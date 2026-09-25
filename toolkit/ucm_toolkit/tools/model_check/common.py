@@ -6,6 +6,7 @@ import copy
 import hashlib
 import inspect
 import math
+import os
 import time
 import traceback
 from contextlib import contextmanager, nullcontext
@@ -127,7 +128,7 @@ def make_config(
     device: str,
     connector_module_path: str = "ucm.integration.vllm.ucm_connector",
 ) -> Any:
-    """Create a one-rank vLLM configuration for the synthetic request."""
+    """Create the requested vLLM parallel configuration for the synthetic request."""
 
     from vllm.config import KVTransferConfig
     from vllm.engine.arg_utils import EngineArgs
@@ -156,8 +157,19 @@ def make_config(
             "dtype": dtype,
             "kv_cache_dtype": kv_cache_dtype,
             "block_size": block_size,
-            "tensor_parallel_size": 1,
-            "pipeline_parallel_size": 1,
+            "tensor_parallel_size": int(os.getenv("UCM_MODEL_CHECK_TP", "1")),
+            "pipeline_parallel_size": int(os.getenv("UCM_MODEL_CHECK_PP", "1")),
+            "prefill_context_parallel_size": int(os.getenv("UCM_MODEL_CHECK_PCP", "1")),
+            "decode_context_parallel_size": int(os.getenv("UCM_MODEL_CHECK_DCP", "1")),
+            "cp_kv_cache_interleave_size": (
+                block_size
+                if device == "npu"
+                and (
+                    int(os.getenv("UCM_MODEL_CHECK_PCP", "1")) > 1
+                    or int(os.getenv("UCM_MODEL_CHECK_DCP", "1")) > 1
+                )
+                else 1
+            ),
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_model_len,
             "max_num_seqs": 2,
@@ -173,6 +185,16 @@ def make_config(
         },
     )
     vllm_config = engine_args.create_engine_config()
+    for env, name in (
+        ("TP", "tensor_parallel_size"),
+        ("PP", "pipeline_parallel_size"),
+        ("PCP", "prefill_context_parallel_size"),
+        ("DCP", "decode_context_parallel_size"),
+    ):
+        if int(getattr(vllm_config.parallel_config, name, 1)) != int(
+            os.getenv(f"UCM_MODEL_CHECK_{env}", "1")
+        ):
+            raise UnsupportedEnvironment(f"Engine did not accept requested {env}")
     model_config = vllm_config.model_config
     if bool(
         getattr(model_config, "is_multimodal_model", False)
@@ -401,15 +423,12 @@ def make_layout(
     if hasattr(vllm_config.cache_config, "num_gpu_blocks"):
         vllm_config.cache_config.num_gpu_blocks = num_blocks
     if hasattr(kv_utils, "get_kv_cache_configs"):
+        specs = gather_objects(kv_cache_specs)
         with current_vllm_config_context(vllm_config):
             configs = kv_utils.get_kv_cache_configs(
-                vllm_config, [kv_cache_specs], [1 << 50]
+                vllm_config, specs, [1 << 50] * len(specs)
             )
-        if len(configs) != 1:
-            raise UnsupportedEnvironment(
-                f"Expected one worker KV config, got {len(configs)}"
-            )
-        return configs[0]
+        return configs[int(os.getenv("RANK", "0"))]
 
     if not hasattr(kv_utils, "get_kv_cache_groups"):
         raise UnsupportedEnvironment(
@@ -572,8 +591,48 @@ def init_kv(
     return kv_caches
 
 
+def gather_objects(value):
+    """Use real CPU process groups for metadata; no model tensors are gathered."""
+    if int(os.getenv("WORLD_SIZE", "1")) == 1:
+        return [value]
+    from vllm.distributed import get_world_group
+
+    values = [None] * torch.distributed.get_world_size()
+    torch.distributed.all_gather_object(
+        values, value, group=get_world_group().cpu_group
+    )
+    return values
+
+
+def assert_shared_dispatch(metadata):
+    """Independent native Schedulers must emit the same global transfer plan."""
+    if not hasattr(metadata, "requests"):
+        return
+    signature = [
+        (
+            request_id,
+            phase,
+            plan.hash_group,
+            plan.keys,
+            plan.token_start,
+            plan.token_end,
+            tuple(tuple(int(x) for x in window) for window in plan.windows),
+        )
+        for request_id, request in metadata.requests.items()
+        for phase in ("load", "dump")
+        for plan in getattr(request, phase + "_plans")
+    ]
+    signatures = gather_objects(signature)
+    if any(value != signatures[0] for value in signatures):
+        raise AssertionError("Ranks received different logical Scheduler/UCM plans")
+
+
+def sync_workers():
+    gather_objects(None)
+
+
 def init_dist(vllm_config: Any, backend: str) -> None:
-    """Create vLLM's mandatory one-rank model-parallel group once."""
+    """Create real model-parallel groups using torchrun rank/device coordinates."""
 
     from vllm.distributed import (
         init_distributed_environment,
@@ -584,15 +643,31 @@ def init_dist(vllm_config: Any, backend: str) -> None:
     if not torch.distributed.is_initialized():
         with current_vllm_config_context(vllm_config):
             init_distributed_environment(
-                world_size=1,
-                rank=0,
-                distributed_init_method="tcp://127.0.0.1:29500",
-                local_rank=0,
+                world_size=int(os.getenv("WORLD_SIZE", "1")),
+                rank=int(os.getenv("RANK", "0")),
+                distributed_init_method=(
+                    "env://" if "RANK" in os.environ else "tcp://127.0.0.1:29500"
+                ),
+                local_rank=int(os.getenv("LOCAL_RANK", "0")),
                 backend=backend,
             )
     if not model_parallel_is_initialized():
         with current_vllm_config_context(vllm_config):
-            initialize_model_parallel(1, 1, 1, 1, backend=backend)
+            p = vllm_config.parallel_config
+            call_with_supported_kwargs(
+                initialize_model_parallel,
+                {
+                    "tensor_model_parallel_size": p.tensor_parallel_size,
+                    "pipeline_model_parallel_size": p.pipeline_parallel_size,
+                    "prefill_context_model_parallel_size": getattr(
+                        p, "prefill_context_parallel_size", 1
+                    ),
+                    "decode_context_model_parallel_size": getattr(
+                        p, "decode_context_parallel_size", 1
+                    ),
+                    "backend": backend,
+                },
+            )
 
 
 def make_cache(
@@ -917,8 +992,11 @@ def make_scheduler_cache_config(worker_kv_cache_config: Any) -> Any:
 
     import vllm.v1.core.kv_cache_utils as kv_utils
 
+    configs = gather_objects(worker_kv_cache_config)
+    if hasattr(kv_utils, "generate_scheduler_kv_cache_config"):
+        return kv_utils.generate_scheduler_kv_cache_config(configs)
     if hasattr(kv_utils, "get_scheduler_kv_cache_config"):
-        return kv_utils.get_scheduler_kv_cache_config([worker_kv_cache_config])
+        return kv_utils.get_scheduler_kv_cache_config(configs)
     scheduler_config = copy.deepcopy(worker_kv_cache_config)
     try:
         from vllm.v1.kv_cache_interface import UniformTypeKVCacheSpecs
@@ -1097,7 +1175,11 @@ def _v2_segment_payload(key: bytes, offset: int, size: int) -> bytes:
     """Generate position-dependent bytes without retaining a second KV copy."""
 
     offset, size = int(offset), int(size)
-    seed = hashlib.sha256(bytes(key) + offset.to_bytes(8, "little")).digest()
+    seed = hashlib.sha256(
+        bytes(key)
+        + offset.to_bytes(8, "little")
+        + int(os.getenv("RANK", "0")).to_bytes(4, "little")
+    ).digest()
     pattern = bytes((seed[index % len(seed)] + index) % 251 for index in range(251))
     return (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
 
@@ -1696,6 +1778,7 @@ def verify(
 
     source_ids = dispatch.block_ids
     save_metadata = dispatch.scheduler_output.kv_connector_metadata
+    assert_shared_dispatch(save_metadata)
     dump_count = metadata_key_count(save_metadata, "dump")
     if dump_count == 0:
         raise UnsupportedEnvironment(
@@ -1725,6 +1808,7 @@ def verify(
     worker.clear_connector_metadata()
     synchronize()
     log(f"dump completed: request_id={dispatch.request_id}, dump_keys={dump_count}")
+    sync_workers()
     time.sleep(10)
 
     target = schedule_target(
@@ -1744,6 +1828,7 @@ def verify(
                 f"{sorted(overlap)}"
             )
     load_metadata = target.scheduler_output.kv_connector_metadata
+    assert_shared_dispatch(load_metadata)
     load_count = metadata_key_count(load_metadata, "load")
     if load_count == 0:
         raise UnsupportedEnvironment(
@@ -1766,4 +1851,7 @@ def verify(
         load_metadata,
         worker,
     )
-    log(f"PASS: Scheduler->UCM dump/load, compared_loaded_tensor_blocks={compared}")
+    sync_workers()
+    log(
+        f"PASS: Scheduler->UCM dump/load, rank={os.getenv('RANK', '0')}, compared_loaded_tensor_blocks={compared}"
+    )

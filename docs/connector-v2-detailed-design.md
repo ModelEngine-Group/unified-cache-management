@@ -406,6 +406,10 @@ layerwise 在 start_load 提交本步所有层加载，不是只预取下一层�
 
 layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文件缓存使用独立的 `-layerwise` namespace，暂不与 bulk 文件互用。model-check 沿用原来的实际引擎、tensor 分配和 Scheduler 路径；layerwise 下改为按 layer_name 的 payload 填充/比对，bulk 仍比较完整 span。该检查仍共用 UCM 的寻址逻辑，不是完全独立的地址 oracle。
 
+### 10.1 同拓扑并行分片
+
+`ParallelLayout` 负责 TP/PP/PCP/DCP 参数与 CP 逻辑页换算；world size 为 TP×PP×PCP，DCP 为 TP 子组。`AllShardLookup` 对各 rank 的已提交文件取共同命中。搬运仍使用原来的 keys/[K,S] 协议，文件路径携带拓扑和 rank；PP 空分片使用零列矩阵提交完成标记。只支持相同拓扑恢复，不支持 reshard。CP 暂限 FA 整页，PCP 无当前引擎运行时证据。详见 [并行设计与验证](connector-v2-parallel-validation-20260926.md)。
+
 ## 11. 性能模型与当前优化
 
 初始化成本包括解析 views/segments、编译范围、建立 record 模板。每次构造主要分配 K×S 的 ptrs，做 broadcast 算术和必要的列合并。固定 sizes/offsets 保持小模板；源范围与 block IDs 的检查仍会读取相应数组。
@@ -437,7 +441,7 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 
 ### 12.1 已有证据
 
-- 当前测试文件有 95 项用例；本次仅整理文档，未重新运行。上一轮删除 key 扫描后的本地运行记录为 95 项通过。
+- 2026-09-26 当前本地验证：111 项 connector v2 组件测试、8 项 toolkit 测试通过；并行运行时矩阵和精确源码快照见 [并行验证记录](connector-v2-parallel-validation-20260926.md)。
 - 用例覆盖逻辑/物理 layout、FA 子块、WA 尾部、State、模型层跨名字选择、二维 offsets、跨请求共享 keys 保留目标、原对象透传、保留批次独立性和 wait 期间描述符存活。
 - 历史四模型双栈 model-check 通过数：CPU GLM/MiniMax/Kimi/DSV4 比较块数 1092/434/93/8，NPU 为 1638/868/186/168。该全模型轮次早于最后几次 Adapter/key 扫描简化，不能声称当前精确源码已做同轮 8/8 回归。
 - 官方 vLLM 0.29 使用 CPU 替代 CUDA 验证；NPU 使用已有 Ascend 0.26 RC 检出，精确 rc1 身份未确认。真实 CUDA 卡尚未验收。model-check 验证真实 KV 分配与字节往返，不等于带模型权重的推理精度测试。
@@ -457,7 +461,8 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 | layerwise 地址构造与 worker 回调 | 已接入；本地 103 项测试及 CPU/NPU 各四组 TP1 model-check 通过，见 [2026-09-26 验证记录](connector-v2-layerwise-validation-20260926.md) |
 | 自定义多 group U | 当前拒绝 |
 | 非阻塞任务生命周期 | 支持 enqueue/按层 wait/步末 drain；当前文件 Proxy 同步，异步后端用测试替身验证 |
-| Worker rank 的物理存储隔离 | 当前 namespace/key 使用方式仍需完成设计与多 rank 验证 |
+| Worker rank 的物理存储隔离 | 同拓扑 namespace/rank 分片，全分片 commit 后命中；TP2/PP2/TP2×PP2 双栈通过，见并行验证记录 |
+| CP | FA 完整分布式页；DCP2 双栈通过，PCP 被当前引擎拒绝，尚未运行时验收 |
 | KV cache dtype namespace 隔离 | 当前使用 model dtype，不能覆盖所有 KV dtype 差异 |
 | 不齐 chunked prefill 的 WA dump | 需验证边界之后旧窗口块是否已被 HMA 淘汰/复用 |
 | 多边界链不一致缺失 | 当前 lookup 的最小终点策略需验证共同命中假设 |

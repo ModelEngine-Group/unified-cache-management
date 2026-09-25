@@ -1165,6 +1165,167 @@ class HashAndLookupTest(unittest.TestCase):
         self.assertEqual(result.external_hit_tokens, 1024)
 
 
+class ParallelShardTest(unittest.TestCase):
+    def test_lookup_requires_all_committed_shards_and_loads_own_bytes(self):
+        from ucm.integration.vllm.v2.parallel import AllShardLookup
+
+        key = b"p" * 16
+        with tempfile.TemporaryDirectory() as directory:
+            memory = ByteMemory()
+            memory.write(100, b"rankzero")
+            memory.write(200, b"rank-one")
+            shards = [
+                SimpleFileUCMProxy(Path(directory) / str(i), MemoryByteAccess(memory))
+                for i in range(2)
+            ]
+            scheduler = AllShardLookup(shards[0], shards)
+            for i in range(2):
+                shards[i].dump((key,), (0,), (100 + i * 100,), (8,))
+            shards[0].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (False,))
+            self.assertEqual(scheduler.lookup_on_prefix((key,)), -1)
+            self.assertEqual(scheduler.lookup_on_reverse((key,)), -1)
+            shards[1].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (True,))
+            for i in range(2):
+                AllShardLookup(shards[i], shards).load(
+                    (key,), (0,), (300 + 100 * i,), (8,)
+                )
+            self.assertEqual(memory.read(300, 8), b"rankzero")
+            self.assertEqual(memory.read(400, 8), b"rank-one")
+
+    def test_empty_pp_shard_marker_is_not_visible_before_commit(self):
+        from ucm.integration.vllm.v2.parallel import AllShardLookup
+
+        key = b"s" * 16
+        empty = np.empty((1, 0), dtype=np.uint64)
+        with tempfile.TemporaryDirectory() as directory:
+            shards = [
+                SimpleFileUCMProxy(
+                    Path(directory) / str(i), MemoryByteAccess(ByteMemory())
+                )
+                for i in range(2)
+            ]
+            shards[0].dump((key,), empty, empty, empty)
+            shards[1].dump((key,), np.array([[0]]), np.array([[10]]), np.array([[4]]))
+            shards[1].commit((key,))
+            scheduler = AllShardLookup(shards[0], shards)
+            self.assertEqual(scheduler.lookup((key,)), (False,))
+            shards[0].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (True,))
+            self.assertEqual(shards[0]._path(key).stat().st_size, 0)
+
+    def test_topologies_do_not_share_a_namespace(self):
+        from ucm.integration.vllm.v2.parallel import ParallelLayout
+
+        variants = [
+            ParallelLayout(tp=2),
+            ParallelLayout(pp=2),
+            ParallelLayout(pcp=2),
+            ParallelLayout(tp=2, dcp=2),
+            ParallelLayout(tp=2, dcp=2, interleave=128),
+            ParallelLayout(pp=2, pp_partition="1,3"),
+        ]
+        self.assertEqual(len({p.namespace for p in variants}), len(variants))
+
+    def test_cp_whole_page_scaling_and_fractional_rejection(self):
+        from ucm.integration.vllm.v2.parallel import ParallelLayout
+
+        spec = parse_kv_cache_config(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
+            scheduler_block_size=4,
+        )
+        parallel = ParallelLayout(tp=4, pp=2, pcp=2, dcp=2)
+        self.assertEqual(parallel.world_size, 16)
+        scaled = parallel.apply_context_parallel(spec)
+        self.assertEqual(scaled.groups[0].token_block_size, 16)
+        self.assertEqual(scaled.groups[0].layers[0].storage_block_size, 4)
+        self.assertEqual(scaled.ucm_cache_block_size, 16)
+        self.assertEqual(scaled.groups[0].tail_blocks, 1)
+        with self.assertRaisesRegex(ValueError, "whole distributed"):
+            parallel.apply_context_parallel(spec, 8)
+
+    def test_ascend_dcp_indexer_replication_folds_adjacent_kernel_rows(self):
+        from ucm.integration.vllm.v2.parallel import ParallelLayout
+
+        native_spec = FullAttentionSpec(4)
+        native_spec.sfa_dcp_replicated_indexer_size = 2
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.indexer"], native_spec), num_blocks=3),
+            scheduler_block_size=8,
+            device_type="npu",
+        )
+        parsed = ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
+        self.assertEqual(parsed.groups[0].layers[0].storage_block_size, 8)
+        layout = UCMKVCacheLayout(
+            parsed,
+            {"model.layers.0.indexer": FakeTensor(1000, (6, 4, 1, 2), (8, 2, 2, 1))},
+        )
+        access = layout.group_layouts[0].compile_access(
+            token_offsets=np.array([0]), token_counts=np.array([8])
+        )
+        ptrs, sizes = access.resolve(np.array([2], dtype=np.uint64))
+        self.assertEqual(ptrs.reshape(-1).tolist(), [1032])
+        self.assertEqual(sizes.reshape(-1).tolist(), [16])
+
+    def test_pp_empty_group_preserves_global_route_without_allocating_view(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group([], FullAttentionSpec(4)),
+                group(["model.layers.2.attn"], FullAttentionSpec(4)),
+            ),
+            scheduler_block_size=4,
+        )
+        layout = UCMKVCacheLayout(
+            parsed, {"model.layers.2.attn": FakeTensor(1000, (8, 4, 2), (8, 2, 1))}
+        )
+        self.assertEqual(tuple(layout.group_layouts), (1,))
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupDispatchPlan,
+        )
+
+        plan = UCMGroupDispatchPlan(
+            "FA",
+            (b"p" * 16,),
+            0,
+            4,
+            (np.array([1], dtype=np.uint64), np.array([2], dtype=np.uint64)),
+        )
+        meta = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
+        )
+        (transfer,) = layout.build_dump_transfers(meta)
+        self.assertEqual(transfer.ptrs.tolist(), [[1016]])
+        self.assertEqual(transfer.ucm_block_offsets.tolist(), [[0]])
+
+    def test_pp_empty_sliding_group_uses_retained_global_layer_specs(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group(["model.layers.0.attn"], FullAttentionSpec(4)),
+                group(
+                    [],
+                    {"model.layers.9.swa_cache": AscendSlidingWindowMLASpec(4, 1, 8)},
+                ),
+            ),
+            scheduler_block_size=4,
+        )
+        self.assertEqual(parsed.wa_groups[0].tail_tokens, 8)
+        self.assertEqual(parsed.wa_groups[0].tail_blocks, 2)
+        self.assertEqual(parsed.wa_groups[0].layers, ())
+
+    def test_pp_empty_state_spec_can_be_parsed(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group(["model.layers.0.attn"], FullAttentionSpec(4)),
+                group([], {"model.layers.1.state": MambaSpec(4)}),
+            ),
+            scheduler_block_size=4,
+        )
+        self.assertEqual(len(parsed.state_groups), 1)
+        self.assertEqual(parsed.state_groups[0].layers, ())
+
+
 class LayerwiseLifecycleTest(unittest.TestCase):
     def _worker(self, directory, *, state=False, deferred=False):
         memory = ByteMemory()
@@ -1514,6 +1675,7 @@ class ProxyAdapterTest(unittest.TestCase):
     def test_wait_for_save_commits_after_all_dumps_and_not_on_dump_failure(self):
         connector = UCMConnector.__new__(UCMConnector)
         connector.use_layerwise = False
+        connector.spec = SimpleNamespace(dispatch_routes=lambda: ())
         connector.has_connector_metadata = lambda: True
         connector._get_connector_metadata = lambda: UCMConnectorMetadata()
         batches = (

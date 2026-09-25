@@ -167,3 +167,9 @@ sizes:   [2048,    2048,    2048,    2048   ]
 ## 输出数组的生命周期
 
 物理寻址 `BlockAccess.resolve` 返回独立可写的 ptrs/sizes；二维 Transfer 则使用独立 ptrs，以及本次调用小模板广播出的只读 sizes/offsets。单组直接持有这次结果，多组再拼接；后续 dispatch 不会覆盖已下发的描述符。这里的独立性针对描述符数组，KV 源内存本身的在途保护仍由既有生命周期机制负责。
+
+## 并行分片
+
+布局只描述当前 rank 注册的逻辑 views。PP 的空 group 保留全局 group/plan 位置，但不生成本地物理 segments。CP 整页换算在 `ParallelLayout` 完成；Ascend replicated indexer 根据原生 spec 展开连续 kernel rows。rank 隔离与全分片 commit 可见性在存储包装层完成，不进入 LayerView 的寻址算法。
+
+TP/PP/DCP 的验证范围、PCP 引擎限制及复现入口见 [并行验证记录](../../../../../docs/connector-v2-parallel-validation-20260926.md)。

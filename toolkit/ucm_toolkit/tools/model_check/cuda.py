@@ -80,7 +80,9 @@ dtype = config.dtype
 kv_cache_dtype = config.kv_cache_dtype
 connector_module_path = config.connector_module_path
 trust_remote_code = True
-request_token_salt = time.time_ns() ^ os.getpid()
+request_token_salt = int(
+    os.getenv("UCM_MODEL_CHECK_TOKEN_SALT", str(time.time_ns() ^ os.getpid()))
+)
 
 
 def _factory_kwargs_redirect_to_meta(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -265,7 +267,7 @@ def check_config() -> None:
 def main() -> int:
     check_config()
     os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-    active_device = torch.device("cuda:0")
+    active_device = torch.device(f"cuda:{os.getenv('LOCAL_RANK', '0')}")
     torch.cuda.set_device(active_device)
     log(f"CUDA_VISIBLE_DEVICES={visible_devices}, device={active_device}")
     vllm_config = None

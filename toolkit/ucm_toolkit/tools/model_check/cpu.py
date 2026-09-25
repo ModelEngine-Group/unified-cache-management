@@ -66,7 +66,9 @@ dtype = config.dtype
 kv_cache_dtype = config.kv_cache_dtype
 connector_module_path = config.connector_module_path
 trust_remote_code = True
-request_token_salt = time.time_ns() ^ os.getpid()
+request_token_salt = int(
+    os.getenv("UCM_MODEL_CHECK_TOKEN_SALT", str(time.time_ns() ^ os.getpid()))
+)
 
 
 def _factory_kwargs_redirect_to_meta(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -187,6 +189,9 @@ def _patch_cpu_runtime() -> None:
         AttentionBackend, AttentionImpl, AttentionMetadataBuilder)
 
     class _FakeImpl(AttentionImpl):
+        # CUDA layout simulation only: FlashAttention/MLA can return decode LSE.
+        # No attention kernel is executed or validated by this checker.
+        can_return_lse_for_decode = True
         def __init__(self, num_heads, head_size, scale, num_kv_heads=None,
                      alibi_slopes=None, sliding_window=None, kv_cache_dtype="auto",
                      logits_soft_cap=None, attn_type="decoder",

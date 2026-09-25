@@ -8,7 +8,7 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -133,6 +133,12 @@ class ModelCheckToolkitTest(unittest.TestCase):
         run.assert_called_once_with(
             [sys.executable, "-m", "ucm_toolkit.tools.model_check.cuda"],
             env={
+                "UCM_MODEL_CHECK_TP": "1",
+                "UCM_MODEL_CHECK_PP": "1",
+                "UCM_MODEL_CHECK_PCP": "1",
+                "UCM_MODEL_CHECK_DCP": "1",
+                "UCM_MODEL_CHECK_TOKEN_SALT": ANY,
+                "VLLM_DIST_IDENT": ANY,
                 "UCM_MODEL_CHECK_MODEL": "/models/example",
                 "UCM_MODEL_CHECK_TOKENS": "8192",
                 "UCM_MODEL_CHECK_BLOCK_SIZE": "128",
@@ -168,6 +174,12 @@ class ModelCheckToolkitTest(unittest.TestCase):
         run.assert_called_once_with(
             [sys.executable, "-m", "ucm_toolkit.tools.model_check.ascend"],
             env={
+                "UCM_MODEL_CHECK_TP": "1",
+                "UCM_MODEL_CHECK_PP": "1",
+                "UCM_MODEL_CHECK_PCP": "1",
+                "UCM_MODEL_CHECK_DCP": "1",
+                "UCM_MODEL_CHECK_TOKEN_SALT": ANY,
+                "VLLM_DIST_IDENT": ANY,
                 "UCM_MODEL_CHECK_MODEL": "org/model",
                 "UCM_MODEL_CHECK_DEVICE_ID": "3",
                 "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH": (
@@ -176,6 +188,44 @@ class ModelCheckToolkitTest(unittest.TestCase):
                 "ASCEND_RT_VISIBLE_DEVICES": "3",
             },
         )
+
+    def test_multi_rank_launcher_counts_dcp_as_tp_subgroup(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter._detect_platform",
+                return_value="cpu",
+            ),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter.run_command", return_value=0
+            ) as run,
+        ):
+            self.assertEqual(
+                ModelCheckTool().run(["--tp", "2", "--pp", "2", "--dcp", "2"]), 0
+            )
+        argv = run.call_args.args[0]
+        self.assertIn("--nproc-per-node=4", argv)
+        self.assertIn("torch.distributed.run", argv)
+        self.assertEqual(run.call_args.kwargs["env"]["UCM_MODEL_CHECK_DCP"], "2")
+
+    def test_invalid_topology_and_insufficient_devices_do_not_launch(self):
+        from ucm_toolkit.errors import ToolkitError
+
+        with (
+            patch(
+                "ucm_toolkit.tools.model_check.adapter._detect_platform",
+                return_value="ascend",
+            ),
+            patch("ucm_toolkit.tools.model_check.adapter.run_command") as run,
+        ):
+            for args in (
+                ["--tp", "3", "--dcp", "2"],
+                ["--tp", "0"],
+                ["--tp", "2", "--device-id", "0"],
+            ):
+                with self.assertRaises(ToolkitError):
+                    ModelCheckTool().run(args)
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

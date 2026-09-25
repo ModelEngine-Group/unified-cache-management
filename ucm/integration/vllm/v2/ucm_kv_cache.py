@@ -250,7 +250,11 @@ def _classify(
     group: "KVCacheGroupSpec",
     concrete: Sequence[tuple[str, "KVCacheSpec"]],
 ) -> frozenset[KVCacheSpecKind]:
-    specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
+    specs = (
+        tuple(spec for _, spec in concrete)
+        or tuple(getattr(group.kv_cache_spec, "kv_cache_specs", {}).values())
+        or (group.kv_cache_spec,)
+    )
     spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
     unknown = tuple(
         type(spec).__qualname__
@@ -346,15 +350,20 @@ def parse_kv_cache_config(
         )
         kinds = _classify(raw_group, concrete)
         if KVCacheSpecKind.MAMBA in kinds:
+            check_specs = (
+                concrete
+                or tuple(getattr(raw_group.kv_cache_spec, "kv_cache_specs", {}).items())
+                or (("", raw_group.kv_cache_spec),)
+            )
             modes = {
-                str(getattr(spec, "mamba_cache_mode", None)) for _, spec in concrete
+                str(getattr(spec, "mamba_cache_mode", None)) for _, spec in check_specs
             }
             if modes != {"align"}:
                 raise ValueError(
                     "connector v2 supports Mamba state only with "
                     f"mamba_cache_mode='align', got {sorted(modes)}"
                 )
-            block_sizes = {int(getattr(spec, "block_size")) for _, spec in concrete}
+            block_sizes = {int(getattr(spec, "block_size")) for _, spec in check_specs}
             if block_sizes != {scheduler_block_size}:
                 raise ValueError(
                     "Mamba align block size must equal cache_config.block_size="
@@ -393,7 +402,14 @@ def parse_kv_cache_config(
                 )
     num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
     for group_id, (raw_group, concrete, kinds) in enumerate(classified):
-        representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
+        representative = (
+            concrete[0][1]
+            if concrete
+            else next(
+                iter(getattr(raw_group.kv_cache_spec, "kv_cache_specs", {}).values()),
+                raw_group.kv_cache_spec,
+            )
+        )
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
         if KVCacheSpecKind.MAMBA in kinds:
             # Mamba state blocks follow the scheduler block (align check
@@ -424,7 +440,11 @@ def parse_kv_cache_config(
             if has_compression and kinds.isdisjoint(_SLIDING_KINDS):
                 ratio = attention_tokens_per_state_by_layer[layer_indices[name]]
             if device_type == "npu":
-                storage_block_size = logical
+                # Ascend's replicated DCP indexer allocates consecutive kernel
+                # rows per logical block, as declared by its native cache spec.
+                storage_block_size = logical * int(
+                    getattr(spec, "sfa_dcp_replicated_indexer_size", 1)
+                )
             elif ratio > 1 and logical % ratio == 0:
                 storage_block_size = logical // ratio
             else:
@@ -447,21 +467,34 @@ def parse_kv_cache_config(
             # layer's compression ratio, and window == ratio leaves
             # nothing to store (tail 0 groups join no chain).
             tails: set[int] = set()
-            for name, concrete_spec in concrete:
+            tail_specs = concrete or tuple(
+                getattr(raw_group.kv_cache_spec, "kv_cache_specs", {}).items()
+            )
+            for name, concrete_spec in tail_specs:
                 window = int(getattr(concrete_spec, "sliding_window"))
                 if name.lower().endswith("swa_cache"):
                     tail = window
                 else:
-                    layer_index = layer_indices[name]
-                    if layer_index not in attention_tokens_per_state_by_layer:
+                    layer_index = layer_indices.get(name)
+                    if layer_index is None:
+                        layer_index = _layer_index(name, device_type, num_hidden_layers)
+                    ratio = attention_tokens_per_state_by_layer.get(
+                        layer_index, attention_tokens_per_state.get(layer_index)
+                    )
+                    if ratio is None:
                         raise ValueError(
                             "Cannot find matching full-attention compression ratio "
                             f"for sliding layer {layer_index}"
                         )
-                    tail = window - attention_tokens_per_state_by_layer[layer_index]
+                    tail = window - ratio
                 if tail < 0:
                     raise ValueError(f"Negative sliding tail for {name}: {tail}")
                 tails.add(tail)
+            if not tail_specs:
+                raise NotImplementedError(
+                    "An empty PP sliding group needs global per-layer tail semantics; "
+                    "this engine projection does not provide enough information"
+                )
             if len(tails) != 1:
                 raise ValueError(
                     f"Group {group_id} has inconsistent tail sizes {sorted(tails)}"
@@ -587,6 +620,7 @@ class UCMKVCacheLayout:
                 group, self.group_layouts[group.group_id], spec.ucm_cache_block_size
             )
             for group in spec.groups
+            if group.layers
         }
         # Per-kind participating groups, in dispatch_routes() order -- the
         # plan's windows array is positional over this order.
@@ -784,6 +818,8 @@ class UCMKVCacheLayout:
         key_count = len(plan.keys)
         group_record_offset = 0
         for group, blocks in zip(physical_groups, plan.windows):
+            if not group.layers:
+                continue
             group_layout = self.group_layouts[group.group_id]
             # Normalize at the pickle boundary: int64 ids mixed into the
             # uint64 stride arithmetic below would silently promote.

@@ -73,6 +73,8 @@ class ModelCheckTool(ToolAdapter):
             "--model",
             help="model directory or Hugging Face model identifier",
         )
+        for dimension in ("tp", "pp", "pcp", "dcp"):
+            parser.add_argument(f"--{dimension}", type=int, default=1)
         parser.add_argument("--tokens", type=int, help="synthetic request length")
         parser.add_argument(
             "--block-size", type=int, help="vLLM KV-cache block size in tokens"
@@ -123,7 +125,15 @@ class ModelCheckTool(ToolAdapter):
                 return exc.code
             return 0 if exc.code is None else 1
 
+        if min(args.tp, args.pp, args.pcp, args.dcp) < 1 or args.tp % args.dcp:
+            raise ToolkitError("Parallel sizes must be positive and DCP must divide TP")
         env = os.environ.copy()
+        for dimension in ("tp", "pp", "pcp", "dcp"):
+            env[f"UCM_MODEL_CHECK_{dimension.upper()}"] = str(getattr(args, dimension))
+        import time
+
+        env["UCM_MODEL_CHECK_TOKEN_SALT"] = str(time.time_ns())
+        env.setdefault("VLLM_DIST_IDENT", env["UCM_MODEL_CHECK_TOKEN_SALT"])
         platform = _detect_platform()
         string_options = (
             ("model", MODEL_ENV),
@@ -150,6 +160,22 @@ class ModelCheckTool(ToolAdapter):
             env["ASCEND_RT_VISIBLE_DEVICES"] = args.device_id
         # cpu: no device-visibility variable needed
         module = f"{__package__}.{platform}"
+        world = args.tp * args.pp * args.pcp
+        if world > 1:
+            if platform != "cpu" and len(args.device_id.split(",")) < world:
+                raise ToolkitError(f"Need {world} visible devices for this topology")
+            return run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "torch.distributed.run",
+                    "--standalone",
+                    f"--nproc-per-node={world}",
+                    "--module",
+                    module,
+                ],
+                env=env,
+            )
         return run_command([sys.executable, "-m", module], env=env)
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:

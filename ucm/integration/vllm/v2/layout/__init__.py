@@ -31,6 +31,7 @@ def build_group_layouts(
             group, kv_caches, device_type=spec.device_type
         )
         for group in spec.groups
+        if group.layers
     }
 
 

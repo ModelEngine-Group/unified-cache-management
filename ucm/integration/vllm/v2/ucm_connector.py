@@ -15,6 +15,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     SupportsHMA,
 )
 
+from .parallel import AllShardLookup, ParallelLayout
 from .ucm_kv_cache import UCMKVCacheLayout, UCMKVCacheSpec, parse_kv_cache_config
 from .ucm_proxy import (
     SimpleFileUCMProxy,
@@ -133,12 +134,15 @@ def _storage_root(launch_config: dict[str, Any]) -> Path:
 
 
 def _worker_rank(vllm_config: "VllmConfig") -> int:
-    configured = getattr(vllm_config.parallel_config, "rank", None)
-    if configured is not None:
-        return int(configured)
-    from vllm.distributed.parallel_state import get_world_group
+    try:
+        from vllm.distributed.parallel_state import get_world_group
 
-    return int(get_world_group().rank)
+        return int(get_world_group().rank)
+    except (ImportError, AssertionError):
+        configured = getattr(vllm_config.parallel_config, "rank", None)
+        if configured is None:
+            raise
+        return int(configured)
 
 
 def _jsonable(value: Any) -> Any:
@@ -245,6 +249,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             ucm_cache_block_size = int(ucm_cache_block_size)
         rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank(vllm_config)
         _dump_raw_kv_cache_config(kv_cache_config, rank)
+        self.parallel_layout = ParallelLayout.from_config(vllm_config)
         hasher = RequestHasher(vllm_config, 0)
         base_seed = hasher("UCM_HASH_SEED")
 
@@ -270,6 +275,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             attention_tokens_per_state=attention_tokens_per_state,
             num_hidden_layers=num_layers,
         )
+        self.spec = self.parallel_layout.apply_context_parallel(
+            self.spec, ucm_cache_block_size
+        )
         dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         # -r2: block-major record layout and ndarray plans (records dumped
         # by earlier revisions are not byte-compatible).
@@ -284,7 +292,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             # additionally include slot padding. Keep file caches separate.
             namespace += "-layerwise"
         root = _storage_root(launch_config) / ".ucm-v2" / namespace
-        self._proxy = UCMProxyAdapter(SimpleFileUCMProxy(root))
+        if self.parallel_layout.world_size > 1:
+            root = root / self.parallel_layout.namespace
+            shards = tuple(
+                SimpleFileUCMProxy(root / f"rank-{i}")
+                for i in range(self.parallel_layout.world_size)
+            )
+            local_rank = (rank or 0) % self.parallel_layout.world_size
+            self._proxy = UCMProxyAdapter(AllShardLookup(shards[local_rank], shards))
+        else:
+            self._proxy = UCMProxyAdapter(SimpleFileUCMProxy(root))
         self._layer_load_tasks: dict[int, list[tuple[str, UCMProxyTask]]] = {}
         self._dump_tasks: list[UCMProxyTask] = []
         self._saved_layer_names: set[str] = set()
@@ -450,6 +467,28 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         # still be computing. Its own hook or the end-of-forward fallback saves it.
         self._save_layer(layer_name, self._dump_metadata())
 
+    def _dump_empty_shards(
+        self, metadata: UCMConnectorMetadata
+    ) -> list[tuple[bytes, ...]]:
+        from .ucm_proxy import UCMProxyTransfer
+        import numpy as np
+
+        empty_kinds = {
+            kind
+            for kind, groups in self.spec.dispatch_routes()
+            if not any(g.layers for g in groups)
+        }
+        empty_keys = []
+        for request in metadata.requests.values():
+            for plan in request.dump_plans:
+                if plan.hash_group in empty_kinds:
+                    empty = np.empty((len(plan.keys), 0), dtype=np.uint64)
+                    self._proxy.submit(
+                        "dump", UCMProxyTransfer(plan.keys, empty, empty, empty)
+                    )
+                    empty_keys.append(plan.keys)
+        return empty_keys
+
     def wait_for_save(self) -> None:
         if not self.has_connector_metadata():
             return
@@ -460,8 +499,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             batches = self.layout.build_dump_transfers(metadata)
             for batch in batches:
                 self._proxy.submit("dump", batch)
+            empty_keys = self._dump_empty_shards(metadata)
             for batch in batches:
                 self._proxy.commit(batch.keys)
+            for keys in empty_keys:
+                self._proxy.commit(keys)
             return
         if self._save_complete:
             return
@@ -483,6 +525,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._dump_tasks.clear()
         if self._save_error is not None:
             raise self._save_error
+        self._dump_empty_shards(metadata)
         # Keys come from plans: no full-layer pointer matrix or uniqueness scan.
         for request in metadata.requests.values():
             for plan in request.dump_plans:

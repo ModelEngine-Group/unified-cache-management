@@ -71,11 +71,19 @@ class ModelCheckConfig:
     dtype: str
     kv_cache_dtype: str
     connector_module_path: str
+    tp: int = 1
+    pp: int = 1
+    pcp: int = 1
+    dcp: int = 1
 
 
 def load_config() -> ModelCheckConfig:
     """Load model-check configuration from the child-process environment."""
     return ModelCheckConfig(
+        tp=_int_env("UCM_MODEL_CHECK_TP", 1),
+        pp=_int_env("UCM_MODEL_CHECK_PP", 1),
+        pcp=_int_env("UCM_MODEL_CHECK_PCP", 1),
+        dcp=_int_env("UCM_MODEL_CHECK_DCP", 1),
         model=os.environ.get(MODEL_ENV, "/models/Qwen2.5-14B-Instruct"),
         tokens=_int_env(TOKENS_ENV, 4096),
         block_size=_int_env(BLOCK_SIZE_ENV, 64),
