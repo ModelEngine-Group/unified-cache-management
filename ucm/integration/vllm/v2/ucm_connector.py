@@ -20,6 +20,7 @@ from .ucm_proxy import (
     SimpleFileUCMProxy,
     UCMProxyAdapter,
     UCMProxyError,
+    UCMProxyTask,
 )
 from .ucm_scheduler import (
     RequestHasher,
@@ -277,8 +278,19 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             f"-b{self.spec.scheduler_block_size}"
             f"-c{self.spec.ucm_cache_block_size}-r2"
         )
+        self.use_layerwise = bool(launch_config.get("use_layerwise", False))
+        if self.use_layerwise:
+            # Layerwise copies payloads only; bulk Block First records may
+            # additionally include slot padding. Keep file caches separate.
+            namespace += "-layerwise"
         root = _storage_root(launch_config) / ".ucm-v2" / namespace
         self._proxy = UCMProxyAdapter(SimpleFileUCMProxy(root))
+        self._layer_load_tasks: dict[int, list[tuple[str, UCMProxyTask]]] = {}
+        self._dump_tasks: list[UCMProxyTask] = []
+        self._saved_layer_names: set[str] = set()
+        self._failed_load_reqs: set[str] = set()
+        self._save_error: UCMProxyError | None = None
+        self._save_complete = False
         self.layout: UCMKVCacheLayout | None = None
         self._worker_metadata = UCMWorkerMetadata()
         self._invalid_block_ids: set[int] = set()
@@ -327,7 +339,24 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.layout = UCMKVCacheLayout(self.spec, kv_caches)
         self._proxy.register_tensors(kv_caches)
 
+    def _mark_load_failed(self, request_id: str, request: Any) -> None:
+        self._failed_load_reqs.add(request_id)
+        self._worker_metadata.mark_failed(request_id)
+        self._invalid_block_ids.update(
+            int(block_id)
+            for plan in request.load_plans
+            for blocks in plan.windows
+            for block_id in blocks.tolist()
+        )
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
+        # No work from a previous step may outlive its KV block ownership.
+        if self._layer_load_tasks or self._dump_tasks:
+            raise RuntimeError("Previous UCM transfers have not been drained")
+        self._saved_layer_names.clear()
+        self._failed_load_reqs.clear()
+        self._save_error = None
+        self._save_complete = False
         if not self.has_connector_metadata():
             return
         metadata = self._get_connector_metadata()
@@ -335,23 +364,75 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.layout is not None
         for request_id, request in metadata.requests.items():
             request_metadata = UCMConnectorMetadata(requests={request_id: request})
-            batches = self.layout.build_load_transfers(request_metadata)
             try:
-                for batch in batches:
-                    self._proxy.submit("load", batch)
+                if self.use_layerwise:
+                    for layer_id in self.layout.layer_names_by_id:
+                        tasks = self._layer_load_tasks.setdefault(layer_id, [])
+                        for batch in self.layout.build_load_transfers(
+                            request_metadata, layer_id=layer_id
+                        ):
+                            tasks.append(
+                                (request_id, self._proxy.enqueue("load", batch))
+                            )
+                else:
+                    for batch in self.layout.build_load_transfers(request_metadata):
+                        self._proxy.submit("load", batch)
             except UCMProxyError:
-                self._worker_metadata.mark_failed(request_id)
-                self._invalid_block_ids.update(
-                    int(block_id)
-                    for plan in request.load_plans
-                    for blocks in plan.windows
-                    for block_id in blocks.tolist()
-                )
-        # Synchronous load errors are returned through vLLM's invalid-block and
-        # worker-metadata channels; aborting here would bypass those channels.
+                self._mark_load_failed(request_id, request)
+        if self.use_layerwise:
+            # State layers have no Attention/MLA hook. They must be ready before
+            # forward, even when they share a model layer index with attention.
+            state_layer_ids = {
+                layer.layer_index
+                for group in self.spec.groups
+                if group.is_state_snapshot
+                for layer in group.layers
+            }
+            for layer_id in state_layer_ids:
+                self._wait_layer_load(layer_id)
+
+    def _wait_layer_load(self, layer_id: int) -> None:
+        metadata = self._get_connector_metadata()
+        for request_id, task in self._layer_load_tasks.pop(layer_id, ()):
+            try:
+                self._proxy.wait(task)
+            except UCMProxyError:
+                self._mark_load_failed(request_id, metadata.requests[request_id])
 
     def wait_for_layer_load(self, layer_name: str) -> None:
-        return None
+        if not self.use_layerwise or not self.has_connector_metadata():
+            return
+        assert self.layout is not None
+        layer_id = self.layout.layer_id_by_name.get(layer_name)
+        if layer_id is not None:
+            # An attention hook also waits for indexer caches of the same layer.
+            self._wait_layer_load(layer_id)
+
+    def _dump_metadata(self) -> UCMConnectorMetadata:
+        metadata = self._get_connector_metadata()
+        return UCMConnectorMetadata(
+            requests={
+                key: value
+                for key, value in metadata.requests.items()
+                if key not in self._failed_load_reqs
+            }
+        )
+
+    def _save_layer(self, layer_name: str, metadata: UCMConnectorMetadata) -> None:
+        assert self.layout is not None
+        if layer_name in self._saved_layer_names:
+            return
+        if self._save_error is not None:
+            raise self._save_error
+        try:
+            for batch in self.layout.build_dump_transfers(
+                metadata, layer_name=layer_name
+            ):
+                self._dump_tasks.append(self._proxy.enqueue("dump", batch))
+        except UCMProxyError as exc:
+            self._save_error = exc
+            raise
+        self._saved_layer_names.add(layer_name)
 
     def save_kv_layer(
         self,
@@ -360,16 +441,53 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         attn_metadata: "AttentionMetadata",
         **kwargs: Any,
     ) -> None:
-        return None
+        if not self.use_layerwise or not self.has_connector_metadata():
+            return
+        assert self.layout is not None
+        if self._save_complete or layer_name not in self.layout.layer_id_by_name:
+            return
+        # Save this cache only: another cache with the same layer index may
+        # still be computing. Its own hook or the end-of-forward fallback saves it.
+        self._save_layer(layer_name, self._dump_metadata())
 
     def wait_for_save(self) -> None:
         if not self.has_connector_metadata():
             return
-        metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
         assert self.layout is not None
-        for batch in self.layout.build_dump_transfers(metadata):
-            self._proxy.submit("dump", batch)
+        if not self.use_layerwise:
+            metadata = self._get_connector_metadata()
+            assert isinstance(metadata, UCMConnectorMetadata)
+            batches = self.layout.build_dump_transfers(metadata)
+            for batch in batches:
+                self._proxy.submit("dump", batch)
+            for batch in batches:
+                self._proxy.commit(batch.keys)
+            return
+        if self._save_complete:
+            return
+        # Drain loads whose hooks were skipped (e.g. no-forward execution).
+        for layer_id in tuple(self._layer_load_tasks):
+            self._wait_layer_load(layer_id)
+        metadata = self._dump_metadata()
+        try:
+            for layer_name in self.layout.layer_id_by_name:
+                self._save_layer(layer_name, metadata)
+        except UCMProxyError as exc:
+            self._save_error = exc
+        # Always drain submitted writes, including after a later submission fails.
+        for task in self._dump_tasks:
+            try:
+                self._proxy.wait(task)
+            except UCMProxyError as exc:
+                self._save_error = exc
+        self._dump_tasks.clear()
+        if self._save_error is not None:
+            raise self._save_error
+        # Keys come from plans: no full-layer pointer matrix or uniqueness scan.
+        for request in metadata.requests.values():
+            for plan in request.dump_plans:
+                self._proxy.commit(plan.keys)
+        self._save_complete = True
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if not self._worker_metadata.load_failed_reqs:
@@ -392,7 +510,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.dispatcher.requests.pop(request_id, None)
 
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata) -> None:
-        # Bulk v2 I/O is synchronous, so no transfer owns preempted blocks.
+        # wait_for_save drains all layerwise work before returning to the
+        # engine; bulk IO completes synchronously. No task spans scheduler steps.
         return None
 
     def request_finished_all_groups(

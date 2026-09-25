@@ -1079,13 +1079,25 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     if layout is None:
         raise ValueError("connector v2 worker has no registered KV-cache layout")
     builder = getattr(layout, f"build_{phase}_batches")
-    return builder(metadata)
+    if not getattr(connector, "use_layerwise", False):
+        return builder(metadata)
+    # Layerwise transfers copy view payloads, not padding between Block First
+    # slots. Fill and compare those payloads using the same per-name partition;
+    # the bulk oracle still checks its complete spans, including padding.
+    batches = [builder(metadata, layer_name=name) for name in layout.layer_id_by_name]
+    return SimpleNamespace(
+        **{
+            field: tuple(value for batch in batches for value in getattr(batch, field))
+            for field in ("block_ids", "offsets", "ptrs", "sizes")
+        }
+    )
 
 
 def _v2_segment_payload(key: bytes, offset: int, size: int) -> bytes:
     """Generate position-dependent bytes without retaining a second KV copy."""
 
-    seed = hashlib.sha256(bytes(key) + int(offset).to_bytes(8, "little")).digest()
+    offset, size = int(offset), int(size)
+    seed = hashlib.sha256(bytes(key) + offset.to_bytes(8, "little")).digest()
     pattern = bytes((seed[index % len(seed)] + index) % 251 for index in range(251))
     return (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
 

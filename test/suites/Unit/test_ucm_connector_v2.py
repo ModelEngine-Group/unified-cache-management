@@ -1165,6 +1165,286 @@ class HashAndLookupTest(unittest.TestCase):
         self.assertEqual(result.external_hit_tokens, 1024)
 
 
+class LayerwiseLifecycleTest(unittest.TestCase):
+    def _worker(self, directory, *, state=False, deferred=False):
+        memory = ByteMemory()
+        backend = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+        if deferred:
+
+            class DeferredProxy:
+                def __init__(self):
+                    self.events = []
+                    self.fail = None
+
+                def register_tensors(self, caches):
+                    backend.register_tensors(caches)
+
+                def load(self, *args):
+                    self.events.append(("load", args[0]))
+                    return ("load", args)
+
+                def dump(self, *args):
+                    self.events.append(("dump", args[0]))
+                    return ("dump", args)
+
+                def wait(self, task):
+                    operation, args = task
+                    self.events.append(("wait", operation))
+                    if self.fail == operation:
+                        raise OSError("deferred failure")
+                    getattr(backend, operation)(*args)
+
+                def commit(self, keys):
+                    self.events.append(("commit", keys))
+                    backend.commit(keys)
+
+            proxy = DeferredProxy()
+        else:
+            proxy = backend
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        groups = [group(names, FullAttentionSpec(4))]
+        caches = {
+            name: FakeTensor(0x1000 + i * 0x1000, (8, 4, 2), (8, 2, 1))
+            for i, name in enumerate(names)
+        }
+        if state:
+            groups.append(group(["model.layers.2.state"], MambaSpec(4)))
+            caches["model.layers.2.state"] = FakeTensor(0x3000, (8, 8), (8, 1))
+        cfg = vllm_config()
+        cfg.kv_transfer_config.kv_connector_extra_config["use_layerwise"] = True
+        with mock.patch(
+            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
+            return_value=proxy,
+        ):
+            worker = UCMConnector(cfg, KVConnectorRole.WORKER, config(*groups))
+        worker.register_kv_caches(caches)
+        return worker, backend, proxy, memory, names
+
+    def _meta(self, *, load=False, state=False):
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupDispatchPlan,
+        )
+
+        kinds = ("FA", "State") if state else ("FA",)
+        plans = tuple(
+            UCMGroupDispatchPlan(
+                kind,
+                (bytes([i + 1]) * 16,),
+                0,
+                4,
+                (np.array([2 if load else 1], dtype=np.uint64),),
+            )
+            for i, kind in enumerate(kinds)
+        )
+        return UCMConnectorMetadata(
+            requests={
+                "r": RequestDispatchMeta(
+                    "r",
+                    load_plans=plans if load else (),
+                    dump_plans=() if load else plans,
+                )
+            }
+        )
+
+    def test_layerwise_roundtrip_deferred_wait_commit_and_step_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker, backend, proxy, memory, names = self._worker(
+                directory, deferred=True
+            )
+            memory.write(0x1008, b"abcdefgh")
+            memory.write(0x2008, b"ijklmnop")
+            worker.bind_connector_metadata(self._meta())
+            worker.start_load_kv(None)
+            worker.save_kv_layer(names[0], None, None)
+            worker.save_kv_layer(names[0], None, None)
+            worker.save_kv_layer(names[1], None, None)
+            self.assertEqual([e[0] for e in proxy.events], ["dump", "dump"])
+            self.assertEqual(backend.lookup((bytes([1]) * 16,)), (False,))
+            worker.wait_for_save()
+            self.assertEqual(
+                [e[0] for e in proxy.events], ["dump", "dump", "wait", "wait", "commit"]
+            )
+            self.assertEqual(
+                backend._path(bytes([1]) * 16).read_bytes(), b"abcdefghijklmnop"
+            )
+            count = len(proxy.events)
+            worker.wait_for_save()
+            self.assertEqual(len(proxy.events), count)
+            # New step, same worker; only each selected layer becomes ready at wait.
+            worker.bind_connector_metadata(self._meta(load=True))
+            worker.start_load_kv(None)
+            self.assertEqual(memory.read(0x1010, 8), bytes(8))
+            worker.wait_for_layer_load(names[0])
+            self.assertEqual(memory.read(0x1010, 8), b"abcdefgh")
+            self.assertEqual(memory.read(0x2010, 8), bytes(8))
+            worker.wait_for_layer_load(names[0])
+            worker.wait_for_layer_load(names[1])
+            self.assertEqual(memory.read(0x2010, 8), b"ijklmnop")
+            worker.wait_for_save()
+
+    def test_no_hook_state_is_saved_at_end_and_loaded_before_forward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker, backend, proxy, memory, names = self._worker(directory, state=True)
+            for ptr, payload in (
+                (0x1008, b"abcdefgh"),
+                (0x2008, b"ijklmnop"),
+                (0x3008, b"state123"),
+            ):
+                memory.write(ptr, payload)
+            worker.bind_connector_metadata(self._meta(state=True))
+            worker.start_load_kv(None)
+            worker.save_kv_layer(names[0], None, None)
+            # Missing attention hook is also covered at end of forward.
+            worker.wait_for_save()
+            self.assertEqual(
+                backend.lookup((bytes([1]) * 16, bytes([2]) * 16)), (True, True)
+            )
+            worker.bind_connector_metadata(self._meta(load=True, state=True))
+            worker.start_load_kv(None)
+            self.assertEqual(memory.read(0x3010, 8), b"state123")
+            worker.wait_for_save()
+            self.assertEqual(memory.read(0x2010, 8), b"ijklmnop")
+
+    def test_roundtrip_all_physical_orders_and_partial_blocks(self):
+        for order in ("LBNHC", "LBHNC", "LHBNC", "BLNHC", "BLHNC", "BHLNC"):
+            for unit in (4, 8):
+                with (
+                    self.subTest(order=order, unit=unit),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    worker, backend, _, memory, names = self._worker(directory)
+                    worker.layout, strides = LayerViewSegmentsTest()._layout(
+                        order, unit=unit
+                    )
+                    worker.spec = worker.layout.spec
+
+                    def address(layer, block, head, token, content):
+                        return 1000 + sum(
+                            i * strides[a]
+                            for a, i in zip(
+                                "LBHNC", (layer, block, head, token, content)
+                            )
+                        )
+
+                    for layer in range(2):
+                        for head in range(2):
+                            for token in range(8):
+                                for content in range(2):
+                                    value = (
+                                        1 + layer * 64 + head * 24 + token * 2 + content
+                                    )
+                                    memory.write(
+                                        address(layer, 1, head, token, content),
+                                        bytes([value]),
+                                    )
+                                    memory.write(
+                                        address(layer, 2, head, token, content), b"\xff"
+                                    )
+                    worker.bind_connector_metadata(self._meta())
+                    worker.start_load_kv(None)
+                    for name in reversed(names):
+                        worker.save_kv_layer(name, None, None)
+                    worker.wait_for_save()
+                    worker.bind_connector_metadata(self._meta(load=True))
+                    worker.start_load_kv(None)
+                    for name in names:
+                        worker.wait_for_layer_load(name)
+                    worker.wait_for_save()
+                    for layer in range(2):
+                        for head in range(2):
+                            for token in range(8):
+                                for content in range(2):
+                                    expected = (
+                                        memory.read(
+                                            address(layer, 1, head, token, content), 1
+                                        )
+                                        if token < unit
+                                        else b"\xff"
+                                    )
+                                    self.assertEqual(
+                                        memory.read(
+                                            address(layer, 2, head, token, content), 1
+                                        ),
+                                        expected,
+                                    )
+
+    def test_model_check_layerwise_oracle_uses_payloads_not_bulk_padding(self):
+        import importlib.util
+
+        common_path = REPO_ROOT / "toolkit/ucm_toolkit/tools/model_check/common.py"
+        spec = importlib.util.spec_from_file_location(
+            "layerwise_check_common", common_path
+        )
+        common = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(
+            sys.modules, {"torch": types.ModuleType("torch"), spec.name: common}
+        ):
+            spec.loader.exec_module(common)
+        name = "model.layers.0.attn"
+        layout = SimpleNamespace(layer_id_by_name={name: 0})
+
+        def build(metadata, layer_name=None):
+            return SimpleNamespace(
+                block_ids=(b"a" * 16,),
+                offsets=(4,),
+                ptrs=(100,),
+                sizes=(8 if layer_name else 16,),
+            )
+
+        layout.build_dump_batches = build
+        worker = SimpleNamespace(layout=layout, use_layerwise=True)
+        batch = common._v2_batch(worker, SimpleNamespace(requests={}), "dump")
+        self.assertEqual(batch.sizes, (8,))
+        worker.use_layerwise = False
+        self.assertEqual(
+            common._v2_batch(worker, SimpleNamespace(requests={}), "dump").sizes, (16,)
+        )
+        self.assertEqual(
+            len(common._v2_segment_payload(b"a" * 16, np.uint64(4), np.uint64(8))), 8
+        )
+
+    def test_failed_write_drains_other_tasks_without_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker, backend, proxy, memory, names = self._worker(
+                directory, deferred=True
+            )
+            worker.bind_connector_metadata(self._meta())
+            worker.start_load_kv(None)
+            for name in names:
+                worker.save_kv_layer(name, None, None)
+            proxy.fail = "dump"
+            with self.assertRaisesRegex(UCMProxyError, "dump failed"):
+                worker.wait_for_save()
+            self.assertEqual(sum(e == ("wait", "dump") for e in proxy.events), 2)
+            self.assertFalse(any(e[0] == "commit" for e in proxy.events))
+            self.assertFalse(worker._dump_tasks)
+            self.assertEqual(backend.lookup((bytes([1]) * 16,)), (False,))
+
+    def test_failed_load_reports_blocks_and_suppresses_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker, backend, proxy, memory, names = self._worker(
+                directory, deferred=True
+            )
+            metadata = self._meta(load=True)
+            from dataclasses import replace
+
+            metadata.requests["r"] = replace(
+                metadata.requests["r"], dump_plans=self._meta().requests["r"].dump_plans
+            )
+            worker.bind_connector_metadata(metadata)
+            worker.start_load_kv(None)
+            proxy.fail = "load"
+            worker.wait_for_layer_load(names[0])
+            worker.save_kv_layer(names[0], None, None)
+            worker.wait_for_save()
+            self.assertEqual(worker.get_block_ids_with_load_errors(), {2})
+            self.assertEqual(
+                worker.build_connector_worker_meta().load_failed_reqs, {"r"}
+            )
+            self.assertFalse(any(e[0] in ("dump", "commit") for e in proxy.events))
+
+
 class ProxyAdapterTest(unittest.TestCase):
     def test_simple_file_proxy_publishes_and_loads_complete_record(self):
         key = b"f" * 16
@@ -1186,6 +1466,8 @@ class ProxyAdapterTest(unittest.TestCase):
                 (5, 7),
             )
 
+            self.assertEqual(adapter.lookup((key,)), (False,))
+            adapter.commit((key,))
             self.assertEqual(adapter.lookup((key, b"m" * 16)), (True, False))
             self.assertEqual(
                 (Path(directory) / f"{key.hex()}.ucm").read_bytes(), source
@@ -1203,16 +1485,69 @@ class ProxyAdapterTest(unittest.TestCase):
         self.assertEqual(memory.read(0x4000, 7), source[5:])
         self.assertEqual(access.synchronize_calls, 2)
 
-    def test_simple_file_proxy_rejects_incomplete_or_overlapping_dump(self):
-        key = b"g" * 16
+    def test_partial_dumps_stay_hidden_until_selected_keys_commit(self):
+        key, other = b"g" * 16, b"h" * 16
         memory = ByteMemory()
-        access = MemoryByteAccess(memory)
+        memory.write(0x1000, b"abcd")
+        memory.write(0x2000, b"efgh")
         with tempfile.TemporaryDirectory() as directory:
-            adapter = UCMProxyAdapter(SimpleFileUCMProxy(directory, access))
-            with self.assertRaisesRegex(UCMProxyError, "Proxy dump failed"):
-                adapter.dump((key,), (4,), (0x1000,), (8,))
-            with self.assertRaisesRegex(UCMProxyError, "Proxy dump failed"):
-                adapter.dump((key, key), (0, 4), (0x1000, 0x2000), (8, 8))
+            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+            adapter = UCMProxyAdapter(proxy)
+            # Later layer first; repeated writes must preserve earlier ranges.
+            adapter.dump((key,), (4,), (0x2000,), (4,))
+            adapter.dump((other,), (0,), (0x2000,), (4,))
+            self.assertEqual(adapter.lookup((key, other)), (False, False))
+            adapter.dump((key,), (0,), (0x1000,), (4,))
+            adapter.commit((key,))
+            self.assertEqual(adapter.lookup((key, other)), (True, False))
+            self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
+            adapter.commit((key,))  # Idempotent retry.
+            adapter.load((key,), (0,), (0x3000,), (8,))
+            self.assertEqual(memory.read(0x3000, 8), b"abcdefgh")
+            # A replacement remains hidden behind the previous complete block.
+            adapter.dump((key,), (0,), (0x2000,), (4,))
+            self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
+            adapter.commit((key, other))
+            self.assertEqual(proxy._path(key).read_bytes(), b"efgh")
+            self.assertFalse(list(Path(directory).glob("*.tmp")))
+
+    def test_wait_for_save_commits_after_all_dumps_and_not_on_dump_failure(self):
+        connector = UCMConnector.__new__(UCMConnector)
+        connector.use_layerwise = False
+        connector.has_connector_metadata = lambda: True
+        connector._get_connector_metadata = lambda: UCMConnectorMetadata()
+        batches = (
+            SimpleNamespace(keys=(b"a" * 16,)),
+            SimpleNamespace(keys=(b"b" * 16,)),
+        )
+        connector.layout = SimpleNamespace(build_dump_transfers=lambda _: batches)
+        connector._proxy = mock.Mock()
+        connector.wait_for_save()
+        self.assertEqual(
+            connector._proxy.mock_calls,
+            [
+                mock.call.submit("dump", batches[0]),
+                mock.call.submit("dump", batches[1]),
+                mock.call.commit(batches[0].keys),
+                mock.call.commit(batches[1].keys),
+            ],
+        )
+        connector._proxy.reset_mock()
+        connector._proxy.submit.side_effect = [None, UCMProxyError("write failed")]
+        with self.assertRaises(UCMProxyError):
+            connector.wait_for_save()
+        connector._proxy.commit.assert_not_called()
+
+    def test_commit_waits_and_normalizes_failure(self):
+        proxy = mock.Mock()
+        proxy.wait = mock.Mock()
+        proxy.commit.return_value = "commit-task"
+        adapter = UCMProxyAdapter(proxy)
+        adapter.commit((b"a" * 16,))
+        proxy.wait.assert_called_once_with("commit-task")
+        proxy.commit.side_effect = OSError("rename failed")
+        with self.assertRaisesRegex(UCMProxyError, "Proxy commit failed"):
+            adapter.commit((b"a" * 16,))
 
     def test_rejects_misaligned_arrays_and_record_overflow(self):
         key = b"x" * 16
@@ -2118,6 +2453,7 @@ class RaggedLayoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
             proxy.dump(dumped.block_ids, dumped.offsets, dumped.ptrs, dumped.sizes)
+            proxy.commit(dumped.block_ids)
             self.assertEqual(
                 (Path(directory) / (key.hex() + ".ucm")).read_bytes(), expected
             )
@@ -3032,6 +3368,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 memory.write(ptr, bytes((int(offset) + i) % 251 for i in range(size)))
             proxy = SimpleFileUCMProxy(Path(path), byte_access=MemoryByteAccess(memory))
             proxy.dump(source.block_ids, source.offsets, source.ptrs, source.sizes)
+            proxy.commit(source.block_ids)
             proxy.load(
                 target_layer.block_ids,
                 target_layer.offsets,
@@ -3693,6 +4030,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp:
                     proxy = SimpleFileUCMProxy(tmp, MemoryByteAccess(memory))
                     proxy.dump(dump.block_ids, dump.offsets, dump.ptrs, dump.sizes)
+                    proxy.commit(dump.block_ids)
                     for k, start in zip(plan.keys, (0, 4)):
                         expected = bytes(
                             (
@@ -3864,6 +4202,7 @@ class MatrixTransferTest(unittest.TestCase):
             proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
             adapter = UCMProxyAdapter(proxy)
             adapter.submit("dump", batch)
+            adapter.commit(batch.keys)
             expected = []
             for key in batch.keys:
                 pieces = [

@@ -2,7 +2,7 @@
 
 更新时间：2026-09-20。源码基准：`dev_connector`，HEAD `49ff4b75`，目录 `ucm/integration/vllm/v2/`。
 
-本文描述当前实现，不把计划中的异步、layerwise IO 或真实存储 Proxy 能力当作已实现。文中的 UCM block 是一个 key 对应的存储记录，vLLM block 是 KV 池中的物理块，两者不是同一个概念。本文不描述旧版 `ucm/integration/vllm/ucm_connector.py` 的实现。
+本文描述当前实现。2026-09-26 增加 layerwise 回调和显式 commit；异步任务边界已接入，当前文件 Proxy 仍同步执行。文中的 UCM block 是一个 key 对应的存储记录，vLLM block 是 KV 池中的物理块，两者不是同一个概念。本文不描述旧版 `ucm/integration/vllm/ucm_connector.py` 的实现。
 
 ## 1. 目标与当前状态
 
@@ -18,7 +18,7 @@ v2 将不同模型的 Full Attention、Sliding Window 和 Mamba 状态统一成�
 - 每个非空且有选中数据的 plan 生成一个二维 Transfer；不同请求独立提交。跨请求相同 key 可以对应不同 load 目标，不能丢掉其中一个目标。
 - 原生 `Adapter.submit` 原样转发四个字段，不做逐元素校验或 dtype 转换。
 - 地址和大小主要用 NumPy 批量计算，但仍有请求、plan、group 级 Python 循环，不等于多核或设备端并行。
-- worker 生命周期目前使用同步 bulk load/dump；接口支持选择层，但真实 layerwise 回调尚未接入传输。
+- worker 默认使用同步 bulk load/dump；`use_layerwise: true` 启用逐层传输和按层等待，步末等待保存任务并 commit。
 - `SimpleFileUCMProxy` 是可替换的开发后端，不是多级存储管理器；存储层的解析策略不决定寻址层设计。
 
 ## 2. 模块职责与数据流
@@ -377,7 +377,7 @@ proxy.load(transfer.keys, transfer.ucm_block_offsets,
 
 `submit` 仅选择 load/dump、跳过空 keys、原样调用、处理返回 task 和异常。它不检查 shape/dtype/非零/溢出/重复 keys，不创建 ndarray 副本。构造层拥有描述符契约。
 
-后端返回 None 表示本次调用完成；返回 task 时 Adapter 立即执行 `wait(task)`。因此即使替换成提交非阻塞的 Proxy，当前 Adapter 对上层仍表现为同步等待。要让 worker 与 IO 重叠，需要另行调整任务保存、完成回报和 block 生命周期，不能只替换 Proxy 方法名。
+后端返回 None 表示本次调用完成；返回 handle 时，Adapter 的 `enqueue` 保存 handle 和 Transfer，worker 在对应层回调或步末调用 `wait`。bulk 使用 `submit`，仍立即等待。任务不跨调度步；真实计算/IO 重叠还取决于后端设备同步实现，需要实机验证。
 
 旧 `UCMProxyBatch`、`build_*_batches` 和四参数 flat adapter.load/dump 暂留给测试工具兼容，仍有归一化/校验。worker 主路径不使用它们，性能测量不能混用。
 
@@ -386,19 +386,25 @@ proxy.load(transfer.keys, transfer.ucm_block_offsets,
 | hook | 当前行为 |
 |---|---|
 | `register_kv_caches` | 建 layout，注册 tensor storage |
-| `start_load_kv` | 逐请求构造 bulk load Transfers，同步下发 |
-| `wait_for_layer_load` | 空操作，bulk load 已完成 |
-| `save_kv_layer` | 空操作，尚未逐层下发 |
-| `wait_for_save` | 构造并同步提交 bulk dump Transfers |
+| `start_load_kv` | bulk 同步加载；layerwise 按请求、模型层提交加载，状态层在返回前等待 |
+| `wait_for_layer_load` | layerwise 等待对应 layer_id 的加载，包含同层 indexer 等缓存；重复回调不重复等待 |
+| `save_kv_layer` | layerwise 只保存当前 layer_name，避免同层其他缓存尚未计算完成；同一步重复回调跳过 |
+| `wait_for_save` | layerwise 补存未触发回调的缓存，等待全部保存任务后 commit；bulk 完整 dump 后 commit |
 | `build_connector_worker_meta` | 回报并清空 load_failed_reqs |
 | `get_block_ids_with_load_errors` | 回报并清空无效 block IDs |
 | `update_connector_output` | scheduler 删除失败请求的 dispatcher 状态 |
-| `handle_preemptions` | 当前同步 IO 下为空 |
+| `handle_preemptions` | 空操作；所有任务必须在本步 wait_for_save 返回前完成 |
 | `request_finished_all_groups` | 返回 `(False,None)`，不额外保留 blocks |
 
 load 中的 `UCMProxyError` 按请求捕获，标记该请求相关 plan 的 blocks 无效，走 vLLM 的失败回报渠道，不立即从该 hook 抛出。构造阶段异常不在这个 Proxy 错误捕获范围内。dump 失败继续向上传播。
 
-当前 `SimpleFileUCMProxy`：一个 key 一个 `.ucm` 文件；dump 要求完整、无 gap/overlap 的记录，临时文件写完后 rename 发布；load 按 offset 范围读取。`TorchTensorByteAccess` 负责注册 storage、将裸地址转成 torch byte view 和同步设备。它不支持多次 layerwise dump 累积后再发布；不能把单层 Transfer 直接当成完整记录交给该文件后端。
+当前 `SimpleFileUCMProxy`：一个 key 一个 `.ucm` 文件。`dump` 按 UCM block offset 累积写入该 key 的私有 `.tmp` 文件；`commit(keys)` 将指定 key 的临时文件 rename 为可见文件。完整性由调用方保证，发布按 key 原子执行。Adapter 的 `enqueue` 返回持有 Transfer 和后端 handle 的任务，`wait` 等待完成；`submit` 保留同步语义，commit 也等待完成。`TorchTensorByteAccess` 负责注册 storage、将裸地址转成 torch byte view 和同步设备。
+
+layerwise 在 start_load 提交本步所有层加载，不是只预取下一层；因此异步 Proxy 下描述符峰值覆盖所有在途加载。逐层 wait 后释放该层任务。保存提交或等待失败时，会等待其余已提交保存任务，然后抛出错误，不 commit；加载失败按请求上报，并排除该请求的后续保存和发布。重复 wait_for_save 不重复提交已完成的本步。
+
+未触发 save 回调的缓存在步末补存，要求其内容持续有效到 forward 结束；跨层复用物理缓冲区的专用后端需额外接入生产者/消费者同步，当前没有声称支持该场景。Proxy 必须保证异步搬运与设备计算之间的依赖，当前同步文件后端通过设备同步满足这一点。
+
+layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文件缓存使用独立的 `-layerwise` namespace，暂不与 bulk 文件互用。model-check 沿用原来的实际引擎、tensor 分配和 Scheduler 路径；layerwise 下改为按 layer_name 的 payload 填充/比对，bulk 仍比较完整 span。该检查仍共用 UCM 的寻址逻辑，不是完全独立的地址 oracle。
 
 ## 11. 性能模型与当前优化
 
@@ -448,9 +454,9 @@ load 中的 `UCMProxyError` 按请求捕获，标记该请求相关 plan 的 blo
 | 多 kernel rows 带行 padding | 密集行路径明确拒绝 |
 | 压缩状态部分切片 | 必须落在完整 state 边界 |
 | Mamba 非 align / State 部分页 | 不支持 |
-| layerwise 地址构造 | 支持；worker layerwise IO 尚未接入 |
+| layerwise 地址构造与 worker 回调 | 已接入；本地 103 项测试及 CPU/NPU 各四组 TP1 model-check 通过，见 [2026-09-26 验证记录](connector-v2-layerwise-validation-20260926.md) |
 | 自定义多 group U | 当前拒绝 |
-| 真实非阻塞生命周期 | 尚未实现；Adapter 立即 wait |
+| 非阻塞任务生命周期 | 支持 enqueue/按层 wait/步末 drain；当前文件 Proxy 同步，异步后端用测试替身验证 |
 | Worker rank 的物理存储隔离 | 当前 namespace/key 使用方式仍需完成设计与多 rank 验证 |
 | KV cache dtype namespace 隔离 | 当前使用 model dtype，不能覆盖所有 KV dtype 差异 |
 | 不齐 chunked prefill 的 WA dump | 需验证边界之后旧窗口块是否已被 HMA 淘汰/复用 |

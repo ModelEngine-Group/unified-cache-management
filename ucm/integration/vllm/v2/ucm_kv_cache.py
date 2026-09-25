@@ -700,8 +700,8 @@ class UCMKVCacheLayout:
         """Select memory ranges; a filtered batch may not be a complete record.
 
         Layerwise saving needs a backend that accumulates partial records and
-        publishes only when complete. SimpleFileUCMProxy.dump requires the
-        whole record and must not be called once per filtered layer batch.
+        publishes only when complete. SimpleFileUCMProxy supports this through
+        repeated dump calls followed by commit(keys).
         """
         plans = (
             plan

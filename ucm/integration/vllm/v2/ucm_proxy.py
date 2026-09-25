@@ -1,4 +1,4 @@
-"""The storage-neutral synchronous Proxy boundary used by connector v2."""
+"""The storage-neutral transfer and completion boundary used by connector v2."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class UCMProxy(Protocol):
     """Native load/dump receive unique keys and matching [K,S] arrays.
 
     Read-only, non-contiguous arrays are valid. Returning a task requires wait;
-    the adapter currently waits synchronously before releasing descriptors.
+    enqueue retains descriptors until wait; submit waits synchronously.
     """
 
     def lookup(self, block_ids: Sequence[bytes]) -> Sequence[bool]: ...
@@ -54,6 +54,10 @@ class UCMProxy(Protocol):
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> object | None: ...
+
+    def commit(self, block_ids: Sequence[bytes]) -> object | None:
+        """Publish completed UCM blocks after all their dump calls finish."""
+        ...
 
 
 @runtime_checkable
@@ -155,11 +159,11 @@ class TorchTensorByteAccess:
 
 
 class SimpleFileUCMProxy:
-    """Minimal standalone byte-range Proxy for synchronous v2 bulk I/O.
+    """Synchronous file backend with explicit UCM block publication.
 
-    A record is stored as one raw file named by its 16-byte key.  Dump calls
-    must provide every byte in each record exactly once.  Publication uses an
-    atomic rename, so lookup never observes a partially written record.
+    Dump accumulates byte ranges in a private .tmp file per key. Commit
+    atomically renames it to the visible .ucm file. The caller guarantees
+    all required ranges have been written before committing a key.
     """
 
     _SUFFIX = ".ucm"
@@ -172,6 +176,7 @@ class SimpleFileUCMProxy:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.byte_access = byte_access or TorchTensorByteAccess()
+        self._pending: dict[bytes, Path] = {}
 
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
         self.byte_access.register_tensors(kv_caches)
@@ -229,21 +234,6 @@ class SimpleFileUCMProxy:
             )
         return records.items()
 
-    @staticmethod
-    def _record_size(key: bytes, segments: list[tuple[int, int, int]]) -> int:
-        cursor = 0
-        for offset, _ptr, size in sorted(segments):
-            if offset != cursor:
-                kind = "overlap" if offset < cursor else "gap"
-                raise ValueError(
-                    f"Record {key.hex()} has a {kind} at byte {cursor}: "
-                    f"next offset={offset}"
-                )
-            cursor += size
-        if cursor <= 0:
-            raise ValueError(f"Record {key.hex()} is empty")
-        return cursor
-
     def dump(
         self,
         block_ids: Sequence[bytes],
@@ -251,26 +241,45 @@ class SimpleFileUCMProxy:
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> None:
-        records = self._records(block_ids, offsets, ptrs, sizes)
         self.byte_access.synchronize()
-        for key, segments in records:
-            segments = list(segments)
-            record_size = self._record_size(key, segments)
-            record = bytearray(record_size)
-            for offset, ptr, size in segments:
-                payload = self.byte_access.read(ptr, size)
-                if len(payload) != size:
-                    raise RuntimeError(
-                        f"Byte access returned {len(payload)} bytes, expected {size}"
-                    )
-                record[offset : offset + size] = payload
-            target = self._path(key)
-            temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        for key, segments in self._records(block_ids, offsets, ptrs, sizes):
+            temporary = self._pending.get(key)
+            if temporary is None:
+                target = self._path(key)
+                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+                mode = "xb"
+            else:
+                mode = "r+b"
             try:
-                temporary.write_bytes(record)
-                os.replace(temporary, target)
-            finally:
+                with temporary.open(mode) as stream:
+                    self._pending[key] = temporary
+                    for offset, ptr, size in segments:
+                        payload = self.byte_access.read(ptr, size)
+                        if len(payload) != size:
+                            raise RuntimeError(
+                                f"Byte access returned {len(payload)} bytes, expected {size}"
+                            )
+                        stream.seek(offset)
+                        stream.write(payload)
+            except Exception:
+                self._pending.pop(key, None)
                 temporary.unlink(missing_ok=True)
+                raise
+
+    def commit(self, block_ids: Sequence[bytes]) -> None:
+        """Publish only the supplied keys; already committed keys are a no-op.
+
+        Publication is atomic per key, not across the whole key sequence.
+        Private temporary names isolate independent Proxy writers.
+        """
+        for key in block_ids:
+            temporary = self._pending.get(key)
+            if temporary is None:
+                if self._path(key).is_file():
+                    continue
+                raise KeyError(f"No pending UCM block to commit: {key.hex()}")
+            os.replace(temporary, self._path(key))
+            del self._pending[key]
 
     def load(
         self,
@@ -317,6 +326,15 @@ class UCMProxyTransfer:
     @property
     def total_bytes(self) -> int:
         return int(self.sizes.sum())
+
+
+@dataclass(frozen=True)
+class UCMProxyTask:
+    """Keep transfer arrays alive until the backend task completes."""
+
+    operation: str
+    transfer: UCMProxyTransfer
+    handle: object | None
 
 
 @dataclass(frozen=True)
@@ -493,25 +511,44 @@ class UCMProxyAdapter:
                 raise
             raise UCMProxyError("Proxy dump failed") from exc
 
-    def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
-        """Forward layout-owned descriptors unchanged, retaining them through wait.
-
-        The builder owns the key/shape/dtype/range contract. Submission does
-        not rescan, normalize or copy its arrays.
-        """
-        if operation not in ("load", "dump"):
-            raise ValueError(f"Unknown transfer operation: {operation}")
-        if not transfer.keys:
+    def commit(self, block_ids: Sequence[bytes]) -> None:
+        """Publish keys after their writes complete, without rescanning descriptors."""
+        if not block_ids:
             return
         try:
-            task = getattr(self._proxy, operation)(
-                transfer.keys,
-                transfer.ucm_block_offsets,
-                transfer.ptrs,
-                transfer.sizes,
-            )
-            self._wait(operation, task)
+            self._wait("commit", self._proxy.commit(block_ids))
+        except Exception as exc:
+            if isinstance(exc, UCMProxyError):
+                raise
+            raise UCMProxyError("Proxy commit failed") from exc
+
+    def enqueue(self, operation: str, transfer: UCMProxyTransfer) -> UCMProxyTask:
+        """Submit unchanged descriptors; the returned task retains their lifetime."""
+        if operation not in ("load", "dump"):
+            raise ValueError(f"Unknown transfer operation: {operation}")
+        try:
+            handle = None
+            if transfer.keys:
+                handle = getattr(self._proxy, operation)(
+                    transfer.keys,
+                    transfer.ucm_block_offsets,
+                    transfer.ptrs,
+                    transfer.sizes,
+                )
+            return UCMProxyTask(operation, transfer, handle)
         except Exception as exc:
             if isinstance(exc, UCMProxyError):
                 raise
             raise UCMProxyError(f"Proxy {operation} failed") from exc
+
+    def wait(self, task: UCMProxyTask) -> None:
+        try:
+            self._wait(task.operation, task.handle)
+        except Exception as exc:
+            if isinstance(exc, UCMProxyError):
+                raise
+            raise UCMProxyError(f"Proxy {task.operation} failed") from exc
+
+    def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
+        """Synchronous compatibility path for bulk transfers."""
+        self.wait(self.enqueue(operation, transfer))

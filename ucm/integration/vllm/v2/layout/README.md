@@ -28,7 +28,11 @@ ucm_block_offsets: np.ndarray   # [K, S]，相对完整 UCM block
 
 性能基准以“构造 Transfer → Adapter 转发 → 空后端接口返回”为口径；不把文件 Proxy 的解析、字节搬运或 IO 算入接口下发耗时。此前含 Adapter 校验的历史耗时不代表移除校验后的结果。
 
-文件 Proxy 对二维输入逐 key 行处理，不创建全批次 segment-to-key 字典；实际字节 IO 时才迭代这一行的 segments。dump 仍要求每个 key 的完整记录，layerwise dump 不具备累积发布能力。
+文件 Proxy 对二维输入逐 key 行处理，不创建全批次 segment-to-key 字典；实际字节 IO 时才迭代这一行的 segments。dump 按 offset 累积写入私有 `.tmp`，`commit(keys)` 才发布为可见文件。调用方负责保证完整性。
+
+`use_layerwise: true` 接入 worker 逐层回调：start_load 提交各模型层加载，层回调等待该层关联缓存；状态层在 forward 前等待。save 回调只提交当前 layer_name，步末补存未回调的缓存，等待全部任务后 commit。未配置时仍走 bulk。当前文件 Proxy 同步执行；替换为异步 Proxy 时，任务保留 Transfer 数组直至 wait 完成。所有任务在本次 wait_for_save 返回前完成，不跨调度步。
+
+layerwise 不复制 Block First slot padding，因此文件后端使用独立的 `-layerwise` namespace，暂不混用 bulk 文件。model-check 在此模式下按每个 layer_name 的有效 payload 填充和比对，bulk 模式继续比对完整 span。
 
 旧 `build_load_batches/build_dump_batches`、`UCMProxyBatch` 与四参数扁平 adapter 方法暂留作旧工具兼容入口，**worker 已不使用它们**。不要用旧入口测量二维接口收益。下文的旧扁平示例用于解释相同的物理地址及磁盘字节位置；二维形式将 keys 变为 `[A,B]`，后三个数组按两行排列。
 
