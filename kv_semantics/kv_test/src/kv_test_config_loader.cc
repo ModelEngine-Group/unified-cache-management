@@ -246,9 +246,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
                      config.metrics.definitionPath);
         GetStringAny(values, {"metrics.listen_address"}, config.metrics.listenAddress);
         GetStringAny(values, {"metrics.path"}, config.metrics.path);
-        GetStringAny(values, {"metrics.source"}, config.metrics.source);
-        GetStringAny(values, {"metrics.model_name"}, config.metrics.modelName);
-        GetStringAny(values, {"metrics.worker_id"}, config.metrics.workerId);
         GetUint32Any(values, {"metrics.aggregation_interval_ms"},
                      config.metrics.aggregationIntervalMs);
         GetUint32Any(values, {"metrics.shutdown_grace_ms"}, config.metrics.shutdownGraceMs);

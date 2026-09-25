@@ -173,11 +173,8 @@ struct MetricsServerConfig {
     std::string listenAddress{"127.0.0.1"};
     std::uint16_t port{9108};
     std::string path{"/metrics"};
-    std::string source{"kv-test"};
-    std::string modelName{"standalone"};
-    std::string workerId{"endpoint-0"};
-    std::uint32_t aggregationIntervalMs{500};
-    std::uint32_t shutdownGraceMs{0};
+    std::uint32_t aggregationIntervalMs{1000};
+    std::uint32_t shutdownGraceMs{200};
 };
 
 struct ToolBehaviorConfig {
