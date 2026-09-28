@@ -38,7 +38,7 @@ std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
     return std::chrono::milliseconds{distribution(generator)};
 }
 
-bool CountPassiveResult(const Status& status)
+bool CountAsConnFailure(const Status& status)
 {
     return status != Status::NotFound() && status != Status::StoreUnhealthy() &&
            status != Status::InvalidParam() && status != Status::DuplicateKey() &&
@@ -124,9 +124,9 @@ Expected<std::vector<uint8_t>> HealthBreakerStore::Lookup(const Detail::BlockId*
     const auto generation = healthState_->Generation();
     auto result = store_->Lookup(blocks, num);
     const auto status = result ? Status::OK() : result.Error();
-    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return result; }
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
     RecordPassiveResult(status, generation);
-    CheckPassiveHealth(generation);
+    CheckNeedBreak(generation);
     return result;
 }
 
@@ -136,9 +136,9 @@ Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* bloc
     const auto generation = healthState_->Generation();
     auto result = store_->LookupOnPrefix(blocks, num);
     const auto status = result ? Status::OK() : result.Error();
-    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return result; }
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
     RecordPassiveResult(status, generation);
-    CheckPassiveHealth(generation);
+    CheckNeedBreak(generation);
     return result;
 }
 
@@ -148,9 +148,9 @@ Expected<ssize_t> HealthBreakerStore::LookupOnReverse(const Detail::BlockId* blo
     const auto generation = healthState_->Generation();
     auto result = store_->LookupOnReverse(blocks, num);
     const auto status = result ? Status::OK() : result.Error();
-    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return result; }
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
     RecordPassiveResult(status, generation);
-    CheckPassiveHealth(generation);
+    CheckNeedBreak(generation);
     return result;
 }
 
@@ -210,9 +210,9 @@ Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
 {
     const auto generation = healthState_->Generation();
     auto status = store_->Wait(taskId);
-    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return status; }
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return status; }
     RecordPassiveResult(status, generation);
-    CheckPassiveHealth(generation);
+    CheckNeedBreak(generation);
     if (status.Failure()) {
         return Status::StoreUnhealthy(fmt::format("{}: {}", storeId_, status));
     }
@@ -231,7 +231,7 @@ void HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t gene
     healthState_->RecordIo(status.Success(), generation);
 }
 
-void HealthBreakerStore::CheckPassiveHealth(uint64_t generation)
+void HealthBreakerStore::CheckNeedBreak(uint64_t generation)
 {
     if (!healthState_->PassiveThresholdExceeded(generation)) { return; }
     std::lock_guard<std::mutex> lock(healthMutex_);

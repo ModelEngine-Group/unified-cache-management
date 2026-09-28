@@ -63,7 +63,7 @@ public:
 
 private:
     void RecordPassiveResult(const Status& status, uint64_t generation);
-    void CheckPassiveHealth(uint64_t generation);
+    void CheckNeedBreak(uint64_t generation);
     void UpdateState(bool changed, const char* source);
     void RecordProbeMetrics(bool healthy);
     void RecordEffectiveHealth();
