@@ -221,6 +221,14 @@ def _cache_posix_pipeline_builder(
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 
+def _cache_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    _preload_metrics(store_dir)
+    pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
+
+
 def _build_cache_compress_posix_pipeline(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ) -> None:
@@ -369,8 +377,7 @@ def _yuanrong_posix_pipeline_builder(
         if config.get("io_direct", False):
             if object_size % 4096:
                 raise ValueError(
-                    "YuanRong object size must be aligned to 4096 bytes for "
-                    "io_direct"
+                    "YuanRong object size must be aligned to 4096 bytes for io_direct"
                 )
         shards_per_block = block_size // shard_size
         posix_config["tensor_size"] = object_size
@@ -390,6 +397,7 @@ def _dram_pipeline_builder(
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Cache", _cache_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
