@@ -1,10 +1,11 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
-# Licensed under the Appache License, Version 2.0 (the "License");
+
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 # 
-#         https://www.apche.org/license/LICENSE-2.0
+#         https://www.apache.org/license/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 #distributed under the License is distributed on an "AI IS" BASIS,
@@ -15,7 +16,8 @@
 #
 """Utilities for tool-call aware KV Cache pruning.
 
-The API side should keep sending the *original* prompt toekns to VLLM's prefix
+
+The API side should keep sending the *original* prompt tokens to VLLM's prefix
 hashing and physical KV cache allocation continue to use the stable, complete
 context. These helpers only derive per-request logical KV block pruning metadata
 that the Ascend attention metadata builder can apply immediately before invoking

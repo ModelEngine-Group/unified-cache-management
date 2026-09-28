@@ -375,7 +375,7 @@ class UCMAgentConnector(KVConnectorBase_V1):
             )
         elif use_layerwise:
             raise RuntimeError(
-                "kvb is not supported while use_layerwise=Ture."
+                "kvb is not supported while use_layerwise=True."
             )
         else:
             self.connector = AgentConnector(vllm_config, role, kv_cache_config)
