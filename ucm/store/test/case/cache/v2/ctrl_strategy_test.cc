@@ -29,6 +29,7 @@ struct CtrlStrategyTestAccess {
     static const void* HeaderAddress(const CtrlLayout& layout) { return layout.Hdr(); }
     static size_t RankCount(const CtrlLayout& layout) { return layout.RankCount(); }
     static size_t SlotsPerRank(const CtrlLayout& layout) { return layout.SlotsPerRank(); }
+    static size_t SlotSize(const CtrlLayout& layout) { return layout.SlotSize(); }
     static size_t TotalSize(size_t bucketCount, size_t lockCount, size_t slotCount)
     {
         return CtrlLayout::TotalSize(bucketCount, lockCount, slotCount);
@@ -45,6 +46,7 @@ namespace {
 struct ProcessState {
     std::atomic<size_t> setupCount{0};
     std::atomic<size_t> publishCount{0};
+    std::atomic<size_t> controlReady[2]{};
 };
 
 struct ParticipantReport {
@@ -137,8 +139,69 @@ Config MakeControlConfig(const std::string& uniqueId, int rank)
     cfg.localRankSize = 8;
     cfg.shardSize = 4096;
     cfg.bufferCapacity = cfg.localRankSize * 8 * cfg.shardSize;
+    if (rank < 0) { cfg.shardSize = 0; }
     cfg.timeoutMs = 10000;
     return cfg;
+}
+
+std::string ControlTestId(const char* name)
+{
+    return std::string(name) + "_" + std::to_string(::getpid()) + "_" +
+           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+TEST(Cache2CtrlStrategyTest, SchedulerWithoutShardSizeStartsAfterWorker)
+{
+    auto id = ControlTestId("scheduler_no_shard");
+    auto workerConfig = MakeControlConfig(id, 0);
+    auto schedulerConfig = MakeControlConfig(id, -1);
+    CtrlStrategy worker;
+    CtrlStrategy scheduler;
+    ASSERT_TRUE(worker.Setup(workerConfig).Success());
+    ASSERT_TRUE(scheduler.Setup(schedulerConfig).Success());
+    EXPECT_EQ(schedulerConfig.shardSize, 0);
+    auto& layout = scheduler.Layout();
+    EXPECT_EQ(CtrlStrategyTestAccess::SlotSize(layout), workerConfig.shardSize);
+    EXPECT_EQ(CtrlStrategyTestAccess::RankCount(layout), workerConfig.localRankSize);
+    EXPECT_EQ(CtrlStrategyTestAccess::SlotsPerRank(layout), 8);
+    CtrlLayout::RankDataDesc desc;
+    desc.handle.store(123, std::memory_order_relaxed);
+    ASSERT_TRUE(worker.Layout().SetRankDesc(0, desc).Success());
+    auto observed = layout.GetRankDesc(0);
+    ASSERT_TRUE(observed);
+    EXPECT_EQ(observed.Value().handle.load(std::memory_order_relaxed), 123);
+}
+
+TEST(Cache2CtrlStrategyTest, SchedulerStillRejectsMismatchedCapacityAndRanks)
+{
+    auto id = ControlTestId("scheduler_mismatch");
+    CtrlStrategy worker;
+    ASSERT_TRUE(worker.Setup(MakeControlConfig(id, 0)).Success());
+    auto cfg = MakeControlConfig(id, -1);
+    cfg.bufferCapacity *= 2;
+    CtrlStrategy wrongCapacity;
+    EXPECT_EQ(wrongCapacity.Setup(cfg), Status::InvalidParam());
+    cfg = MakeControlConfig(id, -1);
+    cfg.localRankSize = 4;
+    CtrlStrategy wrongRanks;
+    EXPECT_EQ(wrongRanks.Setup(cfg), Status::InvalidParam());
+}
+
+TEST(Cache2CtrlStrategyTest, WorkerStillRequiresMatchingShardSize)
+{
+    auto id = ControlTestId("worker_shard");
+    auto cfg = MakeControlConfig(id, 0);
+    cfg.shardSize = 0;
+    CtrlStrategy invalidCreator;
+    EXPECT_EQ(invalidCreator.Setup(cfg), Status::InvalidParam());
+    CtrlStrategy worker;
+    ASSERT_TRUE(worker.Setup(MakeControlConfig(id, 0)).Success());
+    cfg.deviceId = 1;
+    CtrlStrategy invalidJoiner;
+    EXPECT_EQ(invalidJoiner.Setup(cfg), Status::InvalidParam());
+    cfg.shardSize = 8192;
+    CtrlStrategy mismatchedJoiner;
+    EXPECT_EQ(mismatchedJoiner.Setup(cfg), Status::InvalidParam());
 }
 
 [[noreturn]] void RunParticipant(int startFd, int releaseFd, int reportFd, ProcessState* state,
@@ -148,12 +211,15 @@ Config MakeControlConfig(const std::string& uniqueId, int rank)
     report.group = group;
     report.rank = rank;
     if (!ReadByte(startFd)) { ::_exit(2); }
+    // Match engine startup: a worker creates each DP control region before its scheduler.
+    if (rank < 0 && !WaitFor(state->controlReady[group], 1)) { ::_exit(6); }
 
     {
         CtrlStrategy strategy;
         auto setup = strategy.Setup(MakeControlConfig(uniqueId, rank));
         report.setupOk = setup.Success();
         if (setup.Success()) {
+            if (rank >= 0) { state->controlReady[group].store(1, std::memory_order_release); }
             auto& layout = strategy.Layout();
             if (!ReadMappingIdentity(CtrlStrategyTestAccess::HeaderAddress(layout), report)) {
                 report.setupOk = 0;
