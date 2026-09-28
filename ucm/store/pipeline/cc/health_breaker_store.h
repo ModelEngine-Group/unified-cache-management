@@ -62,6 +62,8 @@ public:
     Status Wait(Detail::TaskHandle taskId) override;
 
 private:
+    void RecordPassiveResult(const Status& status, uint64_t generation);
+    void CheckPassiveHealth(uint64_t generation);
     void UpdateState(bool changed, const char* source);
     void RecordProbeMetrics(bool healthy);
     void RecordEffectiveHealth();
