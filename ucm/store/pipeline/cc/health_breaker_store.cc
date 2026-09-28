@@ -133,13 +133,25 @@ Expected<std::vector<uint8_t>> HealthBreakerStore::Lookup(const Detail::BlockId*
 Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return static_cast<ssize_t>(-1); }
-    return store_->LookupOnPrefix(blocks, num);
+    const auto generation = healthState_->Generation();
+    auto result = store_->LookupOnPrefix(blocks, num);
+    const auto status = result ? Status::OK() : result.Error();
+    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return result; }
+    RecordPassiveResult(status, generation);
+    CheckPassiveHealth(generation);
+    return result;
 }
 
 Expected<ssize_t> HealthBreakerStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return static_cast<ssize_t>(-1); }
-    return store_->LookupOnReverse(blocks, num);
+    const auto generation = healthState_->Generation();
+    auto result = store_->LookupOnReverse(blocks, num);
+    const auto status = result ? Status::OK() : result.Error();
+    if (!config_.passiveEnabled || !CountPassiveResult(status)) { return result; }
+    RecordPassiveResult(status, generation);
+    CheckPassiveHealth(generation);
+    return result;
 }
 
 void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
