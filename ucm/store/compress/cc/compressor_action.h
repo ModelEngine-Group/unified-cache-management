@@ -3,10 +3,10 @@
 
 #include <condition_variable>
 #include <unistd.h>
-#include "compress_lib/compress_types.h"
-#include "compress_lib/tunstall_bf16.h"
+#include "codec.h"
 #include "global_config.h"
 #include "memory_pool.h"
+#include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
 #include "thread/thread_pool.h"
@@ -29,10 +29,11 @@ class CompressorAction {
 
 private:
     StoreV1* backend_{nullptr};
+    HashSet<Detail::TaskHandle>* failureSet_{nullptr};
     size_t shardSize_{0};
-    FixedRatio ratio{R1};
-    DataType dataType{DT_INVALID};
+    size_t compressedShardSize_{0};
     size_t decompressThreadNum{6};
+    std::unique_ptr<Codec> codec_;
 
     struct CompressTask {
         std::shared_ptr<TransTask> task;
@@ -49,14 +50,14 @@ private:
     std::thread dispatcher_;
     std::thread transfer_;
 
-    std::mutex waiterMtx_;   // waiter的锁
-    std::mutex backendMtx_;  // backend->wait锁
+    std::mutex waiterMtx_;
+    std::mutex backendMtx_;
     std::atomic<Detail::TaskHandle> backendTaskHandle_{0};
     std::condition_variable cv_;
 
 public:
     ~CompressorAction();
-    Status Setup(const Config& config);
+    Status Setup(const Config& config, HashSet<Detail::TaskHandle>* failureSet);
     void Push(TaskPtr task, WaiterPtr waiter);
 
 private:
