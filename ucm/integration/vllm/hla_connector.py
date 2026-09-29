@@ -19,6 +19,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
+    KVCacheTensor,
     MambaSpec,
     MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
@@ -69,6 +70,20 @@ class HLARequestDispatchMeta(RequestDispatchMeta):
 
     load_full_attn_count: int = 0
     dump_full_attn_count: int = 0
+
+
+def kv_cache_tensor_layer_names(raw_tensor: KVCacheTensor) -> list[str]:
+    """Names of the layers that share one ``KVCacheTensor`` allocation.
+
+    vLLM PR #51718 (KV-cache layout refactor) renamed
+    ``KVCacheTensor.shared_by`` to ``layers`` with no deprecation period.
+    Probe the new field first and fall back to the legacy attribute so the
+    connector works on both old and new vLLM versions.
+    """
+    layers = getattr(raw_tensor, "layers", None)
+    if layers is not None:
+        return layers
+    return raw_tensor.shared_by
 
 
 def layer_name_to_kv_cache_spec(
@@ -546,7 +561,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         shared_specs: list[KVCacheSpec] = []
         shared_ptrs: list[int] = []
         layer_to_specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
-        for layer_name in raw_tensor.shared_by:
+        for layer_name in kv_cache_tensor_layer_names(raw_tensor):
             kv_layer = kvcaches.get(layer_name)
             if kv_layer is None:
                 continue
@@ -687,7 +702,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         is_npu = current_platform.device_type == "npu"
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            if not raw_tensor.shared_by:
+            if not kv_cache_tensor_layer_names(raw_tensor):
                 continue
 
             shared_specs, shared_ptrs = self._collect_shared_tensor_info(
@@ -696,7 +711,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
 
             if not shared_ptrs:
                 logger.warning(
-                    f"no kv cache tensor found for shared layers {raw_tensor.shared_by}"
+                    "no kv cache tensor found for shared layers "
+                    f"{kv_cache_tensor_layer_names(raw_tensor)}"
                 )
                 continue
 
@@ -736,7 +752,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                     block_stride_lists,
                 )
 
-            for layer_name in raw_tensor.shared_by:
+            for layer_name in kv_cache_tensor_layer_names(raw_tensor):
                 self.layer_name_to_row[layer_name] = row_id
 
         self._finalize_layout_arrays(
@@ -770,7 +786,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for raw_tensor in kv_cache_config.kv_cache_tensors:
             shared_specs = [
                 spec
-                for layer_name in raw_tensor.shared_by
+                for layer_name in kv_cache_tensor_layer_names(raw_tensor)
                 for spec in layer_to_specs.get(layer_name, [])
             ]
             if any(
