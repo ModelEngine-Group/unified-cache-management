@@ -18,7 +18,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import(
     KVConnectorRole,
 )
 from ucm.integration.vllm.request_meta import KvbVllmRequestMeta
-from vllm.distributed.parrallel_state import get_tp_group, get_world_group
+from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
@@ -32,7 +32,7 @@ from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
 from ucm.integration.vllm.perf_counter import PerfCounters
-from ucm.integration.vllm.model_maker_manager import ModelMarkerManager
+from ucm.integration.vllm.model_marker_manager import ModelMarkerManager
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext 
@@ -65,7 +65,7 @@ class RequestMeta:
     token_processed: int = 0
     stats_flag: bool = False
     chunk_prefill_len: int = 0
-    kvb_vllm_request_mata: KvbVllmRequestMeta = field(default_factory=KvbVllmRequestMeta)
+    kvb_vllm_request_meta: KvbVllmRequestMeta = field(default_factory=KvbVllmRequestMeta)
     request_id: str = ""
 
 @dataclass
@@ -123,7 +123,7 @@ class AgentConnector(UCMDirectConnector):
             marker_start = marker_matches[-1] # 倒数第一个
             session_marker_start = marker_matches[0]
         if not marker_start:
-            logger.warning("error:maker_start is None")
+            logger.warning("error:marker_start is None")
             return slot_indices, False
         logger.debug(f"marker_start: {marker_start}")
         logger.debug(f"marker_manager_start:{session_marker_start}")
@@ -163,7 +163,7 @@ class AgentConnector(UCMDirectConnector):
             elif s > marker_start:                    # 完全在标记之后（标记占4个token）
                 after_ranges.append((s,e))
             else:                                     # 跨越标记，归入before
-                logger.error(f"error: 跨越标记，all_toekn_ids:{all_token_ids}")
+                logger.error(f"error: 跨越标记，all_token_ids:{all_token_ids}")
                 return slot_indices, False
             
         result_blocks = []  # 需要裁剪（设为False）的block索引
@@ -216,7 +216,7 @@ class AgentConnector(UCMDirectConnector):
         )
 
         slot_indices, pruned = self.get_tool_result_block_ids(request)
-        num_pruned_blocks = min(hbm_hit_block_num, first_pruned_index)
+        num_pruned_blocks = len(slot_indices) - sum(slot_indices)
         first_pruned_index = sys.maxsize
         if pruned:
             first_pruned_index = slot_indices.index(False)
@@ -232,7 +232,7 @@ class AgentConnector(UCMDirectConnector):
                         )
                         +1
                     )
-                self._prefetch_other_rank_hashest(
+                self._prefetch_other_rank_hashes(
                     external_block_ids[:external_hit_blocks]
                 )
             
@@ -243,7 +243,7 @@ class AgentConnector(UCMDirectConnector):
         slot_indices[:hbm_hit_block_num] = [False] * hbm_hit_block_num
         slot_indices[hbm_hit_block_num + external_hit_blocks:] = [False] * (len(ucm_block_ids) - hbm_hit_block_num - external_hit_blocks)
 
-        request.kvb_vllm_request_mata.ucm_slot_indices = slot_indices
+        request.kvb_vllm_request_meta.ucm_slot_indices = slot_indices
         logger.info_once(
             f"request_id: {request.request_id},"
             f"prompt len: {len(request.all_token_ids)},"
@@ -261,9 +261,9 @@ class AgentConnector(UCMDirectConnector):
         
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
-        request.kvb_vllm_request_mata.hbm_hit_block_num = hbm_hit_block_num
-        request.kvb_vllm_request_mata.num_pruned_blocks = num_pruned_blocks
-        request.kvb_vllm_request_mata.vllm_load_slot_indices = self.get_vllm_load_slot_indices(slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks)
+        request.kvb_vllm_request_meta.hbm_hit_block_num = hbm_hit_block_num
+        request.kvb_vllm_request_meta.num_pruned_blocks = num_pruned_blocks
+        request.kvb_vllm_request_meta.vllm_load_slot_indices = self.get_vllm_load_slot_indices(slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks)
 
         external_hit_tokens = sum(slot_indices) * self.block_size
 
@@ -280,10 +280,10 @@ class AgentConnector(UCMDirectConnector):
             total_hit_block_num = hbm_hit_block_num,
             num_token_ids = len(request.all_token_ids),
             token_processed = num_total_hit_tokens,
-            kvb_vllm_request_mata = request.kvb_vllm_request_mata,
+            kvb_vllm_request_meta = request.kvb_vllm_request_meta,
             request_id = request.request_id
         ) 
-        logger.debug(f"requst_id:{request.request_id}, external_hit_blocks:{external_hit_blocks}")
+        logger.debug(f"request_id:{request.request_id}, external_hit_blocks:{external_hit_blocks}")
         return external_hit_tokens, False
 
     def update_state_after_alloc(
@@ -291,7 +291,7 @@ class AgentConnector(UCMDirectConnector):
     ):
         pass 
     
-    def _genrate_dispatch_meta(
+    def _generate_dispatch_meta(
         self,
         req_meta: RequestMeta,
         new_tokens: int,
@@ -310,8 +310,8 @@ class AgentConnector(UCMDirectConnector):
         |                                scheduled_block_num                                              |
         """
 
-        ucm_slot_indices = req_meta.kvb_vllm_request_mata.ucm_slot_indices
-        vllm_load_slot_indices = req_meta.kvb_vllm_request_mata.vllm_request_meta.vllm_load_slot_indices
+        ucm_slot_indices = req_meta.kvb_vllm_request_meta.ucm_slot_indices
+        vllm_load_slot_indices = req_meta.kvb_vllm_request_meta.vllm_load_slot_indices
         ucm_block_ids = req_meta.ucm_block_ids
         req_meta.vllm_block_ids.extend(vllm_block_ids)
 
@@ -326,7 +326,7 @@ class AgentConnector(UCMDirectConnector):
             end_idx = (req_meta.token_processed + new_tokens) // self.block_size
             dump_ucm_block_ids = ucm_block_ids[start_idx:end_idx]
             dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
-            req_meta.token_processed + new_tokens
+            req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
             (load_ucm_block_ids,load_vllm_block_ids),
@@ -347,7 +347,7 @@ class UCMAgentConnector(KVConnectorBase_V1):
         self.connector:KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.launch_config = ucm_config.get_config()
-        self._setup_ucm_merics(vllm_config, role)
+        self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config:{self.launch_config}")
 
         use_layerwise=(
