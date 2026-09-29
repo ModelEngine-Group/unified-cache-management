@@ -32,7 +32,7 @@ class LightweightTokenCache:
             # 2. 决定回退多少个token, 防止边界Token融合切割错误
             rollback = min(self.rollback_tokens, len(cached_ids))
             if rollback == 0:
-                return True, cached_ids ,prompt[len(best_match):]
+                return True, cached_ids, prompt[len(best_match):]
 
             safe_ids = cached_ids[:-rollback]
             rolled_back_ids = cached_ids[-rollback:]
@@ -41,8 +41,8 @@ class LightweightTokenCache:
             try:
                 # 必须保留 special_tokens, 防止尾部刚好切在某个特殊的tag上
                 tail_str = self.tokenizer.decode(
-                    rolled_back_ids,
-                    skip_special_tokens=False,
+                    rolled_back_ids, 
+                    skip_special_tokens=False, 
                     clean_up_tokenization_spaces=False
                 )
             except Exception:
@@ -54,11 +54,11 @@ class LightweightTokenCache:
 
             return True, safe_ids, suffix
 
-    def insert(self, prompt:str, token_ids: List[int]):
+    def insert(self, prompt: str, token_ids: List[int]):
         # [修改点]：不再提前Decode校验，直接暴力存入
         # 上游传来的prompt是什么样， 就认什么样， 保证O（1）存储且必定成功。
         if not prompt or not token_ids:
-            return
+            return 
         
         with self.lock:
             if prompt not in self.cache:
