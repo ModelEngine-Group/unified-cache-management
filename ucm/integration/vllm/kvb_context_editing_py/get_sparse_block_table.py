@@ -55,7 +55,7 @@ def get_attention_weights_batched(query, key, seq_mask, num_query_heads, num_kv_
 	return attn_mean
 
 
-def compute_block_scores_batched(attn_perr_head, block_size):
+def compute_block_scores_batched(attn_per_head, block_size):
 	"""
 	attn_per_head: (batch_size, num_heads, key_len) CPU tensor
 	对每个head和每个key block 计算平均分数， 返回list of (head_idx, block_idx, score)
