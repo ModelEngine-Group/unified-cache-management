@@ -68,12 +68,12 @@ This section presents the currently supported compute platforms and devices.
 
 | Compute Platform | Vendor | Device |
 |:----------------:|:------:|:------:|
-| CANN | Ascend | 910C, 910B |
+| CANN | Ascend | 910C, 910B, 950PR, 950DT |
 | CUDA | NVIDIA | H100, H20, L40, L20 |
 | MUSA | Mthreads | S5000 |
 | MACA | MetaX | C500 |
 
-> **Note**: The table shows only selected platforms.
+> **Note**: The table shows only selected platforms. Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash.
 
 ## Notes and Limitations 📌
 
