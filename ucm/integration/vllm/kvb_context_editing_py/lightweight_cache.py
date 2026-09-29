@@ -1,11 +1,11 @@
-# 版权所有（c）华为技术有限公司 2012-2026
+# 版权所有 (c) 华为技术有限公司 2012-2026
 
 import threading
 from typing import Dict, List, Tuple
 
 class LightweightTokenCache:
-    def __init__(self, tokenier, max_entries: int = 500, rollback_tokens: int=15):
-        self.tokenier = tokenier
+    def __init__(self, tokenizer, max_entries: int = 500, rollback_tokens: int=15):
+        self.tokenizer = tokenizer
         self.max_entries = max_entries
         self.rollback_tokens = rollback_tokens
         self.cache: Dict[str, List[int]] = {}
@@ -23,31 +23,31 @@ class LightweightTokenCache:
             if not best_match:
                 return False, [], prompt
 
-            cache_ids = self.cache.get(best_match)
+            cached_ids = self.cache.get(best_match)
 
             # 如果完全一致（无增量）
             if len(prompt) == len(best_match):
-                return True, cache_ids, ""
+                return True, cached_ids, ""
 
             # 2. 决定回退多少个token, 防止边界Token融合切割错误
-            rollback = min(self.rollback_tokens, len(cache_ids))
+            rollback = min(self.rollback_tokens, len(cached_ids))
             if rollback == 0:
-                return True, cache_ids ,prompt[len(best_match):]
+                return True, cached_ids ,prompt[len(best_match):]
 
-            safe_ids = cache_ids[:-rollback]
-            rolled_back_ids = cache_ids[-rollback:]
+            safe_ids = cached_ids[:-rollback]
+            rolled_back_ids = cached_ids[-rollback:]
 
-            # 3. [核心魔法]：仅解码被截断的”尾巴“，不解码头部，完美避开 BOS 对其问题
+            # 3. [核心魔法]：仅解码被裁断的”尾巴“，不解码头部，完美避开 BOS 对其问题
             try:
                 # 必须保留 special_tokens, 防止尾部刚好切在某个特殊的tag上
-                tail_str = self.tokenier.decode(
+                tail_str = self.tokenizer.decode(
                     rolled_back_ids,
                     skip_special_tokens=False,
-                    clean_up_toeknization_spaces=False
+                    clean_up_tokenization_spaces=False
                 )
             except Exception:
                 # 极端异常情况降级处理
-                return True, cache_ids, prompt[len(best_match):]
+                return True, cached_ids, prompt[len(best_match):]
 
             # 4. 拼接最终需要重新Tokenize的后缀： 被切掉的尾巴字符串 + 真正新增的文本
             suffix = tail_str + prompt[len(best_match):]
