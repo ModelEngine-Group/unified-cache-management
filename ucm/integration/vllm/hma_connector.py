@@ -1450,15 +1450,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if not request.dump_keys:
                     continue
                 dump_request_ids += (request_id,)
-                # Relative indices restart at 0 in every dump batch, so slicing
-                # a contiguous range per rank would repeatedly favor the first
-                # ranks whenever a step dumps fewer blocks than tp_size. Anchor
-                # the stride on the absolute canonical block index instead, so
-                # ownership rotates as the request advances.
-                size = self.tp_size
-                first_rank = (self.tp_rank - request.dump_hash_start) % size
                 # Use one selection for keys, block addresses and hash positions.
-                key_slice = slice(first_rank, None, size)
+                key_slice = self._get_mla_dump_slice(request.dump_hash_start)
                 tp_dump_keys = request.dump_keys[key_slice]
                 if tp_dump_keys:
                     fa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
@@ -1488,11 +1481,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         wa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
                         wa_dump_vllm_block_ids = tuple(
                             (
-                                stripe_tail_blocks(
-                                    group_block_ids,
-                                    key_slice,
-                                    self.group_metas[group_id].tail_blocks,
-                                )
+                                # Keep all WA blocks belonging to the same key on
+                                # one TP rank so it submits a complete WA record.
+                                # Select whole groups of tail_blocks per key,
+                                # rather than distributing individual WA blocks.
+                                np.asarray(group_block_ids)
+                                .reshape(-1, self.group_metas[group_id].tail_blocks)[
+                                    key_slice
+                                ]
+                                .reshape(-1)
+                                .tolist()
                                 if group_id in self.window_group_ids
                                 else group_block_ids
                             )
