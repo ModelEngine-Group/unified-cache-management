@@ -1,4 +1,4 @@
-# 版权所有（c）华为技术有限公司 2012-2026
+# 版权所有 (c) 华为技术有限公司 2012-2026
 
 import os
 import pickle
@@ -22,7 +22,7 @@ def get_device():
 		return torch.device('cpu')
 
 
-def get_attetion_weights_batched(query, key, seq_mask, num_query_heads, num_kv_heads, head_dim):
+def get_attention_weights_batched(query, key, seq_mask, num_query_heads, num_kv_heads, head_dim):
 	"""
 	计算GQA下最后一个query token对key序列的平均注意力权重。
 	返回形状：(num_query_heads, key_len)的CPU tensor
@@ -43,7 +43,7 @@ def get_attetion_weights_batched(query, key, seq_mask, num_query_heads, num_kv_h
 	# 批量矩阵乘法计算注意力分数
 	q_bmm = q.transpose(1, 2)
 	k_bmm = k.transpose(1, 2) .transpose(-1,-2)
-	scores = torch.matul(q_bmm, k_bmm) / (head_dim ** 0.5)
+	scores = torch.matmul(q_bmm, k_bmm) / (head_dim ** 0.5)
 
 	# seq_mask: [B, L] -> [B, 1,1,1]广播到注意力分数维度
 	# 将填充位置设为 -inf, softmax后权重为0
@@ -235,7 +235,7 @@ def _save_sparse_block_table_impl(
             key_cache, block_table[process_idx], process_seq_lengths_kv, block_size
         ) 
     # 计算注意力权重
-    attn_per_head = get_attetion_weights_batched(
+    attn_per_head = get_attention_weights_batched(
         process_queries, process_keys_extracted, seq_mask, num_heads, kv_heads, head_dim
     )
 
