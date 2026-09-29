@@ -134,13 +134,16 @@ static void CleanUpShmFileExceptMe(const std::string& me)
     fs::path shmDir = "/dev/shm";
     if (!fs::exists(shmDir)) { return; }
     const auto now = fs::file_time_type::clock::now();
-    const auto keepThreshold = std::chrono::minutes(10);
+    const auto keepThreshold = std::chrono::minutes(30);
+    auto myUid = me.substr(prefix.size(), me.find('_', prefix.size()) - prefix.size());
     for (const auto& entry : fs::directory_iterator(shmDir)) {
         const auto& path = entry.path();
         const auto& name = path.filename().string();
         if (!entry.is_regular_file() || name.compare(0, prefix.size(), prefix) != 0 || name == me) {
             continue;
         }
+        auto uid = name.substr(prefix.size(), name.find('_', prefix.size()) - prefix.size());
+        if (uid == myUid) { continue; }
         try {
             const auto lwt = fs::last_write_time(path);
             if (now - lwt <= keepThreshold) { continue; }
