@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import itertools
 import math
 import os
 import pickle
@@ -7,7 +8,6 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
-import itertools
 import numpy as np
 import torch
 import vllm.envs as envs
@@ -17,7 +17,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
 )
-from ucm.integration.vllm.request_meta import KvbVllmRequestMeta
 from vllm.distributed.parallel_state import get_tp_group, get_world_group
 from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.models.utils import extract_layer_index
@@ -25,32 +24,39 @@ from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.perf_counter import PerfCounters
+from ucm.integration.vllm.model_marker_manager import ModelMarkerManager
+from ucm.integration.vllm.request_meta import KvbVllmRequestMeta
 from ucm.logger import init_logger
 from ucm.observability import PrometheusStatsLogger
 from ucm.shared.metrics import ucmmetrics
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
-from ucm.integration.vllm.perf_counter import PerfCounters
-from ucm.integration.vllm.model_marker_manager import ModelMarkerManager
+
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.request import Request
-import vllm.forward_context as global_context
-from vllm.v1.request import Request
-from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-from ucm.integration.vllm.ucm_connector import UCMDirectConnector, UCMConnector, UCMConnectorMetadata
-from ucm.sparse.state import has_ucm_sparse
+
+import sys
 import torch_npu
+import vllm.forward_context as global_context
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.kv_cache_utils import (
     BlockHashList,
     BlockHashWithGroupId,
     KVCacheBlock,
 )
-import sys
+from vllm.v1.request import Request
 
+from ucm.integration.vllm.ucm_connector import (
+    UCMDirectConnector,
+    UCMConnector,
+    UCMConnectorMetadata
+)
+from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
@@ -65,14 +71,16 @@ class RequestMeta:
     token_processed: int = 0
     stats_flag: bool = False
     chunk_prefill_len: int = 0
-    kvb_vllm_request_meta: KvbVllmRequestMeta = field(default_factory=KvbVllmRequestMeta)
+    kvb_vllm_request_meta: KvbVllmRequestMeta = field(
+        default_factory=KvbVllmRequestMeta
+    )
     request_id: str = ""
 
 @dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
         list[bytes], list[int]
-    ]  #[0] mean ucm_block_ids, [1] means vllm_block_ids
+    ]  # [0] mean ucm_block_ids, [1] means vllm_block_ids
     dump_block_ids: tuple[list[bytes], list[int]]
     ucm_block_ids: list[bytes]
     need_load: bool
@@ -87,8 +95,17 @@ class AgentConnector(UCMDirectConnector):
     load -> forward -> save
     """
 
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole, kv_cache_config: Optional["KVCacheConfig"] = None):
-        super().__init__(vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config)
+    def __init__(
+        self, 
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Optional["KVCacheConfig"] = None
+    ):
+        super().__init__(
+            vllm_config=vllm_config,
+            role=role,
+            kv_cache_config=kv_cache_config
+        )
 
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.launch_config = ucm_config.get_config()
@@ -100,8 +117,7 @@ class AgentConnector(UCMDirectConnector):
             raise RuntimeError("need set model_marker_path path.")
 
         self.marker_manager = ModelMarkerManager(
-            config_path=self.model_marker_path, 
-            vllm_config=self._vllm_config
+            config_path=self.model_marker_path, vllm_config=self._vllm_config
         )
         
     
@@ -120,7 +136,7 @@ class AgentConnector(UCMDirectConnector):
         session_marker_start = None
         marker_matches = self.marker_manager.find_marker_positions(arr, "user")
         if len(marker_matches) > 0:
-            marker_start = marker_matches[-1]   # 倒数第一个
+            marker_start = marker_matches[-1]  # 倒数第一个
             session_marker_start = marker_matches[0]
         if not marker_start:
             logger.warning("error: marker_start is None")
@@ -133,7 +149,7 @@ class AgentConnector(UCMDirectConnector):
         # 所有结束二元组（1579，5679）的第一个位置
         ends = self.marker_manager.find_marker_positions(arr, "response")
 
-        #配对生成(start, end)元组 （原始token位置）
+        # 配对生成(start, end)元组 （原始token位置）
         ranges = [] # 每个元素为（s,e）
         j = 0
         last_end = 0
@@ -158,11 +174,11 @@ class AgentConnector(UCMDirectConnector):
 
         # 按原始位置分类
         for s, e in ranges:
-            if e < marker_start:                      # 完全在标记之前
+            if e < marker_start:    # 完全在标记之前
                 before_ranges.append((s, e))
-            elif s > marker_start:                    # 完全在标记之后（标记占4个token）
+            elif s > marker_start:    # 完全在标记之后（标记占4个token）
                 after_ranges.append((s, e))
-            else:                                     # 跨越标记，归入before
+            else:    # 跨越标记，归入before
                 logger.error(f"error: 跨越标记，all_token_ids: {all_token_ids}")
                 return slot_indices, False
             
@@ -180,10 +196,10 @@ class AgentConnector(UCMDirectConnector):
                 start_block = (s + self.block_size - 1) // self.block_size
                 end_block = e // self.block_size
                 if start_block < end_block:
-                    #result_blocks.extend(range(start_block, end_block))
-                    result_blocks.extend([
-                        block_idx for block_idx in range(start_block, end_block)
-                    ])
+                    # result_blocks.extend(range(start_block, end_block))
+                    result_blocks.extend(
+                        [block_idx for block_idx in range(start_block, end_block)]
+                    )
                 
         pruned = len(result_blocks) * self.block_size
         logger.debug(f"pruned token: {pruned}")
@@ -197,9 +213,18 @@ class AgentConnector(UCMDirectConnector):
 
         return slot_indices, pruned
 
-    def get_vllm_load_slot_indices(self, slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks):
+    def get_vllm_load_slot_indices(
+        self, slot_indices,
+        hbm_hit_block_num,
+        external_hit_blocks,
+        num_pruned_blocks
+    ):
         vllm_load_slot_indices = [False] * len(slot_indices)
-        vllm_load_slot_indices[hbm_hit_block_num + num_pruned_blocks : hbm_hit_block_num + external_hit_blocks] = [True] * (external_hit_blocks - num_pruned_blocks)
+        vllm_load_slot_indices[
+        hbm_hit_block_num 
+        + num_pruned_blocks : hbm_hit_block_num 
+        + external_hit_blocks
+        ] = [True] * (external_hit_blocks - num_pruned_blocks)
         assert sum(vllm_load_slot_indices) == sum(slot_indices)
         return vllm_load_slot_indices
     
@@ -224,7 +249,7 @@ class AgentConnector(UCMDirectConnector):
 
         external_hit_blocks = 0
         external_block_ids = ucm_block_ids[hbm_hit_block_num:]
-        if  external_block_ids:
+        if external_block_ids:
             try:
                 external_hit_blocks = (
                     self._rank_consistency.lookup_on_prefix(
@@ -241,7 +266,9 @@ class AgentConnector(UCMDirectConnector):
                 logger.error(f"request {request.request_id} look up error. {e}")
 
         slot_indices[:hbm_hit_block_num] = [False] * hbm_hit_block_num
-        slot_indices[hbm_hit_block_num + external_hit_blocks:] = [False] * (len(ucm_block_ids) - hbm_hit_block_num - external_hit_blocks)
+        slot_indices[hbm_hit_block_num + external_hit_blocks:] = [False] * (
+            len(ucm_block_ids) - hbm_hit_block_num - external_hit_blocks
+        )
 
         request.kvb_vllm_request_meta.ucm_slot_indices = slot_indices
         logger.info_once(
@@ -263,7 +290,11 @@ class AgentConnector(UCMDirectConnector):
 
         request.kvb_vllm_request_meta.hbm_hit_block_num = hbm_hit_block_num
         request.kvb_vllm_request_meta.num_pruned_blocks = num_pruned_blocks
-        request.kvb_vllm_request_meta.vllm_load_slot_indices = self.get_vllm_load_slot_indices(slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks)
+        request.kvb_vllm_request_meta.vllm_load_slot_indices = (
+            self.get_vllm_load_slot_indices(
+                slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks
+            )
+        )
 
         external_hit_tokens = sum(slot_indices) * self.block_size
 
@@ -283,7 +314,9 @@ class AgentConnector(UCMDirectConnector):
             kvb_vllm_request_meta=request.kvb_vllm_request_meta,
             request_id=request.request_id,
         )
-        logger.debug(f"request_id:{request.request_id}, external_hit_blocks:{external_hit_blocks}")
+        logger.debug(
+            f"request_id:{request.request_id}, external_hit_blocks:{external_hit_blocks}"
+        )
         return external_hit_tokens, False
 
     def update_state_after_alloc(
@@ -319,8 +352,16 @@ class AgentConnector(UCMDirectConnector):
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
 
         if need_load:
-            load_ucm_block_ids = [ucm_block_ids[i] for i in range(len(ucm_slot_indices)) if ucm_slot_indices[i]]
-            load_vllm_block_ids = [vllm_block_ids[i] for i in range(len(vllm_load_slot_indices)) if vllm_load_slot_indices[i]]
+            load_ucm_block_ids = [
+                ucm_block_ids[i] 
+                for i in range(len(ucm_slot_indices)) 
+                if ucm_slot_indices[i]
+            ]
+            load_vllm_block_ids = [
+                vllm_block_ids[i] 
+                for i in range(len(vllm_load_slot_indices)) 
+                if vllm_load_slot_indices[i]
+            ]
         if req_meta.token_processed < req_meta.num_token_ids:
             start_idx = req_meta.token_processed // self.block_size
             end_idx = (req_meta.token_processed + new_tokens) // self.block_size
@@ -337,12 +378,14 @@ class AgentConnector(UCMDirectConnector):
 
 
 class UCMAgentConnector(KVConnectorBase_V1):
-    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole, kv_cache_config: Optional["KVCacheConfig"] = None):
+    def __init__(
+        self, 
+        vllm_config: "VllmConfig", 
+        role: KVConnectorRole, 
+        kv_cache_config: Optional["KVCacheConfig"] = None,
+    ):
         KVConnectorBase_V1.__init__(
-            self,
-            vllm_config=vllm_config,
-            role=role,
-            kv_cache_config=kv_cache_config
+            self, vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
@@ -362,7 +405,7 @@ class UCMAgentConnector(KVConnectorBase_V1):
             )
 
         if (
-            hasattr(self._vllm_config.parallel_config,"prefill_context_parallel_size")
+            hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
             and hasattr(
                 self._vllm_config.parallel_config, "decode_context_parallel_size"
             )
@@ -370,13 +413,9 @@ class UCMAgentConnector(KVConnectorBase_V1):
             * self._vllm_config.parallel_config.decode_context_parallel_size
             > 1
         ):
-            raise RuntimeError(
-                    "kvb is not supported in pcp and dcp."
-                )
+            raise RuntimeError("kvb is not supported in pcp and dcp.")
         elif use_layerwise:
-            raise RuntimeError(
-                    "kvb is not supported while use_layerwise=True."
-                )
+            raise RuntimeError("kvb is not supported while use_layerwise=True.")
         else:
             self.connector = AgentConnector(vllm_config, role, kv_cache_config)
 
