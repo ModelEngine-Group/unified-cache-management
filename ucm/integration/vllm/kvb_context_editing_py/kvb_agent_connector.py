@@ -3,7 +3,7 @@ import hashlib
 import math
 import os
 import pickle
-import time 
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed.kv_transfer.kv_connector.v1.base import(
+from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
@@ -35,7 +35,7 @@ from ucm.integration.vllm.perf_counter import PerfCounters
 from ucm.integration.vllm.model_marker_manager import ModelMarkerManager
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
-    from vllm.forward_context import ForwardContext 
+    from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.request import Request
 import vllm.forward_context as global_context
@@ -48,7 +48,7 @@ from vllm.v1.core.kv_cache_utils import (
     BlockHashList,
     BlockHashWithGroupId,
     KVCacheBlock,
-) 
+)
 import sys
 
 logger = init_logger(__name__)
@@ -92,7 +92,7 @@ class AgentConnector(UCMDirectConnector):
 
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.launch_config = ucm_config.get_config()
-        self.kvb_agent_config = self.launch_config.get("kvb_agent_config",{})
+        self.kvb_agent_config = self.launch_config.get("kvb_agent_config", {})
 
         if "model_marker_path" in self.kvb_agent_config:
             self.model_marker_path = self.kvb_agent_config["model_marker_path"]
@@ -126,7 +126,7 @@ class AgentConnector(UCMDirectConnector):
             logger.warning("error: marker_start is None")
             return slot_indices, False
         logger.debug(f"marker_start: {marker_start}")
-        logger.debug(f"marker_manager_start: {session_marker_start}")
+        logger.debug(f"session_marker_start: {session_marker_start}")
 
         # 所有起始位置（200052）
         starts = self.marker_manager.find_marker_positions(arr, "tool_call")
@@ -141,7 +141,7 @@ class AgentConnector(UCMDirectConnector):
             if s < session_marker_start:
                 continue
             if s < last_end:
-                logger.warning(f"error: s < last_end, s:{e}, last_end: {last_end}")
+                logger.warning(f"error: s < last_end, s: {e}, last_end: {last_end}")
                 ranges.pop()
                 continue
             while j < len(ends) and ends[j] <= s:
@@ -186,7 +186,7 @@ class AgentConnector(UCMDirectConnector):
                     ])
                 
         pruned = len(result_blocks) * self.block_size
-        logger.debug(f"pruned token:{pruned}")
+        logger.debug(f"pruned token: {pruned}")
         PerfCounters.get_inst().update("tool_result_tokens", pruned)
         PerfCounters.get_inst().update("pruned_ratio", pruned / len(all_token_ids))
 
@@ -205,7 +205,7 @@ class AgentConnector(UCMDirectConnector):
     
     def get_num_new_matched_tokens(
         self,
-        request:"Request",
+        request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
@@ -230,7 +230,7 @@ class AgentConnector(UCMDirectConnector):
                     self._rank_consistency.lookup_on_prefix(
                             self.store, external_block_ids
                         )
-                        +1
+                        + 1
                     )
                 self._prefetch_other_rank_hashes(
                     external_block_ids[:external_hit_blocks]
@@ -281,8 +281,8 @@ class AgentConnector(UCMDirectConnector):
             num_token_ids=len(request.all_token_ids),
             token_processed=num_total_hit_tokens,
             kvb_vllm_request_meta=request.kvb_vllm_request_meta,
-            request_id=request.request_id
-        ) 
+            request_id=request.request_id,
+        )
         logger.debug(f"request_id:{request.request_id}, external_hit_blocks:{external_hit_blocks}")
         return external_hit_tokens, False
 
@@ -337,7 +337,7 @@ class AgentConnector(UCMDirectConnector):
 
 
 class UCMAgentConnector(KVConnectorBase_V1):
-    def __init__(self, vllm_config:"VllmConfig", role: KVConnectorRole, kv_cache_config: Optional["KVCacheConfig"] = None):
+    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole, kv_cache_config: Optional["KVCacheConfig"] = None):
         KVConnectorBase_V1.__init__(
             self,
             vllm_config=vllm_config,
