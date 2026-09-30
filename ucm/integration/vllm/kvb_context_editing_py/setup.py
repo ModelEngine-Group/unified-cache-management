@@ -1,5 +1,5 @@
-# 版权所有（c）华为技术有限公司 2012-2026
-from setuptools import setup,Extension
+# 版权所有 (c) 华为技术有限公司 2012-2026
+from setuptools import setup, Extension
 from Cython.Build import cythonize
 
 extensions = [
@@ -46,9 +46,9 @@ setup(
         compiler_directives={
             "boundscheck": False,          # 关闭数组越界检查（提速）
             "wraparound": False,           # 关闭负数索引支持（提速）
-            "binding": True,              
+            "binding": True,               # 保留函数 itrospection (便于调试)
         },
         annotate=True,                     # 生成.html 查看C转换质量
     ),
-    zip_safe = False
+    zip_safe = False,
 )

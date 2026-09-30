@@ -1,8 +1,8 @@
-# 版权所有（c）华为技术有限公司 2012-2026
+# 版权所有 (c) 华为技术有限公司 2012-2026
 import copy
 import hashlib
 import math
-import os 
+import os
 import pickle
 import time
 import itertools
@@ -26,7 +26,7 @@ class KvbVllmRequestMeta:
 
 
 def get_layer_idx(layer_name: str):
-    match = re.search(r'(?:layers|blocks|h)\.(\d+)',layer_name)
+    match = re.search(r'(?:layers|blocks|h)\.(\d+)', layer_name)
     if match:
         return int(match.group(1))
     return None

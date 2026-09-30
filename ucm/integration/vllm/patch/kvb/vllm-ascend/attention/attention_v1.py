@@ -275,7 +275,7 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector":
             block_size = AscendAttentionBackend.get_supported_kernel_block_sizes()[0]
 
-            block_size, seq_lens = compact_block_table_for_pruning(
+            block_table, seq_lens = compact_block_table_for_pruning(
                 block_table, seq_lens,
                 block_size)
 
