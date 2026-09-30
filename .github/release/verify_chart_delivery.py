@@ -32,6 +32,9 @@ def images(value):
 
 
 def verify(plan, state, package):
+    # Chart deliberately publishes only the vLLM families.  Keep verification
+    # on the full release plan so callers do not need a second plan artifact.
+    plan = {**plan, "families": chart.chart_families(plan)}
     if state["release"]["status"] != "complete":
         raise ValueError("Chart delivery requires a completed release")
     digest = hashlib.sha256(package.read_bytes()).hexdigest()

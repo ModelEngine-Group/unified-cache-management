@@ -34,6 +34,17 @@ PRODUCTS = [
             "ascend950": "cann-a5",
         },
     },
+    {
+        "id": "sglang",
+        "runtime_repository": "docker.io/lmsysorg/sglang",
+        "target_repository": "ghcr.io/release-org/sglang",
+        "accelerator": "dynamic",
+        "backend": "cuda",
+        "backend_by_soc": {
+            "ascend910b1": "cann-a2",
+            "ascend910_9391": "cann-a3",
+        },
+    },
 ]
 
 INDEX = "application/vnd.oci.image.index.v1+json"
@@ -230,6 +241,149 @@ def test_crane_config_facts_avoid_native_fallback() -> None:
     assert probe["accelerator_runtime"] == "cuda-13.0"
     assert probe["python_abi"] == "cp312"
     assert probe["glibc_version"] is None
+
+
+@pytest.mark.parametrize(
+    ("tag", "env", "history", "backend", "accelerator_runtime"),
+    [
+        (
+            "v0.5.19-cu129",
+            ("CUDA_VERSION=12.9.2",),
+            ("RUN |2 PYTHON_VERSION=3.12 /bin/sh -c true",),
+            "cuda",
+            "cuda-12.9",
+        ),
+        (
+            "v0.5.19-cann9.0.0-910b",
+            (
+                "PATH=/usr/local/python3.12.13/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+                "SOC_VERSION=ascend910b1",
+            ),
+            (),
+            "cann-a2",
+            "cann-9.0.0",
+        ),
+    ],
+)
+def test_sglang_dynamic_product_uses_image_runtime_facts(
+    tag: str,
+    env: tuple[str, ...],
+    history: tuple[str, ...],
+    backend: str,
+    accelerator_runtime: str,
+) -> None:
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    config = _config("amd64", env=env, history=history)
+
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: config,
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    assert inspection["probe_matrix"] == {"include": []}
+    probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
+    assert probe["product_id"] == "sglang"
+    assert probe["backend"] == backend
+    assert probe["accelerator_runtime"] == accelerator_runtime
+
+
+def test_sglang_dynamic_product_uses_tag_only_to_schedule_native_fallback() -> None:
+    reference = "docker.io/lmsysorg/sglang:v0.5.19-cu130-runtime"
+
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config("amd64"),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    fallback = inspection["probe_matrix"]["include"]
+    assert len(fallback) == 1
+    assert fallback[0]["accelerator"] == "cuda"
+    assert fallback[0]["missing_required_fields"] == [
+        "python_version",
+        "cuda_version",
+    ]
+
+
+def test_sglang_cann_na_config_soc_schedules_native_fallback() -> None:
+    reference = "docker.io/lmsysorg/sglang:v0.5.19-cann9.0.0-910b"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+                "SOC_VERSION=na",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    fallback = inspection["probe_matrix"]["include"]
+    assert len(fallback) == 1
+    assert fallback[0]["missing_required_fields"] == ["soc_version"]
+    assert fallback[0]["config_facts"]["soc_version"] == ""
+
+
+@pytest.mark.parametrize(
+    ("tag", "native_soc_version", "expected_soc_version", "expected_backend"),
+    [
+        ("v0.5.18-cann9.0.0-910b", "na", "ascend910b1", "cann-a2"),
+        ("v0.5.18-cann9.0.0-a3", "", "ascend910_9391", "cann-a3"),
+    ],
+)
+def test_sglang_cann_tag_fills_missing_native_soc(
+    tag: str,
+    native_soc_version: str,
+    expected_soc_version: str,
+    expected_backend: str,
+) -> None:
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+    assert inspection["probe_matrix"]["include"]
+
+    probe = runtime.aggregate_runtime_probes(
+        inspection,
+        [
+            {
+                "probe_id": "runtime-001-amd64",
+                "python_version": "3.11.11",
+                "os_id": "Ubuntu",
+                "os_version": "24.04",
+                "glibc_version": "2.39",
+                "cann_version": "CANN 9.0.0",
+                "soc_version": native_soc_version,
+            }
+        ],
+    )["probes"][0]
+
+    assert probe["soc_version"] == expected_soc_version
+    assert probe["backend"] == expected_backend
 
 
 def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
