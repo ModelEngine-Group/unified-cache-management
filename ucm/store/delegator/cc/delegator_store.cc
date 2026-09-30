@@ -129,24 +129,34 @@ Status DelegatorStore::Setup(const Detail::Dictionary& input)
     if (!parsed) { return parsed.Error(); }
     auto config = std::move(parsed).Value();
 
-    const auto factory = backendFactory.load(std::memory_order_acquire);
-    if (factory == nullptr) {
-        // Backend binding is intentionally deferred to a follow-up integration.
-        UC_WARN("DelegatorStore has no backend implementation configured.");
-        return Status::Unsupported();
-    }
+    // PipelineStore sets store_backend to the previously stacked store. The
+    // previous store owns that object, so keep only a non-owning shared_ptr
+    // view while the Executor uses the common shared_ptr interface.
+    StoreV1* pipelineBackend = nullptr;
+    input.Get("store_backend", pipelineBackend);
 
-    try {
-        backend_ = std::shared_ptr<StoreV1>(factory());
-    } catch (const std::bad_alloc&) {
-        return Status::OutOfMemory();
-    }
-    if (!backend_) { return Status::Error("Delegator backend factory returned null"); }
+    if (pipelineBackend != nullptr) {
+        backend_ = std::shared_ptr<StoreV1>(pipelineBackend, [](StoreV1*) {});
+        UC_INFO("DelegatorStore using pipeline backend {}.", backend_->Readme());
+    } else {
+        const auto factory = backendFactory.load(std::memory_order_acquire);
+        if (factory == nullptr) {
+            UC_WARN("DelegatorStore has no backend implementation configured.");
+            return Status::Unsupported();
+        }
 
-    auto status = backend_->Setup(input);
-    if (status.Failure()) {
-        backend_.reset();
-        return status;
+        try {
+            backend_ = std::shared_ptr<StoreV1>(factory());
+        } catch (const std::bad_alloc&) {
+            return Status::OutOfMemory();
+        }
+        if (!backend_) { return Status::Error("Delegator backend factory returned null"); }
+
+        auto status = backend_->Setup(input);
+        if (status.Failure()) {
+            backend_.reset();
+            return status;
+        }
     }
 
     if (config.deviceId < 0) {
