@@ -2,7 +2,7 @@ name: 'Pull Request Gate'
 
 on:
   pull_request:
-    branches: [ "dev*", "main", "*release", "feature/**" ]
+    branches: [ "dev*", "main", "*release", "feature*", "feature/**" ]
 
 permissions:
   contents: read
