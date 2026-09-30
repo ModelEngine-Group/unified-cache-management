@@ -54,6 +54,11 @@ from ucm.metrics_config import (
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
 from ucm.observability import PrometheusStatsLogger
+from ucm.runtime_mode import (
+    RuntimeModeController,
+    UCMRuntimeMode,
+    resolve_runtime_control_settings,
+)
 from ucm.shared.metrics import ucmmetrics
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
@@ -1370,6 +1375,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
     cross-rank consistency metadata.
     """
 
+    # Whether this connector class honors the online runtime mode switch
+    # (see ucm/runtime_mode.py). Subclasses that override
+    # get_num_new_matched_tokens without delegating to
+    # UCMDirectConnector.get_num_new_matched_tokens must opt out explicitly.
+    supports_runtime_mode_control = True
+
     @staticmethod
     def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
         return launch_config.get("use_consistency_manager", not is_mla)
@@ -1521,6 +1532,34 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size *= self.cp_world_size
         self.request_block_hasher = None
         self._bind_request_block_hasher()
+
+        # Online runtime-mode control (enabled / lite / disabled). The mode is
+        # decided here, at the scheduler-side planning entry point, so a mode
+        # switch only affects NEW scheduling decisions; already-planned loads
+        # and dumps are still executed by the worker, keeping in-flight
+        # requests correct.
+        self._runtime_mode_controller = RuntimeModeController.from_launch_config(
+            self.launch_config, self.engine_id
+        )
+        if self._runtime_mode_controller.control_file:
+            logger.info(
+                "UCM online runtime-mode control enabled: initial_mode=%s, "
+                "control_file=%s, poll_interval_s=%s",
+                self._runtime_mode_controller.mode.name,
+                self._runtime_mode_controller.control_file,
+                self._runtime_mode_controller.poll_interval_s,
+            )
+
+    def _refresh_runtime_mode(self) -> UCMRuntimeMode:
+        """Return the current runtime mode; never raises."""
+        controller = getattr(self, "_runtime_mode_controller", None)
+        if controller is None:
+            return UCMRuntimeMode.ENABLED
+        try:
+            return controller.refresh()
+        except Exception as e:
+            logger.error(f"Failed to refresh UCM runtime mode. {type(e).__name__}: {e}")
+            return UCMRuntimeMode.ENABLED
 
     def get_block_size(self) -> int:
         return self.block_size
@@ -1800,6 +1839,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # state from its previous load attempt before recording a new one.
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+
+        runtime_mode = self._refresh_runtime_mode()
+        if runtime_mode is UCMRuntimeMode.DISABLED:
+            # Online bypass: answer as a full external miss so vLLM keeps its
+            # original compute path. Stale scheduler-side plans from before
+            # the switch (e.g. left by a preemption) must be dropped so no
+            # load/dump is planned for this request.
+            if self.requests_meta.pop(request.request_id, None) is not None:
+                logger.info(
+                    "UCM runtime mode is disabled; dropped pending plans for "
+                    f"request {request.request_id}."
+                )
+            self._record_counter("connector_runtime_mode_bypassed_requests_total")
+            logger.info_once("UCM runtime mode is disabled; external lookup bypassed")
+            return 0, False
+
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
         if request.status == RequestStatus.PREEMPTED:
@@ -1910,6 +1965,34 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"hit external: {external_hit_blocks * self.cp_world_size}, "
             f"total tokens: {len(request.all_token_ids)}"
         )
+
+        if runtime_mode is UCMRuntimeMode.LITE:
+            # Lite/shadow mode: hashing and metadata lookups still run against
+            # the real store (so as-if hit rates are recorded), but no load or
+            # dump data movement is planned; the engine recomputes everything.
+            # total_hit_block_num == hbm_hit_block_num plans no load, and
+            # token_processed == num_token_ids plans no dump.
+            shadow_hit_tokens = external_hit_blocks * self.block_size
+            ucmmetrics.update_stats(
+                {
+                    "connector_runtime_mode_lite_requests_total": 1.0,
+                    "lite_shadow_lookup_blocks_total": float(len(external_block_ids)),
+                    "lite_shadow_external_hit_tokens_total": float(shadow_hit_tokens),
+                }
+            )
+            logger.info_once(
+                f"UCM runtime mode is lite; request {request.request_id} "
+                f"records a shadow hit of {shadow_hit_tokens} token(s) without "
+                "load/dump IO"
+            )
+            self.requests_meta[request.request_id] = RequestMeta(
+                ucm_block_ids=ucm_block_ids,
+                hbm_hit_block_num=hbm_hit_block_num,
+                total_hit_block_num=hbm_hit_block_num,
+                num_token_ids=len(request.all_token_ids),
+                token_processed=len(request.all_token_ids),
+            )
+            return 0, False
 
         if not external_block_ids:
             return 0, False
@@ -2544,6 +2627,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
+        # Keep the runtime-mode gauge fresh even while the engine is idle:
+        # get_finished runs every scheduler step, unlike
+        # get_num_new_matched_tokens which only runs for new work.
+        self._refresh_runtime_mode()
         finished_recving = self._poll_pending_load_tasks()
         async_finished_req_ids = finished_req_ids & self._async_dump_req_ids
 
@@ -3294,6 +3381,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             else False
         )
 
+        use_inference_duration_monitor = (
+            self.launch_config.get("use_inference_duration_monitor", False)
+            if self.launch_config is not None
+            else False
+        )
+
         if use_lite:
             from ucm.integration.vllm.hla_connector import (
                 UCMHLALiteConnector,
@@ -3314,14 +3407,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 self.connector = UCMHLALiteConnector(vllm_config, role, kv_cache_config)
             else:
                 self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
-            return
-
-        use_inference_duration_monitor = (
-            self.launch_config.get("use_inference_duration_monitor", False)
-            if self.launch_config is not None
-            else False
-        )
-        if use_inference_duration_monitor:
+        elif use_inference_duration_monitor:
             from ucm.integration.vllm.inference_duration_monitor_connector import (
                 UCMInferenceDurationMonitorConnector,
             )
@@ -3329,61 +3415,91 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMInferenceDurationMonitorConnector(
                 vllm_config, role, kv_cache_config
             )
-            return
-
-        pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
-        if pp_enabled and not use_layerwise:
-            raise RuntimeError(
-                "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
-            )
-
-        use_ratio_rate = (
-            self.launch_config is not None and "hit_ratio" in self.launch_config
-        )
-
-        use_cp_parallel = (
-            hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
-            and hasattr(
-                self._vllm_config.parallel_config, "decode_context_parallel_size"
-            )
-            and self._vllm_config.parallel_config.prefill_context_parallel_size
-            * self._vllm_config.parallel_config.decode_context_parallel_size
-            > 1
-        )
-
-        from ucm.integration.vllm.hla_connector import (
-            UCMHybridLinearAttentionConnector,
-            UCMHybridLinearAttentionLayerWiseConnector,
-        )
-        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
-
-        use_hybrid_linear_attention = (
-            UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
-        )
-        use_hybrid_linear_attention_layerwise = (
-            use_hybrid_linear_attention
-            and use_layerwise
-            and self.launch_config.get("hybrid_linear_attention_layerwise", True)
-        )
-
-        if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
-            self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
-        elif use_ratio_rate:
-            self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
-        elif use_cp_parallel:
-            self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
-        elif use_hybrid_linear_attention_layerwise:
-            self.connector = UCMHybridLinearAttentionLayerWiseConnector(
-                vllm_config, role, kv_cache_config
-            )
-        elif use_hybrid_linear_attention:
-            self.connector = UCMHybridLinearAttentionConnector(
-                vllm_config, role, kv_cache_config
-            )
-        elif use_layerwise:
-            self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
-            self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+            pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
+            if pp_enabled and not use_layerwise:
+                raise RuntimeError(
+                    "Pipeline parallelism is not supported in UCMDirectConnector, "
+                    "please set use_layerwise=True."
+                )
+
+            use_ratio_rate = (
+                self.launch_config is not None and "hit_ratio" in self.launch_config
+            )
+
+            use_cp_parallel = (
+                hasattr(
+                    self._vllm_config.parallel_config, "prefill_context_parallel_size"
+                )
+                and hasattr(
+                    self._vllm_config.parallel_config, "decode_context_parallel_size"
+                )
+                and self._vllm_config.parallel_config.prefill_context_parallel_size
+                * self._vllm_config.parallel_config.decode_context_parallel_size
+                > 1
+            )
+
+            from ucm.integration.vllm.hla_connector import (
+                UCMHybridLinearAttentionConnector,
+                UCMHybridLinearAttentionLayerWiseConnector,
+            )
+            from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+            use_hybrid_linear_attention = (
+                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                    kv_cache_config
+                )
+            )
+            use_hybrid_linear_attention_layerwise = (
+                use_hybrid_linear_attention
+                and use_layerwise
+                and self.launch_config.get("hybrid_linear_attention_layerwise", True)
+            )
+
+            if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+                self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
+            elif use_ratio_rate:
+                self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
+            elif use_cp_parallel:
+                self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
+            elif use_hybrid_linear_attention_layerwise:
+                self.connector = UCMHybridLinearAttentionLayerWiseConnector(
+                    vllm_config, role, kv_cache_config
+                )
+            elif use_hybrid_linear_attention:
+                self.connector = UCMHybridLinearAttentionConnector(
+                    vllm_config, role, kv_cache_config
+                )
+            elif use_layerwise:
+                self.connector = UCMLayerWiseConnector(
+                    vllm_config, role, kv_cache_config
+                )
+            else:
+                self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+
+        self._log_runtime_mode_control_support()
+
+    def _log_runtime_mode_control_support(self) -> None:
+        """Warn when online runtime-mode control cannot take effect."""
+        if getattr(self.connector, "supports_runtime_mode_control", False):
+            return
+        try:
+            settings = resolve_runtime_control_settings(
+                self.launch_config, self.engine_id
+            )
+        except ValueError as e:
+            logger.warning(f"Invalid runtime-mode configuration: {e}")
+            return
+        if settings.control_file is None:
+            return
+        logger.warning(
+            "Online runtime-mode control (control file: %s) is not supported "
+            "by %s; the control file is ignored and UCM keeps its startup "
+            "behavior. Online toggling is currently supported by the "
+            "UCMDirectConnector family (direct / layerwise / CP / mock).",
+            settings.control_file,
+            type(self.connector).__name__,
+        )
 
     @property
     def requires_kv_delivery(self) -> bool:

@@ -200,6 +200,18 @@ counter:
     documentation: "Number of connector dump submit failures"
   - name: "connector_dump_wait_errors_total"
     documentation: "Number of connector dump wait failures"
+  - name: "connector_runtime_mode_bypassed_requests_total"
+    documentation: "Requests answered as full external misses because online runtime mode is disabled"
+  - name: "connector_runtime_mode_lite_requests_total"
+    documentation: "Requests evaluated in lite (shadow) runtime mode without load/dump IO"
+  - name: "connector_runtime_mode_transitions_total"
+    documentation: "Online runtime mode transitions observed by this connector"
+  - name: "connector_runtime_mode_control_read_errors_total"
+    documentation: "Failures reading the online runtime-mode control file"
+  - name: "lite_shadow_lookup_blocks_total"
+    documentation: "Block-hash lookups issued in lite (shadow) runtime mode"
+  - name: "lite_shadow_external_hit_tokens_total"
+    documentation: "As-if hit tokens recorded in lite (shadow) runtime mode"
 
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_tasks_submitted_total"
@@ -312,6 +324,9 @@ gauge:
     multiprocess_mode: "livemostrecent"
   - name: "posix_gc_running"
     documentation: "Posix garbage collection state, where 1 is running and 0 is idle"
+    multiprocess_mode: "livemostrecent"
+  - name: "connector_runtime_mode"
+    documentation: "Current online runtime mode, where 0 is enabled, 1 is lite and 2 is disabled"
     multiprocess_mode: "livemostrecent"
 
   # -- DramStore client observability -----------------------------------------
