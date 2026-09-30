@@ -104,11 +104,11 @@ def compact_block_table_for_pruning(
     target_cols = torch.where(keep, keep_target_cols, discard_target_cols)
 
     # 构造源数据：保留块保持原值，废弃块置零
-    scr_data = torch.where(keep, block_table, torch.zeros_like(block_table))
+    src_data = torch.where(keep, block_table, torch.zeros_like(block_table))
 
     # 5. 执行压缩并写回原始block_table (真正实现原地修改)
     compacted_table = torch.zeros_like(block_size)
-    compacted_table.scatter_(1, target_cols, scr_data)
+    compacted_table.scatter_(1, target_cols, src_data)
     block_table.copy_(compacted_table)
 
     # 6. 写回原始 seq_lens (跨设备拷贝禁用 non_blocking, 保证调用方读取到最新值)
