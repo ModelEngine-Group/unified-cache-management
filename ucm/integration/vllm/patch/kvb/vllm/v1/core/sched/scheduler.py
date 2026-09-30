@@ -60,7 +60,7 @@ from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
-from ucm.integration.vllm.perf_counters import PerfCounters
+from ucm.integration.vllm.perf_counter import PerfCounters
 logger = init_logger(__name__)
 
 
@@ -617,10 +617,9 @@ class Scheduler(SchedulerInterface):
                             # the number of matched tokens.
                             request_queue.pop_request()
                             step_skipped_waiting.prepend_request(request)
-                            continue
                         
                         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector":
-                            new_computed_blocks, num_new_local_computed_tokens = self.kv_cache_config.update_computed_block(request, new_computed_blocks, num_new_local_computed_tokens)
+                            new_computed_blocks, num_new_local_computed_tokens = self.kv_cache_manager.update_computed_block(request, new_computed_blocks, num_new_local_computed_tokens)
                             
                         request.num_external_computed_tokens = ext_tokens
                         num_external_computed_tokens = ext_tokens
