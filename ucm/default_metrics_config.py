@@ -129,6 +129,10 @@ _COUNTER_METRICS = [
         "Number of failed Posix health probes",
     ),
     (
+        "posix_passive_failures_total",
+        "Number of failed Posix IO tasks observed by passive health detection",
+    ),
+    (
         "posix_aio_timeout_total",
         "Number of Posix AIO task or submit timeouts",
     ),
@@ -199,6 +203,10 @@ _COUNTER_METRICS = [
     (
         "mooncake_unhealthy_count_total",
         "Number of failed Mooncake health probes",
+    ),
+    (
+        "mooncake_passive_failures_total",
+        "Number of failed Mooncake IO tasks observed by passive health detection",
     ),
     (
         "mooncake_load_bytes_total",
@@ -599,6 +607,11 @@ _GAUGE_METRICS = [
         {"multiprocess_mode": "livemostrecent"},
     ),
     (
+        "dramstore_reply_buffer_capacity_bytes",
+        "Total reply slot bytes including alignment",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
         "dramstore_transport_queue_size",
         "Sampled aggregate queued Transmit and Connect admission occupancy",
         {"multiprocess_mode": "livemostrecent"},
@@ -916,7 +929,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_lookup_duration_ms",
         "End-to-end DramStore lookup duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "dramstore_lookup_task_queue_duration_ms",
@@ -966,7 +979,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_dump_duration_ms",
         "End-to-end DramStore dump duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "dramstore_dump_task_queue_duration_ms",
@@ -1016,7 +1029,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_load_duration_ms",
         "End-to-end DramStore load duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "dramstore_load_task_queue_duration_ms",

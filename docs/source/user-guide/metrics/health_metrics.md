@@ -23,18 +23,22 @@ The probe therefore validates the actual I/O path rather than only checking whet
 
 A Mooncake health probe uses a dedicated temporary key to perform a small Put, Get, content verification, and Remove sequence. The probe fails when the client is unavailable, an operation fails, or the returned content does not match.
 
+Posix and Mooncake also trigger circuit breaking on actual I/O failures, independently of active probes. Recovery requires successful active probes and an elapsed cooldown. Repeated failures shortly after recovery extend the cooldown; sustained health resets the backoff. Logs report passive windows with failures and remaining cooldown when probes are healthy.
+
 ## 2. Health Metrics
 
-The default configuration contains six health metrics:
+UCM exports eight health metrics:
 
 | Metric | Type | Meaning | Update |
 | --- | --- | --- | --- |
 | `ucm:posix_healthy_count_total` | Counter | Successful Posix health probes | Incremented by 1 after a successful Posix probe |
 | `ucm:posix_unhealthy_count_total` | Counter | Failed or timed-out Posix health probes | Incremented by 1 after a failed Posix probe |
-| `ucm:posix_store_health` | Gauge | Effective Posix circuit-breaker state: 1 is available and 0 is fused | Updated at startup and after every Posix probe |
+| `ucm:posix_store_health` | Gauge | Effective Posix circuit-breaker state: 1 is available and 0 is fused | Updated at startup, after probes, and on passive trips |
+| `ucm:posix_passive_failures_total` | Counter | Observed Posix I/O failures | Incremented after an eligible I/O failure |
 | `ucm:mooncake_healthy_count_total` | Counter | Successful Mooncake health probes | Incremented by 1 after a successful Mooncake probe |
 | `ucm:mooncake_unhealthy_count_total` | Counter | Failed or timed-out Mooncake health probes | Incremented by 1 after a failed Mooncake probe |
-| `ucm:mooncake_store_health` | Gauge | Effective Mooncake circuit-breaker state: 1 is available and 0 is fused | Updated at startup and after every Mooncake probe |
+| `ucm:mooncake_store_health` | Gauge | Effective Mooncake circuit-breaker state: 1 is available and 0 is fused | Updated at startup, after probes, and on passive trips |
+| `ucm:mooncake_passive_failures_total` | Counter | Observed Mooncake I/O failures | Incremented after an eligible I/O failure |
 
 Use the Gauge to determine whether a Store is currently fused. Use both the success and failure Counters to analyze probe quality over time. There is currently no dedicated Counter for fuse or recovery transitions.
 
