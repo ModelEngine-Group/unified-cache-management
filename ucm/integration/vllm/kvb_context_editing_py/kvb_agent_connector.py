@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Tuple
+
 import numpy as np
 import torch
 import vllm.envs as envs
@@ -24,8 +25,8 @@ from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.perf_counter import PerfCounters
 from ucm.integration.vllm.model_marker_manager import ModelMarkerManager
+from ucm.integration.vllm.perf_counter import PerfCounters
 from ucm.integration.vllm.request_meta import KvbVllmRequestMeta
 from ucm.logger import init_logger
 from ucm.observability import PrometheusStatsLogger
@@ -52,9 +53,9 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.request import Request
 
 from ucm.integration.vllm.ucm_connector import (
-    UCMDirectConnector,
     UCMConnector,
-    UCMConnectorMetadata
+    UCMConnectorMetadata,
+    UCMDirectConnector,
 )
 from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
@@ -96,10 +97,10 @@ class AgentConnector(UCMDirectConnector):
     """
 
     def __init__(
-        self, 
+        self,
         vllm_config: "VllmConfig",
         role: KVConnectorRole,
-        kv_cache_config: Optional["KVCacheConfig"] = None
+        kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(
             vllm_config=vllm_config,
@@ -150,7 +151,7 @@ class AgentConnector(UCMDirectConnector):
         ends = self.marker_manager.find_marker_positions(arr, "response")
 
         # 配对生成(start, end)元组 （原始token位置）
-        ranges = [] # 每个元素为（s,e）
+        ranges = []  # 每个元素为（s,e）
         j = 0
         last_end = 0
         for s in starts:
@@ -174,20 +175,20 @@ class AgentConnector(UCMDirectConnector):
 
         # 按原始位置分类
         for s, e in ranges:
-            if e < marker_start:    # 完全在标记之前
+            if e < marker_start:  # 完全在标记之前
                 before_ranges.append((s, e))
-            elif s > marker_start:    # 完全在标记之后（标记占4个token）
+            elif s > marker_start:  # 完全在标记之后（标记占4个token）
                 after_ranges.append((s, e))
-            else:    # 跨越标记，归入before
+            else:  # 跨越标记，归入before
                 logger.error(f"error: 跨越标记，all_token_ids: {all_token_ids}")
                 return slot_indices, False
             
         result_blocks = []  #  需要裁剪（设为False）的block索引
         pruned_args = request.sampling_params.extra_args["kv_edit_args"]
         logger.debug(f"pruned_args: {pruned_args}")
-        if not 'tool_call' in pruned_args:
+        if not "tool_call" in pruned_args:
             return slot_indices, False
-        pruned_list = pruned_args['tool_call']
+        pruned_list = pruned_args["tool_call"]
         logger.debug(f"pruned_list: {pruned_list}")
         all_ranges = before_ranges + after_ranges
 
@@ -214,16 +215,13 @@ class AgentConnector(UCMDirectConnector):
         return slot_indices, pruned
 
     def get_vllm_load_slot_indices(
-        self, slot_indices,
-        hbm_hit_block_num,
-        external_hit_blocks,
-        num_pruned_blocks
+        self, slot_indices, hbm_hit_block_num, external_hit_blocks, num_pruned_blocks
     ):
         vllm_load_slot_indices = [False] * len(slot_indices)
         vllm_load_slot_indices[
-        hbm_hit_block_num 
-        + num_pruned_blocks : hbm_hit_block_num 
-        + external_hit_blocks
+            hbm_hit_block_num
+            + num_pruned_blocks : hbm_hit_block_num
+            + external_hit_blocks
         ] = [True] * (external_hit_blocks - num_pruned_blocks)
         assert sum(vllm_load_slot_indices) == sum(slot_indices)
         return vllm_load_slot_indices
@@ -253,10 +251,10 @@ class AgentConnector(UCMDirectConnector):
             try:
                 external_hit_blocks = (
                     self._rank_consistency.lookup_on_prefix(
-                            self.store, external_block_ids
-                        )
-                        + 1
+                        self.store, external_block_ids
                     )
+                    + 1
+                )
                 self._prefetch_other_rank_hashes(
                     external_block_ids[:external_hit_blocks]
                 )
@@ -266,7 +264,7 @@ class AgentConnector(UCMDirectConnector):
                 logger.error(f"request {request.request_id} look up error. {e}")
 
         slot_indices[:hbm_hit_block_num] = [False] * hbm_hit_block_num
-        slot_indices[hbm_hit_block_num + external_hit_blocks:] = [False] * (
+        slot_indices[hbm_hit_block_num + external_hit_blocks :] = [False] * (
             len(ucm_block_ids) - hbm_hit_block_num - external_hit_blocks
         )
 
@@ -353,13 +351,13 @@ class AgentConnector(UCMDirectConnector):
 
         if need_load:
             load_ucm_block_ids = [
-                ucm_block_ids[i] 
-                for i in range(len(ucm_slot_indices)) 
+                ucm_block_ids[i]
+                for i in range(len(ucm_slot_indices))
                 if ucm_slot_indices[i]
             ]
             load_vllm_block_ids = [
-                vllm_block_ids[i] 
-                for i in range(len(vllm_load_slot_indices)) 
+                vllm_block_ids[i]
+                for i in range(len(vllm_load_slot_indices))
                 if vllm_load_slot_indices[i]
             ]
         if req_meta.token_processed < req_meta.num_token_ids:
@@ -379,9 +377,9 @@ class AgentConnector(UCMDirectConnector):
 
 class UCMAgentConnector(KVConnectorBase_V1):
     def __init__(
-        self, 
-        vllm_config: "VllmConfig", 
-        role: KVConnectorRole, 
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         KVConnectorBase_V1.__init__(
