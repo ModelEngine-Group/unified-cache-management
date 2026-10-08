@@ -35,10 +35,12 @@ from vllm.v1.attention.backends.registry import (  # type: ignore
 )
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import AttentionSpec, CrossAttentionSpec
-from ucm.integration.vllm.tool_call_pruning import compact_block_table_for_pruning
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
-from vllm_ascend.attention.context_parallel.common_cp import AscendMetadataForDecode, AscendMetadataForPrefill
+from vllm_ascend.attention.context_parallel.common_cp import (
+    AscendMetadataForDecode,
+    AscendMetadataForPrefill,
+)
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
     enable_cp,
@@ -54,6 +56,9 @@ from vllm_ascend.compilation.acl_graph import (
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.ops.flashcomm2_oshard_manager import flashcomm2_oshard_manager
 from vllm_ascend.utils import weak_ref_tensors
+
+from ucm.integration.vllm.tool_call_pruning import compact_block_table_for_pruning
+
 # default max value of sliding window size
 SWA_INT_MAX = 2147483647
 
@@ -71,7 +76,9 @@ class AscendAttentionBackend(AttentionBackend):
     @staticmethod
     def get_impl_cls() -> type["AscendAttentionBackendImpl"]:
         if enable_cp():
-            from vllm_ascend.attention.context_parallel.attention_cp import AscendAttentionCPImpl
+            from vllm_ascend.attention.context_parallel.attention_cp import (
+            AscendAttentionCPImpl,
+            )
 
             return AscendAttentionCPImpl
         return AscendAttentionBackendImpl
@@ -79,7 +86,9 @@ class AscendAttentionBackend(AttentionBackend):
     @staticmethod
     def get_builder_cls() -> type["AscendAttentionMetadataBuilder"]:
         if enable_cp():
-            from vllm_ascend.attention.context_parallel.attention_cp import AscendAttentionCPMetadataBuilder
+            from vllm_ascend.attention.context_parallel.attention_cp import (
+            AscendAttentionCPMetadataBuilder,
+            )
 
             return AscendAttentionCPMetadataBuilder
         return AscendAttentionMetadataBuilder
@@ -105,7 +114,9 @@ class AscendAttentionBackend(AttentionBackend):
         dst_indices = src_to_dst[:, 1]
 
         dst_key_cache[dst_indices] = src_key_cache[src_indices].to(dst_key_cache.device)
-        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(dst_key_cache.device)
+        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(
+            dst_key_cache.device
+        )
 
     @staticmethod
     def copy_blocks(
@@ -223,18 +234,19 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         self.compilation_config = vllm_config.compilation_config
         self.device = device
         self.max_num_blocks_per_req = cdiv(
-            self.model_config.max_model_len, AscendAttentionBackend.get_supported_kernel_block_sizes()[0]
+            self.model_config.max_model_len,
+            AscendAttentionBackend.get_supported_kernel_block_sizes()[0],
         )
         self.speculative_config = vllm_config.speculative_config
         self.decode_threshold = 1
         if self.speculative_config:
             spec_token_num = self.speculative_config.num_speculative_tokens
             self.decode_threshold += spec_token_num
-            assert self.decode_threshold <= 16, (
-                f"decode_threshold exceeded \
+            assert (
+                self.decode_threshold <= 16,
+            ), f"decode_threshold exceeded \
                 npu_fused_infer_attention_score TND layout's limit of 16, \
                 got {self.decode_threshold}"
-            )
 
         self.reorder_batch_threshold = self.decode_threshold
 
@@ -265,19 +277,24 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_reqs + 1]
 
-        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = split_decodes_and_prefills(
-            common_attn_metadata, decode_threshold=self.decode_threshold
+        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
+            split_decodes_and_prefills(
+                common_attn_metadata, decode_threshold=self.decode_threshold
+            )
         )
 
         block_table = common_attn_metadata.block_table_tensor
         seq_lens = common_attn_metadata.seq_lens_cpu[:num_reqs]
 
-        if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector":
+        if (
+            self.vllm_config.kv_transfer_config is not None 
+            and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector"
+        ):
             block_size = AscendAttentionBackend.get_supported_kernel_block_sizes()[0]
 
             block_table, seq_lens = compact_block_table_for_pruning(
-                block_table, seq_lens,
-                block_size)
+                block_table, seq_lens, block_size
+            )
 
         slot_mapping = common_attn_metadata.slot_mapping[:num_actual_tokens]
         # this slot_mapping override doesn't work since vllm will override it again. We should fix it vllm.
@@ -301,7 +318,9 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             )
 
         # TODO: Yet another unnecessary H2D while we already have a query_start_loc on device
-        query_start_loc = query_start_loc_cpu.pin_memory().to(self.device, non_blocking=True)
+        query_start_loc = query_start_loc_cpu.pin_memory().to(
+            self.device, non_blocking=True
+        )
 
         attn_metadata = AscendMetadata(
             num_actual_tokens=num_actual_tokens,
@@ -468,7 +487,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
             if num_layers == 0:
                 return
             if _EXTRA_CTX.is_draft_model:
-                attn_keys = attn_keys * (len(graph_params.attn_params[num_tokens]) // num_layers)
+                attn_keys = attn_keys * (
+                    len(graph_params.attn_params[num_tokens]) // num_layers
+                )
             attn_count = 0
             with torch.npu.stream(update_stream):
                 for key, param, handle, event in zip(
@@ -496,7 +517,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     if _EXTRA_CTX.is_draft_model:
                         draft_step = attn_count // num_layers
                         seq_lens = attn_metadata[draft_step][key].seq_lens_list
-                        actual_seq_lengths_q = attn_metadata[draft_step][key].actual_seq_lengths_q
+                        actual_seq_lengths_q = attn_metadata[draft_step][
+                        key
+                        ].actual_seq_lengths_q
                         block_tables = attn_metadata[draft_step][key].block_tables
                         attn_count = attn_count + 1
                     else:
@@ -539,7 +562,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         attn_metadata: AscendMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        key, value, block_size, block_table, actual_seq_lengths_kv = self._get_fia_params(key, value, attn_metadata)
+        key, value, block_size, block_table, actual_seq_lengths_kv = (
+            self._get_fia_params(key, value, attn_metadata)
+        )
 
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
         if _EXTRA_CTX.is_draft_model:
@@ -687,48 +712,42 @@ class AscendAttentionBackendImpl(AttentionImpl):
             graph_params.handles[num_tokens].append(handle)
             return output
 
-    def _get_fia_params(self, key: torch.Tensor, value: torch.Tensor, attn_metadata: AscendMetadata):
+    def _get_fia_params(
+        self, key: torch.Tensor, value: torch.Tensor, attn_metadata: AscendMetadata
+    ):
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
             block_size = 128
             block_table = None
             actual_seq_lengths_kv = attn_metadata.actual_seq_lengths_q
             if self.attn_type == AttentionType.ENCODER_DECODER:
-                actual_seq_lengths_kv = torch.cumsum(attn_metadata.seq_lens, dim=0).tolist()
+                actual_seq_lengths_kv = torch.cumsum(
+                    attn_metadata.seq_lens, dim=0
+                ).tolist()
         elif attn_metadata.attn_state == AscendAttentionState.PrefillCacheHit:
             batch_size = attn_metadata.seq_lens.shape[0]
             block_table = attn_metadata.block_tables[:batch_size, :]
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
-            key = self.key_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
-            value = self.value_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
+            key = self.key_cache.view(num_block, block_size, -1)  # type: ignore
+            value = self.value_cache.view(num_block, block_size, -1)  # type: ignore
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
         elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
-            key = self.key_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
-            value = self.value_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
+            key = self.key_cache.view(num_block, block_size, -1)  # type: ignore
+            value = self.value_cache.view(num_block, block_size, -1)  # type: ignore
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
         # chunked prefill.
         else:
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
-            key = self.key_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
-            value = self.value_cache.view(  # type: ignore
-                num_block, block_size, -1
-            )
+            key = self.key_cache.view(num_block, block_size, -1)  # type: ignore
+            value = self.value_cache.view(num_block, block_size, -1)  # type: ignore
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
         return key, value, block_size, block_table, actual_seq_lengths_kv
 
-    def _forward_fia_slidingwindow(self, query: torch.Tensor, attn_metadata: AscendMetadata, output: torch.Tensor):
+    def _forward_fia_slidingwindow(
+        self, query: torch.Tensor, attn_metadata: AscendMetadata, output: torch.Tensor
+    ):
         batch_size = attn_metadata.seq_lens.shape[0]
         block_size = 128
         query = query.view(batch_size, 1, self.num_heads * self.head_size)
@@ -770,7 +789,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         # runner v2, there is not capturing attribute in forward_context,
         # just use getattr to avoid attribute error.
         if _EXTRA_CTX.capturing:
-            attn_output, num_tokens = self.full_graph_fia(query, key, value, attn_metadata, output)
+            attn_output, num_tokens = self.full_graph_fia(
+                query, key, value, attn_metadata, output
+            )
             output[:num_tokens] = attn_output[:num_tokens]
             return output
         if (
@@ -780,7 +801,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
             and self.sinks is None
         ):
             return self._forward_fia_slidingwindow(query, attn_metadata, output)
-        key, value, block_size, block_table, actual_seq_lengths_kv = self._get_fia_params(key, value, attn_metadata)
+        key, value, block_size, block_table, actual_seq_lengths_kv = (
+            self._get_fia_params(key, value, attn_metadata)
+        )
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
         query = query[:num_tokens]
         if (
@@ -793,7 +816,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if self.sinks is not None:
             actual_seq_qlen = attn_metadata.actual_seq_lengths_q
             if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-                actual_seq_qlen = torch.tensor([1] * len(attn_metadata.seq_lens_list), dtype=torch.int32).cumsum(dim=0)
+                actual_seq_qlen = torch.tensor(
+                    [1] * len(attn_metadata.seq_lens_list), dtype=torch.int32
+                ).cumsum(dim=0)
             if self.sliding_window is not None:
                 atten_mask = attn_metadata.swa_mask
                 sparse_mode = 4
@@ -807,7 +832,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_query_heads=self.num_heads,
                 num_key_value_heads=self.num_kv_heads,
                 input_layout="TND",
-                pre_tokens=self.sliding_window if self.sliding_window is not None else SWA_INT_MAX,
+                pre_tokens=(
+                    self.sliding_window
+                    if self.sliding_window is not None
+                    else SWA_INT_MAX,
+                ),
                 next_tokens=0,
                 atten_mask=atten_mask,
                 sparse_mode=sparse_mode,
@@ -898,13 +927,25 @@ class AscendAttentionBackendImpl(AttentionImpl):
             slots = attn_metadata.slot_mapping
             encoder_decoder = self.attn_type == AttentionType.ENCODER_DECODER
             DeviceOperator.reshape_and_cache(
-                key=key[: attn_metadata.num_actual_tokens] if not encoder_decoder else key,
-                value=value[: attn_metadata.num_actual_tokens] if not encoder_decoder else value,
+                key=(
+                    key[: attn_metadata.num_actual_tokens]
+                    if not encoder_decoder
+                    else key
+                ),
+                value=(
+                    value[: attn_metadata.num_actual_tokens]
+                    if not encoder_decoder
+                    else value
+                ),
                 key_cache=self.key_cache,
                 value_cache=self.value_cache,
                 # quick fix to make sure slots is int32 for cross attention case.
                 # see: https://github.com/vllm-project/vllm/blob/ce88756b967c2c5006746a424c15dd59a284ed8c/vllm/model_executor/layers/attention/cross_attention.py#L117
-                slot_mapping=slots[: attn_metadata.num_actual_tokens] if not encoder_decoder else slots.to(torch.int32),
+                slot_mapping=(
+                    slots[: attn_metadata.num_actual_tokens]
+                    if not encoder_decoder
+                    else slots.to(torch.int32)
+                ),
             )
             if self.is_kv_producer:
                 attn_metadata.reshape_cache_event.record()
@@ -927,7 +968,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         ):
             output = self.forward_paged_attention(query, attn_metadata, output)
         else:
-            output = self.forward_fused_infer_attention(query, key, value, attn_metadata, output)
+            output = self.forward_fused_infer_attention(
+                query, key, value, attn_metadata, output
+            )
 
         return output
 
@@ -957,7 +1000,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         assert output is not None, "Output tensor must be provided."
 
         if output_scale is not None or output_block_scale is not None:
-            raise NotImplementedError("fused output quantization is not yet supported for AscendAttentionBackendImpl")
+            raise NotImplementedError(
+                "fused output quantization is not yet supported for AscendAttentionBackendImpl"
+            )
 
         assert layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0
         num_tokens = query.shape[0]
@@ -971,12 +1016,18 @@ class AscendAttentionBackendImpl(AttentionImpl):
             )
         # pooling model branch
         if attn_metadata.model_runner_type == "pooling" and not attn_metadata.causal:
-            attn_output = self._forward_encoder_attention(query, key, value, attn_metadata, output)
+            attn_output = self._forward_encoder_attention(
+                query, key, value, attn_metadata, output
+            )
             output[:num_tokens] = attn_output[:num_tokens]
             return output
         if output_padded is not None:
-            attn_output = self.forward_impl(query, key, value, kv_cache, attn_metadata, output_padded)
+            attn_output = self.forward_impl(
+                query, key, value, kv_cache, attn_metadata, output_padded
+            )
         else:
-            attn_output = self.forward_impl(query, key, value, kv_cache, attn_metadata, output)
+            attn_output = self.forward_impl(
+                query, key, value, kv_cache, attn_metadata, output
+            )
         output[:num_tokens] = attn_output[:num_tokens]
         return output
