@@ -42,11 +42,11 @@ device_type = "npu"
 
 # =========================== User configuration ===========================
 # Model profile: glm-5.2, minimax-m2.7 tp8, or dsv4.
-model_name = "glm-5.2"
+model_name = "dsv4"
 # True uses layerwise transfer; False uses non-layerwise. DSV4 ignores it.
-use_layerwise = True
+use_layerwise = False
 # Worker process/NPU count: GLM defaults to 16; MiniMax/DSV4 default to 8.
-worker_number = 16
+worker_number = 8
 # Only used by GLM/MiniMax non-layerwise transfers: GLM=78, MiniMax=62.
 layer_number = 78
 
@@ -84,9 +84,12 @@ MODEL_PROFILES = {
     },
     "dsv4": {
         "worker_mode": "mla",
-        # FA/WA needs group-specific block ownership; this profile has no
-        # group metadata, so keep its existing rank-0 dump approximation.
-        "mla_dump_striping": False,
+        # These 21 C4 and 20 C128 views form one FA row. The HMA connector
+        # stripes FA keys by absolute canonical block index; WA uses a
+        # separate store and is outside this benchmark profile.
+        "benchmark_scope": "FA-only",
+        "mla_dump_striping": True,
+        "cache_io_aggregation": True,
         "share_buffer_enable": True,
         "full_tensor_size_list": [
             131072,
@@ -195,6 +198,7 @@ if model_profile is None:
         f"unsupported model {model_name!r}; choose one of: {available_models}"
     )
 worker_mode = model_profile["worker_mode"]
+benchmark_scope = model_profile.get("benchmark_scope", "all KV views")
 mla_dump_striping = model_profile.get("mla_dump_striping", False)
 share_buffer_enable = model_profile["share_buffer_enable"]
 tensor_size_list = resolve_tensor_size_list(model_profile)
@@ -487,6 +491,7 @@ def create_cache_worker(
     config["local_rank_size"] = worker_number
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_io_aggregation"] = model_profile.get("cache_io_aggregation", False)
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if cache_numa_node is not None:
@@ -513,6 +518,7 @@ def create_cache_scheduler(
     config["cache_buffer_capacity_gb"] = 32
     config["local_rank_size"] = worker_number
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_io_aggregation"] = model_profile.get("cache_io_aggregation", False)
     config["timeout_ms"] = 30000
     config["device_id"] = -1
     if store_cpu_affinity_cores:
@@ -728,6 +734,7 @@ def worker_loop(
     print(
         f"{store_pipeline} benchmark: device={device}, "
         f"model={model_name}, transfer_mode={transfer_mode}, "
+        f"benchmark_scope={benchmark_scope}, "
         f"worker_mode={worker_mode}, layer_number={layer_number}, "
         f"mla_dump_striping={mla_dump_striping}, "
         f"worker_number={worker_number}, "
