@@ -14,7 +14,9 @@ from vllm.v1.core.kv_cache_utils import KVCacheBlock
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request
+
 logger = init_logger(__name__)
+
 
 @dataclass
 class KVCacheBlocks:
@@ -171,7 +173,9 @@ class KVCacheManager:
         self.prefix_cache_stats = PrefixCacheStats()
         return stats
     
-    def update_computed_blocks(self, request, new_blocks: KVCacheBlocks, num_computed_tokens: int):
+    def update_computed_blocks(
+        self, request, new_blocks: KVCacheBlocks, num_computed_tokens: int
+    ):
         block_size = self.coordinator.single_type_managers[0].block_size
         num_pruned_blocks = request.kvb_vllm_request_meta.num_pruned_blocks
         hbm_hit_block_num = request.kvb_vllm_request_meta.hbm_hit_block_num
