@@ -108,7 +108,7 @@ def _layout_source_digest() -> str:
 class RequestHasher:
     """Generate stable, namespaced UCM request and block identifiers."""
 
-    def __init__(self, vllm_config, rank_id):
+    def __init__(self, vllm_config, rank_id, kv_cache_config=None):
         speculative_config = getattr(vllm_config, "speculative_config", None)
         spec_info = ""
         if speculative_config is not None:
@@ -142,6 +142,44 @@ class RequestHasher:
                 f":block_size={cache_config.block_size}"
                 f":compress_ratios={ratios}"
             )
+            if kv_cache_config is not None:
+                tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
+                has_placement = bool(tensors) and hasattr(tensors[0], "layer_stride")
+                groups = []
+                for group in kv_cache_config.kv_cache_groups:
+                    spec = group.kv_cache_spec
+                    nested = getattr(spec, "kv_cache_specs", None)
+                    layers = []
+                    for name in sorted(group.layer_names):
+                        if has_placement:
+                            layers.append(name)
+                            continue
+                        inner = nested[name] if nested else spec
+                        layers.append(
+                            (
+                                name,
+                                getattr(inner, "tokens_per_state", 1),
+                                getattr(inner, "state_content_size_bytes", None),
+                                str(getattr(inner, "dtype", None)),
+                                str(getattr(inner, "kv_quant_mode", None)),
+                            )
+                        )
+                    groups.append(
+                        (
+                            spec.block_size,
+                            getattr(spec, "prefix_cacheable", True),
+                            getattr(spec, "prefix_replay_tokens", 0),
+                            getattr(group, "enable_kv_transfer", True),
+                            tuple(layers),
+                        )
+                    )
+                layout_info += f":transfer_layout=v4:{tuple(groups)!r}"
+                if has_placement:
+                    placement = tuple(
+                        (tuple(t.layers), t.layer_stride, t.block_stride, t.offset)
+                        for t in tensors
+                    )
+                    layout_info += f":placement={placement!r}"
         model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
         dcp_size = getattr(
             vllm_config.parallel_config, "decode_context_parallel_size", 1

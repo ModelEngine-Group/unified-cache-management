@@ -21,7 +21,10 @@ def _load_hma_methods(names):
     tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if getattr(n, "name", None) == "UCMFAWAConnector")
     nodes = [n for n in cls.body if getattr(n, "name", None) in names]
-    module = ast.Module(body=nodes, type_ignores=[])
+    helpers = [
+        n for n in tree.body if getattr(n, "name", None) == "_v41_whole_page_sizes"
+    ]
+    module = ast.Module(body=helpers + nodes, type_ignores=[])
     ast.fix_missing_locations(module)
 
     class GroupMeta:
@@ -38,6 +41,11 @@ def _load_hma_methods(names):
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
+        "KVCacheGroupLayout": object,
+        "FAWARequestMeta": types.SimpleNamespace,
+        "FAWARequestDispatchMeta": types.SimpleNamespace,
+        "UCMFAWAConnectorMetadata": object,
+        "SchedulerOutput": object,
         "extract_layer_index": lambda name: int(name.split(".")[1]),
         "logger": types.SimpleNamespace(
             info_once=lambda *_args: None, info=lambda *_args: None
@@ -117,8 +125,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
     def test_v41_external_load_waits_for_compute_before_submitting_copies(self):
         methods = _load_hma_methods(["start_load_kv"])
         methods["UCMFAWAConnectorMetadata"] = types.SimpleNamespace
-        for is_v41, has_hit in ((True, True), (True, False), (False, True)):
-            with self.subTest(is_v41=is_v41, has_hit=has_hit):
+        for is_v41, has_hit, has_window in (
+            (True, True, True),
+            (True, False, True),
+            (False, True, True),
+            (True, True, False),
+        ):
+            with self.subTest(is_v41=is_v41, has_hit=has_hit, has_window=has_window):
                 events = []
                 request = types.SimpleNamespace(
                     load_keys=[b"key"] if has_hit else [],
@@ -139,7 +152,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     ),
                     _get_connector_metadata=lambda: metadata,
                     fa_store=object(),
-                    wa_store=object(),
+                    window_group_ids=[1] if has_window else [],
+                    wa_store=object() if has_window else None,
                     _extract_fa_ptr=lambda *_args: [],
                     _extract_wa_ptr=lambda *_args: [],
                     _submit_load_task=submit,
@@ -148,7 +162,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 methods["start_load_kv"](connector, None)
                 expected = ["sync"] if is_v41 and has_hit else []
                 if has_hit:
-                    expected.extend(["FA", "WA", ("FA", "WA")])
+                    labels = ["FA", "WA"] if has_window else ["FA"]
+                    expected.extend([*labels, tuple(labels)])
                 else:
                     expected.append(())
                 self.assertEqual(events, expected)
@@ -189,6 +204,19 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 "model.layers.1.self_attn.indexer.k_cache": (64, 4),
             },
         )
+        main_spec = group.kv_cache_spec.kv_cache_specs["model.layers.0.self_attn"]
+        for cache_dtype, width, expected in (
+            ("fp8_ds_mla", 528, (512, 16)),
+            ("nvfp4_ds_mla", 288, (256, 32)),
+        ):
+            main_spec.cache_dtype_str = cache_dtype
+            main_spec.state_content_size_bytes = width
+            self.assertEqual(
+                namespace["_group_physical_layout_by_layer"](group)[
+                    "model.layers.0.self_attn"
+                ],
+                expected,
+            )
 
     def test_packed_v41_page_roundtrip_preserves_values_and_scales(self):
         tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
@@ -236,11 +264,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
         for value_bytes, scale_bytes, c_bytes in (
             (576, 8, 584),  # Main fp8_ds_mla.
+            (512, 16, 528),  # SM100 MXFP8.
+            (256, 32, 288),  # SM100 NVFP4 compressed KV.
             (128, 4, 132),  # Indexer FP8.
             (64, 4, 68),  # Indexer MXFP4.
         ):
             with self.subTest(value_bytes=value_bytes, scale_bytes=scale_bytes):
-                page_strides = {states: states * c_bytes + 37 for states in (64, 32)}
+                page_strides = {states: states * c_bytes + 128 for states in (64, 32)}
                 source_storages = {
                     states: (ctypes.c_ubyte * (2 * stride))()
                     for states, stride in page_strides.items()
@@ -343,6 +373,43 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                         )
                         self.assertEqual(bytes(destination_storage), bytes(expected))
 
+                # The 0.31 adapter copies padded pages as opaque byte ranges.
+                whole_kwargs = dict(
+                    common_kwargs,
+                    whole_page_sizes_by_layer={
+                        name: page_strides[tensor.shape[2]]
+                        for name, tensor in source.items()
+                    },
+                )
+                src = namespace["KVCacheGroupLayout"](source, **whole_kwargs)
+                dst = namespace["KVCacheGroupLayout"](destination, **whole_kwargs)
+                ids = __import__("numpy").array([1])
+                sizes = src.segment_tensor_size_list(64, 64)
+                self.assertEqual(sizes, [page_strides[64], page_strides[32]])
+                for storage in dest_storages.values():
+                    for i in range(len(storage)):
+                        storage[i] = 0xCD
+                for col, size in enumerate(sizes):
+                    ctypes.memmove(
+                        int(dst.extract_addrs(ids)[0, col]),
+                        int(src.extract_addrs(ids)[0, col]),
+                        size,
+                    )
+                for states, stride in page_strides.items():
+                    self.assertEqual(
+                        bytes(dest_storages[states][:stride]), b"\xcd" * stride
+                    )
+                    self.assertEqual(
+                        bytes(dest_storages[states][stride:]),
+                        bytes(source_storages[states][stride:]),
+                    )
+                with self.assertRaises(ValueError):
+                    src.segment_tensor_size_list(32, 64)
+                with self.assertRaises(ValueError):
+                    src.extract_addrs_with_offsets(
+                        ids, 64, __import__("numpy").array([32])
+                    )
+
     def test_request_hasher_versions_v41_packed_layout_only(self):
         # RequestHasher now lives in its own module upstream (#1326); only the
         # class node is executed so the test stays free of vLLM imports.
@@ -396,6 +463,38 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 0,
             ).meta_bytes,
         )
+
+        spec = types.SimpleNamespace(
+            block_size=64,
+            tokens_per_state=1,
+            state_content_size_bytes=584,
+            prefix_replay_tokens=0,
+        )
+        group = types.SimpleNamespace(kv_cache_spec=spec, layer_names=("l0",))
+        kv_config = types.SimpleNamespace(kv_cache_groups=[group])
+        fingerprint = hasher(config((1, 2)), 0, kv_config).meta_bytes
+        self.assertNotEqual(fingerprint, hasher(config((1, 2)), 0).meta_bytes)
+        spec.state_content_size_bytes = 528
+        self.assertNotEqual(
+            fingerprint, hasher(config((1, 2)), 0, kv_config).meta_bytes
+        )
+        spec.state_content_size_bytes = 584
+        spec.prefix_replay_tokens = 128
+        self.assertNotEqual(
+            fingerprint, hasher(config((1, 2)), 0, kv_config).meta_bytes
+        )
+        spec.prefix_replay_tokens = 0
+        kv_config.kv_cache_tensors = [
+            types.SimpleNamespace(
+                layers=["l0"], layer_stride=37440, block_stride=37440, offset=0
+            )
+        ]
+        group.kv_cache_spec = types.SimpleNamespace(
+            block_size=64, kv_cache_specs={"l0": spec}
+        )
+        worker_hash = hasher(config((1, 2)), 0, kv_config).meta_bytes
+        group.kv_cache_spec = spec
+        self.assertEqual(worker_hash, hasher(config((1, 2)), 0, kv_config).meta_bytes)
         self.assertNotEqual(
             v41.meta_bytes,
             hasher(
@@ -666,13 +765,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 requests_meta=request_meta,
                 fa_store=object(),
                 wa_store=object(),
+                window_group_ids=[1],
                 _rank_consistency=Rank(),
                 group_metas={},
                 _record_counter=lambda *_args: None,
                 _prefetch_hit_key_hotness=lambda *_args: None,
                 request_block_hasher=lambda request: [
-                    bytes([index])
-                    for index in range(len(request.all_token_ids) // 32)
+                    bytes([index]) for index in range(len(request.all_token_ids) // 32)
                 ],
             )
             request = types.SimpleNamespace(
@@ -779,6 +878,169 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         self.assertEqual(self_obj.hash_block_size, 32)
         self.assertEqual(sorted(self_obj.transient_group_ids), [2])
         self.assertEqual(self_obj.group_metas[2].tail_blocks, 0)
+
+    def test_bounded_replay_excludes_window_snapshots_and_keeps_group_indices(self):
+        methods = _load_hma_methods(
+            {"_init_group_metas", "_specs_for_group", "_derive_v41_file_sizes"}
+        )
+        methods["resolve_kv_cache_block_sizes"] = lambda *_args: (32, 32)
+        connector, groups, _ = _init_fake_connector(
+            methods, ratios=[0, 1, 2], features={}, resolver=None
+        )
+        groups[1].kv_cache_spec.prefix_cacheable = False
+        groups[1].kv_cache_spec.prefix_replay_tokens = 128
+        connector._specs_for_group = methods["_specs_for_group"]
+        methods["_init_group_metas"](connector)
+        self.assertEqual(connector.fa_group_ids, [0])
+        self.assertEqual(connector.window_group_ids, [])
+        self.assertEqual(connector.transient_group_ids, {1, 2})
+        self.assertEqual(connector.prefix_replay_tokens, 128)
+        self.assertEqual(connector.file_size["WA"], 0)
+        self.assertEqual(set(connector.group_metas), {0, 1, 2})
+
+    def test_padded_page_sizes_survive_scheduler_flattening_of_mixed_specs(self):
+        methods = _load_hma_methods(
+            {"_init_group_metas", "_specs_for_group", "_derive_v41_file_sizes"}
+        )
+        methods["resolve_kv_cache_block_sizes"] = lambda *_args: (64, 32)
+        main = types.SimpleNamespace(block_size=64, tokens_per_state=1)
+        indexer = types.SimpleNamespace(block_size=64, tokens_per_state=2)
+        names = ("l0", "l1.indexer.k_cache")
+        worker_spec = types.SimpleNamespace(
+            block_size=64, kv_cache_specs=dict(zip(names, (main, indexer)))
+        )
+        for spec in (worker_spec, main):
+            connector, groups, _ = _init_fake_connector(
+                methods, ratios=[0, 1, 2], features={}, resolver=None
+            )
+            groups[0].kv_cache_spec = spec
+            groups[0].layer_names = names
+            groups[1].kv_cache_spec.prefix_cacheable = False
+            groups[1].kv_cache_spec.prefix_replay_tokens = 128
+            connector._kv_cache_config.kv_cache_layout = "BLHNC"
+            connector._kv_cache_config.kv_cache_tensors = [
+                types.SimpleNamespace(layers=[name], layer_stride=size)
+                for name, size in zip(names, (37440, 4608))
+            ]
+            connector._specs_for_group = methods["_specs_for_group"]
+            methods["_init_group_metas"](connector)
+            self.assertEqual(connector.hash_block_size, 64)
+            self.assertEqual(connector.file_size, {"FA": 45056, "WA": 0})
+
+    def test_fa_only_prefix_can_be_found_and_saved_without_a_window_store(self):
+        methods = _load_hma_methods(
+            {"_create_wa_store", "_lookup_external_hit_blocks", "wait_for_save"}
+        )
+        methods["UCMFAWAConnectorMetadata"] = types.SimpleNamespace
+        methods["ucmmetrics"] = types.SimpleNamespace(update_stats=lambda _stats: None)
+        keys = [bytes([i]) for i in range(8)]
+        for tp_size, rank in ((1, 0), (8, 0), (8, 7)):
+            with self.subTest(tp_size=tp_size, rank=rank):
+                saved = []
+
+                def submit(label, _store, row_keys, *_args):
+                    saved.append((label, row_keys))
+                    return types.SimpleNamespace(key_count=len(row_keys))
+
+                request = types.SimpleNamespace(
+                    dump_keys=keys,
+                    dump_hash_start=0,
+                    dump_hash_end=8,
+                    dump_vllm_block_ids=(list(range(8)), []),
+                )
+                connector = types.SimpleNamespace(
+                    window_group_ids=[],
+                    fa_group_ids=[0],
+                    fa_store=object(),
+                    wa_store=None,
+                    _rank_consistency=types.SimpleNamespace(
+                        lookup_on_prefix=lambda _store, keys: len(keys) - 1
+                    ),
+                    _get_connector_metadata=lambda: types.SimpleNamespace(
+                        request_meta={"req": request}
+                    ),
+                    _poll_completed_dump_tasks=lambda: None,
+                    _extract_fa_ptr=lambda keys, *_args: __import__("numpy").zeros(
+                        (len(keys), 2), dtype="uint64"
+                    ),
+                    _get_dump_event_handle=lambda: 1,
+                    _submit_dump_task=submit,
+                    tp_size=tp_size,
+                    tp_rank=rank,
+                    tp_dump_tasks={},
+                    file_size={"FA": 4096, "WA": 0},
+                )
+                self.assertIsNone(methods["_create_wa_store"](connector, None))
+                self.assertEqual(
+                    methods["_lookup_external_hit_blocks"](connector, keys), 8
+                )
+                methods["wait_for_save"](connector)
+                start = len(keys) * rank // tp_size
+                end = len(keys) * (rank + 1) // tp_size
+                self.assertEqual(saved, [("FA", keys[start:end])])
+
+    def test_replay_chunks_do_not_dump_past_the_scheduler_computed_position(self):
+        methods = _load_hma_methods(
+            {
+                "build_connector_meta",
+                "_generate_dispatch_meta",
+                "_slice_group_block_ids",
+            }
+        )
+        methods["UCMFAWAConnectorMetadata"] = lambda requests, preempted: (
+            types.SimpleNamespace(request_meta=requests, preempted_req_ids=preempted)
+        )
+        request = types.SimpleNamespace(
+            ucm_block_ids=[bytes([i]) for i in range(8)],
+            total_hit_block_num=4,
+            hbm_hit_block_num=0,
+            token_processed=256,
+            num_token_ids=512,
+            vllm_block_ids=(),
+        )
+        connector = types.SimpleNamespace(
+            prefix_replay_tokens=128,
+            hash_block_size=64,
+            transient_group_ids={1},
+            window_group_ids=[],
+            group_metas={0: types.SimpleNamespace(token_block_size=64), 1: object()},
+            requests_meta={"req": request},
+            wa_dump_block_wise=True,
+        )
+        for name in ("_generate_dispatch_meta", "_slice_group_block_ids"):
+            setattr(connector, name, types.MethodType(methods[name], connector))
+        output = types.SimpleNamespace(
+            scheduled_new_reqs=[
+                types.SimpleNamespace(
+                    req_id="req",
+                    block_ids=(list(range(8)), []),
+                    num_computed_tokens=128,
+                )
+            ],
+            scheduled_cached_reqs=types.SimpleNamespace(req_ids=[]),
+            num_scheduled_tokens={"req": 64},
+            finished_req_ids=set(),
+            preempted_req_ids=set(),
+        )
+        dispatch = methods["build_connector_meta"](connector, output).request_meta[
+            "req"
+        ]
+        self.assertEqual(dispatch.load_keys, request.ucm_block_ids[:4])
+        self.assertEqual(dispatch.dump_keys, [])
+        self.assertEqual(request.token_processed, 192)
+        output.scheduled_new_reqs = []
+        for computed, expected in ((192, []), (256, [bytes([4])])):
+            output.scheduled_cached_reqs = types.SimpleNamespace(
+                req_ids=["req"],
+                new_block_ids=[None],
+                resumed_req_ids=set(),
+                num_computed_tokens=[computed],
+            )
+            dispatch = methods["build_connector_meta"](connector, output).request_meta[
+                "req"
+            ]
+            self.assertEqual(dispatch.dump_keys, expected)
+            self.assertEqual(request.token_processed, computed + 64)
 
     def test_invalid_resolver_result_fails_closed(self):
         methods = _load_hma_methods({"_init_group_metas"})
