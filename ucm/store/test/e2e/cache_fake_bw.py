@@ -561,7 +561,6 @@ def mla_dump_indexes(dump_block_start: int, device_id: int):
 
 def dump(
     epoch: int,
-    record_idx: int,
     device: str,
     device_id: int,
     worker,
@@ -569,9 +568,8 @@ def dump(
     warmup: bool,
 ) -> tuple[float, int]:
     if mla_dump_striping:
-        # Treat successive benchmark records as batches of one long request.
-        # The absolute start rotates the owner across TP ranks, as in vLLM.
-        indexes = mla_dump_indexes(record_idx * block_number, device_id)
+        # Each benchmark record has independent block IDs and starts at block 0.
+        indexes = mla_dump_indexes(0, device_id)
         block_ids = [block_ids[index] for index in indexes]
         if not block_ids:
             return 0.0, 0
@@ -760,7 +758,7 @@ def worker_loop(
         warmup = record_idx < warmup_epoch_number
         epoch = record_idx if warmup else record_idx - warmup_epoch_number
         cost, byte_count = dump(
-            epoch, record_idx, device, device_id, worker, block_ids, warmup
+            epoch, device, device_id, worker, block_ids, warmup
         )
         if not warmup:
             index = device_id * dump_epoch_number + epoch
