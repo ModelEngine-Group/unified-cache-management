@@ -295,6 +295,64 @@ def get_topology_cpu_pools(npu_ids, available_cpu_cores):
     return cpu_pools
 
 
+def get_cache_numa_nodes():
+    """Use an unambiguous NPU affinity; otherwise use cache.v2 rank fallback."""
+    if device_type != "npu":
+        return [None] * worker_number
+
+    npu_ids = get_visible_npu_ids()
+    command_env = os.environ.copy()
+    command_env.update({"LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"})
+    try:
+        result = subprocess.run(
+            ["lscpu", "-e=CPU,NODE"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=command_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"warning: failed to map NPU affinity CPUs to NUMA nodes: {error}")
+        return [None] * worker_number
+    if result.returncode != 0:
+        print(f"warning: lscpu NUMA query failed: {result.stderr.strip()}")
+        return [None] * worker_number
+
+    cpu_to_node = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and all(part.lstrip("-").isdigit() for part in parts):
+            cpu_id, numa_node = map(int, parts)
+            if numa_node >= 0:
+                cpu_to_node[cpu_id] = numa_node
+
+    # Use the full topology, not the benchmark process's possibly restricted
+    # CPU set, when deciding whether an NPU maps to exactly one NUMA node.
+    cpu_pools = get_topology_cpu_pools(npu_ids, cpu_to_node)
+    if cpu_pools is None:
+        print("Cache NUMA plan: NPU affinity unavailable; using rank fallback")
+        return [None] * worker_number
+
+    numa_nodes = []
+    for worker_id, cpu_pool in enumerate(cpu_pools):
+        nodes = {cpu_to_node.get(cpu_id) for cpu_id in cpu_pool}
+        numa_node = (
+            next(iter(nodes)) if len(nodes) == 1 and None not in nodes else None
+        )
+        numa_nodes.append(numa_node)
+        placement = (
+            f"affinity node {numa_node}"
+            if numa_node is not None
+            else "rank fallback"
+        )
+        print(
+            f"Cache NUMA plan: worker={worker_id}, npu={npu_ids[worker_id]}, "
+            f"{placement}"
+        )
+    return numa_nodes
+
+
 def get_fallback_numa_cpu_pools(available_cpu_cores):
     command_env = os.environ.copy()
     command_env.update({"LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"})
@@ -405,7 +463,11 @@ def configure_ucm_logging():
 
 
 def create_cache_worker(
-    pipeline_store_cls, unique_id: str, device_id: int, store_cpu_affinity_cores
+    pipeline_store_cls,
+    unique_id: str,
+    device_id: int,
+    store_cpu_affinity_cores,
+    cache_numa_node,
 ):
     config = {}
     config["store_pipeline"] = store_pipeline
@@ -417,10 +479,15 @@ def create_cache_worker(
     config["io_direct"] = True
     config["cache_load_backend_only"] = True
     config["cache_buffer_capacity_gb"] = 32
+    config["local_rank_size"] = worker_number
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
+    if cache_numa_node is not None:
+        config["cache_detected_numa_node"] = cache_numa_node
+    else:
+        config["cache_fallback_numa_rank"] = device_id
     if store_cpu_affinity_cores:
         config["cpu_affinity_cores"] = store_cpu_affinity_cores
     return pipeline_store_cls(config)
@@ -439,6 +506,7 @@ def create_cache_scheduler(
     config["share_buffer_enable"] = share_buffer_enable
     config["io_direct"] = True
     config["cache_buffer_capacity_gb"] = 32
+    config["local_rank_size"] = worker_number
     config["cache_sdma_direct"] = cache_sdma_direct
     config["timeout_ms"] = 30000
     config["device_id"] = -1
@@ -577,6 +645,7 @@ def worker_loop(
     unique_id: str,
     worker_cpu_affinity_cores,
     store_cpu_affinity_cores,
+    cache_numa_node,
     block_id_records,
     backend_block_ids,
     dump_cost_records,
@@ -603,7 +672,11 @@ def worker_loop(
     )
     device = setup_device(device_id)
     worker = create_cache_worker(
-        UcmPipelineStore, unique_id, device_id, store_cpu_affinity_cores
+        UcmPipelineStore,
+        unique_id,
+        device_id,
+        store_cpu_affinity_cores,
+        cache_numa_node,
     )
     scheduler = (
         create_cache_scheduler(UcmPipelineStore, unique_id, store_cpu_affinity_cores)
@@ -733,6 +806,7 @@ if __name__ == "__main__":
         block_id for block_ids in backend_block_id_records for block_id in block_ids
     ]
     worker_cpu_core_groups, store_cpu_core_groups = make_cpu_affinity_core_groups()
+    cache_numa_nodes = get_cache_numa_nodes()
     dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
     )
@@ -752,6 +826,7 @@ if __name__ == "__main__":
                     unique_id,
                     worker_cpu_core_groups[device_id],
                     store_cpu_core_groups[device_id],
+                    cache_numa_nodes[device_id],
                     worker_block_id_records[device_id],
                     backend_block_ids if device_id == 0 else None,
                     dump_cost_records,
