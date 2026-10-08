@@ -16,11 +16,11 @@ from ucm.integration.vllm.perf_counter import PerfCounters
 def get_device():
     """自动选择计算设备"""
     if torch.npu.is_available():
-        return torch.device(“npu:0”)
+        return torch.device("npu:0")
     elif torch.cuda.is_available():
-        return torch.device(“cuda:0”)
+        return torch.device("cuda:0")
     else:
-        return torch.device(”cpu“)
+        return torch.device("cpu")
 
 
 def get_attention_weights_batched(
@@ -256,7 +256,7 @@ def _save_sparse_block_table_impl(
 
         results[hash_val] = topk_indices
 
-        rank = torch_npu.npu.current_device()
+        rank = torch_.npu.current_device()
         filename = f"union_blocks_l{layer_idx}_rank{rank}_hash{hash_val}.pkl"
 
     end_time = time.perf_counter()
