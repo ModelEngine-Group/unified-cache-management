@@ -29,7 +29,8 @@
 namespace UC::Dram {
 
 TransportManagerBackend::TransportManagerBackend(TransportManagerBackendOptions options)
-    : options_(std::move(options)), manager_(options_.localTransportManagerId)
+    : options_(std::move(options)),
+      manager_(options_.localAddr.ToString(), options_.managerMaxThreads)
 {
 }
 
@@ -38,16 +39,13 @@ TransportManagerBackend::~TransportManagerBackend() = default;
 Status TransportManagerBackend::Init()
 {
     if (options_.deviceId < 0 || options_.connectTimeoutMs <= 0 ||
-        options_.transferTimeoutMs <= 0 || options_.localHost.empty() ||
-        options_.localControlHost.empty() || options_.localControlPort == 0 ||
-        options_.localTransportManagerId.empty() || options_.nodes.empty()) {
+        options_.transferTimeoutMs <= 0 || options_.localAddr.host.empty() ||
+        options_.localAddr.port == 0 || options_.nodes.empty()) {
         return Status::InvalidParam("invalid TransportManager backend options");
     }
-    localControl_ = transport::Endpoint{options_.localControlHost, options_.localControlPort};
-
     // TODO: make transport backend configurable
     transport::HixlInitAttrs attrs;
-    attrs.ip = options_.localHost;
+    attrs.ip = options_.localAddr.host;
     transport::HixlInitAttrs::Instance instance{-1, options_.deviceId, {}};
     if (options_.hixlDeviceListenPort > 0) {
         instance.options["GlobalResourceConfig"] =
@@ -59,11 +57,9 @@ Status TransportManagerBackend::Init()
     attrs.instances.push_back(std::move(instance));
     attrs.connect_timeout_ms = options_.connectTimeoutMs;
     attrs.transfer_timeout_ms = options_.transferTimeoutMs;
-    auto transportStatus = manager_.Init();
+    auto transportStatus = manager_.InstallTransport(transport::TransportProtocol::Hixl, attrs);
     if (transportStatus.Failure()) { return transportStatus; }
-    transportStatus = manager_.InstallTransport(transport::TransportProtocol::Hixl, attrs);
-    if (transportStatus.Failure()) { return transportStatus; }
-    transportStatus = control_.Init(localControl_);
+    transportStatus = manager_.Init();
     if (transportStatus.Failure()) { return transportStatus; }
     for (const auto& node : options_.nodes) {
         if (!nodes_.emplace(node.nodeId, node).second) {
@@ -82,7 +78,7 @@ Expected<MemoryHandle> TransportManagerBackend::RegisterMemory(void* address, st
     region.type = type == MemoryRegionType::DEVICE ? transport::MemoryType::Device
                                                    : transport::MemoryType::Host;
     region.device_id = type == MemoryRegionType::DEVICE ? options_.deviceId : -1;
-    transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
+    transport::MemoryHandle handle{};
     const auto status = manager_.RegisterMemory(region, handle);
     if (status.Failure()) { return status; }
     return static_cast<MemoryHandle>(handle);
@@ -100,8 +96,7 @@ TransmitCompleted TransportManagerBackend::Transmit(const ::UC::Dram::Transmit& 
         return TransmitCompleted{command.token, Status::InvalidParam("invalid transmit")};
     }
     try {
-        const transport::Endpoint endpoint{found->second.controlHost, found->second.controlPort};
-        const auto status = control_.Send(endpoint, command.payload.data(), command.payload.size());
+        const auto status = manager_.Send(found->second.peerAddr, command.payload);
         if (status.Success()) { return TransmitCompleted{command.token, Status::OK()}; }
         return TransmitCompleted{command.token, status};
     } catch (...) {
@@ -111,14 +106,11 @@ TransmitCompleted TransportManagerBackend::Transmit(const ::UC::Dram::Transmit& 
 
 Status TransportManagerBackend::Connect(const ::UC::Dram::Connect& command) noexcept
 {
-    if (command.transportManagerId.empty()) {
+    if (command.peerAddr.empty()) {
         return Status::InvalidParam("remote TransportManager id is missing");
     }
     try {
-        auto status = manager_.ExchangeMetadata(command.transportManagerId);
-        if (status.Failure()) { return status; }
-        status = manager_.Connect(transport::TransportProtocol::Hixl, command.transportManagerId);
-        return status;
+        return manager_.Connect(transport::TransportProtocol::Hixl, command.peerAddr);
     } catch (...) {
         return Status::Error("TransportManager connect threw an exception");
     }
@@ -131,8 +123,7 @@ Status TransportManagerBackend::Fence(const ::UC::Dram::FenceEpoch& command) noe
     try {
         // The transport Manager contract guarantees that successful Disconnect
         // synchronously revokes old-connection access to local registered memory.
-        return manager_.Disconnect(transport::TransportProtocol::Hixl,
-                                   found->second.transportManagerId);
+        return manager_.Disconnect(transport::TransportProtocol::Hixl, found->second.peerAddr);
     } catch (...) {
         return Status::Error("TransportManager disconnect threw an exception");
     }
@@ -142,12 +133,8 @@ void TransportManagerBackend::Stop()
 {
     std::lock_guard lock(stopMutex_);
     if (stopped_) { return; }
-    const auto controlStatus = control_.Shutdown();
     const auto managerStatus = manager_.Shutdown();
     stopped_ = true;
-    if (controlStatus.Failure()) {
-        UC_ERROR("DramStore transport control shutdown failed: {}", controlStatus);
-    }
     if (managerStatus.Failure()) {
         UC_ERROR("DramStore transport manager shutdown failed: {}", managerStatus);
     }

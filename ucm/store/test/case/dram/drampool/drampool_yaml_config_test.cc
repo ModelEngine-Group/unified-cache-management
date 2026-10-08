@@ -64,12 +64,7 @@ std::string ValidRuntimeYaml()
   device_ids: [0, 2]
   hixl:
     listen_port: 26666
-    enable_cs: true
-  endpoints:
-    - two_sided: "127.0.0.1:9000"
-      one_sided: "127.0.0.1:4501"
-    - two_sided: "127.0.0.1:9001"
-      one_sided: "127.0.0.1:4502"
+    enable_hixl_cs: true
 queue:
   request_depth: 65536
   completion_depth: 65536
@@ -113,7 +108,6 @@ DramPoolConfig LaunchConfig()
     config.addr.host = "127.0.0.1";
     config.addr.port = 9000;
     config.poolSizeGb = 7;
-    config.nics = {"mlx5_0"};
     return config;
 }
 
@@ -137,10 +131,6 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.runtimeConfigPath, "launch-selected.yaml");
     EXPECT_EQ(config.addr.port, 9000U);
     EXPECT_EQ(config.poolSizeGb, 7U);
-    EXPECT_EQ(config.nics, (std::vector<std::string>{"mlx5_0"}));
-    ASSERT_EQ(config.twoSidedToOneSided.size(), 2U);
-    EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
-    EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9001"), "127.0.0.1:4502");
     EXPECT_EQ(config.transportDeviceIds, (std::vector<std::int32_t>{0, 2}));
     EXPECT_EQ(config.hixlListenPort, 26666U);
     EXPECT_TRUE(config.enableHixlCs);
@@ -232,7 +222,6 @@ TEST(DramPoolRuntimeYamlTest, FailureDoesNotPartiallyModifyConfiguration)
     EXPECT_TRUE(ParseYamlConfig(yaml.Path().string(), config).Failure());
 
     EXPECT_EQ(config.transportDeviceIds, (std::vector<std::int32_t>{37, 38}));
-    EXPECT_TRUE(config.twoSidedToOneSided.empty());
     EXPECT_EQ(config.poolSizeGb, 7U);
 }
 
@@ -251,14 +240,6 @@ TEST_P(InvalidRuntimeYamlTest, RejectsInvalidValue)
 INSTANTIATE_TEST_SUITE_P(
     Validation, InvalidRuntimeYamlTest,
     testing::Values(
-        InvalidYamlCase{"MissingLocalEndpoint", "two_sided: \"127.0.0.1:9000\"",
-                        "two_sided: \"127.0.0.1:9010\"", "no two_sided entry for --addr"},
-        InvalidYamlCase{"DuplicateTwoSided", "two_sided: \"127.0.0.1:9001\"",
-                        "two_sided: \"127.0.0.1:9000\"", "duplicate transport two_sided"},
-        InvalidYamlCase{"DuplicateOneSided", "one_sided: \"127.0.0.1:4502\"",
-                        "one_sided: \"127.0.0.1:4501\"", "duplicate transport one_sided"},
-        InvalidYamlCase{"EndpointInBothRoles", "one_sided: \"127.0.0.1:4502\"",
-                        "one_sided: \"127.0.0.1:9000\"", "both two_sided and one_sided"},
         InvalidYamlCase{"EmptyDeviceIds", "device_ids: [0, 2]", "device_ids: []",
                         "must not be empty"},
         InvalidYamlCase{"NegativeDevice", "device_ids: [0, 2]", "device_ids: [-1, 2]",

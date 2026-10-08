@@ -8,6 +8,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <memory>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -16,6 +17,9 @@
 #include <vector>
 #include "kv_metrics/metrics.h"
 #include "kv_metrics/standalone_metrics_backend.h"
+#include "task/task_manager.h"
+#include "task/trans_task_executor.h"
+#include "task/trans_task_manager.h"
 
 namespace kv::metrics {
 namespace {
@@ -277,6 +281,172 @@ TEST_F(StandaloneMetricsTest, DoesNotLoseUpdatesDuringConcurrentFlush)
     EXPECT_NE(response.find("kv:test_histogram_count " + std::to_string(kExpectedUpdates)),
               std::string::npos);
 
+    Shutdown();
+}
+
+TEST_F(StandaloneMetricsTest, ExposesKvTestCoreBuiltInMetrics)
+{
+    StandaloneMetricsConfig config;
+    config.port = FindUnusedLoopbackPort();
+    ASSERT_NE(config.port, 0);
+
+    std::string error;
+    ASSERT_TRUE(SetUpStandaloneMetrics(config, &error)) << error;
+    const MetricUpdate updates[] = {
+        {KV_METRIC("kv_client_store_requests_total"),                1.0   },
+        {KV_METRIC("kv_client_store_entries_total"),                 8.0   },
+        {KV_METRIC("kv_client_wait_errors_total"),                   1.0   },
+        {KV_METRIC("kv_client_task_e2e_duration_seconds"),           0.002 },
+        {KV_METRIC("kv_transport_task_send_call_duration_seconds"),  0.0001},
+        {KV_METRIC("kv_transport_task_completion_duration_seconds"), 0.001 },
+        {KV_METRIC("kv_transport_task_e2e_duration_seconds"),        0.002 },
+    };
+    UpdateStats(updates, std::size(updates));
+    Flush();
+
+    const auto response = HttpGet(config.port, config.metricsPath);
+    EXPECT_NE(response.find("kv:kv_client_store_requests_total 1"), std::string::npos);
+    EXPECT_NE(response.find("kv:kv_client_store_entries_total 8"), std::string::npos);
+    EXPECT_NE(response.find("kv:kv_client_wait_errors_total 1"), std::string::npos);
+    EXPECT_NE(response.find("kv:kv_client_task_e2e_duration_seconds_count 1"), std::string::npos);
+    EXPECT_NE(response.find("kv:kv_transport_task_send_call_duration_seconds_count 1"),
+              std::string::npos);
+    EXPECT_NE(response.find("kv:kv_transport_task_completion_duration_seconds_count 1"),
+              std::string::npos);
+    EXPECT_NE(response.find("kv:kv_transport_task_e2e_duration_seconds_count 1"),
+              std::string::npos);
+    Shutdown();
+}
+
+TEST_F(StandaloneMetricsTest, ExposesLabeledMetricInstances)
+{
+    StandaloneMetricsConfig config;
+    config.port = FindUnusedLoopbackPort();
+    ASSERT_NE(config.port, 0);
+
+    std::string error;
+    ASSERT_TRUE(SetUpStandaloneMetrics(config, &error)) << error;
+    const MetricLabels labels{
+        {"node_id", "1"}
+    };
+    ASSERT_TRUE(RegisterMetricLabels("kv_transport_node_task_send_duration_seconds", labels));
+    CachedMetric metric{"kv_transport_node_task_send_duration_seconds", labels};
+    UpdateStats(metric, 0.001);
+    Flush();
+
+    const auto response = HttpGet(config.port, config.metricsPath);
+    EXPECT_NE(
+        response.find("kv:kv_transport_node_task_send_duration_seconds_count{node_id=\"1\"} 1"),
+        std::string::npos);
+    Shutdown();
+}
+
+TEST(MetricTimerTest, RespectsBackendAvailability)
+{
+    Shutdown();
+    EXPECT_FALSE(StartMetricTimer().has_value());
+    EXPECT_FALSE(ElapsedSeconds(MetricTimer{}).has_value());
+    auto backend = std::make_shared<RecordingKvMetricsBackend>();
+    ASSERT_TRUE(InstallBackend(backend));
+    const auto timer = StartMetricTimer();
+    EXPECT_TRUE(timer.has_value());
+    EXPECT_TRUE(ElapsedSeconds(timer).has_value());
+    Shutdown();
+}
+
+TEST(ClientTaskMetricsTest, RecordsSubmitToCompletionOnce)
+{
+    auto backend = std::make_shared<RecordingKvMetricsBackend>();
+    std::string error;
+    ASSERT_TRUE(InstallBackend(backend, &error)) << error;
+
+    auto task = std::make_shared<::kv::ClientTask>();
+    task->submittedAt = std::chrono::steady_clock::now() - std::chrono::milliseconds(5);
+    task->enqueuedAt = std::chrono::steady_clock::now();
+    ::kv::ClientTaskManager::Finalize(task);
+    ::kv::ClientTaskManager::Finalize(task);
+
+    ASSERT_EQ(backend->recordedCount, 1U);
+    EXPECT_EQ(backend->recordedUpdates[0].metric->Name(), "kv_client_task_e2e_duration_seconds");
+    EXPECT_GT(backend->recordedUpdates[0].value, 0.004);
+    EXPECT_TRUE(task->Done());
+    Shutdown();
+}
+
+TEST(TransportTaskMetricsTest, RecordsSubmitToCompletion)
+{
+    auto backend = std::make_shared<RecordingKvMetricsBackend>();
+    std::string error;
+    ASSERT_TRUE(InstallBackend(backend, &error)) << error;
+
+    auto task = std::make_shared<::kv::TransportTask>();
+    task->submittedAt = std::chrono::steady_clock::now() - std::chrono::milliseconds(5);
+    ::kv::TransportTaskManager manager;
+    manager.NotifyCompletion(task);
+
+    ASSERT_EQ(backend->recordedCount, 1U);
+    EXPECT_EQ(backend->recordedUpdates[0].metric->Name(), "kv_transport_task_e2e_duration_seconds");
+    EXPECT_GT(backend->recordedUpdates[0].value, 0.004);
+    Shutdown();
+}
+
+TEST(TransportTaskMetricsTest, PreSendFailureDoesNotRecordSendCompletion)
+{
+    Shutdown();
+    auto backend = std::make_shared<RecordingKvMetricsBackend>();
+    ASSERT_TRUE(InstallBackend(backend));
+
+    const ::kv::TransportConfig config;
+    const std::shared_ptr<::kv::TransProvider> provider;
+    const std::unique_ptr<::kv::ConnectionManager> connectionManager;
+    ::kv::TransportTaskExecutor executor(config, provider, connectionManager);
+    auto task = std::make_shared<::kv::TransportTask>();
+    task->opType = ::kv::AsuOpType::LOAD;
+    task->submittedAt = std::chrono::steady_clock::now();
+    bool sendCompleteNotified = false;
+    task->onSendComplete = [&] { sendCompleteNotified = true; };
+
+    EXPECT_TRUE(executor.Execute(task));
+    EXPECT_FALSE(sendCompleteNotified);
+    EXPECT_FALSE(task->sendReturned.load());
+
+    ::kv::TransportTaskManager manager;
+    manager.NotifyCompletion(task);
+    EXPECT_EQ(backend->recordedCount, 1U);
+    if (backend->recordedCount != 0) {
+        EXPECT_EQ(backend->recordedUpdates[0].metric->Name(),
+                  "kv_transport_task_e2e_duration_seconds");
+    }
+    Shutdown();
+}
+
+TEST(ClientTaskMetricsTest, UndispatchedChildDoesNotNotifySendCompletion)
+{
+    Shutdown();
+    auto backend = std::make_shared<RecordingKvMetricsBackend>();
+    ASSERT_TRUE(InstallBackend(backend));
+
+    auto task = std::make_shared<::kv::ClientTask>();
+    task->submittedAt = std::chrono::steady_clock::now();
+    task->enqueuedAt = task->submittedAt;
+    task->remainingTransportTasks.store(1);
+    task->remainingTransportSendTasks.store(1);
+    auto child = std::make_shared<::kv::TransportTask>();
+    bool sendCompleteNotified = false;
+    child->onSendComplete = [&] { sendCompleteNotified = true; };
+    task->transportTasks.push_back(child);
+
+    ::kv::ClientTaskManager::CompleteUndispatchedTransportTasks(
+        task, 0, ::kv::Status::Error(::kv::StatusCode::CONNECTION_ERROR, "submit failed"));
+
+    EXPECT_FALSE(sendCompleteNotified);
+    EXPECT_EQ(task->remainingTransportSendTasks.load(), 1U);
+    EXPECT_TRUE(task->Done());
+    EXPECT_EQ(backend->recordedCount, 1U);
+    if (backend->recordedCount != 0) {
+        EXPECT_EQ(backend->recordedUpdates[0].metric->Name(),
+                  "kv_client_task_e2e_duration_seconds");
+    }
     Shutdown();
 }
 

@@ -311,14 +311,28 @@ public:
             error = "histogram buckets must be sorted and unique: " + descriptor.name;
             return false;
         }
-        if (metricIds_.find(descriptor.name) != metricIds_.end()) {
-            error = "duplicate metric name: " + descriptor.name;
+        const auto metricKey = MetricKey(descriptor.name, descriptor.labels);
+        if (metricIds_.find(metricKey) != metricIds_.end()) {
+            error = "duplicate metric name and labels: " + descriptor.name;
             return false;
         }
-        metricIds_.emplace(descriptor.name, descriptors_.size());
+        metricIds_.emplace(metricKey, descriptors_.size());
         descriptors_.emplace_back(descriptor);
         snapshot_.emplace_back(MakeMetricState(descriptor));
         return true;
+    }
+
+    bool RegisterMetricLabels(const std::string& name, const MetricLabels& labels)
+    {
+        const auto base = std::find_if(
+            descriptors_.begin(), descriptors_.end(), [&](const MetricDescriptor& descriptor) {
+                return descriptor.name == name && descriptor.labels.empty();
+            });
+        if (base == descriptors_.end()) { return false; }
+        auto descriptor = *base;
+        descriptor.labels = labels;
+        std::string error;
+        return Register(descriptor, error);
     }
 
     void StartAggregation(std::uint32_t intervalMs)
@@ -347,7 +361,7 @@ public:
     std::size_t ResolveMetric(CachedMetric& metric)
     {
         auto* binding = static_cast<SlotBinding*>(metric.Resolve([&] {
-            const auto iter = metricIds_.find(metric.Name());
+            const auto iter = metricIds_.find(MetricKey(metric.Name(), metric.Labels()));
             return std::make_unique<SlotBinding>(iter == metricIds_.end() ? kInvalidMetricId
                                                                           : iter->second);
         }));
@@ -391,22 +405,41 @@ public:
                 for (std::size_t index = 0; index < descriptor.buckets.size(); ++index) {
                     cumulative += state.bucketCounts[index];
                     output << fullName << "_bucket"
-                           << RenderLabels(labels, "le", FormatNumber(descriptor.buckets[index]))
+                           << RenderLabels(MergeLabels(labels, descriptor.labels), "le",
+                                           FormatNumber(descriptor.buckets[index]))
                            << ' ' << cumulative << '\n';
                 }
-                output << fullName << "_bucket" << RenderLabels(labels, "le", "+Inf") << ' '
+                output << fullName << "_bucket"
+                       << RenderLabels(MergeLabels(labels, descriptor.labels), "le", "+Inf") << ' '
                        << state.count << '\n';
-                output << fullName << "_sum" << RenderLabels(labels) << ' ' << state.sum << '\n';
-                output << fullName << "_count" << RenderLabels(labels) << ' ' << state.count
+                output << fullName << "_sum" << RenderLabels(MergeLabels(labels, descriptor.labels))
+                       << ' ' << state.sum << '\n';
+                output << fullName << "_count"
+                       << RenderLabels(MergeLabels(labels, descriptor.labels)) << ' ' << state.count
                        << '\n';
             } else {
-                output << fullName << RenderLabels(labels) << ' ' << state.value << '\n';
+                output << fullName << RenderLabels(MergeLabels(labels, descriptor.labels)) << ' '
+                       << state.value << '\n';
             }
         }
         return output.str();
     }
 
 private:
+    static std::string MetricKey(const std::string& name, const MetricLabels& labels)
+    {
+        std::ostringstream output;
+        output << name;
+        for (const auto& [key, value] : labels) { output << '\x1f' << key << '=' << value; }
+        return output.str();
+    }
+
+    static MetricLabels MergeLabels(const MetricLabels& base, const MetricLabels& extra)
+    {
+        auto result = base;
+        result.insert(extra.begin(), extra.end());
+        return result;
+    }
     static std::uint64_t NextCollectorGeneration() noexcept
     {
         static std::atomic<std::uint64_t> generation{1};
@@ -876,6 +909,10 @@ public:
     void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept override
     {
         if (collector_) { collector_->UpdateStats(updates, count); }
+    }
+    bool RegisterMetricLabels(const std::string& name, const MetricLabels& labels) override
+    {
+        return collector_ != nullptr && collector_->RegisterMetricLabels(name, labels);
     }
     void Flush() override
     {

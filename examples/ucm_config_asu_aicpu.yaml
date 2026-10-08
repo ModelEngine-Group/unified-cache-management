@@ -1,0 +1,40 @@
+# AICPU ASU backend for vLLM / vLLM-Ascend. No external conf/view is required.
+# Replace the sample server and local device addresses before running.
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "ASU"
+      asu_mode: "client"
+      asu_client_id: "ucm-vllm-asu-aicpu"
+      asu_ids: [1]
+      asu_trans_provider_backend: "aicpu"
+
+      # These lists describe remote ASUs and are paired by index.
+      asu_ips: ["eid:ffeeddccbbaa99887766554433221100"]
+      asu_ports: [19001]
+
+      # Sole protocol selector: ubc_ctp or ubg. UBG requires EID addresses;
+      # the paired staged server must also support the selected data path.
+      asu_aicpu_hcomm_protocol: "ubc_ctp"
+      # List indices are ACL logical device IDs, not physical IDs or ASU IDs.
+      # CTP accepts IP/EID; UBG requires EID. No automatic discovery is performed.
+      asu_aicpu_local_addrs:
+        - "eid:00112233445566778899aabbccddeeff"
+        - "eid:00112233445566778899aabbccddee00"
+      # Do not set device_id here; each TP worker uses its current ACL logical device.
+      asu_shared_provider: 0
+      kv_ns_ids: [1]
+      asu_sc: false
+
+      asu_router_type: "RING_HASH"
+      asu_ring_hash_virtual_node_count: 128
+
+      # Client/transport and Store waits; query wait; HCOMM/HIXL send wait.
+      asu_wait_timeout_ms: 50000
+      asu_query_timeout_ms: 50000
+      asu_aicpu_send_timeout_ms: 30000
+      asu_client_max_inflight_tasks: 1024
+
+enable_event_sync: true
+use_layerwise: false
+persist_token_threshold: 0

@@ -39,7 +39,7 @@
 namespace UC::Dram {
 namespace {
 using namespace std::chrono_literals;
-NodeEndpoint Peer() { return {1, "127.0.0.1", 10000, "mock"}; }
+NodeEndpoint Peer() { return {1, "mock"}; }
 
 Request DumpRequest(std::uintptr_t handle = 123)
 {

@@ -31,7 +31,7 @@ void PatchFakeBackendTransportConfig(kv::TransportConfig& config,
     config.attrs.try_emplace("dspec", "0");
     config.attrs.try_emplace("lr", "false");
     config.attrs["fake_backend.path"] = fakeConfig.storePath;
-    config.attrs["fake_backend.latency_ms"] = std::to_string(fakeConfig.latencyMs);
+    config.attrs["fake_backend.latency_us"] = std::to_string(fakeConfig.latencyUs);
     config.attrs["fake_backend.worker_threads"] = std::to_string(fakeConfig.workerThreads);
     config.attrs["fake_backend.complete_immediately"] =
         fakeConfig.completeImmediately ? "true" : "false";
@@ -55,6 +55,11 @@ bool HasFakeProvider(const KvTestConfig& config)
 bool IsAivProviderMode(const KvTestConfig& config)
 {
     return HasProvider(config, kv::TransProviderType::AIV);
+}
+
+bool IsAicpuProviderMode(const KvTestConfig& config)
+{
+    return HasProvider(config, kv::TransProviderType::AICPU);
 }
 
 DeviceAllocationPolicy AllocationPolicyForConfig(const KvTestConfig& config)

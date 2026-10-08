@@ -108,16 +108,6 @@ Status ParseBlockProportions(const std::vector<std::string>& values,
     return Status::OK();
 }
 
-Status ValidateNics(const std::vector<std::string>& nics)
-{
-    for (const auto& nic : nics) {
-        if (Dram::Trim(nic).empty()) {
-            return Status::InvalidParam("--nics contains an empty name");
-        }
-    }
-    return Status::OK();
-}
-
 Status ValidatePoolSize(std::uint64_t poolSizeGb)
 {
     if (poolSizeGb == 0) {
@@ -229,12 +219,11 @@ std::string BuildUsage(const char* program)
 {
     const std::string name = program == nullptr ? "drampool" : program;
     return "Usage: " + name +
-           " --addr <IP>:<PORT> --nics <NAME>... --pool-size-gb <SIZE>"
+           " --addr <IP>:<PORT> --pool-size-gb <SIZE>"
            " --kvcache-block-sizes <SIZE>... [options]\n"
            "Required options:\n"
            "  --addr <IP>:<PORT>                 DramPool service address for KV control "
            "messages.\n"
-           "  --nics <NAME>...                   RDMA NIC names for pinned memory registration.\n"
            "  --pool-size-gb <SIZE>              Local DRAM capacity contributed to the pool.\n"
            "  --kvcache-block-sizes <SIZE>...    Supported fixed KVCache block sizes.\n"
            "Optional options:\n"
@@ -251,7 +240,6 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
     config = DramPoolConfig{};
 
     bool hasAddr = false;
-    bool hasNics = false;
     bool hasPoolSize = false;
     bool hasBlockSizes = false;
     bool hasBlockProportions = false;
@@ -293,16 +281,6 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
             if (status.Failure()) { return status; }
             config.addr = std::move(endpoint);
             hasAddr = true;
-            continue;
-        }
-        if (option == "--nics") {
-            if (hasNics) { return Status::InvalidParam("--nics may be specified once"); }
-            status = ReadListValues(option, hasInlineValue, inlineValue, argc, argv, index, values);
-            if (status.Failure()) { return status; }
-            config.nics = std::move(values);
-            status = ValidateNics(config.nics);
-            if (status.Failure()) { return status; }
-            hasNics = true;
             continue;
         }
         if (option == "--pool-size-gb") {
@@ -364,9 +342,9 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
         return Status::InvalidParam("unknown argument: {}", argument);
     }
 
-    if (!hasAddr || !hasNics || !hasPoolSize || !hasBlockSizes) {
+    if (!hasAddr || !hasPoolSize || !hasBlockSizes) {
         return Status::InvalidParam(
-            "--addr, --nics, --pool-size-gb, and --kvcache-block-sizes are required");
+            "--addr, --pool-size-gb, and --kvcache-block-sizes are required");
     }
     if (!hasBlockProportions) {
         // Each configured block size receives an equal capacity share by default.

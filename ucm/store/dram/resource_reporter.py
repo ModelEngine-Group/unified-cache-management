@@ -138,12 +138,14 @@ def snapshot_deltas(
                 raise ValueError(f"Histogram schema changed: {name}")
             counts = [a - b for a, b in zip(value.bucket_counts, old.bucket_counts)]
             total = value.sum - old.sum
-            if any(v < 0 for v in counts) or total < 0:
+            if (
+                any(v < 0 for v in counts)
+                or total < 0
+                or (all(v == 0 for v in counts) and total != 0)
+            ):
                 # Like a counter decrease, infer a reset. Reset the whole
                 # distribution rather than mixing reset and differenced buckets.
                 counts, total = list(value.bucket_counts), value.sum
-            if sum(counts) == 0 and total != 0:
-                raise ValueError(f"Histogram sum changed without samples: {name}")
         histograms[name] = (counts, total)
     return counters, current.gauges, histograms
 

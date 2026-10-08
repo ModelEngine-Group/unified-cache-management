@@ -86,10 +86,11 @@ find_library(P2P_METADEF_LIBRARY
 
 set(P2P_TRANSPORT_SOURCES
     src/common/binary_codec.cpp
-    src/control/control_channel.cpp
-    src/control/control_protocol.cpp
+    src/common/thread_pool.cpp
+    src/protocols/tcp/tcp_transport.cpp
+    src/core/channel_manager.cpp
+    src/core/memory_region_manager.cpp
     src/core/transport_manager.cpp
-    src/channels/tcp/tcp_message_channel.cpp
 )
 
 set(P2P_HIXL_AVAILABLE OFF)
@@ -99,7 +100,6 @@ if(UCM_RUNTIME_ASCEND_FAMILY
    AND P2P_METADEF_LIBRARY)
     set(P2P_HIXL_AVAILABLE ON)
     list(APPEND P2P_TRANSPORT_SOURCES
-        src/common/acl_runtime_context.cpp
         src/protocols/hixl/hixl_instance.cpp
         src/protocols/hixl/hixl_transport.cpp
     )

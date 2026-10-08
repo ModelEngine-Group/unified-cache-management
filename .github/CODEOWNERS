@@ -19,12 +19,15 @@
 /ucm/store/localstore @mag1c-h @ygwpz
 /ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz
 /ucm/store/nfsstore @mag1c-h @ygwpz
+/ucm/store/test @mag1c-h @nrj868 @Infinite666 @Wwwzff @ygwpz
 
 /ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h @Infinite666
 
 /ucm/pd @flesher0813 @ygwpz @mag1c-h
 
 /ucm/sandbox @Wwwzff @Infinite666 @ygwpz @mag1c-h @FangRun2 @Tarrei
+
+/ucm/shared @mag1c-h @nrj868 @Infinite666 @Wwwzff @ygwpz
 
 /benchmarks @flesher0813 @ygwpz @mag1c-h
 
@@ -38,7 +41,7 @@
 
 /examples @harrisonyhq @ygwpz @mag1c-h @Infinite666
 
-/test @Wwwzff @ygwpz @mag1c-h @SuperMarioYL
+/test @Wwwzff @ygwpz @mag1c-h @SuperMarioYL @nrj868 @Infinite666
 
 /toolkit @dante159753 @harrisonyhq @student-jhz @SuperMarioYL
 

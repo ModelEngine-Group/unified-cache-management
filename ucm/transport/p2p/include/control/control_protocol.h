@@ -24,35 +24,33 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
 #include "core/transport.h"
 
 namespace transport {
 
-enum class ControlOperation : uint32_t {
-    ExchangeMetadata = 0,
-    Connect = 1,
-    Disconnect = 2,
+enum class ManagerMessageType : uint8_t {
+    ConnectRequest = 0,
+    DisconnectRequest = 1,
+    ControlResponse = 2,
+    Data = 3,
 };
 
-inline const char* ControlOperationName(ControlOperation operation) noexcept
-{
-    switch (operation) {
-        case ControlOperation::ExchangeMetadata: return "exchange-metadata";
-        case ControlOperation::Connect: return "connect";
-        case ControlOperation::Disconnect: return "disconnect";
-    }
-    return "unknown";
-}
-
-struct ControlRequest {
-    ControlOperation operation;
-    std::optional<TransportProtocol> protocol;
-    ManagerID manager_id;
-    Metadata payload;
+#pragma pack(push, 1)
+struct ManagerMessageProtocol {
+    uint32_t body_size;
+    // Reserved for Data messages.
+    uint64_t request_id;
+    // Reserved for ControlResponse and Data messages.
+    TransportProtocol protocol;
+    // Reserved for request and Data messages.
+    int32_t status;
+    uint32_t source_size;
+    uint32_t payload_size;
+    ManagerMessageType type;
+    uint8_t reserved[7];
 };
+#pragma pack(pop)
 
-Status EncodeControlRequest(const ControlRequest& request, Metadata& out);
-Status DecodeControlRequest(const Metadata& in, ControlRequest& request);
+static_assert(sizeof(ManagerMessageProtocol) == 36, "unexpected manager message protocol size");
 
 }  // namespace transport

@@ -31,6 +31,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "core/memory_region_manager.h"
 #include "core/transport.h"
 #include "core/transport_init_attrs.h"
 #include "hixl/hixl_types.h"
@@ -41,7 +42,7 @@ class HixlInstance;
 
 struct HixlInstanceInfo {
     Endpoint endpoint;
-    int32_t device_id = -1;
+    int32_t physical_device_id = -1;
 };
 
 class HixlTransport final : public Transport {
@@ -53,10 +54,10 @@ public:
     HixlTransport& operator=(const HixlTransport&) = delete;
 
     TransportProtocol Protocol() const override;
-    Status Init(const InitAttrs& attrs) override;
-    Status Init(const HixlInitAttrs& attrs);
+    Status Init(const TransportContext& context, const InitAttrs& attrs) override;
+    Status Init(const TransportContext& context, const HixlInitAttrs& attrs);
     Status Shutdown() override;
-    Status RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle) override;
+    Status RegisterMemory(const MemoryRegion& memory, MemoryHandle handle) override;
     Status UnregisterMemory(MemoryHandle handle) override;
     Status ExportMetadata(const ManagerID& manager_id, Metadata& out) override;
     Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) override;
@@ -71,12 +72,6 @@ private:
         std::vector<HixlInstanceInfo> instances;
         HixlRole role = HixlRole::Bidirectional;
         size_t local_index = SIZE_MAX;
-        bool connected = false;
-    };
-
-    struct LocalMemoryRecord {
-        MemoryRegion region;
-        std::unordered_map<size_t, hixl::MemHandle> native_handles;
     };
 
     struct PendingTransfer {
@@ -86,19 +81,17 @@ private:
 
     Status ValidateTransferLocked(const Operation& batch, size_t instance_index) const;
     Status BuildRouteLocked(const ManagerID& manager_id, Peer& peer);
-    Status DisconnectRoute(const Peer& peer, bool ignore_failure);
+    Status DisconnectRoute(const Peer& peer);
 
     int32_t connect_timeout_ms_ = 1000;
     int32_t transfer_timeout_ms_ = 1000;
     HixlRole role_ = HixlRole::Bidirectional;
     std::vector<std::unique_ptr<HixlInstance>> instances_;
     std::unordered_map<ManagerID, Peer> peers_;
-    std::unordered_map<MemoryHandle, std::unique_ptr<LocalMemoryRecord>> memories_;
+    std::shared_ptr<MemoryRegionManager> memory_region_manager_;
     std::unordered_map<TransferHandle, PendingTransfer> pending_transfers_;
     TransferHandle next_transfer_handle_ = 1;
-    mutable std::shared_mutex lifecycle_mutex_;
     mutable std::shared_mutex peers_mutex_;
-    mutable std::shared_mutex memories_mutex_;
     mutable std::mutex pending_mutex_;
 };
 

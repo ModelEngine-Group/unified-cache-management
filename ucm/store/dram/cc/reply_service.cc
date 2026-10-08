@@ -144,6 +144,8 @@ void ReplyService::RecordCapacityMetrics(std::size_t usedSlots)
     const auto stride = buffers_.GetTotalSize() / options_.slotCount;
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_reply_buffer_used_bytes"),
                              usedSlots * stride);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_reply_buffer_capacity_bytes"),
+                             buffers_.GetTotalSize());
 }
 
 Expected<ReplySlot> ReplyService::Acquire(const RequestToken& token, OpType op,

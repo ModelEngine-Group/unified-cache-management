@@ -43,6 +43,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     EXPECT_EQ(patchedFake.providerType, kv::TransProviderType::FAKE);
     EXPECT_EQ(patchedFake.attrs.at("sc"), "false");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.path"), "./kv-test-fake-backend-store");
+    EXPECT_EQ(patchedFake.attrs.at("fake_backend.latency_us"), "1000");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.worker_threads"), "4");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.complete_immediately"), "true");
 

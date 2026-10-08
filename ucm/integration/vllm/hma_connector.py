@@ -691,6 +691,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return
         namespaced_backends: list[str] = []
         for backend in backends:
+            if not os.path.isdir(str(backend)):
+                raise FileNotFoundError(
+                    f"Storage backend path does not exist: {backend}"
+                )
             backend_path = os.path.join(str(backend), f"fawa_{store_suffix}")
             os.makedirs(backend_path, exist_ok=True)
             namespaced_backends.append(backend_path)

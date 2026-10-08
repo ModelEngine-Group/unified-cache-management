@@ -48,6 +48,7 @@ namespace UC::DramPool {
 namespace {
 
 constexpr std::size_t kQueueCapacity = 16;
+constexpr std::size_t kManagerMaxThreads = 1;
 constexpr std::uint32_t kValueLength = 16;
 constexpr std::uint64_t kResponseAddress = 0x9000;
 constexpr char kTargetManager[] = "127.0.0.1:29000";
@@ -157,7 +158,7 @@ protected:
     std::unique_ptr<MetadataManager> metadata_;
     BufferPool flagBufferPool_;
     ProtocolManager protocols_;
-    transport::TransportManager manager_{"127.0.0.1:28000"};
+    transport::TransportManager manager_{"127.0.0.1:28000", kManagerMaxThreads};
     std::unique_ptr<DramPoolRuntime> runtime_;
     DramPoolConfig savedConfig_;
 };

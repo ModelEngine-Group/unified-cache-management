@@ -35,9 +35,6 @@ namespace {
 
 constexpr std::uintptr_t HOST_REGISTER_PAGE_SIZE = 4096;
 
-Status RegisterHostBuffer(void* host, size_t size, void** pDevice);
-void UnregisterHostBuffer(void* host);
-
 void FreeHostMemory(void* host)
 {
     auto ret = aclrtFreeHost(host);
@@ -72,6 +69,8 @@ void ReleaseDeviceMappedHostMemory(void* mappedAddress, aclrtDrvMemHandle handle
     }
 }
 
+}  // namespace
+
 Status RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
     void* device = nullptr;
@@ -92,8 +91,6 @@ Status RegisterHostBuffer(void* host, size_t size, void** pDevice)
 }
 
 void UnregisterHostBuffer(void* host) { aclrtHostUnregister(host); }
-
-}  // namespace
 
 std::shared_ptr<void> AscendBuffer::MakeDeviceBuffer(size_t size)
 {

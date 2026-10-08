@@ -62,12 +62,14 @@ See [Model Tour](../model-tour/index.md) for model families and the [developer g
 <colgroup><col style="width:25%"><col style="width:25%"><col style="width:50%"></colgroup>
 <thead><tr><th scope="col">Platform</th><th scope="col">Vendor</th><th scope="col">Devices</th></tr></thead>
 <tbody>
-<tr><th scope="row">CANN</th><td>Ascend</td><td>910C, 910B</td></tr>
+<tr><th scope="row">CANN</th><td>Ascend</td><td>910C, 910B, 950PR, 950DT</td></tr>
 <tr><th scope="row">CUDA</th><td>NVIDIA</td><td>H100, H20, L40, L20</td></tr>
 </tbody>
 </table>
 </div>
 
 The tables list representative models and devices. Engine versions, model variants, runtime settings and backends affect behavior. Unverified means no corresponding validation conclusion is available.
+
+**Note**: Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash.
 
 </div>
