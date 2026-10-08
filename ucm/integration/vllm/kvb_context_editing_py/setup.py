@@ -60,5 +60,5 @@ setup(
         },
         annotate=True,  # 生成.html 查看C转换质量
     ),
-    zip_safe = False,
+    zip_safe=False,
 )
