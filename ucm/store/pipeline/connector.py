@@ -226,6 +226,7 @@ def _build_cache_compress_posix_pipeline(
 ) -> None:
     store_dir = Path(__file__).resolve().parent.parent
     posix_config = copy.deepcopy(config)
+    compress_config = copy.deepcopy(config)
 
     if config.get("device_id", -1) >= 0:
         if (posix_config["block_size"] % posix_config["shard_size"]) != 0:
@@ -235,17 +236,27 @@ def _build_cache_compress_posix_pipeline(
             )
             return
         layers = posix_config["block_size"] // posix_config["shard_size"]
-        posix_config["shard_size"] = (
+        compressed_shard_size = (
             (posix_config["shard_size"] * posix_config["compress_ratio"] // 32)
             // 4096
             * 4096
         )
+        if compressed_shard_size == 0:
+            raise ValueError(
+                "compressed shard size is zero after 4096-byte alignment: "
+                f"shard_size={posix_config['shard_size']}, "
+                f"compress_ratio={posix_config['compress_ratio']}"
+            )
+        posix_config["shard_size"] = compressed_shard_size
         posix_config["tensor_size"] = int(posix_config["shard_size"])
         posix_config["block_size"] = int(posix_config["shard_size"] * layers)
+        compress_config["compressed_shard_size"] = compressed_shard_size
 
     _preload_metrics(store_dir)
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
-    pipeline.Stack("Compress", str(store_dir / "compress/libcompressor.so"), config)
+    pipeline.Stack(
+        "Compress", str(store_dir / "compress/libcompressor.so"), compress_config
+    )
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
 
