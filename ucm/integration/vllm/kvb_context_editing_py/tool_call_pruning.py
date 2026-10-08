@@ -55,7 +55,7 @@ def compact_block_table_for_pruning(
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     
-    num_rows, max_blocks = block_table.shape 
+    num_rows, max_blocks = block_table.shape
     device = block_table.device
     orig_seq_device = seq_lens.device
 
