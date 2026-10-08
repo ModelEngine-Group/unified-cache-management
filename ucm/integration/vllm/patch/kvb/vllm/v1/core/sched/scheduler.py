@@ -121,9 +121,9 @@ class Scheduler(SchedulerInterface):
         self.connector_prefix_cache_stats: PrefixCacheStats | None = None
         self.recompute_kv_load_failures = True
         if self.vllm_config.kv_transfer_config is not None:
-            assert not self.is_encoder_decoder, (
-                "Encoder-decoder models are not currently supported with KV connectors"
-            )
+            assert (
+                not self.is_encoder_decoder
+            ), "Encoder-decoder models are not currently supported with KV connectors"
             self.connector = KVConnectorFactory.create_connector(
                 config=self.vllm_config,
                 role=KVConnectorRole.SCHEDULER,
@@ -254,9 +254,9 @@ class Scheduler(SchedulerInterface):
 
             self.routed_experts_reader = RoutedExpertsReader.create()
 
-            assert len(kv_cache_config.kv_cache_groups) > 0, (
-                "enable_return_routed_experts requires at least one kv cache group"
-            )
+            assert (
+                len(kv_cache_config.kv_cache_groups) > 0
+            ), "enable_return_routed_experts requires at least one kv cache group"
             # Find the attention group for routed experts indexing.
             self.routed_experts_attn_gid = 0
             for gid, group in enumerate(kv_cache_config.kv_cache_groups):
@@ -292,9 +292,9 @@ class Scheduler(SchedulerInterface):
         num_new_local_computed_tokens: int = 0,
         num_external_computed_tokens: int = 0,
     ) -> int:
-        assert num_external_computed_tokens == 0, (
-            "External KV connector is not verified yet"
-        )
+        assert (
+            num_external_computed_tokens == 0
+        ), "External KV connector is not verified yet"
         num_computed_tokens = (
             request.num_computed_tokens
             + num_new_local_computed_tokens
@@ -618,8 +618,18 @@ class Scheduler(SchedulerInterface):
                             request_queue.pop_request()
                             step_skipped_waiting.prepend_request(request)
                         
-                        if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector":
-                            new_computed_blocks, num_new_local_computed_tokens = self.kv_cache_manager.update_computed_block(request, new_computed_blocks, num_new_local_computed_tokens)
+                        if (
+                            self.vllm_config.kv_transfer_config is not None
+                            and self.vllm_config.kv_transfer_config.kv_connector
+                            == "UCMAgentConnector"
+                        ):
+                            new_computed_blocks, num_new_local_computed_tokens = (
+                                self.kv_cache_manager.update_computed_block(
+                                    request,
+                                    new_computed_blocks,
+                                    num_new_local_computed_tokens,
+                                )
+                            )
                             
                         request.num_external_computed_tokens = ext_tokens
                         num_external_computed_tokens = ext_tokens
@@ -934,9 +944,9 @@ class Scheduler(SchedulerInterface):
         NOTE: The request should be popped from the running queue outside of this
         method.
         """
-        assert request.status == RequestStatus.RUNNING, (
-            "Only running requests can be preempted"
-        )
+        assert (
+            request.status == RequestStatus.RUNNING
+        ), "Only running requests can be preempted"
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
