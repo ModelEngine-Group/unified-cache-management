@@ -63,6 +63,8 @@ warmup_epoch_number = 5
 epoch_interval_ms = 15
 # Enable Cache SDMA Direct transfers.
 cache_sdma_direct = False
+# Enable Cache IO aggregation.
+cache_io_aggregation = False
 # Bind each worker and its UCM store threads to NUMA-local CPU cores.
 worker_cpu_affinity_enable = False
 
@@ -89,7 +91,6 @@ MODEL_PROFILES = {
         # separate store and is outside this benchmark profile.
         "benchmark_scope": "FA-only",
         "mla_dump_striping": True,
-        "cache_io_aggregation": True,
         "share_buffer_enable": True,
         "full_tensor_size_list": [
             131072,
@@ -491,7 +492,7 @@ def create_cache_worker(
     config["local_rank_size"] = worker_number
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
-    config["cache_io_aggregation"] = model_profile.get("cache_io_aggregation", False)
+    config["cache_io_aggregation"] = cache_io_aggregation
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if cache_numa_node is not None:
@@ -518,7 +519,7 @@ def create_cache_scheduler(
     config["cache_buffer_capacity_gb"] = 32
     config["local_rank_size"] = worker_number
     config["cache_sdma_direct"] = cache_sdma_direct
-    config["cache_io_aggregation"] = model_profile.get("cache_io_aggregation", False)
+    config["cache_io_aggregation"] = cache_io_aggregation
     config["timeout_ms"] = 30000
     config["device_id"] = -1
     if store_cpu_affinity_cores:
@@ -746,6 +747,7 @@ def worker_loop(
         f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
+        f"cache_io_aggregation={cache_io_aggregation}, "
         f"share_buffer_enable={share_buffer_enable}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
         f"worker_cpu_affinity_cores={worker_cpu_affinity_cores}, "
