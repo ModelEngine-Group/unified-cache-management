@@ -72,6 +72,7 @@ worker_cpu_affinity_enable = False
 MODEL_PROFILES = {
     "glm-5.2": {
         "worker_mode": "mla",
+        "mla_dump_striping": True,
         "share_buffer_enable": True,
         "layer_tensor_size_list": [131072, 16384, 32768],
     },
@@ -83,6 +84,9 @@ MODEL_PROFILES = {
     },
     "dsv4": {
         "worker_mode": "mla",
+        # FA/WA needs group-specific block ownership; this profile has no
+        # group metadata, so keep its existing rank-0 dump approximation.
+        "mla_dump_striping": False,
         "share_buffer_enable": True,
         "full_tensor_size_list": [
             131072,
@@ -191,6 +195,7 @@ if model_profile is None:
         f"unsupported model {model_name!r}; choose one of: {available_models}"
     )
 worker_mode = model_profile["worker_mode"]
+mla_dump_striping = model_profile.get("mla_dump_striping", False)
 share_buffer_enable = model_profile["share_buffer_enable"]
 tensor_size_list = resolve_tensor_size_list(model_profile)
 shard_size = (sum(tensor_size_list) + 4095) // 4096 * 4096
@@ -541,19 +546,44 @@ def make_sized_tensors(device: str, factory):
     return tensors
 
 
+def mla_dump_indexes(dump_block_start: int, device_id: int):
+    """Match the connector's absolute-block TP ownership for one dump batch."""
+    first = (device_id - dump_block_start) % worker_number
+    return range(first, block_number, worker_number)
+
+
 def dump(
-    epoch: int, device: str, device_id: int, worker, block_ids, warmup: bool
-) -> float:
+    epoch: int,
+    record_idx: int,
+    device: str,
+    device_id: int,
+    worker,
+    block_ids,
+    warmup: bool,
+) -> tuple[float, int]:
+    if mla_dump_striping:
+        # Treat successive benchmark records as batches of one long request.
+        # The absolute start rotates the owner across TP ranks, as in vLLM.
+        indexes = mla_dump_indexes(record_idx * block_number, device_id)
+        block_ids = [block_ids[index] for index in indexes]
+        if not block_ids:
+            return 0.0, 0
+    elif worker_mode == "mla" and device_id != 0:
+        return 0.0, 0
+    else:
+        indexes = range(block_number)
     src_tensors = make_tensors(device)
-    total_size = sum(tensor_size_list) * block_number
-    shard_indexes = [0 for _ in range(block_number)]
+    src_tensors = [src_tensors[index] for index in indexes]
+    block_count = len(block_ids)
+    total_size = bytes_per_block * block_count
+    shard_indexes = [0 for _ in range(block_count)]
     synchronize_device()
     tp = time.perf_counter()
     task = worker.dump(block_ids, shard_indexes, src_tensors)
     worker.wait(task)
     cost = time.perf_counter() - tp
-    print_result("dump", epoch, device_id, cost, total_size, warmup)
-    return cost
+    print_result("dump", epoch, device_id, cost, total_size, block_count, warmup)
+    return cost, total_size
 
 
 def load(
@@ -568,7 +598,7 @@ def load(
     worker.wait(task)
     synchronize_device()
     cost = time.perf_counter() - tp
-    print_result("load", epoch, device_id, cost, total_size, warmup)
+    print_result("load", epoch, device_id, cost, total_size, block_number, warmup)
     return cost
 
 
@@ -592,12 +622,13 @@ def print_result(
     device_id: int,
     cost: float,
     total_size: int,
+    block_count: int,
     warmup: bool,
 ):
     phase = "warmup" if warmup else "benchmark"
     print(
         f"phase={phase}, epoch={epoch:03}, worker={device_id:02}, "
-        f"{direction}=[{sum(tensor_size_list)} x {block_number}], "
+        f"{direction}=[{bytes_per_block} x {block_count}], "
         f"cost={cost * 1e3:.3f}ms, "
         f"bw={total_size / cost / 1e9:.3f}GB/s."
     )
@@ -624,19 +655,29 @@ def format_statistics(values):
     return ", ".join(f"{name}={value:.3f}" for name, value in statistics)
 
 
-def print_benchmark_summary(dump_cost_records, load_cost_records):
-    total_size = sum(tensor_size_list) * block_number
+def print_benchmark_summary(dump_cost_records, dump_byte_records, load_cost_records):
     print("\n================ Benchmark summary ================")
     for direction, records in (
         ("dump", dump_cost_records),
         ("load", load_cost_records),
     ):
-        costs = [cost for cost in records if cost > 0]
-        latencies_ms = [cost * 1e3 for cost in costs]
-        bandwidths_gbps = [total_size / cost / 1e9 for cost in costs]
-        print(f"{direction}: samples={len(costs)}")
+        byte_records = (
+            dump_byte_records
+            if direction == "dump"
+            else [bytes_per_epoch] * len(records)
+        )
+        samples = [
+            (cost, byte_count)
+            for cost, byte_count in zip(records, byte_records)
+            if cost > 0
+        ]
+        latencies_ms = [cost * 1e3 for cost, _ in samples]
+        bandwidths_gbps = [
+            byte_count / cost / 1e9 for cost, byte_count in samples
+        ]
+        print(f"{direction}: samples={len(samples)}")
         print(f"  latency(ms): {format_statistics(latencies_ms)}")
-        print(f"  bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
+        print(f"  per-worker bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
 
 
 def worker_loop(
@@ -649,6 +690,7 @@ def worker_loop(
     block_id_records,
     backend_block_ids,
     dump_cost_records,
+    dump_byte_records,
     load_cost_records,
     completed_worker_number,
 ):
@@ -687,6 +729,7 @@ def worker_loop(
         f"{store_pipeline} benchmark: device={device}, "
         f"model={model_name}, transfer_mode={transfer_mode}, "
         f"worker_mode={worker_mode}, layer_number={layer_number}, "
+        f"mla_dump_striping={mla_dump_striping}, "
         f"worker_number={worker_number}, "
         f"block_number={block_number}, tensor_number={len(tensor_size_list)}, "
         f"tensor_size_list={tensor_size_list}, "
@@ -707,10 +750,13 @@ def worker_loop(
     for record_idx, block_ids in enumerate(block_id_records):
         warmup = record_idx < warmup_epoch_number
         epoch = record_idx if warmup else record_idx - warmup_epoch_number
-        if worker_mode == "gqa" or device_id == 0:
-            cost = dump(epoch, device, device_id, worker, block_ids, warmup)
-            if not warmup:
-                dump_cost_records[device_id * dump_epoch_number + epoch] = cost
+        cost, byte_count = dump(
+            epoch, record_idx, device, device_id, worker, block_ids, warmup
+        )
+        if not warmup:
+            index = device_id * dump_epoch_number + epoch
+            dump_cost_records[index] = cost
+            dump_byte_records[index] = byte_count
         barrier.wait()
         if record_idx + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
@@ -810,6 +856,9 @@ if __name__ == "__main__":
     dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
     )
+    dump_byte_records = process_context.Array(
+        "Q", worker_number * dump_epoch_number, lock=False
+    )
     load_cost_records = process_context.Array(
         "d", worker_number * load_epoch_number, lock=False
     )
@@ -830,6 +879,7 @@ if __name__ == "__main__":
                     worker_block_id_records[device_id],
                     backend_block_ids if device_id == 0 else None,
                     dump_cost_records,
+                    dump_byte_records,
                     load_cost_records,
                     completed_worker_number,
                 ),
@@ -863,7 +913,9 @@ if __name__ == "__main__":
                     f"worker pid={failed.pid} exited with code {failed.exitcode}"
                 )
             raise RuntimeError("workers exited before completing the benchmark")
-        print_benchmark_summary(dump_cost_records, load_cost_records)
+        print_benchmark_summary(
+            dump_cost_records, dump_byte_records, load_cost_records
+        )
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
     finally:
