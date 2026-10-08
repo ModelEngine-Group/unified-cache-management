@@ -93,12 +93,12 @@ def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size
     extracted = torch.zeros(
         (batch_size, max_seq_len, hidden_dim),
         dtype=kv_cache.dtype,
-        device=device
+        device=device,
 	)
     seq_mask = torch.zeros(
         (batch_size, max_seq_len),
         dtype=torch.bool,
-        device=device
+        device=device,
 	)
 
     # 3. 向量化索引提取（避免Python for 循环）
@@ -260,7 +260,7 @@ def _save_sparse_block_table_impl(
 
         results[hash_val] = topk_indices
 
-        rank = torch_.npu.current_device()
+        rank = torch.npu.current_device()
         filename = f"union_blocks_l{layer_idx}_rank{rank}_hash{hash_val}.pkl"
 
     end_time = time.perf_counter()
