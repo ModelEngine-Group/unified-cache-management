@@ -16,6 +16,7 @@
 #
 from dataclasses import dataclass
 from enum import Enum
+
 import torch
 import torch_npu
 import vllm.envs as envs_vllm
@@ -62,6 +63,7 @@ from ucm.integration.vllm.tool_call_pruning import compact_block_table_for_pruni
 # default max value of sliding window size
 SWA_INT_MAX = 2147483647
 
+
 @register_backend(AttentionBackendEnum.CUSTOM, "ASCEND")
 class AscendAttentionBackend(AttentionBackend):
     accept_output_buffer: bool = True
@@ -77,7 +79,7 @@ class AscendAttentionBackend(AttentionBackend):
     def get_impl_cls() -> type["AscendAttentionBackendImpl"]:
         if enable_cp():
             from vllm_ascend.attention.context_parallel.attention_cp import (
-            AscendAttentionCPImpl,
+                AscendAttentionCPImpl,
             )
 
             return AscendAttentionCPImpl
@@ -87,7 +89,7 @@ class AscendAttentionBackend(AttentionBackend):
     def get_builder_cls() -> type["AscendAttentionMetadataBuilder"]:
         if enable_cp():
             from vllm_ascend.attention.context_parallel.attention_cp import (
-            AscendAttentionCPMetadataBuilder,
+                AscendAttentionCPMetadataBuilder,
             )
 
             return AscendAttentionCPMetadataBuilder
@@ -208,6 +210,7 @@ class AscendMetadata:
     # sliding window attention mask
     swa_mask: torch.Tensor | None = None
 
+
 class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
     """
     Builder for constructing AscendMetadata from CommonAttentionMetadata.
@@ -287,7 +290,7 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         seq_lens = common_attn_metadata.seq_lens_cpu[:num_reqs]
 
         if (
-            self.vllm_config.kv_transfer_config is not None 
+            self.vllm_config.kv_transfer_config is not None
             and self.vllm_config.kv_transfer_config.kv_connector == "UCMAgentConnector"
         ):
             block_size = AscendAttentionBackend.get_supported_kernel_block_sizes()[0]
@@ -400,7 +403,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.key_cache = None
         self.value_cache = None
         self.is_kv_producer = (
-            self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.is_kv_producer
+            self.vllm_config.kv_transfer_config is not None
+            and self.vllm_config.kv_transfer_config.is_kv_producer
         )
         self.sinks = sinks
 
@@ -518,7 +522,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                         draft_step = attn_count // num_layers
                         seq_lens = attn_metadata[draft_step][key].seq_lens_list
                         actual_seq_lengths_q = attn_metadata[draft_step][
-                        key
+                            key
                         ].actual_seq_lengths_q
                         block_tables = attn_metadata[draft_step][key].block_tables
                         attn_count = attn_count + 1
@@ -833,9 +837,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_key_value_heads=self.num_kv_heads,
                 input_layout="TND",
                 pre_tokens=(
-                    self.sliding_window
-                    if self.sliding_window is not None
-                    else SWA_INT_MAX,
+                    (
+                        self.sliding_window
+                        if self.sliding_window is not None
+                        else SWA_INT_MAX
+                    ),
                 ),
                 next_tokens=0,
                 atten_mask=atten_mask,

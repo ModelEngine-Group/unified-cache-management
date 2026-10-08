@@ -8,7 +8,6 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
-
 from vllm import envs
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import VllmConfig
@@ -60,7 +59,9 @@ from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
+
 from ucm.integration.vllm.perf_counter import PerfCounters
+
 logger = init_logger(__name__)
 
 
@@ -617,7 +618,7 @@ class Scheduler(SchedulerInterface):
                             # the number of matched tokens.
                             request_queue.pop_request()
                             step_skipped_waiting.prepend_request(request)
-                        
+
                         if (
                             self.vllm_config.kv_transfer_config is not None
                             and self.vllm_config.kv_transfer_config.kv_connector
@@ -630,7 +631,7 @@ class Scheduler(SchedulerInterface):
                                     num_new_local_computed_tokens,
                                 )
                             )
-                            
+
                         request.num_external_computed_tokens = ext_tokens
                         num_external_computed_tokens = ext_tokens
 

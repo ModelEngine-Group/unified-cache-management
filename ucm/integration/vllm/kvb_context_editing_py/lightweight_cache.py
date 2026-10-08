@@ -3,6 +3,7 @@
 import threading
 from typing import Dict, List, Tuple
 
+
 class LightweightTokenCache:
     def __init__(self, tokenizer, max_entries: int = 500, rollback_tokens: int = 15):
         self.tokenizer = tokenizer
@@ -19,7 +20,7 @@ class LightweightTokenCache:
             for prefix in self.cache.keys():
                 if prompt.startswith(prefix) and len(prefix) > len(best_match):
                     best_match = prefix
-                
+
             if not best_match:
                 return False, [], prompt
 
@@ -50,7 +51,7 @@ class LightweightTokenCache:
                 return True, cached_ids, prompt[len(best_match) :]
 
             # 4. 拼接最终需要重新Tokenize的后缀： 被切掉的尾巴字符串 + 真正新增的文本
-            suffix = tail_str + prompt[len(best_match):]
+            suffix = tail_str + prompt[len(best_match) :]
 
             return True, safe_ids, suffix
 
@@ -58,8 +59,8 @@ class LightweightTokenCache:
         # [修改点]：不再提前Decode校验，直接暴力存入
         # 上游传来的prompt是什么样， 就认什么样， 保证O（1）存储且必定成功。
         if not prompt or not token_ids:
-            return 
-        
+            return
+
         with self.lock:
             if prompt not in self.cache:
                 # LRU-like 淘汰机制

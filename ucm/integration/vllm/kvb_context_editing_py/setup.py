@@ -1,6 +1,6 @@
 # 版权所有 (c) 华为技术有限公司 2012-2026
-from setuptools import setup, Extension
 from Cython.Build import cythonize
+from setuptools import Extension, setup
 
 extensions = [
     Extension(
@@ -47,7 +47,7 @@ extensions = [
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")
         ],  # 可选：屏蔽numpy警告
         annotation_typing=False,
-    )
+    ),
 ]
 
 setup(

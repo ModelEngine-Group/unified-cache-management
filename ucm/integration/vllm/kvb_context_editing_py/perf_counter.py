@@ -33,7 +33,7 @@ def profile_function(counter_name):
             PerfCounters.get_inst().update(counter_name, elapsed_time)
 
             return result
-        
+
         return wrapper
 
     return actual_decorator
@@ -51,7 +51,7 @@ class TimeRec(object):
         self.max_time = max(tm, self.max_time)
         self.total_cnt += 1
         self.records.append(tm)
-    
+
 
 class PerfCounters(object):
     _instance = None
@@ -101,13 +101,13 @@ class PerfCounters(object):
                 return 0
         else:
             return 0
-    
+
     def update_opencode_request_info(self, block_id, prefill_token_num):
         if block_id not in self.opencode_requests_meta:
             self.opencode_requests_meta[block_id] = [prefill_token_num]
         else:
             self.opencode_requests_meta[block_id].append(prefill_token_num)
-    
+
     def update_hit_infos(self, hit_blocks_num, blocks_num, hit_chunks_num, chunks_num):
         self.hit_blocks_num += hit_blocks_num
         self.all_blocks_num += blocks_num
@@ -132,15 +132,15 @@ class PerfCounters(object):
         if counter_name not in self.profile_data:
             self.profile_data[counter_name] = TimeRec()
         self.profile_data[counter_name].update(tm / MS)
-    
+
     def update_throughput(self, throughput):
         if not self.is_start:
             return
         self.throughput.update(throughput)
-    
+
     def start(self):
         self.is_start = True
-    
+
     def is_running(self):
         return self.is_start
 
@@ -152,10 +152,10 @@ class PerfCounters(object):
             return
         if self.is_print:
             return
-    
+
         print(f"{'Counters Name':<50}{'Arg Time':>20}{'Max Time':>20}{'Count':>20}")
         print("=" * 100)
-        
+
         # 打印数据
         for counter_name, rec in self.profile_data.items():
             if rec.total_cnt > 0:
@@ -177,17 +177,16 @@ class PerfCounters(object):
 
 
 if __name__ == "__main__":
+
     class TestClass(object):
         @profile_function("testclass")
         def test_method(self):
             time.sleep(0.1)
-        
-    
+
     @profile_function("testfunc")
     def test_function():
         time.sleep(0.1)  # 模拟耗时操作
         return sum(range(1000))
-    
 
     PerfCounters.get_inst().start()
 
@@ -210,5 +209,3 @@ if __name__ == "__main__":
     TestClass().test_method()
 
     PerfCounters.get_inst().print()
-
-

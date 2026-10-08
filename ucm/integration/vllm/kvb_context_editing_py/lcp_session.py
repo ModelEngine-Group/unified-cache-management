@@ -71,7 +71,7 @@ def match_session_key(all_token_ids) -> str:
         if best_key is not None and best_lcp >= MIN_LCP_TO_MATCH:
             _session_token_map[best_key] = tokens
             return best_key
-        
+
         new_key = _derive_new_key(tokens)
         if len(_session_token_map) >= MAX_SESSIONS:
             _session_token_map.clear()

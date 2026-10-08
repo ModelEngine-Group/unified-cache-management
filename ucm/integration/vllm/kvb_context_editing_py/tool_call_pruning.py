@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     https://www.apache.org/license/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -21,7 +21,7 @@ context.  These helpers only derive per-request logical KV block pruning metadat
 that the Ascend attention metadata builder can apply immediately before invoking
 paged-attention kernels.
 """
- 
+
 from __future__ import annotations
 
 import glob
@@ -54,7 +54,7 @@ def compact_block_table_for_pruning(
     """
     if block_size <= 0:
         raise ValueError("block_size must be positive")
-    
+
     num_rows, max_blocks = block_table.shape
     device = block_table.device
     orig_seq_device = seq_lens.device

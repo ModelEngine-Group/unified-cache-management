@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 import sys
+
 import torch_npu
 import vllm.forward_context as global_context
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -58,6 +59,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
 )
 from ucm.sparse.state import has_ucm_sparse
+
 logger = init_logger(__name__)
 
 
@@ -77,6 +79,7 @@ class RequestMeta:
     )
     request_id: str = ""
 
+
 @dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
@@ -86,9 +89,11 @@ class RequestDispatchMeta:
     ucm_block_ids: list[bytes]
     need_load: bool
 
+
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
+
 
 class AgentConnector(UCMDirectConnector):
     """
@@ -103,9 +108,7 @@ class AgentConnector(UCMDirectConnector):
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(
-            vllm_config=vllm_config,
-            role=role,
-            kv_cache_config=kv_cache_config
+            vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
 
         ucm_config = Config(vllm_config.kv_transfer_config)
@@ -120,8 +123,7 @@ class AgentConnector(UCMDirectConnector):
         self.marker_manager = ModelMarkerManager(
             config_path=self.model_marker_path, vllm_config=self._vllm_config
         )
-        
-    
+
     def get_tool_result_block_ids(self, request):
         if request.sampling_params.extra_args is not None:
             pruned_args = request.sampling_params.extra_args["kv_edit_args"]
@@ -182,7 +184,7 @@ class AgentConnector(UCMDirectConnector):
             else:  # 跨越标记，归入before
                 logger.error(f"error: 跨越标记，all_token_ids: {all_token_ids}")
                 return slot_indices, False
-            
+
         result_blocks = []  #  需要裁剪（设为False）的block索引
         pruned_args = request.sampling_params.extra_args["kv_edit_args"]
         logger.debug(f"pruned_args: {pruned_args}")
@@ -201,7 +203,7 @@ class AgentConnector(UCMDirectConnector):
                     result_blocks.extend(
                         [block_idx for block_idx in range(start_block, end_block)]
                     )
-                
+
         pruned = len(result_blocks) * self.block_size
         logger.debug(f"pruned token: {pruned}")
         PerfCounters.get_inst().update("tool_result_tokens", pruned)
@@ -225,7 +227,7 @@ class AgentConnector(UCMDirectConnector):
         ] = [True] * (external_hit_blocks - num_pruned_blocks)
         assert sum(vllm_load_slot_indices) == sum(slot_indices)
         return vllm_load_slot_indices
-    
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -258,7 +260,7 @@ class AgentConnector(UCMDirectConnector):
                 self._prefetch_other_rank_hashes(
                     external_block_ids[:external_hit_blocks]
                 )
-            
+
             except RuntimeError as e:
                 external_hit_blocks = 0
                 logger.error(f"request {request.request_id} look up error. {e}")
@@ -283,7 +285,7 @@ class AgentConnector(UCMDirectConnector):
             ucmmetrics.update_stats(
                 {"interval_lookup_hit_rates": external_hit_blocks / len(ucm_block_ids)},
             )
-        
+
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
         request.kvb_vllm_request_meta.hbm_hit_block_num = hbm_hit_block_num
@@ -321,7 +323,7 @@ class AgentConnector(UCMDirectConnector):
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
         pass
-    
+
     def _generate_dispatch_meta(
         self,
         req_meta: RequestMeta,
@@ -416,7 +418,3 @@ class UCMAgentConnector(KVConnectorBase_V1):
             raise RuntimeError("kvb is not supported while use_layerwise=True.")
         else:
             self.connector = AgentConnector(vllm_config, role, kv_cache_config)
-
-            
-
-

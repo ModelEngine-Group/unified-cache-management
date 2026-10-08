@@ -24,60 +24,59 @@ def get_device():
 
 
 def get_attention_weights_batched(
-	query, key, seq_mask, num_query_heads, num_kv_heads, head_dim
+    query, key, seq_mask, num_query_heads, num_kv_heads, head_dim
 ):
     """
     计算GQA下最后一个query token对key序列的平均注意力权重。
     返回形状：(num_query_heads, key_len)的CPU tensor
     """
-    
+
     q = query.view(query.shape[0], -1, num_query_heads, head_dim)
     k = key.view(key.shape[0], -1, num_kv_heads, head_dim)
-    
+
     # GQA：扩展key heads 到 query heads
     if num_kv_heads < num_query_heads:
         assert num_query_heads % num_kv_heads == 0, "query heads 必须能被 kv heads 整除"
         repeat = num_query_heads // num_kv_heads
-        k = k.repeat_interleave(repeat,dim=2) # (k_len, q_heads, dim)
-    elif num_kv_heads >num_query_heads:
+        k = k.repeat_interleave(repeat, dim=2)  # (k_len, q_heads, dim)
+    elif num_kv_heads > num_query_heads:
         raise ValueError("kv heads >query heads 不常见，请检查参数")
-    
-    
+
     # 批量矩阵乘法计算注意力分数
     q_bmm = q.transpose(1, 2)
-    k_bmm = k.transpose(1, 2) .transpose(-1,-2)
-    scores = torch.matmul(q_bmm, k_bmm) / (head_dim ** 0.5)
-    
+    k_bmm = k.transpose(1, 2).transpose(-1, -2)
+    scores = torch.matmul(q_bmm, k_bmm) / (head_dim**0.5)
+
     # seq_mask: [B, L] -> [B, 1,1,1]广播到注意力分数维度
     # 将填充位置设为 -inf, softmax后权重为0
-    mask_expanded = seq_mask.unsqueeze(1).unsqueeze(2) #[0,1,1,L]
-    scores =scores.masked_fill(~mask_expanded, float('-inf'))
-    
+    mask_expanded = seq_mask.unsqueeze(1).unsqueeze(2)  # [0,1,1,L]
+    scores = scores.masked_fill(~mask_expanded, float("-inf"))
+
     attn = torch.softmax(scores, dim=-1)
-    attn_mean = attn.squeeze(2) # (B, QH, K)
+    attn_mean = attn.squeeze(2)  # (B, QH, K)
     return attn_mean
-    
-    
+
+
 def compute_block_scores_batched(attn_per_head, block_size):
     """
     attn_per_head: (batch_size, num_heads, key_len) CPU tensor
     对每个head和每个key block 计算平均分数， 返回list of (head_idx, block_idx, score)
     """
-    batch_size, num_heads, key_len =attn_per_head.shape
+    batch_size, num_heads, key_len = attn_per_head.shape
     num_blocks = key_len // block_size
 
     valid_len = num_blocks * block_size
     attn_per_head = attn_per_head[:, :, :valid_len]
-    reshaped = attn_per_head.view(batch_size,num_heads, num_blocks, block_size)
-    block_scores = reshaped.sum(dim=-1) # (batch_size,num_heads, num_blocks)
-    
+    reshaped = attn_per_head.view(batch_size, num_heads, num_blocks, block_size)
+    block_scores = reshaped.sum(dim=-1)  # (batch_size,num_heads, num_blocks)
+
     return block_scores
 
 
 def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size):
     """
     从分块KV缓存中提取每个序列实际使用的key或value, 并填充对齐
-    
+
     Returns:
         extracted: [batch_size, max_seq_len, hidden_dim]填充后的矩形Tensor
         seq_mask: [batch_size, max_seq_len]有效token的布尔掩码，用于下游忽略填充位
@@ -86,20 +85,22 @@ def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size
     device = kv_cache.device
     hidden_dim = kv_cache.shape[2]
     # 1. 计算每个序列需要的块数和最大长度
-    num_blocks_needed = [(s + block_size -1) // block_size for s in actual_seq_lengths_kv]
+    num_blocks_needed = [
+        (s + block_size - 1) // block_size for s in actual_seq_lengths_kv
+    ]
     max_seq_len = max(actual_seq_lengths_kv)
-    
+
     # 2. 预分配出Tensor和掩码
     extracted = torch.zeros(
         (batch_size, max_seq_len, hidden_dim),
         dtype=kv_cache.dtype,
         device=device,
-	)
+    )
     seq_mask = torch.zeros(
         (batch_size, max_seq_len),
         dtype=torch.bool,
         device=device,
-	)
+    )
 
     # 3. 向量化索引提取（避免Python for 循环）
     # 注意：此处仍需要循环处理每个batch的块索引， 因为block_table是变长的
@@ -112,7 +113,7 @@ def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size
             continue
 
         blocks = block_table[b, :n_blocks]
-        selected_blocks = kv_cache[blocks] # [n_blocks, block_size, hidden_dim]
+        selected_blocks = kv_cache[blocks]  # [n_blocks, block_size, hidden_dim]
         flat_seq = selected_blocks.view(-1, hidden_dim)[:seq_len]
 
         extracted[b, :seq_len] = flat_seq
@@ -163,7 +164,7 @@ def save_sparse_block_table(
 
     if block_table is None:
         return None  # :right:显式返回None, 与异常分支保持一致
-    
+
     try:
         return _save_sparse_block_table_impl(
             block_attention_score,
@@ -181,7 +182,7 @@ def save_sparse_block_table(
         )
     except Exception:
         import traceback
-		
+
         traceback.print_exc()
         return None
 
@@ -217,10 +218,10 @@ def _save_sparse_block_table_impl(
         # :right:新增：过滤条件校验
         kv_len = actual_seq_lengths_kv[bs_idx]
         query_len = (
-            actual_seq_lengths_q[bs_idx] - actual_seq_lengths_q[bs_idx - 1] 
-            if bs_idx > 0 
-			else actual_seq_lengths_q[bs_idx]
-		)
+            actual_seq_lengths_q[bs_idx] - actual_seq_lengths_q[bs_idx - 1]
+            if bs_idx > 0
+            else actual_seq_lengths_q[bs_idx]
+        )
         hash_val = req_hash.get(bs_idx) if req_hash is not None else None
 
         if hash_val is None:
@@ -235,7 +236,7 @@ def _save_sparse_block_table_impl(
     process_queries = batch_queries[process_idx].unsqueeze(1)
     process_keys_extracted, seq_mask = extract_blocks_flat(
         key_cache, block_table[process_idx], process_seq_lengths_kv, block_size
-    ) 
+    )
     # 计算注意力权重
     attn_per_head = get_attention_weights_batched(
         process_queries, process_keys_extracted, seq_mask, num_heads, kv_heads, head_dim
@@ -255,7 +256,7 @@ def _save_sparse_block_table_impl(
         # 2. 讲聚合结果转为列表， 并按总分从大到小排序
         num_blocks = process_seq_lengths_kv[i] // block_size
         _, topk_indices = torch.topk(
-	        block_score_sum, num_blocks, dim=0,largest=True, sorted=True
+            block_score_sum, num_blocks, dim=0, largest=True, sorted=True
         )
 
         results[hash_val] = topk_indices
