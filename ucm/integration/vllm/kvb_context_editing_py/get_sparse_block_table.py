@@ -91,11 +91,15 @@ def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size
     
     # 2. 预分配出Tensor和掩码
     extracted = torch.zeros(
-        (batch_size,max_seq_len,hidden_dim), dtype = kv_cache.dtype, device = device
+        (batch_size, max_seq_len, hidden_dim),
+        dtype=kv_cache.dtype,
+        device=device
 	)
 	seq_mask = torch.zeros(
-        (batch_size, max_seq_len), dtype=torch.bool, device=device
-    )
+        (batch_size, max_seq_len),
+        dtype=torch.bool,
+        device=device
+	)
 
     # 3. 向量化索引提取（避免Python for 循环）
     # 注意：此处仍需要循环处理每个batch的块索引， 因为block_table是变长的
