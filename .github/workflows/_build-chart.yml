@@ -77,7 +77,9 @@ jobs:
               >"out/rendered/${product}-${variant}.yaml"
             grep -Fq "${repository}:${tag}" "out/rendered/${product}-${variant}.yaml"
             grep -Fq "${expected}" "out/rendered/${product}-${variant}.yaml"
-          done < <(jq -r '.families[] | [.product_id,.variant,.target_repository,.target_tag] | @tsv' "${plan}")
+          done < <(jq -r '.families[] |
+            select(.product_id == "vllm" or .product_id == "vllm-ascend") |
+            [.product_id,.variant,.target_repository,.target_tag] | @tsv' "${plan}")
           helm package "${source}" \
             --version "${chart_version}" \
             --app-version "${app_version}" \

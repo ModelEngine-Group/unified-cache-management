@@ -145,7 +145,11 @@ def _meta_package(
 def _runtime_label(runtime: Mapping[str, Any]) -> str:
     accelerator = str(runtime["accelerator_runtime"])
     os_label = f"{runtime['os_id']} {runtime['os_version']}"
-    product = "vLLM Ascend" if runtime["product_id"] == "vllm-ascend" else "vLLM"
+    product = {
+        "vllm": "vLLM",
+        "vllm-ascend": "vLLM Ascend",
+        "sglang": "SGLang",
+    }.get(str(runtime["product_id"]), str(runtime["product_id"]))
     prefix = f"{product} {runtime['version']}"
     if accelerator.startswith("cuda-"):
         return f"{prefix} · CUDA {accelerator.removeprefix('cuda-')} · {os_label}"

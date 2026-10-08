@@ -101,7 +101,7 @@ def build_site(
         print(f"[docs] Installation artifacts: {manifest['release']['url']}")
     else:
         print(
-            "[docs] No completed Schema 9 release; installation links to source builds."
+            "[docs] No completed supported release manifest; installation links to source builds."
         )
 
 

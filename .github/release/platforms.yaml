@@ -3,6 +3,7 @@ schema_version: 3
 
 excluded_upstream_variants:
   vllm-ascend: [310p]
+  sglang: []
 
 builder_families:
   cuda:
@@ -19,6 +20,8 @@ builder_families:
       amd64: quay.io/ascend/manylinux
       arm64: quay.io/ascend/manylinux
     manylinux: manylinux_2_34
+    manylinux_by_runtime:
+      cann-9.0.0: manylinux_2_28
     required_commands: [gcc, g++, make, git, cmake, patchelf]
     required_files: [acl.h]
     variant_required_files:

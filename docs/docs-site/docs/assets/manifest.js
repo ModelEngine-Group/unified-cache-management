@@ -8,14 +8,14 @@
   "use strict";
 
   var KIND = "ucm-release-manifest";
-  var SCHEMA_VERSION = 9;
+  var SCHEMA_VERSION = 10;
   var manifestScriptSource =
     typeof document !== "undefined" && document.currentScript
       ? document.currentScript.src
       : null;
 
   function validateManifest(value) {
-    if (!value || value.kind !== KIND || value.schema_version !== SCHEMA_VERSION) {
+    if (!value || value.kind !== KIND || ![9, SCHEMA_VERSION].includes(value.schema_version)) {
       throw new TypeError("release manifest schema_version must be " + SCHEMA_VERSION);
     }
     if (!value.release || !value.python || !("chart" in value) ||

@@ -13,6 +13,14 @@ from packaging.version import Version
 from . import runtime, serialization
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+CHART_PRODUCTS = frozenset({"vllm", "vllm-ascend"})
+
+
+def chart_families(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the product families that are represented by the Helm Chart."""
+    return [
+        family for family in plan["families"] if family["product_id"] in CHART_PRODUCTS
+    ]
 
 
 def _preferred_reference(plan: dict[str, Any], reference: str) -> str:
@@ -52,7 +60,7 @@ def render_values(plan: dict[str, Any], source: str) -> str:
     if plan["route"] != "release":
         return source
     families = sorted(
-        plan["families"],
+        chart_families(plan),
         key=lambda family: (
             family["product_id"],
             Version(family["runtime"]["version"]),
