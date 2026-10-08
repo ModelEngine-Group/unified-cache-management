@@ -95,7 +95,7 @@ def extract_blocks_flat(kv_cache, block_table, actual_seq_lengths_kv, block_size
         dtype=kv_cache.dtype,
         device=device
 	)
-	seq_mask = torch.zeros(
+    seq_mask = torch.zeros(
         (batch_size, max_seq_len),
         dtype=torch.bool,
         device=device
