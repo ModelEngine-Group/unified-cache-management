@@ -1,24 +1,25 @@
 # 版权所有 (c) 华为技术有限公司 2012-2026
-import time
-import json
-import sys
-import signal
 import atexit
 import functools
-from typing import List, Iterable, Tuple
+import json
+import signal
+import sys
+import time
+from typing import Iterable, List, Tuple
+
 MS = 1000
 Pair = Tuple[List, List]
 
 
-#-----------逐条读取------------
+# -----------逐条读取------------
 def iter_pairs(path: str) -> Iterable[Pair]:
     """流式读取，每次yield (prompt_list, output_list)"""
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:                    # 跳过空行
+            if line:  # 跳过空行
                 item = json.loads(line)
-                yield item['prompt'], item['output']
+                yield item["prompt"], item["output"]
 
 
 def profile_function(counter_name):
@@ -160,7 +161,8 @@ class PerfCounters(object):
             if rec.total_cnt > 0:
                 print(
                     f"{counter_name:<50} {rec.total_time * MS / rec.total_cnt:>20.6f}{rec.max_time * MS:>20.6f} \
-                        {rec.total_cnt:>20}")
+                        {rec.total_cnt:>20}"
+                )
 
         print("-" * 100)
         print("blocks命中率:{}".format(self.hit_blocks_num / self.all_blocks_num))
@@ -174,7 +176,7 @@ class PerfCounters(object):
         PerfCounters.get_inst().print()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     class TestClass(object):
         @profile_function("testclass")
         def test_method(self):
@@ -197,7 +199,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"调用出错: {e}")
         else:
-            if result >= 0: # 假设合法的业务结果是大于等于0的
+            if result >= 0:  # 假设合法的业务结果是大于等于0的
                 print(f"获取有效结果: {result}")
             else:
                 print(f"结果不满足业务预期: {result}")
