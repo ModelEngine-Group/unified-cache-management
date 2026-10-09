@@ -19,7 +19,10 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _check_shm_capacity,
+    _get_store_gc_block_size,
+    _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    _worker_publish_block_size,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
@@ -310,6 +313,12 @@ class FAWADumpTask:
     event_handle: int
 
 
+@dataclass(frozen=True)
+class BlockGeometry:
+    logical: int
+    physical: int
+
+
 class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """UCM connector for mixed full-attention and window KV cache groups.
 
@@ -386,6 +395,55 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return self.hash_block_size
 
     @classmethod
+    def ascend_block_geometry(
+        cls, spec, *, block_size_is_logical: bool | None = None
+    ) -> BlockGeometry:
+        """Follow Ascend's block convention, not the inherited storage property.
+
+        Old v1 runners allocate block_size rows even if vLLM exposes an inherited
+        storage_block_size = block_size // compress_ratio property. The newer
+        logical-block implementation exposes get_storage_block_size in Ascend.
+        Detection assumes that helper and the runner's logical-block convention
+        are introduced together; partial cherry-picks must explicitly provide
+        block_size_is_logical to match their runner.
+        """
+        if block_size_is_logical is None:
+            try:
+                from vllm_ascend.core.kv_cache_interface import (  # noqa: F401
+                    get_storage_block_size,
+                )
+            except ImportError:
+                block_size_is_logical = False
+            else:
+                block_size_is_logical = True
+
+        nested = getattr(spec, "kv_cache_specs", None)
+        if nested:
+            geometries = {
+                cls.ascend_block_geometry(
+                    member, block_size_is_logical=block_size_is_logical
+                )
+                for member in nested.values()
+            }
+            if len(geometries) != 1:
+                raise ValueError(
+                    f"Inconsistent Ascend group block geometry: {geometries}"
+                )
+            return geometries.pop()
+
+        size = int(spec.block_size)
+        ratio = int(getattr(spec, "compress_ratio", 1))
+        if min(size, ratio) <= 0:
+            raise ValueError("Ascend block size and compress ratio must be positive.")
+        if block_size_is_logical:
+            if size % ratio:
+                raise ValueError(
+                    "Logical block size must be divisible by compress ratio."
+                )
+            return BlockGeometry(size, size // ratio)
+        return BlockGeometry(size * ratio, size)
+
+    @classmethod
     def can_handle_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
@@ -452,7 +510,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(spec, "sliding_window", None) is None
                 and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
             ):
-                c4_block_sizes.add(kv_cache_spec.block_size)
+                c4_block_sizes.add(cls.ascend_block_geometry(kv_cache_spec).physical)
 
         if len(c4_block_sizes) != 1:
             raise ValueError(
@@ -496,12 +554,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
             spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
             window_size = getattr(spec, "sliding_window", None)
-            compress_ratio = getattr(spec, "compress_ratio", 1)
             token_block_size = kv_cache_spec.block_size
             if self.is_ascend_layout:
                 # Ascend compressed groups expose a logical block span scaled by
                 # the compression ratio.
-                token_block_size = kv_cache_spec.block_size * compress_ratio
+                token_block_size = self.ascend_block_geometry(kv_cache_spec).logical
 
             if window_size is None:
                 # FA groups store one canonical hash block per row.
@@ -517,7 +574,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     layer_index = extract_layer_index(tensor_name)
                     tail_tokens = window_size - layer_compress_ratios[layer_index]
 
-                tail_blocks = tail_tokens // token_block_size
                 self.window_group_ids.append(group_id)
 
             tail_blocks = max(tail_tokens // token_block_size, 1)
@@ -536,50 +592,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"Maximum token block size {self.max_token_block_size} must be "
                 f"divisible by hash block size {self.hash_block_size}."
             )
-        # get file size for block gc
-        if len(layer_compress_ratios) < 61:
-            # for dsv4 flash
-            num_c4a_layers = 21
-            num_c128a_layers = 20
-            # TODO only support for dp tp
-            num_total_layers = 43
-        else:
-            # for dsv4 pro
-            num_c4a_layers = 30
-            num_c128a_layers = 31
-            num_total_layers = 61
-
-        if (
-            self._vllm_config.speculative_config is not None
-            and self._vllm_config.speculative_config.num_speculative_tokens > 0
-        ):
-            num_total_layers += 1
-
-        # TODO we should get file size in worker thread
-        if self.is_ascend_layout:
-            if self.ascend_base_block_size is None:
-                raise RuntimeError("Ascend base block size was not initialized.")
-            # One C4 row consumes a complete physical block. One C128 row
-            # consumes block_size / 32 physical tokens, so both contributions
-            # scale linearly with the configured vLLM block size.
-            c4a_bytes_per_block_token = 1024 + 128 + 2
-            c128a_bytes_per_block_token = 32
-            self.file_size["FA"] = self.ascend_base_block_size * (
-                c4a_bytes_per_block_token * num_c4a_layers
-                + c128a_bytes_per_block_token * num_c128a_layers
-            )
-            self.file_size["WA"] = (
-                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
-            )
-        else:
-            self.file_size["FA"] = (
-                37376 + 8448
-            ) * num_c4a_layers + 1168 * num_c128a_layers
-            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
-                8192 + 32768
-            ) * num_c4a_layers
-        self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
-        self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
 
     def _create_fa_store(
         self,
@@ -725,17 +737,34 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
-            if self.file_size[label] != padded_size:
-                logger.info_once(
-                    f"GC file size of {label} does not match real file size. "
-                    f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
-                )
+            self.file_size[label] = padded_size
+            gc_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                padded_size,
+                padded_size,
+            )
+            _worker_publish_block_size(
+                gc_size,
+                self._dp_rank,
+                store_suffix=store_suffix,
+            )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
-        else:
-            config["block_size"] = self.file_size[label]
+        elif self._gc_owner:
+            size = _scheduler_read_block_size(
+                store_suffix=store_suffix,
+            )
+            if size is None:
+                raise RuntimeError(
+                    f"FAWA {label} requires worker-published record size before "
+                    "scheduler store initialization; check worker registration "
+                    "order and shared /dev/shm visibility."
+                )
+            self.file_size[label] = size
+            config["block_size"] = size
         logger.info(
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
@@ -775,7 +804,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             layout = KVCacheGroupLayout(
                 group_caches,
                 is_ascend_layout=self.is_ascend_layout,
-                expected_block_size=group_spec.kv_cache_spec.block_size,
+                expected_block_size=(
+                    self.ascend_block_geometry(group_spec.kv_cache_spec).physical
+                    if self.is_ascend_layout
+                    else group_spec.kv_cache_spec.block_size
+                ),
             )
             self.group_layouts[group_id] = layout
 
@@ -1662,8 +1695,9 @@ class UCMFAWALiteConnector(UCMLiteConnector):
     ) -> tuple[int, int, int]:
         """Compute (hbm_block_data_size, fa_file_size, wa_file_size).
 
-        Mirrors UCMFAWAConnector._init_group_metas file_size logic and
-        the calculator's deriveDSv4Params hbm formula.
+        Estimates file sizes from the DS V4 layer layout (the real connector
+        uses worker-published sizes) and mirrors the calculator's
+        deriveDSv4Params hbm formula.
         """
         hf = vllm_config.model_config.hf_text_config
         ratios = getattr(hf, "compress_ratios", None)
@@ -1684,7 +1718,7 @@ class UCMFAWALiteConnector(UCMLiteConnector):
         lb = min(num_c4a, num_c128a) or 1
         num_tuples = cls._approximate_gcd(buckets, lb)
 
-        # file_size (same as _init_group_metas)
+        # file_size estimate
         c4a_per_blk_tok = 1024 + 128 + 2  # mla + indexer + scale
         c128a_per_blk_tok = 32
         if is_ascend:
@@ -1751,7 +1785,12 @@ class UCMFAWALiteConnector(UCMLiteConnector):
             cr = max(cr, 1)
             bs_g = spec.block_size
             block_sizes_for_gcd.append(bs_g)
-            lbs = bs_g * cr if (is_ascend and window is None) else bs_g
+            # Ascend block_size may be physical (<=0.26) or logical (>=0.27).
+            lbs = (
+                UCMFAWAConnector.ascend_block_geometry(spec).logical
+                if is_ascend
+                else bs_g
+            )
             effective_block_sizes.append(lbs)
             mtype = (
                 "compress"
