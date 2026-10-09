@@ -208,7 +208,7 @@
           "refId": "A"
         }
       ],
-      "title": "KV Buffer Slot Usage",
+      "title": "Max Local KV Buffer Slot Usage",
       "type": "stat"
     },
     {
@@ -660,7 +660,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 28
       },
@@ -680,28 +680,28 @@
       },
       "targets": [
         {
-          "expr": "max (ucm:dramstore_task_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_task_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore task queue",
+          "expr": "max by (instance) (ucm:dramstore_task_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_task_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore task queue / {{instance}}",
           "refId": "A"
         },
         {
-          "expr": "max (ucm:dramstore_completion_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_completion_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore completion queue",
+          "expr": "max by (instance) (ucm:dramstore_completion_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_completion_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore completion queue / {{instance}}",
           "refId": "B"
         },
         {
-          "expr": "max (ucm:dramstore_transport_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_transport_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore transport queue",
+          "expr": "max by (instance) (ucm:dramstore_transport_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_transport_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore transport queue / {{instance}}",
           "refId": "C"
         },
         {
-          "expr": "max (ucm:drampool_queue_request_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:drampool_queue_request_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramPool request queue",
+          "expr": "max by (instance) (ucm:drampool_queue_request_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:drampool_queue_request_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramPool request queue / {{instance}}",
           "refId": "D"
         },
         {
-          "expr": "max (ucm:drampool_queue_completion_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:drampool_queue_completion_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramPool completion queue",
+          "expr": "max by (instance) (ucm:drampool_queue_completion_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:drampool_queue_completion_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramPool completion queue / {{instance}}",
           "refId": "E"
         }
       ],
@@ -721,8 +721,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 28
       },
       "options": {
@@ -741,22 +741,66 @@
       },
       "targets": [
         {
-          "expr": "max (ucm:dramstore_reply_buffer_used_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_reply_buffer_capacity_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore reply buffer",
+          "expr": "max by (instance) (ucm:dramstore_reply_buffer_used_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_reply_buffer_capacity_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore reply buffer / {{instance}}",
           "refId": "A"
         },
         {
-          "expr": "max (ucm:drampool_flag_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
-          "legendFormat": "DramPool flag buffer",
+          "expr": "max by (instance) (ucm:drampool_flag_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "DramPool flag buffer / {{instance}}",
           "refId": "B"
         },
         {
-          "expr": "max (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
-          "legendFormat": "DramPool KV buffer",
+          "expr": "max by (instance) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "DramPool KV buffer / {{instance}}",
           "refId": "C"
         }
       ],
       "title": "Memory pool utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Local KV buffer pool usage ratio per instance and slot size. Extracts slot_size_bytes from metrics named ucm:drampool_buffer_pool_usage_ratio_<size>. Retains instances separately and takes the maximum across other selected labels. This is not a cluster-wide memory usage ratio. Missing per-size metrics produce no data.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (instance, slot_size_bytes) (label_replace({__name__=~\"ucm:drampool_buffer_pool_usage_ratio_[0-9]+\",job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}, \"slot_size_bytes\", \"$1\", \"__name__\", \"ucm:drampool_buffer_pool_usage_ratio_([0-9]+)\"))",
+          "legendFormat": "{{instance}} / {{slot_size_bytes}} bytes",
+          "refId": "A"
+        }
+      ],
+      "title": "KV buffer pool utilization by size",
       "type": "timeseries"
     },
     {
