@@ -42,8 +42,8 @@ private:
                        std::uint64_t enqueueUs);
     Status ProcessLoad(const KvLoadRequest& request, const transport::ManagerID& peerOneSidedId,
                        std::uint64_t enqueueUs);
-    Status ProcessLookup(const KvLookupRequest& request,
-                         const transport::ManagerID& peerOneSidedId, std::uint64_t enqueueUs);
+    Status ProcessLookup(const KvLookupRequest& request, const transport::ManagerID& peerOneSidedId,
+                         std::uint64_t enqueueUs);
 
     void DeleteItemsMetadata(const std::vector<TransferItem>& items);
     void LoadEndItems(const std::vector<TransferItem>& items);

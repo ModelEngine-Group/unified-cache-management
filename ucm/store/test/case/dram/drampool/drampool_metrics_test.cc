@@ -21,14 +21,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "drampool_metrics.h"
 #include <cstddef>
 #include <cstdint>
+#include <gtest/gtest.h>
 #include <iterator>
 #include <string>
 #include <thread>
-#include <gtest/gtest.h>
 #include "drampool_config.h"
-#include "drampool_metrics.h"
 #include "metrics_api.h"
 
 namespace UC::DramPool {
@@ -60,27 +60,15 @@ constexpr const char* kCounterNames[] = {
 };
 
 constexpr const char* kGaugeNames[] = {
-    kMetadataEntryCount,
-    kFlagPoolUsageRatio,
-    kBufferPoolUsageRatio,
-    kQueueRequestSize,
-    kQueueCompletionInflight,
-    kQueueCompletionSize,
+    kMetadataEntryCount, kFlagPoolUsageRatio,      kBufferPoolUsageRatio,
+    kQueueRequestSize,   kQueueCompletionInflight, kQueueCompletionSize,
 };
 
 constexpr const char* kHistogramNames[] = {
-    kDumpPrepareDurationMs,
-    kLoadPrepareDurationMs,
-    kLookupScanDurationMs,
-    kDumpTransferDurationMs,
-    kLoadTransferDurationMs,
-    kResponseRttMs,
-    kMetadataStoreendDurationMs,
-    kMetadataLoadendDurationMs,
-    kMetadataEvictGcDurationMs,
-    kQueueRequestEnqueueWaitMs,
-    kDumpBatchTotalDurationMs,
-    kLoadBatchTotalDurationMs,
+    kDumpPrepareDurationMs,      kLoadPrepareDurationMs,     kLookupScanDurationMs,
+    kDumpTransferDurationMs,     kLoadTransferDurationMs,    kResponseRttMs,
+    kMetadataStoreendDurationMs, kMetadataLoadendDurationMs, kMetadataEvictGcDurationMs,
+    kQueueRequestEnqueueWaitMs,  kDumpBatchTotalDurationMs,  kLoadBatchTotalDurationMs,
     kLookupBatchTotalDurationMs,
 };
 

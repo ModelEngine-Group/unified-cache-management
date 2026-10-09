@@ -62,9 +62,9 @@ void TaskWorker::Run(const std::atomic_bool& stop)
             // stamped by the RequestReceiver) to this dequeue. The TryPush wait
             // itself is covered by queue_request_enqueue_wait_ms.
             if (task->enqueue_us != 0) {
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestResidenceMs),
-                                         static_cast<double>(SteadyNowUs() - task->enqueue_us) /
-                                             1000.0);
+                UC::Metrics::UpdateStats(
+                    NAME_TO_METRIC_ID(kQueueRequestResidenceMs),
+                    static_cast<double>(SteadyNowUs() - task->enqueue_us) / 1000.0);
             }
             const auto processStatus = ProcessOneRequest(std::move(task));
             if (processStatus.Failure()) {
@@ -124,8 +124,7 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
 }
 
 Status TaskWorker::ProcessDump(const KvDumpRequest& request,
-                               const transport::ManagerID& peerOneSidedId,
-                               std::uint64_t enqueueUs)
+                               const transport::ManagerID& peerOneSidedId, std::uint64_t enqueueUs)
 {
     ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kDumpPrepareDurationMs));
     if (runtime_.protocol.GetPackedResponseSize(OpType::DUMP, request.batch_size) >
@@ -228,8 +227,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
 }
 
 Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
-                               const transport::ManagerID& peerOneSidedId,
-                               std::uint64_t enqueueUs)
+                               const transport::ManagerID& peerOneSidedId, std::uint64_t enqueueUs)
 {
     ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
     if (runtime_.protocol.GetPackedResponseSize(OpType::LOAD, request.batch_size) >

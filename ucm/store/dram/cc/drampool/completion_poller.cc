@@ -58,9 +58,9 @@ void ReportBatchMetrics(CompletionRecord& record)
 
     switch (record.opcode) {
         case OpType::DUMP: {
-            const auto failedEntries = std::count(record.results.begin(), record.results.end(),
-                                                  static_cast<std::uint8_t>(
-                                                      DumpLoadResult::Failed));
+            const auto failedEntries =
+                std::count(record.results.begin(), record.results.end(),
+                           static_cast<std::uint8_t>(DumpLoadResult::Failed));
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
                                      static_cast<double>(failedEntries));
             break;
@@ -70,14 +70,12 @@ void ReportBatchMetrics(CompletionRecord& record)
             // NotFound), keeping the lookup scan and its scan-duration timer free
             // of bookkeeping.
             const auto missEntries = std::count(record.results.begin(), record.results.end(),
-                                                static_cast<std::uint8_t>(
-                                                    LookupResult::NotFound));
+                                                static_cast<std::uint8_t>(LookupResult::NotFound));
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
                                      static_cast<double>(missEntries));
             break;
         }
-        default:
-            break;
+        default: break;
     }
 }
 
@@ -102,8 +100,7 @@ void ReportBatchEndToEnd(CompletionRecord& record)
         case OpType::LOOKUP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupBatchTotalDurationMs), elapsedMs);
             break;
-        default:
-            break;
+        default: break;
     }
     record.enqueue_us = 0;
 }

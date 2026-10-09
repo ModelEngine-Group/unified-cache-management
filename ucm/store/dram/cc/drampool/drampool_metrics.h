@@ -144,9 +144,12 @@ private:
 // The values mirror examples/metrics/metrics_configs.yaml, which is the single
 // source of truth for metric names, types, and buckets (the Python side
 // registers the same set via ucmmetrics.create_stats); keep both in sync.
-inline constexpr double kMsBucketsSettlement[] = {0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500};
-inline constexpr double kMsBucketsPrepare[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
-inline constexpr double kMsBucketsTransfer[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
+inline constexpr double kMsBucketsSettlement[] = {0.01, 0.05, 0.1, 0.5, 1,   2,
+                                                  5,    10,   20,  50,  100, 500};
+inline constexpr double kMsBucketsPrepare[] = {0.1, 0.5, 1,   2,   5,    10,   20,
+                                               50,  100, 200, 500, 1000, 2000, 5000};
+inline constexpr double kMsBucketsTransfer[] = {0.1, 0.5, 1,   2,    5,    10,   20,   50,
+                                                100, 200, 500, 1000, 2000, 5000, 10000};
 inline constexpr double kMsBucketsScan[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500};
 inline constexpr double kMsBucketsLookupBatch[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000};
 inline constexpr double kMsBucketsGc[] = {1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
@@ -176,14 +179,12 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kDumpFailedEntriesTotal, "counter"},
         {kDumpPrepareDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
         {kDumpMetadataDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
-        {kDumpSubmitDurationMs, "histogram", kMsBucketsSettlement,
-         std::size(kMsBucketsSettlement)},
+        {kDumpSubmitDurationMs, "histogram", kMsBucketsSettlement, std::size(kMsBucketsSettlement)},
         // C. Load business
         {kLoadMissEntriesTotal, "counter"},
         {kLoadPrepareDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
         {kLoadMetadataDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
-        {kLoadSubmitDurationMs, "histogram", kMsBucketsSettlement,
-         std::size(kMsBucketsSettlement)},
+        {kLoadSubmitDurationMs, "histogram", kMsBucketsSettlement, std::size(kMsBucketsSettlement)},
         // D. Lookup business
         {kLookupMissEntriesTotal, "counter"},
         {kLookupScanDurationMs, "histogram", kMsBucketsScan, std::size(kMsBucketsScan)},
@@ -191,8 +192,7 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kDumpTransferDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kLoadTransferDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kTransferFailuresTotal, "counter"},
-        {kGetStatusDurationMs, "histogram", kMsBucketsSettlement,
-         std::size(kMsBucketsSettlement)},
+        {kGetStatusDurationMs, "histogram", kMsBucketsSettlement, std::size(kMsBucketsSettlement)},
         {kResponseSubmitDurationMs, "histogram", kMsBucketsSettlement,
          std::size(kMsBucketsSettlement)},
         {kResponseRttMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
@@ -221,10 +221,8 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kQueueCompletionCapacity, "gauge"},
         {kQueueResponseBufferRetryTotal, "counter"},
         // I. Batch end-to-end duration
-        {kDumpBatchTotalDurationMs, "histogram", kMsBucketsTransfer,
-         std::size(kMsBucketsTransfer)},
-        {kLoadBatchTotalDurationMs, "histogram", kMsBucketsTransfer,
-         std::size(kMsBucketsTransfer)},
+        {kDumpBatchTotalDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
+        {kLoadBatchTotalDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kLookupBatchTotalDurationMs, "histogram", kMsBucketsLookupBatch,
          std::size(kMsBucketsLookupBatch)},
     };
