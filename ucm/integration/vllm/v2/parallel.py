@@ -13,7 +13,7 @@ from .ucm_proxy import KVCacheValue, UCMProxy
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
-    from .ucm_kv_cache import UCMKVCacheSpec
+    from .layout import UCMKVCacheSpec
 
 
 @dataclass(frozen=True)

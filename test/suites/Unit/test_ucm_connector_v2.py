@@ -237,10 +237,11 @@ def resolve_kv_cache_block_sizes(kv_cache_config, vllm_config):
 vllm_kv_cache_utils.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
 sys.modules.setdefault(vllm_kv_cache_utils.__name__, vllm_kv_cache_utils)
 
-from ucm.integration.vllm.v2.ucm_kv_cache import (  # noqa: E402
+from ucm.integration.vllm.v2.layout import (  # noqa: E402
     UCMKVCacheLayout,
     parse_kv_cache_config,
 )
+from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder  # noqa: E402
 from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
     UCMConnector,
     UCMWorkerMetadata,
@@ -455,7 +456,7 @@ class FakeProxy:
 
 def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
     """Flatten the native matrices only for existing byte-address assertions."""
-    transfers = getattr(layout, f"build_{operation}_transfers")(
+    transfers = getattr(UCMTransferBuilder(layout), f"build_{operation}_transfers")(
         metadata, *args, **kwargs
     )
     block_ids = tuple(
@@ -913,7 +914,7 @@ class KVCacheSpecTest(unittest.TestCase):
 
 class MtpLayerIndexTest(unittest.TestCase):
     def test_native_numbering(self):
-        from ucm.integration.vllm.v2.ucm_kv_cache import _layer_index
+        from ucm.integration.vllm.v2.layout.kv_cache import _layer_index
 
         for name, device, expected in (
             ("model.layers.0.attn", "npu", 0),
@@ -1370,7 +1371,7 @@ class ParallelShardTest(unittest.TestCase):
         meta = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
         )
-        (transfer,) = layout.build_dump_transfers(meta)
+        (transfer,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
         self.assertEqual(transfer.ptrs.tolist(), [[1016]])
         self.assertEqual(transfer.ucm_block_offsets.tolist(), [[0]])
 
@@ -1628,8 +1629,10 @@ class LayerwiseLifecycleTest(unittest.TestCase):
                 np.array([[4]], dtype=np.uint64),
             ),)
 
-        layout.build_dump_transfers = build
-        worker = SimpleNamespace(layout=layout, use_layerwise=True)
+        worker = SimpleNamespace(
+            layout=layout, use_layerwise=True,
+            transfer_builder=SimpleNamespace(build_dump_transfers=build),
+        )
         batch = common._v2_batch(worker, SimpleNamespace(requests={}), "dump")
         self.assertEqual(batch.sizes, (8,))
         worker.use_layerwise = False
@@ -1740,14 +1743,15 @@ class ProxyAdapterTest(unittest.TestCase):
     def test_wait_for_save_commits_after_all_dumps_and_not_on_dump_failure(self):
         connector = UCMConnector.__new__(UCMConnector)
         connector.use_layerwise = False
-        connector.spec = SimpleNamespace(dispatch_routes=lambda: ())
+        connector.spec = SimpleNamespace(fa_groups=(), wa_groups=(), state_groups=())
         connector.has_connector_metadata = lambda: True
         connector._get_connector_metadata = lambda: UCMConnectorMetadata()
         batches = (
             SimpleNamespace(keys=(b"a" * 16,)),
             SimpleNamespace(keys=(b"b" * 16,)),
         )
-        connector.layout = SimpleNamespace(build_dump_transfers=lambda _: batches)
+        connector.layout = SimpleNamespace(spec=connector.spec, group_layouts={})
+        connector.transfer_builder = SimpleNamespace(build_dump_transfers=lambda _: batches)
         connector._proxy = mock.Mock()
         connector.wait_for_save()
         self.assertEqual(
@@ -3190,7 +3194,7 @@ class RaggedLayoutTest(unittest.TestCase):
             layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
             [0],
         )
-        from ucm.integration.vllm.v2.store_layout import GroupStoreLayout
+        from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
 
         layerwise_store = GroupStoreLayout.build(
             parsed.groups[group_layout.group_id], group_layout,
@@ -4114,7 +4118,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         )
 
     def test_head_separated_wa_partial_head_then_whole_block(self):
-        from ucm.integration.vllm.v2.store_layout import GroupStoreLayout
+        from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
 
         name = "model.layers.1.swa_cache"
         parsed = parse_kv_cache_config(
@@ -4446,14 +4450,14 @@ class MatrixTransferTest(unittest.TestCase):
     def test_matrix_bytes_and_layerwise_offsets(self):
         layout, _ = LayerViewSegmentsTest()._layout("LHBNC")
         meta = self._metadata()
-        (batch,) = layout.build_dump_transfers(meta)
+        (batch,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
         self.assertEqual(batch.keys, (b"a" * 16, b"b" * 16))
         self.assertEqual(batch.ptrs.shape, (2, 4))
         self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8, 16, 24]] * 2)
         self.assertEqual(batch.sizes.tolist(), [[8] * 4] * 2)
         self.assertEqual(batch.sizes.strides[0], 0)
         self.assertFalse(batch.sizes.flags.writeable)
-        (selected,) = layout.build_load_transfers(meta, layer_id=1)
+        (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
         np.testing.assert_array_equal(selected.ptrs, batch.ptrs[:, 2:])
         self.assertEqual(selected.ucm_block_offsets.tolist(), [[16, 24]] * 2)
         legacy = _flat_layout_records(layout, 'dump', meta)
@@ -4518,11 +4522,11 @@ class MatrixTransferTest(unittest.TestCase):
         meta = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
         )
-        (batch,) = layout.build_load_transfers(meta)
+        (batch,) = UCMTransferBuilder(layout).build_load_transfers(meta)
         self.assertEqual(batch.ptrs.tolist(), [[1000, 2032], [1008, 2040]])
         self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8], [0, 8]])
         self.assertEqual(batch.sizes.tolist(), [[8, 8], [8, 8]])
-        (selected,) = layout.build_load_transfers(meta, layer_id=1)
+        (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
         self.assertEqual(selected.ucm_block_offsets.tolist(), [[8], [8]])
 
     def test_shared_keys_across_requests_keep_separate_destinations(self):
@@ -4539,7 +4543,8 @@ class MatrixTransferTest(unittest.TestCase):
             load_plans=(other_plan,),
             dump_plans=(other_plan,),
         )
-        for build in (layout.build_load_transfers, layout.build_dump_transfers):
+        builder = UCMTransferBuilder(layout)
+        for build in (builder.build_load_transfers, builder.build_dump_transfers):
             for layer_id in (None, 1):
                 batches = build(metadata, layer_id=layer_id)
                 self.assertEqual(len(batches), 2)
@@ -4549,14 +4554,14 @@ class MatrixTransferTest(unittest.TestCase):
     def test_templates_and_retained_transfers_are_independent(self):
         layout, _ = LayerViewSegmentsTest()._layout("LBHNC")
         meta = self._metadata()
-        (first,) = layout.build_load_transfers(meta)
-        (retained,) = layout.build_load_transfers(meta)
+        (first,) = UCMTransferBuilder(layout).build_load_transfers(meta)
+        (retained,) = UCMTransferBuilder(layout).build_load_transfers(meta)
         expected = retained.ptrs.copy()
         first.ptrs[:] = 1
         # Even a caller deliberately changing a broadcast view's backing
         # cannot change the compiled layout or another retained submission.
         first.sizes.base[:] = 1
-        (later,) = layout.build_load_transfers(meta)
+        (later,) = UCMTransferBuilder(layout).build_load_transfers(meta)
         np.testing.assert_array_equal(retained.ptrs, expected)
         np.testing.assert_array_equal(later.ptrs, expected)
         self.assertEqual(later.sizes.tolist(), [[8] * 4] * 2)
@@ -4595,7 +4600,7 @@ class MatrixTransferTest(unittest.TestCase):
 
     def test_matrix_buffers_live_until_async_wait(self):
         layout, _ = LayerViewSegmentsTest()._layout("LBHNC")
-        (batch,) = layout.build_load_transfers(self._metadata())
+        (batch,) = UCMTransferBuilder(layout).build_load_transfers(self._metadata())
 
         class Deferred(FakeProxy):
             def load(self, keys, offsets, ptrs, sizes):

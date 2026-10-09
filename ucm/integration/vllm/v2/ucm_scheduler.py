@@ -12,13 +12,41 @@ import numpy as np
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
-from .ucm_kv_cache import UCMKVCacheGroupInfo, UCMKVCacheSpec
+from .layout import UCMKVCacheGroupInfo, UCMKVCacheSpec
 from .ucm_proxy import UCMProxyAdapter
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
+
+
+def dispatch_routes(
+    spec: UCMKVCacheSpec,
+) -> tuple[
+    tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...
+]:
+    """The routing table every dump/load works over: key kind -> groups.
+
+    FA holds the full-attention groups; WA the sliding groups that
+    re-store a window tail (tail 0 groups store nothing); State the
+    mamba snapshot groups. Empty kinds are absent, and
+    ``group_ucm_block_ids`` / dispatch plans index these in order.
+    """
+
+    routes: list[
+        tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]]
+    ] = []
+    if spec.fa_groups:
+        routes.append(("FA", spec.fa_groups))
+    wa_stored = tuple(
+        group for group in spec.wa_groups if (group.tail_tokens or 0) > 0
+    )
+    if wa_stored:
+        routes.append(("WA", wa_stored))
+    if spec.state_groups:
+        routes.append(("State", spec.state_groups))
+    return tuple(routes)
 
 
 class RequestHasher:
@@ -155,7 +183,7 @@ class UCMDispatcher:
         self.requests: dict[str, RequestState] = {}
         # The per-kind routing table (key kind -> participating groups),
         # built once: FA, then the tail-storing WA groups, then State.
-        self._routes = kv_cache_spec.dispatch_routes()
+        self._routes = dispatch_routes(kv_cache_spec)
         self._chain_tags = tuple(
             (label, _key_tag(label, tp_rank, pp_rank)) for label, _ in self._routes
         )

@@ -7,34 +7,21 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .layout.group import BlockAccess, KVCacheGroupLayout
-from .layout.view import LAYOUT_DEBUG, layout_debug
+from .group import BlockAccess, KVCacheGroupLayout
+from .view import LAYOUT_DEBUG, layout_debug
 
 if TYPE_CHECKING:
-    from .ucm_kv_cache import UCMKVCacheGroupInfo
+    from .kv_cache import UCMKVCacheGroupInfo
 
 
 @dataclass(frozen=True)
 class GroupStoreLayout:
-    """One group's record template; offsets are relative to the group start.
+    """One group's storage template, independent of request keys and plans.
 
-    One FA key identifies one UCM block (only its covered blocks):
-
-        UCM block
-        +-- group 0 (dispatch_routes order)
-        |   +-- window block 0 (oldest)
-        |   |   +-- layer/component/segment payloads
-        |   +-- window block 1
-        |       +-- layer/component/segment payloads
-        +-- group 1
-            +-- window block 0
-                +-- layer/component/segment payloads
-
-    ``ucm_block_offsets`` holds this group's local positions; the caller adds
-    the group base to produce offsets within the complete UCM block.
-
-    Whole Block First slots include their existing padding. Selecting layers
-    preserves record offsets; it does not repack the record.
+    Offsets are relative to this group's start. The caller chooses participating
+    groups and adds their storage bases to form the complete stored value.
+    Whole Block First slots include padding. Selecting segments preserves the
+    configured storage offsets; it does not repack the stored value.
     """
 
     blocks_per_key: int

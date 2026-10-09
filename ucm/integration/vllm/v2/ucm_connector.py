@@ -20,12 +20,13 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     SupportsHMA,
 )
 
-from .parallel import AllShardLookup, ParallelLayout
-from .ucm_kv_cache import (
+from .layout import (
     UCMKVCacheLayout,
     UCMKVCacheSpec,
     parse_kv_cache_config,
 )
+from .parallel import AllShardLookup, ParallelLayout
+from .ucm_kv_cache import UCMTransferBuilder
 from .ucm_proxy import (
     SimpleFileUCMProxy,
     UCMProxyAdapter,
@@ -36,6 +37,7 @@ from .ucm_scheduler import (
     RequestHasher,
     UCMConnectorMetadata,
     UCMDispatcher,
+    dispatch_routes,
 )
 from ucm.utils import Config
 
@@ -332,6 +334,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._save_error: UCMProxyError | None = None
         self._save_complete = False
         self.layout: UCMKVCacheLayout | None = None
+        self.transfer_builder: UCMTransferBuilder | None = None
         self._worker_metadata = UCMWorkerMetadata()
         self._invalid_block_ids: set[int] = set()
         self.dispatcher = (
@@ -381,6 +384,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             num_hidden_layers=self._num_hidden_layers,
             use_layerwise=self.use_layerwise,
         )
+        self.transfer_builder = UCMTransferBuilder(self.layout)
         self._proxy.register_tensors(kv_caches)
 
     def _mark_load_failed(self, request_id: str, request: Any) -> None:
@@ -409,13 +413,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         if not self.has_connector_metadata():
             return
         metadata = self._get_connector_metadata()
-        assert self.layout is not None
+        assert self.layout is not None and self.transfer_builder is not None
         for request_id, request in metadata.requests.items():
             request_metadata = UCMConnectorMetadata(requests={request_id: request})
             try:
                 if self.use_layerwise:
                     for layer_id in self.layout.layer_names_by_id:
-                        for batch in self.layout.build_load_transfers(
+                        for batch in self.transfer_builder.build_load_transfers(
                             request_metadata, layer_id=layer_id
                         ):
                             task = self._proxy.enqueue("load", batch)
@@ -423,7 +427,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                                 (request_id, task)
                             )
                 else:
-                    for batch in self.layout.build_load_transfers(request_metadata):
+                    for batch in self.transfer_builder.build_load_transfers(
+                        request_metadata
+                    ):
                         self._proxy.submit("load", batch)
             except UCMProxyError:
                 self._mark_load_failed(request_id, request)
@@ -467,13 +473,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
     def _save_layer(self, layer_name: str, metadata: UCMConnectorMetadata) -> None:
-        assert self.layout is not None
+        assert self.layout is not None and self.transfer_builder is not None
         if layer_name in self._saved_layer_names:
             return
         if self._save_error is not None:
             raise self._save_error
         try:
-            for batch in self.layout.build_dump_transfers(
+            for batch in self.transfer_builder.build_dump_transfers(
                 metadata, layer_name=layer_name
             ):
                 self._dump_tasks.append(self._proxy.enqueue("dump", batch))
@@ -507,7 +513,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.layout is not None
         empty_kinds = {
             kind
-            for kind, groups in self.layout.spec.dispatch_routes()
+            for kind, groups in dispatch_routes(self.layout.spec)
             if not any(g.group_id in self.layout.group_layouts for g in groups)
         }
         empty_keys = []
@@ -524,10 +530,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def wait_for_save(self) -> None:
         if not self.has_connector_metadata() or self._save_complete:
             return
-        assert self.layout is not None
+        assert self.layout is not None and self.transfer_builder is not None
         if not self.use_layerwise:
             metadata = self._dump_metadata()
-            batches = self.layout.build_dump_transfers(metadata)
+            batches = self.transfer_builder.build_dump_transfers(metadata)
             for batch in batches:
                 self._proxy.submit("dump", batch)
             empty_keys = self._dump_empty_shards(metadata)

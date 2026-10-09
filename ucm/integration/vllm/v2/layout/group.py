@@ -1,7 +1,7 @@
 """Physical KV-cache access, compiled once and resolved over block IDs.
 
 ``compile_access`` converts local token ranges to per-segment byte offsets and
-sizes. ``BlockAccess.resolve`` supplies the physical block IDs. Neither needs
+sizes. ``BlockAccess.resolve_ptrs`` supplies the physical block IDs. Neither needs
 hash keys or UCM window rules; store_layout.py composes their results into
 records. Whole Block First spans retain padding for the fast path, including
 State pages. Partial-token support is one policy for the entire group.
@@ -23,7 +23,7 @@ from .view import LayerView
 if TYPE_CHECKING:
     import torch
 
-    from ..ucm_kv_cache import UCMKVCacheGroupInfo, UCMLayerSpec
+    from .kv_cache import UCMKVCacheGroupInfo, UCMLayerSpec
 
 
 @dataclass(frozen=True)

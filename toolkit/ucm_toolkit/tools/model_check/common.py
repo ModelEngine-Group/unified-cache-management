@@ -1156,7 +1156,7 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     layout = getattr(connector, "layout", None)
     if layout is None:
         raise ValueError("connector v2 worker has no registered KV-cache layout")
-    builder = getattr(layout, f"build_{phase}_transfers")
+    builder = getattr(connector.transfer_builder, f"build_{phase}_transfers")
     if getattr(connector, "use_layerwise", False):
         transfers = tuple(
             transfer

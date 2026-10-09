@@ -5,11 +5,12 @@ v2 contract is validated.  Importing it does not alter connector registration.
 """
 
 from .ucm_connector import UCMConnector, UCMConnectorMetadata, UCMRuntimeContext
-from .ucm_kv_cache import (
+from .layout import (
     UCMKVCacheLayout,
     UCMKVCacheSpec,
     parse_kv_cache_config,
 )
+from .ucm_kv_cache import UCMTransferBuilder
 from .ucm_proxy import (
     SimpleFileUCMProxy,
     TorchTensorByteAccess,
@@ -25,6 +26,7 @@ __all__ = [
     "UCMDispatcher",
     "UCMKVCacheLayout",
     "UCMKVCacheSpec",
+    "UCMTransferBuilder",
     "UCMProxy",
     "UCMProxyAdapter",
     "UCMByteAccess",

@@ -1,4 +1,4 @@
-"""Build the per-group KV-cache addressing plans for connector v2.
+"""Layout entry point: metadata, HBM views and storage templates.
 
 One entry point, :func:`build_group_layouts`: walk every KV group of the
 parsed spec and hand the runtime views to :class:`KVCacheGroupLayout`,
@@ -13,13 +13,22 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from .group import KVCacheGroupLayout, TensorDescriptor
+from .group import BlockAccess, BlockFirstView, KVCacheGroupLayout, TensorDescriptor
+from .kv_cache import (
+    UCMLayerSpec,
+    UCMKVCacheGroupInfo,
+    UCMKVCacheLayout,
+    UCMKVCacheSpec,
+    _concrete_specs,
+    _layer_index,
+    parse_kv_cache_config,
+)
+from .store_layout import GroupStoreLayout
+from .view import ComponentView, LayerView, MemorySegment
 
 if TYPE_CHECKING:
+    import torch
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
-
-    from ..ucm_kv_cache import UCMKVCacheSpec
-    from ..ucm_proxy import KVCacheValue
 
 
 def _parse_descriptors(
@@ -80,13 +89,11 @@ def _attention_view_order(
 def build_group_layouts(
     spec: "UCMKVCacheSpec",
     kv_cache_config: "KVCacheConfig",
-    kv_caches: Mapping[str, "KVCacheValue"],
+    kv_caches: Mapping[str, "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]"],
     *,
     num_hidden_layers: int,
 ) -> dict[int, KVCacheGroupLayout]:
     """Bind local native declarations and real views to each persistent group."""
-    from ..ucm_kv_cache import UCMLayerSpec, _concrete_specs, _layer_index
-
     block_first_layout = False
     if spec.device_type in ("cuda", "cpu"):
         from vllm.v1.kv_cache_layout import KVCacheLayout
@@ -134,4 +141,19 @@ def build_group_layouts(
     return layouts
 
 
-__all__ = ["KVCacheGroupLayout", "build_group_layouts"]
+__all__ = [
+    "BlockAccess",
+    "BlockFirstView",
+    "ComponentView",
+    "GroupStoreLayout",
+    "KVCacheGroupLayout",
+    "LayerView",
+    "MemorySegment",
+    "TensorDescriptor",
+    "UCMLayerSpec",
+    "UCMKVCacheGroupInfo",
+    "UCMKVCacheLayout",
+    "UCMKVCacheSpec",
+    "build_group_layouts",
+    "parse_kv_cache_config",
+]

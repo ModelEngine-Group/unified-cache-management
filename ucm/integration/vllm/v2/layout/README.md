@@ -2,42 +2,34 @@
 
 完整设计见 [UCM Connector v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，包含 scheduler、hash/窗口规则、worker 生命周期和验证边界。本文件保留布局接口与数值示例。
 
-## 当前 worker 主路径：二维 Transfer
+## 模块边界
+
+Layout 统一负责三部分，不按文件数量强行拆分：
+
+- `kv_cache.py`：解析 KVCacheConfig 的 group/persistence/token 元数据；`UCMKVCacheLayout` 汇总元数据、HBM 布局和外存模板。
+- `__init__.py`、`group.py`、`view.py`：绑定 worker 原生 spec/descriptor 和真实 tensor views，解析 LayerView/ComponentView/MemorySegment，并提供 block IDs 与 token 范围的寻址。
+- `store_layout.py`：编译每个 group 的外存 offsets、sizes、store_bytes，以及通用或整块 Block First 模板。
+
+`layout` 不依赖 scheduler 或 proxy，不接收请求 metadata/plan，不生成 Transfer。调用方可以给出 block IDs、token offsets 和 segment mask，使用布局计算 byte ranges；这仍是寻址，不是调度。
+
+外部 `../ucm_kv_cache.py / UCMTransferBuilder` 解释 plan、关联 keys、累计 participating groups 的外存起点、拼接二维 Transfer；connector 持有独立的 `layout` 与 `transfer_builder`。路由 `dispatch_routes(spec)` 在 scheduler 中。
 
 ```python
-for transfer in layout.build_load_transfers(metadata, layer_id=7):
+from ucm.integration.vllm.v2.layout import UCMKVCacheLayout, parse_kv_cache_config
+from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
+
+layout = UCMKVCacheLayout(
+    spec, kv_caches, kv_cache_config=worker_config,
+    num_hidden_layers=num_hidden_layers, use_layerwise=use_layerwise,
+)
+transfer_builder = UCMTransferBuilder(layout)
+for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
     proxy_adapter.submit("load", transfer)
 ```
 
-`UCMProxyTransfer` 的字段与约定：
+本次只调整职责与导入位置，token/State/transient 策略、segment 寻址、padding、bulk/layerwise 外存模板及 namespace r7 不变。当前开发 proxy 同步执行，State layerwise 流水仍待实现。测试/工具已迁移当前接口引用，旧 spec/view/lifecycle 夹具仍待核对；未运行测试。
 
-```python
-keys: tuple[bytes, ...]          # [K]，本批次唯一
-ptrs: np.ndarray                # [K, S]
-sizes: np.ndarray               # [K, S]
-ucm_block_offsets: np.ndarray   # [K, S]，相对完整 UCM block
-```
-
-同一 plan 的多个 group 在列方向合并，顺序为 group -> window block -> layer/component/segment。每个 plan 属于单个请求的 hash 链，keys 已保证唯一，直接生成一个矩形 Transfer，不扫描或分区。不同 plan 的 S 可以不同，分别下发，不补零。不同请求共享前缀时可以有相同 key；请求各自的 Transfer 保留各自的目标地址，不做跨请求去重。
-
-固定 sizes/offsets 通过每次调用独立的一维模板 broadcast 成二维只读视图；ptrs 为本次计算结果。多 group ptrs 当前仍按列 concatenate，没有实现直接写入最终矩阵。Proxy 不要求连续数组，不修改数组，异步返回 task 时由 adapter 的现有 wait 契约保持描述符存活；adapter 当前依旧同步等待，不是新增异步执行器。
-
-单 group 直接传递本次生成的矩阵，不再重复拼接 sizes/offsets。layout 不扫描 keys 唯一性，也不维护相关缓存。不缓存 ptrs 或跨批次复用可写缓冲区。
-
-原生 `Adapter.submit` 信任构造层的契约，直接传递 keys/offsets/ptrs/sizes 原对象，不重复校验 key 长度、唯一性、dtype、shape、数值或范围，也不转换数组。Adapter 的 key 校验缓存已删除。操作分派、空批次跳过、异常包装及既有 wait 行为保留；旧扁平兼容入口的校验不属于这条路径。
-
-性能基准以“构造 Transfer → Adapter 转发 → 空后端接口返回”为口径；不把文件 Proxy 的解析、字节搬运或 IO 算入接口下发耗时。此前含 Adapter 校验的历史耗时不代表移除校验后的结果。
-
-文件 Proxy 对二维输入逐 key 行处理，不创建全批次 segment-to-key 字典；实际字节 IO 时才迭代这一行的 segments。dump 按 offset 累积写入私有 `.tmp`，`commit(keys)` 才发布为可见文件。调用方负责保证完整性。
-
-`use_layerwise: true` 接入 worker 逐层回调：start_load 提交各模型层加载，层回调等待该层关联缓存；状态层在 forward 前等待。save 回调只提交当前 layer_name，步末补存未回调的缓存，等待全部任务后 commit。未配置时仍走 bulk。当前文件 Proxy 同步执行；替换为异步 Proxy 时，任务保留 Transfer 数组直至 wait 完成。所有任务在本次 wait_for_save 返回前完成，不跨调度步。
-
-layerwise 使用按有效 payload 紧凑累加的通用模板，不复制 Block First padding，也不保留 HBM 中的 page 间隙；文件后端使用独立的 `-layerwise` namespace，暂不混用 bulk 文件。model-check 在此模式下按每个 layer_name 的有效 payload 填充和比对，bulk 模式继续比对完整 span。
-
-已删除旧 batch builder、扁平 adapter 和 UCMProxyBatch。worker、model-check 与 NPU probe 都使用二维 Transfer；工具只在逐字节填充/比较时展开矩阵，测试只在检查地址数值时展开矩阵。下文的扁平示例仅用于解释相同的物理地址及磁盘字节位置，不再对应独立生产 API。
-
-
-建议按 `view.py -> group.py -> ../store_layout.py -> ../ucm_kv_cache.py` 阅读。
+建议按 `kv_cache.py -> __init__.py -> view.py -> group.py -> store_layout.py` 阅读；理解 plan 与传输时再读外部 `../ucm_kv_cache.py`。
 
 ## 谁负责什么
 
@@ -48,7 +40,8 @@ layerwise 使用按有效 payload 紧凑累加的通用模板，不复制 Block 
 | `KVCacheGroupLayout` | 一个 group 的 LayerViews | 把源地址几何编译成 NumPy segment 列，按 layer_id/name 选择列 |
 | `BlockAccess` | 固定 token 范围模板；运行时 block IDs、starts | 源内存 `ptrs/sizes`，形状 `[block, segment]` |
 | `GroupStoreLayout` | group 的 FA/WA/State 规则与物理布局 | 在 UCM block 中放置数据，维护目标 offsets，判断能否合并 IO |
-| `UCMKVCacheLayout` | scheduler 给出的 keys/windows 和可选层选择 | 组合 groups，关联 keys，构造 proxy 批次 |
+| `UCMKVCacheLayout` | 元数据、worker KVCacheConfig 与真实 views | 汇总 group_layouts/store_layouts，建立层名与层号索引 |
+| 外部 `UCMTransferBuilder` | Layout、scheduler plan 与层选择 | 关联 keys，组合各 group，构造 proxy Transfer |
 
 `view` 表示逻辑视图；`segment` 表示能连续复制的一段。两者不是一一对应关系。`segment_mask` 针对展开后的列。
 
@@ -99,7 +92,7 @@ layer 1 base_ptr = 2000000
 
 ### 1. 注册时编译
 
-`UCMKVCacheLayout(spec, kv_caches)` 创建两个 group 相关对象：
+`UCMKVCacheLayout(spec, kv_caches, kv_cache_config=..., num_hidden_layers=..., use_layerwise=...)` 创建两个 group 相关对象：
 
 ```python
 group_layout = layout.group_layouts[group_id]
@@ -150,7 +143,7 @@ key B: offset 0    <- layer 0 的下一段 2048 字节
        offset 2048 <- layer 1 的下一段 2048 字节
 ```
 
-`UCMKVCacheLayout._iter_plan_segments` 加 group 起点并关联 keys，最终扁平化为：
+外部 `UCMTransferBuilder._iter_plan_segments` 加 group 起点并关联 keys，最终扁平化为：
 
 ```text
 keys:    [A,       A,       B,       B      ]
@@ -161,7 +154,7 @@ sizes:   [2048,    2048,    2048,    2048   ]
 
 若只请求 layer_id=1，先选 segment 列再展开地址，得到 `ptrs=[2131072,2133120]`、`offsets=[2048,2048]`。目标 offset 不变成零，因为同一个 UCM block 中 layer 0 的位置仍被保留。
 
-这个例子的数值由 `LayerViewSegmentsTest.test_documented_fa_subblocks_preserve_layer_offsets` 验证，覆盖物理寻址到旧扁平批次。实际 connector 通过 `build_load_transfers/build_dump_transfers` 下发对应二维矩阵，不需要自己展开 head 或解释 strides。
+对应夹具为 `LayerViewSegmentsTest.test_documented_fa_subblocks_preserve_layer_offsets`；当前未运行，不能据此声称新接口已验证。实际 connector 通过外部 transfer_builder 的 `build_load_transfers/build_dump_transfers` 下发对应二维矩阵，不需要自己展开 head 或解释 strides。
 
 ## 当前边界
 

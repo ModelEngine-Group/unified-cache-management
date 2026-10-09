@@ -27,7 +27,7 @@ def layout_debug(message: str) -> None:
 if TYPE_CHECKING:
     import torch
 
-    from ..ucm_kv_cache import UCMLayerSpec
+    from .kv_cache import UCMLayerSpec
 
 
 @dataclass(frozen=True, slots=True)

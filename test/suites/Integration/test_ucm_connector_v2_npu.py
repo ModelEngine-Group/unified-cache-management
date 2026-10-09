@@ -32,6 +32,7 @@ for package_name, package_path in (
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 from ucm.integration.vllm.v2.ucm_connector import UCMConnector
+from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
 from ucm.integration.vllm.v2.ucm_proxy import (
     SimpleFileUCMProxy,
     TorchTensorByteAccess,
@@ -41,6 +42,7 @@ from ucm.integration.vllm.v2.ucm_scheduler import (
     RequestDispatchMeta,
     UCMConnectorMetadata,
     UCMGroupDispatchPlan,
+    dispatch_routes,
 )
 
 if (
@@ -81,8 +83,8 @@ def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
     key = sequence.to_bytes(16, "little")
     dump_meta = _metadata(layout, kind, groups, key, 0, "dump_plans")
     load_meta = _metadata(layout, kind, groups, key, window_blocks, "load_plans")
-    (dump_transfer,) = layout.build_dump_transfers(dump_meta)
-    (load_transfer,) = layout.build_load_transfers(load_meta)
+    (dump_transfer,) = UCMTransferBuilder(layout).build_dump_transfers(dump_meta)
+    (load_transfer,) = UCMTransferBuilder(layout).build_load_transfers(load_meta)
     source_ptrs = dump_transfer.ptrs.reshape(-1)
     target_ptrs = load_transfer.ptrs.reshape(-1)
     sizes = dump_transfer.sizes.reshape(-1)
@@ -141,7 +143,7 @@ def main() -> int:
             worker.register_kv_caches(fixture.kv_caches)
             layout = worker.layout
             adapter = UCMProxyAdapter(SimpleFileUCMProxy(directory, byte_access))
-            routes = layout.spec.dispatch_routes()
+            routes = dispatch_routes(layout.spec)
             for sequence, (kind, groups) in enumerate(routes, 1):
                 segments, transferred = _exercise_route(
                     layout, adapter, byte_access, kind, groups, sequence
