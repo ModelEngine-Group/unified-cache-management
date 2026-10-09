@@ -23,6 +23,7 @@ repos:
     rev: v1.7.7
     hooks:
       - id: actionlint
+        entry: python scripts/actionlint_compat.py
         exclude: \.(jsonl|txt)$
 default_stages:
   - pre-commit

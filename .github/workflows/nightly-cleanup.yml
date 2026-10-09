@@ -34,10 +34,12 @@ jobs:
       ${{
         github.event_name == 'workflow_dispatch' ||
         (github.event.workflow_run.head_repository.full_name == github.repository &&
-         ((github.event.workflow_run.name == 'UCM Nightly Release · Shanghai 02:00' &&
+         (((github.event.workflow_run.path == '.github/workflows/release-nightly.yml' ||
+            startsWith(github.event.workflow_run.path, '.github/workflows/release-nightly.yml@')) &&
            (github.event.workflow_run.event == 'schedule' ||
             github.event.workflow_run.event == 'workflow_dispatch')) ||
-          (github.event.workflow_run.name == 'UCM Tag Release · Stable, Prerelease, Draft, and Nightly' &&
+          ((github.event.workflow_run.path == '.github/workflows/release-tag.yml' ||
+            startsWith(github.event.workflow_run.path, '.github/workflows/release-tag.yml@')) &&
            github.event.workflow_run.event == 'push' &&
            startsWith(github.event.workflow_run.head_branch, 'nightly/'))))
       }}
@@ -82,16 +84,14 @@ jobs:
           run_id="$(jq -er '.workflow_run.id' "${GITHUB_EVENT_PATH}")"
           attempt="$(jq -er '.workflow_run.run_attempt' "${GITHUB_EVENT_PATH}")"
           source_sha="$(jq -er '.workflow_run.head_sha' "${GITHUB_EVENT_PATH}")"
-          source_name="$(jq -er '.workflow_run.name' "${GITHUB_EVENT_PATH}")"
           source_path="$(jq -er '.workflow_run.path' "${GITHUB_EVENT_PATH}")"
+          source_path="${source_path%%@*}"
           source_event="$(jq -er '.workflow_run.event' "${GITHUB_EVENT_PATH}")"
-          if [ "${source_name}" = 'UCM Nightly Release · Shanghai 02:00' ]; then
-            test "${source_path}" = .github/workflows/release-nightly.yml
+          if [ "${source_path}" = .github/workflows/release-nightly.yml ]; then
             [[ "${source_event}" = schedule || "${source_event}" = workflow_dispatch ]]
             echo "eligible=true" >>"${GITHUB_OUTPUT}"
             exit 0
           fi
-          test "${source_name}" = 'UCM Tag Release · Stable, Prerelease, Draft, and Nightly'
           test "${source_path}" = .github/workflows/release-tag.yml
           test "${source_event}" = push
           source_tag="$(jq -er '.workflow_run.head_branch' "${GITHUB_EVENT_PATH}")"

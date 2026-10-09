@@ -40,6 +40,8 @@ def test_nightly_cleanup_covers_all_completed_outcomes_and_uses_trusted_code() -
     assert workflow["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
     job = workflow["jobs"]["cleanup"]
     assert "head_repository.full_name == github.repository" in job["if"]
+    assert "workflow_run.name" not in job["if"]
+    assert "workflow_run.path" in job["if"]
     assert "conclusion" not in job["if"]
     checkout = next(
         step for step in job["steps"] if "checkout@" in step.get("uses", "")
@@ -115,6 +117,9 @@ def test_nightly_ownership_precedes_creation_and_exact_targets_gate_publishers()
         "valid",
         "prior_attempt",
         "no_binding",
+        "custom_name",
+        "custom_nightly_name",
+        "impostor_path",
     ],
 )
 def test_completed_tag_authorization_uses_immutable_binding_and_accepts_retries(
@@ -159,6 +164,16 @@ def test_completed_tag_authorization_uses_immutable_binding_and_accepts_retries(
     }
     if field in invalid:
         binding[field] = invalid[field]
+    if field in {"custom_name", "custom_nightly_name"}:
+        event["workflow_run"]["name"] = "Nightly cleanup fixture - failure"
+    if field == "custom_nightly_name":
+        event["workflow_run"].update(
+            path=".github/workflows/release-nightly.yml@develop",
+            event="workflow_dispatch",
+            head_branch="develop",
+        )
+    if field == "impostor_path":
+        event["workflow_run"]["path"] = ".github/workflows/impostor.yml"
     binding_attempt = 1 if field == "prior_attempt" else attempt
     if field == "prior_attempt":
         binding["runs"] = [{"id": run_id, "attempt": binding_attempt}]
@@ -225,7 +240,7 @@ def test_completed_tag_authorization_uses_immutable_binding_and_accepts_retries(
         text=True,
         check=False,
     )
-    if field in invalid:
+    if field in invalid or field == "impostor_path":
         assert result.returncode != 0
         assert (
             not output_path.exists() or "eligible=true" not in output_path.read_text()
@@ -234,6 +249,6 @@ def test_completed_tag_authorization_uses_immutable_binding_and_accepts_retries(
     else:
         assert result.returncode == 0, result.stderr
         assert "eligible=true" in output_path.read_text()
-        if field != "no_binding":
+        if field not in {"no_binding", "custom_nightly_name"}:
             arguments = json.loads((tmp_path / "record-calls.json").read_text())
             assert arguments[arguments.index("--run-attempt") + 1] == str(attempt)
