@@ -1,7 +1,7 @@
-# 版权所有（c）华为技术有限公司 2012-2026
+# 版权所有 (c) 华为技术有限公司 2012-2026
 """LCP-based session prefix matching for codeagent multi-round requests.
 
-Replaces the old fixed-window token hash (``[8000:10000]``) approach used to 
+Replaces the old fixed-window token hash (``[8000:10000]``) approach used to
 identify "the same session" across multiple rounds of a codeagent request.
 
 Each request is matched to the previous round of the same session by computing
@@ -24,8 +24,8 @@ from array import array
 # belonging to the same session. Tuned to the old CAL_HASH window behaviour.
 MIN_LCP_TO_MATCH = 10000
 
-#Upper bound on the number of concurrently tracked sessions to avoid
-# unbounded memory growth
+# Upper bound on the number of concurrently tracked sessions to avoid
+# unbounded memory growth.
 MAX_SESSIONS = 400
 
 _session_token_map: dict[str, list[int]] = {}
@@ -40,19 +40,19 @@ def _compute_lcp(prev: list[int], cur: list[int]) -> int:
 
 
 def _derive_new_key(tokens: list[int]) -> str:
-    data = array("I",tokens).tobytes()
+    data = array("I", tokens).tobytes()
     return hashlib.sha256(data).hexdigest()
 
 
 def match_session_key(all_token_ids) -> str:
     """Return the deterministic session key for ``all_token_ids``.
 
-    If the request shares at least ``MIN_LCP_TO_MATCH`` prefix tokens with a 
-    previously registered session, the existing session key is returned and the 
-    registered token sequence is refreshed to the current round. Otherwise a 
+    If the request shares at least ``MIN_LCP_TO_MATCH`` prefix tokens with a
+    previously registered session, the existing session key is returned and the
+    registered token sequence is refreshed to the current round. Otherwise a
     brand-new session key is derived from the full token sequence.
 
-    The returned key is stable across rounds of the same session, allowing the 
+    The returned key is stable across rounds of the same session, allowing the
     sparse KV metadata computed in an earlier round to be looked up and reused.
     """
     tokens = list(all_token_ids)
@@ -71,7 +71,7 @@ def match_session_key(all_token_ids) -> str:
         if best_key is not None and best_lcp >= MIN_LCP_TO_MATCH:
             _session_token_map[best_key] = tokens
             return best_key
-        
+
         new_key = _derive_new_key(tokens)
         if len(_session_token_map) >= MAX_SESSIONS:
             _session_token_map.clear()
@@ -82,4 +82,3 @@ def match_session_key(all_token_ids) -> str:
 def get_request_hash(tokens: list[int], response_index: int):
     data = array("I", tokens[:response_index]).tobytes()
     return hashlib.sha256(data).hexdigest()
-

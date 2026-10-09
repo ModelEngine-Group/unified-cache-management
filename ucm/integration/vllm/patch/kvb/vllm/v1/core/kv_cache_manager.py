@@ -14,7 +14,9 @@ from vllm.v1.core.kv_cache_utils import KVCacheBlock
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request
+
 logger = init_logger(__name__)
+
 
 @dataclass
 class KVCacheBlocks:
@@ -170,26 +172,27 @@ class KVCacheManager:
         stats = self.prefix_cache_stats
         self.prefix_cache_stats = PrefixCacheStats()
         return stats
-    
-    def update_computed_blocks(self, request, new_blocks: KVCacheBlock, num_computed_tokens: int):
+
+    def update_computed_blocks(
+        self, request, new_blocks: KVCacheBlocks, num_computed_tokens: int
+    ):
         block_size = self.coordinator.single_type_managers[0].block_size
         num_pruned_blocks = request.kvb_vllm_request_meta.num_pruned_blocks
         hbm_hit_block_num = request.kvb_vllm_request_meta.hbm_hit_block_num
         if hbm_hit_block_num < num_computed_tokens / block_size:
             for block_list in new_blocks.blocks:
                 del block_list[hbm_hit_block_num:]
-            num_computed_tokens =hbm_hit_block_num * block_size
+            num_computed_tokens = hbm_hit_block_num * block_size
         if num_pruned_blocks == 0:
             return new_blocks, num_computed_tokens
 
-
-        extra_null_block_list = [self.block_pool.null_block]* num_pruned_blocks
+        extra_null_block_list = [self.block_pool.null_block] * num_pruned_blocks
         for block_list in new_blocks.blocks:
             block_list.extend(extra_null_block_list)
 
         num_computed_tokens += num_pruned_blocks * block_size
         return new_blocks, num_computed_tokens
-          
+
     def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
