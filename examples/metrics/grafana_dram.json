@@ -660,7 +660,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 28
       },
@@ -721,8 +721,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 28
       },
       "options": {
@@ -757,6 +757,50 @@
         }
       ],
       "title": "Memory pool utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Local KV buffer pool usage ratio per instance and slot size. Extracts slot_size_bytes from metrics named ucm:drampool_buffer_pool_usage_ratio_<size>. Retains instances separately and takes the maximum across other selected labels. This is not a cluster-wide memory usage ratio. Missing per-size metrics produce no data.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (instance, slot_size_bytes) (label_replace({__name__=~\"ucm:drampool_buffer_pool_usage_ratio_[0-9]+\",job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}, \"slot_size_bytes\", \"$1\", \"__name__\", \"ucm:drampool_buffer_pool_usage_ratio_([0-9]+)\"))",
+          "legendFormat": "{{instance}} / {{slot_size_bytes}} bytes",
+          "refId": "A"
+        }
+      ],
+      "title": "KV buffer pool utilization by size",
       "type": "timeseries"
     },
     {
