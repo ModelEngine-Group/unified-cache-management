@@ -208,7 +208,7 @@
           "refId": "A"
         }
       ],
-      "title": "Max Local KV Buffer Slot Usage",
+      "title": "KV Buffer Slot Usage",
       "type": "stat"
     },
     {
@@ -680,28 +680,28 @@
       },
       "targets": [
         {
-          "expr": "max by (instance) (ucm:dramstore_task_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_task_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore task queue / {{instance}}",
+          "expr": "max (ucm:dramstore_task_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_task_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore task queue",
           "refId": "A"
         },
         {
-          "expr": "max by (instance) (ucm:dramstore_completion_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_completion_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore completion queue / {{instance}}",
+          "expr": "max (ucm:dramstore_completion_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_completion_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore completion queue",
           "refId": "B"
         },
         {
-          "expr": "max by (instance) (ucm:dramstore_transport_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_transport_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore transport queue / {{instance}}",
+          "expr": "max (ucm:dramstore_transport_queue_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_transport_queue_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore transport queue",
           "refId": "C"
         },
         {
-          "expr": "max by (instance) (ucm:drampool_queue_request_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:drampool_queue_request_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramPool request queue / {{instance}}",
+          "expr": "max (ucm:drampool_queue_request_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:drampool_queue_request_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramPool request queue",
           "refId": "D"
         },
         {
-          "expr": "max by (instance) (ucm:drampool_queue_completion_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:drampool_queue_completion_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramPool completion queue / {{instance}}",
+          "expr": "max (ucm:drampool_queue_completion_size{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:drampool_queue_completion_capacity{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramPool completion queue",
           "refId": "E"
         }
       ],
@@ -741,18 +741,18 @@
       },
       "targets": [
         {
-          "expr": "max by (instance) (ucm:dramstore_reply_buffer_used_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max by (instance) (ucm:dramstore_reply_buffer_capacity_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
-          "legendFormat": "DramStore reply buffer / {{instance}}",
+          "expr": "max (ucm:dramstore_reply_buffer_used_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) / clamp_min(max (ucm:dramstore_reply_buffer_capacity_bytes{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}), 1e-9)",
+          "legendFormat": "DramStore reply buffer",
           "refId": "A"
         },
         {
-          "expr": "max by (instance) (ucm:drampool_flag_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
-          "legendFormat": "DramPool flag buffer / {{instance}}",
+          "expr": "max (ucm:drampool_flag_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "DramPool flag buffer",
           "refId": "B"
         },
         {
-          "expr": "max by (instance) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
-          "legendFormat": "DramPool KV buffer / {{instance}}",
+          "expr": "max (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "DramPool KV buffer",
           "refId": "C"
         }
       ],
