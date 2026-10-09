@@ -1,43 +1,45 @@
 #!/usr/bin/env python3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Install published UCM wheels without importing UCM.
+"""Install published UCM wheels with Python 3.10+ and pip.
 
-The flow is: probe the target, discover compatible published backends, choose
-a backend for its Toolkit, then invoke pip. PyPI owns package facts; selection functions
-own policy. Keep both here so downloading this one file remains sufficient.
+Usage: python3 install_ucm.py [--version latest] [--extra auto]
+
+Normal installation uses the public packaging library, preparing a temporary
+copy if it is missing. Read-only --probe and --resolve require packaging to be
+installed beforehand. --help and importing this file need only the standard library.
 """
+
+from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from email.message import Message
 from email.parser import BytesParser
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-if sys.version_info < (3, 10):  # noqa: UP036 - standalone interpreter check
-    sys.exit("UCM: run install_ucm.py with Python 3.10 or newer.")
-
-try:
-    from pip._vendor.packaging.markers import default_environment
-    from pip._vendor.packaging.requirements import Requirement
-    from pip._vendor.packaging.specifiers import SpecifierSet
-    from pip._vendor.packaging.tags import Tag, sys_tags
-    from pip._vendor.packaging.utils import canonicalize_name, parse_wheel_filename
-    from pip._vendor.packaging.version import Version
-except ImportError:
-    sys.exit("UCM: this Python needs pip with its bundled packaging library.")
+# Runtime imports stay local so help and module imports work without packaging.
+if TYPE_CHECKING:
+    from packaging.tags import Tag
+    from packaging.version import Version
 
 
 # These are publication/Toolkit interfaces, not lists of available versions.
@@ -81,6 +83,8 @@ class TargetEnvironment:
     accelerator: AcceleratorRuntime | None = None
 
     def supports_python(self, requires_python: str | None) -> bool:
+        from packaging.specifiers import SpecifierSet
+
         return SpecifierSet(requires_python or "").contains(
             self.markers["python_full_version"], prereleases=True
         )
@@ -102,6 +106,9 @@ class TargetEnvironment:
     @classmethod
     def from_json(cls, data: dict) -> "TargetEnvironment":
         """Load probe facts without filling missing fields from the resolver host."""
+        from packaging.markers import default_environment
+        from packaging.tags import Tag
+
         if not isinstance(data, dict):
             raise TypeError("runtime probe must be a JSON object")
         markers = data["markers"]
@@ -163,6 +170,54 @@ class BackendCandidate:
 
 def diagnostic(message: str) -> None:
     print(f"UCM: {message}", file=sys.stderr)
+
+
+@contextmanager
+def packaging_dependency(allow_install: bool) -> Iterator[None]:
+    """Provide packaging for this invocation without changing installed packages.
+
+    Read-only commands fail with an installation hint when packaging is absent.
+    Only the installation command may use pip to prepare a temporary copy; pip's
+    source, proxy, certificate and constraint settings remain in effect.
+    """
+    if allow_install and importlib.util.find_spec("pip") is None:
+        raise RuntimeError(f"install pip for {sys.executable} before installing UCM")
+    if importlib.util.find_spec("packaging") is not None:
+        yield
+        return
+    if not allow_install:
+        command = shlex.join([sys.executable, "-m", "pip", "install", "packaging"])
+        raise RuntimeError(
+            f"--probe and --resolve require packaging; install it first: {command}"
+        )
+
+    diagnostic("preparing packaging in a temporary directory for this installation")
+    with tempfile.TemporaryDirectory(prefix="ucm-installer-") as directory:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--only-binary=:all:",
+                "--no-deps",
+                "--no-user",
+                "--target",
+                directory,
+                "packaging",
+            ],
+            check=True,
+            stdout=sys.stderr,
+        )
+        sys.path.insert(0, directory)
+        try:
+            yield
+        finally:
+            sys.path.remove(directory)
+            # Do not leave imports pointing at the temporary directory after cleanup.
+            for name in list(sys.modules):
+                if name == "packaging" or name.startswith("packaging."):
+                    del sys.modules[name]
 
 
 def runtime_version(value: str, source: str) -> tuple[int, int, int]:
@@ -283,6 +338,9 @@ def detect_accelerator() -> AcceleratorRuntime:
 
 
 def probe_environment(automatic: bool) -> TargetEnvironment:
+    from packaging.markers import default_environment
+    from packaging.tags import sys_tags
+
     markers = default_environment()
     architecture = platform.machine().lower()
     libc, glibc = platform.libc_ver()
@@ -321,6 +379,8 @@ class PyPI:
             raise RuntimeError(f"cannot read {url}: {error}") from error
 
     def files(self, project: str) -> list[dict]:
+        from packaging.utils import canonicalize_name
+
         name = canonicalize_name(project)
         if name not in self._project_files:
             url = f"{PYPI_INDEX}/{quote(name, safe='')}/"
@@ -370,6 +430,8 @@ def compatible_wheels(
     files: list[dict], project: str, version: Version, environment: TargetEnvironment
 ) -> list[dict]:
     """Order published wheels by this interpreter's supported-tag preference."""
+    from packaging.utils import canonicalize_name, parse_wheel_filename
+
     ranks = {tag: index for index, tag in enumerate(environment.tags)}
     candidates = []
     for artifact in files:
@@ -390,6 +452,9 @@ def usable_wheel(
     pypi: PyPI, project: str, version: Version, environment: TargetEnvironment
 ) -> tuple[dict, Message] | None:
     """Return the preferred compatible file and its verified core metadata."""
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
     for artifact in compatible_wheels(
         pypi.files(project), project, version, environment
     ):
@@ -410,6 +475,10 @@ def backend_requirement(
     metadata: Message, extra: str, markers: dict[str, str]
 ) -> tuple[str, Version] | None:
     """Follow the meta package's backend pin; never construct a backend name."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
     requirements = []
     for raw in metadata.get_all("Requires-Dist", []):
         requirement = Requirement(raw)
@@ -444,6 +513,9 @@ def backend_requirement(
 
 def candidate_versions(files: list[dict], requested: str) -> list[Version]:
     """Try the exact request, or published non-dev versions newest first (RC too)."""
+    from packaging.utils import parse_wheel_filename
+    from packaging.version import Version
+
     if requested != "latest":
         return [Version(requested)]
     versions = {
@@ -460,6 +532,8 @@ def compatible_backends(
     pypi: PyPI, metadata: Message, environment: TargetEnvironment, extra: str
 ) -> list[BackendCandidate]:
     """Discover the requested backend(s) from one release's dependency metadata."""
+    from packaging.utils import canonicalize_name
+
     candidates = []
     for declared_extra in metadata.get_all("Provides-Extra", []):
         declared_extra = canonicalize_name(declared_extra)
@@ -495,6 +569,8 @@ def resolve(
     pypi: PyPI, environments: list[TargetEnvironment], version: str, extra: str
 ) -> dict:
     """Find the newest release and backend usable by every target environment."""
+    from packaging.version import Version
+
     if not environments:
         raise ValueError("at least one runtime environment is required")
     if extra == "auto" and any(target.accelerator is None for target in environments):
@@ -558,9 +634,13 @@ def resolve(
     )
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install published UCM wheels for this Python interpreter, architecture and Toolkit."
+        description="Install published UCM wheels for this Python interpreter, architecture and Toolkit.",
+        epilog=(
+            "Requires Python 3.10+ and pip. Installation prepares packaging temporarily "
+            "if missing; --probe and --resolve require it to be installed beforehand."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -594,14 +674,22 @@ def main() -> None:
     args = parser.parse_args()
     if not args.version or not args.extra or "," in args.extra:
         parser.error("--version must be non-empty and --extra must select one backend")
-    if args.version != "latest":
-        Version(args.version)
     if args.runtime and not args.resolve:
         parser.error(
             "--runtime requires --resolve; installation must run in the target environment"
         )
     if args.report and (args.resolve or args.probe):
         parser.error("--report is only available when installing")
+    return args
+
+
+def execute(args: argparse.Namespace) -> None:
+    """Probe, resolve or install after the CLI has prepared its dependency."""
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
+    if args.version != "latest":
+        Version(args.version)
     extra = canonicalize_name(args.extra)
     if args.probe:
         print(json.dumps(probe_environment(extra == "auto").to_json()))
@@ -633,6 +721,14 @@ def main() -> None:
     )
 
 
+def main() -> None:
+    args = parse_args()
+    if sys.version_info < (3, 10):  # noqa: UP036 - standalone interpreter check
+        raise RuntimeError("run install_ucm.py with Python 3.10 or newer")
+    with packaging_dependency(allow_install=not (args.probe or args.resolve)):
+        execute(args)
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -643,6 +739,7 @@ if __name__ == "__main__":
         diagnostic(f"command failed (exit {error.returncode}): {error.cmd}")
         sys.exit(error.returncode if error.returncode > 0 else 1)
     except (
+        ImportError,
         OSError,
         ValueError,
         RuntimeError,

@@ -33,7 +33,7 @@ jobs:
       - name: Check Python and selection behavior
         run: |
           python -m py_compile scripts/install_ucm.py
-          python -m pip install pytest
+          python -m pip install pytest packaging
           python -m pytest -q scripts/tests
 
   install:
@@ -81,7 +81,7 @@ jobs:
             "https://raw.githubusercontent.com/${INSTALLER_REPOSITORY}/${INSTALLER_COMMIT}/scripts/install_ucm.py" \
             --output installer-results/install_ucm.py
           cmp scripts/install_ucm.py installer-results/install_ucm.py
-      - name: Resolve and install published wheels without accelerator devices
+      - name: Install published wheels and check read-only selection without accelerator devices
         env:
           RUNTIME_IMAGE: ${{ matrix.runtime.image }}
           EXPECTED_FAMILY: ${{ matrix.runtime.family }}
@@ -100,10 +100,16 @@ jobs:
           fi
           python3 -m venv /tmp/installer-check
           installer_python=/tmp/installer-check/bin/python
+          # A fresh interpreter must exercise the standalone dependency bootstrap.
+          "${installer_python}" -c 'import importlib.util; assert importlib.util.find_spec("packaging") is None'
+          "${installer_python}" /result/install_ucm.py --help
+          "${installer_python}" /result/install_ucm.py --report /result/pip-report.json
+          version="$("${installer_python}" -c 'from importlib.metadata import version; print(version("uc-manager"))')"
+          # Read-only commands require their public dependency to be prepared explicitly.
+          "${installer_python}" -m pip install --only-binary=:all: packaging
           "${installer_python}" /result/install_ucm.py --probe > /result/runtime.json
-          "${installer_python}" /result/install_ucm.py --resolve --runtime /result/runtime.json > /result/selection.json
-          version="$("${installer_python}" -c 'import json; print(json.load(open("/result/selection.json"))["version"])')"
-          "${installer_python}" /result/install_ucm.py --version "${version}" --report /result/pip-report.json
+          "${installer_python}" /result/install_ucm.py --resolve --version "${version}" \
+            --runtime /result/runtime.json > /result/selection.json
           "${installer_python}" - <<'PY'
           import json
           import os
@@ -154,6 +160,7 @@ jobs:
           path: input
       - name: Select one published release for both probed architectures
         run: |
+          python -m pip install packaging
           shopt -s nullglob
           runtimes=(input/*/runtime.json)
           test "${#runtimes[@]}" -eq 2

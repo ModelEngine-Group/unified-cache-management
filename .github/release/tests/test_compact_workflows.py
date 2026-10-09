@@ -385,6 +385,11 @@ def test_published_wheels_use_the_consumer_installer_without_changing_fork_scope
     assert "${PWD}/scripts/install_ucm.py:/tmp/install_ucm.py:ro" in run
     official = run.split('if [ "${PUBLICATION_SCOPE}" = official ]; then', 1)[1]
     official, fork = official.split("else\n", 1)
+    dependency_setup = (
+        '"${installer_python}" -m pip install --only-binary=:all: packaging'
+    )
+    assert official.index(dependency_setup) < official.index("--resolve")
+    assert dependency_setup not in fork
     assert (
         '"${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" --resolve'
         in official
@@ -414,8 +419,19 @@ def test_installer_workflow_runs_the_downloaded_python_file_with_the_target_inte
     assert "/scripts/install_ucm.py" in install
     assert "cmp scripts/install_ucm.py installer-results/install_ucm.py" in install
     assert "installer_python=/tmp/installer-check/bin/python" in install
-    for operation in ("--probe", "--resolve", "--version"):
+    for operation in ("--help", "--report", "--probe", "--resolve"):
         assert f'"${{installer_python}}" /result/install_ucm.py {operation}' in install
+    dependency_setup = (
+        '"${installer_python}" -m pip install --only-binary=:all: packaging'
+    )
+    assert 'assert importlib.util.find_spec("packaging") is None' in install
+    assert install.index("--report") < install.index(dependency_setup)
+    assert install.index(dependency_setup) < install.index("--probe")
+    assert '--resolve --version "${version}"' in install
+    resolve = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["resolve-runtimes"]["steps"]
+    )
+    assert resolve.index("python -m pip install packaging") < resolve.index("--resolve")
     assert "export PYTHON=" not in install
     assert "install_ucm.sh" not in checks + install
 

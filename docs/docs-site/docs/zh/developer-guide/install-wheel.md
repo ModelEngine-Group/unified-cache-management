@@ -2,7 +2,11 @@
 
 使用 UCM 单文件 Python 安装器 `scripts/install_ucm.py`，在用户环境或接入项目的镜像构建中安装已发布 wheel。环境探测和选包逻辑由 UCM 维护，接入项目只负责获取脚本、传递参数和安排调用位置。
 
-脚本需要 Python 3.10 及以上，以及该解释器中的 pip。它复用 pip 随附的 packaging，不需要克隆仓库、预装 UCM、GPU/NPU 或 Docker。安装目标使用 Linux 和 glibc，CPU 架构是否可用由**实际发布的兼容 wheel 标签**决定，不另设架构白名单。安装检查覆盖 Ubuntu、openEuler 的 AMD64/ARM64 环境。例如，包声明 `Requires-Python: >=3.10`，不代表它的 `cp312` 后端 wheel 可以用于 Python 3.10。
+脚本需要 Python 3.10 及以上，以及该解释器中的 pip。它使用公开的 `packaging` 库。正常安装时，如果缺少该库，脚本会使用同一解释器的 pip 将它准备到临时目录，结束后清理。此过程继承 pip 的配置和依赖约束，不修改环境中已有的 `packaging`。不需要克隆仓库、预装 UCM、GPU/NPU 或 Docker。
+
+`--help` 不依赖 `packaging`。只读的 `--probe` 和 `--resolve` 要求调用方事先安装该库，两个命令都不会安装依赖。`--probe` 保持离线，`--resolve` 会读取已发布包的元数据。
+
+安装目标使用 Linux 和 glibc，CPU 架构是否可用由**实际发布的兼容 wheel 标签**决定，不另设架构白名单。安装检查覆盖 Ubuntu、openEuler 的 AMD64/ARM64 环境。例如，包声明 `Requires-Python: >=3.10`，不代表它的 `cp312` 后端 wheel 可以用于 Python 3.10。
 
 ## 获取单个脚本
 
@@ -28,7 +32,8 @@ python3 install_ucm.py
 # 固定 UCM 版本和已发布的后端 extra。
 python3 install_ucm.py --version 0.7.0 --extra cann910-a2
 
-# 只解析，不安装任何包。
+# 先准备一次依赖，再执行不安装任何包的选包命令。
+python3 -m pip install packaging
 python3 install_ucm.py --resolve > ucm-selection.json
 ```
 
@@ -66,19 +71,21 @@ CUDA 通过 `CUDA_HOME`、`CUDA_PATH` 定位活动 Toolkit；未设置时检查 
 
 ## 多架构使用同一次选择
 
-先在每个目标镜像中，用最终安装 UCM 的 Python 导出环境：
+在每个目标镜像中准备 `packaging`，再用最终安装 UCM 的 Python 导出环境：
 
 ```bash
 # 分别在 ARM64、AMD64 目标环境中执行，保存各自的文件。
+python3 -m pip install packaging
 python3 install_ucm.py --probe > runtime-arm64.json
 python3 install_ucm.py --probe > runtime-amd64.json
 ```
 
 `--probe` 不联网、不安装。JSON 包含完整 PEP 508 `markers`、按本机优先级排列的 wheel `tags` 字符串数组，以及 `accelerator` 对象，例如 `{"family":"a2","toolkit_version":[9,1,0]}`。使用显式 `--extra` 时跳过 Toolkit 检测，`accelerator` 为 `null`。
 
-在构建协调端，将同一后端的目标环境一起解析：
+在构建协调端准备相同依赖，再将同一后端的目标环境一起解析：
 
 ```bash
+python3 -m pip install packaging
 python3 install_ucm.py --resolve \
   --runtime runtime-amd64.json --runtime runtime-arm64.json > ucm-selection.json
 ```

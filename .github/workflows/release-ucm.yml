@@ -1486,6 +1486,7 @@ jobs:
               export PIP_EXTRA_INDEX_URL="${UCM_DEPENDENCY_INDEX}"
               if [ "${PUBLICATION_SCOPE}" = official ]; then
                 # Exercise the same automatic Toolkit/SoC selection consumers use.
+                "${installer_python}" -m pip install --only-binary=:all: packaging
                 "${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" --resolve > /result/selection.json
                 "${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" \
                   --report /result/install-report.json

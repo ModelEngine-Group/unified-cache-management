@@ -2,7 +2,11 @@
 
 Use UCM's standalone Python file `scripts/install_ucm.py` to install a published wheel in a user environment or a downstream project's image build. UCM owns environment detection and package selection; the integrating project only downloads the script, passes parameters, and chooses when to run it.
 
-The script needs Python 3.10 or newer and pip in that interpreter. It uses pip's bundled packaging library and does not need a checkout, an existing UCM installation, a GPU/NPU, or Docker. Installation targets use Linux and glibc; architecture availability is determined by **actually published, compatible wheel tags**, not an architecture allowlist. AMD64/ARM64 on Ubuntu and openEuler are covered by the installation checks. For example, a package's `Requires-Python: >=3.10` does not make its `cp312` backend wheel usable with Python 3.10.
+The script needs Python 3.10 or newer and pip in that interpreter. It uses the public `packaging` library. During installation, if that library is missing, the script uses the same interpreter's pip to prepare it in a temporary directory and removes the directory when finished. It inherits pip's configuration and constraints without changing an existing `packaging` installation. No checkout, existing UCM installation, GPU/NPU, or Docker is needed.
+
+`--help` works without `packaging`. The read-only `--probe` and `--resolve` commands require it to be installed beforehand; neither command installs dependencies. `--probe` stays offline, while `--resolve` reads published package metadata.
+
+Installation targets use Linux and glibc; architecture availability is determined by **actually published, compatible wheel tags**, not an architecture allowlist. AMD64/ARM64 on Ubuntu and openEuler are covered by the installation checks. For example, a package's `Requires-Python: >=3.10` does not make its `cp312` backend wheel usable with Python 3.10.
 
 ## Obtain one file
 
@@ -28,7 +32,8 @@ The default is `--version latest --extra auto`. `latest` means the highest publi
 # Fix the UCM version and published backend extra.
 python3 install_ucm.py --version 0.7.0 --extra cann910-a2
 
-# Resolve without installing anything.
+# Prepare the dependency once, then resolve without installing anything.
+python3 -m pip install packaging
 python3 install_ucm.py --resolve > ucm-selection.json
 ```
 
@@ -66,19 +71,21 @@ Exact selection does not establish native-library, engine-interface or hardware 
 
 ## Share one selection across architectures
 
-In each target image, export the environment with the Python that will install UCM:
+Prepare `packaging` in each target image, then export the environment with the Python that will install UCM:
 
 ```bash
 # Run separately in the ARM64 and AMD64 target environments, saving each file.
+python3 -m pip install packaging
 python3 install_ucm.py --probe > runtime-arm64.json
 python3 install_ucm.py --probe > runtime-amd64.json
 ```
 
 `--probe` does not access the network or install packages. Its JSON contains complete PEP 508 `markers`, wheel `tags` as strings in interpreter preference order, and an `accelerator` object such as `{"family":"a2","toolkit_version":[9,1,0]}`. An explicit `--extra` skips Toolkit detection and produces `accelerator: null`.
 
-On the build coordinator, resolve the target environments for the same backend together:
+Prepare the same dependency on the build coordinator, then resolve the target environments for the same backend together:
 
 ```bash
+python3 -m pip install packaging
 python3 install_ucm.py --resolve \
   --runtime runtime-amd64.json --runtime runtime-arm64.json > ucm-selection.json
 ```

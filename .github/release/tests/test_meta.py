@@ -19,6 +19,7 @@ from email.parser import BytesParser
 from pathlib import Path
 
 import pytest
+from packaging.markers import default_environment
 
 ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = ROOT / ".github" / "release"
@@ -233,7 +234,7 @@ def test_materialized_source_builds_and_records_empty_meta_wheel(
         metadata = BytesParser().parsebytes(archive.read(metadata_name))
     for extra, requirement in result["extras"].items():
         name, version = installer.backend_requirement(
-            metadata, extra, installer.default_environment()
+            metadata, extra, default_environment()
         )
         assert f"{name}=={version}" == requirement
 

@@ -1,6 +1,7 @@
 """Exercise the standalone installer's published-package contract without hardware."""
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import io
 import json
@@ -12,6 +13,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import pytest
+from packaging.markers import default_environment
+from packaging.tags import Tag
 
 SCRIPT = Path(__file__).resolve().parents[1] / "install_ucm.py"
 SPEC = importlib.util.spec_from_file_location("ucm_installer", SCRIPT)
@@ -22,7 +25,7 @@ SPEC.loader.exec_module(installer)
 
 
 def environment(architecture="x86_64", family="a2", runtime=(9, 1, 0)):
-    markers = installer.default_environment()
+    markers = default_environment()
     markers.update(
         python_full_version="3.12.4",
         python_version="3.12",
@@ -30,8 +33,6 @@ def environment(architecture="x86_64", family="a2", runtime=(9, 1, 0)):
         platform_system="Linux",
         platform_machine=architecture,
     )
-    from pip._vendor.packaging.tags import Tag
-
     tags = [
         Tag("cp312", "cp312", f"manylinux_2_{floor}_{architecture}")
         for floor in range(34, 16, -1)
@@ -426,7 +427,7 @@ def test_probe_without_accelerator_with_explicit_extra(monkeypatch, distro, arch
     monkeypatch.setattr(
         installer.platform, "freedesktop_os_release", lambda: {"PRETTY_NAME": distro}
     )
-    monkeypatch.setattr(installer, "sys_tags", lambda: iter(environment(arch).tags))
+    monkeypatch.setattr("packaging.tags.sys_tags", lambda: iter(environment(arch).tags))
     monkeypatch.setattr(
         installer,
         "detect_accelerator",
@@ -636,10 +637,20 @@ def test_cli_passes_report_path_to_pip(monkeypatch, catalog, tmp_path):
     ]
 
 
-def test_downloaded_file_starts_with_only_pip(tmp_path):
+@pytest.fixture
+def standalone_python(tmp_path):
     python = tmp_path / "venv/bin/python"
     subprocess.run(
         [sys.executable, "-m", "venv", str(python.parent.parent)], check=True
+    )
+    return python
+
+
+def test_downloaded_file_help_and_import_need_only_the_standard_library(tmp_path):
+    python = tmp_path / "venv/bin/python"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(python.parent.parent)],
+        check=True,
     )
     script = tmp_path / "install_ucm.py"
     script.write_text(SCRIPT.read_text())
@@ -651,4 +662,105 @@ def test_downloaded_file_starts_with_only_pip(tmp_path):
         check=True,
     )
     assert "--resolve" in result.stdout
-    assert "ucm" not in installer.__dict__
+    assert result.stderr == ""
+    imported = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import runpy, sys; "
+            f"runpy.run_path({str(script)!r}); "
+            "assert 'packaging' not in sys.modules and 'pip' not in sys.modules",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert imported.stdout == imported.stderr == ""
+
+
+@pytest.mark.parametrize("action", ["--probe", "--resolve"])
+def test_read_only_commands_do_not_prepare_missing_dependencies(
+    standalone_python, action
+):
+    result = subprocess.run(
+        [str(standalone_python), str(SCRIPT), action],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "install it first:" in result.stderr
+    assert f"{standalone_python} -m pip install packaging" in result.stderr
+    assert "preparing packaging" not in result.stderr
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_temporary_dependency_uses_public_packaging_and_leaves_no_install(
+    standalone_python, tmp_path, abort
+):
+    """Use a real local wheel and pip, without downloading or changing the venv."""
+    distribution = importlib.metadata.distribution("packaging")
+    wheel = tmp_path / f"packaging-{distribution.version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for file in distribution.files:
+            if str(file).startswith(("packaging/", "packaging-")):
+                archive.write(distribution.locate_file(file), str(file))
+    code = f"""
+import importlib.util
+import runpy
+import sys
+from pathlib import Path
+
+namespace = runpy.run_path({str(SCRIPT)!r})
+assert importlib.util.find_spec('packaging') is None
+original_path = sys.path.copy()
+try:
+    with namespace['packaging_dependency'](allow_install=True):
+        import packaging
+        from packaging.tags import sys_tags
+        from packaging.version import Version
+        dependency_dir = Path(packaging.__file__).parent.parent
+        assert dependency_dir != Path(sys.prefix) / 'lib'
+        assert list(sys_tags()) and Version('0.9.0rc1') > Version('0.8.0')
+        if {abort!r}:
+            raise ValueError('installation aborted')
+except ValueError:
+    assert {abort!r}
+assert not dependency_dir.exists()
+assert sys.path == original_path
+assert importlib.util.find_spec('packaging') is None
+"""
+    result = subprocess.run(
+        [str(standalone_python), "-c", code],
+        env={
+            **installer.os.environ,
+            "PIP_NO_INDEX": "1",
+            "PIP_FIND_LINKS": str(tmp_path),
+            "PIP_USER": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout == ""
+    assert "preparing packaging" in result.stderr
+
+
+def test_temporary_dependency_installation_failure_stops_the_command(
+    standalone_python, tmp_path
+):
+    result = subprocess.run(
+        [str(standalone_python), str(SCRIPT), "--extra", "cu129"],
+        env={
+            **installer.os.environ,
+            "PIP_NO_INDEX": "1",
+            "PIP_FIND_LINKS": str(tmp_path / "empty-index"),
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "command failed" in result.stderr
+    assert "requires Linux" not in result.stderr
+    assert "selected " not in result.stderr
