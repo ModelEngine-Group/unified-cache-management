@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -302,7 +303,7 @@ def _install_stubs():
     _install_package("ucm", REPO_ROOT / "ucm")
     _install_package("ucm.integration", REPO_ROOT / "ucm" / "integration")
     _install_package("ucm.integration.vllm", REPO_ROOT / "ucm" / "integration" / "vllm")
-    _install_module("torch", Tensor=type("Tensor", (), {}))
+    _install_module("torch", Tensor=type("Tensor", (), {}), dtype=object)
     _install_module(
         "prometheus_client",
         Counter=FakeCounter,
@@ -345,11 +346,16 @@ def _install_stubs():
         SchedulerOutput=type("SchedulerOutput", (), {}),
     )
     _install_module(
+        "vllm.v1.request",
+        RequestStatus=SimpleNamespace(PREEMPTED="preempted"),
+    )
+    _install_module(
         "vllm.v1.kv_cache_interface",
         FullAttentionSpec=type("FullAttentionSpec", (), {}),
         KVCacheConfig=type("KVCacheConfig", (), {}),
         KVCacheSpec=type("KVCacheSpec", (), {}),
         MambaSpec=type("MambaSpec", (), {}),
+        MLAAttentionSpec=type("MLAAttentionSpec", (), {}),
         SlidingWindowSpec=type("SlidingWindowSpec", (), {}),
         UniformTypeKVCacheSpecs=type("UniformTypeKVCacheSpecs", (), {}),
     )
@@ -360,6 +366,7 @@ def _install_stubs():
     _install_module(
         "ucm.integration.vllm.device",
         create_device=lambda *args, **kwargs: None,
+        get_current_device_id=lambda: 0,
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
     _install_module(
@@ -1255,13 +1262,16 @@ def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypa
     monkeypatch.setitem(
         sys.modules,
         "ucm.integration.vllm.hma_connector",
-        SimpleNamespace(UCMFAWAConnector=FakeFawaConnector),
+        SimpleNamespace(
+            UCMFAWAConnector=FakeFawaConnector,
+            UCMFAWALiteConnector=FakeInnerConnector,
+        ),
     )
 
     connector = UCMConnector(
         _vllm_config(launch_config={"use_lite": True}),
         KVConnectorRole.SCHEDULER,
-        kv_cache_config=object(),
+        kv_cache_config=SimpleNamespace(kv_cache_groups=[]),
     )
 
     assert type(connector.connector) is FakeInnerConnector
@@ -2529,6 +2539,69 @@ def test_hybrid_layerwise_records_save_bytes_once():
     assert fake_ucmmetrics.updated == [{"save_bytes_total": 896}]
     assert connector._layerwise_save_bytes == 0
     assert connector.is_save is False
+
+
+@pytest.mark.parametrize("load_async", [False, True], ids=["sync", "async"])
+def test_hla_load_orders_device_work_once_and_only_waits_for_sync(load_async):
+    from ucm.integration.vllm.hla_connector import (
+        HLARequestDispatchMeta,
+        UCMHybridLinearAttentionConnector,
+    )
+
+    _reset_fakes()
+    trace = []
+    connector = object.__new__(UCMHybridLinearAttentionConnector)
+    connector.device = SimpleNamespace(synchronize=lambda: trace.append("sync"))
+    connector.is_mla = False
+    connector.tp_rank = 0
+    connector.tp_size = 1
+    connector.block_data_size = 32
+    connector.store = object()
+    ptrs = SimpleNamespace(shape=(1, 1))
+    ptrs.reshape = lambda *args: ptrs
+    connector.kv_cache_layout = SimpleNamespace(extract_block_addrs=lambda ids: ptrs)
+    connector._pending_load_tasks = {}
+    connector._finished_async_load_req_ids = set()
+
+    def submit_load(store, request_ids, keys, shards, ptrs):
+        trace.append("submit")
+        return object()
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=Mock(side_effect=submit_load),
+        wait_load=Mock(side_effect=lambda _: trace.append("wait")),
+        check_load=Mock(return_value=False),
+    )
+    connector._connector_metadata = ucm_connector_module.UCMConnectorMetadata(
+        {
+            req_id: HLARequestDispatchMeta(
+                ([req_id.encode()], [block]),
+                ([], []),
+                load_async=load_async,
+            )
+            for req_id, block in [("hit-a", 10), ("hit-b", 11)]
+        }
+    )
+    connector._get_connector_metadata = lambda: connector._connector_metadata
+    connector.start_load_kv(None)
+    expected = ["sync", "submit", "submit"]
+    assert trace == expected + ([] if load_async else ["wait", "wait"])
+    if load_async:
+        assert set(connector._pending_load_tasks) == {"hit-a", "hit-b"}
+        assert connector._poll_pending_load_tasks() == set()
+        # Replayed metadata must neither resubmit nor synchronize the NPU.
+        connector.start_load_kv(None)
+        assert trace == expected
+        connector._rank_consistency.check_load.return_value = True
+        assert connector._poll_pending_load_tasks() == {"hit-a", "hit-b"}
+        assert connector._pending_load_tasks == {}
+        assert trace == expected + ["wait", "wait"]
+    else:
+        assert connector._pending_load_tasks == {}
+    connector._connector_metadata.request_meta.clear()
+    before_empty_step = list(trace)
+    connector.start_load_kv(None)
+    assert trace == before_empty_step
 
 
 def test_fawa_records_only_successful_load_task_bytes():

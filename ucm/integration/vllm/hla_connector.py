@@ -1406,13 +1406,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         request_to_load_blocks: dict[str, int] = {}
         all_load_ucm_ids: list[bytes] = []
         all_load_vllm_ids: list[int] = []
-        # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
-        # has completed before submitting load DMA (store stream).  Without
-        # this, the copy may land after the load and clobber loaded data.
-        # At this point the previous step's forward is done, so the only
-        # pending compute op is the mamba state copy — sync overhead is
-        # negligible.
-        self.device.synchronize()
+        load_stream_synchronized = False
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
@@ -1442,6 +1436,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 ptrs = self.kv_cache_layout.extract_block_addrs(scoped_vllm)
                 ptrs = ptrs.reshape(ptrs.shape[0], -1)
                 shard_indexs = [0] * len(scoped_ucm)
+                if not load_stream_synchronized:
+                    # Order Mamba state copies and block zeroing before load DMA.
+                    self.device.synchronize()
+                    load_stream_synchronized = True
                 task = self._rank_consistency.submit_load(
                     self.store,
                     {request_id: request.load_block_ids[0]},

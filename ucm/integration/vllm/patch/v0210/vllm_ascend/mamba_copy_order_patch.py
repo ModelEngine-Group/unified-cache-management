@@ -17,7 +17,13 @@ Resulting execution order:
   2. ``start_load_kv`` → ``device.synchronize()`` → load DMA (store stream)
   3. ``model_runner`` → ``do_mamba_copy_block`` (no-op, offset == 0)
   4. ``_model_forward``
+
+Load-only steps must not retain a Mamba state index: after an asynchronous
+load, the next forward must resolve its source from the restored prefix.
 """
+
+import inspect
+from functools import wraps
 
 from ucm.integration.vllm.patch.utils import when_imported
 from ucm.logger import init_logger
@@ -46,19 +52,26 @@ def patch_mamba_copy_order(mod):
     if getattr(original_preprocess, "_ucm_copy_order_patched", False):
         return
 
+    preprocess_signature = inspect.signature(original_preprocess)
+
+    @wraps(original_preprocess)
     def patched_preprocess(*args, **kwargs):
-        original_preprocess(*args, **kwargs)
-        if args:
-            copy_bufs = args[-1]
-        else:
-            copy_bufs = kwargs.get("copy_bufs")
+        arguments = preprocess_signature.bind(*args, **kwargs).arguments
+        result = original_preprocess(*args, **kwargs)
+        scheduler_output = arguments["scheduler_output"]
+        mamba_state_idx = arguments["mamba_state_idx"]
+        for request_id in arguments["input_batch"].req_ids:
+            if scheduler_output.num_scheduled_tokens.get(request_id, 0) == 0:
+                mamba_state_idx.pop(request_id, None)
+        copy_bufs = arguments.get("copy_bufs")
         if copy_bufs is not None and copy_bufs.offset > 0:
             do_mamba_copy_block(copy_bufs)
             copy_bufs.offset = 0
+        return result
 
     patched_preprocess._ucm_copy_order_patched = True
     mamba_utils.preprocess_mamba = patched_preprocess
     logger.info(
         "UCM mamba copy order patch applied: do_mamba_copy_block restored "
-        "to preprocess_mamba (before start_load_kv)"
+        "to preprocess_mamba (before start_load_kv); load-only state indices cleared"
     )
