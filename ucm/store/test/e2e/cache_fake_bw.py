@@ -25,8 +25,8 @@
 # Usage:
 # 1. Select model/mode and set worker_number/layer_number below.
 #    GLM defaults to 16/78; MiniMax to 8/62; DSV4 to 8 and ignores layer_number.
-# 2. Tune the workload and optional SDMA/CPU-affinity switches as needed.
-# 3. Run this script with python3.
+# 2. Select Cache|Fake or Cache|Posix; configure storage_backends for Posix.
+# 3. Tune the workload and optional SDMA/CPU-affinity switches, then run with python3.
 import multiprocessing
 import os
 import secrets
@@ -37,6 +37,8 @@ import time
 
 import torch
 
+# Cache|Fake measures Cache transfers; Cache|Posix also writes KV files.
+# Loads still prefer Cache hits on both pipelines.
 store_pipeline = "Cache|Fake"
 device_type = "npu"
 
@@ -61,12 +63,20 @@ load_epoch_number = 128
 warmup_epoch_number = 5
 # Pause between adjacent epochs, in milliseconds.
 epoch_interval_ms = 15
+# Number of Cache copy streams per worker and transfer direction.
+cache_stream_number = 16
 # Enable Cache SDMA Direct transfers.
 cache_sdma_direct = False
 # Enable Cache IO aggregation.
 cache_io_aggregation = False
 # Bind each worker and its UCM store threads to NUMA-local CPU cores.
 worker_cpu_affinity_enable = False
+
+# Only used by Cache|Posix. All workers and the lookup observer share these paths.
+storage_backends = ["./build/data"]
+posix_io_engine = "psync"  # psync or aio; io_direct is enabled below.
+posix_data_trans_concurrency = 128
+posix_lookup_concurrency = 16
 
 # MLA writes once from worker 0 and all workers load the same block ids, while
 # GQA workers use their own block ids. GLM and MiniMax support layerwise and
@@ -347,14 +357,10 @@ def get_cache_numa_nodes():
     numa_nodes = []
     for worker_id, cpu_pool in enumerate(cpu_pools):
         nodes = {cpu_to_node.get(cpu_id) for cpu_id in cpu_pool}
-        numa_node = (
-            next(iter(nodes)) if len(nodes) == 1 and None not in nodes else None
-        )
+        numa_node = next(iter(nodes)) if len(nodes) == 1 and None not in nodes else None
         numa_nodes.append(numa_node)
         placement = (
-            f"affinity node {numa_node}"
-            if numa_node is not None
-            else "rank fallback"
+            f"affinity node {numa_node}" if numa_node is not None else "rank fallback"
         )
         print(
             f"Cache NUMA plan: worker={worker_id}, npu={npu_ids[worker_id]}, "
@@ -472,6 +478,23 @@ def configure_ucm_logging():
     os.environ["UC_LOGGER_LEVEL"] = "info"
 
 
+def configure_storage_backend(config):
+    if store_pipeline == "Cache|Posix":
+        config["storage_backends"] = storage_backends
+        config["posix_io_engine"] = posix_io_engine
+        config["posix_data_trans_concurrency"] = posix_data_trans_concurrency
+        config["posix_lookup_concurrency"] = posix_lookup_concurrency
+
+
+def prepare_storage_dirs():
+    if store_pipeline != "Cache|Posix":
+        return
+    if not storage_backends:
+        raise ValueError("Cache|Posix requires at least one storage_backends directory")
+    for path in storage_backends:
+        os.makedirs(path, exist_ok=True)
+
+
 def create_cache_worker(
     pipeline_store_cls,
     unique_id: str,
@@ -490,7 +513,7 @@ def create_cache_worker(
     config["cache_load_backend_only"] = True
     config["cache_buffer_capacity_gb"] = 32
     config["local_rank_size"] = worker_number
-    config["cache_stream_number"] = 4
+    config["cache_stream_number"] = cache_stream_number
     config["cache_sdma_direct"] = cache_sdma_direct
     config["cache_io_aggregation"] = cache_io_aggregation
     config["timeout_ms"] = 30000
@@ -501,6 +524,7 @@ def create_cache_worker(
         config["cache_fallback_numa_rank"] = device_id
     if store_cpu_affinity_cores:
         config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    configure_storage_backend(config)
     return pipeline_store_cls(config)
 
 
@@ -508,7 +532,10 @@ def create_cache_scheduler(
     pipeline_store_cls, unique_id: str, store_cpu_affinity_cores
 ):
     config = {}
-    config["store_pipeline"] = store_pipeline
+    # Query Posix directly so Cache hits cannot hide pending backend commits.
+    config["store_pipeline"] = (
+        "Posix" if store_pipeline == "Cache|Posix" else store_pipeline
+    )
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
     # Keep scheduler tensor sizes and shard size unset so the C++ defaults are
@@ -524,6 +551,7 @@ def create_cache_scheduler(
     config["device_id"] = -1
     if store_cpu_affinity_cores:
         config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    configure_storage_backend(config)
     return pipeline_store_cls(config)
 
 
@@ -608,7 +636,7 @@ def load(
 
 
 def wait_blocks_available(scheduler, block_ids, timeout_s=60, poll_interval_s=0.001):
-    """Wait for a full prefix hit; Cache v2 may satisfy hits from Cache or backend."""
+    """Wait for a full prefix hit; the Posix observer checks committed files."""
     deadline = time.perf_counter() + timeout_s
     while True:
         last_hit = scheduler.lookup_on_prefix(block_ids)
@@ -677,9 +705,7 @@ def print_benchmark_summary(dump_cost_records, dump_byte_records, load_cost_reco
             if cost > 0
         ]
         latencies_ms = [cost * 1e3 for cost, _ in samples]
-        bandwidths_gbps = [
-            byte_count / cost / 1e9 for cost, byte_count in samples
-        ]
+        bandwidths_gbps = [byte_count / cost / 1e9 for cost, byte_count in samples]
         print(f"{direction}: samples={len(samples)}")
         print(f"  latency(ms): {format_statistics(latencies_ms)}")
         print(f"  per-worker bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
@@ -714,7 +740,8 @@ def worker_loop(
 
     logger = init_logger(__name__)
     logger.info(
-        "Cache Fake benchmark worker %d initialized UC logging at info level.",
+        "%s benchmark worker %d initialized UC logging at info level.",
+        store_pipeline,
         device_id,
     )
     device = setup_device(device_id)
@@ -744,6 +771,7 @@ def worker_loop(
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
         f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
+        f"cache_stream_number={cache_stream_number}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"cache_io_aggregation={cache_io_aggregation}, "
         f"share_buffer_enable={share_buffer_enable}, "
@@ -752,14 +780,19 @@ def worker_loop(
         f"store_cpu_affinity_cores={store_cpu_affinity_cores}, "
         f"multiprocessing_start_method={multiprocessing.get_start_method()}"
     )
+    if store_pipeline == "Cache|Posix":
+        print(
+            f"Posix backend: worker={device_id}, storage_backends={storage_backends}, "
+            f"posix_io_engine={posix_io_engine}, "
+            f"posix_data_trans_concurrency={posix_data_trans_concurrency}, "
+            f"posix_lookup_concurrency={posix_lookup_concurrency}"
+        )
 
     barrier.wait()
     for record_idx, block_ids in enumerate(block_id_records):
         warmup = record_idx < warmup_epoch_number
         epoch = record_idx if warmup else record_idx - warmup_epoch_number
-        cost, byte_count = dump(
-            epoch, device, device_id, worker, block_ids, warmup
-        )
+        cost, byte_count = dump(epoch, device, device_id, worker, block_ids, warmup)
         if not warmup:
             index = device_id * dump_epoch_number + epoch
             dump_cost_records[index] = cost
@@ -837,6 +870,7 @@ if __name__ == "__main__":
             "before running the benchmark"
         )
     configure_ucm_logging()
+    prepare_storage_dirs()
     process_context = multiprocessing.get_context("spawn")
     barrier = process_context.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
@@ -920,9 +954,7 @@ if __name__ == "__main__":
                     f"worker pid={failed.pid} exited with code {failed.exitcode}"
                 )
             raise RuntimeError("workers exited before completing the benchmark")
-        print_benchmark_summary(
-            dump_cost_records, dump_byte_records, load_cost_records
-        )
+        print_benchmark_summary(dump_cost_records, dump_byte_records, load_cost_records)
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
     finally:
