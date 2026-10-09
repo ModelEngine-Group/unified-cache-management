@@ -14,6 +14,7 @@
 | 开发任务 | 指南 |
 | --- | --- |
 | 准备可修改的运行环境 | [源码构建](build_from_source.md) |
+| 在其他项目或镜像中安装已发布 UCM | [接入 wheel 安装脚本](install-wheel.md) |
 | 选择后端并配置缓存 | [缓存配置](cache-configuration/index.md) |
 | 接入存储或新增 Pipeline 阶段 | [扩展 Store](extending-store.md) |
 | 增加运行时测量 | [指标开发](add-metrics.md) |

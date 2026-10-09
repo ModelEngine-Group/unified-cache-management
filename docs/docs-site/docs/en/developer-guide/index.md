@@ -14,6 +14,7 @@ Understand how UCM connects the engine's KV Cache lifecycle to external storage,
 | Development task | Guide |
 | --- | --- |
 | Prepare an editable runtime | [Build from source](build_from_source.md) |
+| Install released UCM in another project or image | [Integrate the wheel installer](install-wheel.md) |
 | Choose and configure a backend | [Cache Configuration](cache-configuration/index.md) |
 | Add storage or a Pipeline stage | [Extend Store](extending-store.md) |
 | Add runtime measurements | [Metrics development](add-metrics.md) |

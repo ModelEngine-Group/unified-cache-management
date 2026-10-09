@@ -368,6 +368,58 @@ def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
     }
 
 
+def test_published_wheels_use_the_consumer_installer_without_changing_fork_scope() -> (
+    None
+):
+    job = _load("release-ucm.yml")["jobs"]["verify-pypi-installs"]
+    assert job["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.plan.outputs.pypi_test_matrix) }}"
+    )
+    step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Install one extra from the planned Python index"
+    )
+    assert step["env"]["PUBLICATION_SCOPE"] == "${{ inputs.publication_scope }}"
+    run = step["run"]
+    assert "${PWD}/scripts/install_ucm.py:/tmp/install_ucm.py:ro" in run
+    official = run.split('if [ "${PUBLICATION_SCOPE}" = official ]; then', 1)[1]
+    official, fork = official.split("else\n", 1)
+    assert (
+        '"${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" --resolve'
+        in official
+    )
+    assert "--report /result/install-report.json" in official
+    assert "installer_python=/tmp/ucm-pypi-venv/bin/python" in run
+    assert "export PYTHON=" not in run
+    assert '"${UCM_META_DISTRIBUTION}[${UCM_EXTRA},toolkit]==${UCM_VERSION}"' in fork
+    assert ".backend_requirement == $backend and .wheel == $wheel" in run
+    assert '"${installer_python}" /tmp/validate_wheel_runtime.py' in run
+    assert any(step.get("if") == "always()" for step in job["steps"])
+
+
+def test_installer_workflow_runs_the_downloaded_python_file_with_the_target_interpreter() -> (
+    None
+):
+    workflow = _load("install-ucm.yml")
+    for event in ("push", "pull_request"):
+        assert "scripts/install_ucm.py" in workflow["on"][event]["paths"]
+    checks = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["test"]["steps"]
+    )
+    assert "python -m py_compile scripts/install_ucm.py" in checks
+    install = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["install"]["steps"]
+    )
+    assert "/scripts/install_ucm.py" in install
+    assert "cmp scripts/install_ucm.py installer-results/install_ucm.py" in install
+    assert "installer_python=/tmp/installer-check/bin/python" in install
+    for operation in ("--probe", "--resolve", "--version"):
+        assert f'"${{installer_python}}" /result/install_ucm.py {operation}' in install
+    assert "export PYTHON=" not in install
+    assert "install_ucm.sh" not in checks + install
+
+
 def test_bot_control_plane_is_trusted_while_builds_use_pr_source() -> None:
     jobs = _load("ucm-build-bot.yml")["jobs"]
     for name in (

@@ -8,12 +8,14 @@ import csv
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import io
 import os
 import subprocess
 import sys
 import tomllib
 import zipfile
+from email.parser import BytesParser
 from pathlib import Path
 
 import pytest
@@ -215,6 +217,25 @@ def test_materialized_source_builds_and_records_empty_meta_wheel(
             f'uc-manager-cuda-cu130=={VERSION}; extra == "cu130"',
         ],
     }
+
+    # The standalone consumer must understand the publisher's actual METADATA,
+    # including setuptools' marker formatting, rather than a second hand-written catalog.
+    script = ROOT / "scripts" / "install_ucm.py"
+    spec = importlib.util.spec_from_file_location("installer_release_contract", script)
+    assert spec is not None and spec.loader is not None
+    installer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = installer
+    spec.loader.exec_module(installer)
+    with zipfile.ZipFile(wheel_path) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = BytesParser().parsebytes(archive.read(metadata_name))
+    for extra, requirement in result["extras"].items():
+        name, version = installer.backend_requirement(
+            metadata, extra, installer.default_environment()
+        )
+        assert f"{name}=={version}" == requirement
 
 
 def test_materialized_source_build_is_reproducible(tmp_path: Path) -> None:

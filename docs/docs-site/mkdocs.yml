@@ -110,6 +110,7 @@ plugins:
             Request Lifecycle: 请求生命周期
             PD Integration: PD 集成原理
             Build from Source: 源码构建
+            Integrate the Wheel Installer: 接入 wheel 安装脚本
             Extending Store: 扩展 Store
             Add Metrics: 指标开发
             Toolkit Development: Toolkit 开发
@@ -202,6 +203,7 @@ nav:
       - Request Lifecycle: developer-guide/request-lifecycle.md
       - PD Integration: developer-guide/pd-integration.md
       - Build from Source: developer-guide/build_from_source.md
+      - Integrate the Wheel Installer: developer-guide/install-wheel.md
       - Cache Configuration:
           - developer-guide/cache-configuration/index.md
           - Filesystem Pipeline: developer-guide/cache-configuration/pipeline.md

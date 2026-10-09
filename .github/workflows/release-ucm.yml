@@ -1442,6 +1442,7 @@ jobs:
           UCM_VERSION: ${{ inputs.version }}
           BACKEND_DISTRIBUTION: ${{ matrix.distribution }}
           PLATFORM_ARG: ${{ matrix.platform_arg }}
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
         run: |
           set -euo pipefail
           external_libraries="$(jq -c '.external_libraries' \
@@ -1453,9 +1454,11 @@ jobs:
           index="$(jq -er '.publish.pypi.simple_index' input/plan/release-plan.json)"
           toolkit_distribution="$(jq -er '.toolkit_package.distribution' input/plan/release-plan.json)"
           meta_distribution="$(jq -er '.meta_package.distribution' input/plan/release-plan.json)"
+          mkdir -p out/installer
           docker pull "${RUNTIME_IMAGE}"
           docker run --rm \
             --entrypoint bash \
+            -e PUBLICATION_SCOPE \
             -e PLATFORM="${PLATFORM_ARG}" \
             -e UCM_EXTRA="${UCM_EXTRA}" \
             -e UCM_PYPI_INDEX="${index}" \
@@ -1471,22 +1474,53 @@ jobs:
             -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
             -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
             -v "${PWD}/.github/release/verify_pypi_install_report.py:/tmp/verify_pypi_install_report.py:ro" \
+            -v "${PWD}/scripts/install_ucm.py:/tmp/install_ucm.py:ro" \
+            -v "${PWD}/out/installer:/result" \
             -v "${PWD}/toolkit/tests/smoke_installed.py:/tmp/smoke_installed.py:ro" \
             -v "${PWD}/input/pypi/pypi-receipt.json:/tmp/pypi-receipt.json:ro" \
             "${RUNTIME_IMAGE}" -c '
               set -euo pipefail
               python3 -m venv /tmp/ucm-pypi-venv
-              . /tmp/ucm-pypi-venv/bin/activate
-              python -m pip install --disable-pip-version-check --no-cache-dir \
-                --index-url "${UCM_PYPI_INDEX}" --extra-index-url "${UCM_DEPENDENCY_INDEX}" \
-                --only-binary=:all: --report /tmp/install-report.json \
-                "${UCM_META_DISTRIBUTION}[${UCM_EXTRA},toolkit]==${UCM_VERSION}"
-              python /tmp/verify_pypi_install_report.py --report /tmp/install-report.json \
-                --receipt /tmp/pypi-receipt.json --project "${UCM_META_DISTRIBUTION}" \
-                --project "${EXPECTED_BACKEND_DISTRIBUTION}" --project "${UCM_TOOLKIT_DISTRIBUTION}"
-              python /tmp/validate_wheel_runtime.py
-              python -I /tmp/smoke_installed.py --distribution "${UCM_TOOLKIT_DISTRIBUTION}" --version "${UCM_VERSION}"
+              installer_python=/tmp/ucm-pypi-venv/bin/python
+              export PIP_INDEX_URL="${UCM_PYPI_INDEX}"
+              export PIP_EXTRA_INDEX_URL="${UCM_DEPENDENCY_INDEX}"
+              if [ "${PUBLICATION_SCOPE}" = official ]; then
+                # Exercise the same automatic Toolkit/SoC selection consumers use.
+                "${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" --resolve > /result/selection.json
+                "${installer_python}" /tmp/install_ucm.py --version "${UCM_VERSION}" \
+                  --report /result/install-report.json
+                "${installer_python}" /tmp/verify_pypi_install_report.py --report /result/install-report.json \
+                  --receipt /tmp/pypi-receipt.json --project "${UCM_META_DISTRIBUTION}" \
+                  --project "${EXPECTED_BACKEND_DISTRIBUTION}"
+                "${installer_python}" -m pip install --only-binary=:all: --report /result/toolkit-report.json \
+                  "${UCM_TOOLKIT_DISTRIBUTION}==${UCM_VERSION}"
+                "${installer_python}" /tmp/verify_pypi_install_report.py --report /result/toolkit-report.json \
+                  --receipt /tmp/pypi-receipt.json --project "${UCM_TOOLKIT_DISTRIBUTION}"
+              else
+                # Fork packages keep their isolated TestPyPI names and publication boundary.
+                "${installer_python}" -m pip install --only-binary=:all: --report /result/install-report.json \
+                  "${UCM_META_DISTRIBUTION}[${UCM_EXTRA},toolkit]==${UCM_VERSION}"
+                "${installer_python}" /tmp/verify_pypi_install_report.py --report /result/install-report.json \
+                  --receipt /tmp/pypi-receipt.json --project "${UCM_META_DISTRIBUTION}" \
+                  --project "${EXPECTED_BACKEND_DISTRIBUTION}" --project "${UCM_TOOLKIT_DISTRIBUTION}"
+              fi
+              "${installer_python}" /tmp/validate_wheel_runtime.py
+              "${installer_python}" -I /tmp/smoke_installed.py --distribution "${UCM_TOOLKIT_DISTRIBUTION}" --version "${UCM_VERSION}"
             '
+          if [ "${PUBLICATION_SCOPE}" = official ]; then
+            jq -e --arg version "${UCM_VERSION}" --arg extra "${UCM_EXTRA}" \
+              --arg backend "${BACKEND_DISTRIBUTION}==${UCM_VERSION}" \
+              --arg wheel "$(jq -er '.filename' input/wheel/wheel-result.json)" \
+              '.version == $version and .extra == $extra and
+               .backend_requirement == $backend and .wheel == $wheel' out/installer/selection.json
+          fi
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: ucm-installer-${{ matrix.id }}-run-${{ github.run_id }}
+          path: out/installer/
+          if-no-files-found: ignore
+          retention-days: 14
 
   verify-pypi-toolkit:
     name: Verify PyPI · Toolkit and optional extra
