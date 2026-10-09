@@ -35,6 +35,16 @@
 namespace UC::PosixStore {
 
 class SpaceManager {
+    struct LookupContext {
+        const Detail::BlockId* blocks;
+        size_t begin;
+        size_t end;
+        size_t nWorker;
+        std::shared_ptr<std::vector<uint8_t>> results;
+        std::shared_ptr<std::atomic<int32_t>> status;
+        std::shared_ptr<Latch> waiter;
+    };
+
     struct PrefixLookupContext {
         const Detail::BlockId* blocks;
         size_t begin;
@@ -47,6 +57,7 @@ class SpaceManager {
 
 private:
     SpaceLayout layout_;
+    ThreadPool<LookupContext> lookupSrv_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
@@ -64,6 +75,8 @@ public:
 
 private:
     uint8_t Lookup(const Detail::BlockId* block);
+    void OnLookup(LookupContext& ctx);
+    void OnLookupTimeout(LookupContext& ctx);
     void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };

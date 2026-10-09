@@ -123,6 +123,7 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     SpaceManager spaceMgr;
     Config config;
     config.dataDirShardBytes = 0;
+    config.lookupConcurrency = 2;
     config.storageBackends.push_back(Path());
     ASSERT_TRUE(spaceMgr.Setup(config).Success());
     std::vector<UC::Detail::BlockId> blocks(3);
