@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*", "draft/v*", "nightly/v*"]
 
+concurrency:
+  group: ${{ startsWith(github.ref, 'refs/tags/nightly/') && format('ucm-nightly-{0}', github.repository_id) || format('ucm-tag-wrapper-{0}', github.run_id) }}
+  queue: max
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -41,6 +46,14 @@ jobs:
           set -euo pipefail
           classification="$(python scripts/materialize_version.py \
             --tag "${RELEASE_TAG}" --classify --version-config version.ini)"
+          if [ "$(jq -r '.release_type' <<<"${classification}")" = nightly ]; then
+            mkdir -p out/nightly
+            python .github/release/ucm_release/cleanup.py record \
+              --repository "${GITHUB_REPOSITORY}" --tag "${RELEASE_TAG}" \
+              --source-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}" \
+              --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+              --output out/nightly/release-cleanup.json
+          fi
           repository="${GITHUB_REPOSITORY,,}"
           if [ "${repository}" = modelengine-group/unified-cache-management ]; then
             publication_scope=official
@@ -57,6 +70,13 @@ jobs:
             echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
             echo "publication_scope=${publication_scope}"
           } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/nightly/release-cleanup.json') != '' }}
+        with:
+          name: ucm-nightly-cleanup-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/nightly/release-cleanup.json
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Run Release core

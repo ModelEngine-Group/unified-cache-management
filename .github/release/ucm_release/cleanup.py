@@ -12,20 +12,23 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 if __package__:
+    from . import nightly_cleanup
     from .manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
     from .manifest import ManifestError as CleanupError
     from .manifest import validate_manifest
 else:
     # Filename entry points also need the package parent for manifest imports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
-    from manifest import ManifestError as CleanupError
-    from manifest import validate_manifest
+    from ucm_release import nightly_cleanup
+    from ucm_release.manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
+    from ucm_release.manifest import ManifestError as CleanupError
+    from ucm_release.manifest import validate_manifest
 
 RELEASE_TYPES = frozenset({"stable", "prerelease", "draft", "nightly"})
 RETRY_DELAYS_SECONDS = (0.0, 5.0, 15.0)
@@ -58,6 +61,23 @@ _TRANSPORT_MARKERS = (
     "timeout",
     "tls handshake timeout",
 )
+
+
+class _GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Signed artifact redirects must not forward the GitHub credential."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        if urllib.parse.urlsplit(new_url).scheme != "https":
+            raise CleanupError("GitHub download redirected to a non-HTTPS URL")
+        redirected = super().redirect_request(
+            request, response, code, message, headers, new_url
+        )
+        if redirected is not None and (
+            urllib.parse.urlsplit(request.full_url).netloc
+            != urllib.parse.urlsplit(new_url).netloc
+        ):
+            redirected.remove_header("Authorization")
+        return redirected
 
 
 class RemoteError(CleanupError):
@@ -136,6 +156,10 @@ class CleanupRemote(Protocol):
 
     def delete(self, resource: Resource, state: object) -> None: ...
 
+    def is_absent(self, resource: Resource, state: object) -> bool: ...
+
+    def recovery_release_ids(self, record: dict[str, Any]) -> set[int]: ...
+
     def release_resources(self, tag: str) -> list[Resource]: ...
 
 
@@ -165,8 +189,22 @@ def registry_resources(manifest: object) -> list[Resource]:
         ("ghcr-member", ref) for ref in sorted(images["ghcr"]["members"])
     )
 
+    references = ghcr_resources + [
+        (f"dockerhub-{kind}", reference)
+        for plural, kind in (("indexes", "index"), ("members", "member"))
+        for reference in sorted(images["dockerhub"][plural])
+    ]
+    return _registry_resources_from_references(references)
+
+
+def _registry_resources_from_references(
+    references: Sequence[tuple[str, str]],
+) -> list[Resource]:
+    """Bind exact references to the allowed tags of each GHCR package."""
     allowed_tags_by_package: dict[str, set[str]] = {}
-    for _, reference in ghcr_resources:
+    for kind, reference in references:
+        if kind.startswith("dockerhub-"):
+            continue
         match = _OCI_REFERENCE.fullmatch(reference)
         if match is None:
             raise AssertionError("validated GHCR reference no longer parses")
@@ -174,21 +212,16 @@ def registry_resources(manifest: object) -> list[Resource]:
             match.group("tag")
         )
     result = []
-    for kind, reference in ghcr_resources:
+    for kind, reference in references:
+        if kind.startswith("dockerhub-"):
+            result.append(Resource(kind, reference))
+            continue
         match = _OCI_REFERENCE.fullmatch(reference)
         if match is None:
             raise AssertionError("validated GHCR reference no longer parses")
         allowed_tags = tuple(sorted(allowed_tags_by_package[match.group("repository")]))
         result.append(Resource(kind, reference, allowed_tags))
 
-    result.extend(
-        Resource("dockerhub-index", ref)
-        for ref in sorted(images["dockerhub"]["indexes"])
-    )
-    result.extend(
-        Resource("dockerhub-member", ref)
-        for ref in sorted(images["dockerhub"]["members"])
-    )
     return result
 
 
@@ -288,7 +321,7 @@ def delete_resource_with_retry(
     sleeper=time.sleep,
     fail_resource: str | None = None,
 ) -> ResourceFailure | None:
-    """Probe and delete one resource with exactly three independent attempts."""
+    """Probe and delete a resource, confirming Release deletion by ID readback."""
     for attempt, delay in enumerate(RETRY_DELAYS_SECONDS, start=1):
         print(
             f"cleanup resource_type={resource.kind} reference={resource.reference} "
@@ -305,7 +338,15 @@ def delete_resource_with_retry(
                 raise RemoteError(
                     f"synthetic HTTP 503 for {resource.reference}", status=503
                 )
-            remote.delete(resource, state)
+            try:
+                remote.delete(resource, state)
+            except RemoteError as error:
+                if not error.is_missing:
+                    raise
+            if not remote.is_absent(resource, state):
+                raise RemoteError(
+                    f"{resource.kind} still exists after deletion", status=409
+                )
             return None
         except RemoteError as error:
             if error.is_missing:
@@ -363,60 +404,123 @@ def _release_resources_with_retry(
     raise AssertionError("Release discovery retry loop exhausted without a result")
 
 
-def cleanup_manifest(
-    manifest: object,
+def _cleanup_phases(
+    tag: str,
     remote: CleanupRemote,
+    registry: Sequence[Resource],
+    actions: Sequence[Resource],
+    releases: Sequence[Resource],
     *,
-    sleeper=time.sleep,
-    fail_resource: str | None = None,
+    sleeper,
+    fail_resource: str | None,
 ) -> CleanupReport:
-    """Delete one Tag through the four recovery-preserving phases."""
-    validated = validate_manifest(manifest)
-    tag = validated["release"]["tag"]
-    phase_one_resources = registry_resources(validated)
-
-    failures = _run_phase(
-        remote,
-        phase_one_resources,
-        sleeper=sleeper,
-        fail_resource=fail_resource,
-    )
-    if failures:
-        return CleanupReport(tag, False, 1, tuple(failures))
-
-    run_id = validated["release"]["actions_run_id"]
-    actions = Resource(
-        "actions-run",
-        f"https://github.com/{remote.repository}/actions/runs/{run_id}",
-        run_id,
-    )
-    failures = _run_phase(
-        remote, [actions], sleeper=sleeper, fail_resource=fail_resource
-    )
-    if failures:
-        return CleanupReport(tag, False, 2, tuple(failures))
-
-    git_tag = Resource("git-tag", tag, tag)
-    failures = _run_phase(
-        remote, [git_tag], sleeper=sleeper, fail_resource=fail_resource
-    )
-    if failures:
-        return CleanupReport(tag, False, 3, tuple(failures))
-
-    releases, discovery_failure = _release_resources_with_retry(
-        remote, tag, sleeper=sleeper
-    )
-    if discovery_failure is not None:
-        return CleanupReport(tag, False, 4, (discovery_failure,))
-    unbacked = [resource for resource in releases if not resource.holds_manifest]
+    """Remove one target while retaining its last recovery record until the end."""
+    early_actions = [item for item in actions if not item.holds_manifest]
+    for phase, resources in enumerate(
+        (registry, early_actions, [Resource("git-tag", tag, tag)]), start=1
+    ):
+        failures = _run_phase(
+            remote, resources, sleeper=sleeper, fail_resource=fail_resource
+        )
+        if failures:
+            return CleanupReport(tag, False, phase, tuple(failures))
+    unbacked = [item for item in releases if not item.holds_manifest]
     failures = _run_phase(
         remote, unbacked, sleeper=sleeper, fail_resource=fail_resource
     )
     if failures:
         return CleanupReport(tag, False, 4, tuple(failures))
-    backed = [resource for resource in releases if resource.holds_manifest]
-    failures = _run_phase(remote, backed, sleeper=sleeper, fail_resource=fail_resource)
+    holders = [item for item in releases if item.holds_manifest]
+    holders.extend(item for item in actions if item.holds_manifest)
+    failures = _run_phase(remote, holders, sleeper=sleeper, fail_resource=fail_resource)
     return CleanupReport(tag, not failures, 4 if failures else None, tuple(failures))
+
+
+def cleanup_manifest(
+    manifest: object,
+    remote: CleanupRemote,
+    *,
+    release_id: int | None = None,
+    sleeper=time.sleep,
+    fail_resource: str | None = None,
+) -> CleanupReport:
+    """Resolve stable IDs, then remove a published release in four phases."""
+    validated = validate_manifest(manifest)
+    tag = validated["release"]["tag"]
+    releases, failure = _release_resources_with_retry(remote, tag, sleeper=sleeper)
+    if failure is not None:
+        return CleanupReport(tag, False, 4, (failure,))
+    if release_id is not None:
+        releases = [item for item in releases if item.identifier != release_id]
+        releases.append(
+            Resource("github-release", f"{tag}#{release_id}", release_id, True)
+        )
+    if not releases:
+        failure = _failure(
+            Resource("github-releases", tag),
+            1,
+            CleanupError("cannot resolve GitHub Release IDs before deleting the Tag"),
+        )
+        return CleanupReport(tag, False, 4, (failure,))
+    run_id = validated["release"]["actions_run_id"]
+    actions = [
+        Resource(
+            "actions-run",
+            f"https://github.com/{remote.repository}/actions/runs/{run_id}",
+            run_id,
+        )
+    ]
+    return _cleanup_phases(
+        tag,
+        remote,
+        registry_resources(validated),
+        actions,
+        releases,
+        sleeper=sleeper,
+        fail_resource=fail_resource,
+    )
+
+
+def cleanup_record(
+    record: object,
+    remote: CleanupRemote,
+    *,
+    sleeper=time.sleep,
+    fail_resource: str | None = None,
+) -> CleanupReport:
+    """Delete a proven Nightly target without requiring a successful Manifest."""
+    validated = nightly_cleanup.validate_record(record, remote.repository)
+    tag = validated["tag"]
+    registry = _registry_resources_from_references(
+        [(item["kind"], item["reference"]) for item in validated["resources"]]
+    )
+    holders = remote.recovery_release_ids(validated)
+    releases = [
+        Resource(
+            "github-release", f"{tag}#{identifier}", identifier, identifier in holders
+        )
+        for identifier in validated["release_ids"]
+    ]
+    # A failed attachment update can leave the full inventory only in the run.
+    # Keep that run until the Tag and unbacked Releases are successfully removed.
+    actions = [
+        Resource(
+            "actions-run",
+            f"https://github.com/{remote.repository}/actions/runs/{identifier}",
+            identifier,
+            holds_manifest=not bool(holders),
+        )
+        for identifier in sorted({run["id"] for run in validated["runs"]})
+    ]
+    return _cleanup_phases(
+        tag,
+        remote,
+        registry,
+        actions,
+        releases,
+        sleeper=sleeper,
+        fail_resource=fail_resource,
+    )
 
 
 def render_failure_summary(failures: Sequence[ResourceFailure]) -> str:
@@ -474,8 +578,10 @@ class ProductionRemote:
         self.token = token
         self.crane = crane
         self.api_base = api_base.rstrip("/")
-        self._opener = opener or urllib.request.build_opener()
+        self._opener = opener or urllib.request.build_opener(_GitHubRedirectHandler())
         self._package_owner_prefix: str | None = None
+        self._package_versions: dict[str, list[dict[str, Any]]] = {}
+        self._package_denied: dict[str, RemoteError] = {}
 
     def _request(
         self,
@@ -485,6 +591,11 @@ class ProductionRemote:
         accept: str = "application/vnd.github+json",
     ) -> bytes:
         url = path if path.startswith("https://") else self.api_base + path
+        if (
+            urllib.parse.urlsplit(url).netloc
+            != urllib.parse.urlsplit(self.api_base).netloc
+        ):
+            raise CleanupError("GitHub API URL is outside the configured API host")
         request = urllib.request.Request(
             url,
             method=method,
@@ -652,11 +763,17 @@ class ProductionRemote:
             raise CleanupError("GHCR resource does not belong to the repository owner")
         package = urllib.parse.quote("/".join(parts[1:]), safe="")
         base = f"{self._owner_package_prefix()}/packages/container/{package}/versions"
+        if base in self._package_denied:
+            raise self._package_denied[base]
         try:
-            versions = self._all_pages(base)
+            if base not in self._package_versions:
+                self._package_versions[base] = self._all_pages(base)
+            versions = self._package_versions[base]
         except RemoteError as error:
             if error.is_missing:
                 return None
+            if error.status in {401, 403}:
+                self._package_denied[base] = error
             raise
         target_tag = match.group("tag")
         matches: list[tuple[int, list[str]]] = []
@@ -683,13 +800,38 @@ class ProductionRemote:
                 status=422,
             )
         version_id, tags = matches[0]
+        # The package listing is shared by hundreds of historical references;
+        # verify the selected version's current tags before every deletion.
+        path = f"{base}/{version_id}"
+        try:
+            current = self._github_json("GET", path)
+        except RemoteError as error:
+            if error.is_missing:
+                self._package_versions[base] = [
+                    item for item in versions if item.get("id") != version_id
+                ]
+                return None
+            raise
+        if not isinstance(current, dict) or current.get("id") != version_id:
+            raise CleanupError("GHCR package version response does not match its ID")
+        metadata = current.get("metadata", {})
+        container = metadata.get("container", {}) if isinstance(metadata, dict) else {}
+        tags = container.get("tags") if isinstance(container, dict) else None
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            raise CleanupError("GHCR package version Tags are malformed")
+        if target_tag not in tags:
+            self._package_versions.pop(base, None)
+            raise RemoteError(
+                "GHCR Tag changed during cleanup; inventory must be refreshed",
+                status=409,
+            )
         allowed = set(allowed_tags)
         if target_tag not in allowed:
             raise CleanupError("GHCR resource allowed Tag set omits its target Tag")
         other_tags = sorted(set(tags) - allowed)
         if other_tags:
             raise UnsafePackageVersion(reference, other_tags)
-        return f"{base}/{version_id}"
+        return path
 
     @staticmethod
     def _crane_error(detail: str) -> RemoteError:
@@ -750,10 +892,9 @@ class ProductionRemote:
                 return None
             raise
         if resource.kind == "github-release" and (
-            not isinstance(value, dict)
-            or value.get("tag_name") != str(resource.reference).split("#", 1)[0]
+            not isinstance(value, dict) or value.get("id") != resource.identifier
         ):
-            return None
+            raise CleanupError("GitHub Release response does not match its ID")
         return path
 
     def probe(self, resource: Resource) -> object | None:
@@ -790,6 +931,82 @@ class ProductionRemote:
             ref = urllib.parse.quote(f"tags/{resource.identifier}", safe="/")
             delete_path = f"/repos/{self.repository}/git/refs/{ref}"
         self._github_json("DELETE", delete_path)
+
+    def is_absent(self, resource: Resource, state: object) -> bool:
+        """Read back the exact ID/digest used by DELETE; only 404 means absent."""
+        try:
+            if resource.kind in {"chart-oci", "ghcr-index", "ghcr-member"}:
+                if not isinstance(state, str):
+                    raise CleanupError("GHCR readback state is invalid")
+                self._github_json("GET", state)
+                return False
+            return self.probe(resource) is None
+        except RemoteError as error:
+            if error.is_missing:
+                return True
+            raise
+
+    def recovery_release_ids(self, record: dict[str, Any]) -> set[int]:
+        """Find live Release attachments covering the complete recovered target."""
+        expected_resources = {
+            (item["kind"], item["reference"]) for item in record["resources"]
+        }
+        expected_runs = {(item["id"], item["attempt"]) for item in record["runs"]}
+        holders: set[int] = set()
+        for identifier in record["release_ids"]:
+            try:
+                release = self._github_json(
+                    "GET", f"/repos/{self.repository}/releases/{identifier}"
+                )
+            except RemoteError as error:
+                if error.is_missing:
+                    continue
+                raise
+            if not isinstance(release, dict) or release.get("id") != identifier:
+                raise CleanupError("recovery Release response does not match its ID")
+            assets = release.get("assets")
+            if not isinstance(assets, list):
+                raise CleanupError("recovery Release assets are malformed")
+            for asset in assets:
+                if not isinstance(asset, dict) or asset.get("name") not in {
+                    nightly_cleanup.CLEANUP_FILENAME,
+                    MANIFEST_FILENAME,
+                }:
+                    continue
+                asset_id = asset.get("id")
+                if type(asset_id) is not int or asset_id < 1:
+                    raise CleanupError("recovery asset ID is malformed")
+                raw = self._request(
+                    "GET",
+                    f"/repos/{self.repository}/releases/assets/{asset_id}",
+                    accept="application/octet-stream",
+                )
+                try:
+                    value = json.loads(raw)
+                    saved = (
+                        nightly_cleanup.validate_record(value, self.repository)
+                        if asset["name"] == nightly_cleanup.CLEANUP_FILENAME
+                        else nightly_cleanup.record_from_manifest(
+                            value, self.repository, identifier, record["source_sha"]
+                        )
+                    )
+                except (UnicodeError, json.JSONDecodeError, CleanupError) as error:
+                    raise CleanupError(
+                        f"recovery asset cannot be validated: {error}"
+                    ) from error
+                saved_resources = {
+                    (item["kind"], item["reference"]) for item in saved["resources"]
+                }
+                saved_runs = {(item["id"], item["attempt"]) for item in saved["runs"]}
+                if (
+                    saved["tag"] == record["tag"]
+                    and saved["source_sha"] == record["source_sha"]
+                    and identifier in saved["release_ids"]
+                    and expected_resources <= saved_resources
+                    and expected_runs <= saved_runs
+                ):
+                    holders.add(identifier)
+        return holders
 
     def release_resources(self, tag: str) -> list[Resource]:
         resources: list[Resource] = []
@@ -835,11 +1052,31 @@ def _add_remote_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--fail-resource")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
+    parser.add_argument(
+        "--dry-run", action="store_true", help="read-only cleanup preview"
+    )
+    parser.add_argument(
+        "--inventory", type=Path, help="reviewed historical Nightly inventory"
+    )
+    parser.add_argument("--report", type=Path, help="write per-version JSON results")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    record = commands.add_parser(
+        "record", help="persist an unfinished Nightly cleanup target"
+    )
+    record.add_argument("--repository", required=True)
+    record.add_argument("--tag", required=True)
+    record.add_argument("--source-sha", required=True)
+    record.add_argument("--run-id", type=int, required=True)
+    record.add_argument("--run-attempt", type=int, required=True)
+    record.add_argument("--release-id", type=int)
+    record.add_argument("--previous", type=Path)
+    record.add_argument("--plan", type=Path)
+    record.add_argument("--output", type=Path, required=True)
 
     tag = commands.add_parser("tag", help="clean one exact Tag")
     tag.add_argument("--tag", required=True)
@@ -848,7 +1085,7 @@ def build_parser() -> argparse.ArgumentParser:
     retention = commands.add_parser(
         "retention", help="clean oldest excess same-type Tags"
     )
-    retention.add_argument("--current-tag", required=True)
+    retention.add_argument("--current-tag", help="required for non-Nightly retention")
     retention.add_argument(
         "--release-type", choices=sorted(RELEASE_TYPES), required=True
     )
@@ -871,10 +1108,219 @@ def _production_remote(arguments: argparse.Namespace) -> ProductionRemote:
     )
 
 
+def _read_document(path: Path) -> object:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise CleanupError(f"cannot read cleanup input {path}: {error}") from error
+
+
+def _write_document(path: Path | None, value: object) -> None:
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def _run_record(arguments: argparse.Namespace) -> None:
+    record = nightly_cleanup.record_for_tag(
+        arguments.repository,
+        arguments.tag,
+        arguments.source_sha,
+        arguments.run_id,
+        arguments.run_attempt,
+        arguments.release_id,
+    )
+    if arguments.previous is not None:
+        previous = nightly_cleanup.validate_record(
+            _read_document(arguments.previous), arguments.repository
+        )
+        if previous["tag"] != arguments.tag:
+            raise CleanupError("previous cleanup record belongs to another Tag")
+        record = nightly_cleanup.merge_records(
+            [previous, record], arguments.repository
+        )[0]
+    if arguments.plan is not None:
+        record = nightly_cleanup.record_from_plan(
+            record, _read_document(arguments.plan)
+        )
+    _write_document(arguments.output, record)
+    print(json.dumps(record, sort_keys=True))
+
+
+def _nightly_catalog(arguments: argparse.Namespace, remote: ProductionRemote):
+    if __package__:
+        from .nightly_catalog import collect_catalog
+    else:
+        from ucm_release.nightly_catalog import collect_catalog
+    path = getattr(arguments, "inventory", None)
+    history = _read_document(path) if path is not None else None
+    return collect_catalog(remote, history)
+
+
+def _record_preview(record: dict[str, Any], remote: CleanupRemote) -> None:
+    for resource in _registry_resources_from_references(
+        [(item["kind"], item["reference"]) for item in record["resources"]]
+    ):
+        remote.probe(resource)
+
+
+def _record_result(record: dict[str, Any], status: str, reason: str | None = None):
+    result = {
+        "tag": record["tag"],
+        "status": status,
+        "release_ids": record["release_ids"],
+        "run_ids": sorted({item["id"] for item in record["runs"]}),
+        "registry_references": len(record["resources"]),
+    }
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+def _run_nightly_targets(
+    arguments: argparse.Namespace,
+    remote: ProductionRemote,
+    targets: Sequence[dict[str, Any]],
+    *,
+    blocked: dict[str, str],
+    kept: Sequence[dict[str, Any]] = (),
+    deferred: Sequence[dict[str, Any]] = (),
+) -> list[ResourceFailure]:
+    failures: list[ResourceFailure] = []
+    results = [_record_result(item, "kept", blocked.get(item["tag"])) for item in kept]
+    for item in deferred:
+        reason = blocked.get(item["tag"])
+        if reason is not None:
+            failures.append(
+                _failure(
+                    Resource("nightly-version", item["tag"]), 1, CleanupError(reason)
+                )
+            )
+        results.append(
+            _record_result(
+                item,
+                "blocked" if reason else "deferred",
+                reason or "publication run is active or queued",
+            )
+        )
+    dry_run = getattr(arguments, "dry_run", False)
+    for record in targets:
+        reason = blocked.get(record["tag"])
+        if reason is not None:
+            failure = _failure(
+                Resource("nightly-version", record["tag"]), 1, CleanupError(reason)
+            )
+            failures.append(failure)
+            results.append(_record_result(record, "blocked", reason))
+            continue
+        if dry_run:
+            try:
+                _record_preview(record, remote)
+            except CleanupError as error:
+                failures.append(
+                    _failure(Resource("nightly-version", record["tag"]), 1, error)
+                )
+                results.append(_record_result(record, "blocked", str(error)))
+            else:
+                results.append(_record_result(record, "would-delete"))
+            continue
+        try:
+            report = cleanup_record(
+                record, remote, fail_resource=arguments.fail_resource
+            )
+        except CleanupError as error:
+            failures.append(
+                _failure(Resource("nightly-version", record["tag"]), 1, error)
+            )
+            results.append(_record_result(record, "blocked", str(error)))
+            continue
+        failures.extend(report.failures)
+        results.append(
+            _record_result(record, "deleted" if report.completed else "blocked")
+        )
+        if report.failures:
+            results[-1]["failures"] = [
+                {
+                    "kind": item.resource.kind,
+                    "reference": item.resource.reference,
+                    "attempts": item.attempts,
+                    "error": item.final_error,
+                }
+                for item in report.failures
+            ]
+    summary = {
+        "repository": remote.repository,
+        "max_count": getattr(arguments, "max_count", None),
+        "status": (
+            "failed"
+            if failures
+            else "dry-run" if dry_run else "deferred" if deferred else "complete"
+        ),
+        "results": results,
+    }
+    _write_document(getattr(arguments, "report", None), summary)
+    for result in results:
+        print(
+            f"nightly {result['status']}: {result['tag']}"
+            + (f" - {result['reason']}" if "reason" in result else "")
+        )
+    return failures
+
+
+def _run_nightly_retention(
+    arguments: argparse.Namespace, remote: ProductionRemote
+) -> list[ResourceFailure]:
+    if arguments.max_count == -1 or arguments.pypi_enabled:
+        print(
+            "Nightly retention skipped: unlimited count or immutable PyPI publication"
+        )
+        _write_document(
+            getattr(arguments, "report", None),
+            {"repository": remote.repository, "status": "skipped", "results": []},
+        )
+        return []
+    nightly_cleanup.select_retention([], arguments.max_count, set())
+    catalog = _nightly_catalog(arguments, remote)
+    selection = nightly_cleanup.select_retention(
+        catalog.records, arguments.max_count, catalog.active_tags
+    )
+    orphan_candidates = [
+        item for item in catalog.orphans if item["tag"] not in catalog.active_tags
+    ]
+    orphan_deferred = [
+        item for item in catalog.orphans if item["tag"] in catalog.active_tags
+    ]
+    return _run_nightly_targets(
+        arguments,
+        remote,
+        (*selection.candidates, *orphan_candidates),
+        blocked=catalog.blocked,
+        kept=selection.kept,
+        deferred=(*selection.deferred, *orphan_deferred),
+    )
+
+
 def _run_tag(
     arguments: argparse.Namespace, remote: ProductionRemote
 ) -> list[ResourceFailure]:
+    if arguments.tag.startswith("nightly/"):
+        catalog = _nightly_catalog(arguments, remote)
+        targets = [
+            item
+            for item in (*catalog.records, *catalog.orphans)
+            if item["tag"] == arguments.tag
+        ]
+        if not targets:
+            raise CleanupError(f"Nightly {arguments.tag} has no proven cleanup target")
+        if arguments.tag in catalog.active_tags:
+            return _run_nightly_targets(
+                arguments, remote, [], blocked=catalog.blocked, deferred=targets
+            )
+        return _run_nightly_targets(arguments, remote, targets, blocked=catalog.blocked)
     manifest = remote.load_manifest_for_tag(arguments.tag)
+    if getattr(arguments, "dry_run", False):
+        print(f"would-delete: {arguments.tag}")
+        return []
     report = cleanup_manifest(
         manifest,
         remote,
@@ -888,6 +1334,8 @@ def _run_tag(
 def _run_retention(
     arguments: argparse.Namespace, remote: ProductionRemote
 ) -> list[ResourceFailure]:
+    if arguments.release_type == "nightly":
+        return _run_nightly_retention(arguments, remote)
     skip = select_retention_candidates(
         [],
         current_tag=arguments.current_tag,
@@ -907,9 +1355,13 @@ def _run_retention(
     )
     failures: list[ResourceFailure] = []
     for candidate in selection.candidates:
+        if getattr(arguments, "dry_run", False):
+            print(f"would-delete: {candidate.manifest['release']['tag']}")
+            continue
         report = cleanup_manifest(
             candidate.manifest,
             remote,
+            release_id=candidate.release_id,
             fail_resource=arguments.fail_resource,
         )
         failures.extend(report.failures)
@@ -921,6 +1373,9 @@ def _run_retention(
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        if arguments.command == "record":
+            _run_record(arguments)
+            return 0
         remote = _production_remote(arguments)
         failures = (
             _run_tag(arguments, remote)
@@ -938,6 +1393,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return 0
     except CleanupError as error:
+        _write_document(
+            getattr(arguments, "report", None),
+            {"status": "failed", "error": str(error)},
+        )
         print(str(error), file=sys.stderr)
         return 2
 

@@ -249,6 +249,7 @@ jobs:
     environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     outputs:
       enabled: ${{ steps.opened.outputs.enabled }}
+      release_id: ${{ steps.opened.outputs.release_id }}
     permissions:
       contents: write
     env:
@@ -257,10 +258,19 @@ jobs:
       RELEASE_TYPE: ${{ inputs.release_type }}
       RELEASE_TAG: ${{ inputs.git_tag }}
       IS_PRERELEASE: ${{ inputs.is_prerelease }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        if: ${{ inputs.release_type == 'nightly' }}
+        with:
+          python-version: "3.12"
+      - if: ${{ inputs.release_type == 'nightly' }}
+        run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: -r .github/release/requirements.txt
       - id: opened
         name: Create or reuse exact Tag Release
         run: |
@@ -359,6 +369,53 @@ jobs:
               <<<"${releases}" >/dev/null
           fi
           echo "enabled=true" >>"${GITHUB_OUTPUT}"
+          echo "release_id=${release_id}" >>"${GITHUB_OUTPUT}"
+      - name: Persist Nightly ownership on the exact Release ID
+        if: ${{ inputs.release_type == 'nightly' }}
+        env:
+          RELEASE_ID: ${{ steps.opened.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/nightly
+          gh api "/repos/${GH_REPO}/releases/${RELEASE_ID}" \
+            >out/nightly/github-release.json
+          jq -e --arg tag "${RELEASE_TAG}" \
+            '.tag_name == $tag or (.draft == true and .name == $tag)' \
+            out/nightly/github-release.json >/dev/null
+          old_asset="$(jq -er \
+            '[.assets[] | select(.name == "release-cleanup.json")] |
+             if length <= 1 then (.[0].id // "") else error("cleanup asset is ambiguous") end' \
+            out/nightly/github-release.json)"
+          args=(record --repository "${GH_REPO}" --tag "${RELEASE_TAG}"
+                --source-sha "${SOURCE_SHA}" --release-id "${RELEASE_ID}"
+                --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}"
+                --output out/nightly/release-cleanup.json)
+          if [ -n "${old_asset}" ]; then
+            gh api -H 'Accept: application/octet-stream' \
+              "/repos/${GH_REPO}/releases/assets/${old_asset}" \
+              >out/nightly/previous-cleanup.json
+            args+=(--previous out/nightly/previous-cleanup.json)
+          fi
+          python .github/release/ucm_release/cleanup.py "${args[@]}"
+          if [ -n "${old_asset}" ]; then
+            gh api --method DELETE "/repos/${GH_REPO}/releases/assets/${old_asset}"
+          fi
+          gh api --hostname uploads.github.com --method POST \
+            -H 'Content-Type: application/json' \
+            "/repos/${GH_REPO}/releases/${RELEASE_ID}/assets?name=release-cleanup.json" \
+            --input out/nightly/release-cleanup.json >out/nightly/upload.json
+          asset_id="$(jq -er '.id' out/nightly/upload.json)"
+          gh api -H 'Accept: application/octet-stream' \
+            "/repos/${GH_REPO}/releases/assets/${asset_id}" \
+            >out/nightly/release-cleanup-readback.json
+          cmp out/nightly/release-cleanup.json out/nightly/release-cleanup-readback.json
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/nightly/release-cleanup.json') != '' }}
+        with:
+          name: ucm-nightly-cleanup-open-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/nightly/release-cleanup.json
+          if-no-files-found: error
+          retention-days: 90
 
   inspect-runtimes:
     name: Inspect selected Runtime manifests
@@ -537,6 +594,9 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
+    permissions:
+      contents: write
     outputs:
       route: ${{ steps.plan.outputs.route }}
       release_kind: ${{ steps.plan.outputs.release_kind }}
@@ -669,6 +729,51 @@ jobs:
             echo "image_index_matrix=${index_matrix}"
             echo "has_image_indexes=${has_image_indexes}"
           } >>"${GITHUB_OUTPUT}"
+      - name: Persist exact Nightly targets before publication
+        if: ${{ inputs.release_type == 'nightly' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.git_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ID: ${{ needs.open-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${GH_REPO}/releases/${RELEASE_ID}" \
+            >out/plan/github-release.json
+          jq -e --arg tag "${RELEASE_TAG}" \
+            '.tag_name == $tag or (.draft == true and .name == $tag)' \
+            out/plan/github-release.json >/dev/null
+          old_asset="$(jq -er \
+            '[.assets[] | select(.name == "release-cleanup.json")] |
+             if length == 1 then .[0].id else error("cleanup asset is missing or ambiguous") end' \
+            out/plan/github-release.json)"
+          gh api -H 'Accept: application/octet-stream' \
+            "/repos/${GH_REPO}/releases/assets/${old_asset}" \
+            >out/plan/previous-cleanup.json
+          python .github/release/ucm_release/cleanup.py record \
+            --repository "${GH_REPO}" --tag "${RELEASE_TAG}" \
+            --source-sha "${SOURCE_SHA}" --release-id "${RELEASE_ID}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --previous out/plan/previous-cleanup.json \
+            --plan out/plan/release-plan.json --output out/plan/release-cleanup.json
+          gh api --method DELETE "/repos/${GH_REPO}/releases/assets/${old_asset}"
+          gh api --hostname uploads.github.com --method POST \
+            -H 'Content-Type: application/json' \
+            "/repos/${GH_REPO}/releases/${RELEASE_ID}/assets?name=release-cleanup.json" \
+            --input out/plan/release-cleanup.json >out/plan/cleanup-upload.json
+          asset_id="$(jq -er '.id' out/plan/cleanup-upload.json)"
+          gh api -H 'Accept: application/octet-stream' \
+            "/repos/${GH_REPO}/releases/assets/${asset_id}" \
+            >out/plan/release-cleanup-readback.json
+          cmp out/plan/release-cleanup.json out/plan/release-cleanup-readback.json
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/plan/release-cleanup.json') != '' }}
+        with:
+          name: ucm-nightly-cleanup-plan-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/plan/release-cleanup.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Report shared publication decisions
         run: |
           set -euo pipefail
@@ -1787,6 +1892,7 @@ jobs:
             out/release/readback/release-notes.md
       - id: retention
         name: Retain only the configured same-type Releases
+        if: ${{ inputs.release_type != 'nightly' }}
         run: |
           set -euo pipefail
           resolved="$(PYTHONPATH=.github/release python -c \

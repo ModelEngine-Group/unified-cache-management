@@ -1,0 +1,203 @@
+name: UCM Nightly Retention
+
+on:
+  workflow_run:
+    workflows:
+      - UCM Nightly Release · Shanghai 02:00
+      - UCM Tag Release · Stable, Prerelease, Draft, and Nightly
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview retention and resource ownership without deleting
+        type: boolean
+        required: true
+        default: true
+      history_inventory:
+        description: Optional reviewed JSON under .github/release/history/
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: ucm-nightly-${{ github.repository_id }}
+  queue: max
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Retain the newest configured Nightly versions
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.head_repository.full_name == github.repository &&
+         ((github.event.workflow_run.name == 'UCM Nightly Release · Shanghai 02:00' &&
+           (github.event.workflow_run.event == 'schedule' ||
+            github.event.workflow_run.event == 'workflow_dispatch')) ||
+          (github.event.workflow_run.name == 'UCM Tag Release · Stable, Prerelease, Draft, and Nightly' &&
+           github.event.workflow_run.event == 'push' &&
+           startsWith(github.event.workflow_run.head_branch, 'nightly/'))))
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'release-production' || 'fork-preview' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      HISTORY_INVENTORY: ${{ inputs.history_inventory }}
+    steps:
+      # Completed runs supply evidence only; privileged cleanup executes default-branch code.
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: -r .github/release/requirements.txt
+      - id: source
+        name: Verify trusted completed publication and Nightly binding
+        run: |
+          set -euo pipefail
+          mkdir -p out/cleanup
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            echo "eligible=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          jq -e --arg repository "${GH_REPO}" \
+            '.workflow_run.head_repository.full_name == $repository and
+             .workflow_run.status == "completed"' "${GITHUB_EVENT_PATH}" >/dev/null
+          run_id="$(jq -er '.workflow_run.id' "${GITHUB_EVENT_PATH}")"
+          attempt="$(jq -er '.workflow_run.run_attempt' "${GITHUB_EVENT_PATH}")"
+          source_sha="$(jq -er '.workflow_run.head_sha' "${GITHUB_EVENT_PATH}")"
+          source_name="$(jq -er '.workflow_run.name' "${GITHUB_EVENT_PATH}")"
+          source_path="$(jq -er '.workflow_run.path' "${GITHUB_EVENT_PATH}")"
+          source_event="$(jq -er '.workflow_run.event' "${GITHUB_EVENT_PATH}")"
+          if [ "${source_name}" = 'UCM Nightly Release · Shanghai 02:00' ]; then
+            test "${source_path}" = .github/workflows/release-nightly.yml
+            [[ "${source_event}" = schedule || "${source_event}" = workflow_dispatch ]]
+            echo "eligible=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          test "${source_name}" = 'UCM Tag Release · Stable, Prerelease, Draft, and Nightly'
+          test "${source_path}" = .github/workflows/release-tag.yml
+          test "${source_event}" = push
+          source_tag="$(jq -er '.workflow_run.head_branch' "${GITHUB_EVENT_PATH}")"
+          classification="$(python scripts/materialize_version.py --tag "${source_tag}" --classify)"
+          test "$(jq -er '.release_type' <<<"${classification}")" = nightly
+          artifact_prefix="ucm-nightly-cleanup-run-${run_id}-attempt-"
+          artifacts="$(gh api --paginate --slurp \
+            "/repos/${GH_REPO}/actions/runs/${run_id}/artifacts?per_page=100" \
+            | jq -ce --arg prefix "${artifact_prefix}" --argjson attempt "${attempt}" \
+              '[.[] | .artifacts[] |
+                select((.name | startswith($prefix)) and .expired == false) |
+                . + {binding_attempt:(.name | ltrimstr($prefix) | tonumber)} |
+                select(.binding_attempt <= $attempt)] | sort_by(.binding_attempt)')"
+          count="$(jq 'length' <<<"${artifacts}")"
+          if [ "${count}" = 0 ]; then
+            # Cancellation before classify can leave no artifact; trusted event metadata
+            # still authorizes retention, which independently proves each target's ownership.
+            echo 'Trusted Nightly Tag completed before producing cleanup evidence.'
+            echo "eligible=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          binding_attempt="$(jq -er '.[-1].binding_attempt' <<<"${artifacts}")"
+          test "$(jq --argjson attempt "${binding_attempt}" \
+            '[.[] | select(.binding_attempt == $attempt)] | length' <<<"${artifacts}")" = 1
+          artifact_id="$(jq -er '.[-1].id' <<<"${artifacts}")"
+          gh api "/repos/${GH_REPO}/actions/artifacts/${artifact_id}/zip" \
+            >out/cleanup/source-binding.zip
+          unzip -p out/cleanup/source-binding.zip release-cleanup.json \
+            >out/cleanup/source-binding.json
+          tag="$(jq -er '.tag' out/cleanup/source-binding.json)"
+          test "${tag}" = "${source_tag}"
+          jq -e --arg repository "${GH_REPO}" --arg sha "${source_sha}" \
+            --argjson run "${run_id}" --argjson attempt "${binding_attempt}" \
+            '.kind == "ucm-release-cleanup" and .schema_version == 1 and
+             .repository == $repository and .source_sha == $sha and
+             any(.runs[]; .id == $run and .attempt == $attempt)' \
+            out/cleanup/source-binding.json >/dev/null
+          python .github/release/ucm_release/cleanup.py record \
+            --repository "${GH_REPO}" --tag "${tag}" --source-sha "${source_sha}" \
+            --run-id "${run_id}" --run-attempt "${attempt}" \
+            --previous out/cleanup/source-binding.json \
+            --output out/cleanup/validated-binding.json
+          echo "eligible=true" >>"${GITHUB_OUTPUT}"
+      - name: Install Crane
+        if: ${{ steps.source.outputs.eligible == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/crane"
+          curl -fsSL --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}/crane" crane
+          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - name: Validate Docker Hub credentials when configured
+        if: ${{ steps.source.outputs.eligible == 'true' && (env.DOCKERHUB_USERNAME != '' || env.DOCKERHUB_TOKEN != '') }}
+        run: |
+          set -euo pipefail
+          test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
+      - name: Authenticate to Docker Hub when configured
+        if: ${{ steps.source.outputs.eligible == 'true' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+      - id: retention
+        name: Select and clean over-quota Nightly versions
+        if: ${{ steps.source.outputs.eligible == 'true' }}
+        run: |
+          set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
+          max_count="$(PYTHONPATH=.github/release python -c \
+            'from ucm_release import policy; print(policy.resolve(release_type="nightly")["release_profile"]["max_count"])')"
+          args=(retention --repository "${GH_REPO}" --release-type nightly
+                --max-count "${max_count}" --pypi-enabled false
+                --report out/cleanup/report.json)
+          if [ "${DRY_RUN}" = true ]; then
+            args+=(--dry-run)
+          fi
+          if [ -n "${HISTORY_INVENTORY}" ]; then
+            # Only reviewed data in the trusted checkout can expand historical ownership.
+            [[ "${HISTORY_INVENTORY}" =~ ^\.github/release/history/[A-Za-z0-9._-]+\.json$ ]]
+            test -f "${HISTORY_INVENTORY}"
+            args+=(--inventory "${HISTORY_INVENTORY}")
+          fi
+          python .github/release/ucm_release/cleanup.py "${args[@]}" \
+            2>&1 | tee out/cleanup/cleanup.log
+      - name: Publish the retention result even on failure
+        if: ${{ always() }}
+        env:
+          RETENTION_OUTCOME: ${{ steps.retention.outcome }}
+        run: |
+          mkdir -p out/cleanup
+          {
+            echo '### Nightly retention'
+            echo
+            echo "Outcome: ${RETENTION_OUTCOME}; dry run: ${DRY_RUN}"
+            if [ -f out/cleanup/report.json ]; then
+              echo
+              echo '```json'
+              cat out/cleanup/report.json
+              echo '```'
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() }}
+        with:
+          name: ucm-nightly-retention-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/cleanup/
+          if-no-files-found: warn
+          retention-days: 90

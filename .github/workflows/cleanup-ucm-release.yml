@@ -14,7 +14,8 @@ on:
         default: ""
 
 concurrency:
-  group: ucm-release-cleanup-${{ github.repository_id }}-${{ inputs.tag }}
+  group: ${{ startsWith(inputs.tag, 'nightly/') && format('ucm-nightly-{0}', github.repository_id) || format('ucm-release-cleanup-{0}-{1}', github.repository_id, inputs.tag) }}
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -40,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          ref: develop
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - name: Install Crane
         run: |

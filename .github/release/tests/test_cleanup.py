@@ -26,6 +26,7 @@ def test_release_entrypoints_run_by_filename_without_pythonpath(tmp_path, script
         env=environment,
         text=True,
         capture_output=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
@@ -127,6 +128,12 @@ class FakeRemote:
         if self.delete_errors[resource.reference]:
             raise self.delete_errors[resource.reference].pop(0)
         self.present.discard(resource.reference)
+
+    def is_absent(self, resource: cleanup.Resource, state: object) -> bool:
+        return resource.reference not in self.present
+
+    def recovery_release_ids(self, record: dict[str, object]) -> set[int]:
+        return {item.identifier for item in self.releases if item.holds_manifest}
 
     def release_resources(self, tag: str) -> list[cleanup.Resource]:
         self.release_calls.append(tag)
@@ -412,7 +419,7 @@ def test_actions_failure_blocks_tag_and_releases() -> None:
     assert report.stopped_phase == 2
     assert remote.probe_calls.count(run) == 3
     assert tag not in remote.probe_calls
-    assert remote.release_calls == []
+    assert remote.release_calls == [tag]
 
 
 def test_tag_failure_keeps_release_manifest_and_rerun_recovers_from_404() -> None:
@@ -432,7 +439,7 @@ def test_tag_failure_keeps_release_manifest_and_rerun_recovers_from_404() -> Non
     assert run not in remote.present
     assert tag in remote.present
     assert release.reference in remote.present
-    assert remote.release_calls == []
+    assert remote.release_calls == [tag]
 
     second = cleanup.cleanup_manifest(manifest, remote, sleeper=lambda _: None)
 
@@ -440,6 +447,159 @@ def test_tag_failure_keeps_release_manifest_and_rerun_recovers_from_404() -> Non
     assert tag not in remote.present
     assert release.reference not in remote.present
     assert remote.probe_calls.count(run) == 2
+
+
+def test_release_ids_are_frozen_before_tag_deletion() -> None:
+    manifest = _manifest(chart=None, ghcr_members=[], ghcr_indexes=[])
+    run, tag = _control_references(manifest)
+    release = cleanup.Resource("github-release", f"{tag}#99", 99)
+
+    class TagDependentRemote(FakeRemote):
+        def release_resources(self, tag: str) -> list[cleanup.Resource]:
+            resources = super().release_resources(tag)
+            return resources if tag in self.present else []
+
+    remote = TagDependentRemote(
+        present={run, tag, release.reference}, releases=[release]
+    )
+
+    report = cleanup.cleanup_manifest(manifest, remote, sleeper=lambda _: None)
+
+    assert report.completed is True
+    assert release.reference in remote.delete_calls
+    assert release.reference not in remote.present
+    assert remote.release_calls == [tag]
+
+
+def test_record_cleans_known_release_id_when_tag_discovery_is_empty() -> None:
+    tag = "nightly/v0.8.0-20260825-1"
+    record = cleanup.nightly_cleanup.record_for_tag(
+        "release-org/unified-cache-management", tag, "a" * 40, 12345, 1, 99
+    )
+    run = "https://github.com/release-org/unified-cache-management/actions/runs/12345"
+    release = cleanup.Resource("github-release", f"{tag}#99", 99)
+    remote = FakeRemote(present={run, tag, release.reference})
+
+    report = cleanup.cleanup_record(record, remote, sleeper=lambda _: None)
+
+    assert report.completed is True
+    assert release.reference in remote.delete_calls
+    assert release.reference not in remote.present
+    assert remote.release_calls == []
+
+
+def test_empty_release_discovery_blocks_tag_deletion_without_a_known_id() -> None:
+    manifest = _manifest(chart=None, ghcr_members=[], ghcr_indexes=[])
+    run, tag = _control_references(manifest)
+    remote = FakeRemote(present={run, tag})
+
+    report = cleanup.cleanup_manifest(manifest, remote, sleeper=lambda _: None)
+
+    assert report.completed is False
+    assert report.failures
+    assert tag not in remote.delete_calls
+    assert tag in remote.present
+
+
+def test_release_probe_uses_id_after_tag_name_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = cleanup.ProductionRemote("release-org/unified-cache-management", "token")
+    release = cleanup.Resource("github-release", "nightly/v0.8.0-20260825-1#99", 99)
+    path = "/repos/release-org/unified-cache-management/releases/99"
+    calls: list[tuple[str, str]] = []
+
+    def github_json(method: str, request_path: str):
+        calls.append((method, request_path))
+        return {"id": 99, "tag_name": "untagged-example"}
+
+    monkeypatch.setattr(remote, "_github_json", github_json)
+
+    assert remote.probe(release) == path
+    assert calls == [("GET", path)]
+
+
+def test_release_probe_rejects_malformed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = cleanup.ProductionRemote("release-org/unified-cache-management", "token")
+    release = cleanup.Resource("github-release", "nightly/v0.8.0-20260825-1#99", 99)
+    monkeypatch.setattr(remote, "_github_json", lambda method, path: [])
+
+    with pytest.raises(cleanup.CleanupError):
+        remote.probe(release)
+
+
+@pytest.mark.parametrize("delete_status", [204, 404])
+def test_release_deletion_requires_readback_to_confirm_absence(
+    monkeypatch: pytest.MonkeyPatch, delete_status: int
+) -> None:
+    remote = cleanup.ProductionRemote("release-org/unified-cache-management", "token")
+    release = cleanup.Resource("github-release", "nightly/v0.8.0-20260825-1#99", 99)
+    path = "/repos/release-org/unified-cache-management/releases/99"
+    calls: list[tuple[str, str]] = []
+
+    def github_json(method: str, request_path: str):
+        calls.append((method, request_path))
+        if method == "DELETE":
+            if delete_status == 404:
+                raise cleanup.RemoteError("not found", status=404)
+            return None
+        return {"id": 99, "tag_name": "nightly/v0.8.0-20260825-1"}
+
+    monkeypatch.setattr(remote, "_github_json", github_json)
+
+    failure = cleanup.delete_resource_with_retry(
+        remote, release, sleeper=lambda _: None
+    )
+
+    assert failure is not None
+    assert failure.attempts == 3
+    assert calls == [("GET", path), ("DELETE", path), ("GET", path)] * 3
+
+
+def test_release_deletion_succeeds_after_readback_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = cleanup.ProductionRemote("release-org/unified-cache-management", "token")
+    release = cleanup.Resource("github-release", "nightly/v0.8.0-20260825-1#99", 99)
+    calls: list[str] = []
+
+    def github_json(method: str, path: str):
+        calls.append(method)
+        if method == "DELETE":
+            return None
+        if calls == ["GET"]:
+            return {"id": 99, "tag_name": "nightly/v0.8.0-20260825-1"}
+        raise cleanup.RemoteError("not found", status=404)
+
+    monkeypatch.setattr(remote, "_github_json", github_json)
+
+    assert (
+        cleanup.delete_resource_with_retry(remote, release, sleeper=lambda _: None)
+        is None
+    )
+    assert calls == ["GET", "DELETE", "GET"]
+
+
+def test_release_get_404_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = cleanup.ProductionRemote("release-org/unified-cache-management", "token")
+    release = cleanup.Resource("github-release", "nightly/v0.8.0-20260825-1#99", 99)
+    calls: list[str] = []
+
+    def github_json(method: str, path: str):
+        calls.append(method)
+        raise cleanup.RemoteError("not found", status=404)
+
+    monkeypatch.setattr(remote, "_github_json", github_json)
+
+    assert (
+        cleanup.delete_resource_with_retry(remote, release, sleeper=lambda _: None)
+        is None
+    )
+    assert calls == ["GET"]
 
 
 def test_release_phase_attempts_every_exact_release_independently() -> None:
@@ -496,9 +656,17 @@ def test_ghcr_package_version_with_another_tag_is_permanent(
         lambda path: [
             {
                 "id": 77,
-                "metadata": {"container": {"tags": ["v0.23.0", "shared-latest"]}},
+                "metadata": {"container": {"tags": ["v0.23.0"]}},
             }
         ],
+    )
+    monkeypatch.setattr(
+        remote,
+        "_github_json",
+        lambda method, path: {
+            "id": 77,
+            "metadata": {"container": {"tags": ["v0.23.0", "shared-latest"]}},
+        },
     )
     resource = cleanup.Resource(
         "ghcr-index",
@@ -536,6 +704,14 @@ def test_ghcr_allows_other_target_tags_from_the_same_manifest(
         ],
     )
 
+    monkeypatch.setattr(
+        remote,
+        "_github_json",
+        lambda method, path: {
+            "id": 77,
+            "metadata": {"container": {"tags": ["v0.23.0", "v0.23.0-amd64"]}},
+        },
+    )
     assert remote.probe(resources[0]).endswith("/77")
 
 

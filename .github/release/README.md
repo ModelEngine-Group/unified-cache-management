@@ -491,19 +491,63 @@ After completion, verify all of the following:
 
 ## Retention and cleanup
 
-`max_count: -1` disables retention. Finite retention considers only successful
-same-type Releases carrying an exact supported manifest, never the current
-Tag; old Releases without one are skipped rather than guessed. When PyPI is
-enabled for a finite Profile, retention is skipped with an explicit reason.
+`max_count: -1` disables automatic retention. Nightly counts every unique
+Nightly Tag, including successful Releases, failed or cancelled Drafts, legacy
+manifests and orphaned Releases. It keeps the newest configured number by the
+Tag's date and numeric sequence, using the base version as the tie-breaker.
+Duplicate Releases and run attempts count once. Existing objects determine the
+quota; a current Tag that was never created does not reserve a slot. Active,
+queued and waiting runs are protected even when their version is over quota,
+and the report explicitly records the deferral until a terminal sweep.
+Stable, prerelease and ordinary Draft retention continue to require an exact
+supported public manifest; immutable PyPI publication still disables retention.
 
-Cleanup is manifest-driven and retryable through
-`cleanup-ucm-release.yml(tag=...)`. Each resource is probed before up to three
-attempts with waits of 0, 5, and 15 seconds. Registry resources are removed
-first, followed by the associated Actions Run, Git Tag, and all exact-tag
-GitHub Releases. A failed phase blocks later phases while other resources in
-that phase are still attempted. GHCR package versions carrying any non-target
-Tag are refused. Re-running cleanup is idempotent because missing resources are
-treated as already removed.
+The internal `release-cleanup.json` records the repository, original Tag,
+source SHA, exact Release IDs, source run attempts and release-only registry
+references. The preparation artifact binds a Tag before opening a Release;
+the Release attachment preserves the record once it exists. Planning persists
+all exact enabled publication targets before any OCI publication. Retries union
+their records rather than replacing previous targets. Builders, base runtimes
+and PyPI packages are never added. The public Schema 9 manifest continues to
+require complete publication; the internal cleanup reader also supports proven
+legacy Schema 6 records without changing the public contract.
+
+`nightly-cleanup.yml` runs after trusted Nightly or Nightly-Tag workflows finish,
+including failure and cancellation. It uses default-branch code and shares a
+repository lifecycle concurrency group with both publishing entrypoints and
+manual Nightly cleanup, with `queue: max` and `cancel-in-progress: false`. The
+common release core retains its separate Tag-level group. Non-Nightly cleanup
+remains available through `cleanup-ucm-release.yml(tag=...)`.
+
+Cleanup resolves immutable identities before mutation and uses recoverable
+phases: registry, Actions run, Tag, then Releases holding the recovery inventory.
+If no live Release attachment covers the full inventory, the artifact-holding
+run is also retained until the last phase. Each resource is probed and deleted
+with up to three attempts, waiting 0, 5 and 15 seconds, followed by an exact
+ID/digest readback. Only confirmed absence is success. Failed phases preserve
+later recovery holders; independent resources and versions continue to be
+attempted. GHCR package versions with non-target Tags are refused. Missing
+ownership evidence or permissions is an explicit blocker, never a silent quota
+exemption or a successful deletion.
+
+Preview the configured quota without deleting:
+
+```bash
+python .github/release/ucm_release/cleanup.py retention \
+  --repository ModelEngine-Group/unified-cache-management \
+  --release-type nightly --max-count 7 --pypi-enabled false \
+  --dry-run --report out/cleanup/report.json
+```
+
+A reviewed historical snapshot can be supplied with
+`--inventory .github/release/history/nightly-20261009.json`. It restores exact
+resource ownership for older failed Drafts and already deleted GitHub objects;
+these registry-only leftovers are cleaned separately from the live quota. The
+snapshot records `20260910` as blocked because its deleted run's complete image
+inventory could not be recovered. No references are guessed from a prefix.
+The JSON report distinguishes kept, would-delete, deleted, deferred and blocked
+versions. API 403 or an unresolved resource keeps the result failed; reruns are
+idempotent when resources have already been removed.
 
 Every published Runtime image also contains the same Tag's example config at
 `/workspace/ucm_config_example.yaml`. It is not selected automatically; callers

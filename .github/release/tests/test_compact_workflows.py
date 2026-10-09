@@ -54,6 +54,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     assert workflow["on"]["schedule"] == [{"cron": "0 18 * * *"}]
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
+        "queue": "max",
         "cancel-in-progress": False,
     }
     jobs = workflow["jobs"]
@@ -413,7 +414,14 @@ def test_cross_job_artifact_names_survive_failed_job_reruns() -> None:
         "ucm-build-bot.yml",
     )
     text = "\n".join((WORKFLOWS / name).read_text(encoding="utf-8") for name in names)
-    assert "github.run_attempt" not in text
+    for name in names:
+        workflow = _load(name)
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                artifact = step.get("with", {}).get("name", "")
+                if "github.run_attempt" in artifact:
+                    # Evidence is scoped to an attempt; downstream build inputs stay run-scoped.
+                    assert artifact.startswith("ucm-nightly-cleanup-")
     assert "GITHUB_RUN_ATTEMPT" in text  # candidate Builder tags remain retry-scoped.
 
 
@@ -434,6 +442,7 @@ def test_completed_release_runs_retention_and_manual_cleanup_reuses_the_module()
     )
     assert manifest_index < retention_index
     assert "cleanup.py retention" in retention["run"]
+    assert retention["if"] == "${{ inputs.release_type != 'nightly' }}"
     assert "release_profile" in retention["run"]
     assert 'pypi_enabled="$(jq -r' in retention["run"]
     assert 'pypi_enabled="$(jq -er' not in retention["run"]

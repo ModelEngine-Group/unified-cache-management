@@ -8,6 +8,7 @@ on:
 
 concurrency:
   group: ucm-nightly-${{ github.repository_id }}
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -85,8 +86,19 @@ jobs:
             fi
           done < <(git tag --list "${prefix}*" --sort=-version:refname)
 
+          create_tag=false
           if [ -z "${selected_tag}" ]; then
             selected_tag="${next_tag}"
+            create_tag=true
+          fi
+          mkdir -p out/nightly
+          python .github/release/ucm_release/cleanup.py record \
+            --repository "${GH_REPO}" --tag "${selected_tag}" \
+            --source-sha "${source_sha}" --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output out/nightly/release-cleanup.json
+
+          if [ "${create_tag}" = true ]; then
             if ! gh api --method POST "/repos/${GH_REPO}/git/refs" \
               -f "ref=refs/tags/${selected_tag}" -f "sha=${source_sha}" >/dev/null; then
               git fetch --force origin "refs/tags/${selected_tag}:refs/tags/${selected_tag}"
@@ -106,6 +118,13 @@ jobs:
             echo "image_version=$(jq -r '.image_version' <<<"${classification}")"
             echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
           } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/nightly/release-cleanup.json') != '' }}
+        with:
+          name: ucm-nightly-cleanup-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/nightly/release-cleanup.json
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Run common Release core

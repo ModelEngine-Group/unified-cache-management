@@ -122,7 +122,11 @@ def test_workflow_open_failure_and_rerun_preserve_release_body(tmp_path: Path) -
         ("report-planning-failure", "artifacts-failed"),
         ("open-release", "release-open"),
     ):
-        run = next(step["run"] for step in jobs[job]["steps"] if "run" in step)
+        run = next(
+            step["run"]
+            for step in jobs[job]["steps"]
+            if (step.get("id") == "opened" if job == "open-release" else "run" in step)
+        )
         subprocess.run(
             ["bash", "-e", "-c", run],
             cwd=ROOT,
