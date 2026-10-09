@@ -407,10 +407,10 @@ class _Collector:
                 "cleanup artifact metadata differs from its source run"
             )
         artifact_id = _positive(artifact.get("id"), "cleanup artifact ID")
+        # This REST endpoint redirects to the ZIP and requires GitHub's API media type.
         raw = self.remote._request(
             "GET",
             f"{self.prefix}/actions/artifacts/{artifact_id}/zip",
-            accept="application/octet-stream",
         )
         if len(raw) > 8 * 1024 * 1024:
             raise domain.CleanupRecordError(

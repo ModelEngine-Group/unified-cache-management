@@ -39,6 +39,7 @@ class FakeRemote:
         self.runs = {}
         self.artifacts = {}
         self.downloads = {}
+        self.download_accepts = {}
         self.errors = {}
         self.calls = []
 
@@ -72,8 +73,9 @@ class FakeRemote:
         assert path == PREFIX + "/releases"
         return self.releases
 
-    def _request(self, method, path, **kwargs):
+    def _request(self, method, path, *, accept="application/vnd.github+json"):
         self.calls.append((method, path))
+        self.download_accepts[path] = accept
         assert method == "GET"
         if path in self.errors:
             raise self.errors[path]
@@ -256,6 +258,26 @@ def test_live_producer_record_binds_release_source_run_and_actual_tag():
     assert result.blocked == {}
     assert all(method == "GET" for method, _ in remote.calls)
     assert not any("untrusted.test" in path for _, path in remote.calls)
+
+
+def test_actions_zip_download_uses_rest_media_type_and_release_assets_use_octet_stream():
+    remote = FakeRemote()
+    release = _release()
+    remote.releases = [release]
+    remote.add_asset(release, _record())
+    run = _run()
+    remote.add_run(run)
+    remote.add_artifact(run, _record(release_id=None))
+
+    result = catalog.collect_catalog(remote)
+
+    assert result.blocked == {}
+    assert remote.download_accepts[PREFIX + "/actions/artifacts/100/zip"] == (
+        "application/vnd.github+json"
+    )
+    assert remote.download_accepts[PREFIX + "/releases/assets/10"] == (
+        "application/octet-stream"
+    )
 
 
 @pytest.mark.parametrize(
