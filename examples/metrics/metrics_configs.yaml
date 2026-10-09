@@ -641,7 +641,7 @@ histogram:
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_duration_ms"
     documentation: "End-to-end DramStore lookup duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_lookup_task_queue_duration_ms"
     documentation: "DramStore lookup task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -671,7 +671,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_dump_duration_ms"
     documentation: "End-to-end DramStore dump duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_dump_task_queue_duration_ms"
     documentation: "DramStore dump task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -701,7 +701,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_load_duration_ms"
     documentation: "End-to-end DramStore load duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_load_task_queue_duration_ms"
     documentation: "DramStore load task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -757,10 +757,10 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
   - name: "drampool_dump_transfer_duration_ms"
     documentation: "DUMP data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_load_transfer_duration_ms"
     documentation: "LOAD data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_get_status_duration_ms"
     documentation: "GetStatus() execution duration when the Poller queries data or response transfers (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -769,7 +769,7 @@ histogram:
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
   - name: "drampool_response_rtt_ms"
     documentation: "Response round-trip duration from response-transfer ExecuteAsync return to write-back completion in client memory, including polling delay and GetStatus but excluding the submission itself (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_metadata_storeend_duration_ms"
     documentation: "Per-entry StoreEnd settlement duration after DUMP transfer completion (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -787,10 +787,10 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_dump_batch_total_duration_ms"
     documentation: "End-to-end DUMP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_load_batch_total_duration_ms"
     documentation: "End-to-end LOAD batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "drampool_lookup_batch_total_duration_ms"
     documentation: "End-to-end LOOKUP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]

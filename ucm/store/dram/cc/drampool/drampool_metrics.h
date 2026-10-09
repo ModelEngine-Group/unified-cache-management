@@ -148,10 +148,11 @@ inline constexpr double kMsBucketsSettlement[] = {0.01, 0.05, 0.1, 0.5, 1,   2,
                                                   5,    10,   20,  50,  100, 500};
 inline constexpr double kMsBucketsPrepare[] = {0.1, 0.5, 1,   2,   5,    10,   20,
                                                50,  100, 200, 500, 1000, 2000, 5000};
-inline constexpr double kMsBucketsTransfer[] = {0.1, 0.5, 1,   2,    5,    10,   20,   50,
-                                                100, 200, 500, 1000, 2000, 5000, 10000};
+inline constexpr double kMsBucketsTransfer[] = {0.1, 0.5, 1,   2,   5,    10,   20,
+                                                50,  100, 200, 500, 1000, 2000, 5000};
 inline constexpr double kMsBucketsScan[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500};
-inline constexpr double kMsBucketsLookupBatch[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000};
+inline constexpr double kMsBucketsLookupBatch[] = {0.1, 0.5, 1,   2,   5,    10,   20,
+                                                   50,  100, 200, 500, 1000, 2000, 5000};
 inline constexpr double kMsBucketsGc[] = {1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
 
 // One metric definition: name, type, and histogram buckets. It mirrors one

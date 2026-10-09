@@ -1023,7 +1023,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_lookup_duration_ms",
         "End-to-end DramStore lookup duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_lookup_task_queue_duration_ms",
@@ -1073,7 +1073,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_dump_duration_ms",
         "End-to-end DramStore dump duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_dump_task_queue_duration_ms",
@@ -1123,7 +1123,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_load_duration_ms",
         "End-to-end DramStore load duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_load_task_queue_duration_ms",
@@ -1214,12 +1214,12 @@ _HISTOGRAM_METRICS = [
     (
         "drampool_dump_transfer_duration_ms",
         "DUMP data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "drampool_load_transfer_duration_ms",
         "LOAD data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "drampool_get_status_duration_ms",
@@ -1234,7 +1234,7 @@ _HISTOGRAM_METRICS = [
     (
         "drampool_response_rtt_ms",
         "Response round-trip duration from response-transfer ExecuteAsync return to write-back completion in client memory, including polling delay and GetStatus but excluding the submission itself (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "drampool_metadata_storeend_duration_ms",
@@ -1264,17 +1264,17 @@ _HISTOGRAM_METRICS = [
     (
         "drampool_dump_batch_total_duration_ms",
         "End-to-end DUMP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "drampool_load_batch_total_duration_ms",
         "End-to-end LOAD batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "drampool_lookup_batch_total_duration_ms",
         "End-to-end LOOKUP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
 ]
 

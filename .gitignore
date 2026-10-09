@@ -1,5 +1,6 @@
 # Prerequisites
 *.d
+*
 
 # Compiled Object files
 *.slo
@@ -45,6 +46,7 @@
 .vscode/**
 .idea/**
 .git/**
+dramstore_a2_hixl_host_sync.patch
 **/build/**
 **/output/**
 .venv/**
