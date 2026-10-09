@@ -32,12 +32,12 @@ ucm_block_offsets: np.ndarray   # [K, S]，相对完整 UCM block
 
 `use_layerwise: true` 接入 worker 逐层回调：start_load 提交各模型层加载，层回调等待该层关联缓存；状态层在 forward 前等待。save 回调只提交当前 layer_name，步末补存未回调的缓存，等待全部任务后 commit。未配置时仍走 bulk。当前文件 Proxy 同步执行；替换为异步 Proxy 时，任务保留 Transfer 数组直至 wait 完成。所有任务在本次 wait_for_save 返回前完成，不跨调度步。
 
-layerwise 不复制 Block First slot padding，因此文件后端使用独立的 `-layerwise` namespace，暂不混用 bulk 文件。model-check 在此模式下按每个 layer_name 的有效 payload 填充和比对，bulk 模式继续比对完整 span。
+layerwise 使用按有效 payload 紧凑累加的通用模板，不复制 Block First padding，也不保留 HBM 中的 page 间隙；文件后端使用独立的 `-layerwise` namespace，暂不混用 bulk 文件。model-check 在此模式下按每个 layer_name 的有效 payload 填充和比对，bulk 模式继续比对完整 span。
 
-旧 `build_load_batches/build_dump_batches`、`UCMProxyBatch` 与四参数扁平 adapter 方法暂留作旧工具兼容入口，**worker 已不使用它们**。不要用旧入口测量二维接口收益。下文的旧扁平示例用于解释相同的物理地址及磁盘字节位置；二维形式将 keys 变为 `[A,B]`，后三个数组按两行排列。
+已删除旧 batch builder、扁平 adapter 和 UCMProxyBatch。worker、model-check 与 NPU probe 都使用二维 Transfer；工具只在逐字节填充/比较时展开矩阵，测试只在检查地址数值时展开矩阵。下文的扁平示例仅用于解释相同的物理地址及磁盘字节位置，不再对应独立生产 API。
 
 
-建议按 `view.py -> group.py -> ../record_layout.py -> ../ucm_kv_cache.py` 阅读。
+建议按 `view.py -> group.py -> ../store_layout.py -> ../ucm_kv_cache.py` 阅读。
 
 ## 谁负责什么
 
@@ -47,19 +47,25 @@ layerwise 不复制 Block First slot padding，因此文件后端使用独立的
 | `ComponentView` | 一个注册 tensor view 的 shape/stride | 一个或多个连续 `MemorySegment`；components 可共享 storage |
 | `KVCacheGroupLayout` | 一个 group 的 LayerViews | 把源地址几何编译成 NumPy segment 列，按 layer_id/name 选择列 |
 | `BlockAccess` | 固定 token 范围模板；运行时 block IDs、starts | 源内存 `ptrs/sizes`，形状 `[block, segment]` |
-| `GroupRecordLayout` | group 的 FA/WA/State 规则与物理布局 | 在 UCM block 中放置数据，维护目标 offsets，判断能否合并 IO |
+| `GroupStoreLayout` | group 的 FA/WA/State 规则与物理布局 | 在 UCM block 中放置数据，维护目标 offsets，判断能否合并 IO |
 | `UCMKVCacheLayout` | scheduler 给出的 keys/windows 和可选层选择 | 组合 groups，关联 keys，构造 proxy 批次 |
 
-`view` 表示逻辑视图；`segment` 表示能连续复制的一段。两者不是一一对应关系。`segment_mask/segment_count/selected_segments` 都针对展开后的列。
+`view` 表示逻辑视图；`segment` 表示能连续复制的一段。两者不是一一对应关系。`segment_mask` 针对展开后的列。
 
-`BlockFirstView` 留在 group 中，它只描述源内存中带 padding 的连续 span。record 层只有在整块、未筛层、源 span 与目标 offsets 一致时，才选择合并 IO。多个声明的 offset 相邻还不够：实际起点和 block stride 也必须匹配。
+`supports_partial_tokens` 是 group 级布尔策略：初始化时对全部 ComponentView 的布局能力取 `all`。只要任意 view 不支持部分 token，整个 group 只允许完整 block，按层选择也不能绕过此限制。MemorySegment 只保留寻址参数，不保存逐 segment 的策略标志；固定范围和动态 offset 共用 group 策略。
+
+`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + block_id * block_stride + fixed_offset + dynamic_offset`；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
+
+`BlockFirstView` 留在 group 中，它只描述源内存中带 padding 的连续 span。当前只在 CUDA/CPU 的 BLHNC/BLNHC 下根据原生 descriptor 创建，要求 `0 < layer_stride < block_stride` 且本组 descriptors 的 block stride 一致；信任 0.30 原生 allocator 的连续放置契约，不再逐层检查地址或 offset 链。NPU 直接使用 per-layer segments；GLM 专用 slot descriptor 不符合 stride 条件。store 层仅在 use_layerwise=False、完整块且 BlockFirstView 存在时使用独立的整组 IO 路径；layerwise 继续按通用紧凑模板存取物理 segments。
+
+State group 同样参与该路径：符合条件时，bulk 复制整个 group span，保留各层 page padding，不复制 span 之外的全局 block 空闲容量。use_layerwise=True 时始终使用 payload 前缀和模板，State 整快照与加载等待规则继续由原有策略处理。记录格式使用 r7 namespace，隔离旧版带 page 间隙的 layerwise 文件。
 
 ## 两种 offset
 
 - `block_byte_offsets`：源 segment 内，从块起点跳过多少字节；用于计算 ptr。
 - `ucm_block_offsets`：目标 UCM block 中放在哪；每个 group 模板内先存 group 相对值，最终加 group 基址。
 
-`GroupRecordLayout.group_block_offsets` 是**一个完整 vLLM block** 的目标排布；`ucm_block_offsets` 是**一个 UCM key 覆盖的窗口**排布。窗口可能是部分 block、多个 blocks 或整页 State，因此不能混用。`whole_block_bytes` 是完整 block 的目标空间，`record_bytes` 是这个 group 在一个 UCM block 中的总空间。
+`GroupStoreLayout.group_block_offsets` 是**一个完整 vLLM block** 的目标排布，完整 Block First bulk 为单元素 `[0]`，layerwise 则为有效 payload 的前缀和；`ucm_block_offsets` 是**一个 UCM key 覆盖的窗口**排布。窗口可能是部分 block、多个 blocks 或整页 State，因此不能混用。`whole_block_bytes` 是完整 block 的目标空间，`store_bytes` 是这个 group 在一个 UCM block 中的总空间。
 
 默认排列：
 
@@ -75,7 +81,7 @@ layerwise 不复制 Block First slot padding，因此文件后端使用独立的
     ...
 ```
 
-为兼容既有字节格式，完整 Block First 使用声明的 slots 并保留 padding；多 descriptor 时 slots 按 descriptor 排列，可能与逻辑 layer 遍历次序不同。部分块则按选中范围的 segment sizes 紧凑排列。layerwise 只筛列，不重新打包目标位置。
+完整 Block First 有两条存取路径：use_layerwise=False 时每个原生 block 只有一项，offset 为0、size 为 BlockFirstView.block_size_bytes（含 padding）；use_layerwise=True 时保留通用模板，offset=cumsum(payload_bytes)-payload_bytes、block bytes=sum(payload_bytes)，与是否 Block First 无关。部分块也走通用模板。构造 UCMKVCacheLayout 时显式传入 connector 的 use_layerwise，避免只凭 segment_mask 选择存储格式。
 
 ## FA 16384 / 512 完整例子
 
@@ -97,7 +103,7 @@ layer 1 base_ptr = 2000000
 
 ```python
 group_layout = layout.group_layouts[group_id]
-record_layout = layout.record_layouts[group_id]
+store_layout = layout.store_layouts[group_id]
 ```
 
 record 层确定固定长度 512，并调用：
@@ -105,8 +111,8 @@ record 层确定固定长度 512，并调用：
 ```python
 access = group_layout.compile_access(token_counts=512)
 # access.segment_bytes = [[2048, 2048]]
-# record_layout.ucm_block_offsets = [[0, 2048]]
-# record_layout.record_bytes = 4096
+# store_layout.ucm_block_offsets = [[0, 2048]]
+# store_layout.store_bytes = 4096
 ```
 
 sizes 在这里算好。运行时无需 ends；范围长度改变时需要重新选择或编译 access 模板。
@@ -118,7 +124,8 @@ sizes 在这里算好。运行时无需 ends；范围长度改变时需要重新
 ```python
 block_ids = np.array([2, 2], dtype=np.uint64)
 starts = np.array([0, 512], dtype=np.uint64)
-ptrs, sizes = access.resolve(block_ids, token_offsets=starts)
+ptrs = access.resolve_ptrs(block_ids, token_offsets=starts)
+sizes = np.broadcast_to(access.segment_bytes, ptrs.shape)
 ```
 
 逐列使用同一公式：`base_ptr + block_id * block_stride + start * bytes_per_token`。
@@ -134,7 +141,7 @@ sizes              2048        2048  # 每行相同
 
 ### 3. 关联目标 offsets 与 keys
 
-`GroupRecordLayout.resolve` 把相同 offset 模板重复到两个 key：
+`GroupStoreLayout.resolve_matrices` 把相同 offset 模板重复到两个 key：
 
 ```text
 key A: offset 0    <- layer 0 的 2048 字节
@@ -166,7 +173,7 @@ sizes:   [2048,    2048,    2048,    2048   ]
 
 ## 输出数组的生命周期
 
-物理寻址 `BlockAccess.resolve` 返回独立可写的 ptrs/sizes；二维 Transfer 则使用独立 ptrs，以及本次调用小模板广播出的只读 sizes/offsets。单组直接持有这次结果，多组再拼接；后续 dispatch 不会覆盖已下发的描述符。这里的独立性针对描述符数组，KV 源内存本身的在途保护仍由既有生命周期机制负责。
+物理寻址 `BlockAccess.resolve_ptrs` 返回独立可写的 ptrs；二维 Transfer 则使用独立 ptrs，以及本次调用小模板广播出的只读 sizes/offsets。单组直接持有这次结果，多组再拼接；后续 dispatch 不会覆盖已下发的描述符。这里的独立性针对描述符数组，KV 源内存本身的在途保护仍由既有生命周期机制负责。
 
 ## 并行分片
 

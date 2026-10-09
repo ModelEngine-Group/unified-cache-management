@@ -323,10 +323,6 @@ class UCMProxyTransfer:
     sizes: np.ndarray
     ucm_block_offsets: np.ndarray
 
-    @property
-    def total_bytes(self) -> int:
-        return int(self.sizes.sum())
-
 
 @dataclass(frozen=True)
 class UCMProxyTask:
@@ -337,28 +333,11 @@ class UCMProxyTask:
     handle: object | None
 
 
-@dataclass(frozen=True)
-class UCMProxyBatch:
-    block_ids: tuple[bytes, ...]
-    offsets: np.ndarray
-    ptrs: np.ndarray
-    sizes: np.ndarray
-
-    @property
-    def total_bytes(self) -> int:
-        return int(self.sizes.sum())
-
-
 class UCMProxyAdapter:
-    """Forward native transfers; normalize legacy calls and handle completion."""
+    """Forward native transfers and handle completion."""
 
-    def __init__(
-        self,
-        proxy: UCMProxy,
-        record_sizes: dict[bytes, int] | None = None,
-    ) -> None:
+    def __init__(self, proxy: UCMProxy) -> None:
         self._proxy = proxy
-        self._record_sizes = record_sizes or {}
 
     @staticmethod
     def _keys(block_ids: Sequence[bytes]) -> tuple[bytes, ...]:
@@ -422,95 +401,6 @@ class UCMProxyAdapter:
             )
         self._proxy.wait(task)
 
-    def _batch(
-        self,
-        block_ids: Sequence[bytes],
-        offsets: Sequence[int] | np.ndarray,
-        ptrs: Sequence[int] | np.ndarray,
-        sizes: Sequence[int] | np.ndarray,
-    ) -> UCMProxyBatch:
-        keys = self._keys(block_ids)
-        # One unsigned dtype for every axis: ids, addresses, offsets and
-        # sizes are counts that never go negative, and mixed dtypes would
-        # silently promote to float64 in arithmetic.
-        normalized_offsets = np.asarray(offsets, dtype=np.uint64)
-        normalized_sizes = np.asarray(sizes, dtype=np.uint64)
-        normalized_ptrs = np.asarray(ptrs, dtype=np.uint64)
-        lengths = {
-            len(keys),
-            len(normalized_offsets),
-            len(normalized_ptrs),
-            len(normalized_sizes),
-        }
-        if len(lengths) != 1:
-            raise ValueError(
-                "block_ids, offsets, ptrs and sizes must have identical lengths"
-            )
-        for name, values, invalid in (
-            ("ptr", normalized_ptrs, normalized_ptrs == 0),
-            ("size", normalized_sizes, normalized_sizes == 0),
-        ):
-            if invalid.any():
-                index = int(np.argmax(invalid))
-                raise ValueError(
-                    f"Invalid Proxy segment at index {index}: "
-                    f"{name}={int(values[index])}"
-                )
-        if self._record_sizes:
-            for index, (key, offset, size) in enumerate(
-                zip(keys, normalized_offsets, normalized_sizes)
-            ):
-                record_size = self._record_sizes.get(key)
-                if record_size is not None and offset + size > record_size:
-                    raise ValueError(
-                        f"Proxy segment {index} exceeds record: "
-                        f"offset={int(offset)}, size={int(size)}, "
-                        f"record_size={record_size}"
-                    )
-        return UCMProxyBatch(
-            keys, normalized_offsets, normalized_ptrs, normalized_sizes
-        )
-
-    def load(
-        self,
-        block_ids: Sequence[bytes],
-        offsets: np.ndarray,
-        ptrs: np.ndarray,
-        sizes: np.ndarray,
-    ) -> None:
-        batch = self._batch(block_ids, offsets, ptrs, sizes)
-        if not batch.block_ids:
-            return
-        try:
-            task = self._proxy.load(
-                batch.block_ids, batch.offsets, batch.ptrs, batch.sizes
-            )
-            self._wait("load", task)
-        except Exception as exc:
-            if isinstance(exc, UCMProxyError):
-                raise
-            raise UCMProxyError("Proxy load failed") from exc
-
-    def dump(
-        self,
-        block_ids: Sequence[bytes],
-        offsets: np.ndarray,
-        ptrs: np.ndarray,
-        sizes: np.ndarray,
-    ) -> None:
-        batch = self._batch(block_ids, offsets, ptrs, sizes)
-        if not batch.block_ids:
-            return
-        try:
-            task = self._proxy.dump(
-                batch.block_ids, batch.offsets, batch.ptrs, batch.sizes
-            )
-            self._wait("dump", task)
-        except Exception as exc:
-            if isinstance(exc, UCMProxyError):
-                raise
-            raise UCMProxyError("Proxy dump failed") from exc
-
     def commit(self, block_ids: Sequence[bytes]) -> None:
         """Publish keys after their writes complete, without rescanning descriptors."""
         if not block_ids:
@@ -550,5 +440,5 @@ class UCMProxyAdapter:
             raise UCMProxyError(f"Proxy {task.operation} failed") from exc
 
     def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
-        """Synchronous compatibility path for bulk transfers."""
+        """Submit and wait for a bulk transfer."""
         self.wait(self.enqueue(operation, transfer))

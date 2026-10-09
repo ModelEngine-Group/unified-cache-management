@@ -31,7 +31,7 @@ flowchart TD
     Scheduler --> Meta["UCMConnectorMetadata：keys、token 范围、block IDs"]
     Views["worker 注册的 tensor views"] --> Physical["LayerView / KVCacheGroupLayout / BlockAccess"]
     Spec --> Physical
-    Physical --> Record["GroupRecordLayout：UCM block 内位置与窗口模板"]
+    Physical --> Record["GroupStoreLayout：UCM block 内位置与窗口模板"]
     Meta --> Builder["UCMKVCacheLayout：按 plan 组合各 group"]
     Record --> Builder
     Builder --> Transfer["UCMProxyTransfer：keys K，三个 K×S 矩阵"]
@@ -46,11 +46,11 @@ flowchart TD
 | `ucm_kv_cache.py / UCMKVCacheSpec` | group 分类、token/state 粒度、路由、声明布局解析 | 实际内存搬运 |
 | `layout/view.py` | 将逻辑 tensor views 分解为可连续寻址的 segments | hash key、UCM block 排布 |
 | `layout/group.py` | group 物理几何、层选择、块内范围到 ptrs/sizes 的转换 | key 和目标存储位置 |
-| `record_layout.py` | 每个 group 在 UCM block 中的窗口排布、offsets、合并条件 | 文件格式、异步任务调度 |
+| `store_layout.py` | 每个 group 在 UCM block 中的窗口排布、offsets、合并条件 | 文件格式、异步任务调度 |
 | `ucm_kv_cache.py / UCMKVCacheLayout` | 关联 plan 与 layouts，生成二维 Transfer | 存储实现细节 |
 | `ucm_proxy.py` | Transfer 契约、下发适配、当前文件后端 | scheduler 的窗口语义 |
 
-源码入口：[connector](../ucm/integration/vllm/v2/ucm_connector.py)、[scheduler](../ucm/integration/vllm/v2/ucm_scheduler.py)、[语义与批次构造](../ucm/integration/vllm/v2/ucm_kv_cache.py)、[物理 group](../ucm/integration/vllm/v2/layout/group.py)、[view](../ucm/integration/vllm/v2/layout/view.py)、[record layout](../ucm/integration/vllm/v2/record_layout.py)、[Proxy](../ucm/integration/vllm/v2/ucm_proxy.py)。
+源码入口：[connector](../ucm/integration/vllm/v2/ucm_connector.py)、[scheduler](../ucm/integration/vllm/v2/ucm_scheduler.py)、[语义与批次构造](../ucm/integration/vllm/v2/ucm_kv_cache.py)、[物理 group](../ucm/integration/vllm/v2/layout/group.py)、[view](../ucm/integration/vllm/v2/layout/view.py)、[record layout](../ucm/integration/vllm/v2/store_layout.py)、[Proxy](../ucm/integration/vllm/v2/ucm_proxy.py)。
 
 ## 3. 核心概念与单位
 
@@ -69,7 +69,7 @@ flowchart TD
 | `block_byte_offsets` | 从源 block 内 segment 起点跳过的字节数 | 源内存偏移 |
 | `group_block_offsets` | 完整 vLLM block 的各 segment 在 group 内的目标排布 | bytes |
 | `ucm_block_offsets` | 某个 key 的各段在 UCM block 中的位置 | bytes；group 模板内先相对 group，最终加 group 基址 |
-| `record_bytes` | 一个 key 中某个 group 窗口占用的总空间 | bytes，选择部分层不会改变它 |
+| `store_bytes` | 一个 key 中某个 group 窗口占用的总空间 | bytes，选择部分层不会改变它 |
 
 区分两类重复：不同 UCM keys 可以引用同一个物理 block 的不同 token 范围；这不等于同一请求出现重复 hash key。
 
@@ -258,13 +258,13 @@ size[b,j] = compiled_segment_bytes[r,j]
 
 动态 start 是在固定 start 上追加，若传的是绝对块内 start，应编译零起点模板。代码先选择列，再批量生成地址，不会先算全部层再挑一层；没有长期缓存所有 block 的 ptrs。
 
-`resolve` 返回独立可写 ptrs/sizes 网格；二维 Transfer 路径使用 `resolve_ptrs`，避免提前扩展不随 key 改变的 sizes。
+`resolve_ptrs` 返回独立可写指针网格；sizes 使用固定模板，避免提前扩展不随 key 改变的数据。
 
 源寻址层仍检查 block IDs、窗口行数、动态 start 与 state 对齐、范围是否越过 payload。删除的是 Adapter 的重复字段检查，不是所有层的所有检查。
 
 ## 8. UCM block 排布与块内切片
 
-`GroupRecordLayout` 将物理 segment 映射到一个 key 对应的存储位置，物理 group 不需要理解存储 offsets。
+`GroupStoreLayout` 将物理 segment 映射到一个 key 对应的存储位置，物理 group 不需要理解存储 offsets。
 
 ```text
 一个 FA key -> 一个 UCM block
@@ -280,7 +280,7 @@ size[b,j] = compiled_segment_bytes[r,j]
       ...
 ```
 
-WA/State 使用各自路由的 groups 和窗口，不混进 FA key 中。普通完整块的 segment 紧凑累加；满足声明的 Block First 路径保留其完整块 padding。
+WA/State 使用各自路由的 groups 和窗口，不混进 FA key 中。通用模板始终按 segment 有效 payload 紧凑累加，layerwise 使用此模板。仅 use_layerwise=False、完整块且已有 BlockFirstView 时，单独使用 offset0/整组 span 的 bulk 路径，保留 padding。
 
 ### 8.1 三种 FA 关系
 
@@ -350,7 +350,7 @@ load：从 key[k] 的该位置读相同字节数，写入 ptrs[k,s]
 2. 对每个 group 归一化 block ID dtype，检查窗口长度等于 K×R。
 3. 根据 layer_name 或 layer_id 选择 segments；必要时计算 FA 动态 token starts。
 4. `resolve_matrices` 返回该 group 的 `[K,S_g]` offsets/ptrs/sizes。
-5. offsets 加上前面 groups 的完整 record_bytes；即使某个 group 没有选中层，其空间也不能被压掉。
+5. offsets 加上前面 groups 的完整 store_bytes；即使某个 group 没有选中层，其空间也不能被压掉。
 6. group 列合并；单 group 直接使用结果，多 group ptrs concatenate，sizes/offsets 拼接一行模板再广播。
 7. 直接关联 `plan.keys` 生成 Transfer。不同 plan 分开，不 padding、不跨请求去重。
 
@@ -379,7 +379,7 @@ proxy.load(transfer.keys, transfer.ucm_block_offsets,
 
 后端返回 None 表示本次调用完成；返回 handle 时，Adapter 的 `enqueue` 保存 handle 和 Transfer，worker 在对应层回调或步末调用 `wait`。bulk 使用 `submit`，仍立即等待。任务不跨调度步；真实计算/IO 重叠还取决于后端设备同步实现，需要实机验证。
 
-旧 `UCMProxyBatch`、`build_*_batches` 和四参数 flat adapter.load/dump 暂留给测试工具兼容，仍有归一化/校验。worker 主路径不使用它们，性能测量不能混用。
+旧 UCMProxyBatch、batch builder 和四参数 flat adapter 已删除。worker、model-check 与 NPU probe 共用二维 Transfer；测试中的地址断言在测试侧展开矩阵，不再保留单独的生产兼容路径。
 
 ## 10. Worker 生命周期和错误处理
 
@@ -475,7 +475,7 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 
 ## 13. 阅读和修改建议
 
-理解寻址可按 `view.py → group.py → record_layout.py → UCMKVCacheLayout` 阅读；理解一次请求则按 `UCMConnector → UCMDispatcher → metadata → Transfer → Proxy` 阅读。
+理解寻址可按 `view.py → group.py → store_layout.py → UCMKVCacheLayout` 阅读；理解一次请求则按 `UCMConnector → UCMDispatcher → metadata → Transfer → Proxy` 阅读。
 
 新增物理布局时应先确认注册 view 的逻辑 ABI与 strides，再决定 segment 分解；修改 UCM block 字节顺序应集中在 record 层，并检查 namespace/存量兼容；替换 Proxy 应遵守二维数组与生命周期契约，无需让 Proxy 理解 Group、Layer 或 vLLM strides。
 

@@ -29,16 +29,11 @@ class ParallelLayout:
     def from_config(cls, config: VllmConfig) -> ParallelLayout:
         p = config.parallel_config
         result = cls(
-            *(
-                int(getattr(p, name, 1))
-                for name in (
-                    "tensor_parallel_size",
-                    "pipeline_parallel_size",
-                    "prefill_context_parallel_size",
-                    "decode_context_parallel_size",
-                    "cp_kv_cache_interleave_size",
-                )
-            )
+            tp=p.tensor_parallel_size,
+            pp=p.pipeline_parallel_size,
+            pcp=p.prefill_context_parallel_size,
+            dcp=p.decode_context_parallel_size,
+            interleave=p.cp_kv_cache_interleave_size,
         )
         if min(result.tp, result.pp, result.pcp, result.dcp, result.interleave) < 1:
             raise ValueError("Parallel dimensions must be positive")
@@ -75,15 +70,18 @@ class ParallelLayout:
         )
         # Only complete distributed pages: a fractional CP page needs explicit
         # striped-token mapping, not proportional source offsets.
-        unit = requested_block_size or lcm(*(g.token_block_size for g in groups))
-        if any(unit % g.token_block_size for g in groups):
+        ucm_block_size = requested_block_size or lcm(
+            *(g.token_block_size for g in groups)
+        )
+        if any(ucm_block_size % g.token_block_size for g in groups):
             raise ValueError("CP UCM blocks must contain whole distributed KV pages")
         return replace(
             spec,
             groups=tuple(
-                replace(g, tail_blocks=unit // g.token_block_size) for g in groups
+                replace(g, tail_blocks=ucm_block_size // g.token_block_size)
+                for g in groups
             ),
-            ucm_cache_block_size=unit,
+            ucm_cache_block_size=ucm_block_size,
         )
 
 
@@ -102,7 +100,7 @@ class AllShardLookup:
         return getattr(self.local, name)
 
     def wait(self, task: object) -> None:
-        return getattr(self.local, "wait")(task)
+        return self.local.wait(task)
 
     def register_tensors(self, caches: Mapping[str, KVCacheValue]) -> None:
         method = getattr(self.local, "register_tensors", None)

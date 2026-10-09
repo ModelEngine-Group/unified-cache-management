@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class GroupRecordLayout:
+class GroupStoreLayout:
     """One group's record template; offsets are relative to the group start.
 
     One FA key identifies one UCM block (only its covered blocks):
@@ -40,7 +40,7 @@ class GroupRecordLayout:
     blocks_per_key: int
     access: BlockAccess
     ucm_block_offsets: np.ndarray
-    record_bytes: int
+    store_bytes: int
     group_block_offsets: np.ndarray
     whole_block_bytes: int
     merge_whole_blocks: bool
@@ -52,7 +52,9 @@ class GroupRecordLayout:
         group: UCMKVCacheGroupInfo,
         layout: KVCacheGroupLayout,
         ucm_block_size: int,
-    ) -> GroupRecordLayout:
+        *,
+        use_layerwise: bool,
+    ) -> GroupStoreLayout:
         block_tokens = layout.token_block_size
         if group.is_sliding_window:
             partial_tokens = (group.tail_tokens or 0) % block_tokens
@@ -73,40 +75,28 @@ class GroupRecordLayout:
             token_offsets=token_offsets, token_counts=token_counts
         )
 
-        # Whole-block destination placement belongs here, not in the physical
-        # address resolver. Retain the established padded Block First format.
-        if layout.block_first is not None:
-            slots: list[int] = []
-            for layer in sorted(
-                group.layers, key=lambda item: (item.layer_index, item.layer_name)
-            ):
-                descriptor = layer.descriptor
-                assert descriptor is not None
-                anchor = (
-                    descriptor.offset
-                    + layer.descriptor_position * descriptor.layer_stride
-                )
-                segments = layout.layer_views[layer.layer_name].segments
-                slots.extend(
-                    anchor + segment.base_ptr - segments[0].base_ptr
-                    for segment in segments
-                )
-            group_block_offsets = np.asarray(slots, dtype=np.uint64)
+        # Full Block First pages have one storage entry, including padding.
+        merge_whole_blocks = (
+            not use_layerwise
+            and layout.block_first is not None
+            and partial_tokens == 0
+        )
+        if merge_whole_blocks:
+            group_block_offsets = np.zeros(1, dtype=np.uint64)
             whole_block_bytes = layout.block_first.block_size_bytes
         else:
             group_block_offsets = np.cumsum(layout.payload_bytes) - layout.payload_bytes
             whole_block_bytes = int(layout.payload_bytes.sum())
 
-        ucm_block_offsets = np.empty_like(access.segment_bytes)
-        cursor = 0
-        for row in range(rows):
-            if row == 0 and partial_tokens:
-                sizes = access.segment_bytes[row]
-                ucm_block_offsets[row] = np.cumsum(sizes) - sizes
-                cursor += int(sizes.sum())
-            else:
-                ucm_block_offsets[row] = cursor + group_block_offsets
-                cursor += whole_block_bytes
+        if merge_whole_blocks:
+            ucm_block_offsets = (
+                np.arange(rows, dtype=np.uint64)[:, None] * whole_block_bytes
+            )
+            cursor = rows * whole_block_bytes
+        else:
+            sizes = access.segment_bytes
+            ucm_block_offsets = np.cumsum(sizes).reshape(sizes.shape) - sizes
+            cursor = int(sizes.sum())
         if LAYOUT_DEBUG:
             layout_debug(
                 f"group-layout group={group.group_id} "
@@ -115,61 +105,17 @@ class GroupRecordLayout:
                 f"block-first={int(layout.block_first is not None)} "
                 f"block_size_bytes={whole_block_bytes} token_block={block_tokens} "
                 f"tail_blocks={group.tail_blocks} span={partial_tokens} "
-                f"record_bytes={cursor}"
+                f"store_bytes={cursor}"
             )
         return cls(
             blocks_per_key=group.tail_blocks,
             access=access,
             ucm_block_offsets=ucm_block_offsets,
-            record_bytes=cursor,
+            store_bytes=cursor,
             group_block_offsets=group_block_offsets,
             whole_block_bytes=whole_block_bytes,
-            # Merging is a transfer decision: source span and destination
-            # positions must describe exactly the same byte arrangement.
-            merge_whole_blocks=(
-                partial_tokens == 0
-                and layout.block_first is not None
-                and np.array_equal(
-                    group_block_offsets,
-                    layout.base_ptrs - np.uint64(layout.block_first.base_ptr),
-                )
-            ),
+            merge_whole_blocks=merge_whole_blocks,
             dynamic_token_offsets=bool(partial_tokens) and not group.is_sliding_window,
-        )
-
-    def resolve(
-        self,
-        blocks: np.ndarray,
-        key_count: int,
-        *,
-        token_offsets: np.ndarray | None = None,
-        segment_mask: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-        """Return group-relative record offsets, pointers, sizes, entries/key."""
-        layout = self.access.layout
-        if (
-            layout.block_first is not None
-            and segment_mask is None
-            and self.merge_whole_blocks
-        ):
-            ptrs, sizes = layout.block_first_segments(blocks)
-            offsets = (
-                np.arange(len(blocks), dtype=np.uint64) % self.blocks_per_key
-            ) * self.whole_block_bytes
-            return offsets, ptrs, sizes, self.blocks_per_key
-
-        ptrs, sizes = self.access.resolve(
-            blocks, token_offsets=token_offsets, segment_mask=segment_mask
-        )
-        columns: slice | np.ndarray = (
-            slice(None) if segment_mask is None else segment_mask
-        )
-        offsets = np.tile(self.ucm_block_offsets[:, columns], (key_count, 1))
-        return (
-            offsets.reshape(-1),
-            ptrs.reshape(-1),
-            sizes.reshape(-1),
-            self.blocks_per_key * layout.segment_count(segment_mask),
         )
 
     def resolve_matrices(
@@ -188,9 +134,7 @@ class GroupRecordLayout:
         layout = self.access.layout
         if self.merge_whole_blocks and segment_mask is None:
             ptrs, _ = layout.block_first_segments(blocks)
-            offsets = (
-                np.arange(self.blocks_per_key, dtype=np.uint64) * self.whole_block_bytes
-            )
+            offsets = self.ucm_block_offsets.reshape(-1).copy()
             sizes = np.full(
                 self.blocks_per_key, self.whole_block_bytes, dtype=np.uint64
             )
@@ -201,7 +145,16 @@ class GroupRecordLayout:
             columns: slice | np.ndarray = (
                 slice(None) if segment_mask is None else segment_mask
             )
-            offsets = self.ucm_block_offsets[:, columns].reshape(-1).copy()
+            if self.merge_whole_blocks:
+                # Layerwise IO keeps each segment at its original page position.
+                segment_offsets = (
+                    layout.base_ptrs[columns] - np.uint64(layout.block_first.base_ptr)
+                )
+                offsets = (
+                    self.ucm_block_offsets + segment_offsets[None, :]
+                ).reshape(-1)
+            else:
+                offsets = self.ucm_block_offsets[:, columns].reshape(-1).copy()
             sizes = self.access.segment_bytes[:, columns].reshape(-1).copy()
         shape = (key_count, len(sizes))
         return (

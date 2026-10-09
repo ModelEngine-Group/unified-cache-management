@@ -616,7 +616,7 @@ def assert_shared_dispatch(metadata):
             plan.keys,
             plan.token_start,
             plan.token_end,
-            tuple(tuple(int(x) for x in window) for window in plan.windows),
+            tuple(tuple(int(x) for x in blocks) for blocks in plan.group_block_ids),
         )
         for request_id, request in metadata.requests.items()
         for phase in ("load", "dump")
@@ -1148,7 +1148,7 @@ def metadata_key_count(metadata: Any, phase: str) -> int:
 
 
 def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
-    """Build the exact v2 pointer batch, or return None for legacy metadata."""
+    """Flatten native v2 transfers for per-segment fill/compare diagnostics."""
 
     if not hasattr(metadata, "requests"):
         return None
@@ -1156,18 +1156,27 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     layout = getattr(connector, "layout", None)
     if layout is None:
         raise ValueError("connector v2 worker has no registered KV-cache layout")
-    builder = getattr(layout, f"build_{phase}_batches")
-    if not getattr(connector, "use_layerwise", False):
-        return builder(metadata)
-    # Layerwise transfers copy view payloads, not padding between Block First
-    # slots. Fill and compare those payloads using the same per-name partition;
-    # the bulk oracle still checks its complete spans, including padding.
-    batches = [builder(metadata, layer_name=name) for name in layout.layer_id_by_name]
+    builder = getattr(layout, f"build_{phase}_transfers")
+    if getattr(connector, "use_layerwise", False):
+        transfers = tuple(
+            transfer
+            for name in layout.layer_id_by_name
+            for transfer in builder(metadata, layer_name=name)
+        )
+    else:
+        transfers = builder(metadata)
+    # Diagnostics iterate bytes; worker IO keeps the native [K,S] matrices.
+    block_ids = tuple(
+        key
+        for transfer in transfers
+        for key in transfer.keys
+        for _ in range(transfer.ptrs.shape[1])
+    )
     return SimpleNamespace(
-        **{
-            field: tuple(value for batch in batches for value in getattr(batch, field))
-            for field in ("block_ids", "offsets", "ptrs", "sizes")
-        }
+        block_ids=block_ids,
+        offsets=tuple(v for t in transfers for v in t.ucm_block_offsets.reshape(-1)),
+        ptrs=tuple(v for t in transfers for v in t.ptrs.reshape(-1)),
+        sizes=tuple(v for t in transfers for v in t.sizes.reshape(-1)),
     )
 
 
@@ -1750,7 +1759,7 @@ def schedule(
         prompt_token_ids,
         fixture.kv_cache_config,
         hash_block_size,
-        getattr(connector_spec, "alignment_block_size", None),
+        getattr(connector_spec, "ucm_cache_block_size", None),
     )
     source = schedule_source(
         fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups

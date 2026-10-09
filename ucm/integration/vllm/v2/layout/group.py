@@ -2,8 +2,9 @@
 
 ``compile_access`` converts local token ranges to per-segment byte offsets and
 sizes. ``BlockAccess.resolve`` supplies the physical block IDs. Neither needs
-hash keys or UCM window rules; record_layout.py composes their results into
-records. Whole Block First spans retain padding for the existing fast path.
+hash keys or UCM window rules; store_layout.py composes their results into
+records. Whole Block First spans retain padding for the fast path, including
+State pages. Partial-token support is one policy for the entire group.
 
 Each column is a contiguous token segment, not necessarily an entire view.
 """
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from . import view
-from .view import LayerView, MemorySegment
+from .view import LayerView
 
 if TYPE_CHECKING:
     import torch
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TensorDescriptor:
-    """One vLLM 0.29 ``KVCacheTensor`` declaration, as handed over.
+    """One native ``KVCacheTensor`` declaration, as handed over.
 
     Layer ``layers[l]``'s block ``b`` starts at ``offset + l *
     layer_stride + b * block_stride`` bytes into the backing.
@@ -58,7 +59,7 @@ class BlockAccess:
     """Physical access pattern, with arrays shaped [window block, segment].
 
     No hash keys or storage-record offsets live here. A pattern repeats for
-    each window passed to resolve(); dynamic token offsets are per block.
+    each window passed to resolve_ptrs(); dynamic token offsets are per block.
     Sizes and fixed byte offsets are compiled once. Columns represent segments;
     one component view can contribute multiple head segments.
     """
@@ -66,47 +67,23 @@ class BlockAccess:
     layout: "KVCacheGroupLayout"
     block_byte_offsets: np.ndarray
     segment_bytes: np.ndarray
-    selected_segments: np.ndarray | None = None
 
-    def resolve(self, block_ids, *, token_offsets=None, segment_mask=None):
-        """Return independent writable [block, segment] pointer/size grids."""
-        ptrs, fixed_sizes = self._resolve(
-            block_ids, token_offsets=token_offsets, segment_mask=segment_mask
-        )
-        return ptrs, np.tile(fixed_sizes, (len(ptrs) // len(fixed_sizes), 1))
-
-    def resolve_ptrs(self, block_ids, *, token_offsets=None, segment_mask=None):
-        """Resolve pointers without expanding the already compiled size template."""
-        return self._resolve(
-            block_ids, token_offsets=token_offsets, segment_mask=segment_mask
-        )[0]
-
-    def _resolve(
+    def resolve_ptrs(
         self,
         block_ids: Sequence[int] | np.ndarray,
         *,
         token_offsets: np.ndarray | None = None,
         segment_mask: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Return [block, segment] pointer/size grids in input block order.
+    ) -> np.ndarray:
+        """Return a [block, segment] pointer grid in input block order.
 
         Dynamic token offsets add to the compiled start. Use a zero-start
         template when supplying absolute local starts (the FA sub-block case).
         """
         blocks = np.asarray(block_ids, dtype=np.uint64)
-        if blocks.ndim != 1:
-            raise ValueError("Block IDs must be one-dimensional")
         self.layout._checked_blocks(blocks)
-        rows = len(self.segment_bytes)
-        if len(blocks) % rows:
-            raise ValueError("Block IDs must contain complete access windows")
-        repeats = len(blocks) // rows
-        if self.selected_segments is not None:
-            segment_mask = (
-                self.selected_segments
-                if segment_mask is None
-                else self.selected_segments & segment_mask
-            )
+        blocks_per_chunk = len(self.segment_bytes)
+        count = len(blocks) // blocks_per_chunk
         columns: slice | np.ndarray = (
             slice(None) if segment_mask is None else segment_mask
         )
@@ -114,37 +91,34 @@ class BlockAccess:
         # into this call's pointer buffer instead of tiling source offsets.
         byte_offsets = self.block_byte_offsets[:, columns]
         fixed_sizes = self.segment_bytes[:, columns]
-        dynamic_offsets = None
+        ptrs = (
+            self.layout.base_ptrs[None, columns]
+            + blocks.reshape(count, blocks_per_chunk, 1)
+            * self.layout.block_strides[None, columns]
+            + byte_offsets
+        )
         if token_offsets is not None:
-            starts = np.asarray(token_offsets, dtype=np.int64)
-            if starts.shape != blocks.shape:
-                raise ValueError("One dynamic token offset is required per block")
-            if ((starts < 0) | (starts >= self.layout.token_block_size)).any():
+            starts = np.asarray(token_offsets, dtype=np.uint64)
+            if (starts >= self.layout.token_block_size).any():
                 raise ValueError("Dynamic token offset must lie inside a block")
             dynamic_offsets = self.layout.tokens_to_segment_bytes(
-                starts.astype(np.uint64), segment_mask
-            ).reshape(repeats, rows, fixed_sizes.shape[1])
+                starts, segment_mask
+            ).reshape(count, blocks_per_chunk, fixed_sizes.shape[1])
             ends = dynamic_offsets + byte_offsets + fixed_sizes
-        else:
-            ends = byte_offsets + fixed_sizes
-        if (ends > self.layout.payload_bytes[columns]).any():
-            raise ValueError("Access range extends beyond a physical block")
-        ptrs = np.empty((len(blocks), fixed_sizes.shape[1]), dtype=np.uint64)
-        np.multiply(blocks[:, None], self.layout.block_strides[None, columns], out=ptrs)
-        ptrs += self.layout.base_ptrs[None, columns]
-        windows = ptrs.reshape(repeats, rows, fixed_sizes.shape[1])
-        windows += byte_offsets
-        if dynamic_offsets is not None:
-            windows += dynamic_offsets
-        return ptrs, fixed_sizes
+            # Static ranges were checked by compile_access. Only the
+            # per-call displacement needs a fresh source-bounds check.
+            if (ends > self.layout.payload_bytes[columns]).any():
+                raise ValueError("Access range extends beyond a physical block")
+            ptrs += dynamic_offsets
+        return ptrs.reshape(len(blocks), fixed_sizes.shape[1])
 
 
 class KVCacheGroupLayout:
     """One KV group's addressing facts, distilled once into columns.
 
-    ``extract_segments`` answers (ptr, size) grids for per-block token
-    windows; ``block_first_segments`` the group-span special case;
-    Storage offsets and record packing are owned by GroupRecordLayout.
+    ``compile_access`` builds per-block token-range templates;
+    ``block_first_segments`` handles the group-span special case.
+    Storage offsets and record packing are owned by GroupStoreLayout.
     """
 
     def __init__(
@@ -152,14 +126,17 @@ class KVCacheGroupLayout:
         group: "UCMKVCacheGroupInfo",
         kv_caches: "Mapping[str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]]",
         *,
+        layers: "Sequence[UCMLayerSpec]",
+        block_first_layout: bool,
         device_type: str = "npu",
     ) -> None:
         self.group_id = group.group_id
         self.token_block_size = group.token_block_size
         self.is_state_snapshot = group.is_state_snapshot
-        self.num_blocks = group.layers[0].num_blocks
-        if self.num_blocks <= 0:
-            raise ValueError("num_blocks must be positive")
+        self.layers = tuple(
+            sorted(layers, key=lambda item: (item.layer_index, item.layer_name))
+        )
+        self.num_blocks = self.layers[0].num_blocks
 
         # Walk the group's layers once, in layer order.  One model layer
         # contributes several layer names (attn, indexer.k_cache, swa_cache,
@@ -167,9 +144,7 @@ class KVCacheGroupLayout:
         # order key and the name is only a stable tiebreak within the same
         # layer -- the record layout must not depend on the config's
         # enumeration order.
-        ordered_layers = sorted(
-            group.layers, key=lambda item: (item.layer_index, item.layer_name)
-        )
+        ordered_layers = self.layers
         layer_names: list[str] = []
         layer_ids: list[int] = []
         base_ptrs: list[int] = []
@@ -177,7 +152,6 @@ class KVCacheGroupLayout:
         state_strides: list[int] = []
         states_per_block: list[int] = []
         payload_bytes: list[int] = []
-        segments_by_name: dict[str, tuple[MemorySegment, ...]] = {}
         self.layer_views: dict[str, LayerView] = {}
         for layer in ordered_layers:
             layer_view = view.build_layer_view(
@@ -200,7 +174,6 @@ class KVCacheGroupLayout:
                             f"{segment.block_stride_bytes} disagrees with the "
                             f"declared {layer.descriptor.block_stride}"
                         )
-            segments_by_name[layer.layer_name] = segments
             for segment in segments:
                 layer_names.append(layer.layer_name)
                 layer_ids.append(layer.layer_index)
@@ -210,8 +183,7 @@ class KVCacheGroupLayout:
                 states_per_block.append(segment.states_per_block)
                 payload_bytes.append(segment.payload_bytes)
 
-        # Flat columns carry the arithmetic; per-layer slices answer
-        # "which columns belong to model layer N" without a ragged array.
+        # Flat columns carry the arithmetic; layer IDs/names select columns.
         self.layer_names: tuple[str, ...] = tuple(layer_names)
         self.layer_ids = np.asarray(layer_ids, dtype=np.uint64)
         self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
@@ -219,82 +191,42 @@ class KVCacheGroupLayout:
         self.state_strides = np.asarray(state_strides, dtype=np.uint64)
         self.states_per_block = np.asarray(states_per_block, dtype=np.uint64)
         self.payload_bytes = np.asarray(payload_bytes, dtype=np.uint64)
-        layer_slices: dict[int, slice] = {}
-        for row, layer_id in enumerate(layer_ids):
-            first = layer_slices.setdefault(layer_id, slice(row, row + 1))
-            layer_slices[layer_id] = slice(first.start, row + 1)
-        self.layer_slices = layer_slices
-
-        self.block_first = self._block_first_span(ordered_layers, segments_by_name)
-
-    def _block_first_span(
-        self,
-        ordered_layers: "Sequence[UCMLayerSpec]",
-        segments_by_name: Mapping[str, tuple[MemorySegment, ...]],
-    ) -> BlockFirstView | None:
-        """The group's Block First span, or ``None`` for fragmented source memory.
-
-        The group's descriptors tile its block slot back to back (one
-        block is owned by one group, and vLLM places the group's
-        descriptors at consecutive offsets), so the whole group is one
-        IO span per block.  Requires: every declared layer has a single
-        tensor view, every descriptor is interleaved
-        (``0 < layer_stride < block_stride``) with its pages fitting the
-        stride, and the descriptors' offset chain is gapless.
-        """
-
-        descriptors = []
-        seen = set()
-        for layer in ordered_layers:
-            if layer.descriptor is None:
-                return None  # mixed groups keep the per-view record
-            if id(layer.descriptor) in seen:
-                continue
-            seen.add(id(layer.descriptor))
-            descriptors.append(layer.descriptor)
-        tiles = []
-        for descriptor in descriptors:
-            segments = segments_by_name[descriptor.layers[0]]
-            # The fast path is valid only if every layer's segments form a
-            # contiguous page at its declared address, including split HNC.
-            first_base = segments[0].base_ptr
-            for position, name in enumerate(descriptor.layers):
-                if len(self.layer_views[name].components) != 1:
-                    return None
-                cursor = first_base + position * descriptor.layer_stride
-                total_payload = 0
-                for segment in segments_by_name[name]:
-                    if segment.base_ptr != cursor:
-                        return None
-                    cursor += segment.payload_bytes
-                    total_payload += segment.payload_bytes
-                if total_payload > descriptor.layer_stride:
-                    return None
-            if not 0 < descriptor.layer_stride < descriptor.block_stride:
-                return None  # layer-contiguous placements do not tile
-            tiles.append((descriptor, len(descriptor.layers) * descriptor.layer_stride))
-        tiles.sort(key=lambda item: item[0].offset)
-        block_offset = 0
-        first_descriptor = tiles[0][0]
-        first_base = segments_by_name[first_descriptor.layers[0]][0].base_ptr
-        for descriptor, tile_bytes in tiles:
-            # Declarations alone cannot prove that separate views share the
-            # same backing or that their slots advance together across blocks.
-            if (
-                descriptor.block_stride != first_descriptor.block_stride
-                or segments_by_name[descriptor.layers[0]][0].base_ptr
-                != first_base + descriptor.offset
-            ):
-                return None
-            if descriptor.offset != block_offset:
-                return None  # offset chain must be gapless
-            block_offset += tile_bytes
-        span = BlockFirstView(
-            base_ptr=segments_by_name[first_descriptor.layers[0]][0].base_ptr,
-            block_stride=first_descriptor.block_stride,
-            block_size_bytes=block_offset,
+        self.supports_partial_tokens = all(
+            component.supports_partial_tokens
+            for layer_view in self.layer_views.values()
+            for component in layer_view.components
         )
-        return span
+        self.block_first = self._block_first_span() if block_first_layout else None
+
+    def _block_first_span(self) -> BlockFirstView | None:
+        """Use CUDA/CPU BLHNC/BLNHC placement declarations directly.
+
+        The native allocator places a group's descriptors consecutively
+        from offset zero in one backing. GLM's special slot descriptors
+        have layer-outer strides and do not qualify. Ascend never enters
+        this path; its registered components use per-layer segments.
+        """
+        descriptors: dict[int, TensorDescriptor] = {}
+        for layer in self.layers:
+            descriptor = layer.descriptor
+            if descriptor is None:
+                return None
+            descriptors[id(descriptor)] = descriptor
+        first = min(descriptors.values(), key=lambda item: item.offset)
+        if any(
+            not 0 < descriptor.layer_stride < descriptor.block_stride
+            or descriptor.block_stride != first.block_stride
+            for descriptor in descriptors.values()
+        ):
+            return None
+        return BlockFirstView(
+            base_ptr=self.layer_views[first.layers[0]].segments[0].base_ptr,
+            block_stride=first.block_stride,
+            block_size_bytes=sum(
+                len(descriptor.layers) * descriptor.layer_stride
+                for descriptor in descriptors.values()
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Queries
@@ -305,34 +237,28 @@ class KVCacheGroupLayout:
     ) -> np.ndarray:
         """Per-segment bytes whole tokens occupy -- one conversion, two roles.
 
-        States are evenly spaced inside a block (states_per_block states
-        per token_block tokens), so "the bytes t tokens occupy" and "the
-        bytes the first t tokens of a block span" are the same number: a
-        partial block's live size (template row 0) and a window head's
-        pointer skip (a mid-block start) both read here.  FA sub-span
-        heads pass a per-key array and get a (key, segment) grid back.
-        Windows that are not a whole number of states raise.
+        Partial access requires every view in the group to be token-contiguous.
+        Multi-head HNC accepts only zero or the whole block span; its head-major bytes
+        cannot be sliced using a per-token byte ratio. FA sub-block starts
+        may be supplied as arrays. Layer selection does not relax this policy.
+        Windows must contain whole stored states.
         """
 
         # outer product == the (K, 1) x (1, V) broadcast: one scalar (or
         # one row) of token counts against every segment's state column.
         columns: slice | np.ndarray = slice(None) if mask is None else mask
+        token_counts = np.asarray(tokens)
+        if not self.supports_partial_tokens and (
+            (token_counts != 0) & (token_counts != self.token_block_size)
+        ).any():
+            raise ValueError(f"KV cache group {self.group_id} requires whole-block access")
         states = np.multiply.outer(tokens, self.states_per_block[columns])
         leftover = states % self.token_block_size
         if leftover.any():
-            bad = np.nonzero(leftover.reshape(-1, leftover.shape[-1]).any(axis=0))[0][
-                :4
-            ]
-            selected_names = np.asarray(self.layer_names)[columns]
-            names = ", ".join(selected_names[index] for index in bad)
             raise ValueError(
-                "Token windows are not representable exactly by tensor "
-                f"layout (views starting at {names})"
+                f"Token ranges must align with stored states in group {self.group_id}"
             )
         return (states // self.token_block_size) * self.state_strides[columns]
-
-    def segment_count(self, mask: "np.ndarray | None") -> int:
-        return len(self.layer_names) if mask is None else int(mask.sum())
 
     def segment_mask(
         self,
@@ -359,13 +285,13 @@ class KVCacheGroupLayout:
         *,
         token_offsets: int | Sequence[int] | np.ndarray = 0,
         token_counts: int | Sequence[int] | np.ndarray | None = None,
-        layer_ids: Sequence[int] | None = None,
     ) -> BlockAccess:
-        """Compile local token ranges into physical byte offsets and sizes.
+        """Compile local token ranges for every segment in this group.
 
         Scalars apply to every row; arrays describe a repeating block window.
         Omitted counts extend to the block end. State pages are indivisible.
-        Head-separated components have one column per head segment.
+        Physically separated heads have one column each. Multi-head HNC
+        requires whole blocks even when its heads form one compact segment.
         """
         starts = np.atleast_1d(np.asarray(token_offsets, dtype=np.int64))
         counts = (
@@ -374,51 +300,13 @@ class KVCacheGroupLayout:
             else np.atleast_1d(np.asarray(token_counts, dtype=np.int64))
         )
         starts, counts = np.broadcast_arrays(starts, counts)
-        if starts.ndim != 1 or not len(starts):
-            raise ValueError("Token ranges must be non-empty one-dimensional arrays")
         if (
             (starts < 0) | (counts <= 0) | (starts + counts > self.token_block_size)
         ).any():
             raise ValueError("Token range must lie inside one physical block")
-        if self.is_state_snapshot and (
-            (starts != 0).any() or (counts != self.token_block_size).any()
-        ):
-            raise ValueError("State snapshots require whole-block access")
-        return BlockAccess(
-            self,
-            self.tokens_to_segment_bytes(starts.astype(np.uint64)),
-            self.tokens_to_segment_bytes(counts.astype(np.uint64)),
-            self.segment_mask(layer_ids=layer_ids),
-        )
-
-    def extract_segments(
-        self,
-        block_ids: Sequence[int],
-        local_starts: Sequence[int],
-        local_ends: Sequence[int],
-        layer_ids: Sequence[int] | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Compatibility query using the same addressing path as dispatch.
-
-        State queries retain their existing whole-page semantics.
-        """
-        if not len(block_ids):
-            empty = np.empty(
-                (0, self.segment_count(self.segment_mask(layer_ids=layer_ids))),
-                dtype=np.uint64,
-            )
-            return empty, empty.copy()
-        if self.is_state_snapshot:
-            access = self.compile_access()
-        else:
-            starts = np.asarray(local_starts, dtype=np.int64)
-            ends = np.asarray(local_ends, dtype=np.int64)
-            access = self.compile_access(
-                token_offsets=starts, token_counts=ends - starts
-            )
-        return access.resolve(
-            block_ids, segment_mask=self.segment_mask(layer_ids=layer_ids)
-        )
+        byte_offsets = self.tokens_to_segment_bytes(starts.astype(np.uint64))
+        segment_bytes = self.tokens_to_segment_bytes(counts.astype(np.uint64))
+        return BlockAccess(self, byte_offsets, segment_bytes)
 
     def block_first_segments(
         self, block_ids: Sequence[int] | np.ndarray
@@ -439,7 +327,7 @@ class KVCacheGroupLayout:
         return ptrs, sizes
 
     def _checked_blocks(self, blocks: np.ndarray) -> None:
-        if len(blocks) and (blocks >= self.num_blocks).any():
+        if (blocks >= self.num_blocks).any():
             bad = blocks[blocks >= self.num_blocks][0]
             raise ValueError(
                 f"vLLM block ID {int(bad)} is outside [0, {self.num_blocks})"

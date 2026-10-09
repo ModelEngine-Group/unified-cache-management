@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import pickle
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -25,13 +25,13 @@ class RequestHasher:
     """MD5 hasher compatible with the existing connector namespace format."""
 
     def __init__(self, vllm_config: "VllmConfig", rank_id: int | None) -> None:
-        speculative = getattr(vllm_config, "speculative_config", None)
+        speculative = vllm_config.speculative_config
         spec_info = ""
         if speculative is not None:
-            method = getattr(speculative, "method", "") or ""
-            tokens = getattr(speculative, "num_speculative_tokens", 0)
+            method = speculative.method or ""
+            tokens = speculative.num_speculative_tokens
             spec_info = f":{method}:{tokens}"
-        additional = getattr(vllm_config, "additional_config", None) or {}
+        additional = vllm_config.additional_config
         sparse = (
             f":sfa_c8={int(bool(additional.get('enable_sparse_sfa_c8', False)))}"
             f":li_c8={int(bool(additional.get('enable_sparse_li_c8', False)))}"
@@ -79,11 +79,11 @@ class UCMGroupDispatchPlan:
     keys: tuple[bytes, ...]
     token_start: int
     token_end: int
-    # Window block ids per participating group, in dispatch_routes()
+    # Physical block IDs per participating group, in dispatch_routes()
     # order, block-major (tail_blocks blocks per key) -- the static
     # window shape lives on the spec's groups (``tail_blocks``), so
     # only the ids travel.
-    windows: tuple[np.ndarray, ...]
+    group_block_ids: tuple[np.ndarray, ...]
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,7 @@ class UCMConnectorMetadata(KVConnectorMetadata):
     requests: dict[str, RequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
     finished_req_ids: set[str] = field(default_factory=set)
+    no_forward: bool = False
 
 
 def _token_ids(request: "Request") -> tuple[int, ...]:
@@ -217,9 +218,7 @@ class UCMDispatcher:
         requirement; the WA (window tail) and State (mamba snapshot)
         chains are boundary records -- restoring requires a complete FA
         prefix up to some boundary and that boundary's tail or snapshot.
-        Each boundary chain is reverse-scanned to its latest hit; the
-        restore boundary is the earliest of those (the latest boundary
-        where every chain hits), never past the FA prefix.
+        Boundary chains must all exist at the same restore boundary.
         """
 
         ucm_block_size = self.spec.ucm_cache_block_size
@@ -236,15 +235,25 @@ class UCMDispatcher:
                 if hits >= 0:
                     fa_end = max((first + hits + 1) * ucm_block_size, hbm)
                 break
+        boundary_keys = [
+            keys
+            for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids)
+            if label != "FA"
+        ]
         restore_end = fa_end
-        for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids):
-            if label == "FA":
-                continue
-            hits = self.proxy.lookup_on_reverse(keys[first : fa_end // ucm_block_size])
-            if hits < 0:
-                restore_end = hbm  # no boundary record: nothing may restore
+        while boundary_keys and restore_end > hbm:
+            end = restore_end // ucm_block_size
+            hits = [
+                self.proxy.lookup_on_reverse(keys[first:end])
+                for keys in boundary_keys
+            ]
+            if min(hits) < 0:
+                restore_end = hbm
                 break
-            restore_end = min(restore_end, (first + hits + 1) * ucm_block_size)
+            candidate = (first + min(hits) + 1) * ucm_block_size
+            if candidate == restore_end:
+                break
+            restore_end = candidate
         return UCMLookupResult(max(restore_end - hbm, 0), group_ucm_block_ids)
 
 
@@ -256,8 +265,6 @@ class UCMDispatcher:
         append: bool,
     ) -> None:
         state = self.requests[request_id]
-        if len(group_block_ids) != len(self.spec.groups):
-            raise ValueError("group block table count does not match KV cache groups")
         if append:
             for destination, source in zip(state.group_vllm_block_ids, group_block_ids):
                 destination.extend(int(value) for value in source)
@@ -266,61 +273,76 @@ class UCMDispatcher:
                 [int(value) for value in source] for source in group_block_ids
             )
 
-    def build_metadata(
-        self,
-        scheduled_tokens: Mapping[str, int],
-        *,
-        preempted_req_ids: Sequence[str] = (),
-        finished_req_ids: Sequence[str] = (),
-    ) -> UCMConnectorMetadata:
-        metadata = UCMConnectorMetadata(
-            preempted_req_ids=set(preempted_req_ids),
-            finished_req_ids=set(finished_req_ids),
-        )
-        for request_id, num_scheduled in scheduled_tokens.items():
-            state = self.requests.get(str(request_id))
-            if state is None:
-                continue
-            metadata.requests[str(request_id)] = self._request_meta(
-                str(request_id), state, int(num_scheduled)
-            )
-        for request_id in (*preempted_req_ids, *finished_req_ids):
-            self.requests.pop(str(request_id), None)
-        return metadata
-
     def build_from_scheduler_output(
         self, scheduler_output: "SchedulerOutput"
     ) -> UCMConnectorMetadata:
-        """Consume the vLLM 0.26 SchedulerOutput shape.
-
-        New and resumed block tables replace the snapshot; ordinary cached
-        allocations append only their newly allocated blocks.
-        """
-
-        for request in scheduler_output.scheduled_new_reqs:
-            request_id = str(request.req_id)
-            if request_id in self.requests:
-                self.update_blocks(
-                    request_id,
-                    request.block_ids,
-                    append=False,
-                )
-
-        cached = scheduler_output.scheduled_cached_reqs
-        for index, request_id_value in enumerate(cached.req_ids):
-            request_id = str(request_id_value)
-            if request_id not in self.requests:
-                continue
-            incoming = cached.new_block_ids[index]
-            resumed = request_id in cached.resumed_req_ids
-            if incoming is not None:
-                self.update_blocks(request_id, incoming, append=not resumed)
-
-        return self.build_metadata(
-            scheduler_output.num_scheduled_tokens,
-            preempted_req_ids=tuple(scheduler_output.preempted_req_ids or ()),
-            finished_req_ids=tuple(scheduler_output.finished_req_ids),
+        """Consume 0.30's scheduler-local tables and exact State hand-offs."""
+        block_state = scheduler_output.kv_connector_block_state
+        assert block_state is not None
+        metadata = UCMConnectorMetadata(
+            preempted_req_ids=set(scheduler_output.preempted_req_ids or ()),
+            finished_req_ids=set(scheduler_output.finished_req_ids),
+            no_forward=scheduler_output.total_num_scheduled_tokens == 0,
         )
+        for request_id in block_state.req_ids:
+            state = self.requests.get(request_id)
+            if state is None:
+                continue
+            blocks = block_state.get_block_ids(request_id)
+            self.update_blocks(request_id, blocks, append=False)
+            scheduled = scheduler_output.num_scheduled_tokens.get(request_id, 0)
+            request_meta = self._request_meta(request_id, state, scheduled)
+            snapshots = self._state_dump_plans(
+                state, block_state.boundary_state_offloads.get(request_id, ())
+            )
+            metadata.requests[request_id] = RequestDispatchMeta(
+                request_id, request_meta.load_plans, request_meta.dump_plans + snapshots
+            )
+        for request_id in metadata.preempted_req_ids | metadata.finished_req_ids:
+            self.requests.pop(request_id, None)
+        return metadata
+
+    def _state_dump_plans(
+        self, state: RequestState, offloads: Sequence[tuple[int, int, int]]
+    ) -> tuple[UCMGroupDispatchPlan, ...]:
+        """Publish complete checkpoints beyond the initially matched prefix."""
+        if not self.spec.state_groups:
+            return ()
+        route_index = next(
+            i for i, (kind, _) in enumerate(self._routes) if kind == "State"
+        )
+        groups = self._routes[route_index][1]
+        ucm_block_size = self.spec.ucm_cache_block_size
+        matched_prefix = state.hbm_hit_tokens + state.external_hit_tokens
+        boundaries: dict[int, dict[int, int]] = {}
+        for group_id, block_id, boundary in offloads:
+            # Engine offers include newly hashed imported State blocks. Their
+            # prefix is already cached; do not dump it back to the store.
+            # Use the initial hit boundary, not token_processed: a checkpoint
+            # computed after that hit can be offered on a later step.
+            if (
+                matched_prefix < boundary <= state.num_token_ids
+                and boundary % ucm_block_size == 0
+            ):
+                boundaries.setdefault(boundary, {})[group_id] = block_id
+        plans = []
+        for boundary, blocks in sorted(boundaries.items()):
+            if not all(group.group_id in blocks for group in groups):
+                continue
+            key = state.group_ucm_block_ids[route_index][boundary // ucm_block_size - 1]
+            plans.append(
+                UCMGroupDispatchPlan(
+                    "State",
+                    (key,),
+                    boundary - ucm_block_size,
+                    boundary,
+                    tuple(
+                        np.asarray([blocks[group.group_id]], dtype=np.uint64)
+                        for group in groups
+                    ),
+                )
+            )
+        return tuple(plans)
 
     def _request_meta(
         self, request_id: str, state: RequestState, scheduled_tokens: int
@@ -331,7 +353,22 @@ class UCMDispatcher:
         load_start = state.hbm_hit_tokens if should_load else load_end
         dump_start = state.token_processed
         dump_end = step_end
-        load = self._plans(state, load_start, load_end)
+        # CUDA precopy runs before connector load. Ascend MRV1 stages it
+        # before load and executes it afterwards, reading the boundary slot.
+        # CUDA additionally restores the imported boundary block below: the
+        # engine registers that block as a reusable local checkpoint. Imported
+        # boundaries are excluded from State dump plans.
+        state_target_tokens = (
+            load_end
+            if self.spec.device_type == "npu"
+            else load_end + scheduled_tokens
+        )
+        load = self._plans(
+            state,
+            load_start,
+            load_end,
+            state_target_tokens=state_target_tokens,
+        )
         if should_load:
             state.load_pending = False
         dump = self._plans(state, dump_start, dump_end)
@@ -339,14 +376,21 @@ class UCMDispatcher:
         return RequestDispatchMeta(request_id, load, dump)
 
     def _plans(
-        self, state: RequestState, token_start: int, token_end: int
+        self,
+        state: RequestState,
+        token_start: int,
+        token_end: int,
+        *,
+        state_target_tokens: int | None = None,
     ) -> tuple[UCMGroupDispatchPlan, ...]:
-        """Plans over [token_start, token_end); dump and load share one rule.
+        """FA/WA plans and platform-specific State load destinations.
 
-        FA gets every complete key the range touches; WA/State get the
-        newest boundary it ends on.  A pending load always ends on a
-        whole key (_lookup restores only key-aligned boundaries), so its
-        newest boundary is exactly the restore boundary.
+        FA gets every complete key the range touches; WA gets the newest
+        complete boundary. State loads use that restore boundary's key
+        and its load destinations. CUDA restores both the imported checkpoint
+        and the running block; Ascend copies from the restored checkpoint.
+        State dumps are built separately
+        from the engine's exact boundary_state_offloads.
         """
         plans: list[UCMGroupDispatchPlan] = []
         if token_end <= token_start:
@@ -360,15 +404,13 @@ class UCMDispatcher:
         last_key = token_end // ucm_block_size
         if last_key <= first_key:
             return ()
-        for route_index, (hash_group, physical_groups) in enumerate(self._routes):
+        for route_index, (hash_group, groups) in enumerate(self._routes):
+            if hash_group == "State" and state_target_tokens is None:
+                continue
             keys_available = state.group_ucm_block_ids[route_index]
             if hash_group in ("WA", "State"):
-                # One boundary record per plan.  A dump keeps the newest
-                # boundary the step completed -- a step may straddle
-                # boundaries without ending on one, so the anchor is the
-                # boundary token_end passed (the step range, which starts
-                # where the previous step ended, keeps each boundary from
-                # being recorded twice).
+                # WA keeps the newest completed boundary; a State load
+                # ends exactly at the selected restore boundary.
                 start = last_key - 1
                 end = last_key
             else:
@@ -386,21 +428,45 @@ class UCMDispatcher:
                 # complete, so reverse lookup never selects a partial
                 # one (the load branch above cannot select one either).
                 if end * ucm_block_size < max(
-                    group.tail_tokens or 0 for group in physical_groups
+                    group.tail_tokens or 0 for group in groups
                 ):
                     continue
-            plans.append(
-                UCMGroupDispatchPlan(
-                    hash_group,
-                    tuple(keys_available[start:end]),
-                    start * ucm_block_size,
-                    end * ucm_block_size,
-                    tuple(
-                        self._group_blocks(hash_group, group, state, start, end)
-                        for group in physical_groups
-                    ),
-                )
+            plan = UCMGroupDispatchPlan(
+                hash_group,
+                tuple(keys_available[start:end]),
+                start * ucm_block_size,
+                end * ucm_block_size,
+                tuple(
+                    self._group_blocks(
+                        hash_group,
+                        group,
+                        state,
+                        start,
+                        end,
+                        state_target_tokens=state_target_tokens,
+                    )
+                    for group in groups
+                ),
             )
+            plans.append(plan)
+            if hash_group == "State" and self.spec.device_type != "npu":
+                # Precopy has already run, so restoring only the imported
+                # boundary cannot initialize CUDA's running state. Restoring
+                # only the running block leaves a local cached boundary unfilled.
+                # Complete restore boundaries and a positive scheduled span
+                # place these in distinct slots for every State group.
+                plans.append(
+                    replace(
+                        plan,
+                        group_block_ids=tuple(
+                            self._group_blocks(
+                                hash_group, group, state, start, end,
+                                state_target_tokens=token_end,
+                            )
+                            for group in groups
+                        ),
+                    )
+                )
         return tuple(plans)
 
     def _group_blocks(
@@ -410,13 +476,15 @@ class UCMDispatcher:
         state: RequestState,
         start: int,
         end: int,
+        *,
+        state_target_tokens: int | None = None,
     ) -> np.ndarray:
         """One group's window block ids for the plan's keys, vectorized.
 
         Every window is ``tail_blocks`` vllm blocks ending at the block
         containing the window's last token -- HMA's boundary indices: a
-        FA key's last token is (k + 1) * unit - 1, a WA/State plan's
-        single boundary key anchors at the boundary the plan completed.
+        FA key's last token is (k + 1) * ucm_block_size - 1; a WA key anchors its
+        window at the restore boundary. State uses a platform load slot.
         The _plans clamp gate keeps the WA gather non-negative and the
         parse-time divisibility checks keep an FA key inside one shared
         block.  Block-major per key.
@@ -425,6 +493,13 @@ class UCMDispatcher:
         ucm_block_size = self.spec.ucm_cache_block_size
         table = state.group_vllm_block_ids[group.group_id]
         tail_blocks = group.tail_blocks
+        if hash_group == "State":
+            # The caller resolves CUDA's current running slot versus
+            # Ascend's precopy source slot from the load/copy ordering.
+            index = (state_target_tokens - 1) // group.token_block_size
+            block_id = table[index]
+            assert block_id != 0
+            return np.asarray([block_id], dtype=np.uint64)
         if hash_group == "FA":
             boundary_tokens = (
                 np.arange(start + 1, end + 1, dtype=np.uint64)
@@ -432,7 +507,7 @@ class UCMDispatcher:
                 - 1
             )
         else:
-            # WA / State: one boundary key at the plan's newest boundary.
+            # WA: one boundary key at the plan's newest boundary.
             boundary_tokens = np.asarray(
                 [end * ucm_block_size - 1], dtype=np.uint64
             )
