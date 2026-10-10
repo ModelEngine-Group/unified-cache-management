@@ -93,6 +93,7 @@ public:
         }
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return hostAccessible_; }
+        size_t Segment() const { return buf_->SegmentOf(slotIdx_); }
         void* Data() { return gSlotBase + slotIdx_ * kShardSize; }
         void* DeviceData() { return gDeviceSlotBase + slotIdx_ * kShardSize; }
         // Only the SDMA path asks for this; the mock has no separate device
@@ -122,22 +123,26 @@ public:
         UC::Detail::BlockId block;
         size_t offset;
         bool allowReserved;
+        size_t preferredRank;
     };
     struct PreallocCall {
         UC::Detail::BlockId block;
         size_t offset;
         bool allowReserved;
+        size_t preferredRank;
     };
 
     FakeBuffer()
     {
-        for (auto& state : slotStates_) {
-            state.store(SlotState::Loading, std::memory_order_relaxed);
+        for (size_t i = 0; i < slotStates_.size(); ++i) {
+            slotStates_[i].store(SlotState::Loading, std::memory_order_relaxed);
+            slotSegments_[i] = 0;
         }
     }
-    Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+               size_t preferredRank = UC::Cache2::kInvalid)
     {
-        getCalls_.push_back(GetCall{blockId, offset, allowReserved});
+        getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank});
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) { return Handle{this, it->second, false, HostAccessibleOf(key)}; }
@@ -145,9 +150,10 @@ public:
         slots_.emplace(key, slotIdx);
         return Handle{this, slotIdx, true, HostAccessibleOf(key)};
     }
-    void Prealloc(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    void Prealloc(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+                  size_t preferredRank = UC::Cache2::kInvalid)
     {
-        preallocCalls_.push_back(PreallocCall{blockId, offset, allowReserved});
+        preallocCalls_.push_back(PreallocCall{blockId, offset, allowReserved, preferredRank});
     }
     void SetHostAccessible(bool accessible) { defaultHostAccessible_ = accessible; }
     void SetHostAccessible(const UC::Detail::BlockId& block, bool accessible, size_t offset = 0)
@@ -155,11 +161,12 @@ public:
         hostAccessibleOverrides_[std::make_pair(block, offset)] = accessible;
     }
     size_t SetExisting(const UC::Detail::BlockId& block, SlotState state = SlotState::Ready,
-                       size_t offset = 0)
+                       size_t offset = 0, size_t segment = 0)
     {
         const auto slotIdx = nextSlotIdx_++;
         slots_.emplace(std::make_pair(block, offset), slotIdx);
         slotStates_[slotIdx].store(state, std::memory_order_relaxed);
+        slotSegments_[slotIdx] = segment;
         return slotIdx;
     }
     void SetSlotStateByIdx(size_t slotIdx, SlotState state)
@@ -169,6 +176,7 @@ public:
     size_t LiveHandles() const { return liveHandles_.load(std::memory_order_relaxed); }
     size_t MarkedReady() const { return markedReady_.load(std::memory_order_relaxed); }
     size_t MarkedFailed() const { return markedFailed_.load(std::memory_order_relaxed); }
+    size_t SegmentOf(size_t slotIdx) const { return slotSegments_[slotIdx]; }
     const std::vector<GetCall>& GetCalls() const { return getCalls_; }
     const std::vector<PreallocCall>& PreallocCalls() const { return preallocCalls_; }
     std::function<void(size_t)> onGetState;
@@ -188,6 +196,7 @@ private:
     std::map<std::pair<UC::Detail::BlockId, size_t>, bool> hostAccessibleOverrides_{};
     bool defaultHostAccessible_{true};
     std::array<std::atomic<SlotState>, 64> slotStates_{};
+    std::array<size_t, 64> slotSegments_{};
     size_t nextSlotIdx_{0};
     std::atomic<size_t> liveHandles_{0};
     std::atomic<size_t> markedReady_{0};
@@ -281,6 +290,14 @@ std::uint64_t HistogramCount(const UC::Metrics::HistogramStat& histogram)
 {
     return std::accumulate(histogram.bucketCounts.begin(), histogram.bucketCounts.end(),
                            std::uint64_t{0});
+}
+
+TEST(UCCache2ConfigTest, ReadsSharedBufferMode)
+{
+    UC::Detail::Dictionary dict;
+    EXPECT_FALSE(UC::Cache2::Config::From(dict).shareBufferEnable);
+    dict.Set("share_buffer_enable", true);
+    EXPECT_TRUE(UC::Cache2::Config::From(dict).shareBufferEnable);
 }
 
 class UCCache2LoadQueueTest : public testing::Test {
@@ -395,6 +412,7 @@ TEST_F(UCCache2LoadQueueTest, LoadMissSubmitsBackendAndH2d)
     EXPECT_FALSE(failureSet_.Contains(task->id));
     ASSERT_EQ(buffer_.GetCalls().size(), 1);
     EXPECT_TRUE(buffer_.GetCalls()[0].allowReserved);
+    EXPECT_EQ(buffer_.GetCalls()[0].preferredRank, UC::Cache2::kInvalid);
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.brief, "Backend2Cache");
     EXPECT_EQ(loaded[0].owner, block);
@@ -608,6 +626,7 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
     auto config = config_;
     config.localRankSize = 4;
     config.deviceId = 2;
+    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
@@ -630,6 +649,8 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
     for (size_t i = 0; i < expectedOrder.size(); ++i) {
         EXPECT_EQ(FakeStream::scatters[i].dsts, std::vector<void*>{addrs[expectedOrder[i]]})
             << "scatter " << i;
+        EXPECT_EQ(buffer_.GetCalls()[i].preferredRank, expectedOrder[i] % config.localRankSize)
+            << "get " << i;
     }
     EXPECT_EQ(FakeStream::syncs.load(), 1);
 }
@@ -659,12 +680,48 @@ TEST_F(UCCache2LoadQueueTest, PreallocNextShardSlots)
     EXPECT_EQ(preallocs[0].block, block);
     EXPECT_EQ(preallocs[0].offset, 1);
     EXPECT_TRUE(preallocs[0].allowReserved);
+    EXPECT_EQ(preallocs[0].preferredRank, UC::Cache2::kInvalid);
     EXPECT_EQ(preallocs[1].block, block);
     EXPECT_EQ(preallocs[1].offset, 2);
     EXPECT_TRUE(preallocs[1].allowReserved);
+    EXPECT_EQ(preallocs[1].preferredRank, UC::Cache2::kInvalid);
     EXPECT_EQ(preallocs[2].block, block);
     EXPECT_EQ(preallocs[2].offset, 3);
     EXPECT_TRUE(preallocs[2].allowReserved);
+    EXPECT_EQ(preallocs[2].preferredRank, UC::Cache2::kInvalid);
+}
+
+TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
+{
+    TestedQueue loadQ;
+    auto config = config_;
+    config.blockSize = 2 * kShardSize;
+    config.localRankSize = 4;
+    config.shareBufferEnable = true;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    UC::Detail::TaskDesc desc;
+    for (size_t i = 0; i < config.localRankSize; ++i) {
+        const auto block = TypesHelper::MakeBlockIdRandomly();
+        buffer_.SetExisting(block, SlotState::Ready, 0, (i + 1) % config.localRankSize);
+        desc.push_back({block, 0, {reinterpret_cast<void*>(0x1000 * (i + 1))}});
+    }
+    EXPECT_CALL(backend_, Load).Times(0);
+    EXPECT_CALL(backend_, Wait).Times(0);
+    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ.Close();
+
+    const auto& preallocs = buffer_.PreallocCalls();
+    ASSERT_EQ(preallocs.size(), config.localRankSize);
+    for (size_t i = 0; i < preallocs.size(); ++i) {
+        EXPECT_EQ(preallocs[i].block, task->desc[i].owner);
+        EXPECT_EQ(preallocs[i].offset, 1);
+        EXPECT_TRUE(preallocs[i].allowReserved);
+        EXPECT_EQ(preallocs[i].preferredRank, (i + 1) % config.localRankSize);
+    }
 }
 
 TEST_F(UCCache2LoadQueueTest, SubmitFailsWhenWaitingQueueFull)

@@ -96,6 +96,7 @@ public:
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
         size_t SlotIndex() const { return slotIdx_; }
+        size_t Segment() const { return slotIdx_ / buf_->slotsPerRank_; }
         void* Data() { return buf_->data_.DataAt(slotIdx_); }
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
         // The device-visible alias of this slot's host memory. Only transfer
@@ -173,9 +174,11 @@ public:
 
     // Requires successful worker-side Setup; observers must not call Get.
     // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
-    Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+               size_t preferredRank = kInvalid)
     {
         assert(myRank_ < rankCount_);
+        assert(preferredRank == kInvalid || preferredRank < rankCount_);
         assert(reservedSlots_ < slotsPerRank_);
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
@@ -183,15 +186,19 @@ public:
                             : 2 * usable;
         for (;;) {
             bool owner = false;
-            auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner);
+            auto slot =
+                TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
             if (slot != kInvalid) { return Handle{this, slot, owner}; }
             std::this_thread::yield();
         }
     }
 
-    void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+                  size_t preferredRank = kInvalid)
     {
         if (myRank_ == kInvalid) { return; }
+        assert(preferredRank == kInvalid || preferredRank < rankCount_);
+        if (preferredRank != kInvalid && myRank_ != preferredRank) { return; }
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
         if (usable == 0) { return; }
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
@@ -287,16 +294,21 @@ private:
     // On success, the caller owns one reference and must transfer it into a Handle.
     // kInvalid means retry; owner is only meaningful on success.
     size_t TryAcquireSlot(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
-                          size_t attempts, bool& owner)
+                          size_t attempts, bool& owner, size_t preferredRank = kInvalid)
     {
         auto iBucket = HashKey(blockId);
         auto& layout = ctrl_.Layout();
+        const bool mayOwn = preferredRank == kInvalid || myRank_ == preferredRank;
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner)) {
+            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, mayOwn)) {
                 return iNode;
             }
         }
+        /* All ranks may pin a ready or already-owned shared key. Only the
+         * selected rank may create or take ownership of a key that needs a
+         * host-backend fill, because HAL exposes only its local segment to host. */
+        if (!mayOwn) { return kInvalid; }
 
         auto* targetLock = layout.LockOf(iBucket);
         if (!targetLock->TryLock()) { return kInvalid; }
@@ -344,7 +356,10 @@ private:
             }
             if (reference == kSlotClaimed - 1) { return false; }
             auto state = meta->state.load(std::memory_order_acquire);
-            if (!takeOwnership && reference == 0 && state != State::Ready) { return false; }
+            /* A non-owner may observe Ready or Failed. Loading with no
+             * reference is a preallocated slot that still needs its selected
+             * rank to claim and fill it. */
+            if (!takeOwnership && reference == 0 && state == State::Loading) { return false; }
             if (!meta->reference.compare_exchange_weak(reference, reference + 1,
                                                        std::memory_order_acq_rel)) {
                 ++spin;
