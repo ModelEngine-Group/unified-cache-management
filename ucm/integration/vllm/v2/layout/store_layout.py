@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class GroupStoreLayout:
-    """One group's storage template, independent of request keys and plans.
+    """One group's storage template, independent of UCM block ids and plans.
 
     Offsets are relative to this group's start. The caller chooses participating
     groups and adds their storage bases to form the complete stored value.
@@ -24,7 +24,7 @@ class GroupStoreLayout:
     configured storage offsets; it does not repack the stored value.
     """
 
-    blocks_per_key: int
+    vllm_blocks_per_ucm_block: int
     access: BlockAccess
     ucm_block_offsets: np.ndarray
     store_bytes: int
@@ -64,9 +64,7 @@ class GroupStoreLayout:
 
         # Full Block First pages have one storage entry, including padding.
         merge_whole_blocks = (
-            not use_layerwise
-            and layout.block_first is not None
-            and partial_tokens == 0
+            not use_layerwise and layout.block_first is not None and partial_tokens == 0
         )
         if merge_whole_blocks:
             group_block_offsets = np.zeros(1, dtype=np.uint64)
@@ -95,7 +93,7 @@ class GroupStoreLayout:
                 f"store_bytes={cursor}"
             )
         return cls(
-            blocks_per_key=group.tail_blocks,
+            vllm_blocks_per_ucm_block=group.tail_blocks,
             access=access,
             ucm_block_offsets=ucm_block_offsets,
             store_bytes=cursor,
@@ -107,43 +105,43 @@ class GroupStoreLayout:
 
     def resolve_matrices(
         self,
-        blocks: np.ndarray,
-        key_count: int,
+        vllm_block_ids: np.ndarray,
+        num_ucm_blocks: int,
         *,
         token_offsets: np.ndarray | None = None,
         segment_mask: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return [key, segment] arrays; invariant sizes/offsets are broadcast.
+        """Return [UCM block, segment] arrays; invariant sizes/offsets are broadcast.
 
         Broadcast backing is copied once per call, so even mutation of an
         array's base cannot corrupt a compiled template or a retained batch.
         """
         layout = self.access.layout
         if self.merge_whole_blocks and segment_mask is None:
-            ptrs, _ = layout.block_first_segments(blocks)
+            ptrs, _ = layout.block_first_segments(vllm_block_ids)
             offsets = self.ucm_block_offsets.reshape(-1).copy()
             sizes = np.full(
-                self.blocks_per_key, self.whole_block_bytes, dtype=np.uint64
+                self.vllm_blocks_per_ucm_block, self.whole_block_bytes, dtype=np.uint64
             )
         else:
             ptrs = self.access.resolve_ptrs(
-                blocks, token_offsets=token_offsets, segment_mask=segment_mask
+                vllm_block_ids, token_offsets=token_offsets, segment_mask=segment_mask
             )
             columns: slice | np.ndarray = (
                 slice(None) if segment_mask is None else segment_mask
             )
             if self.merge_whole_blocks:
                 # Layerwise IO keeps each segment at its original page position.
-                segment_offsets = (
-                    layout.base_ptrs[columns] - np.uint64(layout.block_first.base_ptr)
+                segment_offsets = layout.base_ptrs[columns] - np.uint64(
+                    layout.block_first.base_ptr
                 )
-                offsets = (
-                    self.ucm_block_offsets + segment_offsets[None, :]
-                ).reshape(-1)
+                offsets = (self.ucm_block_offsets + segment_offsets[None, :]).reshape(
+                    -1
+                )
             else:
                 offsets = self.ucm_block_offsets[:, columns].reshape(-1).copy()
             sizes = self.access.segment_bytes[:, columns].reshape(-1).copy()
-        shape = (key_count, len(sizes))
+        shape = (num_ucm_blocks, len(sizes))
         return (
             np.broadcast_to(offsets, shape),
             ptrs.reshape(shape),

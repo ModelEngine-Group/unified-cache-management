@@ -2,20 +2,20 @@
 
 更新时间：2026-09-20。源码基准：`dev_connector`，HEAD `49ff4b75`，目录 `ucm/integration/vllm/v2/`。
 
-本文描述当前实现。2026-09-26 增加 layerwise 回调和显式 commit；异步任务边界已接入，当前文件 Proxy 仍同步执行。文中的 UCM block 是一个 key 对应的存储记录，vLLM block 是 KV 池中的物理块，两者不是同一个概念。本文不描述旧版 `ucm/integration/vllm/ucm_connector.py` 的实现。
+本文描述当前实现。2026-09-26 增加 layerwise 回调和显式 commit；异步任务边界已接入，当前文件 Proxy 仍同步执行。文中的 UCM block 是一个 ucm_block_id 对应的存储记录，vLLM block 是 KV 池中的物理块，两者不是同一个概念。本文不描述旧版 `ucm/integration/vllm/ucm_connector.py` 的实现。
 
 ## 1. 目标与当前状态
 
 v2 将不同模型的 Full Attention、Sliding Window 和 Mamba 状态统一成三类工作：
 
-1. scheduler 根据 hash 链、缓存命中和 block table，决定恢复或保存哪些窗口。
+1. scheduler 根据 UCM block id、缓存命中和 block table，决定恢复或保存哪些窗口。
 2. worker 根据已经注册的 tensor views，将窗口转换为源/目标内存地址、长度和 UCM block 内位置。
 3. Proxy 按这些字节描述符搬运数据。
 
 当前关键约定：
 
-- 单请求的 hash 链 keys 按唯一处理。worker 不扫描唯一性，不维护 key 校验缓存，也不对一个 plan 做重复 key 分区。
-- 每个非空且有选中数据的 plan 生成一个二维 Transfer；不同请求独立提交。跨请求相同 key 可以对应不同 load 目标，不能丢掉其中一个目标。
+- 单请求的 ucm_block_ids 按唯一处理。worker 不扫描唯一性，不维护 ucm_block_id 校验缓存，也不对一个 plan 做重复 ucm_block_id 分区。
+- 每个非空且有选中数据的 plan 生成一个二维 Transfer；不同请求独立提交。跨请求相同 ucm_block_id 可以对应不同 load 目标，不能丢掉其中一个目标。
 - 原生 `Adapter.submit` 原样转发四个字段，不做逐元素校验或 dtype 转换。
 - 地址和大小主要用 NumPy 批量计算，但仍有请求、plan、group 级 Python 循环，不等于多核或设备端并行。
 - worker 默认使用同步 bulk load/dump；`use_layerwise: true` 启用逐层传输和按层等待，步末等待保存任务并 commit。
@@ -28,13 +28,13 @@ flowchart TD
     Config["vLLM KVCacheConfig + model config"] --> Spec["parse_kv_cache_config / UCMKVCacheSpec"]
     Spec --> Scheduler["UCMDispatcher：lookup、请求状态、窗口选块"]
     Request["请求 token IDs + SchedulerOutput block tables"] --> Scheduler
-    Scheduler --> Meta["UCMConnectorMetadata：keys、token 范围、block IDs"]
+    Scheduler --> Meta["UCMConnectorMetadata：ucm_block_ids、token 范围、block IDs"]
     Views["worker 注册的 tensor views"] --> Physical["LayerView / KVCacheGroupLayout / BlockAccess"]
     Spec --> Physical
     Physical --> Record["GroupStoreLayout：UCM block 内位置与窗口模板"]
     Meta --> Builder["UCMTransferBuilder：按 plan 组合各 group"]
     Record --> Builder
-    Builder --> Transfer["UCMProxyTransfer：keys K，三个 K×S 矩阵"]
+    Builder --> Transfer["UCMProxyTransfer：ucm_block_ids K，三个 K×S 矩阵"]
     Transfer --> Adapter["Adapter.submit：原样转发与完成等待"]
     Adapter --> Proxy["可替换 Proxy"]
 ```
@@ -46,8 +46,8 @@ flowchart TD
 | `layout/kv_cache.py / UCMKVCacheSpec` | group 分类、token 粒度、tail、持久化与恢复规则 | 请求、plan、proxy |
 | `layout/kv_cache.py / UCMKVCacheLayout` | 汇总元数据、HBM group layouts、store layouts 和层索引 | 解析 plan、生成 Transfer |
 | `layout/__init__.py` | 绑定 worker native spec/descriptor，统一布局入口 | 请求调度 |
-| `layout/view.py` | 将逻辑 tensor views 分解为可连续寻址的 segments | hash key、UCM block 排布 |
-| `layout/group.py` | group 物理几何、层选择、块内范围到 ptrs/sizes 的转换 | key 和目标存储位置 |
+| `layout/view.py` | 将逻辑 tensor views 分解为可连续寻址的 segments | ucm_block_id、UCM block 排布 |
+| `layout/group.py` | group 物理几何、层选择、块内范围到 ptrs/sizes 的转换 | ucm_block_id 和目标存储位置 |
 | `layout/store_layout.py` | 每个 group 在 UCM block 中的窗口排布、offsets、合并条件 | 文件格式、异步任务调度 |
 | `ucm_kv_cache.py / UCMTransferBuilder` | 关联 plan 与 layouts，生成二维 Transfer | 存储实现细节 |
 | `ucm_proxy.py` | Transfer 契约、下发适配、当前文件后端 | scheduler 的窗口语义 |
@@ -59,21 +59,21 @@ flowchart TD
 | 名称 | 含义 | 单位/范围 |
 |---|---|---|
 | `scheduler_block_size` | vLLM `resolve_kv_cache_block_sizes` 返回的 scheduler 粒度 | tokens，不直接照抄原始配置值 |
-| `ucm_cache_block_size`，下称 U | hash 链一步覆盖的 token 数；一个 FA key 的 token 范围 | tokens |
+| `ucm_cache_block_size`，下称 U | 一个 UCM block 覆盖的 token 数；一个 FA ucm_block_id 的 token 范围 | tokens |
 | `group.token_block_size`，下称 T | 该 group 一个物理 block ID 覆盖的 token 数 | tokens |
 | `storage_block_size` | 一个 layer 的逻辑 block 实际包含多少 stored states | states，压缩缓存不等于 tokens |
 | `tail_tokens` | WA 在一个边界保存的尾部范围 | tokens |
-| `tail_blocks`，下称 R | 一个 key 在一个 group 中涉及的物理块数 | FA 为 ceil(U/T)，WA 为 ceil(tail/T)，State 为 1 |
+| `tail_blocks`，下称 R | 一个 ucm_block_id 在一个 group 中涉及的物理块数 | FA 为 ceil(U/T)，WA 为 ceil(tail/T)，State 为 1 |
 | `layer_name` | vLLM 注册的一个缓存名字 | 同一个模型层可能有 attention/indexer/state 等多个名字 |
 | `layer_id` | 模型层编号 | 一个编号可关联多个名字和多个 group |
 | component view | 一个已注册的 tensor 逻辑视图 | 不意味着一块独立物理分配 |
 | `MemorySegment` | 一个逻辑 block 内可按连续 state/token 范围寻址的字节段 | 一个 view 可以有多个 segments |
 | `block_byte_offsets` | 从源 block 内 segment 起点跳过的字节数 | 源内存偏移 |
 | `group_block_offsets` | 完整 vLLM block 的各 segment 在 group 内的目标排布 | bytes |
-| `ucm_block_offsets` | 某个 key 的各段在 UCM block 中的位置 | bytes；group 模板内先相对 group，最终加 group 基址 |
-| `store_bytes` | 一个 key 中某个 group 窗口占用的总空间 | bytes，选择部分层不会改变它 |
+| `ucm_block_offsets` | 某个 ucm_block_id 的各段在 UCM block 中的位置 | bytes；group 模板内先相对 group，最终加 group 基址 |
+| `store_bytes` | 一个 ucm_block_id 中某个 group 窗口占用的总空间 | bytes，选择部分层不会改变它 |
 
-区分两类重复：不同 UCM keys 可以引用同一个物理 block 的不同 token 范围；这不等于同一请求出现重复 hash key。
+区分两类重复：不同 UCM ucm_block_ids 可以引用同一个物理 block 的不同 token 范围；这不等于同一请求出现重复 ucm_block_id。
 
 ## 4. 初始化与配置解析
 
@@ -110,39 +110,39 @@ storage_root/.ucm-v2/{device}-{model_dtype}-b{scheduler_block_size}-c{U}-r2/
 
 U 的默认选择为所有 FA group 的最小 T；没有 FA 时回退到 scheduler 粒度。显式覆盖仅支持单 group，要求为 scheduler 粒度的正整数倍。
 
-窗口静态化约束：FA 中 U、T 必须一方整除另一方；WA 中非零 tail group 的 T 必须整除 U。否则一个 key 的窗口形状可能随边界变化，当前固定矩形模板不支持。
+窗口静态化约束：FA 中 U、T 必须一方整除另一方；WA 中非零 tail group 的 T 必须整除 U。否则一个 ucm_block_id 的窗口形状可能随边界变化，当前固定矩形模板不支持。
 
-scheduler 的 `dispatch_routes(spec)` 按 FA → WA → State 建路由，只保留非空类别。WA 只包含 tail>0 的 group。plan.group_block_ids 的位置必须与该路由的 group 顺序一致。
+scheduler 的 `groups_by_attention_type(spec)` 按 AttentionType（FA → WA → State）分组，只保留非空类别。WA 只包含 tail>0 的 group。plan.vllm_block_ids_by_group 的位置必须与该分组的 group 顺序一致。
 
 ## 5. Hash、lookup 与 scheduler 计划
 
-### 5.1 Hash 链与 key
+### 5.1 Hash 与 ucm_block_id
 
 `RequestHasher` 在 MD5 输入中加入 model 名称末段、TP size、model dtype、rank 参数、speculative 配置和 sparse 开关。token ID 先转 Python int，避免 NumPy 标量改变序列化结果。
 
 ```text
-parent_0 = hasher("UCM_HASH_SEED")
-parent_i = hasher((parent_(i-1), 当前 U 个 token 的 tuple))
-key_i    = parent_i[:14] + 2 字节 tag
+parent_0       = hasher("UCM_HASH_SEED")
+parent_i       = hasher((parent_(i-1), 当前 U 个 token 的 tuple))
+ucm_block_id_i = parent_i[:14] + 2 字节 tag
 ```
 
-不足 U 个 token 的尾部不产生 key。FA/WA/State 共享同一条 parent 链，只改变 tag。
+不足 U 个 token 的尾部不产生 ucm_block_id。FA/WA/State 共享同一组 parent hash，只改变 tag。
 
-tag 大端布局：`type(2) | group(4) | tp_rank(4) | pp_rank(4) | reserved(2)`；当前 group bits 为零，所有同类 group 合在一个记录里。当前 Connector 用逻辑 rank-0 namespace 创建 keys，不能据此推断 worker 分片隔离已完成。
+tag 大端布局：`type(2) | group(4) | tp_rank(4) | pp_rank(4) | reserved(2)`；当前 group bits 为零，所有同类 group 合在一个记录里。当前 Connector 用逻辑 rank-0 namespace 创建 ucm_block_ids，不能据此推断 worker 分片隔离已完成。
 
-单请求链式 keys 唯一是当前输入契约，不另做运行时碰撞检测。跨请求共享前缀可拥有相同 keys，仍使用各自 block tables。
+单请求 ucm_block_ids 唯一是当前输入契约，不另做运行时碰撞检测。跨请求共享前缀可拥有相同 ucm_block_ids，仍使用各自 block tables。
 
 ### 5.2 Lookup
 
-`lookup` 建立/更新 `RequestState`，保存 HBM 命中、external 命中、已处理边界、各链 keys、各 group block tables 和 `load_pending`。
+`lookup` 建立/更新 `RequestState`，保存 HBM 命中、external 命中、已处理边界、各 ucm_block_id type 的 ucm_block_ids、各 group block tables 和 `load_pending`。
 
 - 查找上界：`floor((num_tokens - recompute_tokens)/U)`，默认保留一个 token 重算余量。
-- FA 调 `lookup_on_prefix`，返回最后一个连续命中 key 的相对下标，`-1` 表示无命中。
+- FA 调 `lookup_on_prefix`，返回最后一个连续命中 ucm_block_id 的相对下标，`-1` 表示无命中。
 - WA/State 在 FA 可恢复范围内调用 `lookup_on_reverse`，返回最右命中下标。
-- 当前算法将恢复终点收敛为 FA 终点与各边界链命中位置的最小值；任一边界链无命中则不恢复。
+- 当前算法将恢复终点收敛为 FA 终点与各边界 ucm_block_id type 命中位置的最小值；任一边界 ucm_block_id type 无命中则不恢复。
 - external 命中量不超过 `load_tokens_threshold` 时抑制本次 load。
 
-边界说明：当 WA 与 State 同时存在且各链记录缺失位置不一致时，“各自最新命中的最小值”不自动证明该位置被所有链共同命中；当前算法没有回查这个交点。这里记录实现及适用假设，不把它写成任意缺失分布下都成立的保证。
+边界说明：当 WA 与 State 同时存在且各 ucm_block_id type 记录缺失位置不一致时，“各自最新命中的最小值”不自动证明该位置被所有 ucm_block_id type 共同命中；当前算法没有回查这个交点。这里记录实现及适用假设，不把它写成任意缺失分布下都成立的保证。
 
 ### 5.3 Block table 与 metadata
 
@@ -150,15 +150,15 @@ tag 大端布局：`type(2) | group(4) | tp_rank(4) | pp_rank(4) | reserved(2)`�
 
 ```python
 UCMGroupDispatchPlan(
-    hash_group="FA" | "WA" | "State",
-    keys=tuple[bytes, ...],
+    attention_type=AttentionType.FA | AttentionType.WA | AttentionType.STATE,
+    ucm_block_ids=tuple[bytes, ...],
     token_start=int,
     token_end=int,
-    windows=tuple[np.ndarray, ...],
+    vllm_block_ids_by_group=tuple[np.ndarray, ...],
 )
 ```
 
-`windows[g]` 是 uint64 一维数组，逻辑上为 `[K,R_g]` 后展平；每个 key 的窗口按老块到新块排列。传递的是物理 block IDs，不是虚拟地址。`RequestDispatchMeta` 分别持有 load/dump plans，`UCMConnectorMetadata` 再按 request_id 组织，并携带 preempted/finished IDs。
+`vllm_block_ids_by_group[g]` 是 uint64 一维数组，逻辑上为 `[K,R_g]` 后展平；每个 ucm_block_id 的窗口按老块到新块排列。传递的是 vLLM block ids，不是虚拟地址。`RequestDispatchMeta` 分别持有 load/dump plans，`UCMConnectorMetadata` 再按 request_id 组织，并携带 preempted/finished IDs。
 
 每步 `_request_meta`：
 
@@ -166,19 +166,19 @@ UCMGroupDispatchPlan(
 - dump 区间从 `token_processed` 到本步处理终点，终点不超过 lookup 时记录的 token 数。
 - 生成计划后推进 `token_processed`；finished/preempted 请求移出 dispatcher 状态表。
 
-### 5.4 选 key 与选 block
+### 5.4 选 ucm_block_id 与选 block
 
 对于区间 `[token_start, token_end)`：`first=floor(token_start/U)`，`last=floor(token_end/U)`。若 last<=first，无完整新边界，不生成 plan。
 
-| 类别 | keys | 每个 key 保存的窗口 |
+| 类别 | ucm_block_ids | 每个 ucm_block_id 保存的窗口 |
 |---|---|---|
-| FA | `[first,last)` 中所有 keys | key 覆盖的 U tokens |
+| FA | `[first,last)` 中所有 ucm_block_ids | ucm_block_id 覆盖的 U tokens |
 | WA | 仅 `last-1` | `last*U` 边界之前各 group 的 tail |
 | State | 仅 `last-1` | 该边界的完整状态页 |
 
 WA 若边界小于该路由最大的 tail，跳过整个 plan，避免负下标与不完整记录。
 
-选块公式：FA key k 的末 token 为 `(k+1)*U-1`；WA/State 使用最新边界 `last*U-1`。除以 T 得到 block table 的逻辑位置，从该位置向前取 R 个 entries，转换为物理 block IDs。只将实际窗口覆盖的 table 子区间转成 ndarray，避免小 WA 窗口扫描整张长表。
+选块公式：FA ucm_block_id k 的末 token 为 `(k+1)*U-1`；WA/State 使用最新边界 `last*U-1`。除以 T 得到 block table 的逻辑位置，从该位置向前取 R 个 entries，转换为物理 block IDs。只将实际窗口覆盖的 table 子区间转成 ndarray，避免小 WA 窗口扫描整张长表。
 
 ## 6. 物理 view：shape、stride 与 segment
 
@@ -260,16 +260,16 @@ size[b,j] = compiled_segment_bytes[r,j]
 
 动态 start 是在固定 start 上追加，若传的是绝对块内 start，应编译零起点模板。代码先选择列，再批量生成地址，不会先算全部层再挑一层；没有长期缓存所有 block 的 ptrs。
 
-`resolve_ptrs` 返回独立可写指针网格；sizes 使用固定模板，避免提前扩展不随 key 改变的数据。
+`resolve_ptrs` 返回独立可写指针网格；sizes 使用固定模板，避免提前扩展不随 ucm_block_id 改变的数据。
 
 源寻址层仍检查 block IDs、窗口行数、动态 start 与 state 对齐、范围是否越过 payload。删除的是 Adapter 的重复字段检查，不是所有层的所有检查。
 
 ## 8. UCM block 排布与块内切片
 
-`GroupStoreLayout` 将物理 segment 映射到一个 key 对应的存储位置，物理 group 不需要理解存储 offsets。
+`GroupStoreLayout` 将物理 segment 映射到一个 ucm_block_id 对应的存储位置，物理 group 不需要理解存储 offsets。
 
 ```text
-一个 FA key -> 一个 UCM block
+一个 FA ucm_block_id -> 一个 UCM block
   group 0
     window block 0（最老）
       layer 0 / component / segment ...
@@ -282,7 +282,7 @@ size[b,j] = compiled_segment_bytes[r,j]
       ...
 ```
 
-WA/State 使用各自路由的 groups 和窗口，不混进 FA key 中。通用模板始终按 segment 有效 payload 紧凑累加，layerwise 使用此模板。仅 use_layerwise=False、完整块且已有 BlockFirstView 时，单独使用 offset0/整组 span 的 bulk 路径，保留 padding。
+WA/State 使用各自路由的 groups 和窗口，不混进 FA ucm_block_id 中。通用模板始终按 segment 有效 payload 紧凑累加，layerwise 使用此模板。仅 use_layerwise=False、完整块且已有 BlockFirstView 时，单独使用 offset0/整组 span 的 bulk 路径，保留 padding。
 
 ### 8.1 三种 FA 关系
 
@@ -294,14 +294,14 @@ WA/State 使用各自路由的 groups 和窗口，不混进 FA key 中。通用�
 
 WA 的第一块可能是部分块：count=`tail%T`，start=`T-count`；其余块完整。余数为零时所有块完整。State 一页不可拆。
 
-固定 sizes 在初始化时计算；FA 子块只是运行时改变 starts。一般查询仍可通过重新 compile starts/counts 表达不同范围，但当前 plan 热路径不传逐 key ends。
+固定 sizes 在初始化时计算；FA 子块只是运行时改变 starts。一般查询仍可通过重新 compile starts/counts 表达不同范围，但当前 plan 热路径不传逐 ucm_block_id ends。
 
 ### 8.2 数字例子：16384-token block 切成 512-token UCM blocks
 
-假设一个 group 有两层，每层每 token 4 bytes，两个 layer 的 block-0 基址分别为 1,000,000 和 2,000,000，每块步长为 65,536 bytes。两个不同 keys 引用物理 block 2 的相邻片段：
+假设一个 group 有两层，每层每 token 4 bytes，两个 layer 的 block-0 基址分别为 1,000,000 和 2,000,000，每块步长为 65,536 bytes。两个不同 ucm_block_ids 引用物理 block 2 的相邻片段：
 
 ```text
-keys       = [A, B]
+ucm_block_ids       = [A, B]
 block_ids  = [2, 2]
 starts     = [0, 512]           # tokens
 count      = 512               # tokens，固定
@@ -318,7 +318,7 @@ ucm_block_offsets = [[0, 2048],
 
 ### 8.3 Block First 合并
 
-CUDA/CPU 仅在 resolved BLHNC/BLNHC 下探测本组 Block First；NPU 跳过。原生 descriptor 必须存在，满足 `0<layer_stride<block_stride`，且本组 block_stride 相同；信任 native allocator，不重复验证 offset 链与逐层地址。
+CUDA/CPU 仅在 resolved BLHNC/BLNHC 下探测本组 Block First；NPU 跳过。原生 descriptor 必须存在，满足 `0<layer_stride<block_stride`，且本组 block_stride 相同；信任 native allocator，不重复验证 descriptor 首尾相接与逐层地址。
 
 store 模板仅在 `use_layerwise=False`、BlockFirstView 存在且覆盖完整块时选择 offset0/整组 span 路径，包含组内 padding，State 同样适用。layerwise 与部分块保留有效 payload 的通用紧凑模板。实际按层筛选仍使用 segments，不能把 bulk 的源地址相对偏移误当成 layerwise 存储模板。
 
@@ -329,39 +329,39 @@ store 模板仅在 `use_layerwise=False`、BlockFirstView 存在且覆盖完整�
 ```python
 @dataclass(frozen=True)
 class UCMProxyTransfer:
-    keys: tuple[bytes, ...]         # [K]，plan 内唯一
+    ucm_block_ids: tuple[bytes, ...]         # [K]，plan 内唯一
     ptrs: np.ndarray               # uint64 [K,S]
     sizes: np.ndarray              # uint64 [K,S]，字节数
     ucm_block_offsets: np.ndarray  # uint64 [K,S]，完整 UCM block 内字节偏移
 ```
 
-S 是这次选择后每个 key 的搬运段数，不一定等于层数。一般为各参与 group 的 `R_g * selected_segments_g` 之和；合并整块时该 group 可降为 R_g。
+S 是这次选择后每个 ucm_block_id 的搬运段数，不一定等于层数。一般为各参与 group 的 `R_g * selected_segments_g` 之和；合并整块时该 group 可降为 R_g。
 
 对第 k 行第 s 列：
 
 ```text
-dump：从 ptrs[k,s] 读 sizes[k,s] 字节，写到 key[k] 的 ucm_block_offsets[k,s]
-load：从 key[k] 的该位置读相同字节数，写入 ptrs[k,s]
+dump：从 ptrs[k,s] 读 sizes[k,s] 字节，写到 ucm_block_id[k] 的 ucm_block_offsets[k,s]
+load：从 ucm_block_id[k] 的该位置读相同字节数，写入 ptrs[k,s]
 ```
 
 ### 9.2 构造流程
 
 `build_load_transfers` / `build_dump_transfers` → `_build_transfers` → `_iter_plan_segments`（位于外部 UCMTransferBuilder）：
 
-1. 遍历请求的各 plans，根据 hash_group 找路由。
-2. 对每个 group 归一化 block ID dtype，检查窗口长度等于 K×R。
+1. 遍历请求的各 plans，根据 attention_type 找参与的 groups。
+2. 对每个 group 归一化 vLLM block id dtype，检查窗口长度等于 K×R。
 3. 根据 layer_name 或 layer_id 选择 segments；必要时计算 FA 动态 token starts。
 4. `resolve_matrices` 返回该 group 的 `[K,S_g]` offsets/ptrs/sizes。
 5. offsets 加上前面 groups 的完整 store_bytes；即使某个 group 没有选中层，其空间也不能被压掉。
 6. group 列合并；单 group 直接使用结果，多 group ptrs concatenate，sizes/offsets 拼接一行模板再广播。
-7. 直接关联 `plan.keys` 生成 Transfer。不同 plan 分开，不 padding、不跨请求去重。
+7. 直接关联 `plan.ucm_block_ids` 生成 Transfer。不同 plan 分开，不 padding、不跨请求去重。
 
 `layer_name` 只选一个注册名字；`layer_id` 选择该模型层在所有 groups 中的相关名字。两者不能同时传。group 的 compile_access 编译整组，运行时 segment_mask 可以选择多层；高层 Transfer builder 当前只接收单个 layer_id。
 
 ### 9.3 数组所有权
 
 - ptrs 为本次计算产生的独立数组；不在下一次 dispatch 中覆盖复用。
-- sizes/offsets 从本次调用独立的一维 backing broadcast 到 `[K,S]`，通常第一维 stride=0、只读、不连续；不要求每个 key 复制同一行。
+- sizes/offsets 从本次调用独立的一维 backing broadcast 到 `[K,S]`，通常第一维 stride=0、只读、不连续；不要求每个 ucm_block_id 复制同一行。
 - 后端必须接受这些数组，不修改它们，不假定 C-contiguous。
 - frozen dataclass 不代表 NumPy 数据完全不可变。当前每次模板 backing 独立，避免调用者修改某次 backing 污染编译模板或其他批次。
 - 描述符的存活与 KV 源内存的在途保护是两件事；异步化必须同时处理，不能只保留 ptrs 数组。
@@ -373,11 +373,11 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
     adapter.submit("load", transfer)
 
 # 实际后端参数顺序：
-proxy.load(transfer.keys, transfer.ucm_block_offsets,
+proxy.load(transfer.ucm_block_ids, transfer.ucm_block_offsets,
            transfer.ptrs, transfer.sizes)
 ```
 
-`submit` 仅选择 load/dump、跳过空 keys、原样调用、处理返回 task 和异常。它不检查 shape/dtype/非零/溢出/重复 keys，不创建 ndarray 副本。构造层拥有描述符契约。
+`submit` 仅选择 load/dump、跳过空 ucm_block_ids、原样调用、处理返回 task 和异常。它不检查 shape/dtype/非零/溢出/重复 ucm_block_ids，不创建 ndarray 副本。构造层拥有描述符契约。
 
 后端返回 None 表示本次调用完成；返回 handle 时，Adapter 的 `enqueue` 保存 handle 和 Transfer，worker 在对应层回调或步末调用 `wait`。bulk 使用 `submit`，仍立即等待。任务不跨调度步；真实计算/IO 重叠还取决于后端设备同步实现，需要实机验证。
 
@@ -400,7 +400,7 @@ proxy.load(transfer.keys, transfer.ucm_block_offsets,
 
 load 中的 `UCMProxyError` 按请求捕获，标记该请求相关 plan 的 blocks 无效，走 vLLM 的失败回报渠道，不立即从该 hook 抛出。构造阶段异常不在这个 Proxy 错误捕获范围内。dump 失败继续向上传播。
 
-当前 `SimpleFileUCMProxy`：一个 key 一个 `.ucm` 文件。`dump` 按 UCM block offset 累积写入该 key 的私有 `.tmp` 文件；`commit(keys)` 将指定 key 的临时文件 rename 为可见文件。完整性由调用方保证，发布按 key 原子执行。Adapter 的 `enqueue` 返回持有 Transfer 和后端 handle 的任务，`wait` 等待完成；`submit` 保留同步语义，commit 也等待完成。`TorchTensorByteAccess` 负责注册 storage、将裸地址转成 torch byte view 和同步设备。
+当前 `SimpleFileUCMProxy`：一个 ucm_block_id 一个 `.ucm` 文件。`dump` 按 UCM block offset 累积写入该 ucm_block_id 的私有 `.tmp` 文件；`commit(ucm_block_ids)` 将指定 ucm_block_id 的临时文件 rename 为可见文件。完整性由调用方保证，发布按 ucm_block_id 原子执行。Adapter 的 `enqueue` 返回持有 Transfer 和后端 handle 的任务，`wait` 等待完成；`submit` 保留同步语义，commit 也等待完成。`TorchTensorByteAccess` 负责注册 storage、将裸地址转成 torch byte view 和同步设备。
 
 layerwise 在 start_load 提交本步所有层加载，不是只预取下一层；因此异步 Proxy 下描述符峰值覆盖所有在途加载。逐层 wait 后释放该层任务。保存提交或等待失败时，会等待其余已提交保存任务，然后抛出错误，不 commit；加载失败按请求上报，并排除该请求的后续保存和发布。重复 wait_for_save 不重复提交已完成的本步。
 
@@ -410,7 +410,7 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 
 ### 10.1 同拓扑并行分片
 
-`ParallelLayout` 负责 TP/PP/PCP/DCP 参数与 CP 逻辑页换算；world size 为 TP×PP×PCP，DCP 为 TP 子组。`AllShardLookup` 对各 rank 的已提交文件取共同命中。搬运仍使用原来的 keys/[K,S] 协议，文件路径携带拓扑和 rank；PP 空分片使用零列矩阵提交完成标记。只支持相同拓扑恢复，不支持 reshard。CP 暂限 FA 整页，PCP 无当前引擎运行时证据。详见 [并行设计与验证](connector-v2-parallel-validation-20260926.md)。
+`ParallelLayout` 负责 TP/PP/PCP/DCP 参数与 CP 逻辑页换算；world size 为 TP×PP×PCP，DCP 为 TP 子组。`AllShardLookup` 对各 rank 的已提交文件取共同命中。搬运仍使用原来的 ucm_block_ids/[K,S] 协议，文件路径携带拓扑和 rank；PP 空分片使用零列矩阵提交完成标记。只支持相同拓扑恢复，不支持 reshard。CP 暂限 FA 整页，PCP 无当前引擎运行时证据。详见 [并行设计与验证](connector-v2-parallel-validation-20260926.md)。
 
 ## 11. 性能模型与当前优化
 
@@ -418,17 +418,17 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 
 已经实现：
 
-- 不展开重复的 segment-to-key 列表，keys 只保存 K 个。
+- 不展开重复的 segment-to-ucm_block_id 列表，ucm_block_ids 只保存 K 个。
 - 先筛层再计算地址，不缓存全层 ptrs 后取子集。
 - 单 group 避免多余 concatenate，固定 offsets/sizes 广播。
-- 移除 Adapter 字段扫描、归一化和 key 缓存。
-- 移除构造层单请求 keys 唯一性扫描、缓存及重复分区。
+- 移除 Adapter 字段扫描、归一化和 ucm_block_id 缓存。
+- 移除构造层单请求 ucm_block_ids 唯一性扫描、缓存及重复分区。
 
 尚未实现：多 group 直接写入同一最终 ptr buffer、真实异步重叠、C++/设备侧地址生成。没有证据要求现在引入这些实现。
 
 ### 历史性能结果的解释
 
-2026-09-19 容器复测口径为“从已有 metadata 构造 Transfer → Adapter → 空后端返回”，排除 Proxy 解析、设备搬运和 IO。8192 keys、32 层、单 group：
+2026-09-19 容器复测口径为“从已有 metadata 构造 Transfer → Adapter → 空后端返回”，排除 Proxy 解析、设备搬运和 IO。8192 ucm_block_ids、32 层、单 group：
 
 | 当时场景 | CPU 栈 | NPU 栈 |
 |---|---:|---:|
@@ -437,15 +437,15 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 | 32 层逐层 warm 合计 | 3.989 ms | 4.289 ms |
 | 32 层逐层 cold 合计 | 5.033 ms | 5.294 ms |
 
-这是删除 Adapter 校验后、删除 layout key 唯一性扫描之前的版本。当时 cold/warm 专指 key 校验缓存状态；当前已删除这两处缓存，这个定义不再适用。不得将表中数字标为当前源码重新测得的结果。NPU 栈也在 CPU 上运行 NumPy，不代表 NPU 计算寻址。
+这是删除 Adapter 校验后、删除 layout ucm_block_id 唯一性扫描之前的版本。当时 cold/warm 专指 ucm_block_id 校验缓存状态；当前已删除这两处缓存，这个定义不再适用。不得将表中数字标为当前源码重新测得的结果。NPU 栈也在 CPU 上运行 NumPy，不代表 NPU 计算寻址。
 
 ## 12. 验证、限制与待确认项
 
 ### 12.1 已有证据
 
 - 2026-09-26 当前本地验证：111 项 connector v2 组件测试、8 项 toolkit 测试通过；并行运行时矩阵和精确源码快照见 [并行验证记录](connector-v2-parallel-validation-20260926.md)。
-- 用例覆盖逻辑/物理 layout、FA 子块、WA 尾部、State、模型层跨名字选择、二维 offsets、跨请求共享 keys 保留目标、原对象透传、保留批次独立性和 wait 期间描述符存活。
-- 历史四模型双栈 model-check 通过数：CPU GLM/MiniMax/Kimi/DSV4 比较块数 1092/434/93/8，NPU 为 1638/868/186/168。该全模型轮次早于最后几次 Adapter/key 扫描简化，不能声称当前精确源码已做同轮 8/8 回归。
+- 用例覆盖逻辑/物理 layout、FA 子块、WA 尾部、State、模型层跨名字选择、二维 offsets、跨请求共享 ucm_block_ids 保留目标、原对象透传、保留批次独立性和 wait 期间描述符存活。
+- 历史四模型双栈 model-check 通过数：CPU GLM/MiniMax/Kimi/DSV4 比较块数 1092/434/93/8，NPU 为 1638/868/186/168。该全模型轮次早于最后几次 Adapter/ucm_block_id 扫描简化，不能声称当前精确源码已做同轮 8/8 回归。
 - 官方 vLLM 0.29 使用 CPU 替代 CUDA 验证；NPU 使用已有 Ascend 0.26 RC 检出，精确 rc1 身份未确认。真实 CUDA 卡尚未验收。model-check 验证真实 KV 分配与字节往返，不等于带模型权重的推理精度测试。
 
 测试入口：[test_ucm_connector_v2.py](../test/suites/Unit/test_ucm_connector_v2.py)。无完整运行时依赖的本地测试用 stub 隔离框架；不能用其代替后端集成验证。
@@ -467,7 +467,7 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 | CP | FA 完整分布式页；DCP2 双栈通过，PCP 被当前引擎拒绝，尚未运行时验收 |
 | KV cache dtype namespace 隔离 | 当前使用 model dtype，不能覆盖所有 KV dtype 差异 |
 | 不齐 chunked prefill 的 WA dump | 需验证边界之后旧窗口块是否已被 HMA 淘汰/复用 |
-| 多边界链不一致缺失 | 当前 lookup 的最小终点策略需验证共同命中假设 |
+| 多边界 ucm_block_id type 不一致缺失 | 当前 lookup 的最小终点策略需验证共同命中假设 |
 
 ### 12.3 调试入口
 

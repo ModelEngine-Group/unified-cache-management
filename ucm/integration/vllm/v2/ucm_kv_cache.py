@@ -10,7 +10,7 @@ import numpy as np
 from .layout import UCMKVCacheGroupInfo, UCMKVCacheLayout
 from .layout.view import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import UCMProxyTransfer
-from .ucm_scheduler import dispatch_routes
+from .ucm_scheduler import AttentionType, groups_by_attention_type
 
 if TYPE_CHECKING:
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
@@ -19,23 +19,26 @@ if TYPE_CHECKING:
 def dump_metadata(
     plan: "UCMGroupDispatchPlan", ucm_cache_block_size: int
 ) -> tuple[str, ...]:
-    """Per-key JSON for Store dump: chain type and 0-based UCM block index.
+    """Per-UCM-block JSON for Store dump: attention type and 0-based block index.
 
-    A plan's keys are consecutive UCM blocks starting at its token_start.
+    A plan's ucm_block_ids are consecutive UCM blocks starting at its
+    token_start.
     """
     first_block = plan.token_start // ucm_cache_block_size
-    prefix = f'{{"type":"{plan.hash_group}","block_index":'
-    return tuple(f"{prefix}{first_block + row}}}" for row in range(len(plan.keys)))
+    prefix = f'{{"type":"{plan.attention_type.value}","block_index":'
+    return tuple(
+        f"{prefix}{first_block + row}}}" for row in range(len(plan.ucm_block_ids))
+    )
 
 
 class UCMTransferBuilder:
-    """Interpret plans and associate their keys with HBM/storage byte ranges."""
+    """Interpret plans and map their UCM block ids to HBM/storage byte ranges."""
 
     def __init__(self, layout: UCMKVCacheLayout) -> None:
         self.layout = layout
-        self._routes_by_kind: Mapping[str, tuple[UCMKVCacheGroupInfo, ...]] = dict(
-            dispatch_routes(layout.spec)
-        )
+        self._groups_by_attention_type: Mapping[
+            AttentionType, tuple[UCMKVCacheGroupInfo, ...]
+        ] = dict(groups_by_attention_type(layout.spec))
 
     def _selected_layer_names(
         self, layer_name: str | None, layer_id: int | None
@@ -100,15 +103,42 @@ class UCMTransferBuilder:
                 sizes = np.broadcast_to(
                     np.concatenate([g[3][0] for g in groups]), ptrs.shape
                 )
-            # Each plan belongs to one request's hash chain, so keys are unique.
-            # Keep requests separate: shared-prefix keys may have distinct targets.
+            # A plan's ucm_block_ids come from one request, so they are unique.
+            # Keep requests separate: shared-prefix ids may have distinct targets.
             key_metadata = (
                 dump_metadata(plan, self.layout.spec.ucm_cache_block_size)
                 if with_metadata
                 else ()
             )
             transfers.append(
-                UCMProxyTransfer(plan.keys, ptrs, sizes, offsets, key_metadata)
+                UCMProxyTransfer(
+                    plan.ucm_block_ids,
+                    np.arange(
+                        plan.token_start // self.layout.spec.ucm_cache_block_size,
+                        plan.token_start // self.layout.spec.ucm_cache_block_size
+                        + len(plan.ucm_block_ids),
+                        dtype=np.int64,
+                    ),
+                    ptrs,
+                    sizes,
+                    offsets,
+                    key_metadata,
+                    (
+                        np.full(
+                            len(plan.ucm_block_ids),
+                            sum(
+                                self.layout.store_layouts[g.group_id].store_bytes
+                                for g in self._groups_by_attention_type[
+                                    plan.attention_type
+                                ]
+                                if g.group_id in self.layout.store_layouts
+                            ),
+                            dtype=np.uint64,
+                        )
+                        if with_metadata
+                        else None
+                    ),
+                )
             )
         return tuple(transfers)
 
@@ -119,36 +149,38 @@ class UCMTransferBuilder:
     ) -> Iterator[tuple[Sequence[bytes], np.ndarray, np.ndarray, np.ndarray]]:
         """One plan's records as per-group arrays, straight off templates.
 
-        The scheduler sends keys and window block ids; each group's
-        static template (compiled at layout init -- the offsets/sizes
-        grids of one key's window, block-major: block 0's views, block
-        1's views, ...) places them inside the key's record, and group
-        g's contribution starts at group_record_offset.  All keys of
-        a plan resolve in one vectorized pass per group; only the block
+        The scheduler sends UCM block ids and window vLLM block ids; each
+        group's static template (compiled at layout init -- the offsets/sizes
+        grids of one UCM block's window, block-major: block 0's views, block
+        1's views, ...) places them inside the UCM block's record, and group
+        g's contribution starts at group_record_offset.  All UCM blocks of
+        a plan resolve in one vectorized pass per group; only the vLLM block
         ids (and full-attention sub-span heads) vary per call.  Block
         First groups with whole unfiltered windows take the
         one-span-per-block fast path, paddings riding inside.
         """
 
-        if not plan.keys:
+        if not plan.ucm_block_ids:
             return
-        physical_groups = self._routes_by_kind[plan.hash_group]
+        groups = self._groups_by_attention_type[plan.attention_type]
         if LAYOUT_DEBUG:
             layout_debug(
-                f"plan hash_group={plan.hash_group} "
+                f"plan attention_type={plan.attention_type.value} "
                 f"tokens=[{plan.token_start},{plan.token_end}) "
-                f"keys={len(plan.keys)} "
-                f"groups={[group.group_id for group in physical_groups]}"
+                f"ucm_block_ids={len(plan.ucm_block_ids)} "
+                f"groups={[group.group_id for group in groups]}"
             )
-        key_count = len(plan.keys)
+        ucm_block_count = len(plan.ucm_block_ids)
         group_record_offset = 0
-        for group, blocks in zip(physical_groups, plan.group_block_ids, strict=True):
+        for group, vllm_block_ids in zip(
+            groups, plan.vllm_block_ids_by_group, strict=True
+        ):
             if group.group_id not in self.layout.group_layouts:
                 continue
             group_layout = self.layout.group_layouts[group.group_id]
             # Normalize at the pickle boundary: int64 ids mixed into the
             # uint64 stride arithmetic below would silently promote.
-            blocks = np.asarray(blocks, dtype=np.uint64)
+            vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
             store_layout = self.layout.store_layouts[group.group_id]
             mask = (
                 None
@@ -157,14 +189,19 @@ class UCMTransferBuilder:
             )
             token_offsets = None
             if store_layout.dynamic_token_offsets:
-                first_key = plan.token_start // self.layout.spec.ucm_cache_block_size
+                first_block = plan.token_start // self.layout.spec.ucm_cache_block_size
                 token_offsets = (
-                    np.arange(first_key, first_key + key_count, dtype=np.uint64)
+                    np.arange(
+                        first_block, first_block + ucm_block_count, dtype=np.uint64
+                    )
                     * self.layout.spec.ucm_cache_block_size
                     % group_layout.token_block_size
                 )
             offsets, ptrs, sizes = store_layout.resolve_matrices(
-                blocks, key_count, token_offsets=token_offsets, segment_mask=mask
+                vllm_block_ids,
+                ucm_block_count,
+                token_offsets=token_offsets,
+                segment_mask=mask,
             )
             if group_record_offset:
                 offsets = np.broadcast_to(
@@ -172,9 +209,10 @@ class UCMTransferBuilder:
                 )
             if LAYOUT_DEBUG:
                 layout_debug(
-                    f"record group={group.group_id} keys={key_count} "
-                    f"blocks={len(blocks)} segments_per_key={ptrs.shape[1]} "
+                    f"record group={group.group_id} ucm_block_ids={ucm_block_count} "
+                    f"vllm_block_ids={len(vllm_block_ids)} "
+                    f"segments_per_ucm_block={ptrs.shape[1]} "
                     f"record_size={group_record_offset + store_layout.store_bytes}"
                 )
-            yield plan.keys, offsets, ptrs, sizes
+            yield plan.ucm_block_ids, offsets, ptrs, sizes
             group_record_offset += store_layout.store_bytes

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
@@ -19,34 +20,41 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 
-def dispatch_routes(
+class AttentionType(enum.Enum):
+    """What one UCM record stores; the value names it in dump metadata."""
+
+    FA = "FA"  # full-attention groups
+    WA = "WA"  # sliding-window groups that re-store a window tail
+    STATE = "State"  # mamba state snapshot groups
+
+
+def groups_by_attention_type(
     spec: UCMKVCacheSpec,
-) -> tuple[tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...]:
-    """The routing table every dump/load works over: key kind -> groups.
+) -> tuple[tuple[AttentionType, tuple["UCMKVCacheGroupInfo", ...]], ...]:
+    """Attention types in dispatch order, each with the groups it stores.
 
     FA holds the full-attention groups; WA the sliding groups that
     re-store a window tail (tail 0 groups store nothing); State the
-    mamba snapshot groups. Empty kinds are absent, and
-    ``group_ucm_block_ids`` / dispatch plans index these in order.
+    mamba snapshot groups. Absent attention types are omitted, and
+    ``ucm_block_ids_by_attention_type`` / dispatch plans index attention
+    types in this order.
     """
 
-    routes: list[
-        tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]]
-    ] = []
+    result: list[tuple[AttentionType, tuple["UCMKVCacheGroupInfo", ...]]] = []
     if spec.fa_groups:
-        routes.append(("FA", spec.fa_groups))
+        result.append((AttentionType.FA, spec.fa_groups))
     wa_stored = tuple(group for group in spec.wa_groups if (group.tail_tokens or 0) > 0)
     if wa_stored:
-        routes.append(("WA", wa_stored))
+        result.append((AttentionType.WA, wa_stored))
     if spec.state_groups:
-        routes.append(("State", spec.state_groups))
-    return tuple(routes)
+        result.append((AttentionType.STATE, spec.state_groups))
+    return tuple(result)
 
 
 @dataclass(frozen=True)
 class UCMLookupResult:
     external_hit_tokens: int
-    group_ucm_block_ids: tuple[tuple[bytes, ...], ...]
+    ucm_block_ids_by_attention_type: tuple[tuple[bytes, ...], ...]
 
 
 @dataclass
@@ -55,24 +63,27 @@ class RequestState:
     external_hit_tokens: int = 0
     num_token_ids: int = 0
     token_processed: int = 0
-    group_ucm_block_ids: tuple[tuple[bytes, ...], ...] = ()
-    group_vllm_block_ids: tuple[list[int], ...] = ()
+    ucm_block_ids_by_attention_type: tuple[tuple[bytes, ...], ...] = ()
+    vllm_block_tables: tuple[list[int], ...] = ()
     load_pending: bool = False
 
 
 @dataclass(frozen=True)
 class UCMGroupDispatchPlan:
-    """One request's hash-chain slice; keys are unique within this plan."""
+    """Consecutive UCM blocks of one request for one attention type.
 
-    hash_group: Literal["FA", "WA", "State"]
-    keys: tuple[bytes, ...]
+    ucm_block_ids are unique within a plan.
+    """
+
+    attention_type: AttentionType
+    ucm_block_ids: tuple[bytes, ...]
     token_start: int
     token_end: int
-    # Physical block IDs per participating group, in dispatch_routes()
-    # order, block-major (tail_blocks blocks per key) -- the static
+    # vLLM block IDs per participating group, in groups_by_attention_type()
+    # order, block-major (tail_blocks blocks per UCM block id) -- the static
     # window shape lives on the spec's groups (``tail_blocks``), so
     # only the ids travel.
-    group_block_ids: tuple[np.ndarray, ...]
+    vllm_block_ids_by_group: tuple[np.ndarray, ...]
 
 
 @dataclass(frozen=True)
@@ -90,20 +101,26 @@ class UCMConnectorMetadata(KVConnectorMetadata):
     no_forward: bool = False
 
 
-_KEY_TYPE_BITS: Mapping[str, int] = {"FA": 0, "WA": 1, "State": 2}
+_ATTENTION_TYPE_BITS: Mapping[AttentionType, int] = {
+    AttentionType.FA: 0,
+    AttentionType.WA: 1,
+    AttentionType.STATE: 2,
+}
 
 
-def _key_tag(chain: str, tp_rank: int = 0, pp_rank: int = 0) -> bytes:
-    """The 2-byte suffix of a UCM key, big-endian bit layout:
+def _ucm_block_id_tag(
+    attention_type: AttentionType, tp_rank: int = 0, pp_rank: int = 0
+) -> bytes:
+    """The 2-byte suffix of a UCM block id, big-endian bit layout:
 
-    type(2) group(4) tp_rank(4) pp_rank(4) reserved(2).  Every group of a
-    chain shares one record, so no group bits are set today; the layout
+    type(2) group(4) tp_rank(4) pp_rank(4) reserved(2).  All groups of a
+    attention type share one record, so no group bits are set today; the layout
     keeps them for a future per-group split.  Ranks default to the
-    logical rank-0 key namespace the scheduler hashes in.
+    logical rank-0 namespace the scheduler hashes in.
     """
 
     value = (
-        (_KEY_TYPE_BITS[chain] << 14)
+        (_ATTENTION_TYPE_BITS[attention_type] << 14)
         | ((tp_rank & 0b1111) << 6)
         | ((pp_rank & 0b1111) << 2)
     )
@@ -140,48 +157,50 @@ class UCMDispatcher:
         self.need_load_to_running_state = need_load_to_running_state
         self.proxy = proxy
         # Folds vLLM's block-hash extra keys (multimodal inputs, LoRA, cache
-        # salt, prompt embeds) into the chain, so equal token IDs with
-        # different KV-affecting inputs get different keys.
+        # salt, prompt embeds) into the hash, so equal token IDs with
+        # different KV-affecting inputs get different UCM block ids.
         self._block_hasher = request_hasher.make_request_block_hasher(
             kv_cache_spec.ucm_cache_block_size, base_seed
         )
         self.load_threshold_tokens = max(int(load_threshold_tokens), 0)
         self.recompute_tokens = max(int(recompute_tokens), 0)
         self.requests: dict[str, RequestState] = {}
-        # The per-kind routing table (key kind -> participating groups),
-        # built once: FA, then the tail-storing WA groups, then State.
-        self._routes = dispatch_routes(kv_cache_spec)
-        self._chain_tags = tuple(
-            (label, _key_tag(label, tp_rank, pp_rank)) for label, _ in self._routes
+        # Attention type -> participating groups, built once: FA, then the
+        # tail-storing WA groups, then State.
+        self._groups_by_attention_type = groups_by_attention_type(kv_cache_spec)
+        self._attention_type_tags = tuple(
+            (attention_type, _ucm_block_id_tag(attention_type, tp_rank, pp_rank))
+            for attention_type, _ in self._groups_by_attention_type
         )
 
-    def _chain_keys(self, request: "Request") -> tuple[tuple[bytes, ...], ...]:
-        """Per-chain keys: one shared hash chain, each chain's tag appended.
+    def _ucm_block_ids_by_attention_type(
+        self, request: "Request"
+    ) -> tuple[tuple[bytes, ...], ...]:
+        """UCM block ids per attention type: shared block hashes plus a type tag.
 
-        The chain runs over ucm_cache_block_size token blocks from the
-        base seed; a key is the chain value's first 14 bytes plus the
-        chain's 2-byte tag, so the FA and boundary keys at one boundary
-        differ only in their tag.
+        Hashes cover ucm_cache_block_size token blocks from the base seed; a
+        UCM block id is a hash's first 14 bytes plus the attention type's 2-byte
+        tag, so FA, WA and State ids at one boundary differ only in the tag.
         """
 
-        values = self._block_hasher(request)
+        hashes = self._block_hasher(request)
         return tuple(
-            tuple(value[:14] + tag for value in values)
-            for _label, tag in self._chain_tags
+            tuple(block_hash[:14] + tag for block_hash in hashes)
+            for _attention_type, tag in self._attention_type_tags
         )
 
     def lookup(self, request: "Request", num_computed_tokens: int) -> UCMLookupResult:
         """Probe the external cache and record the request snapshot."""
         result = self._lookup(request, num_computed_tokens)
         if result.external_hit_tokens <= self.load_threshold_tokens:
-            result = UCMLookupResult(0, result.group_ucm_block_ids)
+            result = UCMLookupResult(0, result.ucm_block_ids_by_attention_type)
         self.requests[str(request.request_id)] = RequestState(
             hbm_hit_tokens=num_computed_tokens,
             external_hit_tokens=result.external_hit_tokens,
             num_token_ids=len(request.all_token_ids),
             token_processed=num_computed_tokens + result.external_hit_tokens,
-            group_ucm_block_ids=result.group_ucm_block_ids,
-            group_vllm_block_ids=tuple([] for _ in self.spec.groups),
+            ucm_block_ids_by_attention_type=result.ucm_block_ids_by_attention_type,
+            vllm_block_tables=tuple([] for _ in self.spec.groups),
             load_pending=result.external_hit_tokens > 0,
         )
         return result
@@ -189,39 +208,47 @@ class UCMDispatcher:
     def _lookup(self, request: "Request", hbm: int) -> UCMLookupResult:
         """FA prefix restore; WA/State additionally need their boundary.
 
-        All chains share one hash chain at ucm_cache_block_size, so every
-        chain has a key at the same boundary.  The FA chain is a prefix
-        requirement; the WA (window tail) and State (mamba snapshot)
-        chains are boundary records -- restoring requires a complete FA
-        prefix up to some boundary and that boundary's tail or snapshot.
-        Boundary chains must all exist at the same restore boundary.
+        Every attention type has a UCM block id at each ucm_cache_block_size
+        boundary.  FA ids must hit as a contiguous prefix; WA (window tail)
+        and State (mamba snapshot) ids are boundary records -- restoring
+        requires a complete FA prefix up to some boundary plus that
+        boundary's WA and State records, all at the same restore boundary.
         """
 
         ucm_block_size = self.spec.ucm_cache_block_size
-        group_ucm_block_ids = self._chain_keys(request)
-        # Every chain scans up to the last complete block below the
+        ucm_block_ids_by_attention_type = self._ucm_block_ids_by_attention_type(request)
+        # Every attention type scans up to the last complete block below the
         # recompute margin; the margin's block is left to recompute (v1
         # semantics -- a full hit still recomputes recompute_tokens).
         num_tokens = len(request.all_token_ids)
         last = max(num_tokens - self.recompute_tokens, 0) // ucm_block_size
         first = hbm // ucm_block_size
         fa_end = hbm
-        for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids):
-            if label == "FA":
-                hits = self.proxy.lookup_on_prefix(keys[first:last])
+        for (attention_type, _tag), ucm_block_ids in zip(
+            self._attention_type_tags, ucm_block_ids_by_attention_type
+        ):
+            if attention_type is AttentionType.FA:
+                hits = self.proxy.lookup_on_prefix(
+                    ucm_block_ids[first:last], np.arange(first, last, dtype=np.int64)
+                )
                 if hits >= 0:
                     fa_end = max((first + hits + 1) * ucm_block_size, hbm)
                 break
-        boundary_keys = [
-            keys
-            for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids)
-            if label != "FA"
+        boundary_ucm_block_ids = [
+            ucm_block_ids
+            for (attention_type, _tag), ucm_block_ids in zip(
+                self._attention_type_tags, ucm_block_ids_by_attention_type
+            )
+            if attention_type is not AttentionType.FA
         ]
         restore_end = fa_end
-        while boundary_keys and restore_end > hbm:
+        while boundary_ucm_block_ids and restore_end > hbm:
             end = restore_end // ucm_block_size
             hits = [
-                self.proxy.lookup_on_reverse(keys[first:end]) for keys in boundary_keys
+                self.proxy.lookup_on_reverse(
+                    ucm_block_ids[first:end], np.arange(first, end, dtype=np.int64)
+                )
+                for ucm_block_ids in boundary_ucm_block_ids
             ]
             if min(hits) < 0:
                 restore_end = hbm
@@ -230,22 +257,24 @@ class UCMDispatcher:
             if candidate == restore_end:
                 break
             restore_end = candidate
-        return UCMLookupResult(max(restore_end - hbm, 0), group_ucm_block_ids)
+        return UCMLookupResult(
+            max(restore_end - hbm, 0), ucm_block_ids_by_attention_type
+        )
 
     def update_blocks(
         self,
         request_id: str,
-        group_block_ids: Sequence[Sequence[int]],
+        vllm_block_tables: Sequence[Sequence[int]],
         *,
         append: bool,
     ) -> None:
         state = self.requests[request_id]
         if append:
-            for destination, source in zip(state.group_vllm_block_ids, group_block_ids):
+            for destination, source in zip(state.vllm_block_tables, vllm_block_tables):
                 destination.extend(int(value) for value in source)
         else:
-            state.group_vllm_block_ids = tuple(
-                [int(value) for value in source] for source in group_block_ids
+            state.vllm_block_tables = tuple(
+                [int(value) for value in source] for source in vllm_block_tables
             )
 
     def build_from_scheduler_output(
@@ -263,8 +292,8 @@ class UCMDispatcher:
             state = self.requests.get(request_id)
             if state is None:
                 continue
-            blocks = block_state.get_block_ids(request_id)
-            self.update_blocks(request_id, blocks, append=False)
+            vllm_block_tables = block_state.get_block_ids(request_id)
+            self.update_blocks(request_id, vllm_block_tables, append=False)
             scheduled = scheduler_output.num_scheduled_tokens.get(request_id, 0)
             request_meta = self._request_meta(request_id, state, scheduled)
             snapshots = self._state_dump_plans(
@@ -283,14 +312,16 @@ class UCMDispatcher:
         """Publish complete checkpoints beyond the initially matched prefix."""
         if not self.spec.state_groups:
             return ()
-        route_index = next(
-            i for i, (kind, _) in enumerate(self._routes) if kind == "State"
+        type_index = next(
+            i
+            for i, (attention_type, _) in enumerate(self._groups_by_attention_type)
+            if attention_type is AttentionType.STATE
         )
-        groups = self._routes[route_index][1]
+        groups = self._groups_by_attention_type[type_index][1]
         ucm_block_size = self.spec.ucm_cache_block_size
         matched_prefix = state.hbm_hit_tokens + state.external_hit_tokens
         boundaries: dict[int, dict[int, int]] = {}
-        for group_id, block_id, boundary in offloads:
+        for group_id, vllm_block_id, boundary in offloads:
             # Engine offers include newly hashed imported State blocks. Their
             # prefix is already cached; do not dump it back to the store.
             # Use the initial hit boundary, not token_processed: a checkpoint
@@ -299,20 +330,22 @@ class UCMDispatcher:
                 matched_prefix < boundary <= state.num_token_ids
                 and boundary % ucm_block_size == 0
             ):
-                boundaries.setdefault(boundary, {})[group_id] = block_id
+                boundaries.setdefault(boundary, {})[group_id] = vllm_block_id
         plans = []
-        for boundary, blocks in sorted(boundaries.items()):
-            if not all(group.group_id in blocks for group in groups):
+        for boundary, vllm_block_ids in sorted(boundaries.items()):
+            if not all(group.group_id in vllm_block_ids for group in groups):
                 continue
-            key = state.group_ucm_block_ids[route_index][boundary // ucm_block_size - 1]
+            ucm_block_id = state.ucm_block_ids_by_attention_type[type_index][
+                boundary // ucm_block_size - 1
+            ]
             plans.append(
                 UCMGroupDispatchPlan(
-                    "State",
-                    (key,),
+                    AttentionType.STATE,
+                    (ucm_block_id,),
                     boundary - ucm_block_size,
                     boundary,
                     tuple(
-                        np.asarray([blocks[group.group_id]], dtype=np.uint64)
+                        np.asarray([vllm_block_ids[group.group_id]], dtype=np.uint64)
                         for group in groups
                     ),
                 )
@@ -357,8 +390,8 @@ class UCMDispatcher:
     ) -> tuple[UCMGroupDispatchPlan, ...]:
         """FA/WA plans and runner-specific State load destinations.
 
-        FA gets every complete key the range touches; WA gets the newest
-        complete boundary. State loads use that restore boundary's key
+        FA gets every complete UCM block the range touches; WA gets the newest
+        complete boundary. State loads use that restore boundary's UCM block
         and its load destinations: the running block and imported checkpoint
         when need_load_to_running_state, else only the checkpoint the runner
         copies from. State dumps are built separately
@@ -368,35 +401,37 @@ class UCMDispatcher:
         if token_end <= token_start:
             return ()
         ucm_block_size = self.spec.ucm_cache_block_size
-        # Route-invariant key bounds: the first key the range touches and
-        # the boundary it ends on.  No complete key in range means no
-        # plan for any kind: FA has nothing to store or load, and the
+        # Type-invariant UCM block bounds: the first block the range touches
+        # and the boundary it ends on.  No complete UCM block in range means
+        # no plan for any attention type: FA has nothing to store or load, and the
         # WA/State boundary was not reached.
-        first_key = token_start // ucm_block_size
-        last_key = token_end // ucm_block_size
-        if last_key <= first_key:
+        first_block_index = token_start // ucm_block_size
+        end_block_index = token_end // ucm_block_size
+        if end_block_index <= first_block_index:
             return ()
-        for route_index, (hash_group, groups) in enumerate(self._routes):
-            if hash_group == "State" and state_target_tokens is None:
+        for type_index, (attention_type, groups) in enumerate(
+            self._groups_by_attention_type
+        ):
+            if attention_type is AttentionType.STATE and state_target_tokens is None:
                 continue
-            keys_available = state.group_ucm_block_ids[route_index]
-            if hash_group in ("WA", "State"):
+            ucm_block_ids = state.ucm_block_ids_by_attention_type[type_index]
+            if attention_type in (AttentionType.WA, AttentionType.STATE):
                 # WA keeps the newest completed boundary; a State load
                 # ends exactly at the selected restore boundary.
-                start = last_key - 1
-                end = last_key
+                start = end_block_index - 1
+                end = end_block_index
             else:
-                # FA keys are stored once and never re-stored, so a plan
-                # covers every complete key the range touches -- not just
-                # the newest boundary.
-                start = first_key
-                end = last_key
-            if hash_group == "WA":
+                # FA blocks are stored once and never re-stored, so a plan
+                # covers every complete UCM block the range touches -- not
+                # just the newest boundary.
+                start = first_block_index
+                end = end_block_index
+            if attention_type is AttentionType.WA:
                 # A tail window is only worth storing once it is
-                # complete: an early boundary shorter than the chain's
+                # complete: an early boundary shorter than its groups'
                 # largest tail would clamp the window head to token 0 --
                 # the request's own prefix, which a restore recomputes
-                # anyway.  Skipping keeps every dumped key's record
+                # anyway.  Skipping keeps every dumped UCM block's record
                 # complete, so reverse lookup never selects a partial
                 # one (the load branch above cannot select one either).
                 if end * ucm_block_size < max(
@@ -404,13 +439,13 @@ class UCMDispatcher:
                 ):
                     continue
             plan = UCMGroupDispatchPlan(
-                hash_group,
-                tuple(keys_available[start:end]),
+                attention_type,
+                tuple(ucm_block_ids[start:end]),
                 start * ucm_block_size,
                 end * ucm_block_size,
                 tuple(
                     self._group_blocks(
-                        hash_group,
+                        attention_type,
                         group,
                         state,
                         start,
@@ -421,7 +456,10 @@ class UCMDispatcher:
                 ),
             )
             plans.append(plan)
-            if hash_group == "State" and self.need_load_to_running_state:
+            if (
+                attention_type is AttentionType.STATE
+                and self.need_load_to_running_state
+            ):
                 # Precopy has already run, so restoring only the imported
                 # boundary cannot initialize the running state. Restoring
                 # only the running block leaves a local cached boundary unfilled.
@@ -430,9 +468,9 @@ class UCMDispatcher:
                 plans.append(
                     replace(
                         plan,
-                        group_block_ids=tuple(
+                        vllm_block_ids_by_group=tuple(
                             self._group_blocks(
-                                hash_group,
+                                attention_type,
                                 group,
                                 state,
                                 start,
@@ -447,7 +485,7 @@ class UCMDispatcher:
 
     def _group_blocks(
         self,
-        hash_group: Literal["FA", "WA", "State"],
+        attention_type: AttentionType,
         group: UCMKVCacheGroupInfo,
         state: RequestState,
         start: int,
@@ -455,33 +493,33 @@ class UCMDispatcher:
         *,
         state_target_tokens: int | None = None,
     ) -> np.ndarray:
-        """One group's window block ids for the plan's keys, vectorized.
+        """One group's window vLLM block ids for the plan's UCM blocks.
 
-        Every window is ``tail_blocks`` vllm blocks ending at the block
-        containing the window's last token -- HMA's boundary indices: a
-        FA key's last token is (k + 1) * ucm_block_size - 1; a WA key anchors its
-        window at the restore boundary. State uses a platform load slot.
-        The _plans clamp gate keeps the WA gather non-negative and the
-        parse-time divisibility checks keep an FA key inside one shared
-        block.  Block-major per key.
+        Every window is ``tail_blocks`` vLLM blocks ending at the block
+        containing the window's last token -- HMA's boundary indices: FA UCM
+        block k's last token is (k + 1) * ucm_block_size - 1; a WA UCM block
+        anchors its window at the restore boundary. State uses a platform
+        load slot. The _plans clamp gate keeps the WA gather non-negative and
+        the parse-time divisibility checks keep an FA UCM block inside one
+        shared vLLM block.  Block-major per UCM block.
         """
 
         ucm_block_size = self.spec.ucm_cache_block_size
-        table = state.group_vllm_block_ids[group.group_id]
+        table = state.vllm_block_tables[group.group_id]
         tail_blocks = group.tail_blocks
-        if hash_group == "State":
+        if attention_type is AttentionType.STATE:
             # The caller picks the running or boundary slot from the
             # runner's load/copy ordering.
             index = (state_target_tokens - 1) // group.token_block_size
-            block_id = table[index]
-            assert block_id != 0
-            return np.asarray([block_id], dtype=np.uint64)
-        if hash_group == "FA":
+            vllm_block_id = table[index]
+            assert vllm_block_id != 0
+            return np.asarray([vllm_block_id], dtype=np.uint64)
+        if attention_type is AttentionType.FA:
             boundary_tokens = (
                 np.arange(start + 1, end + 1, dtype=np.uint64) * ucm_block_size - 1
             )
         else:
-            # WA: one boundary key at the plan's newest boundary.
+            # WA: one UCM block at the plan's newest boundary.
             boundary_tokens = np.asarray([end * ucm_block_size - 1], dtype=np.uint64)
         boundary_block_idx = boundary_tokens // group.token_block_size
         # Convert only the table range the windows touch -- a WA group's
@@ -490,9 +528,9 @@ class UCMDispatcher:
         # first_idx non-negative.
         first_idx = int(boundary_block_idx.min()) - (tail_blocks - 1)
         last_idx = int(boundary_block_idx.max())
-        table_ids = np.asarray(table[first_idx : last_idx + 1], dtype=np.uint64)
+        vllm_block_ids = np.asarray(table[first_idx : last_idx + 1], dtype=np.uint64)
         within = boundary_block_idx - first_idx
         if tail_blocks == 1:
-            return table_ids[within]
+            return vllm_block_ids[within]
         steps_back = np.arange(tail_blocks, dtype=np.uint64)[::-1]
-        return table_ids[(within[:, None] - steps_back[None, :]).reshape(-1)]
+        return vllm_block_ids[(within[:, None] - steps_back[None, :]).reshape(-1)]

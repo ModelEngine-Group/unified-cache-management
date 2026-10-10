@@ -51,7 +51,7 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 - 无 forward 步骤的 metadata 携带 `no_forward`，在 `get_transfer_results` 补做保存等待；有 forward/draft 时遵循引擎原来的 finalization 时序。
 - namespace 当前为 `r7`，摘要包含 HF text config、KV/Mamba dtype、resolved KV layout 和 Ascend 普通 attention 的轴模式，继续区分平台、模型 dtype、block size、layerwise 与并行拓扑。整组 Block First 快路径限定为 CUDA/CPU 原生布局，使用独立 namespace，不读取旧 r2/r3/r4/r5/r6 文件。设备地址与 allocation 容量不参与身份。
 
-后端仍是开发用 `SimpleFileUCMProxy`。变长 Transfer 与 wait/commit 接口保留，没有接入生产 Cache|Posix，也没有将 v1 固定列模板引入 v2。
+后端仍是开发用 `FileTestStore`。变长 Transfer 与 wait/commit 接口保留，没有接入生产 Cache|Posix，也没有将 v1 固定列模板引入 v2。
 
 ## 尚未完成与下一步
 
@@ -70,7 +70,7 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 
 用户确认：本项先记录，不在当前 review 阶段实现。以原生 vLLM 0.30.0 / Ascend MRV1 为依据，旧 UCM patch 不纳入本次适配。
 
-当前支持范围：Attention/MLA/indexer 已有按层提交、等待和保存的接线；State 虽然能按层拆 Transfer，但 `start_load_kv` 返回前仍统一等待所有 State 层，尚无 State 加载与逐层计算的流水。开发用 `SimpleFileUCMProxy` 同步执行 IO，也不能证明真实异步重叠或运行时支持。
+当前支持范围：Attention/MLA/indexer 已有按层提交、等待和保存的接线；State 虽然能按层拆 Transfer，但 `start_load_kv` 返回前仍统一等待所有 State 层，尚无 State 加载与逐层计算的流水。开发用 `FileTestStore` 同步执行 IO，也不能证明真实异步重叠或运行时支持。
 
 实现范围与顺序：
 
@@ -183,3 +183,78 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 - 精确 `boundary_state_offloads` 交接由 `6b110badbb`（Save exact Mamba boundary states）引入，本地版本 tag 中 v0.29.0 已包含。这个较新的保存 SPI 与更早存在的本地 hash 注册是两件事。
 - 旧 `hla_connector._append_mamba_align_state_block` 的 load 分支选择最后一个非 null 槽（无 speculative 的普通恢复即 B），并不额外填 A。仅检查本轮运行 State 无法验证外存导入边界的本地缓存内容；尚未运行历史环境复现，不把源码推导当作历史运行失败证据。
 - 旧 UCM 还提供 `v0210/vllm_ascend/mamba_copy_order_patch.py`，把 Ascend A→B 复制提前到 connector load 之前，以适配 HLA 加载 B。这是旧 HLA 能在 Ascend 使用 B 的另一项前提。当前 v2 的 NPU 加载 A 策略依据原生 MRV1 顺序；若启用 `ENABLE_UCM_PATCH`，`apply_all_patches` 仍会导入这个复制顺序补丁，两条策略会冲突。用户已确认本次依据原生引擎，旧 UCM patch 不纳入适配范围；此处仅保留历史差异说明，不宣称打开旧补丁也能正确恢复。
+
+## Proxy Factory 与 Store 组合
+
+Connector 通过 `factory.create_proxy` 创建完整 Adapter。默认配置仍读取
+`v2_storage_path` 或原有 `ucm_connectors` 的路径，保持原 `.ucm-v2/<namespace>`
+目录；自定义配置在同一 namespace 下为每个命名 Store 创建独立目录。
+
+- `PipelineProxy` 只调用顶层 Store。Store 自己持有可选 backend，并管理向下查询、
+  完整记录回填、提交后的下沉和缓冲区生命周期。
+- `ParallelProxy` 将 `block_indices * record_token_span` 按 `token_end` 路由到唯一
+  Store，各 Store 的 `backend=None`。未命中、容量不足均不访问另一条路。
+- `lookup/load/dump/commit/abort` 使用同一份请求内绝对 UCM 记录序号。阈值必须与
+  记录粒度对齐，最后一条路的 `token_end` 为 null。4096 token 阈值和 512 token
+  记录粒度下，序号 0–7 在第一路，8 起在第二路。WA/State 使用边界记录的序号。
+- `UCMProxyTransfer.record_nbytes[K]` 是完整记录大小，按层传输不会缩小该值。
+  dump 完成表示源指针可复用；commit 发布完整记录；flush 等待下层提交；
+  Connector shutdown 排空未完成传输并关闭 Store。
+- 分片包装先在各 rank 内执行选定 Proxy 的查询，再对所有 rank 的结果取 AND。
+  同一记录可以命中不同 rank 的不同层；空 PP 分片仍提交零字节标记。
+
+Pipeline 配置示例：
+
+```yaml
+v2_stores:
+  cache:
+    type: test_memory
+    capacity_bytes: 268435456
+  disk:
+    type: test_file
+    path: /path/to/cache
+v2_proxy:
+  type: pipeline
+  stores: [cache, disk]
+```
+
+Factory 从后向前连接 backend。Parallel 使用独立 Store 定义，例如：
+
+```yaml
+v2_stores:
+  first:
+    type: test_file
+    path: /path/to/first
+  rest:
+    type: test_file
+    path: /path/to/rest
+v2_proxy:
+  type: parallel
+  routes:
+    - {token_end: 4096, store: first}
+    - {token_end: null, store: rest}
+```
+
+当前实现是开发用 `FileTestStore` 和 `MemoryTestStore`，尚未接入生产 Cache/Posix。
+内存测试 Store 在 commit 时同步自动下沉；完整记录回填、容量淘汰以及下沉失败后的
+源数据保留都由 Store 实现。flush/close 重试未完成的下沉，失败继续上报。
+文件测试 Store 使用临时文件与原子重命名发布数据，JSON sidecar 保存记录元数据。
+调用者负责保证 commit 前所有必要片段已完成。
+
+内存测试 Store 是进程内缓存，可以直接接入任一种 Proxy 做单测。真实 Connector
+的 scheduler 与 worker 分进程，因此 Factory 拒绝独立的 `test_memory` 路由，以及
+没有共享末层的内存 Pipeline，避免 worker 有数据而 scheduler 永远查询不到。
+测试内存 Store 的 backend 只接受这组测试 Store；生产 Store 的 backend 适配不在
+该实现中。
+
+验证入口：
+
+```bash
+python -m pytest test/suites/Unit/test_ucm_proxy_v2.py --noconftest \
+  --confcutdir=test/suites/Unit -q
+```
+
+覆盖两种 Proxy 的逐层字节往返、非零起点和边界位置、Store 下沉/回填/容量、
+异步路由失败后排空、Factory 配置、TP 全分片可见性和 PP 空分片提交。
+已有 `test_ucm_connector_v2.py` 的大批 fixture 仍使用旧 vLLM API；当前 0.30
+源码与这些 fixture 的不匹配需另行迁移，不能把该历史测试集视为全绿基线。

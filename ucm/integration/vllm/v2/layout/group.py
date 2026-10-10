@@ -1,8 +1,8 @@
 """Physical KV-cache access, compiled once and resolved over block IDs.
 
 ``compile_access`` converts local token ranges to per-segment byte offsets and
-sizes. ``BlockAccess.resolve_ptrs`` supplies the physical block IDs. Neither needs
-hash keys or UCM window rules; store_layout.py composes their results into
+sizes. ``BlockAccess.resolve_ptrs`` supplies the vLLM block ids. Neither needs
+UCM block ids or UCM window rules; store_layout.py composes their results into
 records. Whole Block First spans retain padding for the fast path, including
 State pages. Partial-token support is one policy for the entire group.
 
@@ -44,9 +44,10 @@ class TensorDescriptor:
 class BlockFirstView:
     """One group's contiguous per-block span on a Block First layout.
 
-    The group's descriptors tile the block slot back to back (offset
-    chain, paddings riding inside), so one block of this group is one
-    IO span: every layer page of every descriptor in it.
+    The group's descriptors tile the block slot back to back (each
+    starting where the previous ends, paddings riding inside), so one
+    block of this group is one IO span: every layer page of every
+    descriptor in it.
     """
 
     base_ptr: int  # first layer of the first (lowest-offset) descriptor
@@ -58,7 +59,7 @@ class BlockFirstView:
 class BlockAccess:
     """Physical access pattern, with arrays shaped [window block, segment].
 
-    No hash keys or storage-record offsets live here. A pattern repeats for
+    No UCM block ids or storage-record offsets live here. A pattern repeats for
     each window passed to resolve_ptrs(); dynamic token offsets are per block.
     Sizes and fixed byte offsets are compiled once. Columns represent segments;
     one component view can contribute multiple head segments.
@@ -70,7 +71,7 @@ class BlockAccess:
 
     def resolve_ptrs(
         self,
-        block_ids: Sequence[int] | np.ndarray,
+        vllm_block_ids: Sequence[int] | np.ndarray,
         *,
         token_offsets: np.ndarray | None = None,
         segment_mask: np.ndarray | None = None,
@@ -80,10 +81,10 @@ class BlockAccess:
         Dynamic token offsets add to the compiled start. Use a zero-start
         template when supplying absolute local starts (the FA sub-block case).
         """
-        blocks = np.asarray(block_ids, dtype=np.uint64)
-        self.layout._checked_blocks(blocks)
+        vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+        self.layout._checked_vllm_block_ids(vllm_block_ids)
         blocks_per_chunk = len(self.segment_bytes)
-        count = len(blocks) // blocks_per_chunk
+        count = len(vllm_block_ids) // blocks_per_chunk
         columns: slice | np.ndarray = (
             slice(None) if segment_mask is None else segment_mask
         )
@@ -93,7 +94,7 @@ class BlockAccess:
         fixed_sizes = self.segment_bytes[:, columns]
         ptrs = (
             self.layout.base_ptrs[None, columns]
-            + blocks.reshape(count, blocks_per_chunk, 1)
+            + vllm_block_ids.reshape(count, blocks_per_chunk, 1)
             * self.layout.block_strides[None, columns]
             + byte_offsets
         )
@@ -110,7 +111,7 @@ class BlockAccess:
             if (ends > self.layout.payload_bytes[columns]).any():
                 raise ValueError("Access range extends beyond a physical block")
             ptrs += dynamic_offsets
-        return ptrs.reshape(len(blocks), fixed_sizes.shape[1])
+        return ptrs.reshape(len(vllm_block_ids), fixed_sizes.shape[1])
 
 
 class KVCacheGroupLayout:
@@ -248,10 +249,13 @@ class KVCacheGroupLayout:
         # one row) of token counts against every segment's state column.
         columns: slice | np.ndarray = slice(None) if mask is None else mask
         token_counts = np.asarray(tokens)
-        if not self.supports_partial_tokens and (
-            (token_counts != 0) & (token_counts != self.token_block_size)
-        ).any():
-            raise ValueError(f"KV cache group {self.group_id} requires whole-block access")
+        if (
+            not self.supports_partial_tokens
+            and ((token_counts != 0) & (token_counts != self.token_block_size)).any()
+        ):
+            raise ValueError(
+                f"KV cache group {self.group_id} requires whole-block access"
+            )
         states = np.multiply.outer(tokens, self.states_per_block[columns])
         leftover = states % self.token_block_size
         if leftover.any():
@@ -309,7 +313,7 @@ class KVCacheGroupLayout:
         return BlockAccess(self, byte_offsets, segment_bytes)
 
     def block_first_segments(
-        self, block_ids: Sequence[int] | np.ndarray
+        self, vllm_block_ids: Sequence[int] | np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """One group-sized (ptr, size) per block, paddings riding inside.
 
@@ -320,15 +324,15 @@ class KVCacheGroupLayout:
 
         span = self.block_first
         assert span is not None  # caller checks block_first is not None
-        blocks = np.asarray(block_ids, dtype=np.uint64)
-        self._checked_blocks(blocks)
-        ptrs = span.base_ptr + blocks * span.block_stride
-        sizes = np.full(len(blocks), span.block_size_bytes, dtype=np.uint64)
+        vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+        self._checked_vllm_block_ids(vllm_block_ids)
+        ptrs = span.base_ptr + vllm_block_ids * span.block_stride
+        sizes = np.full(len(vllm_block_ids), span.block_size_bytes, dtype=np.uint64)
         return ptrs, sizes
 
-    def _checked_blocks(self, blocks: np.ndarray) -> None:
-        if (blocks >= self.num_blocks).any():
-            bad = blocks[blocks >= self.num_blocks][0]
+    def _checked_vllm_block_ids(self, vllm_block_ids: np.ndarray) -> None:
+        if (vllm_block_ids >= self.num_blocks).any():
+            bad = vllm_block_ids[vllm_block_ids >= self.num_blocks][0]
             raise ValueError(
                 f"vLLM block ID {int(bad)} is outside [0, {self.num_blocks})"
             )

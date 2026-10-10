@@ -119,6 +119,8 @@ vllm_base.KVConnectorMetadata = KVConnectorMetadata
 vllm_base.KVConnectorRole = KVConnectorRole
 vllm_base.KVConnectorWorkerMetadata = KVConnectorWorkerMetadata
 vllm_base.SupportsHMA = SupportsHMA
+vllm_base.KVConnectorTransferResults = SimpleNamespace
+sys.modules["vllm"].envs = SimpleNamespace(VLLM_KV_CACHE_LAYOUT="NHD")
 sys.modules[vllm_base.__name__] = vllm_base
 
 vllm_model_utils = types.ModuleType("vllm.model_executor.models.utils")
@@ -211,6 +213,13 @@ for name, value in (
     ("get_kv_cache_spec_kind", get_kv_cache_spec_kind),
 ):
     setattr(vllm_kv_cache_interface, name, value)
+vllm_kv_cache_interface.CircularBufferSpec = type(
+    "CircularBufferSpec", (_KVCacheSpec,), {}
+)
+vllm_kv_cache_interface.KpoolTailSpec = type("KpoolTailSpec", (_KVCacheSpec,), {})
+vllm_kv_cache_interface.UniformTypeKVCacheSpecs = type(
+    "UniformTypeKVCacheSpecs", (), {}
+)
 sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
 
 # The connector resolves its scheduler granularity through vLLM's
@@ -241,17 +250,23 @@ from ucm.integration.vllm.v2.layout import (  # noqa: E402
     UCMKVCacheLayout,
     parse_kv_cache_config,
 )
+from ucm.integration.vllm.v2.test_stores import (
+    FileTestStore,
+    MemoryTestStore,
+    record_segments,
+)
 from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
     UCMConnector,
     UCMWorkerMetadata,
 )
 from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder  # noqa: E402
 from ucm.integration.vllm.v2.ucm_proxy import (  # noqa: E402
-    SimpleFileUCMProxy,
+    PipelineProxy,
     UCMProxyAdapter,
     UCMProxyError,
 )
 from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
+    AttentionType,
     RequestHasher,
     RequestState,
     UCMConnectorMetadata,
@@ -396,7 +411,7 @@ def make_dispatcher(parsed, proxy=None, hasher=None, **kwargs):
     """A UCMDispatcher for dispatch-only tests (lookup never runs)."""
     return UCMDispatcher(
         parsed,
-        UCMProxyAdapter(proxy or FakeProxy()),
+        UCMProxyAdapter(PipelineProxy(proxy or RecordingTestStore())),
         hasher or RequestHasher(vllm_config(), 0),
         b"seed",
         **kwargs,
@@ -407,7 +422,7 @@ def seed_request_state(
     dispatcher,
     request,
     external_hit_tokens=0,
-    group_ucm_block_ids=(),
+    ucm_block_ids_by_attention_type=(),
     hbm_hit_tokens=0,
 ):
     """Record a synthetic lookup result the way UCMDispatcher.lookup would."""
@@ -416,15 +431,17 @@ def seed_request_state(
         external_hit_tokens=external_hit_tokens,
         num_token_ids=len(request.all_token_ids),
         token_processed=hbm_hit_tokens + external_hit_tokens,
-        group_ucm_block_ids=group_ucm_block_ids,
-        group_vllm_block_ids=tuple([] for _ in dispatcher.spec.groups),
+        ucm_block_ids_by_attention_type=ucm_block_ids_by_attention_type,
+        vllm_block_tables=tuple([] for _ in dispatcher.spec.groups),
         load_pending=external_hit_tokens > 0,
     )
     dispatcher.requests[str(request.request_id)] = state
     return state
 
 
-class FakeProxy:
+class RecordingTestStore:
+    backend = None
+
     def __init__(self):
         self.present = set()
         self.lookup_calls = []
@@ -450,7 +467,7 @@ class FakeProxy:
     def load(self, block_ids, offsets, ptrs, sizes):
         self.load_calls.append((block_ids, offsets, ptrs, sizes))
 
-    def dump(self, block_ids, offsets, ptrs, sizes, metadata=()):
+    def dump(self, block_ids, offsets, ptrs, sizes, metadata=(), record_nbytes=None):
         self.dump_calls.append((block_ids, offsets, ptrs, sizes, metadata))
 
 
@@ -460,7 +477,10 @@ def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
         metadata, *args, **kwargs
     )
     block_ids = tuple(
-        key for t in transfers for key in t.keys for _ in range(t.ptrs.shape[1])
+        key
+        for t in transfers
+        for key in t.ucm_block_ids
+        for _ in range(t.ptrs.shape[1])
     )
     fields = {
         field: (
@@ -477,6 +497,17 @@ def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
     return SimpleNamespace(block_ids=block_ids, **fields)
 
 
+def make_transfer(keys, ptrs, sizes, offsets, metadata=()):
+    from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
+
+    indices = np.arange(len(keys), dtype=np.int64)
+    lengths = np.max(offsets + sizes, axis=1, initial=0)
+    metadata = metadata or tuple(
+        json.dumps({"type": "FA", "block_index": int(i)}) for i in indices
+    )
+    return UCMProxyTransfer(keys, indices, ptrs, sizes, offsets, metadata, lengths)
+
+
 def _submit_segments(adapter, operation, keys, offsets, ptrs, sizes):
     """Feed the existing byte fixtures through the native [K,S] adapter."""
     from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
@@ -488,7 +519,7 @@ def _submit_segments(adapter, operation, keys, offsets, ptrs, sizes):
         offsets, ptrs, sizes = np.asarray(segments, dtype=np.uint64).T
         adapter.submit(
             operation,
-            UCMProxyTransfer((key,), ptrs[None, :], sizes[None, :], offsets[None, :]),
+            make_transfer((key,), ptrs[None, :], sizes[None, :], offsets[None, :]),
         )
 
 
@@ -515,7 +546,7 @@ def _scheduler_metadata(
     """Use the scheduler-output entry point for existing dispatch fixtures."""
     block_state = SimpleNamespace(
         req_ids=tuple(r for r in scheduled_tokens if r in dispatcher.requests),
-        get_block_ids=lambda r: dispatcher.requests[r].group_vllm_block_ids,
+        get_block_ids=lambda r: dispatcher.requests[r].vllm_block_tables,
         boundary_state_offloads={},
     )
     output = SimpleNamespace(
@@ -542,54 +573,9 @@ class ByteMemory:
         return bytes(self.values.get(ptr + index, 0) for index in range(size))
 
 
-class InMemoryByteProxy(FakeProxy):
-    """Synchronous test-only Proxy; one dump call publishes complete records."""
-
+class MemoryFixtureStore(MemoryTestStore):
     def __init__(self, memory):
-        super().__init__()
-        self.memory = memory
-        self.records = {}
-
-    def lookup(self, keys):
-        return [key in self.records for key in keys]
-
-    def lookup_on_prefix(self, keys):
-        for index, key in enumerate(keys):
-            if key not in self.records:
-                return index - 1
-        return len(keys) - 1
-
-    def lookup_on_reverse(self, keys):
-        for index in range(len(keys) - 1, -1, -1):
-            if keys[index] in self.records:
-                return index
-        return -1
-
-    def dump(self, block_ids, offsets, ptrs, sizes, metadata=()):
-        pending = {}
-        if np.ndim(ptrs) == 2:
-            block_ids = tuple(key for key in block_ids for _ in range(ptrs.shape[1]))
-            offsets, ptrs, sizes = (
-                np.asarray(a).reshape(-1) for a in (offsets, ptrs, sizes)
-            )
-        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes):
-            # NumPy 1.x uint64 + Python int can promote to float64.
-            offset, ptr, size = int(offset), int(ptr), int(size)
-            record = pending.setdefault(key, bytearray())
-            required = offset + size
-            record.extend(b"\x00" * max(required - len(record), 0))
-            record[offset:required] = self.memory.read(ptr, size)
-        self.records.update({key: bytes(value) for key, value in pending.items()})
-
-    def load(self, block_ids, offsets, ptrs, sizes):
-        if np.ndim(ptrs) == 2:
-            block_ids = tuple(key for key in block_ids for _ in range(ptrs.shape[1]))
-            offsets, ptrs, sizes = (
-                np.asarray(a).reshape(-1) for a in (offsets, ptrs, sizes)
-            )
-        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes):
-            offset, ptr, size = int(offset), int(ptr), int(size)
-            self.memory.write(ptr, self.records[key][offset : offset + size])
+        super().__init__(MemoryByteAccess(memory))
 
 
 class MemoryByteAccess:
@@ -808,7 +794,7 @@ class KVCacheSpecTest(unittest.TestCase):
             (128, 128, 4, 0),
         )
 
-        # This A-chain capture predates platform block-size alignment. It has
+        # This capture predates platform block-size alignment. It has
         # Attention=768, Mamba=1024 and mamba_cache_mode=none, so it must not
         # be accepted as a production Kimi align layout.
         with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
@@ -955,17 +941,19 @@ class StateLoadTargetTest(unittest.TestCase):
             dispatcher,
             request,
             external_hit_tokens=256,
-            group_ucm_block_ids=(fa_keys, state_keys),
+            ucm_block_ids_by_attention_type=(fa_keys, state_keys),
         )
         # Restore boundary 256 lives in block 11; this step's running block
         # for tokens [256, 384) is block 12.
-        state.group_vllm_block_ids = ([1, 2, 3, 4], [0, 11, 12, 0])
+        state.vllm_block_tables = ([1, 2, 3, 4], [0, 11, 12, 0])
 
         meta = dispatcher._request_meta("r", state, 128)
-        state_plans = [p for p in meta.load_plans if p.hash_group == "State"]
+        state_plans = [
+            p for p in meta.load_plans if p.attention_type is AttentionType.STATE
+        ]
         for plan in state_plans:
-            self.assertEqual(plan.keys, (state_keys[1],))
-        return [plan.group_block_ids[0].tolist() for plan in state_plans]
+            self.assertEqual(plan.ucm_block_ids, (state_keys[1],))
+        return [plan.vllm_block_ids_by_group[0].tolist() for plan in state_plans]
 
     def test_copy_after_load_restores_only_the_boundary_block(self):
         # Ascend V1 runner: its A->B copy runs after the connector load.
@@ -995,7 +983,7 @@ class RequestAwareKeyTest(unittest.TestCase):
             ucm_cache_block_size=128,
             device_type="cuda",
         )
-        (keys,) = make_dispatcher(spec)._chain_keys(request)
+        (keys,) = make_dispatcher(spec)._ucm_block_ids_by_attention_type(request)
         return keys
 
     def test_same_tokens_with_different_images_get_different_keys(self):
@@ -1022,16 +1010,16 @@ class RequestAwareKeyTest(unittest.TestCase):
 
 
 class DumpMetadataTest(unittest.TestCase):
-    """Each dumped key carries JSON with its chain type and UCM block index."""
+    """Each dumped UCM block carries JSON with its attention type and block index."""
 
     def test_block_index_counts_ucm_blocks_from_the_request_start(self):
         from ucm.integration.vllm.v2.ucm_kv_cache import dump_metadata
         from ucm.integration.vllm.v2.ucm_scheduler import UCMGroupDispatchPlan
 
         keys = tuple(bytes([index]) * 16 for index in range(3))
-        fa = UCMGroupDispatchPlan("FA", keys, 256, 640, ())
-        wa = UCMGroupDispatchPlan("WA", keys[:1], 512, 640, ())
-        state = UCMGroupDispatchPlan("State", keys[:1], 896, 1024, ())
+        fa = UCMGroupDispatchPlan(AttentionType.FA, keys, 256, 640, ())
+        wa = UCMGroupDispatchPlan(AttentionType.WA, keys[:1], 512, 640, ())
+        state = UCMGroupDispatchPlan(AttentionType.STATE, keys[:1], 896, 1024, ())
 
         self.assertEqual(
             [json.loads(item) for item in dump_metadata(fa, 128)],
@@ -1052,8 +1040,8 @@ class DumpMetadataTest(unittest.TestCase):
     def test_adapter_passes_metadata_to_dump_only(self):
         from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
 
-        proxy = FakeProxy()
-        adapter = UCMProxyAdapter(proxy)
+        proxy = RecordingTestStore()
+        adapter = UCMProxyAdapter(PipelineProxy(proxy))
         keys = (b"a" * 16, b"b" * 16)
         grid = np.zeros((2, 1), dtype=np.uint64)
         metadata = (
@@ -1061,8 +1049,8 @@ class DumpMetadataTest(unittest.TestCase):
             '{"type":"FA","block_index":1}',
         )
 
-        adapter.submit("dump", UCMProxyTransfer(keys, grid, grid, grid, metadata))
-        adapter.submit("load", UCMProxyTransfer(keys, grid, grid, grid))
+        adapter.submit("dump", make_transfer(keys, grid, grid, grid, metadata))
+        adapter.submit("load", make_transfer(keys, grid, grid, grid))
 
         self.assertIs(proxy.dump_calls[-1][4], metadata)
         self.assertEqual(len(proxy.load_calls[-1]), 4)
@@ -1174,18 +1162,20 @@ class HashAndLookupTest(unittest.TestCase):
             "e60666fdcd359c82d9a369fc06bb3270",
         )
 
-    def test_key_tag_bit_layout(self):
-        from ucm.integration.vllm.v2.ucm_scheduler import _key_tag
+    def test_ucm_block_id_tag_bit_layout(self):
+        from ucm.integration.vllm.v2.ucm_scheduler import _ucm_block_id_tag
 
         # type(2) group(4) tp_rank(4) pp_rank(4) reserved(2), big-endian.
-        self.assertEqual(_key_tag("FA"), b"\x00\x00")
-        self.assertEqual(_key_tag("WA"), b"\x40\x00")
-        self.assertEqual(_key_tag("State"), b"\x80\x00")
-        self.assertEqual(_key_tag("FA", tp_rank=1), b"\x00\x40")
-        self.assertEqual(_key_tag("FA", pp_rank=1), b"\x00\x04")
-        self.assertEqual(_key_tag("WA", tp_rank=15, pp_rank=15), b"\x43\xfc")
+        self.assertEqual(_ucm_block_id_tag(AttentionType.FA), b"\x00\x00")
+        self.assertEqual(_ucm_block_id_tag(AttentionType.WA), b"\x40\x00")
+        self.assertEqual(_ucm_block_id_tag(AttentionType.STATE), b"\x80\x00")
+        self.assertEqual(_ucm_block_id_tag(AttentionType.FA, tp_rank=1), b"\x00\x40")
+        self.assertEqual(_ucm_block_id_tag(AttentionType.FA, pp_rank=1), b"\x00\x04")
+        self.assertEqual(
+            _ucm_block_id_tag(AttentionType.WA, tp_rank=15, pp_rank=15), b"\x43\xfc"
+        )
 
-    def test_chain_keys_share_one_chain_and_differ_only_by_tag(self):
+    def test_attention_types_share_one_hash_and_differ_only_by_tag(self):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
@@ -1194,11 +1184,14 @@ class HashAndLookupTest(unittest.TestCase):
             scheduler_block_size=128,
         )
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(FakeProxy()), self.hasher, b"seed"
+            parsed,
+            UCMProxyAdapter(PipelineProxy(RecordingTestStore())),
+            self.hasher,
+            b"seed",
         )
         request = FakeRequest("r", 512)
         values = self.hasher.make_request_block_hasher(128, b"seed")(request)
-        fa_keys, state_keys = coordinator._chain_keys(request)
+        fa_keys, state_keys = coordinator._ucm_block_ids_by_attention_type(request)
 
         self.assertEqual(fa_keys[0][:14], values[0][:14])
         self.assertEqual(state_keys[0][:14], values[0][:14])
@@ -1206,23 +1199,27 @@ class HashAndLookupTest(unittest.TestCase):
         self.assertEqual(state_keys[0][14:], b"\x80\x00")
         self.assertNotEqual(fa_keys[0], state_keys[0])
 
-    def test_custom_cache_block_chains_at_the_cache_block(self):
+    def test_custom_cache_block_hashes_at_the_cache_block(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
+            parsed,
+            UCMProxyAdapter(PipelineProxy(proxy)),
+            self.hasher,
+            b"seed",
+            recompute_tokens=0,
         )
         request = FakeRequest("r", 1024)
-        (keys,) = coordinator._chain_keys(request)
+        (keys,) = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update(keys)
 
         result = coordinator.lookup(request, 0)
 
-        self.assertEqual(result.group_ucm_block_ids[0], keys)
+        self.assertEqual(result.ucm_block_ids_by_attention_type[0], keys)
         self.assertEqual(result.external_hit_tokens, 1024)
 
     def test_direct_prefix_stops_at_first_miss(self):
@@ -1230,12 +1227,16 @@ class HashAndLookupTest(unittest.TestCase):
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
+            parsed,
+            UCMProxyAdapter(PipelineProxy(proxy)),
+            self.hasher,
+            b"seed",
+            recompute_tokens=0,
         )
         request = FakeRequest("r", 512)
-        (keys,) = coordinator._chain_keys(request)
+        (keys,) = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update((keys[0], keys[2], keys[3]))
 
         result = coordinator.lookup(request, 0)
@@ -1248,10 +1249,10 @@ class HashAndLookupTest(unittest.TestCase):
             scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
             parsed,
-            UCMProxyAdapter(proxy),
+            UCMProxyAdapter(PipelineProxy(proxy)),
             RequestHasher(vllm_config(), 0),
             b"seed",
         )
@@ -1265,12 +1266,12 @@ class HashAndLookupTest(unittest.TestCase):
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
+            parsed, UCMProxyAdapter(PipelineProxy(proxy)), self.hasher, b"seed"
         )
         request = FakeRequest("r", 512)
-        (keys,) = coordinator._chain_keys(request)
+        (keys,) = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update(keys)
 
         result = coordinator.lookup(request, 0)
@@ -1287,12 +1288,16 @@ class HashAndLookupTest(unittest.TestCase):
             ),
             scheduler_block_size=128,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
+            parsed,
+            UCMProxyAdapter(PipelineProxy(proxy)),
+            self.hasher,
+            b"seed",
+            recompute_tokens=0,
         )
         request = FakeRequest("r", 1024)
-        fa_keys, state_keys = coordinator._chain_keys(request)
+        fa_keys, state_keys = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update(fa_keys)
         proxy.present.add(state_keys[3])
 
@@ -1308,12 +1313,12 @@ class HashAndLookupTest(unittest.TestCase):
             ),
             scheduler_block_size=128,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
+            parsed, UCMProxyAdapter(PipelineProxy(proxy)), self.hasher, b"seed"
         )
         request = FakeRequest("r", 1024)
-        fa_keys, state_keys = coordinator._chain_keys(request)
+        fa_keys, state_keys = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update((*fa_keys, *state_keys))
 
         result = coordinator.lookup(request, 0)
@@ -1330,7 +1335,7 @@ class HashAndLookupTest(unittest.TestCase):
         )
         coordinator = UCMDispatcher(
             parsed,
-            UCMProxyAdapter(FakeProxy()),
+            UCMProxyAdapter(PipelineProxy(RecordingTestStore())),
             self.hasher,
             b"seed",
             recompute_tokens=0,
@@ -1339,8 +1344,8 @@ class HashAndLookupTest(unittest.TestCase):
         result = coordinator.lookup(FakeRequest("r", 1024), 0)
 
         self.assertEqual(result.external_hit_tokens, 0)
-        self.assertEqual(len(result.group_ucm_block_ids[0]), 8)
-        self.assertEqual(len(result.group_ucm_block_ids[1]), 8)
+        self.assertEqual(len(result.ucm_block_ids_by_attention_type[0]), 8)
+        self.assertEqual(len(result.ucm_block_ids_by_attention_type[1]), 8)
 
     def test_dsv4_requires_fa_prefix_and_latest_wa_boundary(self):
         parsed = parse_kv_cache_config(
@@ -1357,19 +1362,23 @@ class HashAndLookupTest(unittest.TestCase):
             ),
             scheduler_block_size=16,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
+            parsed,
+            UCMProxyAdapter(PipelineProxy(proxy)),
+            self.hasher,
+            b"seed",
+            recompute_tokens=0,
         )
         request = FakeRequest("r", 1536)
-        fa_keys, wa_keys = coordinator._chain_keys(request)
+        fa_keys, wa_keys = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update(fa_keys)
         proxy.present.add(wa_keys[1])
 
         result = coordinator.lookup(request, 0)
 
         self.assertEqual(result.external_hit_tokens, 1024)
-        self.assertEqual(result.group_ucm_block_ids, (fa_keys, wa_keys))
+        self.assertEqual(result.ucm_block_ids_by_attention_type, (fa_keys, wa_keys))
 
     def test_dsv4_full_hit_leaves_one_complete_canonical_block(self):
         parsed = parse_kv_cache_config(
@@ -1386,12 +1395,12 @@ class HashAndLookupTest(unittest.TestCase):
             ),
             scheduler_block_size=16,
         )
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
-            parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
+            parsed, UCMProxyAdapter(PipelineProxy(proxy)), self.hasher, b"seed"
         )
         request = FakeRequest("r", 1536)
-        fa_keys, wa_keys = coordinator._chain_keys(request)
+        fa_keys, wa_keys = coordinator._ucm_block_ids_by_attention_type(request)
         proxy.present.update((*fa_keys, *wa_keys))
 
         result = coordinator.lookup(request, 0)
@@ -1409,22 +1418,40 @@ class ParallelShardTest(unittest.TestCase):
             memory.write(100, b"rankzero")
             memory.write(200, b"rank-one")
             shards = [
-                SimpleFileUCMProxy(Path(directory) / str(i), MemoryByteAccess(memory))
+                FileTestStore(Path(directory) / str(i), MemoryByteAccess(memory))
                 for i in range(2)
             ]
-            scheduler = AllShardLookup(shards[0], shards)
+            scheduler = AllShardLookup(
+                PipelineProxy(shards[0]), [PipelineProxy(store) for store in shards]
+            )
             for i in range(2):
                 shards[i].dump((key,), (0,), (100 + i * 100,), (8,))
             shards[0].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (False,))
-            self.assertEqual(scheduler.lookup_on_prefix((key,)), -1)
-            self.assertEqual(scheduler.lookup_on_reverse((key,)), -1)
+            self.assertEqual(
+                scheduler.lookup((key,), np.arange(len((key,)), dtype=np.int64)),
+                (False,),
+            )
+            self.assertEqual(
+                scheduler.lookup_on_prefix(
+                    (key,), np.arange(len((key,)), dtype=np.int64)
+                ),
+                -1,
+            )
+            self.assertEqual(
+                scheduler.lookup_on_reverse(
+                    (key,), np.arange(len((key,)), dtype=np.int64)
+                ),
+                -1,
+            )
             shards[1].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (True,))
+            self.assertEqual(
+                scheduler.lookup((key,), np.arange(len((key,)), dtype=np.int64)),
+                (True,),
+            )
             for i in range(2):
-                AllShardLookup(shards[i], shards).load(
-                    (key,), (0,), (300 + 100 * i,), (8,)
-                )
+                AllShardLookup(
+                    PipelineProxy(shards[i]), [PipelineProxy(store) for store in shards]
+                ).load((key,), np.array([0]), (0,), (300 + 100 * i,), (8,))
             self.assertEqual(memory.read(300, 8), b"rankzero")
             self.assertEqual(memory.read(400, 8), b"rank-one")
 
@@ -1435,18 +1462,24 @@ class ParallelShardTest(unittest.TestCase):
         empty = np.empty((1, 0), dtype=np.uint64)
         with tempfile.TemporaryDirectory() as directory:
             shards = [
-                SimpleFileUCMProxy(
-                    Path(directory) / str(i), MemoryByteAccess(ByteMemory())
-                )
+                FileTestStore(Path(directory) / str(i), MemoryByteAccess(ByteMemory()))
                 for i in range(2)
             ]
             shards[0].dump((key,), empty, empty, empty)
             shards[1].dump((key,), np.array([[0]]), np.array([[10]]), np.array([[4]]))
             shards[1].commit((key,))
-            scheduler = AllShardLookup(shards[0], shards)
-            self.assertEqual(scheduler.lookup((key,)), (False,))
+            scheduler = AllShardLookup(
+                PipelineProxy(shards[0]), [PipelineProxy(store) for store in shards]
+            )
+            self.assertEqual(
+                scheduler.lookup((key,), np.arange(len((key,)), dtype=np.int64)),
+                (False,),
+            )
             shards[0].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (True,))
+            self.assertEqual(
+                scheduler.lookup((key,), np.arange(len((key,)), dtype=np.int64)),
+                (True,),
+            )
             self.assertEqual(shards[0]._path(key).stat().st_size, 0)
 
     def test_topologies_do_not_share_a_namespace(self):
@@ -1520,7 +1553,7 @@ class ParallelShardTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (b"p" * 16,),
             0,
             4,
@@ -1563,10 +1596,10 @@ class ParallelShardTest(unittest.TestCase):
 class LayerwiseLifecycleTest(unittest.TestCase):
     def _worker(self, directory, *, state=False, deferred=False):
         memory = ByteMemory()
-        backend = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+        backend = FileTestStore(directory, MemoryByteAccess(memory))
         if deferred:
 
-            class DeferredProxy:
+            class DeferredTestStore:
                 def __init__(self):
                     self.events = []
                     self.fail = None
@@ -1593,7 +1626,7 @@ class LayerwiseLifecycleTest(unittest.TestCase):
                     self.events.append(("commit", keys))
                     backend.commit(keys)
 
-            proxy = DeferredProxy()
+            proxy = DeferredTestStore()
         else:
             proxy = backend
         names = ("model.layers.0.attn", "model.layers.1.attn")
@@ -1608,7 +1641,7 @@ class LayerwiseLifecycleTest(unittest.TestCase):
         cfg = vllm_config()
         cfg.kv_transfer_config.kv_connector_extra_config["use_layerwise"] = True
         with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
+            "ucm.integration.vllm.v2.factory.FileTestStore",
             return_value=proxy,
         ):
             worker = UCMConnector(cfg, KVConnectorRole.WORKER, config(*groups))
@@ -1621,16 +1654,18 @@ class LayerwiseLifecycleTest(unittest.TestCase):
             UCMGroupDispatchPlan,
         )
 
-        kinds = ("FA", "State") if state else ("FA",)
+        attention_types = (
+            (AttentionType.FA, AttentionType.STATE) if state else (AttentionType.FA,)
+        )
         plans = tuple(
             UCMGroupDispatchPlan(
-                kind,
+                attention_type,
                 (bytes([i + 1]) * 16,),
                 0,
                 4,
                 (np.array([2 if load else 1], dtype=np.uint64),),
             )
-            for i, kind in enumerate(kinds)
+            for i, attention_type in enumerate(attention_types)
         )
         return UCMConnectorMetadata(
             requests={
@@ -1783,7 +1818,7 @@ class LayerwiseLifecycleTest(unittest.TestCase):
             from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
 
             return (
-                UCMProxyTransfer(
+                make_transfer(
                     (b"a" * 16,),
                     np.array([[100]], dtype=np.uint64),
                     np.array([[8 if layer_name else 16]], dtype=np.uint64),
@@ -1858,14 +1893,21 @@ class ProxyAdapterTest(unittest.TestCase):
         registered = {"layer": object()}
 
         with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, access)
-            adapter = UCMProxyAdapter(proxy)
+            proxy = FileTestStore(directory, access)
+            adapter = UCMProxyAdapter(PipelineProxy(proxy))
             adapter.register_tensors(registered)
             _submit_segments(adapter, "dump", (key, key), (0, 5), (4096, 8192), (5, 7))
 
-            self.assertEqual(adapter.lookup((key,)), (False,))
-            adapter.commit((key,))
-            self.assertEqual(adapter.lookup((key, b"m" * 16)), (True, False))
+            self.assertEqual(
+                adapter.lookup((key,), np.arange(len((key,)), dtype=np.int64)), (False,)
+            )
+            adapter.commit((key,), np.arange(len((key,)), dtype=np.int64))
+            self.assertEqual(
+                adapter.lookup(
+                    (key, b"m" * 16), np.arange(len((key, b"m" * 16)), dtype=np.int64)
+                ),
+                (True, False),
+            )
             self.assertEqual(
                 (Path(directory) / f"{key.hex()}.ucm").read_bytes(), source
             )
@@ -1885,23 +1927,35 @@ class ProxyAdapterTest(unittest.TestCase):
         memory.write(0x1000, b"abcd")
         memory.write(0x2000, b"efgh")
         with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
-            adapter = UCMProxyAdapter(proxy)
+            proxy = FileTestStore(directory, MemoryByteAccess(memory))
+            adapter = UCMProxyAdapter(PipelineProxy(proxy))
             # Later layer first; repeated writes must preserve earlier ranges.
             _submit_segments(adapter, "dump", (key,), (4,), (8192,), (4,))
             _submit_segments(adapter, "dump", (other,), (0,), (8192,), (4,))
-            self.assertEqual(adapter.lookup((key, other)), (False, False))
+            self.assertEqual(
+                adapter.lookup(
+                    (key, other), np.arange(len((key, other)), dtype=np.int64)
+                ),
+                (False, False),
+            )
             _submit_segments(adapter, "dump", (key,), (0,), (4096,), (4,))
-            adapter.commit((key,))
-            self.assertEqual(adapter.lookup((key, other)), (True, False))
+            adapter.commit((key,), np.arange(len((key,)), dtype=np.int64))
+            self.assertEqual(
+                adapter.lookup(
+                    (key, other), np.arange(len((key, other)), dtype=np.int64)
+                ),
+                (True, False),
+            )
             self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
-            adapter.commit((key,))  # Idempotent retry.
+            adapter.commit(
+                (key,), np.arange(len((key,)), dtype=np.int64)
+            )  # Idempotent retry.
             _submit_segments(adapter, "load", (key,), (0,), (12288,), (8,))
             self.assertEqual(memory.read(0x3000, 8), b"abcdefgh")
             # A replacement remains hidden behind the previous complete block.
             _submit_segments(adapter, "dump", (key,), (0,), (8192,), (4,))
             self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
-            adapter.commit((key, other))
+            adapter.commit((key, other), np.arange(len((key, other)), dtype=np.int64))
             self.assertEqual(proxy._path(key).read_bytes(), b"efgh")
             self.assertFalse(list(Path(directory).glob("*.tmp")))
 
@@ -1912,8 +1966,8 @@ class ProxyAdapterTest(unittest.TestCase):
         connector.has_connector_metadata = lambda: True
         connector._get_connector_metadata = lambda: UCMConnectorMetadata()
         batches = (
-            SimpleNamespace(keys=(b"a" * 16,)),
-            SimpleNamespace(keys=(b"b" * 16,)),
+            SimpleNamespace(ucm_block_ids=(b"a" * 16,)),
+            SimpleNamespace(ucm_block_ids=(b"b" * 16,)),
         )
         connector.layout = SimpleNamespace(spec=connector.spec, group_layouts={})
         connector.transfer_builder = SimpleNamespace(
@@ -1926,8 +1980,8 @@ class ProxyAdapterTest(unittest.TestCase):
             [
                 mock.call.submit("dump", batches[0]),
                 mock.call.submit("dump", batches[1]),
-                mock.call.commit(batches[0].keys),
-                mock.call.commit(batches[1].keys),
+                mock.call.commit(batches[0].ucm_block_ids, batches[0].block_indices),
+                mock.call.commit(batches[1].ucm_block_ids, batches[1].block_indices),
             ],
         )
         connector._proxy.reset_mock()
@@ -1940,45 +1994,63 @@ class ProxyAdapterTest(unittest.TestCase):
         proxy = mock.Mock()
         proxy.wait = mock.Mock()
         proxy.commit.return_value = "commit-task"
-        adapter = UCMProxyAdapter(proxy)
-        adapter.commit((b"a" * 16,))
+        adapter = UCMProxyAdapter(PipelineProxy(proxy))
+        adapter.commit((b"a" * 16,), np.arange(len((b"a" * 16,)), dtype=np.int64))
         proxy.wait.assert_called_once_with("commit-task")
         proxy.commit.side_effect = OSError("rename failed")
         with self.assertRaisesRegex(UCMProxyError, "Proxy commit failed"):
-            adapter.commit((b"a" * 16,))
+            adapter.commit((b"a" * 16,), np.arange(len((b"a" * 16,)), dtype=np.int64))
 
     def test_normalizes_proxy_error(self):
-        class BrokenProxy(FakeProxy):
+        class BrokenTestStore(RecordingTestStore):
             def lookup(self, keys):
                 raise OSError("backend detail")
 
         with self.assertRaises(UCMProxyError) as caught:
-            UCMProxyAdapter(BrokenProxy()).lookup([b"x" * 16])
+            UCMProxyAdapter(PipelineProxy(BrokenTestStore())).lookup(
+                [b"x" * 16], np.arange(len([b"x" * 16]), dtype=np.int64)
+            )
         self.assertIsInstance(caught.exception.__cause__, OSError)
 
     def test_file_proxy_prefix_and_reverse_scans(self):
         keys = [bytes([index]) * 16 for index in range(5)]
         with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory)
+            proxy = FileTestStore(directory)
             for key in (keys[0], keys[1], keys[3]):
                 (Path(directory) / f"{key.hex()}{proxy._SUFFIX}").write_bytes(b"x")
-            adapter = UCMProxyAdapter(proxy)
+            adapter = UCMProxyAdapter(PipelineProxy(proxy))
 
-            self.assertEqual(adapter.lookup_on_prefix(keys), 1)
-            self.assertEqual(adapter.lookup_on_reverse(keys), 3)
-            self.assertEqual(adapter.lookup_on_prefix(keys[2:]), -1)
-            self.assertEqual(adapter.lookup_on_reverse((keys[4],)), -1)
+            self.assertEqual(
+                adapter.lookup_on_prefix(keys, np.arange(len(keys), dtype=np.int64)), 1
+            )
+            self.assertEqual(
+                adapter.lookup_on_reverse(keys, np.arange(len(keys), dtype=np.int64)), 3
+            )
+            self.assertEqual(
+                adapter.lookup_on_prefix(
+                    keys[2:], np.arange(len(keys[2:]), dtype=np.int64)
+                ),
+                -1,
+            )
+            self.assertEqual(
+                adapter.lookup_on_reverse(
+                    (keys[4],), np.arange(len((keys[4],)), dtype=np.int64)
+                ),
+                -1,
+            )
 
     def test_scan_rejects_out_of_range_results(self):
-        class BadScanProxy(FakeProxy):
-            def lookup_on_prefix(self, keys):
+        class BadScanProxy(PipelineProxy):
+            def lookup_on_prefix(self, keys, block_indices):
                 return len(keys)
 
         with self.assertRaisesRegex(UCMProxyError, "lookup_on_prefix"):
-            UCMProxyAdapter(BadScanProxy()).lookup_on_prefix((b"x" * 16,))
+            UCMProxyAdapter(BadScanProxy(RecordingTestStore())).lookup_on_prefix(
+                (b"x" * 16,), np.arange(len((b"x" * 16,)), dtype=np.int64)
+            )
 
     def test_waits_for_async_load_and_dump_tasks(self):
-        class AsyncProxy(FakeProxy):
+        class AsyncTestStore(RecordingTestStore):
             def __init__(self):
                 super().__init__()
                 self.wait_calls = []
@@ -1987,15 +2059,17 @@ class ProxyAdapterTest(unittest.TestCase):
                 super().load(block_ids, offsets, ptrs, sizes)
                 return ("load-task", len(block_ids))
 
-            def dump(self, block_ids, offsets, ptrs, sizes, metadata=()):
-                super().dump(block_ids, offsets, ptrs, sizes, metadata)
+            def dump(
+                self, block_ids, offsets, ptrs, sizes, metadata=(), record_nbytes=None
+            ):
+                super().dump(block_ids, offsets, ptrs, sizes, metadata, record_nbytes)
                 return ("dump-task", len(block_ids))
 
             def wait(self, task):
                 self.wait_calls.append(task)
 
-        proxy = AsyncProxy()
-        adapter = UCMProxyAdapter(proxy)
+        proxy = AsyncTestStore()
+        adapter = UCMProxyAdapter(PipelineProxy(proxy))
         key = b"x" * 16
 
         _submit_segments(adapter, "load", (key,), (0,), (4096,), (32,))
@@ -2007,13 +2081,13 @@ class ProxyAdapterTest(unittest.TestCase):
         )
 
     def test_rejects_async_task_without_wait_contract(self):
-        class IncompleteAsyncProxy(FakeProxy):
+        class IncompleteAsyncTestStore(RecordingTestStore):
             def load(self, block_ids, offsets, ptrs, sizes):
                 return object()
 
         with self.assertRaisesRegex(UCMProxyError, "does not provide wait"):
             _submit_segments(
-                UCMProxyAdapter(IncompleteAsyncProxy()),
+                UCMProxyAdapter(PipelineProxy(IncompleteAsyncTestStore())),
                 "load",
                 (b"x" * 16,),
                 (0,),
@@ -2022,13 +2096,13 @@ class ProxyAdapterTest(unittest.TestCase):
             )
 
     def test_worker_load_failure_reports_request_and_block_ids_once(self):
-        class BrokenLoadProxy(FakeProxy):
+        class BrokenLoadTestStore(RecordingTestStore):
             def load(self, block_ids, offsets, ptrs, sizes):
                 raise OSError("device copy failed")
 
         with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
-            return_value=BrokenLoadProxy(),
+            "ucm.integration.vllm.v2.factory.FileTestStore",
+            return_value=BrokenLoadTestStore(),
         ):
             connector = UCMConnector(
                 vllm_config(),
@@ -2044,7 +2118,7 @@ class ProxyAdapterTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (b"x" * 16,),
             0,
             4,
@@ -2073,15 +2147,15 @@ class ProxyAdapterTest(unittest.TestCase):
         self.assertEqual(connector.get_block_ids_with_load_errors(), set())
 
     def test_worker_load_failure_is_isolated_to_its_request(self):
-        class SelectiveLoadProxy(FakeProxy):
+        class SelectiveLoadTestStore(RecordingTestStore):
             def load(self, block_ids, offsets, ptrs, sizes):
                 if b"x" * 16 in block_ids:
                     raise OSError("one request failed")
                 super().load(block_ids, offsets, ptrs, sizes)
 
-        proxy = SelectiveLoadProxy()
+        proxy = SelectiveLoadTestStore()
         with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
+            "ucm.integration.vllm.v2.factory.FileTestStore",
             return_value=proxy,
         ):
             connector = UCMConnector(
@@ -2099,7 +2173,7 @@ class ProxyAdapterTest(unittest.TestCase):
 
         def request_meta(request_id, key, block_id):
             plan = UCMGroupDispatchPlan(
-                "FA",
+                AttentionType.FA,
                 (key,),
                 0,
                 4,
@@ -2166,7 +2240,9 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def add_state(self, request_id="r"):
         request = FakeRequest(request_id, 512)
         keys = tuple(bytes([index]) * 16 for index in range(4))
-        return seed_request_state(self.dispatcher, request, group_ucm_block_ids=(keys,))
+        return seed_request_state(
+            self.dispatcher, request, ucm_block_ids_by_attention_type=(keys,)
+        )
 
     def test_new_replaces_and_cached_appends_block_tables(self):
         state = self.add_state()
@@ -2176,7 +2252,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
                 scheduled={"r": 128},
             )
         )
-        self.assertEqual(state.group_vllm_block_ids, ([3, 4],))
+        self.assertEqual(state.vllm_block_tables, ([3, 4],))
 
         self.dispatcher.build_from_scheduler_output(
             self.scheduler_output(
@@ -2185,11 +2261,11 @@ class DispatcherLifecycleTest(unittest.TestCase):
                 scheduled={"r": 128},
             )
         )
-        self.assertEqual(state.group_vllm_block_ids, ([3, 4, 5],))
+        self.assertEqual(state.vllm_block_tables, ([3, 4, 5],))
 
     def test_resumed_request_replaces_stale_blocks(self):
         state = self.add_state()
-        state.group_vllm_block_ids = ([1, 2, 3],)
+        state.vllm_block_tables = ([1, 2, 3],)
 
         self.dispatcher.build_from_scheduler_output(
             self.scheduler_output(
@@ -2200,7 +2276,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(state.group_vllm_block_ids, ([7, 6],))
+        self.assertEqual(state.vllm_block_tables, ([7, 6],))
 
     def test_preempt_and_finish_remove_request_snapshots(self):
         self.add_state("preempted")
@@ -2226,8 +2302,10 @@ class DispatcherLifecycleTest(unittest.TestCase):
         dispatcher = make_dispatcher(parsed)
         request = FakeRequest("chunked", 1024)
         keys = (b"a" * 16, b"b" * 16)
-        state = seed_request_state(dispatcher, request, group_ucm_block_ids=(keys,))
-        state.group_vllm_block_ids = ([1, 2, 3, 4, 5, 6, 7, 8],)
+        state = seed_request_state(
+            dispatcher, request, ucm_block_ids_by_attention_type=(keys,)
+        )
+        state.vllm_block_tables = ([1, 2, 3, 4, 5, 6, 7, 8],)
 
         first = _scheduler_metadata(dispatcher, {"chunked": 128})
         second = _scheduler_metadata(dispatcher, {"chunked": 384})
@@ -2236,26 +2314,26 @@ class DispatcherLifecycleTest(unittest.TestCase):
         self.assertEqual(first.requests["chunked"].dump_plans, ())
         second_plan = second.requests["chunked"].dump_plans[0]
         self.assertEqual(
-            (second_plan.keys, second_plan.token_start, second_plan.token_end),
+            (second_plan.ucm_block_ids, second_plan.token_start, second_plan.token_end),
             ((keys[0],), 0, 512),
         )
         self.assertEqual(
-            second_plan.group_block_ids[0].tolist(),
+            second_plan.vllm_block_ids_by_group[0].tolist(),
             [1, 2, 3, 4],
         )
         third_plan = third.requests["chunked"].dump_plans[0]
         self.assertEqual(
-            (third_plan.keys, third_plan.token_start, third_plan.token_end),
+            (third_plan.ucm_block_ids, third_plan.token_start, third_plan.token_end),
             ((keys[1],), 512, 1024),
         )
-        self.assertEqual(third_plan.group_block_ids[0].tolist(), [5, 6, 7, 8])
+        self.assertEqual(third_plan.vllm_block_ids_by_group[0].tolist(), [5, 6, 7, 8])
 
     def test_external_load_plan_is_consumed_after_first_scheduled_step(self):
         state = self.add_state()
         state.external_hit_tokens = 128
         state.token_processed = 128
         state.load_pending = True
-        state.group_vllm_block_ids = ([3, 4, 5, 6],)
+        state.vllm_block_tables = ([3, 4, 5, 6],)
 
         first = _scheduler_metadata(self.dispatcher, {"r": 128})
         second = _scheduler_metadata(self.dispatcher, {"r": 128})
@@ -2265,7 +2343,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         self.assertEqual(first.requests["r"].load_plans[0].token_end, 128)
         self.assertEqual(second.requests["r"].load_plans, ())
 
-    def test_boundary_chain_dumps_straddled_boundaries(self):
+    def test_boundary_attention_types_dump_straddled_boundaries(self):
         # A step may advance past a cache boundary without ending on it
         # (eagle-style multi-token steps, odd chunked-prefill sizes): the
         # boundary record must still be dumped -- the newest boundary the
@@ -2283,37 +2361,40 @@ class DispatcherLifecycleTest(unittest.TestCase):
         fa_keys = tuple(bytes([index]) * 16 for index in range(16))
         state_keys = tuple(bytes([index + 32]) * 16 for index in range(16))
         seed_request_state(
-            dispatcher, request, group_ucm_block_ids=(fa_keys, state_keys)
+            dispatcher, request, ucm_block_ids_by_attention_type=(fa_keys, state_keys)
         )
         for request_id, state in dispatcher.requests.items():
-            state.group_vllm_block_ids = (list(range(16)), list(range(16)))
+            state.vllm_block_tables = (list(range(16)), list(range(16)))
 
         first = _scheduler_metadata(dispatcher, {"r": 1000})
         state_plan = next(
             plan
             for plan in first.requests["r"].dump_plans
-            if plan.hash_group == "State"
+            if plan.attention_type is AttentionType.STATE
         )
         # [0, 1000) completes boundaries up to 896: the newest is 896's.
-        self.assertEqual(state_plan.keys, (state_keys[6],))
+        self.assertEqual(state_plan.ucm_block_ids, (state_keys[6],))
 
         # [1000, 1100) straddles boundary 1024 without ending on it.
         second = _scheduler_metadata(dispatcher, {"r": 100})
         state_plan = next(
             plan
             for plan in second.requests["r"].dump_plans
-            if plan.hash_group == "State"
+            if plan.attention_type is AttentionType.STATE
         )
-        self.assertEqual(state_plan.keys, (state_keys[7],))
+        self.assertEqual(state_plan.ucm_block_ids, (state_keys[7],))
         self.assertEqual(state_plan.token_end, 1024)
         # The snapshot block is the boundary's (1024th token's) block,
         # not the step end's (1100th token's) block.
-        self.assertEqual(state_plan.group_block_ids[0].tolist(), [7])
+        self.assertEqual(state_plan.vllm_block_ids_by_group[0].tolist(), [7])
 
         # [1100, 1124) completes no new boundary: nothing more to record.
         third = _scheduler_metadata(dispatcher, {"r": 24})
         self.assertFalse(
-            any(plan.hash_group == "State" for plan in third.requests["r"].dump_plans)
+            any(
+                plan.attention_type is AttentionType.STATE
+                for plan in third.requests["r"].dump_plans
+            )
         )
 
     def test_dsv4_wa_dispatch_uses_only_final_boundary_and_real_tails(self):
@@ -2347,7 +2428,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         fa_keys = (b"a" * 16, b"b" * 16)
         wa_keys = (b"c" * 16, b"d" * 16)
         state = seed_request_state(dispatcher, request, 1024, (fa_keys, wa_keys))
-        state.group_vllm_block_ids = (
+        state.vllm_block_tables = (
             [1, 2],
             [3],
             list(range(8)),
@@ -2359,21 +2440,21 @@ class DispatcherLifecycleTest(unittest.TestCase):
         fa_plan = next(
             plan
             for plan in metadata.requests["dsv4"].load_plans
-            if plan.hash_group == "FA"
+            if plan.attention_type is AttentionType.FA
         )
         wa_plan = next(
             plan
             for plan in metadata.requests["dsv4"].load_plans
-            if plan.hash_group == "WA"
+            if plan.attention_type is AttentionType.WA
         )
 
-        self.assertEqual(len(fa_plan.group_block_ids), 2)
-        self.assertEqual(wa_plan.keys, (wa_keys[1],))
+        self.assertEqual(len(fa_plan.vllm_block_ids_by_group), 2)
+        self.assertEqual(wa_plan.ucm_block_ids, (wa_keys[1],))
         # Windows carry only block ids; the static shapes live in the spec
         # (swa: one whole 128-token block; C4 compressor: the [4, 8)
         # half-block sub-span) and the worker derives them from templates.
         self.assertEqual(
-            tuple(blocks.tolist() for blocks in wa_plan.group_block_ids),
+            tuple(blocks.tolist() for blocks in wa_plan.vllm_block_ids_by_group),
             ([7], [127]),
         )
 
@@ -2396,8 +2477,10 @@ class DispatcherLifecycleTest(unittest.TestCase):
         request = FakeRequest("r", 1024)
         fa_keys = tuple(bytes([index]) * 16 for index in range(8))
         wa_keys = tuple(bytes([index + 32]) * 16 for index in range(8))
-        seed_request_state(dispatcher, request, group_ucm_block_ids=(fa_keys, wa_keys))
-        dispatcher.requests["r"].group_vllm_block_ids = (
+        seed_request_state(
+            dispatcher, request, ucm_block_ids_by_attention_type=(fa_keys, wa_keys)
+        )
+        dispatcher.requests["r"].vllm_block_tables = (
             list(range(8)),
             list(range(8)),
         )
@@ -2406,20 +2489,28 @@ class DispatcherLifecycleTest(unittest.TestCase):
         # the 512-token tail -- no WA record.
         early = _scheduler_metadata(dispatcher, {"r": 384})
         self.assertTrue(
-            any(plan.hash_group == "FA" for plan in early.requests["r"].dump_plans)
+            any(
+                plan.attention_type is AttentionType.FA
+                for plan in early.requests["r"].dump_plans
+            )
         )
         self.assertFalse(
-            any(plan.hash_group == "WA" for plan in early.requests["r"].dump_plans)
+            any(
+                plan.attention_type is AttentionType.WA
+                for plan in early.requests["r"].dump_plans
+            )
         )
 
         # [384, 640): the newest boundary 640 outgrows the tail -- the
         # full window [128, 640) is one WA record at that boundary.
         later = _scheduler_metadata(dispatcher, {"r": 256})
         wa_plan = next(
-            plan for plan in later.requests["r"].dump_plans if plan.hash_group == "WA"
+            plan
+            for plan in later.requests["r"].dump_plans
+            if plan.attention_type is AttentionType.WA
         )
-        self.assertEqual(wa_plan.keys, (wa_keys[4],))
-        self.assertEqual(wa_plan.group_block_ids[0].tolist(), [1, 2, 3, 4])
+        self.assertEqual(wa_plan.ucm_block_ids, (wa_keys[4],))
+        self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [1, 2, 3, 4])
 
     def test_wa_window_not_dividing_block_keeps_partial_head(self):
         # ceil, not HMA's floor: a 96-token window over 64-token blocks
@@ -2440,8 +2531,10 @@ class DispatcherLifecycleTest(unittest.TestCase):
         request = FakeRequest("r", 512)
         fa_keys = tuple(bytes([index]) * 16 for index in range(4))
         wa_keys = tuple(bytes([index + 32]) * 16 for index in range(4))
-        seed_request_state(dispatcher, request, group_ucm_block_ids=(fa_keys, wa_keys))
-        dispatcher.requests["r"].group_vllm_block_ids = (
+        seed_request_state(
+            dispatcher, request, ucm_block_ids_by_attention_type=(fa_keys, wa_keys)
+        )
+        dispatcher.requests["r"].vllm_block_tables = (
             list(range(4)),
             list(range(8)),
         )
@@ -2450,11 +2543,11 @@ class DispatcherLifecycleTest(unittest.TestCase):
         wa_plan = next(
             plan
             for plan in metadata.requests["r"].dump_plans
-            if plan.hash_group == "WA"
+            if plan.attention_type is AttentionType.WA
         )
         # Window [288, 384): the head half of block 4 plus all of block 5.
-        self.assertEqual(wa_plan.keys, (wa_keys[2],))
-        self.assertEqual(wa_plan.group_block_ids[0].tolist(), [4, 5])
+        self.assertEqual(wa_plan.ucm_block_ids, (wa_keys[2],))
+        self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [4, 5])
 
         layout = UCMKVCacheLayout(
             parsed,
@@ -2502,23 +2595,23 @@ class DispatcherLifecycleTest(unittest.TestCase):
         c4_keys = tuple(bytes([index]) * 16 for index in range(4))
         c128_keys = tuple(bytes([index + 16]) * 16 for index in range(4))
         seed_request_state(
-            dispatcher, request, group_ucm_block_ids=(c4_keys, c128_keys)
+            dispatcher, request, ucm_block_ids_by_attention_type=(c4_keys, c128_keys)
         )
-        dispatcher.requests["r"].group_vllm_block_ids = ([1, 2, 3, 4], [5, 6])
+        dispatcher.requests["r"].vllm_block_tables = ([1, 2, 3, 4], [5, 6])
 
         metadata = _scheduler_metadata(dispatcher, {"r": 2048})
         plan = metadata.requests["r"].dump_plans[0]
 
         # Group 0 (token block 512 == unit): one whole block per key.
         self.assertEqual(
-            plan.group_block_ids[0].tolist(),
+            plan.vllm_block_ids_by_group[0].tolist(),
             [1, 2, 3, 4],
         )
         # Group 1 (token block 16384): four keys share one page -- the
         # same id four times, flat; each key's 512-token sub-span head is
         # derived on the worker from the plan's token range.
         self.assertEqual(
-            plan.group_block_ids[1].tolist(),
+            plan.vllm_block_ids_by_group[1].tolist(),
             [5, 5, 5, 5],
         )
 
@@ -2534,15 +2627,15 @@ class DispatcherLifecycleTest(unittest.TestCase):
         state = seed_request_state(
             dispatcher,
             FakeRequest("r", 8192 * 128),
-            group_ucm_block_ids=(keys,),
+            ucm_block_ids_by_attention_type=(keys,),
         )
-        state.group_vllm_block_ids = (list(range(8192)),)
+        state.vllm_block_tables = (list(range(8192)),)
 
         metadata = _scheduler_metadata(dispatcher, {"r": 8192 * 128})
         plan = metadata.requests["r"].dump_plans[0]
 
-        self.assertEqual(len(plan.keys), 8192)
-        self.assertEqual(plan.group_block_ids[0].tolist(), list(range(8192)))
+        self.assertEqual(len(plan.ucm_block_ids), 8192)
+        self.assertEqual(plan.vllm_block_ids_by_group[0].tolist(), list(range(8192)))
 
         import pickle
 
@@ -2638,7 +2731,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         key = b"m" * 16
         plan = UCMGroupDispatchPlan(
-            "State",
+            AttentionType.STATE,
             (key,),
             0,
             4,
@@ -2777,7 +2870,7 @@ class RaggedLayoutTest(unittest.TestCase):
         # of block 2 plus the whole block 3.  Only the ids travel; the
         # static tail pattern places the sub-spans.
         plan = UCMGroupDispatchPlan(
-            "WA",
+            AttentionType.WA,
             (key,),
             0,
             192,
@@ -2823,7 +2916,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         def batch(phase, block_ids):
             plan = UCMGroupDispatchPlan(
-                "WA",
+                AttentionType.WA,
                 (key,),
                 0,
                 192,
@@ -2846,7 +2939,7 @@ class RaggedLayoutTest(unittest.TestCase):
         dumped = batch("dump", (2, 3))
         loaded = batch("load", (7, 5))
         with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+            proxy = FileTestStore(directory, MemoryByteAccess(memory))
             proxy.dump(dumped.block_ids, dumped.offsets, dumped.ptrs, dumped.sizes)
             proxy.commit(dumped.block_ids)
             self.assertEqual(
@@ -2892,9 +2985,9 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         key_a, key_b = b"d" * 16, b"e" * 16
-        adapter = UCMProxyAdapter(InMemoryByteProxy(memory))
+        adapter = UCMProxyAdapter(PipelineProxy(MemoryFixtureStore(memory)))
         dump_plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key_a, key_b),
             0,
             16,
@@ -2910,7 +3003,7 @@ class RaggedLayoutTest(unittest.TestCase):
         # The load lands on scattered blocks; each key's record keeps its
         # own byte position.
         load_plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key_a, key_b),
             0,
             16,
@@ -2932,6 +3025,8 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
+        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        adapter.commit(ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64))
         _submit_segments(
             adapter,
             "load",
@@ -2975,7 +3070,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             768,
@@ -3046,7 +3141,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "State",
+            AttentionType.STATE,
             (key,),
             1536,
             2304,
@@ -3097,10 +3192,10 @@ class RaggedLayoutTest(unittest.TestCase):
             "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
         }
         layout = UCMKVCacheLayout(parsed, caches)
-        proxy = FakeProxy()
+        proxy = RecordingTestStore()
         coordinator = UCMDispatcher(
             parsed,
-            UCMProxyAdapter(proxy),
+            UCMProxyAdapter(PipelineProxy(proxy)),
             RequestHasher(vllm_config(), 0),
             b"seed",
             recompute_tokens=0,
@@ -3109,7 +3204,7 @@ class RaggedLayoutTest(unittest.TestCase):
         dispatcher = coordinator
         result = dispatcher.lookup(request, 0)
         state = dispatcher.requests["r"]
-        state.group_vllm_block_ids = ([2, 5],)
+        state.vllm_block_tables = ([2, 5],)
         state.external_hit_tokens = 256
         state.load_pending = True
         metadata = _scheduler_metadata(dispatcher, {"r": 1})
@@ -3206,7 +3301,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         key = b"b" * 16
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             256,
@@ -3290,7 +3385,7 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(window_ptrs[:, 0].tolist(), [0x1000 + 2 * block_stride])
         self.assertEqual(window_sizes[:, 0].tolist(), [2048])
 
-    def test_tiled_group_spans_chain_two_descriptors(self):
+    def test_tiled_group_spans_join_two_descriptors(self):
         # The DSV4 shape: one group, several descriptors tiling the block
         # slot back to back, with their layers interleaved in layer order.
         # The whole group is one span per block; each layer's record
@@ -3352,7 +3447,7 @@ class RaggedLayoutTest(unittest.TestCase):
         layout = UCMKVCacheLayout(parsed, caches)
         group_layout = layout.group_layouts[0]
 
-        # One group-level span: both tiles chained, slot-sized.
+        # One group-level span: both tiles joined, slot-sized.
         span = group_layout.block_first
         self.assertIsNotNone(span)
         self.assertEqual(
@@ -3405,7 +3500,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         key = b"c" * 16
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             256,
@@ -3515,7 +3610,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         key = b"r" * 16
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             8,
@@ -3589,7 +3684,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         key = b"t" * 16
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             256,
@@ -3647,7 +3742,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             128,
@@ -3730,7 +3825,7 @@ class RaggedLayoutTest(unittest.TestCase):
             # group answers at its slot anchors, the aux layer-first
             # group at its payload slots.
             plan = UCMGroupDispatchPlan(
-                "FA",
+                AttentionType.FA,
                 (b"record",),
                 0,
                 4,
@@ -3794,7 +3889,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 memory.write(ptr, b"\xef" * size)
             for offset, ptr, size in zip(source.offsets, source.ptrs, source.sizes):
                 memory.write(ptr, bytes((int(offset) + i) % 251 for i in range(size)))
-            proxy = SimpleFileUCMProxy(Path(path), byte_access=MemoryByteAccess(memory))
+            proxy = FileTestStore(Path(path), byte_access=MemoryByteAccess(memory))
             proxy.dump(source.block_ids, source.offsets, source.ptrs, source.sizes)
             proxy.commit(source.block_ids)
             proxy.load(
@@ -3865,7 +3960,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             512,
             1024,
@@ -3906,7 +4001,7 @@ class RaggedLayoutTest(unittest.TestCase):
             512,
             ((b"a" * 16,) * 4, (b"s" * 16,) * 4),
         )
-        state.group_vllm_block_ids = ([1, 2, 3, 4], [0, 1, 2, 6])
+        state.vllm_block_tables = ([1, 2, 3, 4], [0, 1, 2, 6])
 
         metadata = _scheduler_metadata(dispatcher, {"r": 1})
         batch = _flat_layout_records(layout, "load", metadata)
@@ -3937,7 +4032,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         dump_plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             4,
@@ -3951,7 +4046,7 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
         )
         load_plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             4,
@@ -3975,8 +4070,8 @@ class RaggedLayoutTest(unittest.TestCase):
         source_v = bytes((index * 11 + 5) % 256 for index in range(12))
         memory.write(0x1000 + 8, source_k)
         memory.write(0x2000 + 12, source_v)
-        proxy = InMemoryByteProxy(memory)
-        adapter = UCMProxyAdapter(proxy)
+        proxy = MemoryFixtureStore(memory)
+        adapter = UCMProxyAdapter(PipelineProxy(proxy))
 
         dump_batch = _flat_layout_records(layout, "dump", dump_meta)
         _submit_segments(
@@ -3987,7 +4082,11 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
-        self.assertEqual(adapter.lookup([key]), (True,))
+        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        adapter.commit(ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64))
+        self.assertEqual(
+            adapter.lookup([key], np.arange(len([key]), dtype=np.int64)), (True,)
+        )
         load_batch = _flat_layout_records(layout, "load", load_meta)
         _submit_segments(
             adapter,
@@ -4001,9 +4100,14 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(memory.read(0x1000 + 6 * 8, 8), source_k)
         self.assertEqual(memory.read(0x2000 + 6 * 12, 12), source_v)
 
-        class DeferredByteProxy(InMemoryByteProxy):
-            def dump(self, block_ids, offsets, ptrs, sizes, metadata=()):
-                return ("dump", (block_ids, offsets, ptrs, sizes, metadata))
+        class DeferredByteStore(MemoryFixtureStore):
+            def dump(
+                self, block_ids, offsets, ptrs, sizes, metadata=(), record_nbytes=None
+            ):
+                return (
+                    "dump",
+                    (block_ids, offsets, ptrs, sizes, metadata, record_nbytes),
+                )
 
             def load(self, block_ids, offsets, ptrs, sizes):
                 return ("load", (block_ids, offsets, ptrs, sizes))
@@ -4011,12 +4115,12 @@ class RaggedLayoutTest(unittest.TestCase):
             def wait(self, task):
                 operation, arguments = task
                 if operation == "dump":
-                    InMemoryByteProxy.dump(self, *arguments)
+                    MemoryFixtureStore.dump(self, *arguments)
                 else:
-                    InMemoryByteProxy.load(self, *arguments)
+                    MemoryFixtureStore.load(self, *arguments)
 
-        deferred_proxy = DeferredByteProxy(memory)
-        deferred_adapter = UCMProxyAdapter(deferred_proxy)
+        deferred_proxy = DeferredByteStore(memory)
+        deferred_adapter = UCMProxyAdapter(PipelineProxy(deferred_proxy))
         _submit_segments(
             deferred_adapter,
             "dump",
@@ -4025,8 +4129,12 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
+        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        deferred_adapter.commit(
+            ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64)
+        )
         deferred_load_plan = UCMGroupDispatchPlan(
-            "FA",
+            AttentionType.FA,
             (key,),
             0,
             4,
@@ -4454,7 +4562,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
             with self.subTest(order=order):
                 layout, strides = self._layout(order)
                 plan = UCMGroupDispatchPlan(
-                    "FA",
+                    AttentionType.FA,
                     (b"a" * 16, b"b" * 16),
                     0,
                     8,
@@ -4483,10 +4591,10 @@ class LayerViewSegmentsTest(unittest.TestCase):
                     ),
                 )
                 with tempfile.TemporaryDirectory() as tmp:
-                    proxy = SimpleFileUCMProxy(tmp, MemoryByteAccess(memory))
+                    proxy = FileTestStore(tmp, MemoryByteAccess(memory))
                     proxy.dump(dump.block_ids, dump.offsets, dump.ptrs, dump.sizes)
                     proxy.commit(dump.block_ids)
-                    for k, start in zip(plan.keys, (0, 4)):
+                    for k, start in zip(plan.ucm_block_ids, (0, 4)):
                         expected = bytes(
                             (
                                 1000
@@ -4580,7 +4688,11 @@ class LayerViewSegmentsTest(unittest.TestCase):
             },
         )
         plan = UCMGroupDispatchPlan(
-            "FA", (b"a" * 16, b"b" * 16), 0, 1024, (np.array([2, 2], dtype=np.uint64),)
+            AttentionType.FA,
+            (b"a" * 16, b"b" * 16),
+            0,
+            1024,
+            (np.array([2, 2], dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
@@ -4627,14 +4739,14 @@ class LayerViewSegmentsTest(unittest.TestCase):
 
 
 class MatrixTransferTest(unittest.TestCase):
-    def _metadata(self, keys=(b"a" * 16, b"b" * 16)):
+    def _metadata(self, ucm_block_ids=(b"a" * 16, b"b" * 16)):
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
             UCMGroupDispatchPlan,
         )
 
         plan = UCMGroupDispatchPlan(
-            "FA", keys, 0, 8, (np.array([2, 2], dtype=np.uint64),)
+            AttentionType.FA, ucm_block_ids, 0, 8, (np.array([2, 2], dtype=np.uint64),)
         )
         return UCMConnectorMetadata(
             requests={
@@ -4646,7 +4758,7 @@ class MatrixTransferTest(unittest.TestCase):
         layout, _ = LayerViewSegmentsTest()._layout("LHBNC")
         meta = self._metadata()
         (batch,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
-        self.assertEqual(batch.keys, (b"a" * 16, b"b" * 16))
+        self.assertEqual(batch.ucm_block_ids, (b"a" * 16, b"b" * 16))
         self.assertEqual(batch.ptrs.shape, (2, 4))
         self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8, 16, 24]] * 2)
         self.assertEqual(batch.sizes.tolist(), [[8] * 4] * 2)
@@ -4660,12 +4772,14 @@ class MatrixTransferTest(unittest.TestCase):
         for address in range(1000, 1192):
             memory.write(address, bytes([address % 251]))
         with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
-            adapter = UCMProxyAdapter(proxy)
+            proxy = FileTestStore(directory, MemoryByteAccess(memory))
+            adapter = UCMProxyAdapter(PipelineProxy(proxy))
             adapter.submit("dump", batch)
-            adapter.commit(batch.keys)
+            adapter.commit(
+                batch.ucm_block_ids, np.arange(len(batch.ucm_block_ids), dtype=np.int64)
+            )
             expected = []
-            for key in batch.keys:
+            for key in batch.ucm_block_ids:
                 pieces = [
                     (int(o), memory.read(int(p), int(n)))
                     for k, o, p, n in zip(
@@ -4712,7 +4826,11 @@ class MatrixTransferTest(unittest.TestCase):
             },
         )
         plan = UCMGroupDispatchPlan(
-            "FA", (b"a" * 16, b"b" * 16), 0, 16, (np.array([0, 1]), np.array([2, 2]))
+            AttentionType.FA,
+            (b"a" * 16, b"b" * 16),
+            0,
+            16,
+            (np.array([0, 1]), np.array([2, 2])),
         )
         meta = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
@@ -4731,7 +4849,9 @@ class MatrixTransferTest(unittest.TestCase):
         metadata = self._metadata()
         first = metadata.requests["r"]
         plan = first.load_plans[0]
-        other_plan = replace(plan, group_block_ids=(np.array([1, 1], dtype=np.uint64),))
+        other_plan = replace(
+            plan, vllm_block_ids_by_group=(np.array([1, 1], dtype=np.uint64),)
+        )
         metadata.requests["other"] = replace(
             first,
             request_id="other",
@@ -4743,7 +4863,10 @@ class MatrixTransferTest(unittest.TestCase):
             for layer_id in (None, 1):
                 batches = build(metadata, layer_id=layer_id)
                 self.assertEqual(len(batches), 2)
-                self.assertEqual([b.keys for b in batches], [plan.keys, plan.keys])
+                self.assertEqual(
+                    [b.ucm_block_ids for b in batches],
+                    [plan.ucm_block_ids, plan.ucm_block_ids],
+                )
                 self.assertFalse(np.array_equal(batches[0].ptrs, batches[1].ptrs))
 
     def test_templates_and_retained_transfers_are_independent(self):
@@ -4764,7 +4887,7 @@ class MatrixTransferTest(unittest.TestCase):
     def test_submit_passes_through_strided_and_broadcast_matrices(self):
         from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
 
-        class CaptureProxy(FakeProxy):
+        class RecordingTransferStore(RecordingTestStore):
             def load(self, *args):
                 self.received = args
 
@@ -4774,9 +4897,9 @@ class MatrixTransferTest(unittest.TestCase):
         ptrs = np.array([[10, 11], [20, 21]], dtype=np.uint64)[:, 1:]
         sizes = np.broadcast_to(np.array([5], dtype=np.uint64), (2, 1))
         offsets = np.broadcast_to(np.array([3], dtype=np.uint64), (2, 1))
-        transfer = UCMProxyTransfer(keys, ptrs, sizes, offsets)
-        proxy = CaptureProxy()
-        adapter = UCMProxyAdapter(proxy)
+        transfer = make_transfer(keys, ptrs, sizes, offsets)
+        proxy = RecordingTransferStore()
+        adapter = UCMProxyAdapter(PipelineProxy(proxy))
         for operation in ("load", "dump"):
             adapter.submit(operation, transfer)
             for actual, original in zip(proxy.received, (keys, offsets, ptrs, sizes)):
@@ -4789,7 +4912,7 @@ class MatrixTransferTest(unittest.TestCase):
         sizes = np.broadcast_to(np.array([5], dtype=np.uint64), (2, 1))
         records = [
             (key, list(segments))
-            for key, segments in SimpleFileUCMProxy._records(keys, offsets, ptrs, sizes)
+            for key, segments in record_segments(keys, offsets, ptrs, sizes)
         ]
         self.assertEqual(records, [(keys[0], [(3, 11, 5)]), (keys[1], [(3, 21, 5)])])
 
@@ -4797,7 +4920,7 @@ class MatrixTransferTest(unittest.TestCase):
         layout, _ = LayerViewSegmentsTest()._layout("LBHNC")
         (batch,) = UCMTransferBuilder(layout).build_load_transfers(self._metadata())
 
-        class Deferred(FakeProxy):
+        class Deferred(RecordingTestStore):
             def load(self, keys, offsets, ptrs, sizes):
                 self.refs = (keys, offsets, ptrs, sizes)
                 return object()
@@ -4806,7 +4929,7 @@ class MatrixTransferTest(unittest.TestCase):
                 self.checked = self.refs[2].shape == (2, 4) and self.refs[3][0, 0] == 8
 
         proxy = Deferred()
-        UCMProxyAdapter(proxy).submit("load", batch)
+        UCMProxyAdapter(PipelineProxy(proxy)).submit("load", batch)
         self.assertTrue(proxy.checked)
 
 

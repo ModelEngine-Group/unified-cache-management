@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
 import os
-from math import lcm
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from math import lcm
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from .ucm_proxy import KVCacheValue, UCMProxy
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+
     from .layout import UCMKVCacheSpec
 
 
@@ -86,9 +89,9 @@ class ParallelLayout:
 
 
 class AllShardLookup:
-    """Storage wrapper: a logical key is ready only when every shard is committed.
+    """Storage wrapper: a logical ucm_block_id is ready only when every shard is committed.
 
-    Rank-local dump/load still use the unchanged keys/[K,S] protocol. Each
+    Rank-local dump/load still use the unchanged ucm_block_ids/[K,S] protocol. Each
     shard has its own namespace; this intentionally does not reshard TP/PP/CP.
     """
 
@@ -107,18 +110,39 @@ class AllShardLookup:
         if method is not None:
             return method(caches)
 
-    def lookup(self, keys: Sequence[bytes]) -> tuple[bool, ...]:
-        hits = [True] * len(keys)
+    def lookup(
+        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+    ) -> tuple[bool, ...]:
+        hits = [True] * len(ucm_block_ids)
         for shard in self.shards:
-            hits = [a and b for a, b in zip(hits, shard.lookup(keys), strict=True)]
+            hits = [
+                a and b
+                for a, b in zip(
+                    hits, shard.lookup(ucm_block_ids, block_indices), strict=True
+                )
+            ]
         return tuple(hits)
 
-    def lookup_on_prefix(self, keys: Sequence[bytes]) -> int:
-        for index, hit in enumerate(self.lookup(keys)):
+    def lookup_on_prefix(
+        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+    ) -> int:
+        for index, hit in enumerate(self.lookup(ucm_block_ids, block_indices)):
             if not hit:
                 return index - 1
-        return len(keys) - 1
+        return len(ucm_block_ids) - 1
 
-    def lookup_on_reverse(self, keys: Sequence[bytes]) -> int:
-        hits = self.lookup(keys)
+    def lookup_on_reverse(
+        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+    ) -> int:
+        hits = self.lookup(ucm_block_ids, block_indices)
         return next((i for i in range(len(hits) - 1, -1, -1) if hits[i]), -1)
+
+    def close(self) -> None:
+        error = None
+        for shard in self.shards:
+            try:
+                shard.close()
+            except Exception as exc:
+                error = error or exc
+        if error is not None:
+            raise error

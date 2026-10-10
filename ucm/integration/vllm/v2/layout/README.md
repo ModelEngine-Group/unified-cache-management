@@ -7,12 +7,12 @@
 Layout 统一负责三部分，不按文件数量强行拆分：
 
 - `kv_cache.py`：解析 KVCacheConfig 的 group/persistence/token 元数据；`UCMKVCacheLayout` 汇总元数据、HBM 布局和外存模板。
-- `__init__.py`、`group.py`、`view.py`：绑定 worker 原生 spec/descriptor 和真实 tensor views，解析 LayerView/ComponentView/MemorySegment，并提供 block IDs 与 token 范围的寻址。
+- `__init__.py`、`group.py`、`view.py`：绑定 worker 原生 spec/descriptor 和真实 tensor views，解析 LayerView/ComponentView/MemorySegment，并提供 vLLM block ids 与 token 范围的寻址。
 - `store_layout.py`：编译每个 group 的外存 offsets、sizes、store_bytes，以及通用或整块 Block First 模板。
 
-`layout` 不依赖 scheduler 或 proxy，不接收请求 metadata/plan，不生成 Transfer。调用方可以给出 block IDs、token offsets 和 segment mask，使用布局计算 byte ranges；这仍是寻址，不是调度。
+`layout` 不依赖 scheduler 或 proxy，不接收请求 metadata/plan，不生成 Transfer。调用方可以给出 vLLM block ids、token offsets 和 segment mask，使用布局计算 byte ranges；这仍是寻址，不是调度。
 
-外部 `../ucm_kv_cache.py / UCMTransferBuilder` 解释 plan、关联 keys、累计 participating groups 的外存起点、拼接二维 Transfer；connector 持有独立的 `layout` 与 `transfer_builder`。路由 `dispatch_routes(spec)` 在 scheduler 中。
+外部 `../ucm_kv_cache.py / UCMTransferBuilder` 解释 plan、关联 ucm_block_ids、累计 participating groups 的外存起点、拼接二维 Transfer；connector 持有独立的 `layout` 与 `transfer_builder`。按 attention type 分组的 `groups_by_attention_type(spec)` 在 scheduler 中。
 
 ```python
 from ucm.integration.vllm.v2.layout import UCMKVCacheLayout, parse_kv_cache_config
@@ -38,16 +38,16 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
 | `LayerView` | 一个 layer_name 注册的一个或多个 tensor views | 逻辑层描述，不分配 KV storage |
 | `ComponentView` | 一个注册 tensor view 的 shape/stride | 一个或多个连续 `MemorySegment`；components 可共享 storage |
 | `KVCacheGroupLayout` | 一个 group 的 LayerViews | 把源地址几何编译成 NumPy segment 列，按 layer_id/name 选择列 |
-| `BlockAccess` | 固定 token 范围模板；运行时 block IDs、starts | 源内存 `ptrs/sizes`，形状 `[block, segment]` |
+| `BlockAccess` | 固定 token 范围模板；运行时 vLLM block ids、starts | 源内存 `ptrs/sizes`，形状 `[block, segment]` |
 | `GroupStoreLayout` | group 的 FA/WA/State 规则与物理布局 | 在 UCM block 中放置数据，维护目标 offsets，判断能否合并 IO |
 | `UCMKVCacheLayout` | 元数据、worker KVCacheConfig 与真实 views | 汇总 group_layouts/store_layouts，建立层名与层号索引 |
-| 外部 `UCMTransferBuilder` | Layout、scheduler plan 与层选择 | 关联 keys，组合各 group，构造 proxy Transfer |
+| 外部 `UCMTransferBuilder` | Layout、scheduler plan 与层选择 | 关联 ucm_block_ids，组合各 group，构造 proxy Transfer |
 
 `view` 表示逻辑视图；`segment` 表示能连续复制的一段。两者不是一一对应关系。`segment_mask` 针对展开后的列。
 
 `supports_partial_tokens` 是 group 级布尔策略：初始化时对全部 ComponentView 的布局能力取 `all`。只要任意 view 不支持部分 token，整个 group 只允许完整 block，按层选择也不能绕过此限制。MemorySegment 只保留寻址参数，不保存逐 segment 的策略标志；固定范围和动态 offset 共用 group 策略。
 
-`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + block_id * block_stride + fixed_offset + dynamic_offset`；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
+`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + vllm_block_id * block_stride + fixed_offset + dynamic_offset`；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
 
 `BlockFirstView` 留在 group 中，它只描述源内存中带 padding 的连续 span。当前只在 CUDA/CPU 的 BLHNC/BLNHC 下根据原生 descriptor 创建，要求 `0 < layer_stride < block_stride` 且本组 descriptors 的 block stride 一致；信任 0.30 原生 allocator 的连续放置契约，不再逐层检查地址或 offset 链。NPU 直接使用 per-layer segments；GLM 专用 slot descriptor 不符合 stride 条件。store 层仅在 use_layerwise=False、完整块且 BlockFirstView 存在时使用独立的整组 IO 路径；layerwise 继续按通用紧凑模板存取物理 segments。
 
@@ -58,12 +58,12 @@ State group 同样参与该路径：符合条件时，bulk 复制整个 group sp
 - `block_byte_offsets`：源 segment 内，从块起点跳过多少字节；用于计算 ptr。
 - `ucm_block_offsets`：目标 UCM block 中放在哪；每个 group 模板内先存 group 相对值，最终加 group 基址。
 
-`GroupStoreLayout.group_block_offsets` 是**一个完整 vLLM block** 的目标排布，完整 Block First bulk 为单元素 `[0]`，layerwise 则为有效 payload 的前缀和；`ucm_block_offsets` 是**一个 UCM key 覆盖的窗口**排布。窗口可能是部分 block、多个 blocks 或整页 State，因此不能混用。`whole_block_bytes` 是完整 block 的目标空间，`store_bytes` 是这个 group 在一个 UCM block 中的总空间。
+`GroupStoreLayout.group_block_offsets` 是**一个完整 vLLM block** 的目标排布，完整 Block First bulk 为单元素 `[0]`，layerwise 则为有效 payload 的前缀和；`ucm_block_offsets` 是**一个 UCM block 覆盖的窗口**排布。窗口可能是部分 block、多个 blocks 或整页 State，因此不能混用。`whole_block_bytes` 是完整 block 的目标空间，`store_bytes` 是这个 group 在一个 UCM block 中的总空间。
 
 默认排列：
 
 ```text
-一个 FA hash key -> 一个 UCM block
+一个 FA ucm_block_id -> 一个 UCM block 记录
   group 0
     window block 0
       layer 0 / component 0 / segments ...
@@ -88,7 +88,7 @@ layer 0 base_ptr = 1000000
 layer 1 base_ptr = 2000000
 ```
 
-每层每 token 4 字节，一个源 block 为 65536 字节。每个 UCM key 保存 512 tokens，每层 2048 字节；整个 UCM block 为 4096 字节。
+每层每 token 4 字节，一个源 block 为 65536 字节。每个 UCM block 保存 512 tokens，每层 2048 字节；整个 UCM block 为 4096 字节。
 
 ### 1. 注册时编译
 
@@ -112,44 +112,44 @@ sizes 在这里算好。运行时无需 ends；范围长度改变时需要重新
 
 ### 2. scheduler 给物理 blocks，worker 算块内 starts
 
-假设前两个逻辑 UCM keys 对应的数据都在物理 block 2（物理 block ID 不要求等于逻辑序号）：
+假设前两个 UCM block（ucm_block_id）对应的数据都在 vLLM block 2（vllm_block_id 不要求等于 UCM block 序号）：
 
 ```python
-block_ids = np.array([2, 2], dtype=np.uint64)
+vllm_block_ids = np.array([2, 2], dtype=np.uint64)
 starts = np.array([0, 512], dtype=np.uint64)
-ptrs = access.resolve_ptrs(block_ids, token_offsets=starts)
+ptrs = access.resolve_ptrs(vllm_block_ids, token_offsets=starts)
 sizes = np.broadcast_to(access.segment_bytes, ptrs.shape)
 ```
 
-逐列使用同一公式：`base_ptr + block_id * block_stride + start * bytes_per_token`。
+逐列使用同一公式：`base_ptr + vllm_block_id * block_stride + start * bytes_per_token`。
 
 ```text
-                 layer 0     layer 1
-key A start 0    1131072     2131072
-key B start 512  1133120     2133120
-sizes              2048        2048  # 每行相同
+                          layer 0     layer 1
+ucm_block_id A start 0    1131072     2131072
+ucm_block_id B start 512  1133120     2133120
+sizes                       2048        2048  # 每行相同
 ```
 
 完整 32 个子块的 starts 为 `0, 512, ..., 15872`。HNC 时一层可能有多个 head segments，公式对每个 segment 计算，不能把它们误当成一个连续 token 区间。
 
-### 3. 关联目标 offsets 与 keys
+### 3. 关联目标 offsets 与 ucm_block_ids
 
 `GroupStoreLayout.resolve_matrices` 把相同 offset 模板重复到两个 key：
 
 ```text
-key A: offset 0    <- layer 0 的 2048 字节
-       offset 2048 <- layer 1 的 2048 字节
-key B: offset 0    <- layer 0 的下一段 2048 字节
-       offset 2048 <- layer 1 的下一段 2048 字节
+ucm_block_id A: offset 0    <- layer 0 的 2048 字节
+                offset 2048 <- layer 1 的 2048 字节
+ucm_block_id B: offset 0    <- layer 0 的下一段 2048 字节
+                offset 2048 <- layer 1 的下一段 2048 字节
 ```
 
-外部 `UCMTransferBuilder._iter_plan_segments` 加 group 起点并关联 keys，最终扁平化为：
+外部 `UCMTransferBuilder._iter_plan_segments` 加 group 起点并关联 ucm_block_ids，最终扁平化为：
 
 ```text
-keys:    [A,       A,       B,       B      ]
-offsets: [0,       2048,    0,       2048   ]
-ptrs:    [1131072, 2131072, 1133120, 2133120]
-sizes:   [2048,    2048,    2048,    2048   ]
+ucm_block_ids: [A,       A,       B,       B      ]
+offsets:       [0,       2048,    0,       2048   ]
+ptrs:          [1131072, 2131072, 1133120, 2133120]
+sizes:         [2048,    2048,    2048,    2048   ]
 ```
 
 若只请求 layer_id=1，先选 segment 列再展开地址，得到 `ptrs=[2131072,2133120]`、`offsets=[2048,2048]`。目标 offset 不变成零，因为同一个 UCM block 中 layer 0 的位置仍被保留。

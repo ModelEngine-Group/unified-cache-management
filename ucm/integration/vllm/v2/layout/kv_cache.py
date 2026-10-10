@@ -1,7 +1,7 @@
 """KV-cache metadata and the layout aggregate, independent of dispatch plans.
 
 Parse shared persistence policy from KVCacheConfig; worker registration binds
-HBM group layouts and compiles each group's storage template. No request keys,
+HBM group layouts and compiles each group's storage template. No UCM block ids,
 connector metadata or proxy transfers are interpreted here.
 """
 
@@ -59,7 +59,7 @@ class UCMKVCacheGroupInfo:
     token_block_size: int
     kinds: frozenset[KVCacheSpecKind]
     tail_tokens: int | None = None
-    # vLLM blocks one ucm key's window spans (0 = the group stores
+    # vLLM blocks one UCM block's window spans (0 = the group stores
     # nothing); the parser stamps it once the cache block size is known.
     tail_blocks: int = 0
     is_eagle_group: bool = False
@@ -87,7 +87,7 @@ class UCMKVCacheSpec:
     ``resolve_kv_cache_block_sizes`` reports for this engine -- the
     token-alignment invariant of the resident KV pool (single group:
     ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
-    counts tokens per record and per shared hash-chain key, defining the
+    counts tokens per record (one UCM block id), defining the
     restore boundaries. An explicit size must be a multiple of
     scheduler_block_size; State defaults to that common alignment, while
     attention-only models default to their smallest FA block span.
@@ -116,12 +116,12 @@ class UCMKVCacheSpec:
 
 
 def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
-    """vLLM blocks one ucm key's window spans (0 = the group stores nothing).
+    """vLLM blocks one UCM block's window spans (0 = the group stores nothing).
 
     HMA's ``tail_blocks`` with the one generalization v2 needs: a tail
     that does not divide the block still keeps its partial head block
     (ceil, not HMA's floor).  A state snapshot is one indivisible
-    checkpoint page; a full-attention key spans the whole ucm block
+    checkpoint page; a full-attention UCM block spans every vLLM block it covers
     (several blocks when the UCM block is larger than a native block,
     the containing block otherwise).
     """
