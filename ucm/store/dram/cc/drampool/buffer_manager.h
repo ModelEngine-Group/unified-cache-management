@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -151,7 +152,40 @@ public:
             UC_ERROR("BufferManager::Free: no pool registered for size {}.", size);
             return Status::NotFound();
         }
+        // BufferPool::Free updates its own used-slot count on success.
         return pool->Free(slot);
+    }
+
+    /**
+     * @brief Ratio of currently used slots to total slots for the given size.
+     * @return used / slot_count; 0.0 if the size was not registered or the
+     *         pool has no slots.
+     */
+    double GetUsedSlotRatio(std::size_t size) const
+    {
+        const auto it = pools_.find(size);
+        if (it == pools_.end() || it->second == nullptr || it->second->GetSlotCount() == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(it->second->GetUsedCount()) /
+               static_cast<double>(it->second->GetSlotCount());
+    }
+
+    /**
+     * @brief Aggregate ratio of used slots to total slots across all pools.
+     * @return sum(used) / sum(slot_count) over every registered pool; 0.0 if
+     *         no pool has slots.
+     */
+    double GetTotalUsedSlotRatio() const
+    {
+        std::size_t used = 0;
+        std::size_t total = 0;
+        for (const auto& [_, pool] : pools_) {
+            if (pool == nullptr) { continue; }
+            used += pool->GetUsedCount();
+            total += pool->GetSlotCount();
+        }
+        return total == 0 ? 0.0 : static_cast<double>(used) / static_cast<double>(total);
     }
 
 private:

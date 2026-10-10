@@ -480,6 +480,59 @@ _COUNTER_METRICS = [
         "dramstore_stale_replies_total",
         "DramStore stale replies",
     ),
+    # -- DramPool server observability ----------------------------------------
+    (
+        "drampool_dump_requests_total",
+        "Total DUMP requests received and processed by DramPool",
+    ),
+    (
+        "drampool_load_requests_total",
+        "Total LOAD requests received and processed by DramPool",
+    ),
+    (
+        "drampool_lookup_requests_total",
+        "Total LOOKUP requests received and processed by DramPool",
+    ),
+    (
+        "drampool_dump_nospace_failures_total",
+        "DUMP entries whose buffer allocation finally failed with NoSpace after eviction retries (registration failures excluded)",
+    ),
+    (
+        "drampool_dump_failed_entries_total",
+        "Total DUMP entries that settled with a Failed result (all failure paths merged)",
+    ),
+    (
+        "drampool_load_miss_entries_total",
+        "LOAD entries that missed stored data (LoadBegin failure or request longer than stored length)",
+    ),
+    (
+        "drampool_lookup_miss_entries_total",
+        "LOOKUP entries that do not exist or are not READY",
+    ),
+    (
+        "drampool_transfer_failures_total",
+        "Data transfers that ended in a non-Completed terminal state (DUMP and LOAD merged)",
+    ),
+    (
+        "drampool_response_failures_total",
+        "Response return-path failures (local submit failures plus write-back transfer failures, DUMP and LOAD merged)",
+    ),
+    (
+        "drampool_submit_failures_total",
+        "Data transfer submission failures (ExecuteAsync failure or invalid handle)",
+    ),
+    (
+        "drampool_queue_request_full_total",
+        "requestQueue TryPush failures because the queue was full",
+    ),
+    (
+        "drampool_queue_completion_full_total",
+        "completionQueue full events that forced SubmitCompletion to spin-wait",
+    ),
+    (
+        "drampool_queue_response_buffer_retry_total",
+        "Response flag-buffer NoSpace events where SubmitResponse parked the request for retry",
+    ),
     (
         "drampool_resource_log_read_errors_total",
         "Number of failures opening, reading, or parsing the DramPool resource log",
@@ -629,6 +682,47 @@ _GAUGE_METRICS = [
     (
         "dramstore_transport_fence_queue_capacity",
         "Aggregate reserved Fence admission capacity",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    # -- DramPool server observability ----------------------------------------
+    (
+        "drampool_metadata_entry_count",
+        "Current number of cached entries (blocks) in the pool, summed over all shards",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_buffer_pool_usage_ratio",
+        "Used-slot ratio of the data pools, aggregated over all configured block sizes",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_flag_pool_usage_ratio",
+        "Used-slot ratio of the flag response-buffer pool",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_request_size",
+        "Current number of requests queued in requestQueue",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_completion_size",
+        "Current number of completion records queued in completionQueue",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_completion_inflight",
+        "Completion records currently in flight in the Poller pending window",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_request_capacity",
+        "Configured requestQueue depth (requests)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_completion_capacity",
+        "Configured completionQueue depth (records)",
         {"multiprocess_mode": "livemostrecent"},
     ),
 ]
@@ -929,7 +1023,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_lookup_duration_ms",
         "End-to-end DramStore lookup duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_lookup_task_queue_duration_ms",
@@ -979,7 +1073,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_dump_duration_ms",
         "End-to-end DramStore dump duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_dump_task_queue_duration_ms",
@@ -1029,7 +1123,7 @@ _HISTOGRAM_METRICS = [
     (
         "dramstore_load_duration_ms",
         "End-to-end DramStore load duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "dramstore_load_task_queue_duration_ms",
@@ -1080,6 +1174,107 @@ _HISTOGRAM_METRICS = [
         "dramstore_dump_prerequisite_duration_ms",
         "DUMP prerequisite event wait before task admission (ms)",
         [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    # -- DramPool server observability ----------------------------------------
+    (
+        "drampool_dump_prepare_duration_ms",
+        "DUMP local preparation duration per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer submission (ms, successful path only; split into dump_metadata and dump_submit)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_dump_metadata_duration_ms",
+        "DUMP metadata-processing segment per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer-item building, excluding the ExecuteAsync submission (ms, successful path only)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_dump_submit_duration_ms",
+        "DUMP data-transfer ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_load_prepare_duration_ms",
+        "LOAD local preparation duration per batch: LoadBegin per entry, length validation, and transfer submission (ms, successful path only; split into load_metadata and load_submit)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_metadata_duration_ms",
+        "LOAD metadata-processing segment per batch: LoadBegin per entry, length validation, and transfer-item building, excluding the ExecuteAsync submission (ms, successful path only)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_submit_duration_ms",
+        "LOAD data-transfer ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_lookup_scan_duration_ms",
+        "Per-batch LOOKUP metadata scan duration: per-entry existence checks plus result filling (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_dump_transfer_duration_ms",
+        "DUMP data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_transfer_duration_ms",
+        "LOAD data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_get_status_duration_ms",
+        "GetStatus() execution duration when the Poller queries data or response transfers (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_response_submit_duration_ms",
+        "Response write-back ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_response_rtt_ms",
+        "Response round-trip duration from response-transfer ExecuteAsync return to write-back completion in client memory, including polling delay and GetStatus but excluding the submission itself (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_metadata_storeend_duration_ms",
+        "Per-entry StoreEnd settlement duration after DUMP transfer completion (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_metadata_loadend_duration_ms",
+        "Per-entry LoadEnd reference-release duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_metadata_evict_gc_duration_ms",
+        "Duration of one background GC eviction sweep across all shards (ms)",
+        [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
+        "drampool_queue_request_enqueue_wait_ms",
+        "Per-request wait from preparation to successful requestQueue TryPush, including full-queue retries (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_queue_request_residence_ms",
+        "Per-request residence in requestQueue from the successful TryPush to the TaskWorker dequeue, excluding the TryPush wait (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_dump_batch_total_duration_ms",
+        "End-to-end DUMP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_batch_total_duration_ms",
+        "End-to-end LOAD batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_lookup_batch_total_duration_ms",
+        "End-to-end LOOKUP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
 ]
 

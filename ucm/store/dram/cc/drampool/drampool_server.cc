@@ -29,6 +29,7 @@
 #include <type_traits>
 #include <utility>
 #include "core/transport_manager.h"
+#include "drampool_metrics.h"
 #include "logger/logger.h"
 #include "metadata.h"
 #include "pool/buffer_pool.h"
@@ -219,6 +220,12 @@ Status DramPoolServer::InitQueues()
 {
     requestQueue_.Setup(g_config.requestQueueDepth);
     completionQueue_.Setup(g_config.completionQueueDepth);
+    // The depths are constant, but every reporter sweep clears gauges, so the
+    // TaskWorker loop also refreshes both capacity gauges periodically.
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestCapacity),
+                             static_cast<double>(g_config.requestQueueDepth));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionCapacity),
+                             static_cast<double>(g_config.completionQueueDepth));
     return Status::OK();
 }
 
@@ -445,10 +452,21 @@ void DramPoolServer::RequestReceiveLoop()
         UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, peer={}",
                  task->request->request_id, static_cast<int>(task->request->opcode), transportPeer);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
+        ScopedTimer enqueueWaitTimer(NAME_TO_METRIC_ID(kQueueRequestEnqueueWaitMs));
+        enqueueWaitTimer.Arm();
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
-            if (requestQueue_.TryPush(std::move(task))) { break; }
+            // Stamp immediately before each TryPush attempt: the successful push
+            // is the queue entry instant, so the queue residence metric excludes
+            // the TryPush wait (covered by enqueue_wait_ms). TryPush leaves the
+            // task untouched on failure, so the stamp is restamped on retry.
+            task->enqueue_us = SteadyNowUs();
+            if (requestQueue_.TryPush(std::move(task))) {
+                g_requestQueueLen.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
             if (!queueFullLogged) {
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestFullTotal), 1);
                 UC_WARN("RequestReceiver queue is full, request_id={}, depth={}, retry_wait_us={}",
                         task->request->request_id, g_config.requestQueueDepth,
                         g_config.requestReceiverIdleWaitUs);
@@ -475,6 +493,12 @@ void DramPoolServer::GCThreadLoop()
     while (true) {
         std::unique_lock<std::mutex> waitLock(stopWaitMutex_);
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kMetadataEntryCount),
+                                 static_cast<double>(metadataManager_->GetKeyCnt()));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kBufferPoolUsageRatio),
+                                 bufferManager_->GetTotalUsedSlotRatio());
+        ScopedTimer evictTimer(NAME_TO_METRIC_ID(kMetadataEvictGcDurationMs));
+        evictTimer.Arm();
         metadataManager_->PerformEvict();
     }
     UC_INFO_UNLIMITED("DramPool GCThread stopped");

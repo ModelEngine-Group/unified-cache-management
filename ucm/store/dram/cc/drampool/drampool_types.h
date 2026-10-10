@@ -52,12 +52,23 @@ inline std::uint64_t SteadyNowMs()
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+inline std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
 using RequestPtr = std::unique_ptr<KvRequest>;
 
 // Receiver keeps transport identity beside the parsed KV request.
 struct RequestTask {
     RequestPtr request;
     transport::ManagerID peer_one_sided_id;
+    // requestQueue push instant (us). Restamped on every full-queue retry, so
+    // the successful TryPush marks the queue entry instant and the queue
+    // residence excludes the TryPush wait.
+    std::uint64_t enqueue_us{0};
 };
 
 using RequestTaskPtr = std::unique_ptr<RequestTask>;
@@ -98,6 +109,14 @@ struct CompletionRecord {
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
+    // requestQueue enqueue instant (us), carried over from RequestTask. Doubles
+    // as a one-shot sentinel: zero after the batch-level end-to-end duration
+    // has been reported by CompletionPoller.
+    std::uint64_t enqueue_us{0};
+    // One-shot guard for the batch outcome counters (failed/miss entries): the
+    // flag-pool NoSpace retries re-enter SubmitResponse, which must not
+    // double-count them.
+    bool batch_outcome_reported{false};
     bool timeout_reported{false};
 
     // State needed to construct the request's sole response.

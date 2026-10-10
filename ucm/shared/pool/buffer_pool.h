@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -69,6 +70,8 @@ public:
     std::size_t GetTotalSize() const { return slotStride_ * slotNum_; }
     std::size_t GetSlotCount() const { return slotNum_; }
     MemoryType GetMemoryType() const { return memoryType_; }
+    // Slots handed out by Allocate and not yet returned by a successful Free.
+    std::uint64_t GetUsedCount() const { return used_.load(std::memory_order_relaxed); }
 
 private:
     static bool ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride);
@@ -83,6 +86,7 @@ private:
 
     BufferRegion region_;
     IndexPool indexPool_;
+    std::atomic<std::uint64_t> used_{0};
 };
 
 }  // namespace UC

@@ -337,6 +337,40 @@ TEST_F(BufferPoolTest, RejectsInvalidFree)
     EXPECT_EQ(status, Status::InvalidParam());
 }
 
+TEST_F(BufferPoolTest, TracksUsedSlotCount)
+{
+    BufferPool pool;
+    ASSERT_TRUE(pool.Init("used_count_pool", MemoryType::Host, 64, 2).Success());
+    EXPECT_EQ(pool.GetUsedCount(), 0);
+
+    BufferPool::Slot first;
+    BufferPool::Slot second;
+    BufferPool::Slot third;
+    ASSERT_TRUE(pool.Allocate(first).Success());
+    EXPECT_EQ(pool.GetUsedCount(), 1);
+    ASSERT_TRUE(pool.Allocate(second).Success());
+    EXPECT_EQ(pool.GetUsedCount(), 2);
+
+    auto status = pool.Allocate(third);
+    EXPECT_TRUE(status.Failure());
+    EXPECT_EQ(status, Status::NoSpace());
+    EXPECT_EQ(pool.GetUsedCount(), 2);
+
+    ASSERT_TRUE(pool.Free(second.slotIndex).Success());
+    EXPECT_EQ(pool.GetUsedCount(), 1);
+
+    status = pool.Free(pool.GetSlotCount());
+    EXPECT_TRUE(status.Failure());
+    EXPECT_EQ(status, Status::InvalidParam());
+    EXPECT_EQ(pool.GetUsedCount(), 1);
+
+    ASSERT_TRUE(pool.Allocate(second).Success());
+    EXPECT_EQ(pool.GetUsedCount(), 2);
+
+    pool.Reset();
+    EXPECT_EQ(pool.GetUsedCount(), 0);
+}
+
 TEST_F(BufferPoolTest, ResetAllowsReinitialization)
 {
     BufferPool pool;
@@ -380,6 +414,7 @@ TEST_F(BufferPoolTest, ConcurrentAllocateAndFree)
     for (int i = 0; i < kThreadCount; ++i) { threads.emplace_back(worker); }
     for (auto& thread : threads) { thread.join(); }
     EXPECT_FALSE(failed.load());
+    EXPECT_EQ(pool.GetUsedCount(), 0);
 }
 
 }  // namespace

@@ -24,6 +24,7 @@
 #include "metadata.h"
 #include <cstdlib>
 #include <stdexcept>
+#include "drampool_metrics.h"
 #include "logger/logger.h"
 #include "pos_eviction_policy.h"
 #include "ttl_eviction_policy.h"
@@ -78,6 +79,8 @@ Status ShardMetadata::StoreBegin(const BlockId& key, EntryPtr entry)
 
 Status ShardMetadata::StoreEnd(const BlockId& key)
 {
+    ScopedTimer storeEndTimer(NAME_TO_METRIC_ID(kMetadataStoreendDurationMs));
+    storeEndTimer.Arm();
     ReadOnlyGuard lock(mtx_);
     auto it = metadata_.find(key);
     if (it == metadata_.end()) { return Status::NotFound(); }
@@ -100,6 +103,8 @@ Status ShardMetadata::LoadBegin(const BlockId& key, EntryPtr& entry)
 
 Status ShardMetadata::LoadEnd(const BlockId& key)
 {
+    ScopedTimer loadEndTimer(NAME_TO_METRIC_ID(kMetadataLoadendDurationMs));
+    loadEndTimer.Arm();
     ReadOnlyGuard lock(mtx_);
     auto it = metadata_.find(key);
     if (it == metadata_.end()) { return Status::NotFound(); }
@@ -189,6 +194,11 @@ Status MetadataManager::StoreBegin(const BlockId& key, EntryPtr entry)
     }
     if (!st.Success()) {
         UC_ERROR("StoreBegin: Allocate for size {} failed, status {}.", entry->size, st.ToString());
+        if (st == Status::NoSpace()) {
+            // Both the periodic and the deep eviction retries have run; still NoSpace
+            // means real memory pressure.
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpNospaceFailuresTotal), 1);
+        }
         return Status::Error();
     }
     const auto bufSize = entry->size;
