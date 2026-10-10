@@ -15,8 +15,8 @@ TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 builders = importlib.import_module("ucm_release.builders")
-compact = importlib.import_module("ucm_release.compact")
-core = importlib.import_module("ucm_release.core")
+planner = importlib.import_module("ucm_release.plan")
+serialization = importlib.import_module("ucm_release.serialization")
 policy = importlib.import_module("ucm_release.policy")
 pr = importlib.import_module("ucm_release.pr")
 upstream = importlib.import_module("ucm_release.upstream")
@@ -39,15 +39,15 @@ def _fixture_policy():
 
 def _inputs():
     formal = _fixture_policy()
-    fixture = core.load_json(TAG_FIXTURE)
+    fixture = serialization.load_json(TAG_FIXTURE)
     selection = upstream.resolve_upstreams(
         formal,
         candidates=upstream.resolve_runtime_candidates(formal, tag_fixture=fixture),
         runtime_probe=fixture["runtime_probe"],
         tag_fixture=fixture,
     )
-    catalog = builders.catalog_from_selection(
-        selection, owner="release-org", formal_policy=formal
+    catalog = builders.catalog_from_builds(
+        selection["wheel_builds"], owner="release-org", formal_policy=formal
     )
     return formal, fixture, selection, catalog
 
@@ -184,7 +184,7 @@ def test_single_arch_publication_and_compact_plan_share_the_bare_tag() -> None:
         author="SuperMarioYL",
         run_id=105,
     )
-    plan = compact.resolve_plan(
+    plan = planner.resolve_plan(
         formal,
         runtime_selection=result["selection"],
         builder_catalog=_finalized_catalog(result["builder_catalog"]),

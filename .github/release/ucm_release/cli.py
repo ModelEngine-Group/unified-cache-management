@@ -1,53 +1,46 @@
-# fmt: off
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 import yaml
 
 from . import (
     builders,
-    compact,
-    core,
+    chart,
     meta,
+    plan,
     policy,
     pr,
     problems,
     pypi,
     registry,
     runtime,
+    serialization,
+    toolkit,
     upstream,
     wheel,
 )
 
-catalog_resolution = registry
-
 
 def _json(value: object) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _paths(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
-    parser.add_argument("--schema-dir", type=Path, default=core.DEFAULT_SCHEMA_DIR)
+    parser.add_argument("--release", type=Path, default=policy.DEFAULT_RELEASE)
 
 
 def _write(path: Path, value: object) -> None:
-    path.write_bytes(core.canonical_bytes(value) + b"\n")
+    path.write_bytes(serialization.canonical_bytes(value) + b"\n")
 
 
 def _publication_context(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
-    value = core.load_json(path)
+    value = serialization.load_json(path)
     if not isinstance(value, dict) or set(value) != {
         "fork_test_pypi",
         "dockerhub_namespace",
@@ -61,61 +54,36 @@ def _publication_context(path: Path | None) -> dict[str, object]:
     return value
 
 
-def _crane_output(operation: str, reference: str) -> str:
-    completed = None
-    last_error = ""
-    for attempt in range(1, 4):
-        try:
-            completed = subprocess.run(
-                ["crane", operation, reference],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            completed = None
-            last_error = "timed out after 60 seconds"
-        if completed is None:
-            if attempt < 3:
-                time.sleep(2**attempt)
-            continue
-        if completed.returncode == 0:
-            return completed.stdout
-        last_error = completed.stderr.strip() or str(completed.returncode)
-        if attempt < 3:
-            time.sleep(2**attempt)
-    raise ValueError(
-        f"crane {operation} failed for {reference}: {last_error or 'unknown error'}"
-    )
-
-
-def _crane_json(operation: str, reference: str) -> object:
-    try:
-        return json.loads(_crane_output(operation, reference))
-    except json.JSONDecodeError as error:
-        raise ValueError(
-            f"crane {operation} returned malformed JSON for {reference}"
-        ) from error
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m ucm_release")
     groups = parser.add_subparsers(dest="group", required=True)
+
+    chart_parser = groups.add_parser("chart")
+    chart_actions = chart_parser.add_subparsers(dest="action", required=True)
+    chart_prepare = chart_actions.add_parser("prepare")
+    chart_prepare.add_argument("--plan", type=Path, required=True)
+    chart_prepare.add_argument("--output", type=Path, required=True)
+    chart_prepare.set_defaults(
+        func=lambda a: chart.prepare_chart(serialization.load_json(a.plan), a.output)
+    )
 
     builders_parser = groups.add_parser("builders")
     builders_actions = builders_parser.add_subparsers(dest="action", required=True)
 
     builders_discover = builders_actions.add_parser("discover")
-    builders_discover.add_argument("--config", type=Path, default=policy.DEFAULT_PLATFORMS)
+    builders_discover.add_argument(
+        "--config", type=Path, default=policy.DEFAULT_PLATFORMS
+    )
     builders_discover.add_argument("--owner")
     builders_discover.add_argument("--selection", type=Path, required=True)
     builders_discover.add_argument("--output", type=Path, required=True)
 
     def _cmd_builders_discover(a):
         formal = policy.resolve(platforms_path=a.config)
-        result = builders.catalog_from_selection(
-            core.load_json(a.selection),
+        result = builders.catalog_from_builds(
+            upstream.validate_selection(serialization.load_json(a.selection))[
+                "wheel_builds"
+            ],
             a.config,
             owner=a.owner,
             formal_policy=formal,
@@ -128,14 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     builders_sync_plan = builders_actions.add_parser("sync-plan")
     builders_sync_plan.add_argument("--catalog", type=Path, required=True)
-    builders_sync_plan.add_argument(
-        "--existing", "--existing-tags", dest="existing", type=Path, required=True
-    )
+    builders_sync_plan.add_argument("--existing", type=Path, required=True)
     builders_sync_plan.add_argument("--output", type=Path, required=True)
 
     def _cmd_builders_sync_plan(a):
         result = builders.compute_sync_plan(
-            core.load_json(a.catalog), core.load_json(a.existing)
+            serialization.load_json(a.catalog), serialization.load_json(a.existing)
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -148,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     builders_labels.add_argument("--output", type=Path, required=True)
 
     def _cmd_builders_labels(a):
-        result = builders.builder_labels(core.load_json(a.builder))
+        result = builders.builder_labels(serialization.load_json(a.builder))
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
         return result
@@ -162,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _cmd_builders_finalize(a):
         result = builders.finalize_catalog(
-            core.load_json(a.catalog), core.load_json(a.observations)
+            serialization.load_json(a.catalog), serialization.load_json(a.observations)
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -175,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     builders_bind_source.add_argument("--output", type=Path, required=True)
 
     def _cmd_builders_bind_source(a):
-        result = builders.bind_source_catalog(core.load_json(a.catalog))
+        result = builders.bind_source_catalog(serialization.load_json(a.catalog))
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
         return result
@@ -197,7 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
     upstreams_actions = upstreams_parser.add_subparsers(dest="action", required=True)
 
     upstreams_candidates = upstreams_actions.add_parser("candidates")
-    upstreams_candidates.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
+    upstreams_candidates.add_argument(
+        "--release", type=Path, default=policy.DEFAULT_RELEASE
+    )
     upstreams_candidates.add_argument(
         "--release-type", choices=policy.RELEASE_TYPES, default="stable"
     )
@@ -208,7 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     def _cmd_upstreams_candidates(a):
         result = upstream.resolve_runtime_candidates(
             policy.resolve(a.release, release_type=a.release_type),
-            tag_fixture=core.load_json(a.tag_fixture) if a.tag_fixture else None,
+            tag_fixture=(
+                serialization.load_json(a.tag_fixture) if a.tag_fixture else None
+            ),
             pr_default=a.pr_default,
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
     upstreams_candidates.set_defaults(func=_cmd_upstreams_candidates)
 
     upstreams_resolve = upstreams_actions.add_parser("resolve")
-    upstreams_resolve.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
+    upstreams_resolve.add_argument(
+        "--release", type=Path, default=policy.DEFAULT_RELEASE
+    )
     upstreams_resolve.add_argument(
         "--release-type", choices=policy.RELEASE_TYPES, default="stable"
     )
@@ -230,9 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     def _cmd_upstreams_resolve(a):
         result = upstream.resolve_upstreams(
             policy.resolve(a.release, release_type=a.release_type),
-            candidates=core.load_json(a.candidates),
-            runtime_probe=core.load_json(a.runtime_probe),
-            tag_fixture=core.load_json(a.tag_fixture) if a.tag_fixture else None,
+            candidates=serialization.load_json(a.candidates),
+            runtime_probe=serialization.load_json(a.runtime_probe),
+            tag_fixture=(
+                serialization.load_json(a.tag_fixture) if a.tag_fixture else None
+            ),
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -240,40 +214,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     upstreams_resolve.set_defaults(func=_cmd_upstreams_resolve)
 
-    compact_parser = groups.add_parser("compact")
-    compact_actions = compact_parser.add_subparsers(dest="action", required=True)
+    plan_parser = groups.add_parser("plan")
+    plan_actions = plan_parser.add_subparsers(dest="action", required=True)
 
-    compact_plan = compact_actions.add_parser("plan")
-    compact_plan.add_argument("--catalog", type=Path, default=core.DEFAULT_RELEASE)
-    compact_plan.add_argument("--schema-dir", type=Path, default=core.DEFAULT_SCHEMA_DIR)
-    compact_plan.add_argument(
+    plan_create = plan_actions.add_parser("create")
+    plan_create.add_argument("--release", type=Path, default=policy.DEFAULT_RELEASE)
+    plan_create.add_argument(
         "--release-type", choices=policy.RELEASE_TYPES, default="stable"
     )
-    compact_plan.add_argument("--builder-catalog", type=Path, required=True)
-    compact_plan.add_argument("--runtime-selection", type=Path, required=True)
-    compact_plan.add_argument("--route", choices=tuple(sorted(compact.ROUTES)), required=True)
-    compact_plan.add_argument("--pin-upstream", action="append", default=None)
-    compact_plan.add_argument("--git-tag")
-    compact_plan.add_argument(
-        "--release-kind", choices=("none", "publish", "draft")
+    plan_create.add_argument("--builder-catalog", type=Path, required=True)
+    plan_create.add_argument("--runtime-selection", type=Path, required=True)
+    plan_create.add_argument(
+        "--route", choices=tuple(sorted(plan.ROUTES)), required=True
     )
-    compact_plan.add_argument("--is-prerelease", choices=("true", "false"))
-    compact_plan.add_argument("--chart-version")
-    compact_plan.add_argument("--publication-context", type=Path)
-    compact_plan.add_argument("--output", type=Path, required=True)
+    plan_create.add_argument("--git-tag")
+    plan_create.add_argument("--release-kind", choices=("none", "publish", "draft"))
+    plan_create.add_argument("--is-prerelease", choices=("true", "false"))
+    plan_create.add_argument("--chart-version")
+    plan_create.add_argument("--publication-context", type=Path)
+    plan_create.add_argument("--output", type=Path, required=True)
 
-    def _cmd_compact_plan(a):
+    def _cmd_plan_create(a):
         publication = _publication_context(a.publication_context)
-        result = compact.resolve_plan(
+        result = plan.resolve_plan(
             policy.resolve(
-                a.catalog,
+                a.release,
                 release_type=a.release_type,
                 **publication,
             ),
-            builder_catalog=core.load_json(a.builder_catalog),
-            runtime_selection=core.load_json(a.runtime_selection),
+            builder_catalog=serialization.load_json(a.builder_catalog),
+            runtime_selection=serialization.load_json(a.runtime_selection),
             route=a.route,
-            pinned_upstreams=a.pin_upstream,
             git_tag=a.git_tag,
             release_kind=a.release_kind,
             is_prerelease=(
@@ -285,18 +256,18 @@ def build_parser() -> argparse.ArgumentParser:
         _write(a.output, result)
         return result
 
-    compact_plan.set_defaults(func=_cmd_compact_plan)
+    plan_create.set_defaults(func=_cmd_plan_create)
 
-    compact_retag = compact_actions.add_parser("retag-pr")
-    compact_retag.add_argument("--plan", type=Path, required=True)
-    compact_retag.add_argument("--pr-number", required=True)
-    compact_retag.add_argument("--author", required=True)
-    compact_retag.add_argument("--run-id", required=True)
-    compact_retag.add_argument("--output", type=Path, required=True)
+    plan_retag = plan_actions.add_parser("retag-pr")
+    plan_retag.add_argument("--plan", type=Path, required=True)
+    plan_retag.add_argument("--pr-number", required=True)
+    plan_retag.add_argument("--author", required=True)
+    plan_retag.add_argument("--run-id", required=True)
+    plan_retag.add_argument("--output", type=Path, required=True)
 
-    def _cmd_compact_retag(a):
-        result = compact.retag_pr_plan(
-            core.load_json(a.plan),
+    def _cmd_plan_retag(a):
+        result = plan.retag_pr_plan(
+            serialization.load_json(a.plan),
             pr_number=a.pr_number,
             author=a.author,
             run_id=a.run_id,
@@ -305,64 +276,95 @@ def build_parser() -> argparse.ArgumentParser:
         _write(a.output, result)
         return result
 
-    compact_retag.set_defaults(func=_cmd_compact_retag)
+    plan_retag.set_defaults(func=_cmd_plan_retag)
 
-    compact_select = compact_actions.add_parser("select")
-    compact_select.add_argument("--plan", type=Path, required=True)
-    compact_select.add_argument("--kind", choices=("wheel", "image"), required=True)
-    compact_select.add_argument("--id", required=True)
-    compact_select.add_argument("--output", type=Path, required=True)
+    plan_select = plan_actions.add_parser("select")
+    plan_select.add_argument("--plan", type=Path, required=True)
+    plan_select.add_argument("--kind", choices=("wheel", "image"), required=True)
+    plan_select.add_argument("--id", required=True)
+    plan_select.add_argument("--output", type=Path, required=True)
 
-    def _cmd_compact_select(a):
-        result = compact.select_task(core.load_json(a.plan), a.kind, a.id)
+    def _cmd_plan_select(a):
+        result = plan.select_task(serialization.load_json(a.plan), a.kind, a.id)
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
         return result
 
-    compact_select.set_defaults(func=_cmd_compact_select)
+    plan_select.set_defaults(func=_cmd_plan_select)
 
-    compact_prepare = compact_actions.add_parser("prepare-wheel-source")
-    compact_prepare.add_argument("--source-root", type=Path, required=True)
-    compact_prepare.add_argument("--distribution", required=True)
-    compact_prepare.set_defaults(
-        func=lambda a: compact.prepare_wheel_source(a.source_root, a.distribution)
+    wheel_actions = groups.add_parser("wheel").add_subparsers(
+        dest="action", required=True
+    )
+    wheel_prepare = wheel_actions.add_parser("prepare-source")
+    wheel_prepare.add_argument("--source-root", type=Path, required=True)
+    wheel_prepare.add_argument("--distribution", required=True)
+    wheel_prepare.set_defaults(
+        func=lambda a: wheel.prepare_wheel_source(a.source_root, a.distribution)
     )
 
-    compact_record = compact_actions.add_parser("record-wheel-result")
-    compact_record.add_argument("--task", type=Path, required=True)
-    compact_record.add_argument("--wheel", type=Path, required=True)
-    compact_record.add_argument("--output", type=Path, required=True)
+    wheel_record = wheel_actions.add_parser("record-result")
+    wheel_record.add_argument("--task", type=Path, required=True)
+    wheel_record.add_argument("--wheel", type=Path, required=True)
+    wheel_record.add_argument("--output", type=Path, required=True)
 
-    def _cmd_compact_record(a):
-        result = compact.record_wheel_result(core.load_json(a.task), a.wheel)
+    def _cmd_wheel_record(a):
+        result = wheel.record_wheel_result(serialization.load_json(a.task), a.wheel)
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
         return result
 
-    compact_record.set_defaults(func=_cmd_compact_record)
+    wheel_record.set_defaults(func=_cmd_wheel_record)
 
-    compact_meta_source = compact_actions.add_parser("materialize-meta-source")
-    compact_meta_source.add_argument("--plan", type=Path, required=True)
-    compact_meta_source.add_argument("--output-dir", type=Path, required=True)
+    meta_actions = groups.add_parser("meta").add_subparsers(
+        dest="action", required=True
+    )
+    meta_source = meta_actions.add_parser("materialize-source")
+    meta_source.add_argument("--plan", type=Path, required=True)
+    meta_source.add_argument("--output-dir", type=Path, required=True)
 
-    def _cmd_compact_meta_source(a):
-        path = meta.materialize_meta_source(core.load_json(a.plan), a.output_dir)
+    def _cmd_meta_source(a):
+        path = meta.materialize_meta_source(
+            serialization.load_json(a.plan), a.output_dir
+        )
         return {"source": str(path)}
 
-    compact_meta_source.set_defaults(func=_cmd_compact_meta_source)
+    meta_source.set_defaults(func=_cmd_meta_source)
 
-    compact_meta_result = compact_actions.add_parser("record-meta-result")
-    compact_meta_result.add_argument("--plan", type=Path, required=True)
-    compact_meta_result.add_argument("--wheel", type=Path, required=True)
-    compact_meta_result.add_argument("--output", type=Path, required=True)
+    meta_result = meta_actions.add_parser("record-result")
+    meta_result.add_argument("--plan", type=Path, required=True)
+    meta_result.add_argument("--wheel", type=Path, required=True)
+    meta_result.add_argument("--output", type=Path, required=True)
 
-    def _cmd_compact_meta_result(a):
-        result = meta.record_meta_wheel(core.load_json(a.plan), a.wheel)
+    def _cmd_meta_result(a):
+        result = meta.record_meta_wheel(serialization.load_json(a.plan), a.wheel)
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
         return result
 
-    compact_meta_result.set_defaults(func=_cmd_compact_meta_result)
+    meta_result.set_defaults(func=_cmd_meta_result)
+
+    toolkit_parser = groups.add_parser("toolkit")
+    toolkit_actions = toolkit_parser.add_subparsers(dest="action", required=True)
+    toolkit_source = toolkit_actions.add_parser("prepare-source")
+    toolkit_source.add_argument("--plan", type=Path, required=True)
+    toolkit_source.add_argument("--source-root", type=Path, required=True)
+    toolkit_source.set_defaults(
+        func=lambda a: toolkit.prepare_source(
+            serialization.load_json(a.plan), a.source_root
+        )
+    )
+    toolkit_result = toolkit_actions.add_parser("record-result")
+    toolkit_result.add_argument("--plan", type=Path, required=True)
+    toolkit_result.add_argument("--wheel", type=Path, required=True)
+    toolkit_result.add_argument("--output", type=Path, required=True)
+
+    def _cmd_toolkit_result(a):
+        result = toolkit.record_result(serialization.load_json(a.plan), a.wheel)
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        _write(a.output, result)
+        return result
+
+    toolkit_result.set_defaults(func=_cmd_toolkit_result)
 
     pypi_parser = groups.add_parser("pypi")
     pypi_actions = pypi_parser.add_subparsers(dest="action", required=True)
@@ -373,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     pypi_publish.add_argument("--meta-result", type=Path, required=True)
     pypi_publish.add_argument("--wheel-root", type=Path, required=True)
     pypi_publish.add_argument("--meta-root", type=Path, required=True)
+    pypi_publish.add_argument("--toolkit-root", type=Path)
     pypi_publish.add_argument("--repository-url", required=True)
     pypi_publish.add_argument("--attempts", type=int, default=12)
     pypi_publish.add_argument("--interval", type=float, default=5.0)
@@ -380,25 +383,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _cmd_pypi_publish(a):
         backend_results = [
-            core.load_json(path)
+            serialization.load_json(path)
             for path in sorted(a.wheel_results_dir.rglob("wheel-result.json"))
         ]
+        release_plan = serialization.load_json(a.release_plan)
+        toolkit_result, _ = toolkit.load_artifact(release_plan, a.toolkit_root)
         publication = pypi.build_publication(
-            core.load_json(a.release_plan),
+            release_plan,
             backend_results,
-            core.load_json(a.meta_result),
+            serialization.load_json(a.meta_result),
+            toolkit_result,
         )
         if a.repository_url != publication["repository_url"]:
             raise ValueError("PyPI repository URL differs from the authorized plan")
         token = os.environ.get("PYPI_API_TOKEN", "")
         projects = [*publication["backends"], publication["meta"]]
+        if publication.get("toolkit") is not None:
+            projects.append(publication["toolkit"])
         expected_sha256 = {
             file["filename"]: file["sha256"]
             for project in projects
             for file in project["files"]
         }
         uploader = pypi.make_twine_uploader(
-            roots=[a.wheel_root, a.meta_root],
+            roots=[a.wheel_root, a.meta_root]
+            + ([a.toolkit_root] if a.toolkit_root else []),
             expected_sha256=expected_sha256,
             repository_url=a.repository_url,
             token=token,
@@ -441,9 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
             references,
             products=formal["products"],
             runners=formal["runners"],
-            manifest_loader=lambda reference: _crane_json("manifest", reference),
-            config_loader=lambda reference: _crane_json("config", reference),
-            digest_loader=lambda reference: _crane_output("digest", reference).strip(),
+            manifest_loader=lambda reference: registry.read_json("manifest", reference),
+            config_loader=lambda reference: registry.read_json("config", reference),
+            digest_loader=lambda reference: registry.read("digest", reference).strip(),
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -459,8 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     def _cmd_runtime_aggregate(a):
         probe_paths = sorted(a.probe_dir.rglob("runtime-probe-raw.json"))
         result = runtime.aggregate_runtime_probes(
-            core.load_json(a.inspection),
-            [core.load_json(path) for path in probe_paths],
+            serialization.load_json(a.inspection),
+            [serialization.load_json(path) for path in probe_paths],
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -479,8 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
     def _cmd_runtime_resolve(a):
         result = pr.resolve_pr_request(
             policy.resolve(),
-            core.load_json(a.probe),
-            core.load_json(a.builder_registry),
+            serialization.load_json(a.probe),
+            serialization.load_json(a.builder_registry),
             pr_number=a.pr_number,
             author=a.author,
             run_id=a.run_id,
@@ -523,34 +532,38 @@ def build_parser() -> argparse.ArgumentParser:
                 raise ValueError("receipt stage must use name=result")
             stage_results[name] = result
         resolution = (
-            core.load_json(a.resolution)
+            serialization.load_json(a.resolution)
             if a.resolution is not None and a.resolution.is_file()
             else None
         )
         builder_matches = resolution.get("builder_matches") if resolution else None
-        failures = [] if builder_matches is not None else resolution.get("problems", []) if resolution else []
+        failures = (
+            []
+            if builder_matches is not None
+            else resolution.get("problems", []) if resolution else []
+        )
         external_failures = []
         if a.failure_dir is not None and a.failure_dir.is_dir():
             external_failures = [
-                core.load_json(path)
+                serialization.load_json(path)
                 for path in sorted(a.failure_dir.rglob("*-failure.json"))
             ]
         result = runtime.build_receipt(
             requested_refs=references,
             stage_results=stage_results,
             inspection=(
-                core.load_json(a.inspection)
+                serialization.load_json(a.inspection)
                 if a.inspection is not None and a.inspection.is_file()
                 else None
             ),
             runtime_probe=(
-                core.load_json(a.probe)
+                serialization.load_json(a.probe)
                 if a.probe is not None and a.probe.is_file()
                 else None
             ),
             builder_matches=builder_matches,
             publication=(
-                core.load_json(a.publication)
+                serialization.load_json(a.publication)
                 if a.publication is not None and a.publication.is_file()
                 else None
             ),
@@ -577,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     problems_render.add_argument("--action", type=Path, required=True)
 
     def _cmd_problems_render(a):
-        selection = upstream.validate_selection(core.load_json(a.selection))
+        selection = upstream.validate_selection(serialization.load_json(a.selection))
         values = selection["problems"]
         summary = problems.render_actions_summary(values)
         issue = problems.render_rolling_issue(values)
@@ -595,235 +608,13 @@ def build_parser() -> argparse.ArgumentParser:
     config_actions = config.add_subparsers(dest="action", required=True)
     validate = config_actions.add_parser("validate")
     _paths(validate)
-    validate.set_defaults(func=lambda a: {'schema_version': 5, 'products': len(policy.load(a.release)['release']['products']), 'backends': len(policy.load(a.release)['platforms']['backends'])})  # fmt: skip  # noqa: E501
-
-    catalog_parser = groups.add_parser("catalog")
-    catalog_actions = catalog_parser.add_subparsers(dest="action", required=True)
-    catalog_validate = catalog_actions.add_parser("validate")
-    catalog_validate.add_argument("--catalog", type=Path, default=core.DEFAULT_RELEASE)
-    catalog_validate.add_argument('--schema-dir', type=Path, default=core.DEFAULT_SCHEMA_DIR)  # fmt: skip  # noqa: E501
-    catalog_validate.add_argument('--repository-root', type=Path, default=core.REPO_ROOT)  # fmt: skip  # noqa: E501
-
-    def _cmd_catalog_validate(a):
-        raw = core.load_yaml(a.catalog)
-        if raw.get("kind") == "ucm-release-policy":
-            formal = policy.resolve(a.catalog, repository_root=a.repository_root)
-            return {
-                "kind": "ucm-catalog-validation",
-                "schema_version": 1,
-                "config_sha256": core.sha256_value(formal),
-                "products": len(formal["products"]),
-                "backends": len(formal["backends"]),
-            }
-        catalog = core.load_catalog(
-            a.catalog, a.schema_dir, repository_root=a.repository_root
-        )
-        catalog_resolution.validate_catalog_tag_grammar(catalog)
-        return {
-            "kind": "ucm-catalog-validation",
-            "schema_version": 1,
-            "config_sha256": core.sha256_value(catalog),
-            "upstream_products": len(catalog["upstream_products"]),
-            "compatibility_rules": len(catalog["compatibility"]["rules"]),
+    validate.set_defaults(
+        func=lambda a: {
+            "schema_version": 6,
+            "products": len(policy.load(a.release)["release"]["products"]),
+            "backends": len(policy.load(a.release)["platforms"]["backends"]),
         }
-
-    catalog_validate.set_defaults(func=_cmd_catalog_validate)
-
-    catalog_resolve = catalog_actions.add_parser("resolve")
-    catalog_resolve.add_argument("--catalog", type=Path, default=core.DEFAULT_RELEASE)
-    catalog_resolve.add_argument('--schema-dir', type=Path, default=core.DEFAULT_SCHEMA_DIR)  # fmt: skip  # noqa: E501
-    catalog_resolve.add_argument('--lane', choices=('feature-candidate', 'protected-tag'), required=True)  # fmt: skip  # noqa: E501
-    catalog_resolve.add_argument("--source-sha", required=True)
-    catalog_resolve.add_argument("--builder-catalog", type=Path, required=True)
-    catalog_resolve.add_argument("--fixture", type=Path)
-    catalog_resolve.add_argument("--pin-upstream", action="append", default=None, metavar="REPO:TAG", help="pin a specific upstream image:tag (PR path; repeatable; skips the registry scan + catalog compatibility gates)")  # fmt: skip  # noqa: E501
-    catalog_resolve.add_argument("--output", type=Path, required=True)
-
-    def _cmd_resolve(a):
-        release = core.load_catalog(a.catalog, a.schema_dir)
-        builder_catalog = core.load_json(a.builder_catalog)
-        fixture = core.load_json(a.fixture) if a.fixture else None
-        result = catalog_resolution.resolve_catalog(release, builder_catalog=builder_catalog, source_sha=a.source_sha, lane=a.lane, fixture=fixture, pin_upstreams=a.pin_upstream)  # fmt: skip  # noqa: E501
-        a.output.parent.mkdir(parents=True, exist_ok=True)
-        _write(a.output, result)
-        return result
-    catalog_resolve.set_defaults(func=_cmd_resolve)
-
-    validate_resolved_plan = catalog_actions.add_parser("validate-resolved-plan")
-    validate_resolved_plan.add_argument("--plan", type=Path, required=True)
-
-    def _cmd_validate_resolved_plan(a):
-        plan = core.load_json(a.plan)
-        registry.validate_resolved_plan(plan)
-        return {"kind": "ucm-resolved-plan-validation", "schema_version": 1}
-
-    validate_resolved_plan.set_defaults(func=_cmd_validate_resolved_plan)
-
-    validate_main_loop = catalog_actions.add_parser("validate-main-loop")
-    validate_main_loop.add_argument("--plan", type=Path, required=True)
-    validate_main_loop.add_argument("--catalog", type=Path, default=core.DEFAULT_RELEASE)
-    validate_main_loop.add_argument('--schema-dir', type=Path, default=core.DEFAULT_SCHEMA_DIR)  # fmt: skip  # noqa: E501
-
-    def _cmd_validate_main_loop(a):
-        plan = core.load_json(a.plan)
-        catalog = core.load_catalog(a.catalog, a.schema_dir)
-        counts = registry.validate_main_full_loop_plan(plan, catalog)
-        return {"kind": "ucm-main-full-loop-validation", "schema_version": 1, **counts}
-    validate_main_loop.set_defaults(func=_cmd_validate_main_loop)
-
-    core_parser = groups.add_parser("core")
-    core_actions = core_parser.add_subparsers(dest="action", required=True)
-    tag_preflight = core_actions.add_parser("tag-preflight")
-    tag_preflight.add_argument('--lane', choices=('feature-candidate', 'protected-tag'), required=True)  # fmt: skip  # noqa: E501
-    tag_preflight.add_argument("--resolved-plan", type=Path)
-    tag_preflight.add_argument('--catalog-planner', action='store_true', help='resolve current catalog authority only in the initial planning job')  # fmt: skip  # noqa: E501
-    _paths(tag_preflight)
-
-    def _cmd_tag_preflight(a):
-        if a.catalog_planner:
-            if a.resolved_plan is not None:
-                raise ValueError('catalog planner mode cannot consume a resolved plan binding')  # fmt: skip  # noqa: E501
-            return core.tag_preflight(lane=a.lane, release_path=a.release, schema_dir=a.schema_dir)  # fmt: skip  # noqa: E501
-        if a.resolved_plan is None:
-            raise ValueError('tag preflight requires a resolved plan')  # fmt: skip  # noqa: E501
-        resolved_plan = core.load_json(a.resolved_plan)
-        registry.validate_resolved_plan(resolved_plan)
-        if resolved_plan['lane'] != a.lane: raise ValueError('tag preflight lane differs from resolved plan')  # noqa: E701,E501
-        return core.tag_preflight(lane=a.lane, authority=resolved_plan['source'])  # fmt: skip  # noqa: E501
-    tag_preflight.set_defaults(func=_cmd_tag_preflight)
-
-    wheel_parser = groups.add_parser("wheel")
-    wheel_actions = wheel_parser.add_subparsers(dest="action", required=True)
-
-    wc_build_config = wheel_actions.add_parser("build-config")
-    wc_build_config.add_argument("--task-file", type=Path, required=True)
-    wc_build_config.add_argument("--authority-file", type=Path, required=True)
-    wc_build_config.add_argument("--output", type=Path, required=True)
-    wc_build_config.set_defaults(
-        func=lambda a: wheel.build_wheel_config(
-            a.task_file, a.authority_file, a.output
-        )
-    )
-
-    wc_prepare_source = wheel_actions.add_parser("prepare-source")
-    wc_prepare_source.add_argument("--build-config", type=Path, required=True)
-    wc_prepare_source.add_argument("--source-root", type=Path, required=True)
-    wc_prepare_source.set_defaults(
-        func=lambda a: wheel.prepare_wheel_source(a.build_config, a.source_root)
-    )
-
-    wc_source_context = wheel_actions.add_parser("source-context")
-    wc_source_context.add_argument("--repository-root", type=Path, default=core.REPO_ROOT)
-    wc_source_context.add_argument("--source-sha", required=True)
-    wc_source_context.add_argument("--source-version", required=True)
-    wc_source_context.add_argument("--output-dir", type=Path, required=True)
-    wc_source_context.set_defaults(
-        func=lambda a: wheel.prepare_source_context(
-            a.output_dir,
-            a.source_sha,
-            a.source_version,
-            repository_root=a.repository_root,
-        )
-    )
-
-    wc_production_authority = wheel_actions.add_parser("production-authority")
-    wc_production_authority.add_argument("--task", type=Path, required=True)
-    wc_production_authority.add_argument(
-        "--source-context", type=Path, required=True
-    )
-    wc_production_authority.add_argument("--source-date-epoch", type=int, required=True)
-    wc_production_authority.add_argument("--tool-wheels", type=Path, required=True)
-    wc_production_authority.add_argument("--output", type=Path, required=True)
-    wc_production_authority.set_defaults(
-        func=lambda a: wheel.build_production_authority(
-            core.load_json(a.task),
-            core.load_json(a.source_context),
-            a.source_date_epoch,
-            core.load_json(a.tool_wheels),
-            output=a.output,
-        )
-    )
-
-    wc_env = wheel_actions.add_parser("check-environment")
-    wc_env.add_argument("--task", type=Path, required=True)
-    wc_env.add_argument("--python-executable", type=Path, required=True)
-
-    def _cmd_wheel_check_env(a):
-        task = core.load_json(a.task)
-        return wheel.check_build_environment(task, python_executable=a.python_executable)  # fmt: skip  # noqa: E501
-    wc_env.set_defaults(func=_cmd_wheel_check_env)
-
-    wc_ctx = wheel_actions.add_parser("verify-context")
-    wc_ctx.add_argument("--archive", type=Path, required=True)
-    wc_ctx.add_argument("--manifest", type=Path, required=True)
-    wc_ctx.add_argument("--source-root", type=Path, required=True)
-    wc_ctx.add_argument("--commit-payload", type=Path)
-    wc_ctx.add_argument("--expected-source-sha")
-
-    def _cmd_wheel_verify_ctx(a):
-        return wheel.verify_source_context(a.archive, a.manifest, a.source_root, a.commit_payload, a.expected_source_sha)  # fmt: skip  # noqa: E501
-    wc_ctx.set_defaults(func=_cmd_wheel_verify_ctx)
-
-    wc_auth = wheel_actions.add_parser("authority")
-    wc_auth.add_argument("--spec-id", required=True)
-    wc_auth.add_argument("--source-sha", required=True)
-    wc_auth.add_argument("--source-date-epoch", required=True)
-    wc_auth.add_argument("--builder-coordinate", required=True)
-    wc_auth.add_argument("--wheelhouse", type=Path, required=True)
-    wc_auth.add_argument("--source-archive", type=Path, required=True)
-    wc_auth.add_argument("--source-commit-payload", type=Path, required=True)
-    wc_auth.add_argument("--source-manifest", type=Path, required=True)
-    wc_auth.add_argument("--source-root", type=Path, required=True)
-    wc_auth.add_argument("--task-file", type=Path, required=True)
-    wc_auth.add_argument("--output", type=Path, required=True)
-
-    def _cmd_wheel_authority(a):
-        return wheel.build_authority_record(a.output, a.spec_id, a.source_sha, int(a.source_date_epoch), a.builder_coordinate, a.wheelhouse, a.source_archive, a.source_commit_payload, a.source_manifest, a.source_root, a.task_file)  # fmt: skip  # noqa: E501
-    wc_auth.set_defaults(func=_cmd_wheel_authority)
-
-    wc_closure = wheel_actions.add_parser("closure")
-    wc_closure.add_argument("path", type=Path)
-    wc_closure.add_argument("--spec-id", required=True)
-    wc_closure.add_argument("--authority-file", type=Path, required=True)
-    wc_closure.add_argument("--task-file", type=Path)
-    wc_closure.add_argument("--output", type=Path, required=True)
-
-    def _cmd_wheel_closure(a):
-        return wheel.audit_dependency_closure(a.path, a.output, a.spec_id, a.authority_file, task_path=a.task_file)  # fmt: skip  # noqa: E501
-    wc_closure.set_defaults(func=_cmd_wheel_closure)
-
-    wc_seal = wheel_actions.add_parser("seal")
-    wc_seal.add_argument("path", type=Path)
-    wc_seal.add_argument("--spec-id", required=True)
-    wc_seal.add_argument("--source-sha", required=True)
-    wc_seal.add_argument("--build-key", required=True)
-    wc_seal.add_argument("--source-date-epoch", required=True)
-    wc_seal.add_argument("--authority-file", type=Path, required=True)
-    wc_seal.add_argument("--dependency-closure", type=Path, required=True)
-    wc_seal.add_argument("--task-file", type=Path)
-    wc_seal.add_argument("--output-dir", type=Path, required=True)
-
-    def _cmd_wheel_seal(a):
-        return wheel.seal_wheel(a.path, a.output_dir, a.spec_id, a.source_sha, a.build_key, int(a.source_date_epoch), a.authority_file, a.dependency_closure, task_path=a.task_file)  # fmt: skip  # noqa: E501
-    wc_seal.set_defaults(func=_cmd_wheel_seal)
-
-    wc_inspect = wheel_actions.add_parser("inspect")
-    wc_inspect.add_argument("path", type=Path)
-    wc_inspect.add_argument("--spec-id", required=True)
-    wc_inspect.add_argument("--expected-sha256", required=True)
-    wc_inspect.add_argument('--source-kind', choices=('fixture', 'builder-candidate'), required=True)  # fmt: skip  # noqa: E501
-    wc_inspect.add_argument("--task-file", type=Path)
-    wc_inspect.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
-    wc_inspect.add_argument('--schema-dir', type=Path, default=core.DEFAULT_SCHEMA_DIR)  # fmt: skip  # noqa: E501
-    wc_inspect.add_argument("--output", type=Path)
-
-    def _cmd_wheel_inspect(a):
-        result = wheel.inspect_wheel(a.path, a.spec_id, a.expected_sha256, a.source_kind, task_path=a.task_file, release_path=a.release, schema_dir=a.schema_dir)  # fmt: skip  # noqa: E501
-        if a.output is not None:
-            a.output.parent.mkdir(parents=True, exist_ok=True)
-            _write(a.output, result)
-        return result
-    wc_inspect.set_defaults(func=_cmd_wheel_inspect)
+    )  # noqa: E501
 
     return parser
 
@@ -845,7 +636,3 @@ def main(argv: list[str] | None = None) -> int:
         parser.exit(2, f"error: {error}\n")
     print(_json(result))
     return 0
-
-
-if __name__ == '__main__': sys.exit(main())  # noqa: E701
-# fmt: on

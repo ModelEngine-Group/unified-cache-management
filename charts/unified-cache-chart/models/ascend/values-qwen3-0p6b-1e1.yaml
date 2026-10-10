@@ -1,3 +1,7 @@
+images:
+  # Ascend 配置须显式指定对应镜像；发布包 values.yaml 的候选注释列出可选地址。
+  image: ""
+
 # ============================================================
 # Qwen3-0.6B 单机部署（Ascend，kthena）
 # helm install qwen3-0p6b-1e1 -n inference --create-namespace . -f values.yaml -f models/ascend/values-qwen3-0p6b-1e1.yaml

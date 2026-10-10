@@ -47,7 +47,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: ./.github/actions/download-artifact-retry
         with:
           name: ${{ inputs.plan_artifact }}
@@ -61,13 +61,13 @@ jobs:
           mkdir -p out .ucm-compact
           python scripts/materialize_version.py \
             --version "$(jq -er '.version' input/plan/release-plan.json)" >/dev/null
-          PYTHONPATH=.github/release python -m ucm_release compact select \
+          PYTHONPATH=.github/release python -m ucm_release plan select \
             --plan input/plan/release-plan.json --kind wheel --id "${WHEEL_ID}" \
             --output out/wheel-task.json >/dev/null
           source_version="$(PYTHONPATH=.github/release python -c \
-            'from ucm_release.core import read_version; print(read_version())')"
+            'from ucm_release.version_config import read_version; print(read_version())')"
           test "$(jq -r '.wheel_version' out/wheel-task.json)" = "${source_version}"
-          PYTHONPATH=.github/release python -m ucm_release compact prepare-wheel-source \
+          PYTHONPATH=.github/release python -m ucm_release wheel prepare-source \
             --source-root . \
             --distribution "$(jq -r '.dist_name' out/wheel-task.json)" >/dev/null
           jq -r '.build_requirements[]' out/wheel-task.json \
@@ -176,7 +176,7 @@ jobs:
           set -euo pipefail
           wheel="$(find out/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "${wheel}"
-          PYTHONPATH=.github/release python -m ucm_release compact record-wheel-result \
+          PYTHONPATH=.github/release python -m ucm_release wheel record-result \
             --task out/wheel-task.json --wheel "${wheel}" \
             --output out/wheel/wheel-result.json >/dev/null
           external_libraries="$(jq -r '

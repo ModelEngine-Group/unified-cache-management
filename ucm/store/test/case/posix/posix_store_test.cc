@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
@@ -391,6 +392,110 @@ TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
     auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
     EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, PsyncDispatchQueueServesManySingleShardLoads)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakePsyncConfig(Path())), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Test::Detail::DataGenerator source{1, AIO_TEST_DATA_SIZE};
+    source.GenerateRandom();
+    UC::Detail::TaskDesc dump;
+    dump.brief = "Dump";
+    dump.push_back(UC::Detail::Shard{block, 0, {source.Buffer()}});
+    auto dumpHandle = store.Dump(std::move(dump));
+    ASSERT_TRUE(dumpHandle.HasValue());
+    ASSERT_EQ(store.Wait(dumpHandle.Value()), UC::Status::OK());
+
+    constexpr size_t kTasks = 256;
+    std::vector<UC::Test::Detail::DataGenerator> targets;
+    std::vector<UC::Detail::TaskHandle> handles;
+    targets.reserve(kTasks);
+    handles.reserve(kTasks);
+    for (size_t i = 0; i < kTasks; ++i) {
+        targets.emplace_back(1, AIO_TEST_DATA_SIZE);
+        targets.back().Generate();
+        UC::Detail::TaskDesc load;
+        load.brief = "Load";
+        load.push_back(UC::Detail::Shard{block, 0, {targets.back().Buffer()}});
+        auto handle = store.Load(std::move(load));
+        ASSERT_TRUE(handle.HasValue());
+        handles.push_back(handle.Value());
+    }
+    for (size_t i = 0; i < kTasks; ++i) {
+        ASSERT_EQ(store.Wait(handles[i]), UC::Status::OK());
+        ASSERT_EQ(source.Compare(targets[i]), 0);
+    }
+}
+
+TEST_F(UCPosixStoreTest, PsyncDispatchQueueServesConcurrentMultiProducerLoads)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakePsyncConfig(Path())), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Test::Detail::DataGenerator source{1, AIO_TEST_DATA_SIZE};
+    source.GenerateRandom();
+    UC::Detail::TaskDesc dump;
+    dump.brief = "Dump";
+    dump.push_back(UC::Detail::Shard{block, 0, {source.Buffer()}});
+    auto dumpHandle = store.Dump(std::move(dump));
+    ASSERT_TRUE(dumpHandle.HasValue());
+    ASSERT_EQ(store.Wait(dumpHandle.Value()), UC::Status::OK());
+
+    constexpr size_t kThreads = 8;
+    constexpr size_t kTasksPerThread = 32;
+    std::vector<std::vector<UC::Test::Detail::DataGenerator>> targets;
+    targets.reserve(kThreads);
+    for (size_t i = 0; i < kThreads; ++i) {
+        targets.emplace_back();
+        targets.back().reserve(kTasksPerThread);
+        for (size_t j = 0; j < kTasksPerThread; ++j) {
+            targets.back().emplace_back(1, AIO_TEST_DATA_SIZE);
+            targets.back().back().Generate();
+        }
+    }
+
+    std::mutex startMtx;
+    std::condition_variable startCv;
+    bool started = false;
+    std::atomic_size_t failures{0};
+    std::vector<std::thread> workers;
+    workers.reserve(kThreads);
+    for (size_t i = 0; i < kThreads; ++i) {
+        workers.emplace_back([&, i] {
+            {
+                std::unique_lock<std::mutex> lock(startMtx);
+                startCv.wait(lock, [&] { return started; });
+            }
+            for (size_t j = 0; j < kTasksPerThread; ++j) {
+                UC::Detail::TaskDesc load;
+                load.brief = "Load";
+                load.push_back(UC::Detail::Shard{block, 0, {targets[i][j].Buffer()}});
+                auto handle = store.Load(std::move(load));
+                if (!handle.HasValue()) {
+                    ++failures;
+                    continue;
+                }
+                if (store.Wait(handle.Value()).Failure()) {
+                    ++failures;
+                    continue;
+                }
+                if (source.Compare(targets[i][j]) != 0) { ++failures; }
+            }
+        });
+    }
+    {
+        std::lock_guard<std::mutex> lock(startMtx);
+        started = true;
+    }
+    startCv.notify_all();
+    for (auto& worker : workers) { worker.join(); }
+    ASSERT_EQ(failures.load(), 0);
 }
 
 TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)

@@ -1,4 +1,4 @@
-"""Retain and remove one UCM Tag release from its public schema-v6 manifest."""
+"""Retain and remove current UCM releases using the public manifest."""
 
 from __future__ import annotations
 
@@ -16,26 +16,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-MANIFEST_KIND = "ucm-release-manifest"
-MANIFEST_SCHEMA_VERSION = 6
-MANIFEST_FILENAME = "release-manifest.json"
+if __package__:
+    from .manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
+    from .manifest import ManifestError as CleanupError
+    from .manifest import validate_manifest
+else:
+    # Filename entry points also need the package parent for manifest imports.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
+    from manifest import ManifestError as CleanupError
+    from manifest import validate_manifest
+
 RELEASE_TYPES = frozenset({"stable", "prerelease", "draft", "nightly"})
 RETRY_DELAYS_SECONDS = (0.0, 5.0, 15.0)
-
-_MANIFEST_KEYS = frozenset(
-    {
-        "kind",
-        "schema_version",
-        "tag",
-        "release_type",
-        "actions_run_id",
-        "chart_oci",
-        "runtime_images",
-        "github_release_assets",
-    }
-)
-_RUNTIME_CHANNELS = ("ghcr", "dockerhub")
-_RUNTIME_IMAGE_KEYS = frozenset({"members", "indexes"})
 _OCI_REFERENCE = re.compile(
     r"(?P<repository>(?:ghcr\.io|docker\.io)/"
     r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+)"
@@ -45,6 +38,7 @@ _REPOSITORY = re.compile(
     r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/(?P<repo>[A-Za-z0-9_.-]+)"
 )
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_PATH_COMPONENT = re.compile(r"[a-z0-9][a-z0-9.+-]*")
 _MISSING_MARKERS = (
     "404",
     "manifest unknown",
@@ -64,10 +58,6 @@ _TRANSPORT_MARKERS = (
     "timeout",
     "tls handshake timeout",
 )
-
-
-class CleanupError(ValueError):
-    """A local contract or permanent remote cleanup error."""
 
 
 class RemoteError(CleanupError):
@@ -149,129 +139,31 @@ class CleanupRemote(Protocol):
     def release_resources(self, tag: str) -> list[Resource]: ...
 
 
-def _mapping(value: object, context: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise CleanupError(f"{context} must be an object")
-    return value
-
-
-def _array(value: object, context: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise CleanupError(f"{context} must be an array")
-    return value
-
-
-def _exact_keys(value: dict[str, Any], expected: frozenset[str], context: str) -> None:
-    if set(value) != set(expected):
-        missing = sorted(expected - value.keys())
-        extra = sorted(value.keys() - expected)
-        raise CleanupError(
-            f"{context} fields must be exact; missing={missing}, extra={extra}"
-        )
-
-
-def _tagged_oci_reference(value: object, context: str, *, registry: str) -> str:
-    if not isinstance(value, str):
-        raise CleanupError(f"{context} must be a tagged OCI reference")
-    match = _OCI_REFERENCE.fullmatch(value)
-    if match is None or not match.group("repository").startswith(registry + "/"):
-        raise CleanupError(f"{context} must be a tagged {registry} reference")
-    return value
-
-
-def validate_manifest(
-    value: object, *, expected_tag: str | None = None
-) -> dict[str, Any]:
-    """Validate and return the exact public cleanup manifest contract."""
-    manifest = _mapping(value, "release manifest")
-    _exact_keys(manifest, _MANIFEST_KEYS, "release manifest")
-    if manifest["kind"] != MANIFEST_KIND:
-        raise CleanupError("release manifest kind is invalid")
-    if manifest["schema_version"] != MANIFEST_SCHEMA_VERSION:
-        raise CleanupError("release manifest must use schema version 6")
-    tag = manifest["tag"]
-    if not isinstance(tag, str) or not tag or tag.strip() != tag:
-        raise CleanupError("release manifest Tag must be a non-empty exact string")
-    if expected_tag is not None and tag != expected_tag:
-        raise CleanupError("release manifest Tag differs from the requested Tag")
-    if (
-        not isinstance(manifest["release_type"], str)
-        or manifest["release_type"] not in RELEASE_TYPES
-    ):
-        raise CleanupError("release manifest release type is invalid")
-    run_id = manifest["actions_run_id"]
-    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
-        raise CleanupError("release manifest Actions run ID must be a positive integer")
-
-    chart = manifest["chart_oci"]
-    if chart is not None:
-        _tagged_oci_reference(chart, "release manifest Chart OCI", registry="ghcr.io")
-
-    runtime_images = _mapping(
-        manifest["runtime_images"], "release manifest Runtime Images"
-    )
-    _exact_keys(
-        runtime_images, frozenset(_RUNTIME_CHANNELS), "release manifest Runtime Images"
-    )
-    for channel in _RUNTIME_CHANNELS:
-        channel_value = _mapping(
-            runtime_images[channel], f"release manifest {channel} images"
-        )
-        _exact_keys(
-            channel_value, _RUNTIME_IMAGE_KEYS, f"release manifest {channel} images"
-        )
-        registry = "ghcr.io" if channel == "ghcr" else "docker.io"
-        seen: set[str] = set()
-        for image_kind in ("members", "indexes"):
-            references = _array(
-                channel_value[image_kind],
-                f"release manifest {channel} {image_kind}",
-            )
-            for index, reference in enumerate(references):
-                normalized = _tagged_oci_reference(
-                    reference,
-                    f"release manifest {channel} {image_kind}[{index}]",
-                    registry=registry,
-                )
-                if normalized in seen:
-                    raise CleanupError(
-                        f"release manifest {channel} image references must be unique"
-                    )
-                seen.add(normalized)
-
-    assets = _array(
-        manifest["github_release_assets"], "release manifest GitHub Release assets"
-    )
-    seen_assets: set[str] = set()
-    for asset in assets:
-        if (
-            not isinstance(asset, str)
-            or not asset
-            or asset in {".", ".."}
-            or Path(asset).name != asset
-        ):
-            raise CleanupError(
-                "release manifest has an invalid GitHub Release asset name"
-            )
-        if asset in seen_assets:
-            raise CleanupError("release manifest GitHub Release assets must be unique")
-        seen_assets.add(asset)
-    if MANIFEST_FILENAME not in seen_assets:
-        raise CleanupError(
-            "release manifest must list itself as a GitHub Release asset"
-        )
-    return manifest
-
-
 def registry_resources(manifest: object) -> list[Resource]:
     """Project phase-one resources in the required deletion order."""
     validated = validate_manifest(manifest)
+    images = {
+        channel: {"indexes": set(), "members": set()}
+        for channel in ("ghcr", "dockerhub")
+    }
+    for image in validated["images"]:
+        for channel, publication in image["publications"].items():
+            if publication is None:
+                continue
+            kind = "indexes" if publication["multi_arch"] else "members"
+            images[channel][kind].add(publication["pull"])
+            images[channel]["members"].update(
+                member["reference"] for member in publication["members"]
+            )
     ghcr_resources: list[tuple[str, str]] = []
-    if validated["chart_oci"] is not None:
-        ghcr_resources.append(("chart-oci", validated["chart_oci"]))
-    images = validated["runtime_images"]
-    ghcr_resources.extend(("ghcr-index", ref) for ref in images["ghcr"]["indexes"])
-    ghcr_resources.extend(("ghcr-member", ref) for ref in images["ghcr"]["members"])
+    if validated["chart"] is not None and validated["chart"]["oci"] is not None:
+        ghcr_resources.append(("chart-oci", validated["chart"]["oci"]))
+    ghcr_resources.extend(
+        ("ghcr-index", ref) for ref in sorted(images["ghcr"]["indexes"])
+    )
+    ghcr_resources.extend(
+        ("ghcr-member", ref) for ref in sorted(images["ghcr"]["members"])
+    )
 
     allowed_tags_by_package: dict[str, set[str]] = {}
     for _, reference in ghcr_resources:
@@ -290,10 +182,12 @@ def registry_resources(manifest: object) -> list[Resource]:
         result.append(Resource(kind, reference, allowed_tags))
 
     result.extend(
-        Resource("dockerhub-index", ref) for ref in images["dockerhub"]["indexes"]
+        Resource("dockerhub-index", ref)
+        for ref in sorted(images["dockerhub"]["indexes"])
     )
     result.extend(
-        Resource("dockerhub-member", ref) for ref in images["dockerhub"]["members"]
+        Resource("dockerhub-member", ref)
+        for ref in sorted(images["dockerhub"]["members"])
     )
     return result
 
@@ -329,12 +223,16 @@ def select_retention_candidates(
         )
 
     grouped: dict[str, list[ManifestRecord]] = {}
+    normalized_by_record: dict[int, dict[str, Any]] = {}
     for record in records:
         try:
             manifest = validate_manifest(record.manifest)
         except CleanupError:
             continue
-        if manifest["release_type"] != release_type or manifest["tag"] == current_tag:
+        if (
+            manifest["release"]["type"] != release_type
+            or manifest["release"]["tag"] == current_tag
+        ):
             continue
         if (
             not isinstance(record.created_at, str)
@@ -354,7 +252,8 @@ def select_retention_candidates(
         }[release_type]
         if (record.draft, record.prerelease) != expected_visibility:
             continue
-        grouped.setdefault(manifest["tag"], []).append(record)
+        normalized_by_record[id(record)] = manifest
+        grouped.setdefault(manifest["release"]["tag"], []).append(record)
 
     unique_records: list[ManifestRecord] = []
     for tag_records in grouped.values():
@@ -365,7 +264,11 @@ def select_retention_candidates(
             min(tag_records, key=lambda item: (item.created_at, item.release_id))
         )
     unique_records.sort(
-        key=lambda item: (item.created_at, item.release_id, item.manifest["tag"])
+        key=lambda item: (
+            item.created_at,
+            item.release_id,
+            normalized_by_record[id(item)]["release"]["tag"],
+        )
     )
     allowed_other_tags = max_count - 1
     excess = max(0, len(unique_records) - allowed_other_tags)
@@ -469,7 +372,7 @@ def cleanup_manifest(
 ) -> CleanupReport:
     """Delete one Tag through the four recovery-preserving phases."""
     validated = validate_manifest(manifest)
-    tag = validated["tag"]
+    tag = validated["release"]["tag"]
     phase_one_resources = registry_resources(validated)
 
     failures = _run_phase(
@@ -481,7 +384,7 @@ def cleanup_manifest(
     if failures:
         return CleanupReport(tag, False, 1, tuple(failures))
 
-    run_id = validated["actions_run_id"]
+    run_id = validated["release"]["actions_run_id"]
     actions = Resource(
         "actions-run",
         f"https://github.com/{remote.repository}/actions/runs/{run_id}",
@@ -679,7 +582,7 @@ class ProductionRemote:
             is not None
         ]
         if not manifests:
-            raise CleanupError(f"Tag {tag} has no exact schema-v6 release manifest")
+            raise CleanupError(f"Tag {tag} has no exact schema 9 manifest")
         if any(manifest != manifests[0] for manifest in manifests[1:]):
             raise CleanupError(f"Tag {tag} has conflicting release manifests")
         return manifests[0]

@@ -159,7 +159,7 @@ protected:
 
     TaskManagerDependencies Dependencies(RequestSubmitter submitRequest) const
     {
-        return TaskManagerDependencies{router_, std::move(submitRequest)};
+        return TaskManagerDependencies{router_, std::move(submitRequest), [] {}};
     }
 
     static Detail::TaskDesc ValidTask()
@@ -500,6 +500,156 @@ TEST_F(UCDramTaskManagerAsyncTest, PartialDispatchWaitsForPostedRequest)
             requests[0].taskId, requests[0].requestId, requests[0].nodeId, Status::OK(), {}});
     EXPECT_TRUE(manager.WaitTransfer(task_id).Failure());
     manager.Shutdown();
+}
+
+TEST_F(UCDramTaskManagerAsyncTest, PrerequisiteFanoutErrorWaitsForEveryBorrower)
+{
+    std::promise<std::vector<Request>> dispatched;
+    std::vector<Request> captured;
+    auto dependencies = Dependencies([&](Request& request) {
+        if (request.prerequisiteHandle == 0) { return Status::NoSpace(); }
+        captured.push_back(request);
+        if (captured.size() == 2) { dispatched.set_value(captured); }
+        return Status::OK();
+    });
+    TaskManager manager(Config(1), std::move(dependencies));
+    ASSERT_TRUE(manager.Start().Success());
+    auto task = TwoEntryTask();
+    task.prerequisiteHandle = 123;
+    auto submitted = manager.SubmitTransfer(OpType::DUMP, std::move(task));
+    ASSERT_TRUE(submitted);
+    auto future = dispatched.get_future();
+    ASSERT_EQ(future.wait_for(std::chrono::seconds{3}), std::future_status::ready);
+    auto requests = future.get();
+    ASSERT_EQ(requests.size(), 2U);
+    ASSERT_EQ(requests[0].prerequisiteHandle, 123U);
+    EXPECT_EQ(requests[0].prerequisiteHandle, requests[1].prerequisiteHandle);
+    std::promise<void> queryEntered;
+    std::promise<void> releaseQuery;
+    auto released = releaseQuery.get_future();
+    std::atomic<bool> destroyed{false};
+    auto owner = std::async(std::launch::async, [&] {
+        // Model a native Query still using the handle on a peer owner.
+        auto query = [&](std::uintptr_t handle) -> Expected<bool> {
+            EXPECT_EQ(handle, 123U);
+            EXPECT_FALSE(destroyed.load());
+            queryEntered.set_value();
+            released.wait();
+            EXPECT_FALSE(destroyed.load());
+            return true;
+        };
+        auto ready = query(requests[0].prerequisiteHandle);
+        EXPECT_TRUE(ready && ready.Value());
+        requests[0].prerequisiteHandle = 0;
+        PublishCompletion(
+            manager,
+            RequestCompleted{
+                requests[0].taskId, requests[0].requestId, requests[0].nodeId, Status::OK(), {}});
+    });
+    // Avoid fatal assertions until the blocked owner has been released.
+    EXPECT_EQ(queryEntered.get_future().wait_for(std::chrono::seconds{3}),
+              std::future_status::ready);
+    requests[1].prerequisiteHandle = 0;
+    PublishCompletion(
+        manager,
+        RequestCompleted{
+            requests[1].taskId, requests[1].requestId, requests[1].nodeId, Status::Timeout(), {}});
+    // Completions take priority over submissions, so this observes the failed child.
+    auto barrier = manager.SubmitTransfer(OpType::LOAD, ValidTask());
+    EXPECT_TRUE(barrier);
+    if (barrier) { EXPECT_EQ(manager.WaitTransfer(barrier.Value()), Status::NoSpace()); }
+    auto done = manager.Check(submitted.Value());
+    EXPECT_TRUE(done && !done.Value());
+    // A failed child must not authorize destroying the event used by its sibling.
+    releaseQuery.set_value();
+    EXPECT_EQ(manager.WaitTransfer(submitted.Value()), Status::Timeout());
+    destroyed.store(true);
+    owner.get();
+}
+
+TEST_F(UCDramTaskManagerAsyncTest, PrerequisiteAdmissionRejectionDoesNotQueryEvent)
+{
+    std::size_t requestsSeen = 0;
+    auto dependencies = Dependencies([&](Request& request) {
+        ++requestsSeen;
+        EXPECT_EQ(request.prerequisiteHandle, 123U);
+        return Status::NoSpace();
+    });
+    TaskManager manager(Config(1), std::move(dependencies));
+    ASSERT_TRUE(manager.Start().Success());
+    auto task = TwoEntryTask();
+    task.prerequisiteHandle = 123;
+    auto submitted = manager.SubmitTransfer(OpType::DUMP, std::move(task));
+    ASSERT_TRUE(submitted);
+    EXPECT_EQ(manager.WaitTransfer(submitted.Value()), Status::NoSpace());
+    EXPECT_EQ(requestsSeen, 2U);
+}
+
+TEST_F(UCDramTaskManagerAsyncTest, LoadDoesNotForwardPrerequisite)
+{
+    CompletingRequests completing;
+    TaskManager manager(Config(), Dependencies([&](Request& request) {
+                            EXPECT_EQ(request.prerequisiteHandle, 0U);
+                            return completing.Post(request);
+                        }));
+    completing.Bind(manager);
+    ASSERT_TRUE(manager.Start().Success());
+    auto task = ValidTask();
+    task.prerequisiteHandle = 123;
+    auto submitted = manager.SubmitTransfer(OpType::LOAD, std::move(task));
+    ASSERT_TRUE(submitted);
+    EXPECT_TRUE(manager.WaitTransfer(submitted.Value()).Success());
+}
+
+TEST_F(UCDramTaskManagerAsyncTest, PrerequisiteDispatcherExceptionStopsNodesBeforeFailure)
+{
+    bool stopped = false;
+    auto dependencies = Dependencies([](Request&) -> Status {
+        throw std::runtime_error("dispatch failure with borrowed event");
+    });
+    dependencies.shutdownNodes = [&] { stopped = true; };
+    TaskManager manager(Config(), std::move(dependencies));
+    ASSERT_TRUE(manager.Start().Success());
+    auto task = ValidTask();
+    task.prerequisiteHandle = 123;
+    auto submitted = manager.SubmitTransfer(OpType::DUMP, std::move(task));
+    ASSERT_TRUE(submitted);
+    EXPECT_TRUE(manager.WaitTransfer(submitted.Value()).Failure());
+    EXPECT_TRUE(stopped);
+}
+
+TEST_F(UCDramTaskManagerAsyncTest, PartialPrerequisiteDispatchExceptionWaitsForNodeShutdown)
+{
+    std::promise<void> stopping;
+    std::promise<void> releaseShutdown;
+    auto released = releaseShutdown.get_future();
+    std::size_t dispatched = 0;
+    auto dependencies = Dependencies([&](Request& request) -> Status {
+        EXPECT_EQ(request.prerequisiteHandle, 123U);
+        if (++dispatched == 1) { return Status::OK(); }
+        throw std::runtime_error("second request dispatch failed");
+    });
+    dependencies.shutdownNodes = [&] {
+        stopping.set_value();
+        released.wait();
+    };
+    TaskManager manager(Config(1), std::move(dependencies));
+    ASSERT_TRUE(manager.Start().Success());
+    auto task = TwoEntryTask();
+    task.prerequisiteHandle = 123;
+    auto submitted = manager.SubmitTransfer(OpType::DUMP, std::move(task));
+    // Release the callback even on a failed expectation so teardown cannot hang.
+    EXPECT_TRUE(submitted);
+    EXPECT_EQ(stopping.get_future().wait_for(std::chrono::seconds{3}), std::future_status::ready);
+    if (submitted) {
+        auto done = manager.Check(submitted.Value());
+        EXPECT_TRUE(done && !done.Value());
+    }
+    EXPECT_FALSE(manager.SubmitTransfer(OpType::LOAD, ValidTask()));
+    releaseShutdown.set_value();
+    if (submitted) { EXPECT_TRUE(manager.WaitTransfer(submitted.Value()).Failure()); }
+    manager.Shutdown();
+    EXPECT_EQ(dispatched, 2U);
 }
 
 TEST_F(UCDramTaskManagerAsyncTest, ShutdownWaitsForInProgressNodeDispatch)

@@ -36,6 +36,10 @@ Status SpaceManager::Setup(const Config& config)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    if (config.posixGcEnable) {
+        s = gcConfigGuard_.Setup(config);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
     if (hotnessTrackerEnable_) {
         s = hotnessTracker_.Setup(&layout_);
         if (s.Failure()) [[unlikely]] { return s; }
@@ -62,10 +66,10 @@ Status SpaceManager::Setup(const Config& config)
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     std::vector<uint8_t> results(num, false);
-    auto res = LookupOnPrefix(blocks, num);
-    if (!res) [[unlikely]] { return res.Error(); }
-    const auto index = res.Value();
-    for (ssize_t i = 0; i <= index; ++i) { results[i] = true; }
+    for (size_t i = 0; i < num; ++i) {
+        results[i] = Lookup(blocks + i);
+        if (results[i] && hotnessTrackerEnable_) { hotnessTracker_.Touch(blocks[i]); }
+    }
     return results;
 }
 

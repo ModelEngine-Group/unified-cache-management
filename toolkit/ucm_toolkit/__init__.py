@@ -2,4 +2,16 @@
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+try:
+    from ._version import __version__
+except ModuleNotFoundError:
+    # Editable installs read the same authority as the native UCM package.
+    from pathlib import Path
+
+    __version__ = next(
+        line.partition("=")[2]
+        for line in (Path(__file__).resolve().parents[2] / "version.ini")
+        .read_text()
+        .splitlines()
+        if line.startswith("UCM_VERSION=")
+    )

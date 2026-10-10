@@ -33,4 +33,13 @@ Status Event::Synchronize() const
     return ret == ACL_SUCCESS ? Status::OK() : Status{ret, std::to_string(ret)};
 }
 
+Expected<bool> Event::Query() const
+{
+    if (!Valid()) { return true; }
+    aclrtEventRecordedStatus state = ACL_EVENT_RECORDED_STATUS_NOT_READY;
+    const auto ret = aclrtQueryEventStatus(reinterpret_cast<aclrtEvent>(NativeHandle()), &state);
+    if (ret != ACL_SUCCESS) { return Status{ret, std::to_string(ret)}; }
+    return state == ACL_EVENT_RECORDED_STATUS_COMPLETE;
+}
+
 }  // namespace UC::Trans

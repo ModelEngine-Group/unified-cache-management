@@ -15,7 +15,11 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from . import core
+OCI_REPOSITORY_PATTERN = re.compile(
+    "^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:(?:[._]|-+)[a-z0-9]+)*)+$"
+)
+OCI_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+
 
 __all__ = [
     "aggregate_runtime_probes",
@@ -26,6 +30,7 @@ __all__ = [
     "project_pr_publication",
     "project_pr_tag",
     "project_runtime_image_tag",
+    "image_publication_targets",
     "render_receipt_markdown",
     "sanitize_oci_tag_component",
 ]
@@ -94,11 +99,27 @@ def parse_runtime_reference(reference: str) -> tuple[str, str]:
     repository, separator, tag = reference.strip().rpartition(":")
     if not separator or not repository or not tag or "@" in repository:
         raise ValueError(f"runtime reference {reference!r} must be repository:tag")
-    if core.OCI_REPOSITORY_PATTERN.fullmatch(repository) is None:
+    if OCI_REPOSITORY_PATTERN.fullmatch(repository) is None:
         raise ValueError(f"runtime reference {reference!r} has an invalid repository")
-    if core.OCI_TAG_PATTERN.fullmatch(tag) is None:
+    if OCI_TAG_PATTERN.fullmatch(tag) is None:
         raise ValueError(f"runtime reference {reference!r} has an invalid OCI tag")
     return repository, tag
+
+
+def image_publication_targets(
+    plan: Mapping[str, Any], reference: str
+) -> dict[str, str]:
+    """Resolve the enabled publication coordinates for one planned image."""
+    publish = _mapping(plan.get("publish"), "release plan publish")
+    targets: dict[str, str] = {}
+    if _mapping(publish.get("ghcr"), "release plan GHCR").get("enabled") is True:
+        targets["ghcr"] = reference
+    dockerhub = _mapping(publish.get("dockerhub"), "release plan Docker Hub")
+    if dockerhub.get("enabled") is True:
+        repository, tag = parse_runtime_reference(reference)
+        namespace = _string(dockerhub, "namespace", "enabled Docker Hub publication")
+        targets["dockerhub"] = f"{namespace}/{repository.rsplit('/', 1)[-1]}:{tag}"
+    return targets
 
 
 def _policy_by_repository(
@@ -132,9 +153,9 @@ def _policy_by_repository(
         product_ids.add(product_id)
         if repository in result:
             raise ValueError(f"duplicate runtime repository {repository!r}")
-        if core.OCI_REPOSITORY_PATTERN.fullmatch(repository) is None:
+        if OCI_REPOSITORY_PATTERN.fullmatch(repository) is None:
             raise ValueError(f"{context}: invalid runtime_repository")
-        if core.OCI_REPOSITORY_PATTERN.fullmatch(target_repository) is None:
+        if OCI_REPOSITORY_PATTERN.fullmatch(target_repository) is None:
             raise ValueError(f"{context}: invalid target_repository")
         if accelerator not in {"cuda", "ascend"}:
             raise ValueError(f"{context}: accelerator must be cuda or ascend")
@@ -758,7 +779,7 @@ def sanitize_oci_tag_component(value: str, *, max_length: int = 128) -> str:
         raise ValueError("OCI tag component max_length must be positive")
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
     normalized = normalized[:max_length].rstrip(".-")
-    if not normalized or core.OCI_TAG_PATTERN.fullmatch(normalized) is None:
+    if not normalized or OCI_TAG_PATTERN.fullmatch(normalized) is None:
         raise ValueError(f"value {value!r} cannot be represented in an OCI tag")
     return normalized
 
@@ -798,9 +819,9 @@ def _builder_record(raw_builder: Mapping[str, object], index: int) -> dict[str, 
         raise ValueError(f"{context}: checked must be boolean")
     if builder["cpu_arch"] not in SUPPORTED_ARCHITECTURES:
         raise ValueError(f"{context}: unsupported cpu_arch")
-    if core.OCI_REPOSITORY_PATTERN.fullmatch(str(builder["target_repository"])) is None:
+    if OCI_REPOSITORY_PATTERN.fullmatch(str(builder["target_repository"])) is None:
         raise ValueError(f"{context}: invalid target_repository")
-    if core.OCI_TAG_PATTERN.fullmatch(str(builder["target_tag"])) is None:
+    if OCI_TAG_PATTERN.fullmatch(str(builder["target_tag"])) is None:
         raise ValueError(f"{context}: invalid target_tag")
     floor = _manylinux_floor(builder["manylinux"], f"{context}.manylinux")
     created_at = _created(builder["created"], f"{context}.created")
@@ -958,7 +979,7 @@ def _runtime_image_tag_prefix(value: object) -> str:
     if (
         not prefix.endswith("-")
         or component != component.lower()
-        or core.OCI_TAG_PATTERN.fullmatch(component) is None
+        or OCI_TAG_PATTERN.fullmatch(component) is None
     ):
         raise ValueError(
             "runtime image tag prefix must be a lowercase OCI component ending in '-'"
@@ -991,7 +1012,7 @@ def project_runtime_image_tag(
             "runtime image tag exceeds the OCI 128-character limit "
             "after repository-owner prefix and member suffix"
         )
-    if core.OCI_TAG_PATTERN.fullmatch(result) is None:
+    if OCI_TAG_PATTERN.fullmatch(result) is None:
         raise ValueError("runtime image tag is invalid")
     return result
 
@@ -1019,7 +1040,7 @@ def project_pr_tag(
         runtime_tag, max_length=maximum_runtime_length
     )
     result = prefix + pr_prefix + runtime_component
-    if core.OCI_TAG_PATTERN.fullmatch(result) is None:
+    if OCI_TAG_PATTERN.fullmatch(result) is None:
         raise ValueError("projected PR tag is invalid")
     return result
 
@@ -1417,3 +1438,20 @@ def render_receipt_markdown(value: Mapping[str, object]) -> str:
     if run_url:
         lines.extend(("", f"Artifacts and logs: {run_url}"))
     return "\n".join(lines) + "\n"
+
+
+def oci_tag_version(version: str) -> str:
+    return version.replace('+', '.')  # fmt: skip  # noqa: E501
+
+
+def wheel_variant(probe: Mapping[str, object]) -> tuple[str, str, str]:
+    backend = str(probe["backend"])
+    accelerator_runtime = str(probe["accelerator_runtime"])
+    if backend == "cuda":
+        version = accelerator_runtime.removeprefix("cuda-")
+        return "cuda", "default", f"cu{version.replace('.', '')}"
+    if backend.startswith("cann-"):
+        variant = backend.removeprefix("cann-")
+        version = accelerator_runtime.removeprefix("cann-")
+        return "ascend", variant, f"cann{version.replace('.', '')}-{variant}"
+    raise ValueError(f"unsupported runtime backend {backend!r}")

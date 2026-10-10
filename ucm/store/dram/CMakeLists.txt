@@ -23,7 +23,7 @@ add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
 
 set_target_properties(dramstore PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
-    INSTALL_RPATH "$ORIGIN;$ORIGIN/../../transport/p2p"
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/../../transport/p2p;$ORIGIN/../../shared/metrics"
 )
 if(UCM_RUNTIME_ASCEND_FAMILY)
     target_compile_definitions(dramstore PRIVATE UC_DRAM_ASCEND_BACKEND)
@@ -43,6 +43,7 @@ target_link_libraries(dramstore
         infra_thread
         router
         buffer_pool
+        metrics
 )
 if(UCM_RUNTIME_ASCEND_FAMILY)
     target_link_libraries(dramstore PUBLIC ucm_p2p_transport)
@@ -80,6 +81,7 @@ target_link_libraries(drampool_core
         infra_template
         infra_thread
         buffer_pool
+        metrics
         ucm_p2p_transport
         trans
 )
@@ -90,6 +92,6 @@ if(UCM_RUNTIME_ASCEND_FAMILY)
     target_link_options(drampool PRIVATE "LINKER:--allow-shlib-undefined")
 endif()
 set_target_properties(drampool PROPERTIES
-    INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p"
+    INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p;$ORIGIN/../ucm/shared/metrics"
 )
 install(TARGETS drampool RUNTIME DESTINATION bin COMPONENT ucm)

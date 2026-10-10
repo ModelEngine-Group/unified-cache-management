@@ -74,11 +74,11 @@ def test_dump_wait_failures_use_rate_limited_error_logging(relative_path):
     assert set(matching_calls) == {"error_limit"}
 
 
-def test_default_rate_limit_window_is_ten_seconds():
+def test_default_rate_limit_window_is_sixty_seconds():
     header = (REPO_ROOT / "ucm/shared/infra/logger/cc/spdlog_logger.h").read_text(
         encoding="utf-8"
     )
     logger_doc = (REPO_ROOT / "ucm/logger.py").read_text(encoding="utf-8")
 
-    assert "kDefaultRateLimitWindowMs = 10000" in header
-    assert "default: 10000 = 10s" in logger_doc
+    assert "kDefaultRateLimitWindowMs = 60000" in header
+    assert "default: 60000 = 60s" in logger_doc

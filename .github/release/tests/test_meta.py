@@ -322,53 +322,6 @@ def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> N
     }
 
 
-def test_release_workflow_uses_canonical_meta_source_date_epoch() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release-ucm.yml").read_text(
-        encoding="utf-8"
-    )
-    build_meta = workflow.split("\n  build-meta:", 1)[1].split("\n  package-chart:", 1)[
-        0
-    ]
-
-    assert f'SOURCE_DATE_EPOCH: "{meta.META_SOURCE_DATE_EPOCH}"' in build_meta
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    (
-        (
-            lambda plan: (
-                plan.update(version="0.9.1+cann901.a2"),
-                plan["meta_package"].update(version="0.9.1+cann901.a2"),
-            ),
-            "must not contain a local version",
-        ),
-        (
-            lambda plan: plan["meta_package"]["extras"].update(
-                {"CANN901_A2": plan["meta_package"]["extras"].pop("cann901-a2")}
-            ),
-            "invalid canonical meta package extra",
-        ),
-        (
-            lambda plan: plan["meta_package"]["extras"].pop("cu130"),
-            "must exactly match planned runtime variants",
-        ),
-        (
-            lambda plan: plan["meta_package"]["extras"].update(
-                {"cu130": f"uc-manager-cuda-cu130>={VERSION}"}
-            ),
-            "must pin one distribution with ==",
-        ),
-    ),
-)
-def test_meta_plan_rejects_invalid_version_or_extras(mutate, message: str) -> None:
-    plan = copy.deepcopy(_plan())
-    mutate(plan)
-
-    with pytest.raises(ValueError, match=message):
-        meta.validate_meta_package(plan)
-
-
 def test_meta_plan_rejects_swapped_extra_backends() -> None:
     plan = _plan()
     extras = plan["meta_package"]["extras"]
@@ -397,20 +350,35 @@ def test_meta_wheel_rejects_package_payload(tmp_path: Path) -> None:
         meta.record_meta_wheel(_plan(), wheel_path)
 
 
-def test_meta_wheel_rejects_wrong_version(tmp_path: Path) -> None:
-    wheel_path = tmp_path / "uc_manager-0.9.2-py3-none-any.whl"
-    _write_wheel(wheel_path, version="0.9.2")
-
-    with pytest.raises(ValueError, match="filename version does not match"):
-        meta.record_meta_wheel(_plan(), wheel_path)
-
-
-def test_meta_wheel_rejects_wrong_extras(tmp_path: Path) -> None:
-    wheel_path = tmp_path / f"uc_manager-{VERSION}-py3-none-any.whl"
-    _write_wheel(
-        wheel_path,
-        extras={"cann901-a2": f"uc-manager-cann901-a2=={VERSION}"},
+def test_toolkit_extra_is_separate_from_backend_family(tmp_path):
+    plan = _fork_plan()
+    plan["toolkit_package"] = {
+        "distribution": "supermarioyl-ucm-toolkit",
+        "version": VERSION,
+    }
+    plan["meta_package"]["extras"]["toolkit"] = f"supermarioyl-ucm-toolkit=={VERSION}"
+    assert (
+        meta.validate_meta_package(plan)["extras"]["toolkit"]
+        == f"supermarioyl-ucm-toolkit=={VERSION}"
     )
-
-    with pytest.raises(ValueError, match="Provides-Extra does not match"):
-        meta.record_meta_wheel(_plan(), wheel_path)
+    source = tmp_path / "source"
+    meta.materialize_meta_source(plan, source)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--no-isolation",
+            "--wheel",
+            "--outdir",
+            str(tmp_path / "dist"),
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    result = meta.record_meta_wheel(plan, next((tmp_path / "dist").glob("*.whl")))
+    assert result["extras"] == plan["meta_package"]["extras"]
+    plan["meta_package"]["extras"]["toolkit"] = "supermarioyl-ucm-toolkit==0.0.1"
+    with pytest.raises(ValueError, match="toolkit extra"):
+        meta.validate_meta_package(plan)

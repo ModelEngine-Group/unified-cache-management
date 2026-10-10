@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -116,7 +116,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -175,7 +175,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.resolve-upstreams.outputs.selection_artifact }}
@@ -191,7 +191,7 @@ jobs:
           PYTHONPATH=.github/release python -m ucm_release builders bind-source \
             --catalog out/plan/builder-catalog.desired.json \
             --output out/plan/builder-catalog.json >/dev/null
-          PYTHONPATH=.github/release python -m ucm_release compact plan \
+          PYTHONPATH=.github/release python -m ucm_release plan create \
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog out/plan/builder-catalog.json --route pr \
             --output out/plan/release-plan.json >/dev/null

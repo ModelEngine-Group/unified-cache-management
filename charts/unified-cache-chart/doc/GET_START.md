@@ -1,6 +1,6 @@
 # 快速一键部署 Unified Cache
 
-本文从一个单机 profile 开始，说明如何在 CUDA 或 Ascend 集群准备镜像与存储，再部署多机或 PD 服务。uc-stack 不提供私有环境默认值：镜像、模型位置、StorageClass、网络和 Pod 身份都由使用者显式配置。
+本文从一个单机 profile 开始，说明如何在 CUDA 或 Ascend 集群准备镜像与存储，再部署多机或 PD 服务。发布包默认使用本次最新稳定 vLLM 的 CUDA 镜像；模型位置、StorageClass、网络和 Pod 身份由使用者显式配置。
 
 ## 1. Helm 打包
 
@@ -53,7 +53,7 @@ servingEngineSpec:
 
 ### 2.2 镜像准备
 
-根 `values.yaml` 的 `images.image` 默认为空，Chart 不提供公共运行时镜像。安装时必须通过以下任一方式提供：
+源码 `values.yaml` 的 `images.image` 默认为空。发布包会填写默认 CUDA 镜像，并在该字段旁以注释列出全部运行时镜像及架构，优先 Docker Hub，未启用该渠道时使用 GHCR；没有稳定 CUDA 候选时默认留空。Ascend、源码安装或选择其他镜像时，通过以下任一方式指定完整地址：
 
 ```yaml
 images:

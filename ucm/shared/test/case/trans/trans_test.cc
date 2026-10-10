@@ -33,6 +33,9 @@ class UCTransUnitTest : public ::testing::Test {};
 TEST_F(UCTransUnitTest, EmptyEventIsSafe)
 {
     UC::Trans::Event event;
+    auto ready = event.Query();
+    ASSERT_TRUE(ready);
+    EXPECT_TRUE(ready.Value());
     EXPECT_FALSE(event.Valid());
     EXPECT_TRUE(event.Synchronize().Success());
 

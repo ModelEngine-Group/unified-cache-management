@@ -45,7 +45,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: ./.github/actions/download-artifact-retry
         with:
           name: ${{ inputs.plan_artifact }}
@@ -67,7 +67,7 @@ jobs:
           jq -e '(.publish.ghcr.enabled == true) or
                  (.publish.dockerhub.enabled == true)' "${plan}" >/dev/null
           mkdir -p out/receipts context
-          PYTHONPATH=.github/release python -m ucm_release compact select \
+          PYTHONPATH=.github/release python -m ucm_release plan select \
             --plan "${plan}" --kind image --id "${IMAGE_ID}" \
             --output out/image-task.json >/dev/null
           wheel_id="$(jq -r '.wheel_id' out/image-task.json)"
@@ -104,7 +104,12 @@ jobs:
         with:
           name: ${{ steps.task.outputs.wheel_artifact }}
           path: input/wheel
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ucm-toolkit-run-${{ github.run_id }}
+          path: input/toolkit
       - uses: jlumbroso/free-disk-space@v1.3.1
+        timeout-minutes: 5
         with:
           tool-cache: true
           android: true
@@ -119,15 +124,22 @@ jobs:
           set -euo pipefail
           wheel="$(find input/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "${wheel}"
+          toolkit_wheel="$(find input/toolkit -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "${toolkit_wheel}"
           cp .github/release/docker/Dockerfile.runtime context/Dockerfile
           cp examples/ucm_config_example.yaml context/ucm_config_example.yaml
           cp "${wheel}" "context/$(basename "${wheel}")"
+          cp "${toolkit_wheel}" "context/$(basename "${toolkit_wheel}")"
           base="$(jq -er '.runtime.image_reference' out/image-task.json)"
-          docker buildx build \
+          UCM_REGISTRY_RETRY_DELAYS="10 20" \
+            bash .github/release/retry-registry-command.sh \
+            "${RUNNER_TEMP}/ucm-runtime-build.log" --retry-quay-blob \
+            docker buildx build \
             --platform "$(jq -r '.platform' out/image-task.json)" \
             --file context/Dockerfile --target runtime \
             --build-arg "BASE_IMAGE=${base}" \
             --build-arg "UCM_WHEEL=$(basename "${wheel}")" \
+            --build-arg "UCM_TOOLKIT_WHEEL=$(basename "${toolkit_wheel}")" \
             --output type=oci,dest=out/image.oci.tar \
             --progress plain context
           test -s out/image.oci.tar
@@ -136,18 +148,28 @@ jobs:
           IMAGE_ID: ${{ inputs.image_id }}
         run: |
           set -euo pipefail
-          for setup_attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install --yes skopeo; then
-              break
-            fi
-            if [ "${setup_attempt}" -eq 3 ]; then
-              echo "skopeo setup failed after ${setup_attempt} attempts" >&2
-              exit 1
-            fi
-            setup_wait=$((setup_attempt * 5))
-            echo "skopeo setup failed; retrying in ${setup_wait}s" >&2
-            sleep "${setup_wait}"
-          done
+          if ! command -v skopeo >/dev/null 2>&1; then
+            # Skopeo comes from Ubuntu; unrelated runner feeds must not block setup.
+            test -s /etc/apt/sources.list.d/ubuntu.sources
+            apt_options=(
+              -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+              -o Dir::Etc::sourceparts=-
+            )
+            for setup_attempt in 1 2 3; do
+              if sudo apt-get "${apt_options[@]}" update && \
+                 sudo apt-get "${apt_options[@]}" install --yes skopeo; then
+                break
+              fi
+              if [ "${setup_attempt}" -eq 3 ]; then
+                echo "skopeo setup failed after ${setup_attempt} attempts" >&2
+                exit 1
+              fi
+              setup_wait=$((setup_attempt * 5))
+              echo "skopeo setup failed; retrying in ${setup_wait}s" >&2
+              sleep "${setup_wait}"
+            done
+          fi
+          skopeo --version
           local_tag="ucm-runtime-check:${IMAGE_ID}"
           wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' \
             input/wheel/wheel-result.json)"

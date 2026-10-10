@@ -26,6 +26,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -91,6 +92,31 @@ static inline int32_t AioSetup(int32_t nEvents, aio_context_t* pCtx)
 {
     return syscall(SYS_io_setup, nEvents, pCtx);
 }
+
+static std::string AioSetupErrorMessage(int32_t eno, size_t requestedEvents)
+{
+    auto message = fmt::format("UCM Posix AIO: io_setup({}) failed with errno={} ({}).",
+                               requestedEvents, eno, strerror(eno));
+    if (eno == EAGAIN) {
+        auto readLimit = [](const char* path) -> std::string {
+            std::ifstream input(path);
+            uint64_t value;
+            if (input >> value) { return std::to_string(value); }
+            return "unavailable";
+        };
+        const auto aioNr = readLimit("/proc/sys/fs/aio-nr");
+        const auto aioMaxNr = readLimit("/proc/sys/fs/aio-max-nr");
+        message += fmt::format(
+            " Possible AIO quota exhaustion: fs.aio-nr={}, fs.aio-max-nr={} (snapshot). "
+            "Increase the host limit, e.g. 'sudo sysctl -w fs.aio-max-nr=1048576' "
+            "(choose a value above the current limit), or run fewer AIO instances.",
+            aioNr, aioMaxNr);
+    } else if (eno == ENOMEM) {
+        message += " Insufficient kernel resources; check available memory and resource limits.";
+    }
+    return message;
+}
+
 static inline int32_t AioGetEvents(aio_context_t ctx, int64_t minNr, int64_t maxNr,
                                    io_event* events, timespec* timeout)
 {
@@ -180,8 +206,9 @@ Status AioImpl::Setup(size_t timeoutMs)
     auto ret = AioSetup(queueDepth_, &ctx_);
     auto eno = errno;
     if (ret != 0) {
-        UC_ERROR("Failed(ret={}, errno={}, message={}) to call AioSetup.", ret, eno, strerror(eno));
-        return Status{eno, std::string(strerror(eno))};
+        auto message = AioSetupErrorMessage(eno, queueDepth_);
+        UC_ERROR("Failed(ret={}) to call AioSetup: {}", ret, message);
+        return Status{eno, std::move(message)};
     }
     eventFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     eno = errno;

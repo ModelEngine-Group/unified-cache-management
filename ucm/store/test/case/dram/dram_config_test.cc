@@ -23,6 +23,7 @@
  * */
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <limits>
 #include <string>
 #include <vector>
 #include "config.h"
@@ -33,13 +34,8 @@ namespace {
 Detail::Dictionary BaseConfig(bool includeTensorSizes = true, bool includeDeviceId = true)
 {
     Detail::Dictionary config;
-    config.Set("local_control_endpoint", std::string{"127.0.0.1:6000"});
-    config.Set("local_host", std::string{"127.0.0.1"});
-    config.Set("local_transport_manager_id", std::string{"127.0.0.1:6100"});
-    config.Set("node_control_endpoints",
-               std::vector<std::string>{"127.0.0.1:7000", "127.0.0.1:9000"});
-    config.Set("node_transport_manager_ids",
-               std::vector<std::string>{"127.0.0.1:7100", "127.0.0.1:9100"});
+    config.Set("local_addr", std::string{"127.0.0.1:6100"});
+    config.Set("peer_addrs", std::vector<std::string>{"127.0.0.1:7100", "127.0.0.1:9100"});
     if (includeDeviceId) { config.SetNumber("device_id", 0); }
     if (includeTensorSizes) { config.Set("tensor_size_list", std::vector<ssize_t>{4096}); }
     return config;
@@ -106,6 +102,37 @@ TEST(UCDramConfigTest, ParsesFixedReconnectInterval)
     EXPECT_EQ(parsed.Value().nodeScheduler.reconnectInterval.count(), 37);
 }
 
+TEST(UCDramConfigTest, ParsesOptionalSharedPollInterval)
+{
+    auto input = BaseConfig();
+    auto defaults = DramConfig::Parse(input);
+    ASSERT_TRUE(defaults);
+    EXPECT_EQ(defaults.Value().nodeScheduler.pollInterval, std::chrono::microseconds{50});
+    for (const auto interval : {1, 175, 10000}) {
+        input.SetNumber("poll_interval_us", interval);
+        auto parsed = DramConfig::Parse(input);
+        ASSERT_TRUE(parsed);
+        EXPECT_EQ(parsed.Value().nodeScheduler.pollInterval, std::chrono::microseconds{interval});
+    }
+}
+
+TEST(UCDramConfigTest, RejectsInvalidPollInterval)
+{
+    for (const auto interval :
+         {ssize_t{-1}, ssize_t{0}, ssize_t{10001}, std::numeric_limits<ssize_t>::max()}) {
+        auto input = BaseConfig();
+        input.SetNumber("poll_interval_us", interval);
+        auto parsed = DramConfig::Parse(input);
+        ASSERT_FALSE(parsed);
+        EXPECT_EQ(parsed.Error(), Status::InvalidParam());
+    }
+    auto input = BaseConfig();
+    input.Set("poll_interval_us", std::string{"175"});
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_FALSE(parsed);
+    EXPECT_EQ(parsed.Error(), Status::InvalidParam());
+}
+
 TEST(UCDramConfigTest, RequiresTensorSizes) { EXPECT_FALSE(DramConfig::Parse(BaseConfig(false))); }
 
 TEST(UCDramConfigTest, ParsesGpuKvBuffers)
@@ -148,18 +175,14 @@ TEST(UCDramConfigTest, ParsesRouterTypeIntoStrongConfiguration)
     EXPECT_FALSE(DramConfig::Parse(input));
 }
 
-TEST(UCDramConfigTest, RejectsMalformedControlEndpointsAndEmptyManagerIds)
+TEST(UCDramConfigTest, RejectsMalformedTransportEndpoints)
 {
     auto local = BaseConfig();
-    local.Set("local_control_endpoint", std::string{"client"});
+    local.Set("local_addr", std::string{"client"});
     EXPECT_FALSE(DramConfig::Parse(local));
 
-    auto manager = BaseConfig();
-    manager.Set("local_transport_manager_id", std::string{});
-    EXPECT_FALSE(DramConfig::Parse(manager));
-
     auto remote = BaseConfig();
-    remote.Set("node_transport_manager_ids", std::vector<std::string>{"", "127.0.0.1:9100"});
+    remote.Set("peer_addrs", std::vector<std::string>{"", "127.0.0.1:9100"});
     EXPECT_FALSE(DramConfig::Parse(remote));
 }
 
@@ -169,32 +192,28 @@ TEST(UCDramConfigTest, RejectsInvalidSchedulerBoundaries)
     zeroBudget.SetNumber("max_io_entries", 0);
     EXPECT_FALSE(DramConfig::Parse(zeroBudget));
 
-    auto mismatchedNodes = BaseConfig();
-    mismatchedNodes.Set("node_control_endpoints", std::vector<std::string>{"127.0.0.1:7000"});
-    EXPECT_FALSE(DramConfig::Parse(mismatchedNodes));
+    auto malformedNode = BaseConfig();
+    malformedNode.Set("peer_addrs", std::vector<std::string>{"127.0.0.1:7000", "bad"});
+    EXPECT_FALSE(DramConfig::Parse(malformedNode));
 
     auto emptyNodes = BaseConfig();
-    emptyNodes.Set("node_control_endpoints", std::vector<std::string>{});
-    emptyNodes.Set("node_transport_manager_ids", std::vector<std::string>{});
+    emptyNodes.Set("peer_addrs", std::vector<std::string>{});
     EXPECT_FALSE(DramConfig::Parse(emptyNodes));
 }
 
-TEST(UCDramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
+TEST(UCDramConfigTest, ParsesTransportEndpoints)
 {
     auto input = BaseConfig();
     input.SetNumber("device_id", -1);
-    input.Set("local_control_endpoint", std::string{"127.0.0.1:06000"});
+    input.Set("local_addr", std::string{"127.0.0.1:06100"});
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     const auto& config = parsed.Value();
-    EXPECT_EQ(config.localControlHost, "127.0.0.1");
-    EXPECT_EQ(config.localControlPort, std::uint16_t{6000});
-    EXPECT_EQ(config.localTransportManagerId, "127.0.0.1:6100");
+    EXPECT_EQ(config.localAddr.host, "127.0.0.1");
+    EXPECT_EQ(config.localAddr.port, std::uint16_t{6100});
     ASSERT_EQ(config.nodeScheduler.nodes.size(), std::size_t{2});
     EXPECT_EQ(config.nodeScheduler.nodes[0].nodeId, NodeId{0});
-    EXPECT_EQ(config.nodeScheduler.nodes[0].controlHost, "127.0.0.1");
-    EXPECT_EQ(config.nodeScheduler.nodes[0].controlPort, std::uint16_t{7000});
-    EXPECT_EQ(config.nodeScheduler.nodes[0].transportManagerId, "127.0.0.1:7100");
+    EXPECT_EQ(config.nodeScheduler.nodes[0].peerAddr, "127.0.0.1:7100");
     EXPECT_EQ(config.nodeScheduler.nodes[1].nodeId, NodeId{1});
 }
 
@@ -209,22 +228,20 @@ TEST(UCDramConfigTest, UsesConfiguredPortsForScheduler)
     EXPECT_EQ(parsed.Value().GetRole(), Role::SCHEDULER);
     EXPECT_EQ(parsed.Value().deviceId, -1);
     EXPECT_EQ(parsed.Value().nodeScheduler.deviceId, 0);
-    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6000});
-    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6100");
+    EXPECT_EQ(parsed.Value().localAddr.port, std::uint16_t{6100});
     EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36666});
     EXPECT_TRUE(parsed.Value().enableHixlCs);
 }
 
-TEST(UCDramConfigTest, OffsetsWorkerPortsByDeviceId)
+TEST(UCDramConfigTest, OffsetsWorkerPortsByPhysicalDeviceId)
 {
     auto input = BaseConfig();
     input.SetNumber("device_id", 3);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed.Value().GetRole(), Role::WORKER);
-    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6004});
-    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6104");
-    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36667});
+    EXPECT_EQ(parsed.Value().localAddr.port, std::uint16_t{6107});
+    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36673});
 }
 
 TEST(UCDramConfigTest, RejectsInvalidDeviceIdAndWorkerPortOverflow)
@@ -235,7 +252,7 @@ TEST(UCDramConfigTest, RejectsInvalidDeviceIdAndWorkerPortOverflow)
 
     auto overflow = BaseConfig();
     overflow.SetNumber("device_id", 0);
-    overflow.Set("local_control_endpoint", std::string{"127.0.0.1:65535"});
+    overflow.Set("local_addr", std::string{"127.0.0.1:65535"});
     EXPECT_FALSE(DramConfig::Parse(overflow));
 
     auto hixlOverflow = BaseConfig();

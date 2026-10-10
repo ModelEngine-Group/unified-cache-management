@@ -25,11 +25,9 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_GC_LEASE_H
 
 #include <atomic>
-#include <condition_variable>
 #include <ctime>
-#include <mutex>
 #include <string>
-#include <thread>
+#include "gc_liveness.h"
 #include "global_config.h"
 #include "status/status.h"
 
@@ -61,9 +59,7 @@ private:
     Status ProbeHolder(bool& stale);
     Status TakeOverStale();
     void SweepParked() const;
-    void HeartbeatLoop();
     void StopHeartbeat();
-    Status Touch(const std::string& path, time_t& stamp, bool create) const;
 
     std::string backend_;
     std::string lockDir_;
@@ -78,10 +74,7 @@ private:
     bool haveSuspect_{false};
 
     std::atomic<bool> held_{false};
-    std::thread heartbeatWorker_;
-    std::mutex stopMtx_;
-    std::condition_variable stopCv_;
-    bool stopHeartbeat_{false};
+    GcHeartbeat heartbeat_;
 };
 
 }  // namespace UC::PosixStore

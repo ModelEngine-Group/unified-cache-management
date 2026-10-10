@@ -1,2 +1,0 @@
-# Exact Python runtime dependencies recorded in compact Wheels.
-wrapt==1.17.2

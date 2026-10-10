@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
+#include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
 #include "shard_gc.h"
@@ -49,6 +50,7 @@ private:
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
+    GcConfigGuard gcConfigGuard_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
 

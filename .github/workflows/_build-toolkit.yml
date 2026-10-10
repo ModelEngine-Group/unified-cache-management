@@ -1,0 +1,110 @@
+name: Build and verify UCM Toolkit
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: ""
+      plan_artifact:
+        type: string
+        default: ""
+    outputs:
+      toolkit_artifact:
+        value: ${{ jobs.build.outputs.toolkit_artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      toolkit_artifact: ucm-toolkit-run-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check
+          -r .github/release/requirements.txt -r toolkit/requirements-dev.txt
+      - uses: actions/download-artifact@v4.3.0
+        if: ${{ inputs.plan_artifact != '' }}
+        with:
+          name: ${{ inputs.plan_artifact }}
+          path: input/plan
+      - name: Prepare standalone PR package plan
+        if: ${{ inputs.plan_artifact == '' }}
+        env:
+          PYTHONPATH: .github/release
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ucm_release import toolkit, version_config
+          version = version_config.read_version()
+          repository = os.environ["GITHUB_REPOSITORY"]
+          plan = {"kind": "ucm-release-plan", "repository": repository, "version": version,
+                  "toolkit_package": toolkit.package_identity(repository, version)}
+          path = Path("input/plan/release-plan.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(plan))
+          PY
+      - name: Test and build the toolkit Wheel
+        env:
+          PYTHONPATH: .github/release
+        run: |
+          python -m pytest toolkit/tests -q
+          python scripts/materialize_version.py \
+            --version "$(jq -r '.version' input/plan/release-plan.json)"
+          python -m ucm_release toolkit prepare-source \
+            --plan input/plan/release-plan.json --source-root .
+          python -m build --no-isolation --wheel --outdir out/toolkit toolkit
+          python -m twine check out/toolkit/*.whl
+          python -m ucm_release toolkit record-result \
+            --plan input/plan/release-plan.json --wheel "$(find out/toolkit -name '*.whl')" \
+            --output out/toolkit/toolkit-result.json
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-toolkit-run-${{ github.run_id }}
+          path: out/toolkit/
+          if-no-files-found: error
+          retention-days: 90
+
+  installed:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ${{ needs.build.outputs.toolkit_artifact }}
+          path: input/toolkit
+      - name: Install outside the checkout and exercise packaged resources
+        env:
+          VERIFY_NATIVE: ${{ matrix.python == '3.12' }}
+        run: |
+          python -m venv "${RUNNER_TEMP}/toolkit-venv"
+          . "${RUNNER_TEMP}/toolkit-venv/bin/activate"
+          python -m pip install --no-deps input/toolkit/*.whl
+          arguments=()
+          if [ "${VERIFY_NATIVE}" = true ]; then arguments+=(--build-native); fi
+          python -I toolkit/tests/smoke_installed.py \
+            --distribution "$(jq -r '.distribution' input/toolkit/toolkit-result.json)" \
+            --version "$(jq -r '.version' input/toolkit/toolkit-result.json)" "${arguments[@]}"

@@ -24,13 +24,13 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_TRANSPORT_MANAGER_BACKEND_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_TRANSPORT_MANAGER_BACKEND_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
 #include "transport_executor.h"
 #include "types.h"
@@ -38,13 +38,11 @@
 namespace UC::Dram {
 
 struct TransportManagerBackendOptions {
-    std::string localControlHost;
-    std::uint16_t localControlPort{0};
-    std::string localTransportManagerId;
-    std::string localHost;
+    transport::Endpoint localAddr;
     std::int32_t deviceId{0};
     std::int32_t hixlDeviceListenPort{-1};
     bool enableHixlCs{false};
+    std::size_t managerMaxThreads{};
     std::int32_t connectTimeoutMs{1000};
     std::int32_t transferTimeoutMs{5000};
     std::vector<NodeEndpoint> nodes;
@@ -76,9 +74,7 @@ private:
     Status Init();
 
     TransportManagerBackendOptions options_;
-    transport::Endpoint localControl_;
     transport::TransportManager manager_;
-    transport::TcpMessageChannel control_;
     std::unordered_map<NodeId, NodeEndpoint> nodes_;
     std::mutex stopMutex_;
     bool stopped_{false};

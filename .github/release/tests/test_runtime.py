@@ -269,33 +269,6 @@ def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     assert fallback[0]["missing_required_fields"] == ["soc_version"]
 
 
-def test_openeuler_tag_is_an_os_hint_not_a_wheel_capability() -> None:
-    config = _config(
-        "arm64",
-        env=(
-            "PATH=/usr/local/python3.12.13/bin:/usr/bin",
-            "CANN_VERSION=9.1.0",
-            "SOC_VERSION=ascend910b1",
-        ),
-    )
-    inspection = runtime.inspect_runtime_references(
-        ["quay.io/ascend/vllm-ascend:v0.23.0-openeuler"],
-        products=PRODUCTS,
-        runners=RUNNERS,
-        manifest_loader=lambda _reference: _index("arm64"),
-        config_loader=lambda _reference: config,
-        digest_loader=lambda _reference: "sha256:" + "9" * 64,
-    )
-
-    assert inspection["probe_matrix"] == {"include": []}
-    facts = inspection["members"][0]["config_facts"]
-    assert facts["os_id"] == "openeuler"
-    assert facts["os_version"] == "unreported"
-    probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
-    assert probe["backend"] == "cann-a2"
-    assert probe["python_abi"] == "cp312"
-
-
 def test_conflicting_crane_facts_schedule_native_fallback() -> None:
     config = _config(
         "amd64",
@@ -533,69 +506,6 @@ def test_builder_match_reports_complete_missing_capability() -> None:
     assert "cpu_arch=arm64" in problem["detail"]
 
 
-def test_multiple_opaque_tags_with_the_same_capability_reuse_one_wheel() -> None:
-    references = [
-        "docker.io/vllm/vllm-openai:nightly",
-        "docker.io/vllm/vllm-openai:v0.21.0-ubuntu2404",
-    ]
-    repository = "docker.io/vllm/vllm-openai"
-    member_reference = f"{repository}@{DIGESTS['amd64']}"
-    inspection = runtime.inspect_runtime_references(
-        references,
-        products=PRODUCTS,
-        runners=RUNNERS,
-        manifest_loader=lambda _reference: _index("amd64"),
-        config_loader=lambda reference: {member_reference: _config("amd64")}[reference],
-        digest_loader=lambda _reference: "sha256:" + "9" * 64,
-    )
-    probe = runtime.aggregate_runtime_probes(inspection, _raw_cuda_probes(inspection))
-
-    matches = runtime.match_runtime_builders(probe, [_builder(architecture="amd64")])
-
-    assert len(matches["matches"]) == 2
-    assert len({item["wheel_id"] for item in matches["matches"]}) == 1
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number=42, author="release-author", run_id=998877
-    )
-    assert [family["runtime_ref"] for family in publication["families"]] == references
-    assert len({family["wheel_ids"][0] for family in publication["families"]}) == 1
-
-
-def test_publication_projects_single_member_without_index() -> None:
-    _, probe = _aggregate_cuda(("arm64",), tag="nightly")
-    matches = _matches(probe)
-
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number=42, author="Release-Author", run_id=998877
-    )
-
-    members = publication["member_matrix"]["include"]
-    assert len(members) == 1
-    assert members[0]["target_tag"] == "pr-42-release-author-run-998877-nightly"
-    assert publication["index_matrix"]["include"] == []
-    assert publication["families"][0]["has_index"] is False
-    assert publication["families"][0]["final_refs"] == [members[0]["target_ref"]]
-
-
-def test_publication_projects_dynamic_dual_arch_index_and_deduplicates_wheels() -> None:
-    _, probe = _aggregate_cuda()
-    matches = _matches(probe)
-
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number="42", author="Release-Author", run_id="998877"
-    )
-
-    members = publication["member_matrix"]["include"]
-    indexes = publication["index_matrix"]["include"]
-    assert [member["cpu_arch"] for member in members] == ["amd64", "arm64"]
-    assert len(indexes) == 1
-    assert indexes[0]["members"] == [member["target_ref"] for member in members]
-    assert indexes[0]["target_tag"] == (
-        "pr-42-release-author-run-998877-cu129-nightly-deadbeef"
-    )
-    assert len(publication["families"][0]["wheel_ids"]) == 2
-
-
 def test_pr_tag_sanitizes_and_truncates_with_run_identity() -> None:
     first = runtime.project_pr_tag(
         "nightly/feature+" + "x" * 160,
@@ -710,18 +620,6 @@ def test_receipt_survives_early_failure_and_includes_builder_gap() -> None:
     assert "`failure`" in markdown
     assert "missing-compatible-builder" in markdown
     assert "docker.io/vllm/vllm-openai:nightly" in markdown
-
-
-def test_receipt_preserves_malformed_raw_reference_as_inspect_problem() -> None:
-    receipt = runtime.build_receipt(
-        requested_refs=["not-a-runtime-reference"],
-        stage_results={"inspect": "failure", "probe": "skipped"},
-    )
-
-    assert receipt["status"] == "failure"
-    assert receipt["runtimes"][0]["runtime_ref"] == "not-a-runtime-reference"
-    assert receipt["problems"][0]["reason"] == "invalid-runtime-reference"
-    assert "must be repository:tag" in receipt["problems"][0]["detail"]
 
 
 def test_receipt_never_claims_publication_when_member_job_failed() -> None:

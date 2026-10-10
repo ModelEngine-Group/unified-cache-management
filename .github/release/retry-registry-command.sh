@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-  echo "usage: retry-registry-command.sh LOG_PATH [--retry-transport] [--rate-limit-marker PATH [--rate-limit-scope TEXT]] COMMAND [ARG ...]" >&2
+  echo "usage: retry-registry-command.sh LOG_PATH [--retry-transport] [--retry-quay-blob] [--rate-limit-marker PATH [--rate-limit-scope TEXT]] COMMAND [ARG ...]" >&2
   exit 2
 fi
 
@@ -12,6 +12,11 @@ shift
 retry_transport=false
 if [ "${1:-}" = "--retry-transport" ]; then
   retry_transport=true
+  shift
+fi
+retry_quay_blob=false
+if [ "${1:-}" = "--retry-quay-blob" ]; then
+  retry_quay_blob=true
   shift
 fi
 rate_limit_marker=""
@@ -52,6 +57,9 @@ mkdir -p "$(dirname "${log_path}")"
 rate_limit_pattern='TOOMANYREQUESTS|too many requests|retry-after|HTTP 429|(^|[^[:alnum:]])429([^[:alnum:]]|$)'
 scoped_rate_limit_pattern='TOOMANYREQUESTS|too many requests|retry-after|HTTP 429|status[^0-9]*429|429 Too Many Requests'
 transport_pattern='connection reset( by peer)?|(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)'
+# Quay has returned 401 for public layers after manifest resolution succeeded.
+# Opt in only for this blob-read failure, never for login or publication errors.
+quay_blob_pattern='unexpected status from GET request to https://quay\.io/v2/[^[:space:]]+/blobs/sha256:[0-9a-f]{64}: 401 Unauthorized'
 
 for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   if "$@" 2>&1 | tee "${log_path}"; then
@@ -73,6 +81,9 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   elif [ "${retry_transport}" = true ] && \
        grep -Eiq "${transport_pattern}" "${log_path}"; then
     retry_reason="transport"
+  elif [ "${retry_quay_blob}" = true ] && \
+       grep -Eq "${quay_blob_pattern}" "${log_path}"; then
+    retry_reason="quay-blob"
   else
     echo "Registry command failed with a non-retryable error" >&2
     exit "${command_status}"
@@ -100,6 +111,8 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   sleep_seconds="${retry_delays[$((attempt - 1))]}"
   if [ "${retry_reason}" = "rate-limit" ]; then
     echo "Registry command was rate-limited; retrying in ${sleep_seconds}s" >&2
+  elif [ "${retry_reason}" = "quay-blob" ]; then
+    echo "Quay blob read returned 401; retrying in ${sleep_seconds}s" >&2
   else
     echo "Registry command hit a transient transport error; retrying in ${sleep_seconds}s" >&2
   fi

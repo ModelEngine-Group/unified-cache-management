@@ -1,0 +1,51 @@
+# UCM ASU AIV backend example for vLLM / vLLM-Ascend integration.
+#
+# Use with:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_asu.yaml"}
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "ASU"
+      asu_mode: "client"
+      asu_client_id: "ucm-vllm-asu-aiv"
+      # For multiple ASUs, list every ASU here and provide asu_ips/asu_ports in the same order,
+      # for example: asu_ids: [1, 2]
+      asu_ids: [1]
+      asu_trans_provider_backend: "aiv"
+      # 0 creates one provider per transport; 1 shares one provider within this client process.
+      asu_shared_provider: 0
+
+      # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
+      # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
+      kv_ns_ids: [100]
+
+      # cpu ip where mock server runs
+      # Multi-ASU example: asu_ips: ["223.223.8.11", "223.223.8.12"]
+      # Multi-ASU example: asu_ports: [19001, 19002]
+      asu_ips: ["223.223.8.11"]
+      asu_ports: [19001]
+      # ASU client routing.
+      asu_router_type: "RING_HASH"
+      asu_ring_hash_virtual_node_count: 128
+
+      # Local software backend. This uses normal KvClient + AsuTransportImpl submit/CQE paths
+      # and replaces the missing device Send/backend execution with local files.
+      # asu_fake_backend_path: "./asu-fake-backend-store"
+      # asu_fake_backend_latency_ms: 1
+      # asu_fake_backend_worker_threads: 4
+      # Set true to bypass fake-backend IO; lookups miss while other requests complete successfully.
+      asu_fake_backend_complete_immediately: false
+
+      # ASU wait/task timeout and connection recovery.
+      asu_wait_timeout_ms: 5000
+      asu_query_timeout_ms: 500
+      asu_max_error_count: 2
+      asu_client_max_inflight_tasks: 1024
+      asu_transport_max_inflight_tasks: 1024
+      asu_sc: true
+      asu_completion_poll_spin_limit: 16
+
+enable_event_sync: true
+use_layerwise: false
+persist_token_threshold: 0

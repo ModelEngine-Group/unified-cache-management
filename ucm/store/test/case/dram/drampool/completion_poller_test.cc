@@ -52,6 +52,7 @@ namespace {
 constexpr std::size_t kQueueCapacity = 16;
 constexpr std::size_t kValueLength = 16;
 constexpr std::size_t kFlagSlotSize = 64;
+constexpr std::size_t kManagerMaxThreads = 1;
 constexpr std::uint64_t kRequestId = 42;
 constexpr char kUnavailablePeer[] = "127.0.0.1:29000";
 
@@ -162,7 +163,7 @@ protected:
     std::unique_ptr<MetadataManager> metadata_;
     BufferPool flagBufferPool_;
     ProtocolManager protocols_;
-    transport::TransportManager manager_{"127.0.0.1:28000"};
+    transport::TransportManager manager_{"127.0.0.1:28000", kManagerMaxThreads};
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<CompletionPoller> poller_;
     DramPoolConfig savedConfig_;

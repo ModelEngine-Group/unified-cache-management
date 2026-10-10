@@ -169,7 +169,7 @@ def resolve_pr_request(
             resolved = (
                 raw_build_resolver([probe])
                 if raw_build_resolver is not None
-                else upstream.resolve_probe_builds(formal_policy, [probe])
+                else builders.resolve_probe_builds(formal_policy, [probe])
             )
             if len(resolved) != 1:
                 raise ValueError(f"expected one raw Builder, resolved {len(resolved)}")
@@ -284,8 +284,8 @@ def resolve_pr_request(
             "problems": [],
         }
     )
-    builder_catalog = builders.catalog_from_selection(
-        selection,
+    builder_catalog = builders.catalog_from_builds(
+        selection["wheel_builds"],
         owner=str(formal_policy.get("repository", "")).split("/", 1)[0] or None,
         formal_policy=formal_policy,
     )

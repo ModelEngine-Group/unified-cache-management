@@ -33,4 +33,13 @@ Status Event::Synchronize() const
     return ret == cudaSuccess ? Status::OK() : Status{ret, cudaGetErrorString(ret)};
 }
 
+Expected<bool> Event::Query() const
+{
+    if (!Valid()) { return true; }
+    const auto ret = cudaEventQuery(reinterpret_cast<cudaEvent_t>(NativeHandle()));
+    if (ret == cudaSuccess) { return true; }
+    if (ret == cudaErrorNotReady) { return false; }
+    return Status{ret, cudaGetErrorString(ret)};
+}
+
 }  // namespace UC::Trans

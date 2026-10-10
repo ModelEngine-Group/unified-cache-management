@@ -9,9 +9,9 @@ import os
 import sys
 from pathlib import Path
 
-from ... import registry
 from ...errors import ScriptNotFoundError
 from ...registry import ToolAdapter
+from ...resources import resource_path, source_root
 from ...runner import run_command
 from .model_profile import (
     ModelProfileError,
@@ -73,7 +73,7 @@ class PosixAioTool(ToolAdapter):
     aliases = ("posix_aio",)
     description = "Run the POSIX AIO store test script."
     buildable = False
-    script_path = "ucm/store/test/e2e/posixstore_aio_test.py"
+    script_path = "posixstore_aio_test.py"
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register POSIX AIO run arguments."""
@@ -220,7 +220,9 @@ class PosixAioTool(ToolAdapter):
 
     def _make_env(self) -> dict[str, str]:
         env = os.environ.copy()
-        repo_root = registry.repo_root()
+        repo_root = source_root()
+        if repo_root is None:
+            return env
         import_mode = env.get(IMPORT_MODE_ENV, "auto").strip().lower()
         if import_mode == "source":
             _prepend_pythonpath(env, repo_root)
@@ -233,7 +235,7 @@ class PosixAioTool(ToolAdapter):
         return env
 
     def _launch(self, forwarded_args: list[str]) -> int:
-        script = registry.resolve_repo_path(self.script_path or "")
+        script = resource_path(self.script_path or "")
         if not script.exists():
             raise ScriptNotFoundError(str(script))
         env = self._make_env()
@@ -383,7 +385,7 @@ class PosixAioTool(ToolAdapter):
         else:
             forwarded = self._forward_args(args)
         if args.dry_run:
-            script = registry.resolve_repo_path(self.script_path or "")
+            script = resource_path(self.script_path or "")
             cmd = [sys.executable, str(script), *forwarded]
             print("[dry-run] would run: " + " ".join(cmd))
             return 0
@@ -391,7 +393,7 @@ class PosixAioTool(ToolAdapter):
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect POSIX AIO script availability."""
-        script = registry.resolve_repo_path(self.script_path or "")
+        script = resource_path(self.script_path or "")
         status = "OK" if script.exists() else "MISSING"
         print(f"{self.name}: {script} {status}")
         return 0 if script.exists() else 1

@@ -155,6 +155,10 @@ public:
 
     void UpdateStats(const std::unordered_map<std::string, double>& values);
 
+    // Like UpdateStats, ignore uninitialized metrics and unregistered names.
+    // Validate registered histogram bucket counts before publishing the batch to caller TLS.
+    void MergeHistogramStats(const HistogramStatsMap& values);
+
     std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
                HistogramStatsMap>
     GetAllStatsAndClear();
