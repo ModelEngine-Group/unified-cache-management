@@ -161,6 +161,10 @@ def _get_store_gc_block_size(
 
 _SHM_DIR = "/dev/shm"
 
+# Default shared-buffer capacity (GB) applied by vLLM connectors when
+# ``cache_buffer_capacity_gb`` is omitted.
+_DEFAULT_SHARED_BUFFER_CAPACITY_GB = 128
+
 
 def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
     """Early-validate that /dev/shm can hold the shared-buffer store.
@@ -173,18 +177,62 @@ def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
     if cache_buffer_capacity_gb <= 0:
         return
     try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
+        shm_usage = shutil.disk_usage(_SHM_DIR)
     except OSError:
         # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
         logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
         return
     needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
+    if shm_usage.total < needed_bytes:
         raise RuntimeError(
             f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
+            f"but {_SHM_DIR} has only {shm_usage.total >> 30}GB. "
             f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
             f"larger size= option) or decrease cache_buffer_capacity_gb."
+        )
+    if shm_usage.free < needed_bytes:
+        raise RuntimeError(
+            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB free in "
+            f"{_SHM_DIR}, but only {shm_usage.free >> 30}GB of the "
+            f"{shm_usage.total >> 30}GB tmpfs is free. Remove stale files under "
+            f"{_SHM_DIR} (e.g. uc_shm_cache_* left by crashed runs) or decrease "
+            f"cache_buffer_capacity_gb."
+        )
+    _check_host_mem_available(cache_buffer_capacity_gb)
+
+
+def _check_host_mem_available(cache_buffer_capacity_gb: int) -> None:
+    """Early-validate that the host can pin the shared buffer.
+
+    Registering the shared buffer (cudaHostRegister / aclrtHostRegisterV2 with
+    pinning) faults in and locks every page of the tmpfs file, consuming the
+    same amount of physical host RAM. If MemAvailable is below the configured
+    capacity, registration fails deep inside the C++ store (e.g. Ascend error
+    107017); raise here instead with an actionable message.
+    """
+    if cache_buffer_capacity_gb <= 0:
+        return
+    mem_available_kb = None
+    try:
+        with open("/proc/meminfo", "rt", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_available_kb = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        # /proc/meminfo unavailable (e.g. non-Linux dev host); defer to the store.
+        logger.debug("Skip host memory check: /proc/meminfo unavailable.")
+        return
+    if mem_available_kb is None:
+        return
+    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
+    mem_available = mem_available_kb * 1024
+    if mem_available < needed_bytes:
+        raise RuntimeError(
+            f"Registering the {cache_buffer_capacity_gb}GB shared buffer requires "
+            f"pinning the same amount of host memory, but only "
+            f"{mem_available >> 30}GB is available (MemAvailable). Free host "
+            f"memory or decrease cache_buffer_capacity_gb."
         )
 
 
@@ -1448,6 +1496,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
             .get("share_buffer_enable", self.is_mla)
         )
         if share_buffer_enable:
+            # Fail fast, before the model is loaded, when the host cannot hold
+            # the shared buffer (tmpfs size/free space, pinnable host memory).
+            # For FAWA-style connectors that split the capacity across stores,
+            # the total (pre-split) capacity is validated here.
+            capacity_gb = (
+                self.connector_configs[0]
+                .get("ucm_connector_config", {})
+                .get("cache_buffer_capacity_gb")
+            )
+            _check_shm_capacity(
+                int(capacity_gb)
+                if capacity_gb is not None
+                else _DEFAULT_SHARED_BUFFER_CAPACITY_GB
+            )
             if role == KVConnectorRole.WORKER:
                 self.unique_id = _worker_generate_unique_id()
             else:
@@ -1579,9 +1641,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not bool(config.get("share_buffer_enable", False)):
             return
         if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
+            config["cache_buffer_capacity_gb"] = _DEFAULT_SHARED_BUFFER_CAPACITY_GB
             logger.info(
-                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+                "Set cache_buffer_capacity_gb to "
+                f"{_DEFAULT_SHARED_BUFFER_CAPACITY_GB}GB for shared-buffer store."
             )
         # The shared buffer is allocated via shm_open in /dev/shm; fail early
         # (before store creation) if the tmpfs cannot hold it.

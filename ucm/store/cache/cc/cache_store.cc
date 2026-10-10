@@ -214,7 +214,9 @@ private:
             const size_t minBufferCapacityGb =
                 (minBufferNumber * config.shardSize + (size_t(1) << 30) - 1) >> 30;
             return Status::InvalidParam(
-                "too small buffer({}) on shard({}), please set cache_buffer_capacity_gb >= {}GB",
+                "too small buffer({}) on shard({}), effective buffer capacity "
+                "should be at least {}GB, please increase cache_buffer_capacity_gb "
+                "(note: some connectors split it across stores)",
                 config.bufferCapacity, config.shardSize, minBufferCapacityGb);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {

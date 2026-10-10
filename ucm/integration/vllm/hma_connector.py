@@ -18,6 +18,7 @@ from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
+    _DEFAULT_SHARED_BUFFER_CAPACITY_GB,
     _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
 )
@@ -665,9 +666,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         # HMA creates two shared-buffer stores, FA and WA, so split the
         # shared-buffer capacity evenly between them, whether user-set or the
-        # 128GB direct-connector default.
+        # default shared-buffer capacity.
         if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
+            config["cache_buffer_capacity_gb"] = _DEFAULT_SHARED_BUFFER_CAPACITY_GB
         capacity = int(config["cache_buffer_capacity_gb"])
         config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
         logger.info(
@@ -678,6 +679,39 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # The shared buffer is allocated via shm_open in /dev/shm; fail early
         # (before store creation) if the tmpfs cannot hold the FA+WA total.
         _check_shm_capacity(capacity)
+
+    @staticmethod
+    def _check_min_buffer_capacity(
+        label: str,
+        config: dict[str, object],
+        shard_size: int,
+    ) -> None:
+        """Mirror the CacheStore minimum-capacity check with split-aware errors.
+
+        The C++ CacheStore requires at least
+        ``max(1024, 2 * cache_load_exclusive_buffer_number)`` nodes of
+        ``shard_size`` bytes. Its error message refers to the effective
+        per-store capacity and cannot know that FAWA splits
+        ``cache_buffer_capacity_gb`` across the FA and WA stores, so validate
+        here and report the user-facing value to set.
+        """
+        capacity_gb = config.get("cache_buffer_capacity_gb")
+        if capacity_gb is None:
+            # Native default; let the C++ store validate it.
+            return
+        load_exclusive = config.get("cache_load_exclusive_buffer_number")
+        load_exclusive = 1024 if load_exclusive is None else int(load_exclusive)
+        min_nodes = max(1024, load_exclusive * 2)
+        min_bytes = min_nodes * shard_size
+        if int(capacity_gb) * (1 << 30) < min_bytes:
+            min_effective_gb = (min_bytes + (1 << 30) - 1) >> 30
+            raise RuntimeError(
+                f"The FAWA {label} store needs at least {min_effective_gb}GB of "
+                f"effective buffer capacity (shard size {shard_size} bytes x "
+                f"{min_nodes} nodes), but only {int(capacity_gb)}GB is left after "
+                f"splitting cache_buffer_capacity_gb across the FA and WA stores. "
+                f"Please set cache_buffer_capacity_gb >= {min_effective_gb * 2}GB."
+            )
 
     @staticmethod
     def _namespace_storage_backends(
@@ -725,6 +759,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
+            self._check_min_buffer_capacity(label, config, padded_size)
             if self.file_size[label] != padded_size:
                 logger.info_once(
                     f"GC file size of {label} does not match real file size. "
