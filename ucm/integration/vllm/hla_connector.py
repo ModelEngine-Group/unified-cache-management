@@ -28,6 +28,7 @@ from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
+    KVCacheSegment,
     PendingDumpTask,
     RequestDispatchMeta,
     RequestMeta,
@@ -55,6 +56,11 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _kv_cache_tensor_layers(raw_tensor) -> list[str]:
+    """Read layer names from both new and legacy vLLM tensor descriptors."""
+    return getattr(raw_tensor, "layers", getattr(raw_tensor, "shared_by", []))
+
+
 @dataclass
 class HLARequestMeta(RequestMeta):
     """RequestMeta extended with per-group block tracking for hybrid models."""
@@ -69,6 +75,8 @@ class HLARequestDispatchMeta(RequestDispatchMeta):
 
     load_full_attn_count: int = 0
     dump_full_attn_count: int = 0
+    load_group_ids: list[int] = field(default_factory=list)
+    dump_group_ids: list[int] = field(default_factory=list)
 
 
 def layer_name_to_kv_cache_spec(
@@ -94,13 +102,9 @@ def layer_name_to_kv_cache_spec(
 
 def block_size_from_kv_cache_spec(spec: KVCacheSpec) -> int:
     """Token block size used for KV scheduling / hashing for one group spec."""
-    block_size = 0
     if isinstance(spec, UniformTypeKVCacheSpecs):
-        block_size = next(iter(spec.kv_cache_specs.values())).block_size
-    else:
-        block_size = spec.block_size
-
-    return block_size
+        return next(iter(spec.kv_cache_specs.values())).block_size
+    return spec.block_size
 
 
 def is_mamba_align_kv_cache_spec(spec: KVCacheSpec) -> bool:
@@ -110,11 +114,27 @@ def is_mamba_align_kv_cache_spec(spec: KVCacheSpec) -> bool:
     return isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
 
 
+def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
+    """Read HLA prefix-cache eligibility, excluding transient GLM indexer state."""
+    if isinstance(spec, UniformTypeKVCacheSpecs):
+        return all(
+            participates_in_prefix_caching(inner)
+            for inner in spec.kv_cache_specs.values()
+        )
+    # Ascend KpoolTail uses the new flag; it is request-local ring state,
+    # not a historical prefix, even when KV transfer is enabled.
+    return bool(getattr(spec, "prefix_cacheable", True)) and bool(
+        getattr(spec, "participates_in_prefix_caching", True)
+    )
+
+
 def extend_non_null(
     dst_ucm_block_ids: list[bytes],
     dst_vllm_block_ids: list[int],
+    dst_group_ids: list[int],
     src_ucm_block_ids: list[bytes],
     src_vllm_block_ids: list[int],
+    group_id: int,
 ) -> None:
     # Skip vLLM null blocks (block_id=0) used as mamba-align placeholders.
     for ucm_block_id, vllm_block_id in zip(src_ucm_block_ids, src_vllm_block_ids):
@@ -122,6 +142,7 @@ def extend_non_null(
             continue
         dst_ucm_block_ids.append(ucm_block_id)
         dst_vllm_block_ids.append(vllm_block_id)
+        dst_group_ids.append(group_id)
 
 
 def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
@@ -143,10 +164,11 @@ class GroupInfo:
     seed: bytes
     is_mamba_align: bool = False
     block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
+    participates_in_prefix_caching: bool = True
 
     @property
     def is_full_attention(self) -> bool:
-        return not self.is_mamba_align
+        return self.participates_in_prefix_caching and not self.is_mamba_align
 
 
 class KVCacheGroupManager:
@@ -162,6 +184,7 @@ class KVCacheGroupManager:
         self.groups_by_id: list[GroupInfo] = []
         self.full_attn_groups: list[GroupInfo] = []
         self.state_groups: list[GroupInfo] = []
+        self.non_prefix_groups: list[GroupInfo] = []
 
         for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
             spec = group.kv_cache_spec
@@ -174,6 +197,7 @@ class KVCacheGroupManager:
                 layer_names=tuple(group.layer_names),
                 seed=seed,
                 is_mamba_align=is_mamba_align,
+                participates_in_prefix_caching=participates_in_prefix_caching(spec),
             )
             if not is_mamba_align:
                 info.block_hasher = request_hasher.make_request_block_hasher(
@@ -182,19 +206,23 @@ class KVCacheGroupManager:
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
-            else:
+            elif info.is_mamba_align:
                 self.state_groups.append(info)
+            else:
+                self.non_prefix_groups.append(info)
 
         assert len(self.full_attn_groups) >= 1, (
             "UCMHybridLinearAttentionConnector expects at least one full-attention group in "
             "kv_cache_config.kv_cache_groups."
         )
 
-        # Resume points must align to the LCM of all group block_sizes.
-        all_block_sizes = [g.block_size for g in self.groups_by_id]
+        # Non-prefix groups (for example GLM-5.3-Flash KpoolTail) have independent
+        # lifetimes and must not constrain prefix-cache resume boundaries.
+        cached_groups = self.full_attn_groups + self.state_groups
+        all_block_sizes = [g.block_size for g in cached_groups]
         self.lcm_block_size: int = math.lcm(*all_block_sizes)
 
-        for g in self.groups_by_id:
+        for g in cached_groups:
             assert self.lcm_block_size % g.block_size == 0, (
                 f"group {g.group_id} block_size={g.block_size} does not "
                 f"divide LCM={self.lcm_block_size}"
@@ -212,7 +240,9 @@ class KVCacheGroupManager:
             f"full_attn_groups="
             f"{[(g.group_id, g.block_size) for g in self.full_attn_groups]}, "
             f"state_groups="
-            f"{[(g.group_id, g.block_size, g.is_mamba_align) for g in self.state_groups]}"
+            f"{[(g.group_id, g.block_size, g.is_mamba_align) for g in self.state_groups]}, "
+            f"non_prefix_groups="
+            f"{[(g.group_id, g.block_size) for g in self.non_prefix_groups]}"
         )
 
     @property
@@ -221,6 +251,8 @@ class KVCacheGroupManager:
 
     def compute_block_hashes(self, group: GroupInfo, request: "Request") -> list[bytes]:
         """Hash a request at one group's block boundaries and chain seed."""
+        if not group.participates_in_prefix_caching:
+            return []
         if group.is_mamba_align:
             # mamba-align pads block table with null blocks; no per-block hash.
             return [b""] * (len(request.all_token_ids) // group.block_size)
@@ -501,20 +533,265 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             [stride for row in block_stride_lists for stride in row], dtype=np.uint64
         )
 
-        all_block_ids = np.arange(self.num_blocks, dtype=np.uint64)
-        self.row_addr_lookup: dict[int, np.ndarray] = {}
-        for row_id, row_slice in enumerate(self.row_slices):
-            stride = np.ascontiguousarray(self.block_stride_lists[row_slice])
-            base = np.ascontiguousarray(self.base_ptrs[row_slice])
-            self.row_addr_lookup[row_id] = np.ascontiguousarray(
-                all_block_ids[:, None] * stride[None, :] + base[None, :]
+    @staticmethod
+    def _tokens_per_state(spec: KVCacheSpec) -> int:
+        """Read compression ratios across KV-spec versions, including generic HLA."""
+        return int(
+            getattr(spec, "tokens_per_state", getattr(spec, "compress_ratio", 1))
+        )
+
+    @staticmethod
+    def _has_glm53_layout(kv_cache_config) -> bool:
+        """Identify GLM-5.3-Flash independently of allocation packing."""
+        raw_tensors = kv_cache_config.kv_cache_tensors
+        if (
+            not (
+                current_platform.is_cuda_alike()
+                or current_platform.device_type == "npu"
+            )
+            or not raw_tensors
+        ):
+            return False
+        # Ascend tags specs with model_version; upstream CUDA currently does
+        # not. Keep structural detection so CUDA reaches the explicit error.
+        has_mla = False
+        has_indexer = False
+        has_mamba = False
+        for group in kv_cache_config.kv_cache_groups:
+            spec = group.kv_cache_spec
+            inner_specs = (
+                spec.kv_cache_specs.values()
+                if isinstance(spec, UniformTypeKVCacheSpecs)
+                else (spec,)
+            )
+            if any(
+                getattr(inner, "model_version", None) == "glm5_next"
+                for inner in inner_specs
+            ):
+                return True
+            if not participates_in_prefix_caching(spec):
+                continue
+            if is_mamba_align_kv_cache_spec(spec):
+                has_mamba = True
+                continue
+            if isinstance(spec, UniformTypeKVCacheSpecs) and all(
+                isinstance(inner, MLAAttentionSpec)
+                for inner in spec.kv_cache_specs.values()
+            ):
+                ratios = [
+                    HybridLinearAttentionLayout._tokens_per_state(inner)
+                    for inner in spec.kv_cache_specs.values()
+                ]
+                has_mla |= any(ratio == 1 for ratio in ratios)
+                has_indexer |= any(ratio > 1 for ratio in ratios)
+        return has_mla and has_indexer and has_mamba
+
+    def _build_glm53_ascend_layout(self, kvcaches) -> None:
+        """Transfer live Ascend views with their own group block strides.
+
+        MLA and KDA alias component-major allocations, whereas the pooled
+        indexer has padded, block-major pages. Copying a raw allocation page
+        cannot describe both. Give each group its own columns and leave the
+        other columns null. Rows are padded to
+        include standalone KDA layers as well as MLA/Indexer pairs.
+        """
+        descriptors = {
+            name: raw
+            for raw in self.kv_cache_config.kv_cache_tensors
+            for name in _kv_cache_tensor_layers(raw)
+        }
+        specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
+        self._validate_glm53_ascend_descriptors(specs)
+        columns = []
+        self.layer_name_to_row = {}
+        # Group order describes allocation slots, not execution order. Load
+        # every row before the first KDA runs in the layerwise connector.
+        self.preload_all_rows = True
+        # A model-layer callback does not establish that every KDA/indexer
+        # view in this logical row has reached its final state. Keep row
+        # sharding, but take snapshots at the post-forward save boundary.
+        self.save_after_forward = True
+        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            if not participates_in_prefix_caching(group.kv_cache_spec):
+                continue
+            # Separate MLA from its compressed indexer within the same group.
+            families = defaultdict(list)
+            for name in group.layer_names:
+                spec = specs[name][0]
+                families[self._tokens_per_state(spec) > 1].append(name)
+            for names in families.values():
+                if not names:
+                    continue
+                rows = []
+                for row_id, name in enumerate(names):
+                    row = self._build_glm53_ascend_row(
+                        name, kvcaches, descriptors[name], specs[name][0]
+                    )
+                    rows.append(row)
+                    self.layer_name_to_row[name] = row_id
+                sizes = [segment.copy_size for segment in rows[0]]
+                if any([segment.copy_size for segment in row] != sizes for row in rows):
+                    raise ValueError(
+                        "Ascend GLM-5.3-Flash cache family has unequal component sizes."
+                    )
+                columns.append((group_id, sizes, rows))
+
+        self._finalize_glm53_ascend_columns(columns)
+
+    def _validate_glm53_ascend_descriptors(
+        self, specs: dict[str, list[KVCacheSpec]]
+    ) -> None:
+        """Validate unpacked Ascend shared-slot descriptors."""
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            stride = int(getattr(raw, "block_stride", 0))
+            if (
+                not names
+                or int(getattr(raw, "offset", 0)) != 0
+                or int(getattr(raw, "layer_stride", 0)) != 0
+                or (
+                    stride
+                    and (
+                        int(raw.size) != self.num_blocks * stride
+                        or any(
+                            specs[name][0].page_size_bytes != stride for name in names
+                        )
+                    )
+                )
+            ):
+                raise ValueError("Invalid Ascend GLM-5.3-Flash shared-slot descriptor.")
+
+    def _build_glm53_ascend_row(
+        self, name: str, kvcaches, raw, spec: KVCacheSpec
+    ) -> list[KVCacheSegment]:
+        """Build one layer's live components, preserving padded block strides."""
+        allocation_blocks, remainder = divmod(int(raw.size), spec.page_size_bytes)
+        if remainder or allocation_blocks < self.num_blocks:
+            raise ValueError(f"Invalid Ascend allocation for {name}.")
+        value = kvcaches[name]
+        tensors = (value,) if isinstance(value, torch.Tensor) else value
+        if not isinstance(tensors, (list, tuple)) or not tensors:
+            raise TypeError(f"Unsupported Ascend KV entry for {name}.")
+        row = []
+        for tensor in tensors:
+            if not isinstance(tensor, torch.Tensor):
+                raise TypeError(f"Unsupported Ascend KV component: {name}.")
+            # NoPE MLA keeps an empty RoPE view with inherited K strides.
+            if tensor.numel() == 0:
+                continue
+            # A scheduler block can contain several kernel blocks.
+            chunks, remainder = divmod(tensor.shape[0], allocation_blocks)
+            inner_size = math.prod(tensor.shape[1:])
+            expected_stride = 1
+            for dim in range(tensor.dim() - 1, 0, -1):
+                if tensor.shape[dim] > 1 and tensor.stride(dim) != expected_stride:
+                    raise ValueError(f"Non-contiguous Ascend KV block: {name}.")
+                expected_stride *= tensor.shape[dim]
+            if (
+                remainder
+                or chunks < 1
+                or (chunks > 1 and tensor.stride(0) != inner_size)
+            ):
+                raise ValueError(f"Unsupported Ascend kernel block layout: {name}.")
+            size = chunks * inner_size * tensor.element_size()
+            stride = chunks * tensor.stride(0) * tensor.element_size()
+            if stride < size:
+                raise ValueError(f"Overlapping Ascend KV blocks: {name}.")
+            row.append(
+                KVCacheSegment(
+                    ptr=int(tensor.data_ptr()),
+                    copy_size=size,
+                    block_stride=stride,
+                    buffer_size=(self.num_blocks - 1) * stride + size,
+                )
+            )
+        if not row:
+            raise ValueError(f"Empty Ascend KV entry for {name}.")
+        return row
+
+    def _finalize_glm53_ascend_columns(self, columns) -> None:
+        """Pack family columns and group-specific addresses into layout arrays."""
+        row_count = max(len(rows) for _, _, rows in columns)
+        width = sum(len(sizes) for _, sizes, _ in columns)
+        bases = [[0] * width for _ in range(row_count)]
+        buffers = [[0] * width for _ in range(row_count)]
+        strides = [[0] * width for _ in range(row_count)]
+        sizes = [size for _, family_sizes, _ in columns for size in family_sizes]
+        self.group_layouts = {}
+        offset = 0
+        for group_id, family_sizes, rows in columns:
+            group_bases, group_strides = self.group_layouts.setdefault(
+                group_id,
+                (
+                    np.zeros((row_count, width), dtype=np.uint64),
+                    np.zeros((row_count, width), dtype=np.uint64),
+                ),
+            )
+            for row_id, row in enumerate(rows):
+                for component, segment in enumerate(row, offset):
+                    bases[row_id][component] = segment.ptr
+                    buffers[row_id][component] = segment.buffer_size
+                    strides[row_id][component] = segment.block_stride
+                    group_bases[row_id, component] = segment.ptr
+                    group_strides[row_id, component] = segment.block_stride
+            offset += len(family_sizes)
+        self._finalize_layout_arrays(bases, buffers, [sizes] * row_count, strides)
+        self.group_layouts = {
+            group_id: (group_bases.reshape(-1), group_strides.reshape(-1))
+            for group_id, (group_bases, group_strides) in self.group_layouts.items()
+        }
+
+    def _extract_group_addrs(
+        self,
+        vllm_block_ids: List[int],
+        group_ids: list[int],
+        row_slice: slice | None = None,
+    ) -> np.ndarray:
+        if len(vllm_block_ids) != len(group_ids):
+            raise ValueError(
+                "Hybrid block/group id lengths differ: "
+                f"blocks={len(vllm_block_ids)}, groups={len(group_ids)}"
             )
 
+        block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+        group_ids_np = np.asarray(group_ids, dtype=np.int64)
+        width = (
+            len(self.base_ptrs)
+            if row_slice is None
+            else int(row_slice.stop) - int(row_slice.start)
+        )
+        addrs = np.zeros((len(block_ids), width), dtype=np.uint64)
+        for group_id in np.unique(group_ids_np):
+            try:
+                bases, strides = self.group_layouts[int(group_id)]
+            except KeyError as e:
+                raise ValueError(
+                    f"No hybrid physical layout for KV cache group {group_id}."
+                ) from e
+            if row_slice is not None:
+                bases = bases[row_slice]
+                strides = strides[row_slice]
+            selected = np.flatnonzero(group_ids_np == group_id)
+            addrs[selected] = (
+                block_ids[selected, None] * strides[None, :] + bases[None, :]
+            )
+        return np.ascontiguousarray(addrs)
+
     def extract_block_addrs(
-        self, vllm_block_ids: List[int], layer_first: bool = False
+        self,
+        vllm_block_ids: List[int],
+        layer_first: bool = False,
+        group_ids: list[int] | None = None,
     ) -> np.ndarray:
         if layer_first:
             raise ValueError("layer_first is not supported for flattened hybrid layout")
+        if hasattr(self, "group_layouts"):
+            if group_ids is None:
+                raise ValueError(
+                    "The GLM-5.3-Flash hybrid layout requires a group id for "
+                    "each vLLM block id."
+                )
+            return self._extract_group_addrs(vllm_block_ids, group_ids)
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
         return (
             vllm_block_ids_np[:, None] * self.block_stride_lists[None, :]
@@ -522,16 +799,25 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         )
 
     def extract_block_addrs_for_row(
-        self, vllm_block_ids: List[int], row_id: int
+        self,
+        vllm_block_ids: List[int],
+        row_id: int,
+        group_ids: list[int] | None = None,
     ) -> np.ndarray:
         if row_id < 0 or row_id >= len(self.row_slices):
             raise ValueError(
                 f"Invalid hybrid row_id={row_id}; row_count={len(self.row_slices)}"
             )
-        lookup = self.row_addr_lookup.get(row_id)
-        if lookup is not None:
-            return lookup[np.asarray(vllm_block_ids, dtype=np.uint64)]
         row_slice = self.row_slices[row_id]
+        if hasattr(self, "group_layouts"):
+            if group_ids is None:
+                raise ValueError(
+                    "The GLM-5.3-Flash hybrid layout requires a group id for "
+                    "each vLLM block id."
+                )
+            return self._extract_group_addrs(
+                vllm_block_ids, group_ids, row_slice=row_slice
+            )
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
         return (
             vllm_block_ids_np[:, None] * self.block_stride_lists[row_slice][None, :]
@@ -542,11 +828,11 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self,
         raw_tensor,
         kvcaches,
+        layer_to_specs: dict[str, list[KVCacheSpec]],
     ) -> tuple[list[KVCacheSpec], list[int]]:
         shared_specs: list[KVCacheSpec] = []
         shared_ptrs: list[int] = []
-        layer_to_specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
-        for layer_name in raw_tensor.shared_by:
+        for layer_name in _kv_cache_tensor_layers(raw_tensor):
             kv_layer = kvcaches.get(layer_name)
             if kv_layer is None:
                 continue
@@ -678,6 +964,19 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         block_stride_lists.append(sizes)
 
     def _build_layout(self, kvcaches):
+        # GLM-5.3-Flash is currently supported only on Ascend. Do not let
+        # CUDA fall back to the generic layout before it has been adapted.
+        if self._has_glm53_layout(self.kv_cache_config):
+            if current_platform.device_type == "npu":
+                self._build_glm53_ascend_layout(kvcaches)
+            else:
+                raise NotImplementedError(
+                    "GLM-5.3-Flash CUDA KV cache layout is not supported by "
+                    "UCM on the current vLLM release. Only the Ascend layout "
+                    "has been adapted."
+                )
+            return
+
         base_ptrs = []
         buffer_size_rows = []
         tensor_size_lists = []
@@ -685,18 +984,20 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self.layer_name_to_row: dict[str, int] = {}
 
         is_npu = current_platform.device_type == "npu"
+        layer_to_specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            if not raw_tensor.shared_by:
+            layer_names = _kv_cache_tensor_layers(raw_tensor)
+            if not layer_names:
                 continue
 
             shared_specs, shared_ptrs = self._collect_shared_tensor_info(
-                raw_tensor, kvcaches
+                raw_tensor, kvcaches, layer_to_specs
             )
 
             if not shared_ptrs:
                 logger.warning(
-                    f"no kv cache tensor found for shared layers {raw_tensor.shared_by}"
+                    f"no kv cache tensor found for shared layers {layer_names}"
                 )
                 continue
 
@@ -736,7 +1037,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                     block_stride_lists,
                 )
 
-            for layer_name in raw_tensor.shared_by:
+            for layer_name in layer_names:
                 self.layer_name_to_row[layer_name] = row_id
 
         self._finalize_layout_arrays(
@@ -766,19 +1067,28 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ):
             return False
 
+        if HybridLinearAttentionLayout._has_glm53_layout(kv_cache_config):
+            return True
+
         layer_to_specs = layer_name_to_kv_cache_spec(kv_cache_config)
+        # Attention and Mamba layers may use separate tensor allocations.
+        has_full_attention = False
+        has_mamba_align = False
         for raw_tensor in kv_cache_config.kv_cache_tensors:
+            shared_by = _kv_cache_tensor_layers(raw_tensor)
             shared_specs = [
                 spec
-                for layer_name in raw_tensor.shared_by
+                for layer_name in shared_by
                 for spec in layer_to_specs.get(layer_name, [])
             ]
-            if any(
+            has_full_attention |= any(
                 isinstance(spec, FullAttentionSpec) for spec in shared_specs
-            ) and any(
+            )
+            has_mamba_align |= any(
                 isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
                 for spec in shared_specs
-            ):
+            )
+            if has_full_attention and has_mamba_align:
                 return True
 
         return False
@@ -1018,16 +1328,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
         all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
         hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
-        if hbm_full_attn:
-            self.store.prefetch(hbm_full_attn)
-        if mamba_prefetch_hashes:
-            self.store.prefetch(mamba_prefetch_hashes)
         # MLA full-attn is TP-replicated (shared hash), no per-rank entries to prefetch.
         # Only mamba blocks have per-rank entries needing heat update.
         per_rank_hashes = mamba_prefetch_hashes
         if not self.is_mla:
             per_rank_hashes = all_hit_full_attn + mamba_prefetch_hashes
-        self._prefetch_all_rank_hashes(per_rank_hashes)
+        # Use the base connector's best-effort hotness update. It refreshes
+        # rank 0 as well as other ranks and isolates prefetch failures.
+        self._prefetch_direct_hit_key_hotness(hbm_full_attn, per_rank_hashes)
 
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
@@ -1082,6 +1390,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self,
         dst_ucm_block_ids: list[bytes],
         dst_vllm_block_ids: list[int],
+        dst_group_ids: list[int],
         req_meta: "HLARequestMeta",
         request_id: str,
         gid: int,
@@ -1122,6 +1431,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             return
         dst_ucm_block_ids.append(ucm_block_id)
         dst_vllm_block_ids.append(vllm_block_id)
+        dst_group_ids.append(gid)
 
     def _generate_hla_dispatch_meta(
         self,
@@ -1157,8 +1467,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         load_ucm_block_ids: list[bytes] = []
         load_vllm_block_ids: list[int] = []
+        load_group_ids: list[int] = []
         dump_ucm_block_ids: list[bytes] = []
         dump_vllm_block_ids: list[int] = []
+        dump_group_ids: list[int] = []
 
         external_hit_lcm_blocks = (
             req_meta.total_hit_block_num - req_meta.hbm_hit_block_num
@@ -1169,7 +1481,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if need_load and external_hit_lcm_blocks > 0:
             # Pass 1: full-attention blocks first (for MLA rank-0-only dump)
             for gid, group in enumerate(groups_by_id):
-                if group.is_mamba_align:
+                if not group.is_full_attention:
                     continue
                 load_tok_start = hbm_hit_tokens
                 load_tok_end = total_hit_tokens
@@ -1180,8 +1492,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 extend_non_null(
                     load_ucm_block_ids,
                     load_vllm_block_ids,
+                    load_group_ids,
                     req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
                     req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
+                    gid,
                 )
             load_full_attn_count = len(load_ucm_block_ids) if self.is_mla else 0
             # Pass 2: mamba state blocks
@@ -1191,6 +1505,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 self._append_mamba_align_state_block(
                     load_ucm_block_ids,
                     load_vllm_block_ids,
+                    load_group_ids,
                     req_meta,
                     request_id,
                     gid,
@@ -1210,7 +1525,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
             # Pass 1: full-attention blocks first
             for gid, group in enumerate(groups_by_id):
-                if group.is_mamba_align:
+                if not group.is_full_attention:
                     continue
                 start_blk = dump_tok_start // group.block_size
                 end_blk = dump_tok_end // group.block_size
@@ -1219,8 +1534,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 extend_non_null(
                     dump_ucm_block_ids,
                     dump_vllm_block_ids,
+                    dump_group_ids,
                     req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
                     req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
+                    gid,
                 )
             dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
             # Pass 2: mamba state blocks
@@ -1232,6 +1549,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 self._append_mamba_align_state_block(
                     dump_ucm_block_ids,
                     dump_vllm_block_ids,
+                    dump_group_ids,
                     req_meta,
                     request_id,
                     gid,
@@ -1248,6 +1566,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             dump_block_ids=(dump_ucm_block_ids, dump_vllm_block_ids),
             load_full_attn_count=load_full_attn_count,
             dump_full_attn_count=dump_full_attn_count,
+            load_group_ids=load_group_ids,
+            dump_group_ids=dump_group_ids,
         )
 
     def build_connector_meta(
@@ -1326,41 +1646,34 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             scheduler_output.preempted_req_ids or set(),
         )
 
-    def _mla_split_scope(self, ucm_ids, vllm_ids, full_attn_count, is_dump):
-        """Split into MLA/KDA and apply rank scoping for MLA hybrid.
+    def _scope_blocks(self, ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump):
+        """Rank-scope block IDs for dump or load.
 
-        Returns ``(rank0_ucm, scoped_ucm, scoped_vllm)`` where *rank0_ucm*
-        holds the rank-0 hashes of the blocks that will actually be stored
-        (for the rank-consistency tracker), *scoped_ucm* holds the per-rank
-        store keys, and *scoped_vllm* holds the matching vLLM block IDs.
+        Returns rank-0 hashes, scoped store keys, matching vLLM block IDs,
+        and the matching KV-cache group IDs.
         """
-        n = full_attn_count
+        is_rank0 = self.tp_rank % self.tp_size == 0
+        if not self.is_mla:
+            scoped = ucm_ids if is_rank0 else [self.request_hasher(b) for b in ucm_ids]
+            return ucm_ids, scoped, vllm_ids, group_ids
+
+        n = int(full_attn_count) if full_attn_count else 0
         mla_ucm, kda_ucm = ucm_ids[:n], ucm_ids[n:]
         mla_vllm, kda_vllm = vllm_ids[:n], vllm_ids[n:]
-        is_rank0 = self.tp_rank % self.tp_size == 0
+        mla_groups, kda_groups = group_ids[:n], group_ids[n:]
         # MLA: shared hash for all ranks; KDA: rank0 shared, non-rank0 per-rank hash
         if is_rank0:
             kda_scoped = kda_ucm
         else:
             kda_scoped = [self.request_hasher(b) for b in kda_ucm]
         if is_dump and not is_rank0:
-            return kda_ucm, kda_scoped, kda_vllm
-        return mla_ucm + kda_ucm, mla_ucm + kda_scoped, mla_vllm + kda_vllm
-
-    def _scope_blocks(self, ucm_ids, vllm_ids, full_attn_count, is_dump):
-        """Rank-scope block IDs for dump or load.
-
-        Returns ``(rank0_ucm, scoped_ucm, scoped_vllm)`` where *rank0_ucm*
-        is the rank-0 hash (for tracker clear/mark), *scoped_ucm* is the
-        per-rank store key, and *scoped_vllm* is the matching vLLM block IDs.
-        """
-        n = int(full_attn_count) if full_attn_count else 0
-        if self.is_mla:
-            return self._mla_split_scope(ucm_ids, vllm_ids, n, is_dump)
-        if self.tp_rank % self.tp_size == 0:
-            return ucm_ids, ucm_ids, vllm_ids
-        scoped = [self.request_hasher(b) for b in ucm_ids]
-        return ucm_ids, scoped, vllm_ids
+            return kda_ucm, kda_scoped, kda_vllm, kda_groups
+        return (
+            mla_ucm + kda_ucm,
+            mla_ucm + kda_scoped,
+            mla_vllm + kda_vllm,
+            mla_groups + kda_groups,
+        )
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """Bulk load override: MLA blocks shared hash, KDA blocks per-rank hash."""
@@ -1372,8 +1685,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         num_loaded_request = 0
         load_start_time = time.perf_counter() * 1000
         request_to_load_blocks: dict[str, int] = {}
-        all_load_ucm_ids: list[bytes] = []
-        all_load_vllm_ids: list[int] = []
         # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
         # has completed before submitting load DMA (store stream).  Without
         # this, the copy may land after the load and clobber loaded data.
@@ -1388,8 +1699,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             num_loaded_block += len(request.load_block_ids[0])
             num_loaded_request += 1
             n = getattr(request, "load_full_attn_count", 0)
-            _, scoped_ucm, scoped_vllm = self._scope_blocks(
-                request.load_block_ids[0], request.load_block_ids[1], n, is_dump=False
+            _, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
+                request.load_block_ids[0],
+                request.load_block_ids[1],
+                getattr(request, "load_group_ids", []),
+                n,
+                is_dump=False,
             )
             if not scoped_ucm:
                 num_loaded_block -= len(request.load_block_ids[0])
@@ -1397,7 +1712,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 continue
             num_loaded_block -= len(request.load_block_ids[0]) - len(scoped_ucm)
             try:
-                ptrs = self.kv_cache_layout.extract_block_addrs(scoped_vllm)
+                ptrs = self.kv_cache_layout.extract_block_addrs(
+                    scoped_vllm, group_ids=scoped_groups
+                )
                 ptrs = ptrs.reshape(ptrs.shape[0], -1)
                 shard_indexs = [0] * len(scoped_ucm)
                 task = self._rank_consistency.submit_load(
@@ -1437,6 +1754,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
+                continue
 
         if is_load:
             load_end_time = time.perf_counter() * 1000
@@ -1453,34 +1771,61 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 }
             )
 
-    def wait_for_save(self) -> None:
-        metadata = self._get_connector_metadata()
-        assert isinstance(metadata, UCMConnectorMetadata)
-
+    def _build_dump_transfer_data(
+        self,
+        metadata: "UCMConnectorMetadata",
+    ) -> tuple[list[bytes], list[int], list[int], set[str], dict[str, set[bytes]]]:
+        """Collect rank-scoped blocks for bulk and row-sharded saves."""
         total_ucm_block_ids: list[bytes] = []
         total_vllm_block_ids: list[int] = []
+        total_group_ids: list[int] = []
+        dump_request_ids: set[str] = set()
         block_ids_by_request: dict[str, set[bytes]] = {}
-        num_saved_block = 0
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
+            dump_request_ids.add(request_id)
             n = getattr(request, "dump_full_attn_count", 0)
-            rank0_ucm, scoped_ucm, scoped_vllm = self._scope_blocks(
-                request.dump_block_ids[0], request.dump_block_ids[1], n, is_dump=True
+            rank0_ucm, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
+                request.dump_block_ids[0],
+                request.dump_block_ids[1],
+                getattr(request, "dump_group_ids", []),
+                n,
+                is_dump=True,
             )
             if not scoped_ucm:
                 continue
             block_ids_by_request[request_id] = set(rank0_ucm)
-            num_saved_block += len(scoped_ucm)
             total_ucm_block_ids.extend(scoped_ucm)
             total_vllm_block_ids.extend(scoped_vllm)
+            total_group_ids.extend(scoped_groups)
+        return (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            total_group_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        )
+
+    def wait_for_save(self) -> None:
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, UCMConnectorMetadata)
+        (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            total_group_ids,
+            _,
+            block_ids_by_request,
+        ) = self._build_dump_transfer_data(metadata)
 
         if not total_ucm_block_ids:
             return
 
         event_handle = 0
         try:
-            total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                total_vllm_block_ids, group_ids=total_group_ids
+            )
             total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
             shard_indexs = [0] * len(total_ucm_block_ids)
             event_handle = self._get_dump_event_handle()
@@ -1514,7 +1859,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 self.device.destroy_event_handle(event_handle)
 
         self._rank_consistency.finish_dump(set(block_ids_by_request))
-        save_bytes = num_saved_block * self.block_data_size
+        save_bytes = len(total_ucm_block_ids) * self.block_data_size
         ucmmetrics.update_stats(
             {
                 "save_duration": save_end_time - save_start_time,
@@ -1545,7 +1890,9 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.use_layerwise = True
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[int, list[PendingDumpTask]] = defaultdict(list)
-        self.request_data: list[tuple[str, list[bytes], list[bytes], list[int]]] = []
+        self.request_data: list[
+            tuple[str, list[bytes], list[bytes], list[int], list[int]]
+        ] = []
         self._failure_req_ids: set[str] = set()
         self._submitted_load_rows: set[int] = set()
         # A hybrid KV row can be visited more than once in one model-runner
@@ -1553,7 +1900,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         # successful submission only and reset this state for every batch.
         self._dumped_row_ids: set[int] = set()
         self._dump_transfer_data: (
-            tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]] | None
+            tuple[list[bytes], list[int], list[int], set[str], dict[str, set[bytes]]]
+            | None
         ) = None
         self._row_shard_size = 0
         self._layerwise_load_bytes = 0
@@ -1577,6 +1925,53 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
         )
+
+    def _plan_row_saves(self) -> dict[str, list[int]]:
+        """Map each KV-transfer callback layer to the rows safe to dump there."""
+        if getattr(self.kv_cache_layout, "save_after_forward", False):
+            return {}
+        specs_by_name = layer_name_to_kv_cache_spec(self._kv_cache_config)
+        row_to_layers: dict[int, list[str]] = defaultdict(list)
+        for layer_name, row_id in self.layer_name_to_row.items():
+            specs = specs_by_name.get(layer_name, [])
+            if not specs or any(participates_in_prefix_caching(spec) for spec in specs):
+                row_to_layers[row_id].append(layer_name)
+
+        callback_layers = []
+        for layer_name in self.layer_name_to_row:
+            specs = specs_by_name.get(layer_name, [])
+            if any(
+                isinstance(spec, FullAttentionSpec)
+                and participates_in_prefix_caching(spec)
+                and HybridLinearAttentionLayout._tokens_per_state(spec) == 1
+                for spec in specs
+            ):
+                callback_layers.append(layer_name)
+        callback_layers.sort(key=lambda name: (self.layer_name_to_id[name], name))
+
+        save_rows_by_layer: dict[str, list[int]] = defaultdict(list)
+        for row_id in self.row_ids:
+            # Posix commits the backing file when the highest shard index is
+            # written. Keep that shard out of asynchronous layer callbacks so
+            # it cannot make a partially written block visible.
+            if row_id == self.commit_row_id:
+                continue
+            layer_names = row_to_layers.get(row_id, [])
+            if not layer_names:
+                continue
+            completed_at = max(self.layer_name_to_id[name] for name in layer_names)
+            save_layer = next(
+                (
+                    name
+                    for name in callback_layers
+                    if self.layer_name_to_id[name] >= completed_at
+                ),
+                None,
+            )
+            if save_layer is not None:
+                save_rows_by_layer[save_layer].append(row_id)
+
+        return dict(save_rows_by_layer)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -1641,22 +2036,18 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             except Exception as e:
                 logger.warning(f"Failed to bind worker: {e}")
 
-        row_to_layers: dict[int, list[str]] = defaultdict(list)
-        for layer_name, row_id in self.layer_name_to_row.items():
-            row_to_layers[row_id].append(layer_name)
-        self.row_save_layer = {
-            row_id: max(
-                layer_names,
-                key=lambda name: self.layer_name_to_id.get(name, self.first_layer_id),
-            )
-            for row_id, layer_names in row_to_layers.items()
+        self.commit_row_id = max(self.row_ids)
+        self.save_rows_by_layer = self._plan_row_saves()
+        scheduled_rows = {
+            row_id for row_ids in self.save_rows_by_layer.values() for row_id in row_ids
         }
         logger.info(
             "Hybrid layerwise layout: "
             f"rows={len(self.row_ids)}, row_ids={_short_list(self.row_ids)}, "
             f"row_shard_size={row_shard_size}, "
             f"row_tensor_size_list={row_tensor_size_list}, "
-            f"row_save_layers={len(self.row_save_layer)}"
+            f"save_callback_layers={len(self.save_rows_by_layer)}, "
+            f"final_save_rows={len(set(self.row_ids) - scheduled_rows)}"
         )
 
     def _mark_load_failed(
@@ -1675,17 +2066,20 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         row_id: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
+        if row_id in self._submitted_load_rows:
+            return
         for (
             request_id,
             ucm_block_ids,
             store_block_ids,
             vllm_block_ids,
+            group_ids,
         ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
             try:
                 row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
-                    vllm_block_ids, row_id
+                    vllm_block_ids, row_id, group_ids=group_ids
                 )
                 shard_indexs = [row_id] * len(store_block_ids)
                 task = self._rank_consistency.submit_load(
@@ -1704,16 +2098,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._mark_load_failed(metadata, request_id)
         self._submitted_load_rows.add(row_id)
 
-    def _submit_request_load_tasks_for_row_once(
-        self,
-        row_id: int,
-        metadata: "UCMConnectorMetadata",
-    ) -> None:
-        if row_id in self._submitted_load_rows:
-            return
-        self._submit_request_load_tasks_for_row(row_id, metadata)
-
-    def _wait_row_load(self, row_id: int, metadata: "UCMConnectorMetadata") -> int:
+    def _wait_row_load(self, row_id: int, metadata: "UCMConnectorMetadata") -> None:
         """Pop and wait for a row's per-request load tasks, marking failures."""
         row_tasks = self.load_tasks.pop(row_id, {})
         for request_id, task in row_tasks.items():
@@ -1725,11 +2110,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"load failed. {type(e).__name__}: {e}"
                 )
                 self._mark_load_failed(metadata, request_id)
-            else:
-                self._layerwise_load_bytes += (
-                    self._load_block_counts.get(request_id, 0) * self._row_shard_size
-                )
-        return len(row_tasks)
+                continue
+
+            self._layerwise_load_bytes += (
+                self._load_block_counts.get(request_id, 0) * self._row_shard_size
+            )
 
     def _record_layerwise_load_bytes(self) -> None:
         if self._layerwise_load_bytes_recorded:
@@ -1756,15 +2141,25 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             if len(request.load_block_ids[0]) == 0:
                 continue
             n = getattr(request, "load_full_attn_count", 0)
-            _, scoped_ucm, scoped_vllm = self._scope_blocks(
-                request.load_block_ids[0], request.load_block_ids[1], n, is_dump=False
+            _, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
+                request.load_block_ids[0],
+                request.load_block_ids[1],
+                getattr(request, "load_group_ids", []),
+                n,
+                is_dump=False,
             )
             if not scoped_ucm:
                 continue
             self.need_load = True
             self._load_block_counts[request_id] = len(scoped_ucm)
             self.request_data.append(
-                (request_id, request.load_block_ids[0], scoped_ucm, scoped_vllm)
+                (
+                    request_id,
+                    request.load_block_ids[0],
+                    scoped_ucm,
+                    scoped_vllm,
+                    scoped_groups,
+                )
             )
 
         if self.need_load and self.row_ids:
@@ -1778,10 +2173,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             # vLLM only calls wait_for_layer_load at full_attn (last layer of
             # each row), so row 0 must be loaded here before linear_attn begins.
             num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
+            preload_all = getattr(self.kv_cache_layout, "preload_all_rows", False)
+            if preload_all:
+                num_submit = len(self.row_ids)
             for idx in range(num_submit):
-                self._submit_request_load_tasks_for_row_once(idx, metadata)
-            self._wait_row_load(0, metadata)
-            if len(self.row_ids) == 1:
+                self._submit_request_load_tasks_for_row(idx, metadata)
+            for idx in range(num_submit if preload_all else 1):
+                self._wait_row_load(idx, metadata)
+            if preload_all or len(self.row_ids) == 1:
                 self._record_layerwise_load_bytes()
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -1798,7 +2197,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if next_row_id >= len(self.row_ids):
             return
 
-        self._submit_request_load_tasks_for_row_once(next_row_id, metadata)
+        self._submit_request_load_tasks_for_row(next_row_id, metadata)
 
         self._wait_row_load(next_row_id, metadata)
         if next_row_id == self.row_ids[-1]:
@@ -1808,7 +2207,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         prefetch_start = next_row_id + 1
         prefetch_end = min(prefetch_start + self._load_prefetch_rows, len(self.row_ids))
         for idx in range(prefetch_start, prefetch_end):
-            self._submit_request_load_tasks_for_row_once(idx, metadata)
+            self._submit_request_load_tasks_for_row(idx, metadata)
 
     def save_kv_layer(
         self,
@@ -1820,25 +2219,34 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if not self._connector_metadata:
             return
 
-        row_id = self.layer_name_to_row.get(layer_name)
-        if row_id is None:
-            return
-        if self.row_save_layer.get(row_id) != layer_name:
-            return
-        if row_id in self._dumped_row_ids:
-            logger.debug(
-                "Skip duplicate hybrid layerwise dump in the same batch: "
-                f"layer_name={layer_name}, row_id={row_id}"
-            )
+        row_ids = self.save_rows_by_layer.get(layer_name, [])
+        if not row_ids:
             return
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
+        for row_id in row_ids:
+            self._submit_dump_row(row_id, metadata)
+
+    def _submit_dump_row(
+        self,
+        row_id: int,
+        metadata: "UCMConnectorMetadata",
+    ) -> None:
+        """Submit one completed physical row while retaining whole-dump metadata."""
+        if row_id in self._dumped_row_ids:
+            logger.debug(
+                "Skip duplicate hybrid layerwise dump in the same batch: "
+                f"row_id={row_id}"
+            )
+            return
+
         if self._dump_transfer_data is None:
-            self._dump_transfer_data = self._build_dump_transfer_data(metadata, row_id)
+            self._dump_transfer_data = self._build_dump_transfer_data(metadata)
         (
             total_ucm_block_ids,
             total_vllm_block_ids,
+            total_group_ids,
             dump_request_ids,
             block_ids_by_request,
         ) = self._dump_transfer_data
@@ -1847,9 +2255,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
 
         self.is_save = True
-
         row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
-            total_vllm_block_ids, row_id
+            total_vllm_block_ids, row_id, group_ids=total_group_ids
         )
         shard_indexs = [row_id] * len(total_ucm_block_ids)
         try:
@@ -1880,52 +2287,47 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 f"{type(e).__name__}: {e}"
             )
 
-    def _build_dump_transfer_data(
-        self,
-        metadata: "UCMConnectorMetadata",
-        row_id: int,
-    ) -> tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]]:
-        total_ucm_block_ids: list[bytes] = []
-        total_vllm_block_ids: list[int] = []
-        dump_request_ids: set[str] = set()
-        block_ids_by_request: dict[str, set[bytes]] = {}
-        for request_id, request in metadata.request_meta.items():
-            if len(request.dump_block_ids[0]) == 0:
-                continue
-            dump_request_ids.add(request_id)
-            n = getattr(request, "dump_full_attn_count", 0)
-            rank0_ucm, scoped_ucm, scoped_vllm = self._scope_blocks(
-                request.dump_block_ids[0], request.dump_block_ids[1], n, is_dump=True
-            )
-            if not scoped_ucm:
-                continue
-            block_ids_by_request[request_id] = set(rank0_ucm)
-            total_ucm_block_ids.extend(scoped_ucm)
-            total_vllm_block_ids.extend(scoped_vllm)
-        return (
-            total_ucm_block_ids,
-            total_vllm_block_ids,
-            dump_request_ids,
-            block_ids_by_request,
-        )
-
-    def wait_for_save(self) -> None:
-        if not self.is_save:
-            return
-
-        dump_request_ids = (
-            self._dump_transfer_data[2]
-            if self._dump_transfer_data is not None
-            else set()
-        )
-        for row_id in self.row_ids:
+    def _wait_dump_rows(self, row_ids: list[int]) -> None:
+        """Wait for submitted rows and remove their completed tasks."""
+        for row_id in row_ids:
             for pending_dump_task in self.dump_tasks.pop(row_id, []):
                 try:
                     self._rank_consistency.wait_dump(pending_dump_task.task)
                 except Exception as e:
                     logger.error_limit(
-                        f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
+                        f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                     )
+
+    def wait_for_save(self) -> None:
+        metadata = None
+        if self._connector_metadata:
+            metadata = self._get_connector_metadata()
+            assert isinstance(metadata, UCMConnectorMetadata)
+            # Submit every missing non-commit row after the forward. The commit
+            # row stays deferred until these writes have all completed.
+            for row_id in self.row_ids:
+                if row_id != self.commit_row_id and row_id not in self._dumped_row_ids:
+                    self._submit_dump_row(row_id, metadata)
+
+        non_commit_rows = [
+            row_id for row_id in self.row_ids if row_id != self.commit_row_id
+        ]
+        self._wait_dump_rows(non_commit_rows)
+
+        if metadata is not None and self.commit_row_id not in self._dumped_row_ids:
+            self._submit_dump_row(self.commit_row_id, metadata)
+        self._wait_dump_rows([self.commit_row_id])
+
+        if not self.is_save:
+            self.dump_tasks.clear()
+            self._dump_transfer_data = None
+            return
+
+        dump_request_ids = (
+            self._dump_transfer_data[3]
+            if self._dump_transfer_data is not None
+            else set()
+        )
         self._rank_consistency.finish_dump(dump_request_ids)
         if self._layerwise_save_bytes > 0:
             ucmmetrics.update_stats({"save_bytes_total": self._layerwise_save_bytes})
