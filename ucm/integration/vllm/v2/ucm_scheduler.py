@@ -2,30 +2,26 @@
 
 from __future__ import annotations
 
-import hashlib
-import pickle
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
+
+from ucm.integration.vllm.request_hasher import RequestHasher
 
 from .layout import UCMKVCacheGroupInfo, UCMKVCacheSpec
 from .ucm_proxy import UCMProxyAdapter
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
 
 
 def dispatch_routes(
     spec: UCMKVCacheSpec,
-) -> tuple[
-    tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...
-]:
+) -> tuple[tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...]:
     """The routing table every dump/load works over: key kind -> groups.
 
     FA holds the full-attention groups; WA the sliding groups that
@@ -39,47 +35,12 @@ def dispatch_routes(
     ] = []
     if spec.fa_groups:
         routes.append(("FA", spec.fa_groups))
-    wa_stored = tuple(
-        group for group in spec.wa_groups if (group.tail_tokens or 0) > 0
-    )
+    wa_stored = tuple(group for group in spec.wa_groups if (group.tail_tokens or 0) > 0)
     if wa_stored:
         routes.append(("WA", wa_stored))
     if spec.state_groups:
         routes.append(("State", spec.state_groups))
     return tuple(routes)
-
-
-class RequestHasher:
-    """MD5 hasher compatible with the existing connector namespace format."""
-
-    def __init__(self, vllm_config: "VllmConfig", rank_id: int | None) -> None:
-        speculative = vllm_config.speculative_config
-        spec_info = ""
-        if speculative is not None:
-            method = speculative.method or ""
-            tokens = speculative.num_speculative_tokens
-            spec_info = f":{method}:{tokens}"
-        additional = vllm_config.additional_config
-        sparse = (
-            f":sfa_c8={int(bool(additional.get('enable_sparse_sfa_c8', False)))}"
-            f":li_c8={int(bool(additional.get('enable_sparse_li_c8', False)))}"
-        )
-        model_config = vllm_config.model_config
-        model_name = model_config.model.rstrip("/").split("/")[-1]
-        tp_size = vllm_config.parallel_config.tensor_parallel_size
-        meta = (
-            f"{model_name}:{tp_size}:{model_config.dtype}:"
-            f"{rank_id}{spec_info}{sparse}"
-        )
-        self.meta_bytes = meta.encode("utf-8")
-
-    def __call__(self, value: object) -> bytes:
-        payload = (
-            value
-            if isinstance(value, bytes)
-            else pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        )
-        return hashlib.md5(self.meta_bytes + payload).digest()
 
 
 @dataclass(frozen=True)
@@ -129,11 +90,6 @@ class UCMConnectorMetadata(KVConnectorMetadata):
     no_forward: bool = False
 
 
-def _token_ids(request: "Request") -> tuple[int, ...]:
-    # int() normalizes numpy scalars so the hash chain pickles stably.
-    return tuple(int(value) for value in request.all_token_ids)
-
-
 _KEY_TYPE_BITS: Mapping[str, int] = {"FA": 0, "WA": 1, "State": 2}
 
 
@@ -173,11 +129,22 @@ class UCMDispatcher:
         recompute_tokens: int = 1,
         tp_rank: int = 0,
         pp_rank: int = 0,
+        need_load_to_running_state: bool = True,
     ) -> None:
         self.spec = kv_cache_spec
+        # Whether State loads must also fill the running block. True when the
+        # model runner copies Mamba state from the boundary block into the
+        # running block before connector loads (CUDA V1, CUDA/Ascend V2), so
+        # that copy saw no restored data. False when it copies after loads
+        # (Ascend V1), filling the running block from the restored boundary.
+        self.need_load_to_running_state = need_load_to_running_state
         self.proxy = proxy
-        self.hasher = request_hasher
-        self.base_seed = base_seed
+        # Folds vLLM's block-hash extra keys (multimodal inputs, LoRA, cache
+        # salt, prompt embeds) into the chain, so equal token IDs with
+        # different KV-affecting inputs get different keys.
+        self._block_hasher = request_hasher.make_request_block_hasher(
+            kv_cache_spec.ucm_cache_block_size, base_seed
+        )
         self.load_threshold_tokens = max(int(load_threshold_tokens), 0)
         self.recompute_tokens = max(int(recompute_tokens), 0)
         self.requests: dict[str, RequestState] = {}
@@ -188,21 +155,7 @@ class UCMDispatcher:
             (label, _key_tag(label, tp_rank, pp_rank)) for label, _ in self._routes
         )
 
-    def _chain(
-        self, token_ids: Sequence[int], block_size: int, parent: bytes
-    ) -> tuple[bytes, ...]:
-        result: list[bytes] = []
-        for start in range(0, len(token_ids), block_size):
-            block = tuple(token_ids[start : start + block_size])
-            if len(block) != block_size:
-                break
-            parent = self.hasher((parent, block))
-            result.append(parent)
-        return tuple(result)
-
-    def _chain_keys(
-        self, token_ids: Sequence[int]
-    ) -> tuple[tuple[bytes, ...], ...]:
+    def _chain_keys(self, request: "Request") -> tuple[tuple[bytes, ...], ...]:
         """Per-chain keys: one shared hash chain, each chain's tag appended.
 
         The chain runs over ucm_cache_block_size token blocks from the
@@ -211,9 +164,7 @@ class UCMDispatcher:
         differ only in their tag.
         """
 
-        values = self._chain(
-            token_ids, self.spec.ucm_cache_block_size, self.base_seed
-        )
+        values = self._block_hasher(request)
         return tuple(
             tuple(value[:14] + tag for value in values)
             for _label, tag in self._chain_tags
@@ -221,14 +172,13 @@ class UCMDispatcher:
 
     def lookup(self, request: "Request", num_computed_tokens: int) -> UCMLookupResult:
         """Probe the external cache and record the request snapshot."""
-        token_ids = _token_ids(request)
-        result = self._lookup(token_ids, num_computed_tokens)
+        result = self._lookup(request, num_computed_tokens)
         if result.external_hit_tokens <= self.load_threshold_tokens:
             result = UCMLookupResult(0, result.group_ucm_block_ids)
         self.requests[str(request.request_id)] = RequestState(
             hbm_hit_tokens=num_computed_tokens,
             external_hit_tokens=result.external_hit_tokens,
-            num_token_ids=len(token_ids),
+            num_token_ids=len(request.all_token_ids),
             token_processed=num_computed_tokens + result.external_hit_tokens,
             group_ucm_block_ids=result.group_ucm_block_ids,
             group_vllm_block_ids=tuple([] for _ in self.spec.groups),
@@ -236,9 +186,7 @@ class UCMDispatcher:
         )
         return result
 
-    def _lookup(
-        self, token_ids: Sequence[int], hbm: int
-    ) -> UCMLookupResult:
+    def _lookup(self, request: "Request", hbm: int) -> UCMLookupResult:
         """FA prefix restore; WA/State additionally need their boundary.
 
         All chains share one hash chain at ucm_cache_block_size, so every
@@ -250,11 +198,12 @@ class UCMDispatcher:
         """
 
         ucm_block_size = self.spec.ucm_cache_block_size
-        group_ucm_block_ids = self._chain_keys(token_ids)
+        group_ucm_block_ids = self._chain_keys(request)
         # Every chain scans up to the last complete block below the
         # recompute margin; the margin's block is left to recompute (v1
         # semantics -- a full hit still recomputes recompute_tokens).
-        last = max(len(token_ids) - self.recompute_tokens, 0) // ucm_block_size
+        num_tokens = len(request.all_token_ids)
+        last = max(num_tokens - self.recompute_tokens, 0) // ucm_block_size
         first = hbm // ucm_block_size
         fa_end = hbm
         for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids):
@@ -272,8 +221,7 @@ class UCMDispatcher:
         while boundary_keys and restore_end > hbm:
             end = restore_end // ucm_block_size
             hits = [
-                self.proxy.lookup_on_reverse(keys[first:end])
-                for keys in boundary_keys
+                self.proxy.lookup_on_reverse(keys[first:end]) for keys in boundary_keys
             ]
             if min(hits) < 0:
                 restore_end = hbm
@@ -283,7 +231,6 @@ class UCMDispatcher:
                 break
             restore_end = candidate
         return UCMLookupResult(max(restore_end - hbm, 0), group_ucm_block_ids)
-
 
     def update_blocks(
         self,
@@ -381,15 +328,12 @@ class UCMDispatcher:
         load_start = state.hbm_hit_tokens if should_load else load_end
         dump_start = state.token_processed
         dump_end = step_end
-        # CUDA precopy runs before connector load. Ascend MRV1 stages it
-        # before load and executes it afterwards, reading the boundary slot.
-        # CUDA additionally restores the imported boundary block below: the
-        # engine registers that block as a reusable local checkpoint. Imported
-        # boundaries are excluded from State dump plans.
+        # Load the running block when the runner's precopy already ran, plus
+        # (below) the imported boundary block, which the engine registers as a
+        # reusable local checkpoint. Otherwise load only the boundary block the
+        # runner copies from after loads. Imported boundaries are not dumped.
         state_target_tokens = (
-            load_end
-            if self.spec.device_type == "npu"
-            else load_end + scheduled_tokens
+            load_end + scheduled_tokens if self.need_load_to_running_state else load_end
         )
         load = self._plans(
             state,
@@ -411,13 +355,13 @@ class UCMDispatcher:
         *,
         state_target_tokens: int | None = None,
     ) -> tuple[UCMGroupDispatchPlan, ...]:
-        """FA/WA plans and platform-specific State load destinations.
+        """FA/WA plans and runner-specific State load destinations.
 
         FA gets every complete key the range touches; WA gets the newest
         complete boundary. State loads use that restore boundary's key
-        and its load destinations. CUDA restores both the imported checkpoint
-        and the running block; Ascend copies from the restored checkpoint.
-        State dumps are built separately
+        and its load destinations: the running block and imported checkpoint
+        when need_load_to_running_state, else only the checkpoint the runner
+        copies from. State dumps are built separately
         from the engine's exact boundary_state_offloads.
         """
         plans: list[UCMGroupDispatchPlan] = []
@@ -477,9 +421,9 @@ class UCMDispatcher:
                 ),
             )
             plans.append(plan)
-            if hash_group == "State" and self.spec.device_type != "npu":
+            if hash_group == "State" and self.need_load_to_running_state:
                 # Precopy has already run, so restoring only the imported
-                # boundary cannot initialize CUDA's running state. Restoring
+                # boundary cannot initialize the running state. Restoring
                 # only the running block leaves a local cached boundary unfilled.
                 # Complete restore boundaries and a positive scheduled span
                 # place these in distinct slots for every State group.
@@ -488,7 +432,11 @@ class UCMDispatcher:
                         plan,
                         group_block_ids=tuple(
                             self._group_blocks(
-                                hash_group, group, state, start, end,
+                                hash_group,
+                                group,
+                                state,
+                                start,
+                                end,
                                 state_target_tokens=token_end,
                             )
                             for group in groups
@@ -522,23 +470,19 @@ class UCMDispatcher:
         table = state.group_vllm_block_ids[group.group_id]
         tail_blocks = group.tail_blocks
         if hash_group == "State":
-            # The caller resolves CUDA's current running slot versus
-            # Ascend's precopy source slot from the load/copy ordering.
+            # The caller picks the running or boundary slot from the
+            # runner's load/copy ordering.
             index = (state_target_tokens - 1) // group.token_block_size
             block_id = table[index]
             assert block_id != 0
             return np.asarray([block_id], dtype=np.uint64)
         if hash_group == "FA":
             boundary_tokens = (
-                np.arange(start + 1, end + 1, dtype=np.uint64)
-                * ucm_block_size
-                - 1
+                np.arange(start + 1, end + 1, dtype=np.uint64) * ucm_block_size - 1
             )
         else:
             # WA: one boundary key at the plan's newest boundary.
-            boundary_tokens = np.asarray(
-                [end * ucm_block_size - 1], dtype=np.uint64
-            )
+            boundary_tokens = np.asarray([end * ucm_block_size - 1], dtype=np.uint64)
         boundary_block_idx = boundary_tokens // group.token_block_size
         # Convert only the table range the windows touch -- a WA group's
         # table spans the whole request while its window holds a couple
@@ -546,9 +490,7 @@ class UCMDispatcher:
         # first_idx non-negative.
         first_idx = int(boundary_block_idx.min()) - (tail_blocks - 1)
         last_idx = int(boundary_block_idx.max())
-        table_ids = np.asarray(
-            table[first_idx : last_idx + 1], dtype=np.uint64
-        )
+        table_ids = np.asarray(table[first_idx : last_idx + 1], dtype=np.uint64)
         within = boundary_block_idx - first_idx
         if tail_blocks == 1:
             return table_ids[within]

@@ -53,7 +53,15 @@ class UCMProxy(Protocol):
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
-    ) -> object | None: ...
+        metadata: Sequence[str],
+    ) -> object | None:
+        """metadata[k] is a JSON object describing block_ids[k].
+
+        Fields: "type" is the key's chain ("FA", "WA" or "State");
+        "block_index" is the 0-based index of the key's UCM block (in
+        ucm_cache_block_size tokens) within the request's token sequence.
+        """
+        ...
 
     def commit(self, block_ids: Sequence[bytes]) -> object | None:
         """Publish completed UCM blocks after all their dump calls finish."""
@@ -240,7 +248,9 @@ class SimpleFileUCMProxy:
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
+        metadata: Sequence[str] = (),
     ) -> None:
+        # This development backend does not persist the per-key metadata.
         self.byte_access.synchronize()
         for key, segments in self._records(block_ids, offsets, ptrs, sizes):
             temporary = self._pending.get(key)
@@ -322,6 +332,8 @@ class UCMProxyTransfer:
     ptrs: np.ndarray
     sizes: np.ndarray
     ucm_block_offsets: np.ndarray
+    # Per-key JSON for dump (see UCMProxy.dump); load transfers leave it empty.
+    metadata: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -418,8 +430,16 @@ class UCMProxyAdapter:
             raise ValueError(f"Unknown transfer operation: {operation}")
         try:
             handle = None
-            if transfer.keys:
-                handle = getattr(self._proxy, operation)(
+            if transfer.keys and operation == "dump":
+                handle = self._proxy.dump(
+                    transfer.keys,
+                    transfer.ucm_block_offsets,
+                    transfer.ptrs,
+                    transfer.sizes,
+                    transfer.metadata,
+                )
+            elif transfer.keys:
+                handle = self._proxy.load(
                     transfer.keys,
                     transfer.ucm_block_offsets,
                     transfer.ptrs,

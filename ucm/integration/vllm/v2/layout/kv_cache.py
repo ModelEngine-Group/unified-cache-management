@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.kv_cache_interface import (
@@ -182,18 +182,16 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
 
 
 def _transient_alignment(
-    specs: Sequence["KVCacheSpec"],
-    model_type: str,
-    indexer_ratio: int | None,
-    device_type: str,
+    specs: Sequence["KVCacheSpec"], hf_text_config: Any, device_type: str
 ) -> int | None:
     """Return the restore alignment for omitted scratch; native models own pairing."""
+    model_type = hf_text_config.model_type
     if all(isinstance(spec, CircularBufferSpec) for spec in specs):
         if model_type not in ("qwen4_exp", "qwen4_exp_text"):
             raise NotImplementedError(
                 f"No UCM restore policy for CircularBufferSpec in {model_type}"
             )
-        return indexer_ratio
+        return hf_text_config.indexer_compress_ratio
     if model_type in ("glm5_next", "glm5_next_text"):
         tail_types = (KpoolTailSpec,)
         if device_type == "npu":
@@ -201,15 +199,12 @@ def _transient_alignment(
 
             tail_types = (KpoolTailSpec, AscendIndexerKPoolTailSpec)
         if all(isinstance(spec, tail_types) for spec in specs):
-            return indexer_ratio
+            return hf_text_config.index_kpool
     return None
 
 
 def _sliding_tail_tokens(
-    group: "KVCacheGroupSpec",
-    compressor_ratios: Mapping[int, int],
-    device_type: str,
-    num_hidden_layers: int,
+    group: "KVCacheGroupSpec", hf_text_config: Any, device_type: str
 ) -> int:
     """Resolve logical history retention; only legacy compressors subtract a pool."""
     # Empty PP groups keep the global UniformType map. A representative
@@ -223,8 +218,12 @@ def _sliding_tail_tokens(
     for name, spec in pairs:
         tail = spec.sliding_window
         if name.endswith(".compressor.state_cache"):
-            layer_index = _layer_index(name, device_type, num_hidden_layers)
-            tail -= compressor_ratios[layer_index]
+            # DSV4: a restore boundary closes every compression group, so only
+            # the overlap of the next group (window - ratio) is read again.
+            layer_index = _layer_index(
+                name, device_type, hf_text_config.num_hidden_layers
+            )
+            tail -= max(1, int(hf_text_config.compress_ratios[layer_index]))
         if tail < 0:
             raise ValueError(f"Negative sliding tail for {name}: {tail}")
         tails.add(tail)
@@ -290,21 +289,18 @@ def parse_kv_cache_config(
     kv_cache_config: "KVCacheConfig",
     *,
     scheduler_block_size: int,
-    num_hidden_layers: int,
-    indexer_tokens_per_state: int | None,
+    hf_text_config: Any,
     ucm_cache_block_size: int | None = None,
     device_type: str = "npu",
-    compressor_tokens_per_state: Mapping[int, int] | None = None,
-    model_type: str = "",
 ) -> UCMKVCacheSpec:
     """Compile group persistence and restore policy on scheduler and worker.
 
     No physical row counts, placement descriptors or layer layouts are parsed.
-    Compressor ratios only determine the legacy DSV4 history tail. Native group
-    positions remain block-table IDs, including transient and empty PP groups.
+    hf_text_config supplies model ratios the native specs do not carry: DSV4
+    compressor tails and GLM/Qwen scratch alignments. Native group positions
+    remain block-table IDs, including transient and empty PP groups.
     """
     device_type = device_type.lower()
-    compressor_ratios = compressor_tokens_per_state or {}
     raw_groups = kv_cache_config.kv_cache_groups
     if not raw_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
@@ -313,9 +309,7 @@ def parse_kv_cache_config(
     transient_alignments = {}
     for group_id, group in enumerate(raw_groups):
         specs = _member_specs(group.kv_cache_spec)
-        alignment = _transient_alignment(
-            specs, model_type, indexer_tokens_per_state, device_type
-        )
+        alignment = _transient_alignment(specs, hf_text_config, device_type)
         if alignment is not None:
             transient_alignments[group_id] = alignment
         # A recognized scratch ring has no FA/WA/State persistence kind.
@@ -333,9 +327,7 @@ def parse_kv_cache_config(
         if transient:
             tail_tokens = 0
         elif sliding:
-            tail_tokens = _sliding_tail_tokens(
-                group, compressor_ratios, device_type, num_hidden_layers
-            )
+            tail_tokens = _sliding_tail_tokens(group, hf_text_config, device_type)
         else:
             tail_tokens = None
         groups.append(
@@ -381,7 +373,9 @@ class UCMKVCacheLayout:
     def __init__(
         self,
         spec: UCMKVCacheSpec,
-        kv_caches: Mapping[str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]],
+        kv_caches: Mapping[
+            str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]
+        ],
         *,
         kv_cache_config: "KVCacheConfig",
         num_hidden_layers: int,
@@ -395,7 +389,9 @@ class UCMKVCacheLayout:
         )
         self.store_layouts = {
             group.group_id: GroupStoreLayout.build(
-                group, self.group_layouts[group.group_id], spec.ucm_cache_block_size,
+                group,
+                self.group_layouts[group.group_id],
+                spec.ucm_cache_block_size,
                 use_layerwise=use_layerwise,
             )
             for group in spec.groups
@@ -414,4 +410,3 @@ class UCMKVCacheLayout:
         self.layer_names_by_id = {
             layer_id: frozenset(names) for layer_id, names in names_by_id.items()
         }
-

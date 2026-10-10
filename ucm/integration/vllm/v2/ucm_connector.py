@@ -20,13 +20,16 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     SupportsHMA,
 )
 
+from ucm.integration.vllm.request_hasher import RequestHasher
+from ucm.utils import Config
+
 from .layout import (
     UCMKVCacheLayout,
     UCMKVCacheSpec,
     parse_kv_cache_config,
 )
 from .parallel import AllShardLookup, ParallelLayout
-from .ucm_kv_cache import UCMTransferBuilder
+from .ucm_kv_cache import UCMTransferBuilder, dump_metadata
 from .ucm_proxy import (
     SimpleFileUCMProxy,
     UCMProxyAdapter,
@@ -34,12 +37,10 @@ from .ucm_proxy import (
     UCMProxyTask,
 )
 from .ucm_scheduler import (
-    RequestHasher,
     UCMConnectorMetadata,
     UCMDispatcher,
     dispatch_routes,
 )
-from ucm.utils import Config
 
 if TYPE_CHECKING:
     import torch
@@ -140,7 +141,8 @@ def _jsonable(value: Any) -> Any:
     """Best-effort JSON rendering for raw KVCacheConfig payloads."""
 
     import enum as _enum
-    from dataclasses import fields as _fields, is_dataclass as _is_dataclass
+    from dataclasses import fields as _fields
+    from dataclasses import is_dataclass as _is_dataclass
 
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -192,10 +194,7 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
                 "kv_cache_spec": _jsonable(group.kv_cache_spec),
             }
         )
-    tensors = [
-        _jsonable(tensor)
-        for tensor in kv_cache_config.kv_cache_tensors
-    ]
+    tensors = [_jsonable(tensor) for tensor in kv_cache_config.kv_cache_tensors]
     payload = {
         "num_blocks": kv_cache_config.num_blocks,
         "kv_cache_tensors": tensors,
@@ -255,37 +254,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         base_seed = hasher("UCM_HASH_SEED")
 
         self.context = UCMRuntimeContext.from_vllm_config(vllm_config, role, rank=rank)
-        # Legacy DSV4 compressor tails need the main-cache compression ratio.
-        # This model metadata supplies restore semantics only; worker physical
-        # row counts come from its native per-layer specs at registration.
         text_config = vllm_config.model_config.hf_text_config
-        compress_ratios = getattr(text_config, "compress_ratios", ()) or ()
-        num_layers = text_config.num_hidden_layers
-        self._num_hidden_layers = num_layers
-        compressor_tokens_per_state = {
-            index: max(1, int(ratio))
-            for index, ratio in enumerate(compress_ratios)
-        }
-        model_type = text_config.model_type
-        indexer_ratio = None
-        if model_type in ("glm5_next", "glm5_next_text"):
-            indexer_ratio = text_config.index_kpool
-        elif model_type in ("qwen4_exp", "qwen4_exp_text"):
-            indexer_ratio = text_config.indexer_compress_ratio
+        self._num_hidden_layers = text_config.num_hidden_layers
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
             scheduler_block_size=scheduler_block_size,
+            hf_text_config=text_config,
             ucm_cache_block_size=ucm_cache_block_size,
             device_type=self.context.device_type,
-            compressor_tokens_per_state=compressor_tokens_per_state,
-            num_hidden_layers=num_layers,
-            model_type=model_type,
-            indexer_tokens_per_state=indexer_ratio,
         )
-        if self.spec.state_groups and vllm_config.use_v2_model_runner:
-            raise NotImplementedError(
-                "State restore currently targets V1 model-runner load/copy ordering"
-            )
         self.spec = self.parallel_layout.apply_context_parallel(
             self.spec, ucm_cache_block_size
         )
@@ -305,11 +282,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         digest = hashlib.sha256(
             json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
-        # r7 separates compact layerwise records from padded Block First bulk IO.
+        # r8 keys fold vLLM block-hash extra keys (multimodal, LoRA, cache salt,
+        # prompt embeds) into the hash chain; r7 records hashed token IDs only.
         namespace = (
             f"{self.context.device_type}-{dtype}"
             f"-{digest}-b{self.spec.scheduler_block_size}"
-            f"-c{self.spec.ucm_cache_block_size}-r7"
+            f"-c{self.spec.ucm_cache_block_size}-r8"
         )
         self.use_layerwise = bool(launch_config.get("use_layerwise", False))
         if self.use_layerwise:
@@ -348,6 +326,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 load_threshold_tokens=int(
                     launch_config.get("load_tokens_threshold", 0)
                 ),
+                # CUDA V1 and both V2 runners copy Mamba state into the running
+                # block before connector loads, so loads must fill it too. Only
+                # Ascend's V1 runner copies after loads, from the boundary block.
+                need_load_to_running_state=(
+                    self.context.device_type != "npu" or vllm_config.use_v2_model_runner
+                ),
             )
             if role == KVConnectorRole.SCHEDULER
             else None
@@ -379,7 +363,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         if self.context.role != KVConnectorRole.WORKER:
             raise RuntimeError("KV cache registration is only available on worker")
         self.layout = UCMKVCacheLayout(
-            self.spec, kv_caches,
+            self.spec,
+            kv_caches,
             kv_cache_config=self._kv_cache_config,
             num_hidden_layers=self._num_hidden_layers,
             use_layerwise=self.use_layerwise,
@@ -507,8 +492,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def _dump_empty_shards(
         self, metadata: UCMConnectorMetadata
     ) -> list[tuple[bytes, ...]]:
-        from .ucm_proxy import UCMProxyTransfer
         import numpy as np
+
+        from .ucm_proxy import UCMProxyTransfer
 
         assert self.layout is not None
         empty_kinds = {
@@ -521,8 +507,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             for plan in request.dump_plans:
                 if plan.hash_group in empty_kinds:
                     empty = np.empty((len(plan.keys), 0), dtype=np.uint64)
+                    key_metadata = dump_metadata(plan, self.spec.ucm_cache_block_size)
                     self._proxy.submit(
-                        "dump", UCMProxyTransfer(plan.keys, empty, empty, empty)
+                        "dump",
+                        UCMProxyTransfer(plan.keys, empty, empty, empty, key_metadata),
                     )
                     empty_keys.append(plan.keys)
         return empty_keys

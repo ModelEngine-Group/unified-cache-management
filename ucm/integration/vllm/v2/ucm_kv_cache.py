@@ -16,6 +16,18 @@ if TYPE_CHECKING:
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
 
+def dump_metadata(
+    plan: "UCMGroupDispatchPlan", ucm_cache_block_size: int
+) -> tuple[str, ...]:
+    """Per-key JSON for Store dump: chain type and 0-based UCM block index.
+
+    A plan's keys are consecutive UCM blocks starting at its token_start.
+    """
+    first_block = plan.token_start // ucm_cache_block_size
+    prefix = f'{{"type":"{plan.hash_group}","block_index":'
+    return tuple(f"{prefix}{first_block + row}}}" for row in range(len(plan.keys)))
+
+
 class UCMTransferBuilder:
     """Interpret plans and associate their keys with HBM/storage byte ranges."""
 
@@ -44,6 +56,7 @@ class UCMTransferBuilder:
         return self._build_transfers(
             (p for r in metadata.requests.values() for p in r.load_plans),
             self._selected_layer_names(layer_name, layer_id),
+            with_metadata=False,
         )
 
     def build_dump_transfers(
@@ -56,19 +69,20 @@ class UCMTransferBuilder:
         return self._build_transfers(
             (p for r in metadata.requests.values() for p in r.dump_plans),
             self._selected_layer_names(layer_name, layer_id),
+            with_metadata=True,
         )
 
     def _build_transfers(
         self,
         plans: Iterable["UCMGroupDispatchPlan"],
         layer_names: frozenset[str] | None,
+        *,
+        with_metadata: bool,
     ) -> tuple[UCMProxyTransfer, ...]:
         transfers = []
         for plan in plans:
             groups = [
-                g
-                for g in self._iter_plan_segments(plan, layer_names)
-                if g[2].shape[1]
+                g for g in self._iter_plan_segments(plan, layer_names) if g[2].shape[1]
             ]
             if not groups:
                 continue
@@ -88,7 +102,14 @@ class UCMTransferBuilder:
                 )
             # Each plan belongs to one request's hash chain, so keys are unique.
             # Keep requests separate: shared-prefix keys may have distinct targets.
-            transfers.append(UCMProxyTransfer(plan.keys, ptrs, sizes, offsets))
+            key_metadata = (
+                dump_metadata(plan, self.layout.spec.ucm_cache_block_size)
+                if with_metadata
+                else ()
+            )
+            transfers.append(
+                UCMProxyTransfer(plan.keys, ptrs, sizes, offsets, key_metadata)
+            )
         return tuple(transfers)
 
     def _iter_plan_segments(
