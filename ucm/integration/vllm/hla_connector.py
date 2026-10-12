@@ -1396,29 +1396,40 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         gid: int,
         seq_len: int,
         reason: str,
+        num_scheduled_tokens: int = 0,
     ) -> None:
         group = self.group_manager.groups_by_id[gid]
         state_idx = max((seq_len - 1) // group.block_size, 0)
-        vllm_state_idx = state_idx
+        state_indices = [state_idx]
         if reason == "load":
-            block_ids = req_meta.group_vllm_block_ids[gid]
-            for i in range(len(block_ids) - 1, -1, -1):
-                if block_ids[i] != 0:
-                    vllm_state_idx = i
-                    break
-        try:
-            vllm_block_id = req_meta.group_vllm_block_ids[gid][vllm_state_idx]
-        except IndexError:
-            logger.error(
-                "HLA mamba-align state vLLM block missing: "
-                f"request_id={request_id}, group_id={gid}, reason={reason}, "
-                f"seq_len={seq_len}, state_idx={state_idx}, "
-                f"vllm_state_idx={vllm_state_idx}, "
-                f"num_vllm_blocks={len(req_meta.group_vllm_block_ids[gid])}"
+            # Restore the hit checkpoint too: vLLM may expose it to local
+            # prefix-cache hits after this step.
+            running_state_idx = max(
+                (seq_len + num_scheduled_tokens - 1) // group.block_size, 0
             )
+            # Match the worker's running position; table-tail blocks may be
+            # speculative scratch slots or left over from over-allocation.
+            state_indices.append(running_state_idx)
+
+        block_ids = req_meta.group_vllm_block_ids[gid]
+        vllm_block_ids: list[int] = []
+        for vllm_state_idx in state_indices:
+            try:
+                vllm_block_id = block_ids[vllm_state_idx]
+            except IndexError:
+                logger.error(
+                    "HLA mamba-align state vLLM block missing: "
+                    f"request_id={request_id}, group_id={gid}, reason={reason}, "
+                    f"seq_len={seq_len}, state_idx={state_idx}, "
+                    f"vllm_state_idx={vllm_state_idx}, "
+                    f"num_vllm_blocks={len(block_ids)}"
+                )
+                return
+            if vllm_block_id != 0 and vllm_block_id not in vllm_block_ids:
+                vllm_block_ids.append(vllm_block_id)
+        if not vllm_block_ids:
             return
-        if vllm_block_id == 0:
-            return
+
         ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
             group, seq_len, req_meta.group_ucm_block_ids
         )
@@ -1429,9 +1440,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 f"seq_len={seq_len}, state_idx={state_idx}"
             )
             return
-        dst_ucm_block_ids.append(ucm_block_id)
-        dst_vllm_block_ids.append(vllm_block_id)
-        dst_group_ids.append(gid)
+        for vllm_block_id in vllm_block_ids:
+            dst_ucm_block_ids.append(ucm_block_id)
+            dst_vllm_block_ids.append(vllm_block_id)
+            dst_group_ids.append(gid)
 
     def _generate_hla_dispatch_meta(
         self,
@@ -1511,6 +1523,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                     total_hit_tokens,
                     "load",
+                    num_scheduled_tokens=new_tokens,
                 )
         else:
             load_full_attn_count = 0
