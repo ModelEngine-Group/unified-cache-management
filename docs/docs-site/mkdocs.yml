@@ -224,6 +224,7 @@ nav:
       - Precheck: toolkit/user/precheck.md
       - POSIX AIO: toolkit/user/posix-aio.md
       - Metrics View: toolkit/user/metrics-view.md
+      - Runtime Mode: toolkit/user/runtime-mode.md
       - NIC Monitor: toolkit/user/nic-monitor.md
       - Dev Sandbox: toolkit/user/dev-sandbox.md
       - KV Cache Calculator: toolkit/kv-cache-calculator.md

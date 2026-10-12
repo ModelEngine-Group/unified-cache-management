@@ -2,7 +2,7 @@
 
 The UCM toolkit supports environment checks and capacity planning before deployment, plus metrics inspection and performance diagnosis during operation. Choose a tool to inspect the host, measure storage or device-copy bandwidth, or record serving metrics and NIC traffic.
 
-Five command-line tools share the `ucm-toolkit` entry point, a standalone Python package that requires a separate installation. The KV Cache calculator runs directly in this documentation site and needs no CLI installation.
+Six command-line tools share the `ucm-toolkit` entry point, a standalone Python package that requires a separate installation. The KV Cache calculator runs directly in this documentation site and needs no CLI installation.
 
 ## Tool List
 
@@ -11,6 +11,7 @@ Five command-line tools share the `ucm-toolkit` entry point, a standalone Python
 | Check drivers, kernel and shared memory against precheck criteria before deployment | [precheck](user/precheck.md) | Environment results, remediation advice and an optional storage bandwidth report |
 | KV saves or reads are slow; compare storage paths and I/O settings | [posix-aio](user/posix-aio.md) | UCM POSIX Store dump/load timings and bandwidth |
 | Inspect cache hit rates, request latency and load bandwidth in a running service | [metrics-view](user/metrics-view.md) | Terminal metric snapshots or time-window queries over collected samples |
+| Switch UCM on, off or into shadow mode while the service keeps running | [runtime-mode](user/runtime-mode.md) | Online mode changes via the engines' control files, effective within one poll interval |
 | Cross-node transfers are slow; inspect NIC load and traffic distribution | [nic-monitor](user/nic-monitor.md) | Per-NIC send/receive rates, utilization and CSV records for later review |
 | KV loading is slow; measure the host-to-device copy step independently | [dev-sandbox](user/dev-sandbox.md) | Timings and bandwidth for selected copy, transfer or I/O test cases |
 | Estimate KV memory needs before changing context length, batch size or parallelism | [KV Cache calculator](kv-cache-calculator.md) | KV capacity estimates from model and execution settings, and token capacity for a given KV memory budget |
@@ -50,6 +51,7 @@ The base CLI only depends on the Python standard library. Individual tools requi
 | `posix-aio` | Requires the UCM main package (unified-cache-management) and its native extensions installed, plus `numpy`. |
 | `nic-monitor` | Linux, `bash`, `ethtool`, and root or sudo privileges to read NIC statistics. |
 | `metrics-view` | Only depends on Python standard library (`sqlite3` built-in); collection requires an accessible Prometheus/OpenMetrics `/metrics` HTTP endpoint. |
+| `runtime-mode` | Only depends on Python standard library; the target engine must run a UCM connector with runtime-mode control support. |
 | `precheck` | Core checks only depend on Python standard library; bandwidth benchmark requires the UCM main package (native extensions) and `numpy`, Linux only. |
 
 For `dev-sandbox` backend detection priority and switching, see the [dev-sandbox Developer Guide](developer/dev-sandbox.md).
@@ -73,6 +75,7 @@ ucm-toolkit doctor dev-sandbox
 ucm-toolkit doctor posix-aio
 ucm-toolkit doctor nic-monitor
 ucm-toolkit doctor precheck
+ucm-toolkit doctor runtime-mode
 ```
 
 Build tools:

@@ -1,7 +1,7 @@
 # UCM Toolkit
 
 Command-line utilities for environment checks, metrics, network monitoring,
-storage benchmarks and device transfer benchmarks.
+storage benchmarks, device transfer benchmarks and online runtime-mode control.
 
 ```sh
 pip install ucm-toolkit
