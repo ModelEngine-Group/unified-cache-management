@@ -1,7 +1,9 @@
 import csv
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 from scripts import collect_ucm_metrics as metrics
 
@@ -151,6 +153,47 @@ class CollectUcmMetricsTest(unittest.TestCase):
             self.assertEqual(cache_rows[0]["scope"], "all_ranks")
             self.assertEqual(cache_rows[0]["worker_rank"], "ALL")
             self.assertEqual([row["worker_rank"] for row in cache_rows[1:]], ["0", "1"])
+
+            xlsx_path = output_dir / "metrics_report.xlsx"
+            self.assertTrue(xlsx_path.exists())
+            with zipfile.ZipFile(xlsx_path) as workbook:
+                workbook_xml = ElementTree.fromstring(
+                    workbook.read("xl/workbook.xml")
+                )
+                namespace = {
+                    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                }
+                sheet_names = [
+                    sheet.attrib["name"]
+                    for sheet in workbook_xml.findall("main:sheets/main:sheet", namespace)
+                ]
+                self.assertEqual(sheet_names, ["Connector", "CacheStore", "Posix"])
+                cache_sheet = workbook.read("xl/worksheets/sheet2.xml").decode()
+                self.assertLess(
+                    cache_sheet.index("All ranks"),
+                    cache_sheet.index("Per-rank detail"),
+                )
+                self.assertIn("cache_load_duration_ms", cache_sheet)
+
+    def test_report_stem_names_csv_and_xlsx(self):
+        before, after = _snapshots()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            metrics.write_delta_report(
+                output_dir / "metrics_report.md",
+                before,
+                after,
+                window_seconds=10,
+                full=False,
+                report_stem="metrics_report_posix-hit_20261012-153000",
+            )
+
+            self.assertTrue(
+                (output_dir / "metrics_report_posix-hit_20261012-153000.csv").exists()
+            )
+            self.assertTrue(
+                (output_dir / "metrics_report_posix-hit_20261012-153000.xlsx").exists()
+            )
 
 
 if __name__ == "__main__":

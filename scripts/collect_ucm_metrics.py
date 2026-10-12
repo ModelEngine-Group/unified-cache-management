@@ -2,8 +2,9 @@
 """Capture and summarize UCM/vLLM metrics around one request window.
 
 Standard library only. It saves the complete and filtered Prometheus snapshots
-plus per-rank Connector, CacheStore, and Posix tables. Histogram averages and
-p90/p99 values cover only observations added inside the capture window.
+plus per-rank Connector, CacheStore, and Posix tables. The Excel report uses a
+separate worksheet for each page. Histogram averages and p90/p99 values cover
+only observations added inside the capture window.
 
 Usage:
 
@@ -28,9 +29,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 # Metric families worth keeping in the filtered snapshot. Keep this broad: the
 # focused report is parsed from the unfiltered text, but the *_filtered.prom
@@ -638,6 +641,243 @@ def write_report_csv(
                     )
 
 
+XLSX_HEADERS = (
+    "Model",
+    "Engine",
+    "Rank",
+    "Metric",
+    "Samples",
+    "Avg",
+    "P90",
+    "P99",
+    "Unit",
+)
+
+
+def _xlsx_cell(reference: str, value: object, style: int) -> str:
+    if value is None:
+        return f'<c r="{reference}" s="{style}"/>'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return f'<c r="{reference}" s="{style}"><v>{numeric:.15g}</v></c>'
+        value = format_number(numeric)
+    text = str(value)
+    preserve_space = ' xml:space="preserve"' if text[:1].isspace() or text[-1:].isspace() else ""
+    return (
+        f'<c r="{reference}" s="{style}" t="inlineStr"><is><t{preserve_space}>'
+        f"{escape(text)}</t></is></c>"
+    )
+
+
+def _xlsx_row(row_number: int, values: tuple[object, ...], styles: tuple[int, ...]) -> str:
+    cells = "".join(
+        _xlsx_cell(f"{chr(65 + column)}{row_number}", value, styles[column])
+        for column, value in enumerate(values)
+    )
+    return f'<row r="{row_number}">{cells}</row>'
+
+
+def _xlsx_report_values(row: ReportRow) -> tuple[object, ...]:
+    return (
+        row.group.model_name,
+        row.group.engine,
+        row.group.worker_rank,
+        row.metric,
+        row.count,
+        row.average,
+        row.p90,
+        row.p99,
+        row.unit,
+    )
+
+
+def _xlsx_worksheet(
+    title: str,
+    all_rank_rows: list[ReportRow],
+    per_rank_rows: list[ReportRow],
+    window_seconds: float,
+) -> str:
+    rows: list[str] = []
+    row_number = 1
+    rows.append(
+        _xlsx_row(
+            row_number,
+            (f"UCM metrics: {title}", None, None, None, None, None, None, None, None),
+            (1, 0, 0, 0, 0, 0, 0, 0, 0),
+        )
+    )
+    row_number += 1
+    rows.append(
+        _xlsx_row(
+            row_number,
+            (
+                f"Capture window: {window_seconds:.3f}s. All-ranks percentiles merge histogram buckets.",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            (4, 0, 0, 0, 0, 0, 0, 0, 0),
+        )
+    )
+
+    def append_section(section_title: str, report_rows: list[ReportRow], all_ranks: bool) -> None:
+        nonlocal row_number
+        row_number += 2
+        rows.append(
+            _xlsx_row(
+                row_number,
+                (section_title, None, None, None, None, None, None, None, None),
+                (2,) * len(XLSX_HEADERS),
+            )
+        )
+        row_number += 1
+        rows.append(_xlsx_row(row_number, XLSX_HEADERS, (3,) * len(XLSX_HEADERS)))
+        if not report_rows:
+            row_number += 1
+            rows.append(
+                _xlsx_row(
+                    row_number,
+                    ("-", "-", "-", "No observations", None, None, None, None, "-"),
+                    (4, 4, 4, 4, 6, 5, 5, 5, 4),
+                )
+            )
+            return
+        styles = (7, 7, 7, 7, 9, 8, 8, 8, 7) if all_ranks else (4, 4, 4, 4, 6, 5, 5, 5, 4)
+        for report_row in report_rows:
+            row_number += 1
+            rows.append(_xlsx_row(row_number, _xlsx_report_values(report_row), styles))
+
+    append_section("All ranks", all_rank_rows, all_ranks=True)
+    append_section("Per-rank detail", per_rank_rows, all_ranks=False)
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:I{row_number}"/>'
+        '<sheetViews><sheetView workbookViewId="0" showGridLines="0">'
+        '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>'
+        '<selection pane="bottomLeft" activeCell="A6" sqref="A6"/>'
+        '</sheetView></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        '<cols>'
+        '<col min="1" max="1" width="24" customWidth="1"/>'
+        '<col min="2" max="2" width="18" customWidth="1"/>'
+        '<col min="3" max="3" width="10" customWidth="1"/>'
+        '<col min="4" max="4" width="43" customWidth="1"/>'
+        '<col min="5" max="8" width="14" customWidth="1"/>'
+        '<col min="9" max="9" width="11" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(rows)}</sheetData>'
+        '<pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>'
+        '</worksheet>'
+    )
+
+
+def write_report_xlsx(
+    path: Path,
+    pages: dict[str, tuple[list[ReportRow], list[ReportRow]]],
+    window_seconds: float,
+) -> None:
+    sheet_defs = [
+        (title, pages[page_key][0], pages[page_key][1])
+        for page_key, title, _ in REPORT_PAGES
+    ]
+    content_types = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+    ]
+    content_types.extend(
+        f'<Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for index in range(1, len(sheet_defs) + 1)
+    )
+    content_types.append('</Types>')
+
+    workbook_sheets = "".join(
+        f'<sheet name="{escape(title)}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, (title, _, _) in enumerate(sheet_defs, start=1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheets>{workbook_sheets}</sheets><calcPr calcId="0"/></workbook>'
+    )
+    workbook_relationships = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ]
+    workbook_relationships.extend(
+        f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(sheet_defs) + 1)
+    )
+    workbook_relationships.append(
+        f'<Relationship Id="rId{len(sheet_defs) + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    )
+    workbook_relationships.append('</Relationships>')
+
+    styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="0.000"/></numFmts>
+  <fonts count="3">
+    <font><sz val="10"/><name val="Arial"/><family val="2"/></font>
+    <font><b/><sz val="14"/><name val="Arial"/><family val="2"/></font>
+    <font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Arial"/><family val="2"/></font>
+  </fonts>
+  <fills count="5">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF5B9BD5"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left/><right/><top/><bottom style="thin"><color rgb="FFD9E2F3"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="10">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment vertical="center"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"><alignment horizontal="right" vertical="center"/></xf>
+    <xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"><alignment horizontal="right" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"><alignment vertical="center"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1" applyNumberFormat="1"><alignment horizontal="right" vertical="center"/></xf>
+    <xf numFmtId="3" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1" applyNumberFormat="1"><alignment horizontal="right" vertical="center"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>"""
+
+    root_relationships = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as workbook_file:
+        workbook_file.writestr("[Content_Types].xml", "".join(content_types))
+        workbook_file.writestr("_rels/.rels", root_relationships)
+        workbook_file.writestr("xl/workbook.xml", workbook)
+        workbook_file.writestr("xl/_rels/workbook.xml.rels", "".join(workbook_relationships))
+        workbook_file.writestr("xl/styles.xml", styles)
+        for index, (title, all_rank_rows, per_rank_rows) in enumerate(sheet_defs, start=1):
+            workbook_file.writestr(
+                f"xl/worksheets/sheet{index}.xml",
+                _xlsx_worksheet(title, all_rank_rows, per_rank_rows, window_seconds),
+            )
+
+
 def row_as_dict(row: ReportRow) -> dict[str, object]:
     return {
         "model_name": row.group.model_name,
@@ -658,6 +898,7 @@ def write_delta_report(
     after: dict[str, Sample],
     window_seconds: float,
     full: bool,
+    report_stem: str = "metrics_report",
 ) -> dict[str, object]:
     pages: dict[str, tuple[list[ReportRow], list[ReportRow]]] = {}
     report = [
@@ -711,7 +952,8 @@ def write_delta_report(
         report.append("```")
 
     path.write_text("\n".join(report) + "\n", encoding="utf-8")
-    write_report_csv(path.parent / "metrics_report.csv", pages)
+    write_report_csv(path.parent / f"{report_stem}.csv", pages)
+    write_report_xlsx(path.parent / f"{report_stem}.xlsx", pages, window_seconds)
     return {
         "schema_version": 2,
         "window_seconds": window_seconds,
@@ -804,9 +1046,15 @@ def main() -> int:
         print(f"Partial output, if any, is in: {run_dir}", file=sys.stderr)
         return 1
 
+    report_stem = f"metrics_report_{sanitize_label(args.label)}_{timestamp}"
     report_path = run_dir / "metrics_report.md"
     summary = write_delta_report(
-        report_path, before, after, after_ts - before_ts, args.full
+        report_path,
+        before,
+        after,
+        after_ts - before_ts,
+        args.full,
+        report_stem=report_stem,
     )
     summary_path = run_dir / "summary.json"
     summary_path.write_text(
@@ -815,7 +1063,8 @@ def main() -> int:
     )
     print(f"Saved metrics report: {report_path}")
     print(f"Saved machine-readable summary: {summary_path}")
-    print(f"Saved combined CSV: {run_dir / 'metrics_report.csv'}")
+    print(f"Saved combined CSV: {run_dir / f'{report_stem}.csv'}")
+    print(f"Saved Excel workbook: {run_dir / f'{report_stem}.xlsx'}")
     print()
     print("Raw series are in:")
     print(f"  {run_dir / 'before_filtered.prom'}")
