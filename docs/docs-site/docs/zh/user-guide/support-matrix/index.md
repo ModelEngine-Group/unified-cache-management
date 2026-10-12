@@ -62,12 +62,14 @@
 <colgroup><col style="width:25%"><col style="width:25%"><col style="width:50%"></colgroup>
 <thead><tr><th scope="col">计算平台</th><th scope="col">厂商</th><th scope="col">设备</th></tr></thead>
 <tbody>
-<tr><th scope="row">CANN</th><td>Ascend</td><td>910C, 910B</td></tr>
+<tr><th scope="row">CANN</th><td>Ascend</td><td>910C, 910B, 950PR, 950DT</td></tr>
 <tr><th scope="row">CUDA</th><td>NVIDIA</td><td>H100, H20, L40, L20</td></tr>
 </tbody>
 </table>
 </div>
 
 表中列出代表性模型和设备。实际行为受引擎版本、模型变体、运行参数及后端影响；“待验证”表示尚无对应验证结论。
+
+**说明**：Ascend 950PR 和 950DT 仅在DeepSeek-V4-Flash上经过验证。
 
 </div>

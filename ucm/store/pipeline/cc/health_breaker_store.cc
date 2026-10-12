@@ -38,6 +38,13 @@ std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
     return std::chrono::milliseconds{distribution(generator)};
 }
 
+bool CountAsConnFailure(const Status& status)
+{
+    return status != Status::NotFound() && status != Status::StoreUnhealthy() &&
+           status != Status::InvalidParam() && status != Status::DuplicateKey() &&
+           status != Status::Unsupported();
+}
+
 }  // namespace
 
 HealthBreakerStore::~HealthBreakerStore() { Stop(); }
@@ -114,19 +121,37 @@ std::string HealthBreakerStore::Readme() const { return "HealthBreakerStore(" + 
 Expected<std::vector<uint8_t>> HealthBreakerStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return std::vector<uint8_t>(num, 0); }
-    return store_->Lookup(blocks, num);
+    const auto generation = healthState_->Generation();
+    auto result = store_->Lookup(blocks, num);
+    const auto status = result ? Status::OK() : result.Error();
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
+    RecordPassiveResult(status, generation);
+    CheckNeedBreak(generation);
+    return result;
 }
 
 Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return static_cast<ssize_t>(-1); }
-    return store_->LookupOnPrefix(blocks, num);
+    const auto generation = healthState_->Generation();
+    auto result = store_->LookupOnPrefix(blocks, num);
+    const auto status = result ? Status::OK() : result.Error();
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
+    RecordPassiveResult(status, generation);
+    CheckNeedBreak(generation);
+    return result;
 }
 
 Expected<ssize_t> HealthBreakerStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return static_cast<ssize_t>(-1); }
-    return store_->LookupOnReverse(blocks, num);
+    const auto generation = healthState_->Generation();
+    auto result = store_->LookupOnReverse(blocks, num);
+    const auto status = result ? Status::OK() : result.Error();
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return result; }
+    RecordPassiveResult(status, generation);
+    CheckNeedBreak(generation);
+    return result;
 }
 
 void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
@@ -185,11 +210,17 @@ Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
 {
     const auto generation = healthState_->Generation();
     auto status = store_->Wait(taskId);
-    if (!config_.passiveEnabled || status == Status::NotFound() ||
-        status == Status::StoreUnhealthy() || status == Status::InvalidParam() ||
-        status == Status::DuplicateKey() || status == Status::Unsupported()) {
-        return status;
+    if (!config_.passiveEnabled || !CountAsConnFailure(status)) { return status; }
+    RecordPassiveResult(status, generation);
+    CheckNeedBreak(generation);
+    if (status.Failure()) {
+        return Status::StoreUnhealthy(fmt::format("{}: {}", storeId_, status));
     }
+    return status;
+}
+
+void HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t generation)
+{
     if (status.Failure()) {
         if (storeId_.find(":PosixStore") != std::string::npos) {
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_passive_failures_total"), 1.0);
@@ -198,17 +229,15 @@ Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
         }
     }
     healthState_->RecordIo(status.Success(), generation);
-    if (healthState_->PassiveThresholdExceeded(generation)) {
-        // only lock and set state when need to switch to unhealthy
-        std::lock_guard<std::mutex> lock(healthMutex_);
-        const auto changed =
-            healthState_->UpdatePassiveHealth(generation, StoreHealthState::Clock::now());
-        UpdateState(changed, "passive_io");
-    }
-    if (status.Failure()) {
-        return Status::StoreUnhealthy(fmt::format("{}: {}", storeId_, status));
-    }
-    return status;
+}
+
+void HealthBreakerStore::CheckNeedBreak(uint64_t generation)
+{
+    if (!healthState_->PassiveThresholdExceeded(generation)) { return; }
+    std::lock_guard<std::mutex> lock(healthMutex_);
+    const auto changed =
+        healthState_->UpdatePassiveHealth(generation, StoreHealthState::Clock::now());
+    UpdateState(changed, "passive_io");
 }
 
 void HealthBreakerStore::UpdateState(bool changed, const char* source)
@@ -262,8 +291,8 @@ void HealthBreakerStore::ProbeLoop()
                 healthState_->SamplePassiveWindow(start);
                 stats = healthState_->GetPassiveWindowStats();
             }
-            if (stats.failures > 0) {
-                UC_INFO_UNLIMITED(
+            if (stats.failures > 0 && Enabled()) {
+                UC_INFO(
                     "Store passive health window({}): window_s={}, samples={}, failures={}, "
                     "failure_threshold={}.",
                     storeId_, config_.passiveWindow.count(), stats.total, stats.failures,

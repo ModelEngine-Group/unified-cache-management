@@ -124,11 +124,11 @@ For storage changes, see [Cache Configuration](../../developer-guide/cache-confi
 ### Configure the cache {#vllm-configure-the-cache}
 
 Create a writable `/workspace/storage` directory, mounted persistently if running in
-a container. Save the following as `/workspace/ucm.yaml`, readable by the engine:
+a container. Save the following as `/workspace/ucm_config_example.yaml`, readable by the engine:
 
 ```bash
 mkdir -p /workspace/storage
-cat > /workspace/ucm.yaml <<'YAML'
+cat > /workspace/ucm_config_example.yaml <<'YAML'
 ucm_connectors:
   - ucm_connector_name: UcmPipelineStore
     ucm_connector_config:
@@ -162,7 +162,7 @@ vllm serve "$MODEL_ID" \
     "kv_connector": "UCMConnector",
     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm.yaml"}
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
   }'
 ```
 
@@ -338,11 +338,11 @@ For storage changes, see [Cache Configuration](../../developer-guide/cache-confi
 ### Configure the cache {#vllm-ascend-configure-the-cache}
 
 Create a writable `/workspace/storage` directory, mounted persistently if running in
-a container. Save the following as `/workspace/ucm.yaml`, readable by the engine:
+a container. Save the following as `/workspace/ucm_config_example.yaml`, readable by the engine:
 
 ```bash
 mkdir -p /workspace/storage
-cat > /workspace/ucm.yaml <<'YAML'
+cat > /workspace/ucm_config_example.yaml <<'YAML'
 ucm_connectors:
   - ucm_connector_name: UcmPipelineStore
     ucm_connector_config:
@@ -376,7 +376,7 @@ vllm serve "$MODEL_ID" \
     "kv_connector": "UCMConnector",
     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm.yaml"}
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
   }'
 ```
 
