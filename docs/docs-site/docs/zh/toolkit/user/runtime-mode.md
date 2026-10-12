@@ -57,8 +57,17 @@ ucm-toolkit run runtime-mode set disabled --control-file /var/run/ucm/control.js
 | `mode` | 必填 | `enabled`、`lite` 或 `disabled`（接受 `on`、`off`、`shadow`、`bypass` 等别名）。 |
 | `--engine-id ID` | 无 | 用于推导默认控制文件路径的引擎 id；结尾的 `_dpN` 会被忽略。 |
 | `--control-file PATH` | 按规则解析 | 显式控制文件路径，优先级高于 engine id 与环境变量。 |
+| `--wait SECONDS` | `5` | 等待引擎确认新模式的最长秒数；`0` 关闭校验。 |
 
-命令会输出旧模式（若存在可读的控制文件）、新模式以及写入的文件路径。退出码 2 表示模式非法；1 表示写入失败。
+命令会输出旧模式（若存在可读的控制文件）、新模式以及写入的文件路径。
+
+**生效校验。** 支持运行模式控制的引擎会在控制文件旁维护状态回执文件（`<control_file>.status`），记录其观测到的最新模式、以及连接器是否真正受模式门控。`set` 写入后默认等待该回执，"写入成功但不会生效"的静默失败会直接报错：
+
+- 混合模型连接器（`UCMFAWAConnector`、`UCMHybridLinearAttention*`）不受模式门控 → `set` 立即失败，报 `does NOT support runtime-mode control`；
+- `--wait` 秒内没有出现状态文件 → 引擎没有在轮询该文件（未运行 / 路径错误 / `runtime_control_enabled: false` / 引擎在别的机器 / 旧版本引擎无状态上报）；
+- 引擎持续上报旧模式 → 变化未被观察到。
+
+成功时输出确认连接器与 pid（如 `verified: engine acknowledged in 1.2s (UCMDirectConnector, pid 12345)`）。退出码：`0` 写入且已确认；`1` 写入但未确认（或写入失败）；`2` 模式非法。引擎尚未启动、需要预先写入控制文件时可用 `--wait 0`。
 
 ### get
 
@@ -68,11 +77,19 @@ ucm-toolkit run runtime-mode set disabled --control-file /var/run/ucm/control.js
 ucm-toolkit run runtime-mode get --engine-id engine-0
 ```
 
-输出文件路径与解析出的模式。退出码 1 表示文件不存在或内容非法（此时候擎保持当前模式不变）。
+输出文件路径、解析出的模式，以及引擎回执（存在状态文件时）：
+
+```text
+file: /tmp/ucm_runtime_control_engine-0.json
+mode: disabled
+engine:  UCMDirectConnector (pid 12345), acknowledged mode: disabled
+```
+
+状态文件表明连接器不支持时，`get` 会打印"模式切换不生效"的告警。退出码 1 表示控制文件缺失或内容非法（此时引擎保持当前模式不变）。
 
 ### list
 
-发现系统临时目录中的控制文件并显示各自模式：
+发现系统临时目录中的控制文件并显示各自模式与引擎回执：
 
 ```bash
 ucm-toolkit run runtime-mode list
@@ -80,8 +97,9 @@ ucm-toolkit run runtime-mode list
 
 ```text
 control files in /tmp:
-  ucm_runtime_control_engine-0.json          disabled
-  ucm_runtime_control_ucm.json               (unreadable)
+  ucm_runtime_control_engine-0.json          disabled     [engine: UCMDirectConnector]
+  ucm_runtime_control_h.json                 enabled      [engine: UCMFAWAConnector, UNSUPPORTED]
+  ucm_runtime_control_ucm.json               (unreadable) [no engine ack]
 ```
 
 控制文件只在首次设置模式后（或引擎配置了显式 `runtime_control_file` 时）才会存在，全新部署时 `list` 为空是正常现象。
@@ -108,9 +126,11 @@ ucm-toolkit run runtime-mode get --engine-id engine-0
 
 ### 写入模式后引擎没有反应
 
-- 确认引擎连接器支持运行模式控制；不支持的连接器（FAWA / 混合线性注意力）启动时会打印一次性告警。
-- 用 `get` 确认工具与引擎解析到了同一个文件路径（检查引擎的 `runtime_control_file` 或默认路径）。
-- 引擎在轮询间隔（`runtime_control_poll_interval_s`，默认 1s）内才会观察到变化。
+`set` 默认在调用时就会报告这类问题：引擎未确认新模式时以非零退出码结束并打印原因。进一步定位：
+
+- `does NOT support runtime-mode control` —— 引擎运行的是混合模型连接器（FAWA / 混合线性注意力），其调度入口绕过了模式门控，该部署不支持在线切换（引擎启动日志中也会有一次告警）。
+- `no engine acknowledged` —— 确认引擎在运行、解析到的文件路径与引擎的 `runtime_control_file`（或默认路径）一致、`runtime_control_enabled` 未设为 `false`、引擎与本机同机部署、且引擎的 UCM 版本支持状态上报。
+- `still reports mode ...` —— 引擎在轮询但 `--wait` 秒内未观察到变化；可增大 `--wait` 重试（引擎在轮询间隔 `runtime_control_poll_interval_s`，默认 1s 内才会观察到变化）。
 - 查看 `connector_runtime_mode_control_read_errors_total` 指标：控制文件内容可能非法。
 
 ### 共享宿主机上的安全提示

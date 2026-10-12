@@ -44,11 +44,22 @@ or a JSON object with a ``mode`` key::
 
     {"mode": "lite"}
 
-Control-file content is validated before it is applied; unparseable or missing
+Control-file content is validated before it is applied; unparsable or missing
 files keep the current mode, so a half-written file can never corrupt engine
 behavior. Mode changes only affect *new* scheduling decisions: loads and dumps
 that were already planned by the scheduler are still executed by the worker,
 which keeps in-flight requests correct.
+
+Every controller process also maintains a *status file* next to the control
+file (``<control_file>.status``). It records the last observed mode, whether
+the owning connector class actually gates on the mode
+(``supports_runtime_mode_control``; e.g. hybrid-model connectors do not), the
+process id and an update timestamp. It is written at construction, on every
+observed mode change, and throttled as a liveness heartbeat. Tooling (the
+``ucm-toolkit run runtime-mode`` tool) uses it to detect a mode switch that
+would *not* take effect - an unsupported connector, a wrong control-file path,
+or an engine that is not polling at all - instead of silently writing into the
+void.
 """
 
 from __future__ import annotations
@@ -77,6 +88,7 @@ __all__ = [
     "parse_runtime_control_content",
     "resolve_runtime_control_settings",
     "default_runtime_control_file",
+    "runtime_status_file",
     "write_runtime_control_file",
 ]
 
@@ -123,6 +135,9 @@ _MODE_ALIASES: dict[str, UCMRuntimeMode] = {
 }
 
 _READ_ERROR_LOG_INTERVAL_S = 60.0
+# Liveness heartbeat: while polling, the status file is rewritten at most this
+# often (mode changes always rewrite it immediately).
+_STATUS_WRITE_INTERVAL_S = 15.0
 _UNSET = object()
 
 
@@ -158,6 +173,11 @@ def default_runtime_control_file(engine_id: str = "") -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(engine_id or "").strip())
     safe = safe or "ucm"
     return os.path.join(tempfile.gettempdir(), f"ucm_runtime_control_{safe}.json")
+
+
+def runtime_status_file(control_file: str) -> str:
+    """Path of the status/ack file maintained next to a control file."""
+    return f"{control_file}.status"
 
 
 @dataclass(frozen=True)
@@ -255,6 +275,10 @@ class RuntimeModeController:
     side); every instance reads the same shared control file, so all processes
     observe mode changes within one poll interval. The controller never
     raises: any read or parse failure keeps the last known good mode.
+
+    Each instance also maintains ``<control_file>.status`` (see the module
+    docstring) so external tooling can verify that a written mode actually
+    reaches - and can take effect in - the engine.
     """
 
     def __init__(
@@ -262,6 +286,8 @@ class RuntimeModeController:
         initial_mode: UCMRuntimeMode | str = UCMRuntimeMode.ENABLED,
         control_file: Optional[str] = None,
         poll_interval_s: float = 1.0,
+        supports: bool = True,
+        connector_name: str = "",
     ):
         if not isinstance(initial_mode, UCMRuntimeMode):
             parsed = parse_runtime_mode(initial_mode)
@@ -271,24 +297,38 @@ class RuntimeModeController:
         self._mode: UCMRuntimeMode = initial_mode
         self._control_file = control_file
         self._poll_interval_s = max(0.0, float(poll_interval_s))
+        self._supports = bool(supports)
+        self._connector_name = str(connector_name or "")
         self._lock = threading.Lock()
         self._next_poll_after = -math.inf
         self._last_signature: Any = _UNSET
         self._file_existed = False
         self._last_error_log_after = -math.inf
         self._gauge_reported = False
+        self._last_status_write = -math.inf
+        self._last_status_error_log_after = -math.inf
+        # Boot acknowledgment: report the control file's *current* content so
+        # the status file is truthful even before the first poll tick (and for
+        # worker-side controllers, which never refresh). The one-shot read
+        # deliberately does not apply the mode or touch poll-throttle state.
+        if self._control_file is not None:
+            self._write_status(time.monotonic(), mode=self._boot_mode())
 
     @classmethod
     def from_launch_config(
         cls,
         launch_config: Optional[dict[str, Any]],
         engine_id: str = "",
+        supports: bool = True,
+        connector_name: str = "",
     ) -> "RuntimeModeController":
         settings = resolve_runtime_control_settings(launch_config, engine_id)
         return cls(
             initial_mode=settings.initial_mode,
             control_file=settings.control_file,
             poll_interval_s=settings.poll_interval_s,
+            supports=supports,
+            connector_name=connector_name,
         )
 
     @property
@@ -327,6 +367,7 @@ class RuntimeModeController:
                 return self._mode
             self._next_poll_after = now + self._poll_interval_s
             self._poll_control_file()
+            self._maybe_write_status(now)
             return self._mode
 
     # -- internals ---------------------------------------------------------
@@ -358,7 +399,7 @@ class RuntimeModeController:
         if mode is None:
             # Keep the last signature so the file is retried on the next tick;
             # a partially written file only delays the mode switch.
-            self._record_read_error("unreadable or unparseable content")
+            self._record_read_error("unreadable or unparsable content")
             return
 
         self._last_signature = signature
@@ -389,6 +430,9 @@ class RuntimeModeController:
             self._control_file,
         )
         _update_stats({"connector_runtime_mode_transitions_total": 1.0})
+        # A mode change is the event tooling waits for: refresh the status
+        # file immediately instead of waiting for the liveness heartbeat.
+        self._write_status(time.monotonic())
 
     def _report_mode_gauge(self) -> None:
         _update_stats({"connector_runtime_mode": mode_gauge_value(self._mode)})
@@ -403,6 +447,53 @@ class RuntimeModeController:
                 self._control_file,
                 detail,
                 self._mode.name,
+            )
+
+    # -- status file -------------------------------------------------------
+
+    def _boot_mode(self) -> UCMRuntimeMode:
+        """One-shot read of the control file; never applies or raises."""
+        assert self._control_file is not None
+        mode = self._read_mode(self._control_file)
+        return mode if mode is not None else self._mode
+
+    def _maybe_write_status(self, now: float) -> None:
+        """Throttled liveness rewrite during polling."""
+        if now - self._last_status_write >= _STATUS_WRITE_INTERVAL_S:
+            self._write_status(now)
+
+    def _write_status(self, now: float, mode: Optional[UCMRuntimeMode] = None) -> None:
+        """Atomically rewrite the status file; never raises."""
+        if self._control_file is None:
+            return
+        path = runtime_status_file(self._control_file)
+        payload = {
+            "mode": (mode or self._mode).value,
+            "supports_runtime_mode_control": self._supports,
+            "connector": self._connector_name,
+            "pid": os.getpid(),
+            "poll_interval_s": self._poll_interval_s,
+            "updated_at": time.time(),
+        }
+        try:
+            directory = os.path.dirname(os.path.abspath(path))
+            os.makedirs(directory, exist_ok=True)
+            tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, path)
+            self._last_status_write = now
+        except OSError as exc:
+            self._record_status_error(f"write failed: {exc}")
+
+    def _record_status_error(self, detail: str) -> None:
+        now = time.monotonic()
+        if now - self._last_status_error_log_after >= _READ_ERROR_LOG_INTERVAL_S:
+            self._last_status_error_log_after = now
+            logger.warning(
+                "Failed to write UCM runtime status file for control file %s (%s).",
+                self._control_file,
+                detail,
             )
 
 

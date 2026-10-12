@@ -12,6 +12,13 @@ The file format and path resolution mirror ``ucm/runtime_mode.py``: JSON
 (temporary file + ``os.replace``) so a poller can never observe a
 half-written file.
 
+Engines that support runtime-mode control maintain a status/ack file next to
+the control file (``<control_file>.status``) reporting the last observed mode
+and whether the connector actually gates on it. ``set`` verifies a written
+mode against this file by default (``--wait``, default 5s) so an ineffective
+switch - an unsupported connector (e.g. a hybrid model), a wrong path, or an
+engine that is not polling - fails loudly instead of silently.
+
 Examples::
 
     ucm-toolkit run runtime-mode set disabled
@@ -30,12 +37,16 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from typing import List, Optional
 
 MODES = ("enabled", "lite", "disabled")
 
 CONTROL_FILE_PATTERN = "ucm_runtime_control_*.json"
 ENV_CONTROL_FILE = "UCM_RUNTIME_CONTROL_FILE"
+STATUS_SUFFIX = ".status"
+VERIFY_POLL_INTERVAL_S = 0.2
+DEFAULT_VERIFY_WAIT_S = 5.0
 
 MODE_ALIASES = {
     "enabled": "enabled",
@@ -128,6 +139,60 @@ def write_mode(path: str, mode: str) -> None:
     os.replace(tmp_path, path)
 
 
+def status_file(control_file: str) -> str:
+    """Path of the engine-maintained status/ack file for a control file."""
+    return control_file + STATUS_SUFFIX
+
+
+def read_status(control_file: str) -> Optional[dict]:
+    """Read an engine's status file; ``None`` when missing or invalid."""
+    try:
+        with open(status_file(control_file), "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def verify_set(path: str, mode: str, wait_s: float):
+    """Wait for an engine to acknowledge the new mode via its status file.
+
+    Returns ``(ok, detail)``; ``detail`` is the ack status dict on success or
+    a human-readable failure reason.
+    """
+    deadline = time.monotonic() + max(0.0, wait_s)
+    status = None
+    while True:
+        status = read_status(path)
+        if status is not None:
+            if not status.get("supports_runtime_mode_control", True):
+                connector = status.get("connector") or "unknown connector"
+                return False, (
+                    f"engine connector {connector} does NOT support "
+                    "runtime-mode control (e.g. a hybrid model); the mode "
+                    "change will not take effect"
+                )
+            if status.get("mode") == mode:
+                return True, status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(VERIFY_POLL_INTERVAL_S, remaining))
+    if status is None:
+        return False, (
+            "no engine acknowledged this control file within "
+            f"{wait_s:g}s (no status file: {status_file(path)}); possible "
+            "causes: engine not running, wrong control-file path, "
+            "runtime_control_enabled=false, engine on another host, or an "
+            "engine version without status reporting"
+        )
+    observed = status.get("mode")
+    return False, (
+        f"engine still reports mode {observed!r} after {wait_s:g}s; the mode "
+        "change was not observed"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="runtime-mode",
@@ -159,6 +224,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--control-file",
         metavar="PATH",
         help="explicit control file (default: resolve from engine id / env)",
+    )
+    p_set.add_argument(
+        "--wait",
+        type=float,
+        metavar="SECONDS",
+        default=DEFAULT_VERIFY_WAIT_S,
+        help="wait up to SECONDS for the engine to acknowledge the new mode "
+        "via its status file; 0 disables verification (default: "
+        f"{DEFAULT_VERIFY_WAIT_S:g})",
     )
 
     p_get = sub.add_parser("get", help="read the current mode from a control file")
@@ -194,8 +268,22 @@ def cmd_set(args: argparse.Namespace) -> int:
     print(f"file:     {path}")
     print(f"old mode: {old_mode if old_mode else '-'}")
     print(f"new mode: {mode}")
-    print("note:     engines observe the change within their poll interval")
-    return 0
+    if args.wait <= 0:
+        print("note:     verification disabled (--wait 0)")
+        return 0
+    started = time.monotonic()
+    ok, detail = verify_set(path, mode, args.wait)
+    elapsed = time.monotonic() - started
+    if ok:
+        connector = detail.get("connector") or "unknown connector"
+        pid = detail.get("pid", "?")
+        print(
+            f"verified: engine acknowledged in {elapsed:.1f}s "
+            f"({connector}, pid {pid})"
+        )
+        return 0
+    print(f"error: {detail}", file=sys.stderr)
+    return 1
 
 
 def cmd_get(args: argparse.Namespace) -> int:
@@ -212,6 +300,23 @@ def cmd_get(args: argparse.Namespace) -> int:
         return 1
     print(f"file: {path}")
     print(f"mode: {mode}")
+    status = read_status(path)
+    if status is None:
+        print(f"note: no engine status file found ({status_file(path)})")
+    elif not status.get("supports_runtime_mode_control", True):
+        connector = status.get("connector") or "unknown connector"
+        print(f"engine:  {connector} (pid {status.get('pid', '?')})")
+        print(
+            f"warning: this connector does NOT support runtime-mode control "
+            "(e.g. a hybrid model); mode changes have no effect",
+            file=sys.stderr,
+        )
+    else:
+        connector = status.get("connector") or "unknown connector"
+        print(
+            f"engine:  {connector} (pid {status.get('pid', '?')}), "
+            f"acknowledged mode: {status.get('mode', '?')}"
+        )
     return 0
 
 
@@ -231,7 +336,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         path = os.path.join(directory, name)
         mode = read_mode(path)
         state = mode if mode else "(unreadable)"
-        print(f"  {name:<50} {state}")
+        status = read_status(path)
+        if status is None:
+            ack = "[no engine ack]"
+        elif not status.get("supports_runtime_mode_control", True):
+            ack = f"[engine: {status.get('connector') or 'unknown'}, UNSUPPORTED]"
+        else:
+            ack = f"[engine: {status.get('connector') or 'unknown'}]"
+        print(f"  {name:<50} {state:<12} {ack}")
     if not found:
         print("  (none; a control file appears once a mode is first set, or")
         print("   when the engine was configured with runtime_control_file)")

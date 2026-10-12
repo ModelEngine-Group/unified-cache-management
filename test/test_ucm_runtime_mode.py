@@ -13,8 +13,10 @@ files share one canonical stub set regardless of import order.
 """
 
 import json
+import os
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,6 +50,7 @@ from ucm.runtime_mode import (  # noqa: E402
     parse_runtime_control_content,
     parse_runtime_mode,
     resolve_runtime_control_settings,
+    runtime_status_file,
     write_runtime_control_file,
 )
 
@@ -436,6 +439,130 @@ class TestRuntimeModeController:
 
         assert not errors
         assert controller.mode in set(UCMRuntimeMode)
+
+
+# ---------------------------------------------------------------------------
+# RuntimeModeController status file
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeModeStatusFile:
+    """The <control_file>.status ack file lets tooling detect ineffective
+    mode switches (unsupported connector, wrong path, engine not polling)."""
+
+    def _status(self, control_file):
+        path = Path(runtime_status_file(str(control_file)))
+        assert path.exists()
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_boot_status_reports_file_content_and_support(self, tmp_path):
+        control_file = tmp_path / "ctl.json"
+        write_runtime_control_file(str(control_file), "disabled")
+
+        RuntimeModeController(
+            UCMRuntimeMode.ENABLED,
+            str(control_file),
+            supports=False,
+            connector_name="UCMFAWAConnector",
+        )
+
+        status = self._status(control_file)
+        # Boot status reports the file's *content* (not the launch-config
+        # initial mode), so tooling sees what the engine would apply.
+        assert status["mode"] == "disabled"
+        assert status["supports_runtime_mode_control"] is False
+        assert status["connector"] == "UCMFAWAConnector"
+        assert status["pid"] == os.getpid()
+        assert status["updated_at"] <= time.time()
+
+    def test_boot_status_falls_back_to_initial_mode_without_file(self, tmp_path):
+        control_file = tmp_path / "missing.json"
+
+        RuntimeModeController(
+            UCMRuntimeMode.LITE, str(control_file), connector_name="UCMDirectConnector"
+        )
+
+        status = self._status(control_file)
+        assert status["mode"] == "lite"
+        assert status["supports_runtime_mode_control"] is True
+
+    def test_pinned_mode_writes_no_status(self, tmp_path):
+        RuntimeModeController(UCMRuntimeMode.ENABLED, control_file=None)
+        assert list(tmp_path.glob("**/*.status*")) == []
+
+    def test_mode_change_forces_status_rewrite(self, tmp_path):
+        control_file = tmp_path / "ctl.json"
+        controller = RuntimeModeController(
+            UCMRuntimeMode.ENABLED, str(control_file), poll_interval_s=0.0
+        )
+
+        write_runtime_control_file(str(control_file), "lite")
+        assert controller.refresh(now=0.0, force=True) is UCMRuntimeMode.LITE
+
+        assert self._status(control_file)["mode"] == "lite"
+
+    def test_liveness_heartbeat_is_throttled(self, tmp_path, monkeypatch):
+        control_file = tmp_path / "ctl.json"
+        write_runtime_control_file(str(control_file), "enabled")
+        controller = RuntimeModeController(
+            UCMRuntimeMode.ENABLED, str(control_file), poll_interval_s=0.0
+        )
+
+        writes = []
+        real_replace = os.replace
+
+        def counting_replace(src, dst):
+            if str(dst).endswith(".status"):
+                writes.append(dst)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(runtime_mode_module.os, "replace", counting_replace)
+
+        # Pretend the last heartbeat happened at t=100: poll ticks within the
+        # interval must not rewrite the status file...
+        controller._last_status_write = 100.0
+        controller.refresh(now=105.0, force=True)
+        assert writes == []
+
+        # ...while a tick after the interval rewrites it (mode unchanged, so
+        # this rewrite is the heartbeat, not a mode-change force).
+        controller.refresh(now=120.0, force=True)
+        assert len(writes) == 1
+        assert self._status(control_file)["mode"] == "enabled"
+
+    def test_status_write_failure_is_tolerated(self, tmp_path, monkeypatch):
+        control_file = tmp_path / "ctl.json"
+        write_runtime_control_file(str(control_file), "disabled")
+        controller = RuntimeModeController(
+            UCMRuntimeMode.ENABLED, str(control_file), poll_interval_s=0.0
+        )
+
+        real_os_replace = os.replace
+
+        def failing_replace(src, dst):
+            if str(dst).endswith(".status"):
+                raise OSError("disk full")
+            return real_os_replace(src, dst)
+
+        monkeypatch.setattr(runtime_mode_module.os, "replace", failing_replace)
+
+        # A mode-change write that fails must not raise; the observed mode
+        # still switches.
+        assert controller.refresh(now=0.0, force=True) is UCMRuntimeMode.DISABLED
+
+    def test_from_launch_config_passes_support_fields(self, tmp_path):
+        control_file = tmp_path / "ctl.json"
+
+        RuntimeModeController.from_launch_config(
+            {"runtime_control_file": str(control_file)},
+            "engine-0",
+            supports=False,
+            connector_name="UCMHybridLinearAttentionConnector",
+        )
+
+        status = self._status(control_file)
+        assert status["supports_runtime_mode_control"] is False
+        assert status["connector"] == "UCMHybridLinearAttentionConnector"
 
 
 # ---------------------------------------------------------------------------

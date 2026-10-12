@@ -1537,9 +1537,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # decided here, at the scheduler-side planning entry point, so a mode
         # switch only affects NEW scheduling decisions; already-planned loads
         # and dumps are still executed by the worker, keeping in-flight
-        # requests correct.
+        # requests correct. ``supports``/``connector_name`` feed the status
+        # file so tooling can detect connectors (e.g. hybrid models) whose
+        # overridden get_num_new_matched_tokens bypasses the mode gate.
         self._runtime_mode_controller = RuntimeModeController.from_launch_config(
-            self.launch_config, self.engine_id
+            self.launch_config,
+            self.engine_id,
+            supports=type(self).supports_runtime_mode_control,
+            connector_name=type(self).__name__,
         )
         if self._runtime_mode_controller.control_file:
             logger.info(

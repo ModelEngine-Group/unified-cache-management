@@ -57,8 +57,17 @@ Parameters:
 | `mode` | required | `enabled`, `lite` or `disabled` (aliases such as `on`, `off`, `shadow`, `bypass` are accepted). |
 | `--engine-id ID` | none | Engine id for the default control-file path; a trailing `_dpN` is ignored. |
 | `--control-file PATH` | resolved | Explicit control-file path, overriding engine id and environment variable. |
+| `--wait SECONDS` | `5` | Wait up to SECONDS for the engine to acknowledge the new mode; `0` disables verification. |
 
-The command reports the previous mode (if a readable control file existed), the new mode, and the file it wrote. Exit code 2 signals an invalid mode; 1 signals a write failure.
+The command reports the previous mode (if a readable control file existed), the new mode, and the file it wrote.
+
+**Effect verification.** Engines that support runtime-mode control maintain a status file next to the control file (`<control_file>.status`) reporting the last mode they observed and whether their connector actually gates on the mode. After writing, `set` waits for this acknowledgment by default, so an ineffective switch fails loudly:
+
+- a hybrid-model connector (`UCMFAWAConnector`, `UCMHybridLinearAttention*`) does not gate on the mode → `set` fails immediately with `does NOT support runtime-mode control`;
+- no status file appears within `--wait` seconds → the engine is not polling this file (not running, wrong path, `runtime_control_enabled: false`, another host, or an engine version without status reporting);
+- the engine keeps reporting the old mode → the change was not observed.
+
+On success the tool prints the acknowledging connector and pid (`verified: engine acknowledged in 1.2s (UCMDirectConnector, pid 12345)`). Exit codes: `0` written and verified; `1` written but not verified (or write failure); `2` invalid mode. Use `--wait 0` when pre-provisioning a control file before the engine starts.
 
 ### get
 
@@ -68,11 +77,19 @@ Read the current mode from a control file:
 ucm-toolkit run runtime-mode get --engine-id engine-0
 ```
 
-Prints the file path and the parsed mode. Exit code 1 means the file is missing or does not contain a valid mode (an engine keeps its current mode in that case).
+Prints the file path, the parsed mode, and the engine acknowledgment when a status file exists:
+
+```text
+file: /tmp/ucm_runtime_control_engine-0.json
+mode: disabled
+engine:  UCMDirectConnector (pid 12345), acknowledged mode: disabled
+```
+
+When the status file reports an unsupported connector, `get` prints a warning that mode changes have no effect. Exit code 1 means the control file is missing or does not contain a valid mode (an engine keeps its current mode in that case).
 
 ### list
 
-Discover control files in the system temp directory and show their modes:
+Discover control files in the system temp directory and show their modes plus engine acknowledgments:
 
 ```bash
 ucm-toolkit run runtime-mode list
@@ -80,8 +97,9 @@ ucm-toolkit run runtime-mode list
 
 ```text
 control files in /tmp:
-  ucm_runtime_control_engine-0.json          disabled
-  ucm_runtime_control_ucm.json               (unreadable)
+  ucm_runtime_control_engine-0.json          disabled     [engine: UCMDirectConnector]
+  ucm_runtime_control_h.json                 enabled      [engine: UCMFAWAConnector, UNSUPPORTED]
+  ucm_runtime_control_ucm.json               (unreadable) [no engine ack]
 ```
 
 A control file only exists after a mode was first set (or the engine was configured with an explicit `runtime_control_file`), so `list` can legitimately be empty on a fresh deployment.
@@ -108,10 +126,12 @@ ucm-toolkit run runtime-mode get --engine-id engine-0
 
 ### The engine does not react to a mode change
 
-- Confirm the engine's connector supports runtime-mode control; unsupported connectors (FAWA / hybrid linear attention) log a one-time warning at startup.
-- Confirm the resolved file path matches the engine's `runtime_control_file` (or its default path) — use `get` to verify both sides see the same file.
-- The engine observes changes only within its poll interval (`runtime_control_poll_interval_s`, default 1s).
-- Check the `connector_runtime_mode_control_read_errors_total` metric: the file content may be invalid.
+`set` reports this at call time by default: it exits non-zero and prints the reason when the engine does not acknowledge the new mode. To diagnose further:
+
+- `does NOT support runtime-mode control` — the engine runs a hybrid-model connector (FAWA / hybrid linear attention) that bypasses the mode gate; online toggling is not available for this deployment (a one-time warning also appears in the engine log at startup).
+- `no engine acknowledged` — check that the engine is running, that the resolved file path matches the engine's `runtime_control_file` (or its default path), that `runtime_control_enabled` is not `false`, that the engine runs on the same host, and that its UCM version reports status.
+- `still reports mode ...` — the engine is polling but did not observe the change within `--wait` seconds; retry with a larger `--wait` (the engine observes changes only within its poll interval, `runtime_control_poll_interval_s`, default 1s).
+- Check the `connector_runtime_mode_control_read_errors_total` metric: the control-file content may be invalid.
 
 ### Security on shared hosts
 

@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -91,7 +93,7 @@ class RuntimeModeCliTest(unittest.TestCase):
 
     def test_set_writes_atomic_json_payload(self):
         code, out, _ = self._run(
-            ["set", "disabled", "--control-file", self.control_file]
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "0"]
         )
 
         self.assertEqual(code, 0)
@@ -107,9 +109,13 @@ class RuntimeModeCliTest(unittest.TestCase):
         )
 
     def test_set_accepts_aliases_and_reports_old_mode(self):
-        self._run(["set", "enabled", "--control-file", self.control_file])
+        self._run(
+            ["set", "enabled", "--control-file", self.control_file, "--wait", "0"]
+        )
 
-        code, out, _ = self._run(["set", "off", "--control-file", self.control_file])
+        code, out, _ = self._run(
+            ["set", "off", "--control-file", self.control_file, "--wait", "0"]
+        )
 
         self.assertEqual(code, 0)
         self.assertIn("old mode: enabled", out)
@@ -155,7 +161,9 @@ class RuntimeModeCliTest(unittest.TestCase):
             tempfile.gettempdir = lambda: tmp
             try:
                 expected = os.path.join(tmp, "ucm_runtime_control_engine-0.json")
-                code, out, _ = self._run(["set", "lite", "--engine-id", "engine-0_dp3"])
+                code, out, _ = self._run(
+                    ["set", "lite", "--engine-id", "engine-0_dp3", "--wait", "0"]
+                )
                 self.assertEqual(code, 0)
                 self.assertIn(expected, out)
                 self.assertTrue(os.path.exists(expected))
@@ -171,7 +179,7 @@ class RuntimeModeCliTest(unittest.TestCase):
         old_env = os.environ.get(cli.ENV_CONTROL_FILE)
         os.environ[cli.ENV_CONTROL_FILE] = env_file
         try:
-            code, out, _ = self._run(["set", "disabled"])
+            code, out, _ = self._run(["set", "disabled", "--wait", "0"])
             self.assertEqual(code, 0)
             self.assertIn(env_file, out)
 
@@ -202,6 +210,7 @@ class RuntimeModeCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("ucm_runtime_control_e0.json", out)
         self.assertIn("lite", out)
+        self.assertIn("[no engine ack]", out)
 
     def test_parse_control_content_supports_bare_and_json(self):
         self.assertEqual(cli.parse_control_content("disabled"), "disabled")
@@ -209,6 +218,164 @@ class RuntimeModeCliTest(unittest.TestCase):
         self.assertEqual(cli.parse_control_content('{"mode": "bogus"}'), None)
         self.assertEqual(cli.parse_control_content(""), None)
         self.assertEqual(cli.parse_control_content("{broken"), None)
+
+
+class RuntimeModeVerificationTest(unittest.TestCase):
+    """`set` verification against the engine status file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.control_file = os.path.join(self._tmp.name, "ucm_runtime_control_e0.json")
+
+    def _run(self, argv):
+        registry._TOOLS.clear()
+        registry._ALIASES.clear()
+        registry.init_builtin_tools()
+        output = io.StringIO()
+        errors = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            code = main(["run", "runtime-mode", *argv])
+        return code, output.getvalue(), errors.getvalue()
+
+    def _write_status(self, **payload):
+        status = {
+            "mode": "enabled",
+            "supports_runtime_mode_control": True,
+            "connector": "UCMDirectConnector",
+            "pid": 4242,
+            "poll_interval_s": 1.0,
+            "updated_at": 0.0,
+        }
+        status.update(payload)
+        with open(cli.status_file(self.control_file), "w", encoding="utf-8") as f:
+            json.dump(status, f)
+
+    def test_set_fails_when_connector_unsupported(self):
+        self._write_status(
+            mode="enabled",
+            supports_runtime_mode_control=False,
+            connector="UCMFAWAConnector",
+        )
+
+        code, _, err = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "2"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("UCMFAWAConnector", err)
+        self.assertIn("does NOT support runtime-mode control", err)
+        # The control file was still written; the engine simply ignores it.
+        self.assertEqual(cli.read_mode(self.control_file), "disabled")
+
+    def test_set_succeeds_when_engine_acknowledges(self):
+        self._write_status(mode="disabled")
+
+        code, out, _ = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "2"]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("verified: engine acknowledged", out)
+        self.assertIn("UCMDirectConnector", out)
+        self.assertIn("pid 4242", out)
+
+    def test_set_succeeds_when_engine_updates_status_lazily(self):
+        """A background 'engine' updates the status file after a delay."""
+        self._write_status(mode="enabled")
+
+        def fake_engine():
+            time.sleep(0.4)
+            self._write_status(mode="lite")
+
+        worker = threading.Thread(target=fake_engine)
+        worker.start()
+        try:
+            code, out, _ = self._run(
+                ["set", "lite", "--control-file", self.control_file, "--wait", "5"]
+            )
+        finally:
+            worker.join()
+
+        self.assertEqual(code, 0)
+        self.assertIn("verified: engine acknowledged", out)
+
+    def test_set_fails_when_no_engine_acknowledges(self):
+        code, _, err = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "0.3"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("no engine acknowledged", err)
+        self.assertIn("possible causes", err)
+
+    def test_set_fails_when_engine_keeps_old_mode(self):
+        self._write_status(mode="enabled")
+
+        code, _, err = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "0.3"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("still reports mode 'enabled'", err)
+
+    def test_set_wait_zero_skips_verification(self):
+        code, out, _ = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "0"]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("verification disabled", out)
+        self.assertFalse(os.path.exists(cli.status_file(self.control_file)))
+
+    def test_get_reports_engine_ack_and_support(self):
+        cli.write_mode(self.control_file, "lite")
+        self._write_status(mode="lite")
+
+        code, out, err = self._run(["get", "--control-file", self.control_file])
+
+        self.assertEqual(code, 0)
+        self.assertIn("engine:  UCMDirectConnector (pid 4242)", out)
+        self.assertIn("acknowledged mode: lite", out)
+        self.assertEqual(err, "")
+
+    def test_get_warns_on_unsupported_connector(self):
+        cli.write_mode(self.control_file, "disabled")
+        self._write_status(
+            mode="disabled",
+            supports_runtime_mode_control=False,
+            connector="UCMHybridLinearAttentionConnector",
+        )
+
+        code, _, err = self._run(["get", "--control-file", self.control_file])
+
+        self.assertEqual(code, 0)
+        self.assertIn("does NOT support runtime-mode control", err)
+
+    def test_get_notes_missing_status_file(self):
+        cli.write_mode(self.control_file, "lite")
+
+        code, out, _ = self._run(["get", "--control-file", self.control_file])
+
+        self.assertEqual(code, 0)
+        self.assertIn("no engine status file found", out)
+
+    def test_list_marks_unsupported_engine(self):
+        cli.write_mode(self.control_file, "disabled")
+        self._write_status(
+            supports_runtime_mode_control=False, connector="UCMFAWAConnector"
+        )
+
+        old_tmpdir = tempfile.gettempdir
+        tempfile.gettempdir = lambda: self._tmp.name
+        try:
+            code, out, _ = self._run(["list"])
+        finally:
+            tempfile.gettempdir = old_tmpdir
+
+        self.assertEqual(code, 0)
+        self.assertIn("ucm_runtime_control_e0.json", out)
+        self.assertIn("[engine: UCMFAWAConnector, UNSUPPORTED]", out)
 
 
 if __name__ == "__main__":

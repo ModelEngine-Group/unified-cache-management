@@ -155,6 +155,34 @@ Grafana 前缀 `ucm:`）：
 
 日志：启动配置行、模式切换行（含旧/新模式与文件路径）、读错误限频告警、不支持连接器的一次性告警。
 
+### 3.5.1 状态回执文件（status file）
+
+每个 controller 进程在控制文件旁维护 **`<control_file>.status`**，使外部工具能在调用时
+发现"写入成功但不会生效"的静默失败（典型：混合模型连接器不支持门控）：
+
+```json
+{
+  "mode": "disabled",
+  "supports_runtime_mode_control": false,
+  "connector": "UCMFAWAConnector",
+  "pid": 12345,
+  "poll_interval_s": 1.0,
+  "updated_at": 1760000000.123
+}
+```
+
+- **写入时机**：构造时（一次性直接读取控制文件内容作为上报模式，不应用、不影响轮询节流状态）；
+  每次观测到模式切换立即强制写；轮询期间按 `_STATUS_WRITE_INTERVAL_S`（默认 15s）节流重写作为存活心跳。
+- **`supports_runtime_mode_control`**：来自连接器类属性（`UCMDirectConnector.__init__` 经
+  `from_launch_config(supports=..., connector_name=...)` 传入）。混合注意力连接器（FAWA / HLA）
+  重写了 `get_num_new_matched_tokens` 绕过门控点，该标志为 `false`——状态文件是这一事实对工具侧
+  唯一可见的信号。
+- **可靠性**：临时文件 + `os.replace` 原子写；写失败仅限频告警，绝不影响引擎行为；多进程
+  （scheduler / worker 各 rank）同时写，最后写入者生效，原子替换保证内容始终是合法 JSON。
+- **消费方**：`ucm-toolkit run runtime-mode set` 默认在写入后等待引擎回执（`--wait`，默认 5s），
+  按序检查：不支持（立即报错）→ 模式已确认（成功）→ 超时后报告未确认原因（引擎未运行 /
+  路径错误 / `runtime_control_enabled: false` / 跨机 / 旧版本引擎无状态上报）。
+
 ### 3.6 配置与使用
 
 ```yaml
