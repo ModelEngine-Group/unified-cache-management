@@ -377,6 +377,81 @@ class RuntimeModeVerificationTest(unittest.TestCase):
         self.assertIn("ucm_runtime_control_e0.json", out)
         self.assertIn("[engine: UCMFAWAConnector, UNSUPPORTED]", out)
 
+    def test_list_discovers_engines_without_control_file(self):
+        # A running engine writes its status file at boot, before any control
+        # file exists; `list` must still discover it.
+        self._write_status(mode="enabled", connector="UCMDirectConnector")
+
+        old_tmpdir = tempfile.gettempdir
+        tempfile.gettempdir = lambda: self._tmp.name
+        try:
+            code, out, _ = self._run(["list"])
+        finally:
+            tempfile.gettempdir = old_tmpdir
+
+        self.assertEqual(code, 0)
+        self.assertIn("ucm_runtime_control_e0.json", out)
+        self.assertIn("[engine: UCMDirectConnector]", out)
+        self.assertIn("no control file; engine runs its startup mode", out)
+
+    def test_list_empty_hint_mentions_status_files(self):
+        old_tmpdir = tempfile.gettempdir
+        empty = tempfile.mkdtemp()
+        self.addCleanup(lambda: os.rmdir(empty))
+        tempfile.gettempdir = lambda: empty
+        try:
+            code, out, _ = self._run(["list"])
+        finally:
+            tempfile.gettempdir = old_tmpdir
+
+        self.assertEqual(code, 0)
+        self.assertIn("(none", out)
+        self.assertIn("status file", out)
+
+    def test_set_without_engine_id_prints_hint(self):
+        # Default fallback path targets 'ucm', which almost never matches a
+        # real engine; the tool must tell the operator.
+        old_env = os.environ.get(cli.ENV_CONTROL_FILE)
+        os.environ.pop(cli.ENV_CONTROL_FILE, None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                old_tmpdir = tempfile.gettempdir
+                tempfile.gettempdir = lambda: tmp
+                try:
+                    code, out, _ = self._run(["set", "enabled", "--wait", "0"])
+                finally:
+                    tempfile.gettempdir = old_tmpdir
+        finally:
+            if old_env is not None:
+                os.environ[cli.ENV_CONTROL_FILE] = old_env
+
+        self.assertEqual(code, 0)
+        self.assertIn("no --engine-id given", out)
+        self.assertIn("runtime-mode list", out)
+
+    def test_set_with_engine_id_prints_no_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_tmpdir = tempfile.gettempdir
+            tempfile.gettempdir = lambda: tmp
+            try:
+                code, out, _ = self._run(
+                    ["set", "enabled", "--engine-id", "engine-0", "--wait", "0"]
+                )
+            finally:
+                tempfile.gettempdir = old_tmpdir
+
+        self.assertEqual(code, 0)
+        self.assertNotIn("no --engine-id given", out)
+
+    def test_no_ack_error_mentions_list_and_engine_id(self):
+        code, _, err = self._run(
+            ["set", "disabled", "--control-file", self.control_file, "--wait", "0.3"]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("missing --engine-id?", err)
+        self.assertIn("runtime-mode list", err)
+
 
 if __name__ == "__main__":
     unittest.main()

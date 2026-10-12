@@ -89,7 +89,7 @@ When the status file reports an unsupported connector, `get` prints a warning th
 
 ### list
 
-Discover control files in the system temp directory and show their modes plus engine acknowledgments:
+Discover control files in the system temp directory and show their modes plus engine acknowledgments. Status files are written as soon as an engine with runtime-mode support starts, so `list` also discovers running engines whose control file does not exist yet:
 
 ```bash
 ucm-toolkit run runtime-mode list
@@ -100,9 +100,10 @@ control files in /tmp:
   ucm_runtime_control_engine-0.json          disabled     [engine: UCMDirectConnector]
   ucm_runtime_control_h.json                 enabled      [engine: UCMFAWAConnector, UNSUPPORTED]
   ucm_runtime_control_ucm.json               (unreadable) [no engine ack]
+  ucm_runtime_control_e2.json                enabled      [engine: UCMDirectConnector] (no control file; engine runs its startup mode)
 ```
 
-A control file only exists after a mode was first set (or the engine was configured with an explicit `runtime_control_file`), so `list` can legitimately be empty on a fresh deployment.
+A control file only exists after a mode was first set (or the engine was configured with an explicit `runtime_control_file`). When neither `--engine-id` nor `--control-file` is given, `set`/`get` target the `ucm` fallback path, which only matches an engine with an empty id - real deployments define a vLLM engine id, so pass `--engine-id` (the tool prints a reminder when it is missing).
 
 ## Typical Workflow
 
@@ -129,7 +130,7 @@ ucm-toolkit run runtime-mode get --engine-id engine-0
 `set` reports this at call time by default: it exits non-zero and prints the reason when the engine does not acknowledge the new mode. To diagnose further:
 
 - `does NOT support runtime-mode control` — the engine runs a hybrid-model connector (FAWA / hybrid linear attention) that bypasses the mode gate; online toggling is not available for this deployment (a one-time warning also appears in the engine log at startup).
-- `no engine acknowledged` — check that the engine is running, that the resolved file path matches the engine's `runtime_control_file` (or its default path), that `runtime_control_enabled` is not `false`, that the engine runs on the same host, and that its UCM version reports status.
+- `no engine acknowledged` — check that the engine is running, that the resolved file path matches the engine's `runtime_control_file` (or its default path; a missing `--engine-id` targets the `ucm` fallback path, which usually matches no engine), that `runtime_control_enabled` is not `false`, that the engine runs on the same host, and that its UCM version reports status. Run `ucm-toolkit run runtime-mode list` to see the engines on this host.
 - `still reports mode ...` — the engine is polling but did not observe the change within `--wait` seconds; retry with a larger `--wait` (the engine observes changes only within its poll interval, `runtime_control_poll_interval_s`, default 1s).
 - Check the `connector_runtime_mode_control_read_errors_total` metric: the control-file content may be invalid.
 

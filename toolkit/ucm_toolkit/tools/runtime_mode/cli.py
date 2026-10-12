@@ -182,9 +182,11 @@ def verify_set(path: str, mode: str, wait_s: float):
         return False, (
             "no engine acknowledged this control file within "
             f"{wait_s:g}s (no status file: {status_file(path)}); possible "
-            "causes: engine not running, wrong control-file path, "
-            "runtime_control_enabled=false, engine on another host, or an "
-            "engine version without status reporting"
+            "causes: engine not running, wrong control-file path (missing "
+            "--engine-id?), runtime_control_enabled=false, engine on another "
+            "host, or an engine version without status reporting; run "
+            "`ucm-toolkit run runtime-mode list` to discover engines on "
+            "this host"
         )
     observed = status.get("mode")
     return False, (
@@ -250,6 +252,30 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+CONTROL_FILE_RE = re.compile(r"^ucm_runtime_control_.+\.json$")
+STATUS_FILE_RE = re.compile(r"^(ucm_runtime_control_.+\.json)\.status$")
+
+
+def print_engine_id_hint(args: argparse.Namespace) -> None:
+    """Warn when the default 'ucm' fallback path is almost surely wrong.
+
+    Without ``--engine-id`` (or an explicit path/env var) the tool targets
+    ``ucm_runtime_control_ucm.json``, which only matches an engine whose id is
+    empty - real deployments define a vLLM engine id.
+    """
+    if getattr(args, "control_file", None):
+        return
+    if getattr(args, "engine_id", "").strip():
+        return
+    if (os.getenv(ENV_CONTROL_FILE) or "").strip():
+        return
+    print(
+        "note:     no --engine-id given; engines usually need their vLLM "
+        "engine_id (run `ucm-toolkit run runtime-mode list` to discover "
+        "engines on this host)"
+    )
+
+
 def cmd_set(args: argparse.Namespace) -> int:
     mode = parse_mode(args.mode)
     if mode is None:
@@ -266,6 +292,7 @@ def cmd_set(args: argparse.Namespace) -> int:
         print(f"error: cannot write {path}: {exc}", file=sys.stderr)
         return 1
     print(f"file:     {path}")
+    print_engine_id_hint(args)
     print(f"old mode: {old_mode if old_mode else '-'}")
     print(f"new mode: {mode}")
     if args.wait <= 0:
@@ -299,6 +326,7 @@ def cmd_get(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"file: {path}")
+    print_engine_id_hint(args)
     print(f"mode: {mode}")
     status = read_status(path)
     if status is None:
@@ -320,33 +348,56 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ack_marker(status: Optional[dict]) -> str:
+    if status is None:
+        return "[no engine ack]"
+    connector = status.get("connector") or "unknown"
+    if not status.get("supports_runtime_mode_control", True):
+        return f"[engine: {connector}, UNSUPPORTED]"
+    return f"[engine: {connector}]"
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     directory = tempfile.gettempdir()
     print(f"control files in {directory}:")
-    found = 0
     try:
         names = sorted(os.listdir(directory))
     except OSError as exc:
         print(f"error: cannot list {directory}: {exc}", file=sys.stderr)
         return 1
+
+    # Control files exist once a mode was set (or the engine configured an
+    # explicit runtime_control_file). Status files exist as soon as an engine
+    # with runtime-mode support is running, so scan both: engines whose
+    # control file does not exist yet are still discoverable.
+    control_files = {}
+    status_only = {}
     for name in names:
-        if not re.match(r"^ucm_runtime_control_.*\.json$", name):
-            continue
-        found += 1
-        path = os.path.join(directory, name)
+        control_match = CONTROL_FILE_RE.match(name)
+        status_match = STATUS_FILE_RE.match(name)
+        if control_match:
+            control_files[name] = os.path.join(directory, name)
+        elif status_match:
+            control_name = status_match.group(1)
+            if control_name not in control_files:
+                status_only[control_name] = os.path.join(directory, name)
+
+    for name, path in sorted(control_files.items()):
         mode = read_mode(path)
         state = mode if mode else "(unreadable)"
-        status = read_status(path)
-        if status is None:
-            ack = "[no engine ack]"
-        elif not status.get("supports_runtime_mode_control", True):
-            ack = f"[engine: {status.get('connector') or 'unknown'}, UNSUPPORTED]"
-        else:
-            ack = f"[engine: {status.get('connector') or 'unknown'}]"
-        print(f"  {name:<50} {state:<12} {ack}")
-    if not found:
-        print("  (none; a control file appears once a mode is first set, or")
-        print("   when the engine was configured with runtime_control_file)")
+        print(f"  {name:<50} {state:<12} {_ack_marker(read_status(path))}")
+
+    for name in sorted(status_only):
+        status = read_status(os.path.join(directory, name))
+        state = status.get("mode", "?") if status else "?"
+        print(
+            f"  {name:<50} {state:<12} {_ack_marker(status)} "
+            "(no control file; engine runs its startup mode)"
+        )
+
+    if not control_files and not status_only:
+        print("  (none; a control file appears once a mode is first set, and")
+        print("   a status file once an engine with runtime-mode support runs)")
     return 0
 
 

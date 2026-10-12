@@ -89,7 +89,7 @@ engine:  UCMDirectConnector (pid 12345), acknowledged mode: disabled
 
 ### list
 
-发现系统临时目录中的控制文件并显示各自模式与引擎回执：
+发现系统临时目录中的控制文件并显示各自模式与引擎回执。状态回执文件在支持运行模式控制的引擎启动时即会写入，因此 `list` 也能发现控制文件尚不存在的运行中引擎：
 
 ```bash
 ucm-toolkit run runtime-mode list
@@ -100,9 +100,10 @@ control files in /tmp:
   ucm_runtime_control_engine-0.json          disabled     [engine: UCMDirectConnector]
   ucm_runtime_control_h.json                 enabled      [engine: UCMFAWAConnector, UNSUPPORTED]
   ucm_runtime_control_ucm.json               (unreadable) [no engine ack]
+  ucm_runtime_control_e2.json                enabled      [engine: UCMDirectConnector] (no control file; engine runs its startup mode)
 ```
 
-控制文件只在首次设置模式后（或引擎配置了显式 `runtime_control_file` 时）才会存在，全新部署时 `list` 为空是正常现象。
+控制文件只在首次设置模式后（或引擎配置了显式 `runtime_control_file` 时）才会存在。未指定 `--engine-id` 与 `--control-file` 时，`set`/`get` 会使用 `ucm` 兜底路径，它只匹配 engine id 为空的引擎——实际部署都会定义 vLLM engine id，因此应传 `--engine-id`（缺失时工具会打印提醒）。
 
 ## 典型工作流
 
@@ -129,7 +130,7 @@ ucm-toolkit run runtime-mode get --engine-id engine-0
 `set` 默认在调用时就会报告这类问题：引擎未确认新模式时以非零退出码结束并打印原因。进一步定位：
 
 - `does NOT support runtime-mode control` —— 引擎运行的是混合模型连接器（FAWA / 混合线性注意力），其调度入口绕过了模式门控，该部署不支持在线切换（引擎启动日志中也会有一次告警）。
-- `no engine acknowledged` —— 确认引擎在运行、解析到的文件路径与引擎的 `runtime_control_file`（或默认路径）一致、`runtime_control_enabled` 未设为 `false`、引擎与本机同机部署、且引擎的 UCM 版本支持状态上报。
+- `no engine acknowledged` —— 确认引擎在运行、解析到的文件路径与引擎的 `runtime_control_file`（或默认路径）一致（漏传 `--engine-id` 时会使用 `ucm` 兜底路径，通常匹配不到任何引擎）、`runtime_control_enabled` 未设为 `false`、引擎与本机同机部署、且引擎的 UCM 版本支持状态上报。可运行 `ucm-toolkit run runtime-mode list` 查看本机引擎。
 - `still reports mode ...` —— 引擎在轮询但 `--wait` 秒内未观察到变化；可增大 `--wait` 重试（引擎在轮询间隔 `runtime_control_poll_interval_s`，默认 1s 内才会观察到变化）。
 - 查看 `connector_runtime_mode_control_read_errors_total` 指标：控制文件内容可能非法。
 
