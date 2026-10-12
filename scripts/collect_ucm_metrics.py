@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Capture UCM/vLLM Prometheus metrics around one known request window.
+"""Capture and summarize UCM/vLLM metrics around one request window.
 
 Standard library only. It saves the complete and filtered Prometheus snapshots
-plus a focused delta report, so answering "did this request touch the backend?"
-does not require reading hundreds of series.
+plus per-rank Connector, CacheStore, and Posix tables. Histogram averages and
+p90/p99 values cover only observations added inside the capture window.
 
 Usage:
 
@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import math
 import re
 import sys
@@ -45,63 +47,94 @@ INTERESTING_TOKENS = (
     "posix_",
     "connector_",
     "layerwise_",
+    "save_duration",
+    "save_completion_wait_duration",
+    "load_bytes_total",
+    "save_bytes_total",
 )
 
-# Counters that answer "what did the request actually do". A cache hit that
-# still reports cache_load_backend_shards_total > 0 was served from posix.
-FOCUS_COUNTERS = (
-    "cache_load_shards_total",
-    "cache_load_success_shards_total",
-    "cache_load_backend_shards_total",
-    "cache_load_wait_shards_total",
-    "cache_load_failed_shards_total",
-    "cache_posix_load_success_shards_total",
-    "cache_lookup_hit_blocks_total",
-    "cache_lookup_miss_blocks_total",
-    "posix_lookup_query_blocks_total",
-    "posix_lookup_hit_blocks_total",
-    "posix_handle_cache_hit_total",
-    "posix_handle_cache_miss_total",
-    "posix_handle_cache_evict_total",
-    "posix_handle_cache_bypass_total",
-    "posix_healthy_count_total",
-    "posix_unhealthy_count_total",
+CONNECTOR_METHODS = (
+    "get_block_size",
+    "get_kv_connector_stats",
+    "get_num_new_matched_tokens",
+    "update_state_after_alloc",
+    "register_kv_caches",
+    "build_connector_meta",
+    "bind_connector_metadata",
+    "handle_preemptions",
+    "has_connector_metadata",
+    "start_load_kv",
+    "wait_for_layer_load",
+    "save_kv_layer",
+    "wait_for_save",
+    "request_finished_all_groups",
+    "request_finished",
+    "get_finished",
+    "build_connector_worker_meta",
+    "update_connector_output",
+    "clear_connector_metadata",
+    "get_block_ids_with_load_errors",
 )
 
-# Histograms that answer "where did the time go", in milliseconds: the whole
-# cache task first, then its decomposition, then the posix store side.
-FOCUS_HISTOGRAMS = (
-    "cache_lookup_duration_ms",
-    "cache_load_duration_ms",
-    "cache_dump_duration_ms",
-    "cache_lookup_backend_duration_ms",
-    "cache_load_queue_wait_duration_ms",
-    "cache_shard_backend_wait_ms",
-    "cache_load_backend_submit_duration_ms",
-    "cache_h2d_submit_ms",
-    "cache_h2d_sync_ms",
-    "cache_dump_queue_wait_duration_ms",
-    "cache_dump_mkbuf_duration_ms",
-    "cache_d2h_duration_ms",
-    "cache_dump_backend_submit_duration_ms",
-    "cache_dump_backend_wait_duration_ms",
-    "posix_load_task_duration_ms",
-    "posix_load_queue_wait_duration_ms",
+CONNECTOR_HISTOGRAMS = (
+    ("save_duration", "ms"),
+    ("save_completion_wait_duration", "ms"),
+    *((f"connector_{method}_duration_ms", "ms") for method in CONNECTOR_METHODS),
 )
 
-# Gauges: a delta over the window is meaningless, so the report prints the
-# value at the end of the window (and the start, when it moved).
-FOCUS_GAUGES = (
-    "posix_store_health",
-    "posix_store_usage_ratio",
-    "posix_store_used_bytes",
-    "posix_store_capacity_bytes",
-    "posix_gc_running",
-    "cache_load_bandwidth_gbps",
-    "cache_dump_bandwidth_gbps",
+# Keep the unit alongside each Histogram because bandwidth is a Histogram too,
+# not a Gauge. Every result is calculated independently for each worker rank.
+CACHESTORE_HISTOGRAMS = (
+    ("cache_lookup_duration_ms", "ms"),
+    ("cache_lookup_backend_duration_ms", "ms"),
+    ("cache_load_duration_ms", "ms"),
+    ("cache_load_queue_wait_duration_ms", "ms"),
+    ("cache_load_backend_submit_duration_ms", "ms"),
+    ("cache_shard_backend_wait_ms", "ms"),
+    ("cache_h2d_submit_ms", "ms"),
+    ("cache_h2d_sync_ms", "ms"),
+    ("cache_dump_duration_ms", "ms"),
+    ("cache_dump_queue_wait_duration_ms", "ms"),
+    ("cache_dump_prereq_wait_ms", "ms"),
+    ("cache_dump_mkbuf_duration_ms", "ms"),
+    ("cache_d2h_duration_ms", "ms"),
+    ("cache_dump_backend_submit_duration_ms", "ms"),
+    ("cache_dump_backend_wait_duration_ms", "ms"),
+    ("cache_load_bandwidth_gbps", "GB/s"),
+    ("cache_dump_bandwidth_gbps", "GB/s"),
 )
 
-MAX_OTHER_COUNTERS = 40
+POSIX_HISTOGRAMS = (
+    ("posix_load_task_duration_ms", "ms"),
+    ("posix_load_queue_wait_duration_ms", "ms"),
+    ("posix_dump_task_duration_ms", "ms"),
+    ("posix_dump_queue_wait_duration_ms", "ms"),
+    ("posix_s2h_bandwidth_gbps", "GB/s"),
+    ("posix_h2s_bandwidth_gbps", "GB/s"),
+)
+
+REPORT_PAGES = (
+    ("connector", "Connector", CONNECTOR_HISTOGRAMS),
+    ("cachestore", "CacheStore", CACHESTORE_HISTOGRAMS),
+    ("posix", "Posix", POSIX_HISTOGRAMS),
+)
+
+HISTOGRAM_QUANTILES = (0.9, 0.99)
+
+PAGE_THROUGHPUTS = {
+    "connector": (
+        ("load_bytes_total", "connector_load_throughput_gbps"),
+        ("save_bytes_total", "connector_save_throughput_gbps"),
+    ),
+    "cachestore": (
+        ("cache_load_bytes_total", "cache_load_throughput_gbps"),
+        ("cache_dump_bytes_total", "cache_dump_throughput_gbps"),
+    ),
+    "posix": (
+        ("posix_s2h_bytes_total", "posix_load_throughput_gbps"),
+        ("posix_h2s_bytes_total", "posix_dump_throughput_gbps"),
+    ),
+}
 
 SAMPLE_RE = re.compile(
     r"^(?P<name>[^\s{]+)(?P<labels>\{.*\})?\s+"
@@ -113,17 +146,49 @@ SAMPLE_RE = re.compile(
 @dataclass(frozen=True)
 class Sample:
     name: str
-    labels: str
+    labels: tuple[tuple[str, str], ...]
     value: float
 
     @property
     def key(self) -> str:
-        return f"{self.name}{self.labels}"
+        return f"{self.name}{format_labels(self.labels)}"
+
+    def label(self, name: str) -> str | None:
+        return dict(self.labels).get(name)
+
+
+@dataclass(frozen=True)
+class HistogramStats:
+    count: float
+    total: float
+    quantiles: dict[float, float]
+
+    @property
+    def average(self) -> float | None:
+        return self.total / self.count if self.count > 0 else None
+
+
+@dataclass(frozen=True, order=True)
+class RankGroup:
+    model_name: str
+    engine: str
+    worker_rank: str
+
+
+@dataclass(frozen=True)
+class ReportRow:
+    group: RankGroup
+    metric: str
+    count: float | None
+    average: float | None
+    p90: float | None
+    p99: float | None
+    unit: str
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture /metrics around one known UCM cache request.",
+        description="Capture /metrics and report per-rank UCM distributions.",
         epilog=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -172,7 +237,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Also write every per-series non-zero delta, not just the focus lists",
+        help="Append every per-series non-zero delta after the three report pages",
     )
     return parser.parse_args()
 
@@ -219,6 +284,57 @@ def filtered_text(text: str) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def parse_labels(text: str) -> tuple[tuple[str, str], ...]:
+    """Parse and canonicalize a Prometheus label set, including escapes."""
+    if text.startswith("{") and text.endswith("}"):
+        text = text[1:-1]
+    labels: dict[str, str] = {}
+    pos = 0
+    while pos < len(text):
+        while pos < len(text) and text[pos] in " ,":
+            pos += 1
+        if pos >= len(text):
+            break
+        key_start = pos
+        while pos < len(text) and text[pos] != "=":
+            pos += 1
+        if pos >= len(text):
+            break
+        key = text[key_start:pos].strip()
+        pos += 1
+        if pos >= len(text) or text[pos] != '"':
+            break
+        pos += 1
+        value: list[str] = []
+        while pos < len(text):
+            char = text[pos]
+            pos += 1
+            if char == "\\" and pos < len(text):
+                escaped = text[pos]
+                pos += 1
+                value.append("\n" if escaped == "n" else escaped)
+                continue
+            if char == '"':
+                break
+            value.append(char)
+        labels[key] = "".join(value)
+        while pos < len(text) and text[pos] != ",":
+            pos += 1
+        if pos < len(text):
+            pos += 1
+    return tuple(sorted(labels.items()))
+
+
+def format_labels(labels: tuple[tuple[str, str], ...]) -> str:
+    if not labels:
+        return ""
+    parts: list[str] = []
+    for key, value in labels:
+        escaped = value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+        parts.append(f'{key}="{escaped}"')
+    return "{" + ",".join(parts) + "}"
+
+
 def parse_samples(text: str) -> dict[str, Sample]:
     samples: dict[str, Sample] = {}
     for line in text.splitlines():
@@ -231,7 +347,7 @@ def parse_samples(text: str) -> dict[str, Sample]:
         if not is_interesting_metric(name):
             continue
         value = float(match.group("value"))
-        sample = Sample(name, match.group("labels") or "", value)
+        sample = Sample(name, parse_labels(match.group("labels") or ""), value)
         samples[sample.key] = sample
     return samples
 
@@ -240,6 +356,13 @@ def finite_delta(before: float, after: float) -> float | None:
     if not math.isfinite(before) or not math.isfinite(after):
         return None
     return after - before
+
+
+def counter_increase(before: float, after: float) -> float | None:
+    """Return a monotonic counter increase, treating a decrease as a reset."""
+    if not math.isfinite(before) or not math.isfinite(after):
+        return None
+    return after - before if after >= before else max(after, 0.0)
 
 
 def format_number(value: float) -> str:
@@ -256,63 +379,277 @@ def matching_metric(name: str, suffix: str) -> bool:
     return name == f"ucm:{suffix}" or name.endswith(f":{suffix}")
 
 
-def counter_delta(
+def rank_group(sample: Sample, aggregate_ranks: bool = False) -> RankGroup:
+    labels = dict(sample.labels)
+    worker_rank = (
+        "ALL"
+        if aggregate_ranks
+        else labels.get(
+            "worker_rank", labels.get("worker_id", labels.get("rank", "unknown"))
+        )
+    )
+    return RankGroup(
+        model_name=labels.get("model_name", ""),
+        engine=labels.get("engine", ""),
+        worker_rank=worker_rank,
+    )
+
+
+def counter_delta_by_rank(
     counter: str,
     before: dict[str, Sample],
     after: dict[str, Sample],
-) -> float:
-    """Sum a counter's delta across every labelled series (all workers)."""
-    total = 0.0
+    aggregate_ranks: bool = False,
+) -> dict[RankGroup, float]:
+    totals: dict[RankGroup, float] = {}
     for key, after_sample in after.items():
         if not matching_metric(after_sample.name, counter):
             continue
         before_value = before.get(key).value if key in before else 0.0
-        delta = finite_delta(before_value, after_sample.value)
-        if delta is not None:
-            total += delta
-    return total
+        delta = counter_increase(before_value, after_sample.value)
+        if delta is None:
+            continue
+        group = rank_group(after_sample, aggregate_ranks)
+        totals[group] = totals.get(group, 0.0) + delta
+    return totals
 
 
-def histogram_interval(
+def histogram_quantile(
+    quantile: float,
+    cumulative_buckets: dict[float, float],
+    count: float,
+) -> float | None:
+    """Prometheus-compatible linear interpolation within histogram buckets."""
+    if not cumulative_buckets or count <= 0:
+        return None
+    rank = quantile * count
+    previous_bound: float | None = None
+    previous_count = 0.0
+    for upper_bound, cumulative_count in sorted(cumulative_buckets.items()):
+        # Counter resets and scrape races can make adjacent deltas slightly
+        # non-monotonic. Clamp them before interpolation.
+        cumulative_count = max(cumulative_count, previous_count)
+        if cumulative_count < rank:
+            previous_bound = upper_bound
+            previous_count = cumulative_count
+            continue
+        if math.isinf(upper_bound):
+            return previous_bound
+        lower_bound = (
+            0.0
+            if previous_bound is None and upper_bound > 0
+            else upper_bound if previous_bound is None else previous_bound
+        )
+        bucket_count = cumulative_count - previous_count
+        if bucket_count <= 0:
+            return upper_bound
+        return lower_bound + (upper_bound - lower_bound) * (
+            (rank - previous_count) / bucket_count
+        )
+    finite_bounds = [bound for bound in cumulative_buckets if math.isfinite(bound)]
+    return max(finite_bounds) if finite_bounds else None
+
+
+def histogram_intervals_by_rank(
     base: str,
     before: dict[str, Sample],
     after: dict[str, Sample],
-) -> tuple[float, float] | None:
-    """Aggregate a histogram's (count, sum) deltas across all series."""
-    total_count = 0.0
-    total_sum = 0.0
-    seen = False
-    for key, count_sample in after.items():
-        if not matching_metric(count_sample.name, f"{base}_count"):
+    aggregate_ranks: bool = False,
+) -> dict[RankGroup, HistogramStats]:
+    """Calculate interval histogram statistics per rank or across all ranks."""
+    buckets: dict[RankGroup, dict[float, float]] = {}
+    for key, bucket_sample in after.items():
+        if not matching_metric(bucket_sample.name, f"{base}_bucket"):
             continue
-        sum_key = f"ucm:{base}_sum{count_sample.labels}"
-        if sum_key not in after:
-            # Metrics may be exported under a nested namespace; match on suffix.
-            sum_key = next(
-                (
-                    k
-                    for k, s in after.items()
-                    if s.labels == count_sample.labels
-                    and matching_metric(s.name, f"{base}_sum")
-                ),
-                None,
+        le_text = bucket_sample.label("le")
+        if le_text is None:
+            continue
+        before_value = before.get(key).value if key in before else 0.0
+        delta = counter_increase(before_value, bucket_sample.value)
+        if delta is None:
+            continue
+        bound = math.inf if le_text in {"+Inf", "Inf"} else float(le_text)
+        group = rank_group(bucket_sample, aggregate_ranks)
+        group_buckets = buckets.setdefault(group, {})
+        group_buckets[bound] = group_buckets.get(bound, 0.0) + delta
+
+    counts = counter_delta_by_rank(f"{base}_count", before, after, aggregate_ranks)
+    totals = counter_delta_by_rank(f"{base}_sum", before, after, aggregate_ranks)
+    groups = set(buckets) | set(counts) | set(totals)
+    results: dict[RankGroup, HistogramStats] = {}
+    for group in groups:
+        group_buckets = buckets.get(group, {})
+        count = counts.get(group, 0.0) or group_buckets.get(math.inf, 0.0)
+        if count <= 0:
+            continue
+        quantiles: dict[float, float] = {}
+        for quantile in HISTOGRAM_QUANTILES:
+            value = histogram_quantile(quantile, group_buckets, count)
+            if value is not None:
+                quantiles[quantile] = value
+        results[group] = HistogramStats(
+            count=count,
+            total=totals.get(group, 0.0),
+            quantiles=quantiles,
+        )
+    return results
+
+
+def rank_sort_key(group: RankGroup) -> tuple[str, str, int, int | str]:
+    try:
+        return (group.model_name, group.engine, 0, int(group.worker_rank))
+    except ValueError:
+        return (group.model_name, group.engine, 1, group.worker_rank)
+
+
+def build_page_rows(
+    page_key: str,
+    histograms: tuple[tuple[str, str], ...],
+    before: dict[str, Sample],
+    after: dict[str, Sample],
+    window_seconds: float,
+    aggregate_ranks: bool,
+) -> list[ReportRow]:
+    rows: list[ReportRow] = []
+    for metric, unit in histograms:
+        stats_by_rank = histogram_intervals_by_rank(
+            metric, before, after, aggregate_ranks
+        )
+        for group in sorted(stats_by_rank, key=rank_sort_key):
+            stats = stats_by_rank[group]
+            rows.append(
+                ReportRow(
+                    group=group,
+                    metric=metric,
+                    count=stats.count,
+                    average=stats.average,
+                    p90=stats.quantiles.get(0.9),
+                    p99=stats.quantiles.get(0.99),
+                    unit=unit,
+                )
             )
-        if sum_key is None:
-            continue
-        before_count = before.get(key).value if key in before else 0.0
-        before_sum = before.get(sum_key).value if sum_key in before else 0.0
-        count_delta = finite_delta(before_count, count_sample.value)
-        sum_delta = finite_delta(before_sum, after[sum_key].value)
-        if count_delta is None or sum_delta is None:
-            continue
-        seen = True
-        total_count += count_delta
-        total_sum += sum_delta
-    return (total_count, total_sum) if seen else None
+    if window_seconds > 0:
+        for counter, output_name in PAGE_THROUGHPUTS[page_key]:
+            for group, byte_delta in sorted(
+                counter_delta_by_rank(counter, before, after, aggregate_ranks).items(),
+                key=lambda item: rank_sort_key(item[0]),
+            ):
+                rows.append(
+                    ReportRow(
+                        group=group,
+                        metric=output_name,
+                        count=None,
+                        average=byte_delta / window_seconds / 1e9,
+                        p90=None,
+                        p99=None,
+                        unit="GB/s",
+                    )
+                )
+    return rows
 
 
-def gauge_values(name: str, samples: dict[str, Sample]) -> list[Sample]:
-    return [s for s in samples.values() if matching_metric(s.name, name)]
+def format_optional(value: float | None) -> str:
+    return "-" if value is None else format_number(value)
+
+
+def render_rows_table(rows: list[ReportRow]) -> list[str]:
+    lines: list[str] = []
+    lines.append(
+        "| Model | Engine | Rank | Metric | Samples | Avg | P90 | P99 | Unit |"
+    )
+    lines.append("|---|---|---:|---|---:|---:|---:|---:|---|")
+    if not rows:
+        lines.append("| - | - | - | No observations | - | - | - | - | - |")
+        return lines
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    row.group.model_name or "-",
+                    row.group.engine or "-",
+                    row.group.worker_rank,
+                    row.metric,
+                    format_optional(row.count),
+                    format_optional(row.average),
+                    format_optional(row.p90),
+                    format_optional(row.p99),
+                    row.unit,
+                )
+            )
+            + " |"
+        )
+    return lines
+
+
+def render_page_table(
+    title: str,
+    all_rank_rows: list[ReportRow],
+    per_rank_rows: list[ReportRow],
+) -> list[str]:
+    lines = [f"## {title}", "", "### All ranks", ""]
+    lines.extend(render_rows_table(all_rank_rows))
+    lines.extend(("", "### Per-rank detail", ""))
+    lines.extend(render_rows_table(per_rank_rows))
+    return lines
+
+
+def write_report_csv(
+    path: Path,
+    pages: dict[str, tuple[list[ReportRow], list[ReportRow]]],
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(
+            (
+                "page",
+                "scope",
+                "model_name",
+                "engine",
+                "worker_rank",
+                "metric",
+                "samples",
+                "avg",
+                "p90",
+                "p99",
+                "unit",
+            )
+        )
+        for page_key, (all_rank_rows, per_rank_rows) in pages.items():
+            for scope, rows in (
+                ("all_ranks", all_rank_rows),
+                ("per_rank", per_rank_rows),
+            ):
+                for row in rows:
+                    writer.writerow(
+                        (
+                            page_key,
+                            scope,
+                            row.group.model_name,
+                            row.group.engine,
+                            row.group.worker_rank,
+                            row.metric,
+                            row.count,
+                            row.average,
+                            row.p90,
+                            row.p99,
+                            row.unit,
+                        )
+                    )
+
+
+def row_as_dict(row: ReportRow) -> dict[str, object]:
+    return {
+        "model_name": row.group.model_name,
+        "engine": row.group.engine,
+        "worker_rank": row.group.worker_rank,
+        "metric": row.metric,
+        "samples": row.count,
+        "avg": row.average,
+        "p90": row.p90,
+        "p99": row.p99,
+        "unit": row.unit,
+    }
 
 
 def write_delta_report(
@@ -321,58 +658,43 @@ def write_delta_report(
     after: dict[str, Sample],
     window_seconds: float,
     full: bool,
-) -> None:
-    report: list[str] = []
-    report.append("# UCM metrics delta report")
-    report.append("")
-    report.append(f"window: {window_seconds:.1f}s between the two snapshots")
-    report.append("counters are deltas over the window; histograms are the")
-    report.append("interval mean (sum_delta / count_delta) over the same window.")
-    report.append("")
-
-    report.append("## 1. Counters: what the request actually did")
-    for counter in FOCUS_COUNTERS:
-        delta = counter_delta(counter, before, after)
-        marker = ""
-        if counter == "cache_load_backend_shards_total" and delta > 0:
-            marker = "   <-- served by the backend, not by the buffer"
-        elif counter == "cache_lookup_miss_blocks_total" and delta > 0:
-            marker = "   <-- buffer did not hold every queried block"
-        report.append(f"{counter:<44} {format_number(delta)}{marker}")
-
-    report.append("")
-    report.append("## 2. Histograms: where the time went (ms)")
-    for base in FOCUS_HISTOGRAMS:
-        stats = histogram_interval(base, before, after)
-        if stats is None:
-            report.append(f"{base:<44} (no observations)")
-            continue
-        count_delta, sum_delta = stats
-        mean = sum_delta / count_delta if count_delta else 0.0
-        report.append(
-            f"{base:<44} n={format_number(count_delta)} "
-            f"mean={format_number(mean)} total={format_number(sum_delta)}"
+) -> dict[str, object]:
+    pages: dict[str, tuple[list[ReportRow], list[ReportRow]]] = {}
+    report = [
+        "# UCM per-rank metrics report",
+        "",
+        f"Capture window: {window_seconds:.3f}s",
+        "",
+        "Histogram avg/p90/p99 values use only observations added during this window.",
+        "All-ranks rows merge buckets before calculating p90/p99; they do not average rank quantiles.",
+        "Per-rank rows stay separate by model, engine, and worker rank.",
+        "",
+    ]
+    for page_index, (page_key, title, histograms) in enumerate(REPORT_PAGES):
+        all_rank_rows = build_page_rows(
+            page_key,
+            histograms,
+            before,
+            after,
+            window_seconds,
+            aggregate_ranks=True,
         )
+        per_rank_rows = build_page_rows(
+            page_key,
+            histograms,
+            before,
+            after,
+            window_seconds,
+            aggregate_ranks=False,
+        )
+        pages[page_key] = (all_rank_rows, per_rank_rows)
+        if page_index:
+            report.extend(("", "---", ""))
+        report.extend(render_page_table(title, all_rank_rows, per_rank_rows))
 
-    report.append("")
-    report.append("## 3. Gauges: state at the end of the window")
-    emitted = 0
-    for gauge in FOCUS_GAUGES:
-        for sample in gauge_values(gauge, after):
-            before_value = (
-                before.get(sample.key).value if sample.key in before else None
-            )
-            change = ""
-            if before_value is not None and before_value != sample.value:
-                change = f" (was {format_number(before_value)})"
-            report.append(f"{sample.key} {format_number(sample.value)}{change}")
-            emitted += 1
-    if emitted == 0:
-        report.append("(none reported)")
-
-    report.append("")
     if full:
-        report.append("## 4. Every per-series non-zero delta (buckets omitted)")
+        report.extend(("", "---", "", "## All non-zero series deltas", ""))
+        report.append("```text")
         emitted = 0
         for key in sorted(after):
             sample = after[key]
@@ -386,33 +708,21 @@ def write_delta_report(
             emitted += 1
         if emitted == 0:
             report.append("(no non-zero deltas found)")
-    else:
-        report.append("## 4. Other counters that moved")
-        others: list[tuple[str, float]] = []
-        for key in sorted(after):
-            sample = after[key]
-            if sample.name.endswith(("_bucket", "_count", "_sum")):
-                continue
-            if any(matching_metric(sample.name, c) for c in FOCUS_COUNTERS):
-                continue
-            if any(matching_metric(sample.name, g) for g in FOCUS_GAUGES):
-                continue
-            before_value = before.get(key).value if key in before else 0.0
-            delta = finite_delta(before_value, sample.value)
-            if delta is None or delta == 0:
-                continue
-            others.append((key, delta))
-        others.sort(key=lambda item: abs(item[1]), reverse=True)
-        if not others:
-            report.append("(nothing else moved)")
-        for key, delta in others[:MAX_OTHER_COUNTERS]:
-            report.append(f"{key} {format_number(delta)}")
-        if len(others) > MAX_OTHER_COUNTERS:
-            report.append(
-                f"... {len(others) - MAX_OTHER_COUNTERS} more (use --full for all)"
-            )
+        report.append("```")
 
     path.write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_report_csv(path.parent / "metrics_report.csv", pages)
+    return {
+        "schema_version": 2,
+        "window_seconds": window_seconds,
+        "pages": {
+            page_key: {
+                "all_ranks": [row_as_dict(row) for row in all_rank_rows],
+                "per_rank": [row_as_dict(row) for row in per_rank_rows],
+            }
+            for page_key, (all_rank_rows, per_rank_rows) in pages.items()
+        },
+    }
 
 
 def save_snapshot(
@@ -494,11 +804,20 @@ def main() -> int:
         print(f"Partial output, if any, is in: {run_dir}", file=sys.stderr)
         return 1
 
-    report_path = run_dir / "delta_report.txt"
-    write_delta_report(report_path, before, after, after_ts - before_ts, args.full)
-    print(f"Saved delta report: {report_path}")
+    report_path = run_dir / "metrics_report.md"
+    summary = write_delta_report(
+        report_path, before, after, after_ts - before_ts, args.full
+    )
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Saved metrics report: {report_path}")
+    print(f"Saved machine-readable summary: {summary_path}")
+    print(f"Saved combined CSV: {run_dir / 'metrics_report.csv'}")
     print()
-    print("Sections 1-3 are the focused view; raw series are in:")
+    print("Raw series are in:")
     print(f"  {run_dir / 'before_filtered.prom'}")
     print(f"  {run_dir / 'after_filtered.prom'}")
     return 0
