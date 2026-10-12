@@ -33,6 +33,10 @@ from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
 
+from ucm.integration.vllm.cache_numa_affinity import (
+    clear_cache_numa_placement,
+    publish_round_robin_cache_numa_placement,
+)
 from ucm.integration.vllm.device import create_device, get_current_device_id
 from ucm.integration.vllm.metrics import (
     UCM_HAS_PROM_METRICS,
@@ -1577,6 +1581,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         """
         if self._role != KVConnectorRole.WORKER:
             return
+        clear_cache_numa_placement()
+        uses_cache_store = "Cache" in str(
+            config.get("store_pipeline", "")
+        ).split("|")
         numa_node = self.device.get_numa_node(self.device_id)
         if numa_node is not None:
             config["cache_detected_numa_node"] = numa_node
@@ -1589,9 +1597,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
             parallel.pipeline_parallel_size * parallel.tensor_parallel_size
         )
         model_parallel_rank = parallel.rank % model_parallel_size
-        config["cache_fallback_numa_rank"] = (
-            dp_rank * model_parallel_size + model_parallel_rank
-        )
+        fallback_rank = dp_rank * model_parallel_size + model_parallel_rank
+        config["cache_fallback_numa_rank"] = fallback_rank
+        if not uses_cache_store:
+            return
+        try:
+            placement = publish_round_robin_cache_numa_placement(fallback_rank)
+            logger.info(
+                "[UCM CPU Affinity] Cache fallback rank %d resolved to NUMA %d "
+                "from nodes %s.",
+                fallback_rank,
+                placement.node,
+                list(placement.available_nodes),
+            )
+        except (OSError, ValueError) as error:
+            logger.warning(
+                "[UCM CPU Affinity] failed to resolve Cache fallback NUMA for "
+                "rank %d; keeping the existing UCM CPU assignment: %s",
+                fallback_rank,
+                error,
+            )
 
     def _get_world_size(self) -> int:
         parallel = self._vllm_config.parallel_config
