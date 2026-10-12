@@ -62,8 +62,7 @@ Status SpaceManager::Setup(const Config& config)
         return Status::Error("failed to run prefix lookup service thread pool");
     }
     auto lookupSuccess =
-        lookupSrv_
-            .SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
+        lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
             .SetWorkerTimeoutFn(
                 [this](LookupContext& ctx, auto) { OnLookupTimeout(ctx); }, config.timeoutMs)
             .SetNWorker(config.lookupConcurrency)
