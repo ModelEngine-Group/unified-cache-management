@@ -23,6 +23,7 @@ set(UCM_RUNTIME_ASCEND_FAMILY OFF)
 set(UCM_RUNTIME_ASCEND_HAL OFF)
 set(UCM_RUNTIME_ASCEND_IO_AGGREGATION OFF)
 set(UCM_RUNTIME_ASCEND_SDMA_DIRECT OFF)
+set(UCM_CACHE_V2_USE_POSIX_SHM_BACKEND OFF)
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     set(UCM_RUNTIME_ASCEND_FAMILY ON)
     set(UCM_RUNTIME_ASCEND_IO_AGGREGATION ON)
@@ -31,7 +32,9 @@ elseif(RUNTIME_ENVIRONMENT STREQUAL "ascend-a3")
     set(UCM_RUNTIME_ASCEND_SDMA_DIRECT ON)
 elseif(RUNTIME_ENVIRONMENT STREQUAL "ascend-a5")
     set(UCM_RUNTIME_ASCEND_FAMILY ON)
-    set(UCM_RUNTIME_ASCEND_HAL ON)
+    # Keep A5 aligned with upstream until the HAL backend is fully validated.
+    # PosixShm does not register the cache segments with the device runtime.
+    set(UCM_CACHE_V2_USE_POSIX_SHM_BACKEND ON)
 endif()
 
 # Which cache core each platform ships, and therefore which test suite can link.

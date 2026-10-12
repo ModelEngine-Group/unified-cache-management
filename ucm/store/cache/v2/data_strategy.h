@@ -44,6 +44,10 @@
 #include "numa/numa_policy.h"
 #include "status/status.h"
 
+#ifndef UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+#define UCM_CACHE_V2_USE_POSIX_SHM_BACKEND 0
+#endif
+
 namespace UC::Cache2 {
 
 /* Everything needed to set up the data plane for one worker. Assembled from
@@ -65,14 +69,16 @@ class DataStrategy {
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
-    /* One backend per platform: the A5 HAL path owns real device memory, every
-     * other ascend/cuda/simu platform gets memfd host segments. PosixShm stays
-     * as a test/reference backend and is no longer selected here. */
+    /* A5 stays on the upstream PosixShm path until its HAL backend is validated.
+     * Other ascend/cuda/simu platforms use memfd host segments. The HAL branch
+     * remains available for an explicitly enabled experimental build. */
     static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
     {
 #if UCM_RUNTIME_ASCEND_HAL
         (void)uniqueId;
         return std::make_unique<AscendHalDataBackend>();
+#elif UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+        return std::make_unique<PosixShmDataBackend>(uniqueId);
 #else
         return std::make_unique<MemfdDataBackend>(uniqueId);
 #endif
@@ -190,6 +196,13 @@ public:
         }
         auto backend = MakeBackend(options.domainId);
         const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+        BackendOptions backendOptions;
+        backendOptions.deviceId = options.deviceId;
+        backendOptions.rankCount = nRanks;
+        backendOptions.rankBytes = slotSize * nSlotsPerRank;
+        backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
+        backendOptions.deadline = deadline;
+#if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
         auto placement = Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank);
         if (!placement) {
             UC_ERROR("cache2 numa placement failed: owner={} device={} status={}", myRank,
@@ -197,13 +210,8 @@ public:
             return {placement.Error().Underlying(),
                     fmt::format("numa placement failed: {}", placement.Error())};
         }
-        BackendOptions backendOptions;
-        backendOptions.deviceId = options.deviceId;
-        backendOptions.rankCount = nRanks;
-        backendOptions.rankBytes = slotSize * nSlotsPerRank;
         backendOptions.localPlacement = placement.Value();
-        backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
-        backendOptions.deadline = deadline;
+#endif
         Status status = Status::OK();
         try {
             status = backend->Setup(backendOptions);
