@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, Literal
 
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.kv_cache_interface import (
-    CircularBufferSpec,
-    KpoolTailSpec,
     KVCacheSpecKind,
     UniformTypeKVCacheSpecs,
     get_kv_cache_spec_kind,
@@ -63,12 +61,12 @@ class UCMKVCacheGroupInfo:
     # nothing); the parser stamps it once the cache block size is known.
     tail_blocks: int = 0
     is_eagle_group: bool = False
-    # Scratch remains in HBM; UCM reconstructs it at complete-pool boundaries.
-    is_transient: bool = False
+    # Native transfer/cacheability flags select hash-addressed store groups.
+    is_persistent: bool = True
 
     @property
     def is_attention(self) -> bool:
-        return not self.is_transient and KVCacheSpecKind.MAMBA not in self.kinds
+        return self.is_persistent and KVCacheSpecKind.MAMBA not in self.kinds
 
     @property
     def is_sliding_window(self) -> bool:
@@ -127,7 +125,7 @@ def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
     """
 
     token_block = group.token_block_size
-    if group.is_transient:
+    if not group.is_persistent:
         return 0
     if group.is_state_snapshot:
         return 1
@@ -181,30 +179,6 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     return kinds
 
 
-def _transient_alignment(
-    specs: Sequence["KVCacheSpec"],
-    model_type: str,
-    indexer_ratio: int | None,
-    device_type: str,
-) -> int | None:
-    """Return the restore alignment for omitted scratch; native models own pairing."""
-    if all(isinstance(spec, CircularBufferSpec) for spec in specs):
-        if model_type not in ("qwen4_exp", "qwen4_exp_text"):
-            raise NotImplementedError(
-                f"No UCM restore policy for CircularBufferSpec in {model_type}"
-            )
-        return indexer_ratio
-    if model_type in ("glm5_next", "glm5_next_text"):
-        tail_types = (KpoolTailSpec,)
-        if device_type == "npu":
-            from vllm_ascend.core.kv_cache_interface import AscendIndexerKPoolTailSpec
-
-            tail_types = (KpoolTailSpec, AscendIndexerKPoolTailSpec)
-        if all(isinstance(spec, tail_types) for spec in specs):
-            return indexer_ratio
-    return None
-
-
 def _sliding_tail_tokens(
     group: "KVCacheGroupSpec",
     compressor_ratios: Mapping[int, int],
@@ -237,7 +211,6 @@ def _select_cache_block_size(
     groups: Sequence[UCMKVCacheGroupInfo],
     scheduler_block_size: int,
     requested: int | None,
-    transient_alignments: Mapping[int, int],
 ) -> int:
     state_groups = tuple(group for group in groups if group.is_state_snapshot)
     fa_groups = tuple(
@@ -261,14 +234,9 @@ def _select_cache_block_size(
         )
 
     for group in groups:
-        if group.is_transient:
-            alignment = transient_alignments[group.group_id]
-            if ucm_block_size % alignment:
-                raise ValueError(
-                    f"Transient group {group.group_id} requires complete pools "
-                    f"of {alignment} tokens"
-                )
-        elif group.is_state_snapshot or (group.is_sliding_window and group.tail_tokens):
+        if not group.is_persistent:
+            continue
+        if group.is_state_snapshot or (group.is_sliding_window and group.tail_tokens):
             if ucm_block_size % group.token_block_size:
                 raise ValueError(
                     f"Group {group.group_id} block span {group.token_block_size} "
@@ -291,17 +259,17 @@ def parse_kv_cache_config(
     *,
     scheduler_block_size: int,
     num_hidden_layers: int,
-    indexer_tokens_per_state: int | None,
     ucm_cache_block_size: int | None = None,
     device_type: str = "npu",
     compressor_tokens_per_state: Mapping[int, int] | None = None,
-    model_type: str = "",
 ) -> UCMKVCacheSpec:
     """Compile group persistence and restore policy on scheduler and worker.
 
     No physical row counts, placement descriptors or layer layouts are parsed.
     Compressor ratios only determine the legacy DSV4 history tail. Native group
-    positions remain block-table IDs, including transient and empty PP groups.
+    positions remain block-table IDs, including excluded and empty PP groups.
+    Native prefix_cacheable_group_ids selects the groups UCM stores; scratch
+    reconstruction and its resume boundaries belong to the engine.
     """
     device_type = device_type.lower()
     compressor_ratios = compressor_tokens_per_state or {}
@@ -309,28 +277,17 @@ def parse_kv_cache_config(
     if not raw_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
     groups = []
-    # group_id -> compression-group token span; UCM restores at complete pools.
-    transient_alignments = {}
+    persistent_ids = set(kv_cache_config.prefix_cacheable_group_ids)
     for group_id, group in enumerate(raw_groups):
-        specs = _member_specs(group.kv_cache_spec)
-        alignment = _transient_alignment(
-            specs, model_type, indexer_tokens_per_state, device_type
-        )
-        if alignment is not None:
-            transient_alignments[group_id] = alignment
-        # A recognized scratch ring has no FA/WA/State persistence kind.
-        kinds = (
-            frozenset()
-            if alignment is not None and isinstance(specs[0], CircularBufferSpec)
-            else _classify(specs)
-        )
+        is_persistent = group_id in persistent_ids
+        specs = _member_specs(group.kv_cache_spec) if is_persistent else ()
+        kinds = _classify(specs)
         if KVCacheSpecKind.MAMBA in kinds and any(
             spec.mamba_cache_mode != "align" for spec in specs
         ):
             raise ValueError("connector v2 requires mamba_cache_mode='align'")
-        transient = alignment is not None
         sliding = not kinds.isdisjoint(_SLIDING_KINDS)
-        if transient:
+        if not is_persistent:
             tail_tokens = 0
         elif sliding:
             tail_tokens = _sliding_tail_tokens(
@@ -345,11 +302,11 @@ def parse_kv_cache_config(
                 kinds=kinds,
                 tail_tokens=tail_tokens,
                 is_eagle_group=group.is_eagle_group,
-                is_transient=transient,
+                is_persistent=is_persistent,
             )
         )
     ucm_block_size = _select_cache_block_size(
-        groups, scheduler_block_size, ucm_cache_block_size, transient_alignments
+        groups, scheduler_block_size, ucm_cache_block_size
     )
     result = UCMKVCacheSpec(
         tuple(
@@ -365,7 +322,7 @@ def parse_kv_cache_config(
             layout_debug(
                 f"policy group={group.group_id} "
                 f"kinds={sorted(kind.value for kind in group.kinds)} "
-                f"transient={group.is_transient} token_block={group.token_block_size} "
+                f"persistent={group.is_persistent} token_block={group.token_block_size} "
                 f"tail={group.tail_tokens} tail_blocks={group.tail_blocks}"
             )
         layout_debug(
@@ -414,4 +371,3 @@ class UCMKVCacheLayout:
         self.layer_names_by_id = {
             layer_id: frozenset(names) for layer_id, names in names_by_id.items()
         }
-

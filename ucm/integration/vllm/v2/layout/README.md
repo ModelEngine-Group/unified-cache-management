@@ -1,6 +1,6 @@
 # v2 KV 寻址与 UCM block 排布
 
-完整设计见 [UCM Connector v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，包含 scheduler、hash/窗口规则、worker 生命周期和验证边界。本文件保留布局接口与数值示例。
+完整设计见 [UCM Connector v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，包含 scheduler、hash/窗口规则、worker 生命周期和验证边界。本文件保留布局接口与数值示例。图文材料统一维护在 qyh 的 `docs/v2-layout` 分支：[Layout 详细设计与8张图](https://github.com/qyh111/unified-cache-management/blob/docs/v2-layout/docs/connector-v2-layout-design.md)。配套 HTML、SVG 和生成脚本也在该分支，下载后可离线阅读。
 
 ## 模块边界
 
@@ -27,7 +27,7 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
     proxy_adapter.submit("load", transfer)
 ```
 
-本次只调整职责与导入位置，token/State/transient 策略、segment 寻址、padding、bulk/layerwise 外存模板及 namespace r7 不变。当前开发 proxy 同步执行，State layerwise 流水仍待实现。测试/工具已迁移当前接口引用，旧 spec/view/lifecycle 夹具仍待核对；未运行测试。
+2026-10-12：持久化 group 直接取原生 `KVCacheConfig.prefix_cacheable_group_ids`，即同时满足 `enable_kv_transfer` 和 `prefix_cacheable`。`is_persistent=False` 的 group 保留原生编号，但不参与存取、物理布局、UCM/CP block-size 约束；scratch 重建和 pool 恢复边界由引擎负责。已删除模型专属 transient/indexer ratio 解析。segment 寻址、padding 和 bulk/layerwise 外存模板仍使用 r7；namespace 摘要加入 store group IDs，隔离存取集合变化。当前开发 proxy 同步执行，State layerwise 流水仍待实现；本批仅静态检查，未运行测试。
 
 建议按 `kv_cache.py -> __init__.py -> view.py -> group.py -> store_layout.py` 阅读；理解 plan 与传输时再读外部 `../ucm_kv_cache.py`。
 
@@ -54,6 +54,8 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
 State group 同样参与该路径：符合条件时，bulk 复制整个 group span，保留各层 page padding，不复制 span 之外的全局 block 空闲容量。use_layerwise=True 时始终使用 payload 前缀和模板，State 整快照与加载等待规则继续由原有策略处理。记录格式使用 r7 namespace，隔离旧版带 page 间隙的 layerwise 文件。
 
 ## 两种 offset
+
+`compile_access` 的 token offsets/counts 与字节数组统一使用 uint64：先检查起点小于 block token span，再以 `counts <= block_tokens - starts` 检查范围，避免无符号减法下溢或 `starts + counts` 溢出，不经 int64 中转。
 
 - `block_byte_offsets`：源 segment 内，从块起点跳过多少字节；用于计算 ptr。
 - `ucm_block_offsets`：目标 UCM block 中放在哪；每个 group 模板内先存 group 相对值，最终加 group 基址。

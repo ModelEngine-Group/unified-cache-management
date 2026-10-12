@@ -66,19 +66,23 @@ class ParallelLayout:
         if spec.wa_groups or spec.state_groups:
             raise NotImplementedError("v2 CP currently supports full attention only")
         groups = tuple(
-            replace(g, token_block_size=g.token_block_size * cp) for g in spec.groups
+            replace(g, token_block_size=g.token_block_size * cp)
+            if g.is_persistent else g
+            for g in spec.groups
         )
+        persistent_groups = tuple(g for g in groups if g.is_persistent)
         # Only complete distributed pages: a fractional CP page needs explicit
         # striped-token mapping, not proportional source offsets.
         ucm_block_size = requested_block_size or lcm(
-            *(g.token_block_size for g in groups)
+            *(g.token_block_size for g in persistent_groups)
         )
-        if any(ucm_block_size % g.token_block_size for g in groups):
+        if any(ucm_block_size % g.token_block_size for g in persistent_groups):
             raise ValueError("CP UCM blocks must contain whole distributed KV pages")
         return replace(
             spec,
             groups=tuple(
                 replace(g, tail_blocks=ucm_block_size // g.token_block_size)
+                if g.is_persistent else g
                 for g in groups
             ),
             ucm_cache_block_size=ucm_block_size,

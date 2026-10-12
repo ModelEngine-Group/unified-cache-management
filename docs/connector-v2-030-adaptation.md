@@ -34,15 +34,15 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 - State 禁用含 padding 的 whole-group Block First 快路径；FA 的整块快路径保留。
 - PLE/GDN/KDA 使用本 rank 的 State view。PLE 的 `tp_replicated` 不触发再次除 TP；仍逐 rank 存储，未做 replicated 数据去重。单层 State group 不补层数。
 
-### GLM tail 与 Qwen ring
+### 原生存取 group 选择（2026-10-12 更新）
 
-明确标记 transient，保留原生 group ID 和 block table 的位置，但排除其 record layout、layerwise 保存入口和持久化路由：
+UCM 直接使用 `KVCacheConfig.prefix_cacheable_group_ids`，组合 `group.enable_kv_transfer` 和 `spec.prefix_cacheable`。非参与项保留 group ID 与 block table 位置，但 `is_persistent=False`、kinds 为空、tail_blocks=0，不生成 HBM/Store layout，不进入 FA/WA/State 路由，也不参与 UCM 或 CP 页约束。
 
-- GLM 按模型类型和原生 Kpool tail spec 识别 tail，要求完整池恢复边界。
-- Qwen 按模型类型和 `CircularBufferSpec` 识别 raw ring，要求完整压缩组的恢复边界；原生模型/spec 构造负责 ratio、capacity、window 的有效性。
-- 原生模型成对创建 raw/compressed 或 tail/k cache；UCM 不再拼接名称、重复检查配对 owner。`transient_alignments` 只记录各 scratch group 的恢复对齐 token 数，检查最终 UCM unit，而不仅检查 scheduler block。
+- 删除 `_transient_alignment`、transient_alignments 以及 Qwen/GLM 模型名与 indexer ratio 参数；不另加 scratch pool 恢复边界，重建和恢复语义由引擎负责。
+- 参与存取的 group 仍遵守引擎 scheduler 粒度、State 整快照、物理部分 token 能力和既有 SWA tail 规则。旧 DSV4 compressor tail 计算保持现状。
+- namespace 摘要加入 store group IDs，隔离存取集合变化；有效 payload、padding 与 r7 字节格式不变。
 
-这些规则针对原生实现中只保留未完成压缩组原始数据的 scratch/ring。没有根据 `prefix_cacheable=False` 通用排除，也没有将 DSV4.1 ring 套用到 Qwen 规则。DSV4.1 CircularBufferSpec 当前仍拒绝。
+原生声明不参与前缀缓存的 DSV4.1 ring 同样跳过；不据此宣称模型其他布局或生命周期已验收。本批仅 AST/diff 静态检查，未运行测试。
 
 ### 生命周期与存储身份
 
@@ -136,9 +136,9 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 
 用户逐项 review 后，先拆分成员展开、transient 策略、平台物理行数、sliding tail 与 unit 选择；随后进一步拆开两端职责，最新入口见下节。没有执行测试。
 
-- `num_hidden_layers` 和 `indexer_tokens_per_state` 改为必传模型材料；无专用 indexer 的模型传 None。删除层数 None/非正、indexer ratio 等原生模型已验证字段的重复检查。
+- `num_hidden_layers` 必传；2026-10-12 已删除专属 indexer_tokens_per_state 参数，存取集合由原生标志给出。删除层数 None/非正等原生模型已验证字段的重复检查。
 - PP 空本地 group 是真实原生情况。`_member_specs` 统一读取 group 的声明成员，不再在 State 分支反复用 `("", spec)` 补齐；实际 layer/view 仍仅来自 PP 本地 layer_names。
-- `native_id` 统一命名为 `group_id`，保留原生 config/table 位置。Qwen 临时环使用 `is_transient` 和空 persistence kinds，不再把已识别的环标为 UNKNOWN。未知持久 spec 仍拒绝。
+- `native_id` 统一命名为 `group_id`，保留原生 config/table 位置。2026-10-12 用 is_persistent 取代 is_transient：原生禁用存取的 group 不分类，kinds 为空；未知持久 spec 仍拒绝。
 - 原生 CircularBufferSpec 同时被 Qwen QSA 与 DSV4.1 compressor 使用；当前 v2 仅接入 Qwen 的完整池恢复策略。DSV4.1 C2 环在无 speculative、完整 128-token 恢复边界时也有可省略的源码依据，旧 v1 专用实现已采用，但 v2 尚未接入对应策略。
 - 删除 tail/ring 的重复 capacity/window/scheduler 容量检查，以及原生模型已保证的配对 owner 检查。保留最终 UCM unit 的完整压缩组对齐，这是 UCM 自身必须满足的恢复条件。
 - 物理存储大小显式处理 AscendSlidingWindowMLASpec 的行数和 AscendSFAIndexerCacheSpec 的 DCP 复制倍数，删除通用字段猜测；当前实现移至 `layout._storage_block_size`。该倍数描述额外物理行，不是压缩比或 TP 分片。

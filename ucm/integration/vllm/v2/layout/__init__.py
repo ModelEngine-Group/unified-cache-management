@@ -107,7 +107,7 @@ def build_group_layouts(
     layouts = {}
     for group in spec.groups:
         native_group = kv_cache_config.kv_cache_groups[group.group_id]
-        if group.is_transient or not native_group.layer_names:
+        if not group.is_persistent or not native_group.layer_names:
             continue
         layers = []
         for name, native_spec in _concrete_specs(native_group):

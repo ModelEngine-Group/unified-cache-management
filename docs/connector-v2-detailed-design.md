@@ -21,6 +21,8 @@ v2 将不同模型的 Full Attention、Sliding Window 和 Mamba 状态统一成�
 - worker 默认使用同步 bulk load/dump；`use_layerwise: true` 启用逐层传输和按层等待，步末等待保存任务并 commit。
 - `SimpleFileUCMProxy` 是可替换的开发后端，不是多级存储管理器；存储层的解析策略不决定寻址层设计。
 
+Layout 的对象关系、初始化、view 分段、寻址矩阵与外存模板详见 qyh 文档分支的 [Layout 图文详细设计](https://github.com/qyh111/unified-cache-management/blob/docs/v2-layout/docs/connector-v2-layout-design.md)；HTML、SVG 和生成脚本统一维护在该分支。
+
 ## 2. 模块职责与数据流
 
 ```mermaid

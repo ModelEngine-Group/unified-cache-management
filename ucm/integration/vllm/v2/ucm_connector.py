@@ -266,12 +266,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             index: max(1, int(ratio))
             for index, ratio in enumerate(compress_ratios)
         }
-        model_type = text_config.model_type
-        indexer_ratio = None
-        if model_type in ("glm5_next", "glm5_next_text"):
-            indexer_ratio = text_config.index_kpool
-        elif model_type in ("qwen4_exp", "qwen4_exp_text"):
-            indexer_ratio = text_config.indexer_compress_ratio
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
             scheduler_block_size=scheduler_block_size,
@@ -279,8 +273,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             device_type=self.context.device_type,
             compressor_tokens_per_state=compressor_tokens_per_state,
             num_hidden_layers=num_layers,
-            model_type=model_type,
-            indexer_tokens_per_state=indexer_ratio,
         )
         if self.spec.state_groups and vllm_config.use_v2_model_runner:
             raise NotImplementedError(
@@ -296,6 +288,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             "mamba_dtype": vllm_config.cache_config.mamba_cache_dtype,
             "mamba_ssm_dtype": vllm_config.cache_config.mamba_ssm_cache_dtype,
             "kv_cache_layout": kv_cache_config.kv_cache_layout,
+            "store_group_ids": [
+                group.group_id for group in self.spec.groups if group.is_persistent
+            ],
             "ascend_gqa_head_first": (
                 envs.VLLM_KV_CACHE_LAYOUT in ("LBHNC", "HND")
                 if self.context.device_type == "npu"

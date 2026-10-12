@@ -293,19 +293,21 @@ class KVCacheGroupLayout:
         Physically separated heads have one column each. Multi-head HNC
         requires whole blocks even when its heads form one compact segment.
         """
-        starts = np.atleast_1d(np.asarray(token_offsets, dtype=np.int64))
+        block_tokens = np.uint64(self.token_block_size)
+        starts = np.atleast_1d(np.asarray(token_offsets, dtype=np.uint64))
+        # Check the start before subtracting unsigned token counts.
+        if (starts >= block_tokens).any():
+            raise ValueError("Token range must lie inside one physical block")
         counts = (
-            self.token_block_size - starts
+            block_tokens - starts
             if token_counts is None
-            else np.atleast_1d(np.asarray(token_counts, dtype=np.int64))
+            else np.atleast_1d(np.asarray(token_counts, dtype=np.uint64))
         )
         starts, counts = np.broadcast_arrays(starts, counts)
-        if (
-            (starts < 0) | (counts <= 0) | (starts + counts > self.token_block_size)
-        ).any():
+        if ((counts == 0) | (counts > block_tokens - starts)).any():
             raise ValueError("Token range must lie inside one physical block")
-        byte_offsets = self.tokens_to_segment_bytes(starts.astype(np.uint64))
-        segment_bytes = self.tokens_to_segment_bytes(counts.astype(np.uint64))
+        byte_offsets = self.tokens_to_segment_bytes(starts)
+        segment_bytes = self.tokens_to_segment_bytes(counts)
         return BlockAccess(self, byte_offsets, segment_bytes)
 
     def block_first_segments(
