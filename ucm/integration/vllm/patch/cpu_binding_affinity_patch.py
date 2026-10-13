@@ -5,10 +5,6 @@ from pathlib import Path
 import psutil
 from vllm.logger import logger
 
-from ucm.integration.vllm.cache_numa_affinity import (
-    get_cache_numa_placement,
-    select_numa_local_ucm_bundle,
-)
 from ucm.integration.vllm.patch.utils import patch_or_inject
 
 _UCM_THREAD_PREFIX = "ucm_"
@@ -156,52 +152,6 @@ def assign_cpu_roles(
     self.assign_main[npu] = main
     self.assign_acl[npu] = acl
     self.assign_rel[npu] = rel
-
-
-def align_current_ucm_cores_to_cache_numa(self) -> None:
-    """Move only this rank's UCM bundle onto its Cache fallback NUMA node."""
-    if not _ucm_affinity_enabled():
-        return
-    placement = get_cache_numa_placement()
-    if placement is None:
-        return
-
-    current_npu = _current_npu(self)
-    bundle = select_numa_local_ucm_bundle(
-        placement,
-        getattr(self, "assign_ucm", {}),
-        getattr(self, "assign_ucm_health", {}),
-        getattr(self, "cpu_node", {}),
-    )
-    if bundle is None:
-        _logger().warning(
-            "[UCM CPU Affinity] no unique UCM core bundle is available for "
-            "NPU%s Cache NUMA %s (fallback_rank=%s); keeping cores %s",
-            current_npu,
-            placement.node,
-            placement.fallback_rank,
-            getattr(self, "assign_ucm", {}).get(current_npu, []),
-        )
-        return
-
-    previous_cores = list(getattr(self, "assign_ucm", {}).get(current_npu, []))
-    previous_health = list(
-        getattr(self, "assign_ucm_health", {}).get(current_npu, [])
-    )
-    self.assign_ucm[current_npu] = list(bundle.cores)
-    self.assign_ucm_health[current_npu] = list(bundle.health_cores)
-    _logger().info(
-        "[UCM CPU Affinity] aligned NPU%s with Cache NUMA %s: "
-        "ucm=%s->%s, health=%s->%s, source_npu=%s, fallback_rank=%s",
-        current_npu,
-        placement.node,
-        previous_cores,
-        self.assign_ucm[current_npu],
-        previous_health,
-        self.assign_ucm_health[current_npu],
-        bundle.source_npu,
-        placement.fallback_rank,
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -80,7 +80,7 @@ protected:
 
     /* A worker must supply either a detected affinity node or its index within
      * the machine. These tests run in one process, so a deterministic per-rank
-     * index keeps the round-robin placement well defined. */
+     * index keeps the rank-sliced placement well defined. */
     static DataOptions MakeOptions(const std::string& uniqueId, int32_t deviceId, size_t myRank,
                                    size_t timeoutMs)
     {

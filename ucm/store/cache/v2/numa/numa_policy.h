@@ -34,8 +34,8 @@ namespace UC::Cache2::Numa {
  * result, never a user-facing policy: there is no config switch and no node
  * list. */
 enum class Placement {
-    Affinity,       /* device affinity detected: place on that node */
-    RankRoundRobin, /* no affinity: nodes[local worker rank % nodes.size()] */
+    Affinity,  /* device affinity detected: place on that node */
+    RankSlice, /* no affinity: contiguous worker-rank slices per NUMA node */
 };
 
 /* Resolved placement of one local data segment. The whole segment goes on a
@@ -49,8 +49,13 @@ struct Plan {
  * device-layer probe result and stays empty when unknown -- this module never
  * fabricates an affinity. fallbackNumaRank is the connector-derived local
  * worker rank, not the control-plane myRank; a missing one is an error, never
- * a silent 0. The result stays fixed for the segment's lifetime. */
-Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank);
+ * a silent 0. rankCount is the number of worker-local segments and defines
+ * the contiguous rank slices. The result stays fixed for the segment's
+ * lifetime. */
+Expected<size_t> RankSliceIndex(size_t rank, size_t rankCount, size_t nodeCount);
+
+Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank,
+                       size_t rankCount);
 
 /* Binds the whole local segment to plan.node before its first touch and before
  * device registration. Registration pins pages, so binding afterwards would

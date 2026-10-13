@@ -6,9 +6,6 @@ from ucm.integration.vllm.patch.cpu_binding_affinity_patch import (
     assign_cpu_roles,
 )
 from ucm.integration.vllm.patch.cpu_binding_affinity_patch import (
-    align_current_ucm_cores_to_cache_numa,
-)
-from ucm.integration.vllm.patch.cpu_binding_affinity_patch import (
     bind_threads as bind_ucm_threads,
 )
 from ucm.integration.vllm.patch.cpu_binding_affinity_patch import (
@@ -40,10 +37,6 @@ def allocate(self) -> None:
             )
         main = cpu_pool[2:-2] if reserve_irq_cpus else cpu_pool[:-2]
         assign_cpu_roles(self, npu, main, [cpu_pool[-2]], [cpu_pool[-1]])
-    # A3 uses the global-slice policy that caused the rank/NUMA mismatch.
-    # Leave the topology-affinity paths for other devices unchanged.
-    if self._binding_mode() == "global_slice":
-        align_current_ucm_cores_to_cache_numa(self)
 
 
 def print_plan(self) -> None:

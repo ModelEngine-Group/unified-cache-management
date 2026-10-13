@@ -203,7 +203,7 @@ public:
         backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
         backendOptions.deadline = deadline;
 #if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
-        auto placement = Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank);
+        auto placement = Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank, nRanks);
         if (!placement) {
             UC_ERROR("cache2 numa placement failed: owner={} device={} status={}", myRank,
                      options.deviceId, placement.Error());

@@ -61,8 +61,7 @@ Status AscendHalDataBackend::Setup(const BackendOptions& options)
             "A5 HAL allocation cannot apply the NUMA plan yet: owner={} device={} node={} "
             "placement={}",
             owner_, deviceId_, localPlacement_.node,
-            localPlacement_.placement == Numa::Placement::Affinity ? "affinity"
-                                                                   : "rank-round-robin");
+            localPlacement_.placement == Numa::Placement::Affinity ? "affinity" : "rank-slice");
     }
     return Status::OK();
 }
