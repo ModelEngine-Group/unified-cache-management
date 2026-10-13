@@ -379,15 +379,19 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
         // Each configured block size receives an equal capacity share by default.
         config.poolBlockProportions.assign(config.poolBlockSizes.size(), 1);
     }
-    // Options are order-independent; both size and proportion inputs are final
-    // only here, so duplicate-size collapsing must precede the length check and
-    // the slot-count calculation below.
-    NormalizeBlockClasses(config);
+    // Reject mismatched size/proportion counts before collapsing duplicates:
+    // NormalizeBlockClasses reads one proportion per size entry, so a short
+    // proportions list would read out of bounds, and collapsing first would
+    // equalize the lengths and mask the mismatch from this check.
     if (const auto status =
             ValidateBlockClassCount(config.poolBlockSizes, config.poolBlockProportions);
         status.Failure()) {
         return status;
     }
+    // Options are order-independent; both size and proportion inputs are final
+    // only here, so duplicate-size collapsing must precede the slot-count
+    // calculation below.
+    NormalizeBlockClasses(config);
     // Options are order-independent; all pool inputs are complete only here.
     if (const auto status = CalculatePoolSlotCounts(config); status.Failure()) { return status; }
     return Status::OK();
