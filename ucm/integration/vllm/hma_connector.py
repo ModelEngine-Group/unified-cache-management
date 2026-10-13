@@ -188,6 +188,34 @@ class KVCacheGroupLayout:
             )
 
         def handle_kv_layer_tensor(tensor: torch.Tensor, layer_name: str) -> None:
+            if self.is_ascend_layout and self.whole_page_sizes_by_layer:
+                # Ascend V4.1 aliases MLA, indexer and state/window groups on
+                # page-strided allocations. Only the page-origin owner is
+                # registered here; its page includes the indexer's scale plane.
+                page_bytes = self.whole_page_sizes_by_layer[layer_name]
+                if (
+                    tensor.dim() != 4
+                    or tensor.stride(0) * tensor.element_size() != page_bytes
+                ):
+                    raise ValueError(
+                        f"Ascend V4.1 page stride mismatch for {layer_name}: "
+                        f"shape={tuple(tensor.shape)}, expected={page_bytes}."
+                    )
+                ptrs.append(tensor[0].data_ptr())
+                strides.append(page_bytes)
+                tensor_token_strides.append(0)
+                tensor_sizes_per_token.append(page_bytes)
+                tensor_block_sizes.append(1)
+                view_meta.append(
+                    (
+                        layer_name,
+                        tuple(tensor.shape),
+                        tuple(tensor.stride()),
+                        str(tensor.dtype),
+                        1,
+                    )
+                )
+                return
             if tensor.dim() == 5:
                 # [2, num_blocks, block_size, num_head, head_dim]
                 handle_tensor(tensor[0], (-3, -2, -1), layer_name)
@@ -460,6 +488,59 @@ def _v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
     return sizes
 
 
+def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
+    """Select one page-origin view per group/allocation for Ascend 0.30."""
+    sizes = {}
+    tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
+    if not tensors:
+        raise ValueError("Ascend V4.1 requires physical KV page descriptors.")
+    for group in kv_cache_config.kv_cache_groups:
+        spec = group.kv_cache_spec
+        nested = getattr(spec, "kv_cache_specs", None)
+        specs = list(nested.values()) if nested else [spec]
+        if not all(getattr(s, "prefix_cacheable", True) for s in specs):
+            if not all(type(s).__name__ == "CircularBufferSpec" for s in specs):
+                raise ValueError(
+                    "Ascend V4.1 UCM requires persisted SWA windows; "
+                    "bounded replay and other transient groups are not supported."
+                )
+            continue
+        if not getattr(group, "enable_kv_transfer", True):
+            raise ValueError("Ascend V4.1 cannot omit a persistent KV group.")
+        remaining = set(group.layer_names)
+        for tensor in tensors:
+            members = remaining.intersection(tensor.layers)
+            if not members:
+                continue
+            if (
+                tensor.layer_stride != 0
+                or tensor.offset != 0
+                or tensor.block_stride <= 0
+            ):
+                raise ValueError("Unsupported Ascend V4.1 physical page placement.")
+            if getattr(specs[0], "sliding_window", None) is not None:
+                if len(members) != 1:
+                    raise ValueError(
+                        "Ascend V4.1 SWA groups must use distinct page slots."
+                    )
+                owner = next(iter(members))
+            else:
+                owners = [name for name in members if name.endswith(".long_kv_cache")]
+                if len(owners) != 1:
+                    raise ValueError("Ascend V4.1 FA page needs one long KV owner.")
+                owner = owners[0]
+                indexer = owner.removesuffix(".long_kv_cache") + ".indexer.k_cache"
+                if members != {owner, indexer}:
+                    raise ValueError("Unsupported Ascend V4.1 FA page contents.")
+            sizes[owner] = tensor.block_stride
+            remaining.difference_update(members)
+        if remaining:
+            raise ValueError(
+                f"Missing Ascend V4.1 page descriptors: {sorted(remaining)}"
+            )
+    return sizes
+
+
 def _group_physical_layout_by_layer(
     group_spec,
 ) -> dict[str, tuple[int, int]]:
@@ -614,7 +695,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 0 if role == KVConnectorRole.SCHEDULER else self.tp_rank % self.tp_size
             )
             self.request_hasher = RequestHasher(
-                vllm_config, rank_id, kv_cache_config=self._kv_cache_config
+                vllm_config,
+                rank_id,
+                kv_cache_config=self._kv_cache_config,
+                is_v41_layout=self.is_v41_layout,
             )
             if role == KVConnectorRole.SCHEDULER:
                 self._seed = self.request_hasher.seed
@@ -651,6 +735,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"hash_block_size={self.hash_block_size}, "
             f"transient_group_ids={sorted(self.transient_group_ids)}, "
             f"is_v41_layout={self.is_v41_layout}, "
+            f"is_ascend_v41_layout={self.is_ascend_v41_layout}, "
             f"ascend_base_block_size={self.ascend_base_block_size}, "
             f"is_ascend_layout={self.is_ascend_layout}, "
             f"group_metas={group_meta_summary}"
@@ -720,15 +805,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return False
 
         kv_cache_groups = kv_cache_config.kv_cache_groups
-        spec_names = set()
-        for group_spec in kv_cache_groups:
-            nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-            spec = (
-                next(iter(nested_specs.values()))
-                if nested_specs
-                else group_spec.kv_cache_spec
-            )
-            spec_names.add(type(spec).__name__)
+        spec_names = {
+            type(spec).__name__
+            for group in kv_cache_groups
+            for spec in cls._specs_for_group(group)
+        }
         # GPU FAWA is currently selected for DeepSeek-V4 style MLA+SWA layouts.
         DS_V4_REQUIRED_SPECS = frozenset({"SlidingWindowMLASpec"})
         gpu_support = DS_V4_REQUIRED_SPECS.issubset(spec_names)
@@ -745,15 +826,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if kv_cache_config is None:
             return False
         kv_cache_groups = kv_cache_config.kv_cache_groups
-        spec_names = set()
-        for group_spec in kv_cache_groups:
-            nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-            spec = (
-                next(iter(nested_specs.values()))
-                if nested_specs
-                else group_spec.kv_cache_spec
-            )
-            spec_names.add(type(spec).__name__)
+        spec_names = {
+            type(spec).__name__
+            for group in kv_cache_groups
+            for spec in cls._specs_for_group(group)
+        }
         ASCEND_REQUIRED_SPECS = frozenset({"AscendSlidingWindowMLASpec"})
         npu_support = ASCEND_REQUIRED_SPECS.issubset(spec_names)
         return npu_support
@@ -771,13 +848,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         c4_block_sizes = set()
         for group in kv_cache_config.kv_cache_groups:
             kv_cache_spec = group.kv_cache_spec
-            nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
-            spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
-            if (
-                getattr(spec, "sliding_window", None) is None
-                and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
-            ):
-                c4_block_sizes.add(cls.ascend_block_geometry(kv_cache_spec).physical)
+            for spec in cls._specs_for_group(group):
+                if (
+                    getattr(spec, "sliding_window", None) is None
+                    and getattr(spec, "compress_ratio", 1)
+                    == cls.ASCEND_C4_COMPRESS_RATIO
+                ):
+                    c4_block_sizes.add(
+                        cls.ascend_block_geometry(kv_cache_spec).physical
+                    )
 
         if len(c4_block_sizes) != 1:
             raise ValueError(
@@ -797,16 +876,24 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def _init_group_metas(self) -> None:
         """Classify FA/WA groups and compute their logical segment sizes."""
 
+        groups = self._kv_cache_config.kv_cache_groups
+        self.is_ascend_v41_layout = self.can_handle_ascend_kv_cache_config(
+            self._kv_cache_config
+        ) and any(
+            getattr(spec, "model_version", None) == "deepseek_v41"
+            for group in groups
+            for spec in self._specs_for_group(group)
+        )
         if self.can_handle_ascend_kv_cache_config(self._kv_cache_config):
             self.is_ascend_layout = True
-            self.ascend_base_block_size = self._get_ascend_base_block_size(
-                self._kv_cache_config
-            )
-            self.hash_block_size = (
-                self.ascend_base_block_size * self.ASCEND_C4_COMPRESS_RATIO
-            )
+            if not self.is_ascend_v41_layout:
+                self.ascend_base_block_size = self._get_ascend_base_block_size(
+                    self._kv_cache_config
+                )
+                self.hash_block_size = (
+                    self.ascend_base_block_size * self.ASCEND_C4_COMPRESS_RATIO
+                )
 
-        groups = self._kv_cache_config.kv_cache_groups
         self.transient_group_ids = {
             group_id
             for group_id, group in enumerate(groups)
@@ -822,7 +909,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
         hf_config = self._vllm_config.model_config.hf_config
         self.is_v41_layout = bool(
-            self.transient_group_ids
+            self.is_ascend_v41_layout
             or getattr(hf_config, "kv_source_layer_ids", None)
             or getattr(hf_config, "index_source_layer_ids", None)
         )
@@ -838,10 +925,39 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.is_v41_layout |= compressed_ratios.issubset({0, 1, 2}) and bool(
             compressed_ratios & {1, 2}
         )
-        self.whole_page_sizes = (
-            _v41_whole_page_sizes(self._kv_cache_config) if self.is_v41_layout else {}
-        )
-        if self.is_v41_layout:
+        if self.is_ascend_v41_layout:
+            parallel = getattr(self._vllm_config, "parallel_config", None)
+            if any(
+                getattr(parallel, name, 1) != 1
+                for name in (
+                    "pipeline_parallel_size",
+                    "prefill_context_parallel_size",
+                    "decode_context_parallel_size",
+                )
+            ):
+                raise ValueError("Ascend V4.1 UCM currently requires PP=PCP=DCP=1.")
+            self.whole_page_sizes = _ascend_v41_whole_page_sizes(self._kv_cache_config)
+            # Ascend already expresses block_size in original tokens. Use a
+            # complete logical page, even when the engine hashes finer chunks.
+            block_sizes = {
+                group.kv_cache_spec.block_size
+                for group in groups
+                if any(name.endswith(".long_kv_cache") for name in group.layer_names)
+            }
+            if len(block_sizes) != 1 or next(iter(block_sizes)) <= 0:
+                raise ValueError(
+                    "Ascend V4.1 needs one positive logical FA block size."
+                )
+            self.hash_block_size = self.ascend_base_block_size = block_sizes.pop()
+            if self.prefix_replay_tokens:
+                raise ValueError("Ascend V4.1 UCM does not support bounded replay.")
+        else:
+            self.whole_page_sizes = (
+                _v41_whole_page_sizes(self._kv_cache_config)
+                if self.is_v41_layout
+                else {}
+            )
+        if self.is_v41_layout and not self.is_ascend_v41_layout:
             if resolve_kv_cache_block_sizes is None:
                 raise RuntimeError(
                     "DeepSeek V4.1 requires vLLM's "
@@ -883,7 +999,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 continue
             window_size = getattr(spec, "sliding_window", None)
             token_block_size = kv_cache_spec.block_size
-            if self.is_ascend_layout:
+            if self.is_ascend_layout and not self.is_ascend_v41_layout:
                 # Ascend compressed groups expose a logical block span scaled by
                 # the compression ratio.
                 geometry = self.ascend_block_geometry(kv_cache_spec)
@@ -905,7 +1021,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.fa_group_ids.append(group_id)
             else:
                 tensor_name = group.layer_names[0]
-                if tensor_name.split(".")[-1] in ["swa_cache"]:
+                if self.is_ascend_v41_layout or tensor_name.split(".")[-1] in [
+                    "swa_cache"
+                ]:
                     # SWA caches keep the full sliding-window tail.
                     tail_tokens = window_size
                 else:
@@ -915,7 +1033,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
                 self.window_group_ids.append(group_id)
 
+            if self.is_ascend_v41_layout and window_size is not None:
+                tail_tokens = round_up(tail_tokens, token_block_size)
             tail_blocks = max(tail_tokens // token_block_size, 1)
+            if self.is_ascend_v41_layout and self.hash_block_size % token_block_size:
+                raise ValueError(
+                    "Ascend V4.1 hits must align to every persistent group."
+                )
             self.max_token_block_size = max(self.max_token_block_size, token_block_size)
             self.group_metas[group_id] = KVCacheGroupMeta(
                 group_id=group_id,
@@ -939,7 +1063,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # A request resumed from an external FAWA hit must therefore start
             # at a complete compression group so the first new token does not
             # consume a missing predecessor from that ring.
-            compression_granularities = []
+            compression_granularities = (
+                [r for r in compressed_ratios if r > 0]
+                if self.is_ascend_v41_layout
+                else []
+            )
             for group in groups:
                 for spec in self._specs_for_group(group):
                     granularity = getattr(spec, "tokens_per_state", None)
@@ -1048,7 +1176,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if getattr(self, "whole_page_sizes", None):
                 if segment_tokens != meta.token_block_size:
                     raise ValueError("UCM V4.1 cannot store a partial padded page.")
-                payload = sum(self.whole_page_sizes[name] for name in group.layer_names)
+                payload = sum(
+                    self.whole_page_sizes[name]
+                    for name in group.layer_names
+                    if not getattr(self, "is_ascend_v41_layout", False)
+                    or name in self.whole_page_sizes
+                )
                 sizes[label] += payload * meta.tail_blocks
                 continue
             for spec in self._specs_for_group(group):
@@ -1318,11 +1451,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 continue
             group_caches: dict[str, torch.Tensor] = {}
             for layer_name in group_spec.layer_names:
+                if (
+                    self.is_ascend_v41_layout
+                    and layer_name not in self.whole_page_sizes
+                ):
+                    continue
                 if isinstance(kv_caches[layer_name], torch.Tensor):
                     group_caches[layer_name] = kv_caches[layer_name]
                 else:
                     group_caches[layer_name] = tuple(kv_caches[layer_name])
-            standardized_layout = any(
+            standardized_layout = not self.is_ascend_v41_layout and any(
                 layer_name in standardized_layers
                 for layer_name in group_spec.layer_names
             )
@@ -1331,7 +1469,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 is_ascend_layout=self.is_ascend_layout,
                 expected_block_size=(
                     self.ascend_block_geometry(group_spec.kv_cache_spec).physical
-                    if self.is_ascend_layout
+                    if self.is_ascend_layout and not self.is_ascend_v41_layout
                     else group_spec.kv_cache_spec.block_size
                 ),
                 standardized_layout=standardized_layout,

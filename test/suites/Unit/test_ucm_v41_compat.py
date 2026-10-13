@@ -1,12 +1,14 @@
 """Small dependency-free regression tests for the vLLM KV-cache adapters."""
 
 import ast
+import copy
 import ctypes
 import hashlib
 import math
 import pickle
 import types
 import unittest
+from collections import namedtuple
 from collections.abc import Callable
 from pathlib import Path
 from typing import Optional, Sequence
@@ -22,7 +24,10 @@ def _load_hma_methods(names):
     cls = next(n for n in tree.body if getattr(n, "name", None) == "UCMFAWAConnector")
     nodes = [n for n in cls.body if getattr(n, "name", None) in names]
     helpers = [
-        n for n in tree.body if getattr(n, "name", None) == "_v41_whole_page_sizes"
+        n
+        for n in tree.body
+        if getattr(n, "name", None)
+        in ("_v41_whole_page_sizes", "_ascend_v41_whole_page_sizes")
     ]
     module = ast.Module(body=helpers + nodes, type_ignores=[])
     ast.fix_missing_locations(module)
@@ -36,11 +41,13 @@ def _load_hma_methods(names):
 
     namespace = {
         "math": math,
+        "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
         "Optional": Optional,
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
+        "BlockGeometry": namedtuple("BlockGeometry", "logical physical"),
         "KVCacheGroupLayout": object,
         "FAWARequestMeta": types.SimpleNamespace,
         "FAWARequestDispatchMeta": types.SimpleNamespace,
@@ -61,7 +68,7 @@ def _load_hma_methods(names):
     exec(compile(module, str(HMA_PATH), "exec"), namespace)
     for name in names:
         value = namespace[name]
-        if isinstance(value, staticmethod):
+        if isinstance(value, (staticmethod, classmethod)):
             namespace[name] = value.__func__
     return namespace
 
@@ -122,6 +129,247 @@ def _init_fake_connector(methods, *, ratios, features, resolver):
 
 
 class UCMV41CompatibilityTest(unittest.TestCase):
+    @staticmethod
+    def _ascend_v41_connector():
+        # Match the 0.30.0rc1 layer-outermost planner: MLA + indexer share
+        # each page, while ring and SWA groups alias it with different IDs.
+        ns = types.SimpleNamespace
+        mla_type = type("AscendMLAAttentionSpec", (ns,), {})
+        swa_type = type("AscendSlidingWindowMLASpec", (ns,), {})
+        ring_type = type("CircularBufferSpec", (ns,), {})
+        full, windows, tensors = {}, {}, []
+        for layer, ratio in ((0, 1), (1, 2)):
+            prefix = f"model.layers.{layer}.self_attn"
+            kv, index, swa = (
+                prefix + suffix
+                for suffix in (".long_kv_cache", ".indexer.k_cache", ".swa_cache")
+            )
+            for name in (kv, index):
+                full[name] = mla_type(
+                    block_size=128,
+                    tokens_per_state=ratio,
+                    model_version="deepseek_v41",
+                    prefix_cacheable=True,
+                )
+            windows[swa] = swa_type(
+                block_size=128,
+                sliding_window=256,
+                tokens_per_state=1,
+                model_version="deepseek_v41",
+                prefix_cacheable=True,
+            )
+            tensors.append(
+                ns(
+                    layers=[kv, index, swa],
+                    layer_stride=0,
+                    offset=0,
+                    block_stride=262144,
+                )
+            )
+        ring_name = "model.layers.1.self_attn.compressor.state_cache"
+        ring = ring_type(block_size=32, prefix_cacheable=False)
+        tensors[1].layers.append(ring_name)
+        groups = [
+            ns(
+                layer_names=list(full),
+                kv_cache_spec=ns(
+                    block_size=128,
+                    prefix_cacheable=True,
+                    kv_cache_specs=full,
+                ),
+            ),
+            ns(layer_names=[ring_name], kv_cache_spec=ring),
+            ns(
+                layer_names=list(windows),
+                kv_cache_spec=ns(
+                    block_size=128,
+                    prefix_cacheable=True,
+                    kv_cache_specs=windows,
+                ),
+            ),
+        ]
+        config = ns(
+            kv_cache_groups=groups,
+            kv_cache_tensors=tensors,
+            # Default upstream placement labels do not describe Ascend views.
+            kv_cache_layout="BLHNC",
+        )
+        methods = _load_hma_methods(
+            {
+                "_init_group_metas",
+                "_specs_for_group",
+                "_derive_v41_file_sizes",
+            }
+        )
+        connector = ns(
+            _kv_cache_config=config,
+            _vllm_config=ns(model_config=ns(hf_config=ns(compress_ratios=[1, 2]))),
+            is_ascend_layout=False,
+            ascend_base_block_size=None,
+            hash_block_size=256,
+            group_metas={},
+            max_token_block_size=0,
+            can_handle_ascend_kv_cache_config=lambda _: True,
+            _specs_for_group=methods["_specs_for_group"],
+        )
+        connector._derive_v41_file_sizes = types.MethodType(
+            methods["_derive_v41_file_sizes"], connector
+        )
+        return methods, connector
+
+    def test_ascend_v41_page_metadata_survives_scheduler_spec_flattening(self):
+        methods, worker = self._ascend_v41_connector()
+        scheduler = copy.deepcopy(worker)
+        for group in scheduler._kv_cache_config.kv_cache_groups:
+            nested = getattr(group.kv_cache_spec, "kv_cache_specs", None)
+            if nested:
+                group.kv_cache_spec = next(iter(nested.values()))
+        for connector in (worker, scheduler):
+            methods["_init_group_metas"](connector)
+            self.assertEqual(connector.hash_block_size, 128)  # Not C4 * 128.
+            self.assertEqual(connector.resume_token_alignment, 2)
+            self.assertEqual(connector.fa_group_ids, [0])
+            self.assertEqual(connector.window_group_ids, [2])
+            self.assertEqual(connector.transient_group_ids, {1})
+            self.assertEqual(connector.file_size, {"FA": 524288, "WA": 1048576})
+            self.assertEqual(len(connector.whole_page_sizes), 4)
+        self.assertEqual(worker.whole_page_sizes, scheduler.whole_page_sizes)
+
+    def test_ascend_v41_rounds_window_snapshots_to_complete_pages(self):
+        methods, connector = self._ascend_v41_connector()
+        group = connector._kv_cache_config.kv_cache_groups[2]
+        for spec in group.kv_cache_spec.kv_cache_specs.values():
+            spec.sliding_window = 129
+        methods["_init_group_metas"](connector)
+        self.assertEqual(connector.group_metas[2].tail_tokens, 256)
+        self.assertEqual(connector.group_metas[2].tail_blocks, 2)
+
+    def test_ascend_v41_rejects_unsupported_replay_or_page_ownership(self):
+        for change in (
+            "replay",
+            "disabled_transfer",
+            "missing_page",
+            "folded",
+            "layer_stride",
+            "context_parallel",
+        ):
+            with self.subTest(change=change):
+                methods, connector = self._ascend_v41_connector()
+                cfg = connector._kv_cache_config
+                if change == "replay":
+                    cfg.kv_cache_groups[2].kv_cache_spec.prefix_replay_tokens = 256
+                elif change == "disabled_transfer":
+                    cfg.kv_cache_groups[2].enable_kv_transfer = False
+                elif change == "missing_page":
+                    cfg.kv_cache_tensors.pop()
+                elif change == "folded":
+                    folded = "model.layers.0.self_attn.indexer.k_cache_folded"
+                    cfg.kv_cache_groups[0].layer_names.append(folded)
+                    cfg.kv_cache_tensors[0].layers.append(folded)
+                    cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[folded] = next(
+                        iter(
+                            cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs.values()
+                        )
+                    )
+                elif change == "layer_stride":
+                    cfg.kv_cache_tensors[0].layer_stride = 128
+                else:
+                    connector._vllm_config.parallel_config = types.SimpleNamespace(
+                        decode_context_parallel_size=2
+                    )
+                with self.assertRaises(ValueError):
+                    methods["_init_group_metas"](connector)
+
+    def test_ascend_v41_registers_one_page_owner_and_roundtrips_scales(self):
+        methods, connector = self._ascend_v41_connector()
+        methods["_init_group_metas"](connector)
+        tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
+        layout_node = next(
+            n for n in tree.body if getattr(n, "name", None) == "KVCacheGroupLayout"
+        )
+
+        class Tensor:
+            dtype = "bfloat16"
+
+            def __init__(self, page_bytes):
+                self.storage = (ctypes.c_ubyte * (3 * page_bytes))()
+                self.shape = (3, 64, 1, 512)
+                self.page_bytes = page_bytes
+
+            def dim(self):
+                return 4
+
+            def __getitem__(self, _):
+                return self
+
+            def data_ptr(self):
+                return ctypes.addressof(self.storage)
+
+            def element_size(self):
+                return 2
+
+            def stride(self, index=None):
+                strides = (self.page_bytes // 2, 512, 512, 1)
+                return strides if index is None else strides[index]
+
+        namespace = dict(
+            methods,
+            torch=types.SimpleNamespace(Tensor=Tensor),
+            Sequence=Sequence,
+            Tuple=tuple,
+            extract_layer_index=lambda name: int(name.split(".")[2]),
+        )
+        module = ast.fix_missing_locations(
+            ast.Module(body=[layout_node], type_ignores=[])
+        )
+        exec(compile(module, str(HMA_PATH), "exec"), namespace)
+        register = _load_hma_methods({"register_kv_caches"})
+        register.update(namespace)
+        register["create_device"] = lambda: object()
+        register["_use_ucm_connector_cpu_affinity"] = lambda: False
+        connector.group_layouts = {}
+        connector._create_fa_store = lambda *_: None
+        connector._create_wa_store = lambda *_: None
+        # The indexer and ring need no separate transfer view. If registration
+        # tries to treat them as owners, these sentinels fail immediately.
+        caches = {
+            name: None
+            for group in connector._kv_cache_config.kv_cache_groups
+            for name in group.layer_names
+        }
+        for name, size in connector.whole_page_sizes.items():
+            caches[name] = Tensor(size)
+        register["register_kv_caches"](connector, caches)
+        self.assertEqual(set(connector.group_layouts), {0, 2})
+        layout = connector.group_layouts[0]
+        self.assertEqual(len(layout.base_ptrs), 2)
+        self.assertEqual(layout.segment_tensor_size_list(128, 128), [262144] * 2)
+        np = __import__("numpy")
+        src = layout.extract_addrs(np.array([1]))
+        dst = layout.extract_addrs(np.array([2]))
+        for col, size in enumerate(layout.segment_tensor_size_list(128, 128)):
+            # Cover main KV, the separate indexer/scales, and page padding.
+            pattern = bytes(range(256)) * (size // 256)
+            ctypes.memmove(int(src[0, col]), pattern, size)
+            ctypes.memmove(int(dst[0, col]), int(src[0, col]), size)
+            self.assertEqual(ctypes.string_at(int(dst[0, col]), size), pattern)
+            self.assertEqual(
+                ctypes.string_at(int(layout.base_ptrs[col]), size), bytes(size)
+            )
+        with self.assertRaises(ValueError):
+            layout.segment_tensor_size_list(64, 128)
+        with self.assertRaises(ValueError):
+            layout.extract_addrs_with_offsets(np.array([1]), 128, np.array([64]))
+        bad_view = Tensor(131072)
+        with self.assertRaisesRegex(ValueError, "page stride mismatch"):
+            namespace["KVCacheGroupLayout"](
+                {"model.layers.0.self_attn.long_kv_cache": bad_view},
+                is_ascend_layout=True,
+                whole_page_sizes_by_layer={
+                    "model.layers.0.self_attn.long_kv_cache": 262144
+                },
+            )
+
     def test_v41_external_load_waits_for_compute_before_submitting_copies(self):
         methods = _load_hma_methods(["start_load_kv"])
         methods["UCMFAWAConnectorMetadata"] = types.SimpleNamespace
@@ -440,6 +688,31 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             )
 
         hasher = namespace["RequestHasher"]
+        methods, ascend = self._ascend_v41_connector()
+        ascend._vllm_config = config((4, 128))
+        methods["_init_group_metas"](ascend)
+        self.assertTrue(ascend.is_v41_layout)
+        explicit = hasher(
+            ascend._vllm_config,
+            0,
+            ascend._kv_cache_config,
+            is_v41_layout=ascend.is_v41_layout,
+        )
+        for marker in (
+            b"kv_layout=v41_packed_v3",
+            b"ascend_v41_page_transfer=v1",
+            b"transfer_layout=v4",
+            b"placement=",
+        ):
+            self.assertIn(marker, explicit.meta_bytes)
+        self.assertNotEqual(
+            explicit.meta_bytes,
+            hasher(ascend._vllm_config, 0, ascend._kv_cache_config).meta_bytes,
+        )
+        self.assertNotIn(
+            b"kv_layout=",
+            hasher(config((1, 2)), 0, is_v41_layout=False).meta_bytes,
+        )
         v4 = hasher(config((4, 128)), 0)
         v41 = hasher(
             config(
@@ -451,6 +724,19 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         self.assertNotIn(b"kv_layout=v41_packed_v3", v4.meta_bytes)
         self.assertIn(b"kv_layout=v41_packed_v3", v41.meta_bytes)
+        for ratios in ((4, 128), (1, 2)):
+            with self.subTest(ratios=ratios):
+                base_config = config(ratios)
+                base = hasher(base_config, 0)
+                self.assertIn(b":dcp=1:layout=test-layout", base.meta_bytes)
+                base_config.parallel_config.decode_context_parallel_size = 2
+                self.assertNotEqual(base.seed, hasher(base_config, 0).seed)
+                base_config.parallel_config.decode_context_parallel_size = 1
+                namespace["_layout_source_digest"] = lambda: "changed-layout"
+                try:
+                    self.assertNotEqual(base.seed, hasher(base_config, 0).seed)
+                finally:
+                    namespace["_layout_source_digest"] = lambda: "test-layout"
         self.assertNotEqual(
             v41.meta_bytes,
             hasher(
@@ -495,6 +781,17 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         worker_hash = hasher(config((1, 2)), 0, kv_config).meta_bytes
         group.kv_cache_spec = spec
         self.assertEqual(worker_hash, hasher(config((1, 2)), 0, kv_config).meta_bytes)
+        ascend_spec = type("AscendMLAAttentionSpec", (types.SimpleNamespace,), {})(
+            **vars(spec), model_version="deepseek_v41"
+        )
+        group.kv_cache_spec = ascend_spec
+        ascend_hash = hasher(config((1, 2)), 0, kv_config).meta_bytes
+        self.assertIn(b"ascend_v41_page_transfer=v1", ascend_hash)
+        self.assertNotEqual(worker_hash, ascend_hash)
+        group.kv_cache_spec = types.SimpleNamespace(
+            block_size=64, kv_cache_specs={"l0": ascend_spec}
+        )
+        self.assertEqual(ascend_hash, hasher(config((1, 2)), 0, kv_config).meta_bytes)
         self.assertNotEqual(
             v41.meta_bytes,
             hasher(
@@ -1078,6 +1375,85 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         self.assertEqual(self_obj.hash_block_size, 256)
         expected_fa = ((37376 + 8448) * 21 + 1168 * 20 + 4095) // 4096 * 4096
         self.assertEqual(self_obj.file_size["FA"], expected_fa)
+
+    def test_transient_groups_do_not_select_v41_transfer(self):
+        methods = _load_hma_methods(
+            {"_init_group_metas", "_specs_for_group", "_derive_v41_file_sizes"}
+        )
+        methods["_init_group_metas"].__globals__["resolve_kv_cache_block_sizes"] = (
+            lambda *_: (256, 256)
+        )
+        for flag in ("prefix_cacheable", "enable_kv_transfer"):
+            with self.subTest(flag=flag):
+                connector, groups, _ = _init_fake_connector(
+                    methods, ratios=[0, 4, 128], features={}, resolver=None
+                )
+                for group in groups:
+                    group.kv_cache_spec.block_size = 256
+                    group.kv_cache_spec.prefix_cacheable = True
+                target = (
+                    groups[2].kv_cache_spec if flag == "prefix_cacheable" else groups[2]
+                )
+                setattr(target, flag, False)
+                connector._specs_for_group = methods["_specs_for_group"]
+                methods["_init_group_metas"](connector)
+                self.assertFalse(connector.is_v41_layout)
+                self.assertEqual(connector.transient_group_ids, {2})
+                self.assertEqual(connector.hash_block_size, 256)
+                self.assertNotIn(2, connector.fa_group_ids)
+
+    def test_nested_ascend_detection_is_independent_of_member_order(self):
+        methods = _load_hma_methods(
+            {
+                "can_handle_kv_cache_config",
+                "can_handle_ascend_kv_cache_config",
+                "_specs_for_group",
+            }
+        )
+        cls = types.SimpleNamespace(_specs_for_group=methods["_specs_for_group"])
+        cls.can_handle_ascend_kv_cache_config = types.MethodType(
+            methods["can_handle_ascend_kv_cache_config"], cls
+        )
+        swa = type("AscendSlidingWindowMLASpec", (types.SimpleNamespace,), {})()
+        for members in ((object(), swa), (swa, object())):
+            group = types.SimpleNamespace(
+                layer_names=[0, 1],
+                kv_cache_spec=types.SimpleNamespace(
+                    kv_cache_specs=dict(enumerate(members))
+                ),
+            )
+            config = types.SimpleNamespace(kv_cache_groups=[group])
+            self.assertTrue(cls.can_handle_ascend_kv_cache_config(config))
+            self.assertTrue(methods["can_handle_kv_cache_config"](cls, config))
+
+    def test_nested_c4_detection_validates_every_members_geometry(self):
+        methods = _load_hma_methods(
+            {"_get_ascend_base_block_size", "_specs_for_group", "ascend_block_geometry"}
+        )
+        methods["ascend_block_geometry"].__globals__.update(
+            _ascend_block_size_is_logical=lambda: False,
+        )
+        cls = types.SimpleNamespace(
+            _specs_for_group=methods["_specs_for_group"],
+            ASCEND_C4_COMPRESS_RATIO=4,
+            ASCEND_SUPPORTED_VLLM_BLOCK_SIZES={32, 64, 128},
+        )
+        cls.ascend_block_geometry = types.MethodType(
+            methods["ascend_block_geometry"], cls
+        )
+        members = {
+            "first": types.SimpleNamespace(block_size=128, compress_ratio=128),
+            "second": types.SimpleNamespace(block_size=128, compress_ratio=4),
+        }
+        group = types.SimpleNamespace(
+            layer_names=list(members),
+            kv_cache_spec=types.SimpleNamespace(block_size=128, kv_cache_specs=members),
+        )
+        config = types.SimpleNamespace(kv_cache_groups=[group])
+        with self.assertRaisesRegex(ValueError, "must share one block geometry"):
+            methods["_get_ascend_base_block_size"](cls, config)
+        members["first"].compress_ratio = 4
+        self.assertEqual(methods["_get_ascend_base_block_size"](cls, config), 128)
 
     def test_real_v41_flash_topology_keeps_nine_groups(self):
         methods = _load_hma_methods(

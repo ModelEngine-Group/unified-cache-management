@@ -108,7 +108,14 @@ def _layout_source_digest() -> str:
 class RequestHasher:
     """Generate stable, namespaced UCM request and block identifiers."""
 
-    def __init__(self, vllm_config, rank_id, kv_cache_config=None):
+    def __init__(
+        self,
+        vllm_config,
+        rank_id,
+        kv_cache_config=None,
+        *,
+        is_v41_layout: bool | None = None,
+    ):
         speculative_config = getattr(vllm_config, "speculative_config", None)
         spec_info = ""
         if speculative_config is not None:
@@ -121,15 +128,16 @@ class RequestHasher:
         sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
         hf_config = getattr(vllm_config.model_config, "hf_config", None)
         compress_ratios = getattr(hf_config, "compress_ratios", None)
-        is_v41_layout = bool(
-            getattr(hf_config, "kv_source_layer_ids", None)
-            or getattr(hf_config, "index_source_layer_ids", None)
-            or (
-                compress_ratios is not None
-                and {int(ratio) for ratio in compress_ratios}.issubset({0, 1, 2})
-                and bool({int(ratio) for ratio in compress_ratios} & {1, 2})
+        if is_v41_layout is None:
+            is_v41_layout = bool(
+                getattr(hf_config, "kv_source_layer_ids", None)
+                or getattr(hf_config, "index_source_layer_ids", None)
+                or (
+                    compress_ratios is not None
+                    and {int(ratio) for ratio in compress_ratios}.issubset({0, 1, 2})
+                    and bool({int(ratio) for ratio in compress_ratios} & {1, 2})
+                )
             )
-        )
         layout_info = ""
         if is_v41_layout:
             cache_config = getattr(vllm_config, "cache_config", None)
@@ -143,6 +151,19 @@ class RequestHasher:
                 f":compress_ratios={ratios}"
             )
             if kv_cache_config is not None:
+                # The Ascend adapter transfers one aliased physical page per
+                # owner, not the CUDA value/scale segments. Never reuse files
+                # written by the old Ascend C4 adapter or a GPU deployment.
+                if any(
+                    type(inner).__name__.startswith("Ascend")
+                    and getattr(inner, "model_version", None) == "deepseek_v41"
+                    for group in kv_cache_config.kv_cache_groups
+                    for inner in (
+                        getattr(group.kv_cache_spec, "kv_cache_specs", None)
+                        or {"": group.kv_cache_spec}
+                    ).values()
+                ):
+                    layout_info += ":ascend_v41_page_transfer=v1"
                 tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
                 has_placement = bool(tensors) and hasattr(tensors[0], "layer_stride")
                 groups = []
