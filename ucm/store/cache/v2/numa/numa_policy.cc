@@ -164,7 +164,19 @@ NodeMask SingleNodeMask(size_t node)
 
 }  // namespace
 
-Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank)
+Expected<size_t> RankSliceIndex(size_t rank, size_t rankCount, size_t nodeCount)
+{
+    if (rankCount == 0) { return Status::InvalidParam("cache2 numa: rank count is zero"); }
+    if (nodeCount == 0) { return Status::InvalidParam("cache2 numa: node count is zero"); }
+    if (rank >= rankCount) {
+        return Status::InvalidParam("cache2 numa: fallback rank({}) is outside rank count({})",
+                                    rank, rankCount);
+    }
+    return rank * nodeCount / rankCount;
+}
+
+Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank,
+                       size_t rankCount)
 {
     auto available = AvailableNodes();
     if (!available) { return available.Error(); }
@@ -177,7 +189,7 @@ Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> 
         const auto node = static_cast<size_t>(*deviceNode);
         if (std::find(nodes.begin(), nodes.end(), node) == nodes.end()) {
             /* A known but unusable affinity node is a real failure: falling back
-             * to round-robin here would hide a broken device probe. */
+             * to rank slicing here would hide a broken device probe. */
             return Status::Error(
                 fmt::format("cache2 numa: affinity node({}) is not available", node));
         }
@@ -188,8 +200,10 @@ Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> 
         return Status::InvalidParam(
             "cache2 numa: no device affinity and no local worker rank to fall back on");
     }
-    const auto node = nodes[*fallbackNumaRank % nodes.size()];
-    return Plan{Placement::RankRoundRobin, static_cast<int32_t>(node)};
+    auto nodeIndex = RankSliceIndex(*fallbackNumaRank, rankCount, nodes.size());
+    if (!nodeIndex) { return nodeIndex.Error(); }
+    const auto node = nodes[nodeIndex.Value()];
+    return Plan{Placement::RankSlice, static_cast<int32_t>(node)};
 }
 
 Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan)
@@ -213,7 +227,7 @@ Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan)
             fmt::format("cache2 numa: mbind node={} failed: {}", plan.node, std::strerror(error)));
     }
     UC_INFO("cache2 numa bound: node={} placement={} bytes={}", plan.node,
-            plan.placement == Placement::Affinity ? "affinity" : "rank-round-robin", bytes);
+            plan.placement == Placement::Affinity ? "affinity" : "rank-slice", bytes);
     return Status::OK();
 }
 
