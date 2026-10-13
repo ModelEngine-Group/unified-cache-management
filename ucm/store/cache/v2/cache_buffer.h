@@ -98,6 +98,10 @@ public:
         size_t SlotIndex() const { return slotIdx_; }
         void* Data() { return buf_->data_.DataAt(slotIdx_); }
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
+        // The device-visible alias of this slot's host memory. Only transfer
+        // modes that build device descriptors (SDMA Direct) use it; never for
+        // CPU access.
+        void* HostMappedData() { return buf_->data_.HostMappedDeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
         void MarkReady()
         {
@@ -156,6 +160,9 @@ public:
         dataOptions.myRank = myRank_;
         dataOptions.slotSize = slotSize_;
         dataOptions.slotsPerRank = slotsPerRank_;
+        /* Derived from the transfer mode: only a path that puts the host
+         * segment into a device descriptor needs its device-visible alias. */
+        dataOptions.requireHostDeviceAddress = cfg.sdmaDirect;
         return data_.Setup(layout, dataOptions);
     }
 

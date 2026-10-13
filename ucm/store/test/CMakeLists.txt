@@ -10,6 +10,14 @@ if(BUILD_UNIT_TESTS)
     if(NOT TARGET yuanrongstore)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*/yuanrong/.*\\.cc$")
     endif()
+    # Run only the suites whose core this platform actually builds; the cc and v2
+    # sources are mutually exclusive outside simu.
+    if(NOT UCM_CACHE_STORE_BUILDS_CC)
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\][^/\\\\]*\\.cc$")
+    endif()
+    if(NOT UCM_CACHE_STORE_BUILDS_V2)
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\]v2[/\\\\].*")
+    endif()
     add_executable(ucmstore.test ${UCMSTORE_TEST_SOURCE_FILES})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13")
         set_source_files_properties(case/dram/kv_protocol_test.cc

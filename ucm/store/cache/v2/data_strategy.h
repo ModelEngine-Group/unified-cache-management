@@ -37,9 +37,14 @@
 #include "ctrl_layout.h"
 #include "data_backend.h"
 #include "data_backend_ascend.h"
+#include "data_backend_memfd.h"
 #include "data_backend_posix.h"
 #include "logger/logger.h"
 #include "status/status.h"
+
+#ifndef UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+#define UCM_CACHE_V2_USE_POSIX_SHM_BACKEND 0
+#endif
 
 namespace UC::Cache2 {
 
@@ -60,13 +65,18 @@ class DataStrategy {
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
+    /* A5 stays on the upstream PosixShm path until its HAL backend is validated.
+     * Other ascend/cuda/simu platforms use memfd host segments. The HAL branch
+     * remains available for an explicitly enabled experimental build. */
     static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
     {
 #if UCM_RUNTIME_ASCEND_HAL
         (void)uniqueId;
         return std::make_unique<AscendHalDataBackend>();
-#else
+#elif UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
         return std::make_unique<PosixShmDataBackend>(uniqueId);
+#else
+        return std::make_unique<MemfdDataBackend>(uniqueId);
 #endif
     }
 

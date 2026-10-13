@@ -77,6 +77,9 @@ class LoadQ {
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     size_t streamNumber_{1};
+    bool sdmaDirect_{false};
+    bool ioAggregation_{false};
+    bool useGdr_{false};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     std::vector<size_t> tensorSizes_{};
@@ -98,7 +101,10 @@ public:
         buffer_ = buffer;
         backend_ = config.storeBackend;
         deviceId_ = config.deviceId;
-        streamNumber_ = config.streamNumber;
+        streamNumber_ = config.EffectiveStreamNumber();
+        sdmaDirect_ = config.sdmaDirect;
+        ioAggregation_ = config.ioAggregation;
+        useGdr_ = config.useGdr;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         tensorSizes_ = config.tensorSizes;
@@ -131,7 +137,7 @@ public:
 private:
     void DispatchStage()
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_load_disp");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_disp");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set load dispatch thread name.", nameStatus);
         }
@@ -232,12 +238,19 @@ private:
     }
     void TransferStage(std::promise<Status>& started)
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_load_h2d");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_h2d");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set load h2d thread name.", nameStatus);
         }
         StreamT stream;
-        auto s = stream.Setup(deviceId_, streamNumber_);
+        auto s = Status::OK();
+        if (ioAggregation_) {
+            s = stream.SetupIoAggregation(deviceId_, useGdr_);
+        } else if (sdmaDirect_) {
+            s = stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_);
+        } else {
+            s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+        }
         started.set_value(s);
         if (s.Failure()) [[unlikely]] { return; }
         running_.ConsumerLoop(stop_, &LoadQ::TransferOneTask, this, stream);
@@ -299,11 +312,15 @@ private:
     Status ScatterShard(StreamT& stream, ShardTask& task)
     {
         const auto startTp = NowTime::Now();
-        auto s = task.bufferHandle->HostAccessible()
-                     ? stream.HostToDeviceScatterAsync(task.bufferHandle->Data(),
-                                                       task.shard->addrs.data(), tensorSizes_)
-                     : stream.DeviceToDeviceScatterAsync(task.bufferHandle->DeviceData(),
-                                                         task.shard->addrs.data(), tensorSizes_);
+        /* SDMA Direct feeds device descriptors, so the host side has to be the
+         * device-visible alias rather than the CPU address. */
+        void* hostSrc =
+            sdmaDirect_ ? task.bufferHandle->HostMappedData() : task.bufferHandle->Data();
+        auto s =
+            task.bufferHandle->HostAccessible()
+                ? stream.HostToDeviceScatterAsync(hostSrc, task.shard->addrs.data(), tensorSizes_)
+                : stream.DeviceToDeviceScatterAsync(task.bufferHandle->DeviceData(),
+                                                    task.shard->addrs.data(), tensorSizes_);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         if (s.Failure()) [[unlikely]] {
