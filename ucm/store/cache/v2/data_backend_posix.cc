@@ -55,8 +55,10 @@ PosixShmDataBackend::PosixShmDataBackend(const std::string& uniqueId)
 
 PosixShmDataBackend::~PosixShmDataBackend() { Reset(); }
 
-Status PosixShmDataBackend::Setup(int32_t deviceId, size_t nRanks, size_t rankBytes)
+Status PosixShmDataBackend::Setup(const BackendOptions& options)
 {
+    const size_t nRanks = options.rankCount;
+    const size_t rankBytes = options.rankBytes;
     if (nRanks == 0 || rankBytes == 0) {
         return Status::InvalidParam("invalid posix-shm geometry: ranks={} bytes={}", nRanks,
                                     rankBytes);
@@ -65,7 +67,7 @@ Status PosixShmDataBackend::Setup(int32_t deviceId, size_t nRanks, size_t rankBy
     if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
     rankStride_ = (rankBytes + static_cast<size_t>(pageSize) - 1) / pageSize * pageSize;
     segments_.assign(nRanks, Segment{});
-    deviceId_ = deviceId;
+    deviceId_ = options.deviceId;
     UC_INFO("posix-shm setup: device={} ranks={} rank_bytes={} rank_stride={}", deviceId_, nRanks,
             rankBytes, rankStride_);
     return Status::OK();
