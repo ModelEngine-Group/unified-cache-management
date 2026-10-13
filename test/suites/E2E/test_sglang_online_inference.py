@@ -37,19 +37,20 @@ def _request_document_answer(
 
 
 @pytest.mark.stage(1)
-@pytest.mark.platform("gpu")
+@pytest.mark.platform("npu")
 @pytest.mark.feature("sglang_online_inference")
-@pytest.mark.gpu_mem(12000)
-def test_sglang_online_accuracy_from_persisted_cache_h100():
-    """Verify SGLang output before and after restoring UCM cache on H100."""
-    import torch
+def test_sglang_online_accuracy_from_persisted_cache_a2():
+    """Verify SGLang output before and after restoring UCM cache on Ascend A2."""
+    import torch_npu
 
-    assert torch.cuda.is_available(), "SGLang H100 E2E requires a CUDA device"
-    gpu_name = torch.cuda.get_device_name(0)
-    assert "H100" in gpu_name.upper(), f"Expected NVIDIA H100, got {gpu_name!r}"
+    assert torch_npu.npu.is_available(), "SGLang A2 E2E requires an Ascend NPU"
+    device_name = torch_npu.npu.get_device_name(0)
+    assert "910B" in device_name.upper() or "A2" in device_name.upper(), (
+        f"Expected an Ascend A2/910B device, got {device_name!r}"
+    )
 
     model_path = os.getenv(
-        "SGLANG_E2E_MODEL_PATH", "/home/models/Qwen2.5-1.5B-Instruct"
+        "SGLANG_E2E_MODEL_PATH", "/home/models/Qwen3-0.6B"
     )
     storage_path = os.getenv(
         "SGLANG_E2E_STORAGE_PATH", "/tmp/ucm_sglang_e2e_cache"
@@ -77,6 +78,7 @@ def test_sglang_online_accuracy_from_persisted_cache_h100():
         "storage_path": storage_path,
         "port": int(os.getenv("SGLANG_E2E_PORT", "30000")),
         "startup_timeout": float(os.getenv("SGLANG_E2E_STARTUP_TIMEOUT", "600")),
+        "additional_args": ["--device", "npu", "--attention-backend", "ascend"],
     }
 
     with SGLangServerManager(**server_args) as server:

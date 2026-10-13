@@ -504,16 +504,16 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert jobs["test-e2e-pc-a2"]["if"] == (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
     )
-    sglang_e2e = jobs["test-e2e-sglang-h100"]
-    assert sglang_e2e["runs-on"] == ["self-hosted", "gpu", "h100"]
+    sglang_e2e = jobs["test-e2e-sglang-a2"]
+    assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
     assert sglang_e2e["needs"] == "lint-and-unit-tests"
     assert sglang_e2e["if"] == (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
     )
     sglang_e2e_text = yaml.safe_dump(sglang_e2e)
-    assert "Dockerfile.ucm-sglang-cuda-v0.5.5" in sglang_e2e_text
+    assert "Dockerfile.ucm-sglang-ascend.a2-v0.5.18" in sglang_e2e_text
     assert "sglang_online_inference" in sglang_e2e_text
-    assert "test_sglang_online_accuracy_from_persisted_cache_h100" in (
+    assert "test_sglang_online_accuracy_from_persisted_cache_a2" in (
         sglang_e2e_text
     )
 
