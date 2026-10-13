@@ -161,6 +161,10 @@ def _get_store_gc_block_size(
 
 _SHM_DIR = "/dev/shm"
 
+# Default shared-buffer capacity (GB) applied by vLLM connectors when
+# ``cache_buffer_capacity_gb`` is omitted.
+_DEFAULT_SHARED_BUFFER_CAPACITY_GB = 128
+
 
 def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
     """Early-validate that /dev/shm can hold the shared-buffer store.
@@ -173,18 +177,139 @@ def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
     if cache_buffer_capacity_gb <= 0:
         return
     try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
+        shm_usage = shutil.disk_usage(_SHM_DIR)
     except OSError:
         # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
         logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
         return
     needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
+    if shm_usage.total < needed_bytes:
         raise RuntimeError(
             f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
+            f"but {_SHM_DIR} has only {shm_usage.total >> 30}GB. "
             f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
             f"larger size= option) or decrease cache_buffer_capacity_gb."
+        )
+    if shm_usage.free < needed_bytes:
+        raise RuntimeError(
+            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB free in "
+            f"{_SHM_DIR}, but only {shm_usage.free >> 30}GB of the "
+            f"{shm_usage.total >> 30}GB tmpfs is free. Remove stale files under "
+            f"{_SHM_DIR} (e.g. uc_shm_cache_* left by crashed runs) or decrease "
+            f"cache_buffer_capacity_gb."
+        )
+    _check_host_mem_available(cache_buffer_capacity_gb)
+
+
+def _check_host_mem_available(cache_buffer_capacity_gb: int) -> None:
+    """Early-validate that the host can pin the shared buffer.
+
+    Registering the shared buffer (cudaHostRegister / aclrtHostRegisterV2 with
+    pinning) faults in and locks every page of the tmpfs file, consuming the
+    same amount of physical host RAM. If MemAvailable is below the configured
+    capacity, registration fails deep inside the C++ store (e.g. Ascend error
+    107017); raise here instead with an actionable message.
+    """
+    if cache_buffer_capacity_gb <= 0:
+        return
+    mem_available_kb = None
+    try:
+        with open("/proc/meminfo", "rt", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_available_kb = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        # /proc/meminfo unavailable (e.g. non-Linux dev host); defer to the store.
+        logger.debug("Skip host memory check: /proc/meminfo unavailable.")
+        return
+    if mem_available_kb is None:
+        return
+    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
+    mem_available = mem_available_kb * 1024
+    if mem_available < needed_bytes:
+        raise RuntimeError(
+            f"Registering the {cache_buffer_capacity_gb}GB shared buffer requires "
+            f"pinning the same amount of host memory, but only "
+            f"{mem_available >> 30}GB is available (MemAvailable). Free host "
+            f"memory or decrease cache_buffer_capacity_gb."
+        )
+
+
+def _precheck_shared_buffer_capacity(
+    connector_configs: list[dict[str, Any]], is_mla: bool
+) -> None:
+    """Validate shared-buffer host resources from raw connector configs.
+
+    Single source of truth for the shared-buffer precheck gate: called by
+    ``UCMDirectConnector.__init__`` (connector-side fallback) and by
+    ``precheck_shared_buffer_resources`` (launch-time, via the EngineCore
+    startup patch), so both apply identical semantics. For FAWA-style
+    connectors that split the capacity across stores, the total (pre-split)
+    capacity is validated here.
+    """
+    if not connector_configs:
+        return
+    config = connector_configs[0].get("ucm_connector_config", {})
+    if not config.get("share_buffer_enable", is_mla):
+        return
+    capacity_gb = config.get("cache_buffer_capacity_gb")
+    _check_shm_capacity(
+        int(capacity_gb)
+        if capacity_gb is not None
+        else _DEFAULT_SHARED_BUFFER_CAPACITY_GB
+    )
+
+
+def precheck_shared_buffer_resources(vllm_config: Any) -> None:
+    """Launch-time shared-buffer validation, before workers or model load.
+
+    vLLM only constructs KV connectors during ``initialize_from_config``,
+    i.e. after ``load_model``, so connector-side checks fire long after the
+    model has been loaded (minutes for large models). The EngineCore
+    startup patch calls this at the very start of ``EngineCore.__init__``
+    to make shared-buffer misconfigurations (tmpfs size/free space,
+    pinnable host memory) fail within seconds instead.
+
+    The gate mirrors ``UCMDirectConnector.__init__`` and skips the dispatch
+    paths whose connectors do not use the shared buffer (``use_lite``,
+    ``use_inference_duration_monitor``), so this can only fail where the
+    connector-side check would fail too. Config problems other than
+    resource shortfalls are left to the connector, which reports them with
+    better context.
+    """
+    kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
+    if kv_transfer_config is None:
+        return  # KV transfer not enabled.
+    kv_connector = getattr(kv_transfer_config, "kv_connector", None)
+    if kv_connector is not None and "ucm" not in str(kv_connector).lower():
+        return  # A non-UCM KV connector; not our config to validate.
+    try:
+        launch_config = Config(kv_transfer_config).get_config()
+        is_mla = bool(getattr(vllm_config.model_config, "is_deepseek_mla", False))
+    except Exception:
+        logger.debug(
+            "Skip launch-time shared-buffer precheck: UCM config unreadable.",
+            exc_info=True,
+        )
+        return
+    if not isinstance(launch_config, dict):
+        return
+    if launch_config.get("use_lite", False):
+        return
+    if launch_config.get("use_inference_duration_monitor", False):
+        return
+    try:
+        _precheck_shared_buffer_capacity(
+            launch_config.get("ucm_connectors") or [], is_mla
+        )
+    except RuntimeError:
+        raise  # Resource shortfall: the misconfiguration to fail fast on.
+    except Exception:
+        # Malformed values surface later from the connector itself.
+        logger.debug(
+            "Skip launch-time shared-buffer precheck: malformed config.",
+            exc_info=True,
         )
 
 
@@ -1448,6 +1573,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             .get("share_buffer_enable", self.is_mla)
         )
         if share_buffer_enable:
+            # Connector-side shared-buffer resource validation (tmpfs
+            # size/free space, pinnable host memory). vLLM constructs KV
+            # connectors only in initialize_from_config, after load_model;
+            # the EngineCore startup patch runs the same gate pre-worker
+            # via precheck_shared_buffer_resources(), and this remains the
+            # fallback for unpatched vLLM (< 0.24 or ENABLE_UCM_PATCH off).
+            _precheck_shared_buffer_capacity(self.connector_configs, self.is_mla)
             if role == KVConnectorRole.WORKER:
                 self.unique_id = _worker_generate_unique_id()
             else:
@@ -1579,9 +1711,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not bool(config.get("share_buffer_enable", False)):
             return
         if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
+            config["cache_buffer_capacity_gb"] = _DEFAULT_SHARED_BUFFER_CAPACITY_GB
             logger.info(
-                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+                "Set cache_buffer_capacity_gb to "
+                f"{_DEFAULT_SHARED_BUFFER_CAPACITY_GB}GB for shared-buffer store."
             )
         # The shared buffer is allocated via shm_open in /dev/shm; fail early
         # (before store creation) if the tmpfs cannot hold it.
