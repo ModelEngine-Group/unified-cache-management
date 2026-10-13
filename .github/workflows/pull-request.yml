@@ -213,6 +213,119 @@ jobs:
           cache-from: type=gha,scope=gpu
           cache-to: type=gha,mode=max,scope=gpu,ignore-error=true
 
+  test-e2e-sglang-h100:
+    timeout-minutes: 30
+    runs-on: [self-hosted, gpu, h100]
+    needs: lint-and-unit-tests
+    if: github.repository == 'ModelEngine-Group/unified-cache-management'
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Clean repo
+        run: |
+          if [ -d "${{ github.workspace }}" ]; then
+            cd ${{ github.workspace }}
+            rm -rf ./*
+            rm -rf .[!.]*
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Install Docker CLI
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo &> /dev/null; then
+              SUDO="sudo"
+            else
+              echo "Docker CLI installation requires root or sudo"
+              exit 1
+            fi
+          fi
+          if ! command -v docker &> /dev/null; then
+            ${SUDO} apt-get update
+            ${SUDO} apt-get install -y docker.io
+          fi
+          if ! ${SUDO} docker info >/dev/null 2>&1; then
+            echo "Docker daemon is not reachable from the runner."
+            exit 1
+          fi
+
+      - name: Generate Docker Image Version
+        id: version
+        run: |
+          DATE=$(date +%Y%m%d)
+          SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+          REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+          VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+          echo "version=${VERSION}" >>"${GITHUB_OUTPUT}"
+
+      - name: Build
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          cd ${{ github.workspace }}
+          ${SUDO} docker build \
+            --build-arg http_proxy="${http_proxy:-}" \
+            --build-arg https_proxy="${https_proxy:-}" \
+            --build-arg no_proxy="${no_proxy:-}" \
+            --build-arg PIP_INDEX_URL=https://pypi.org/simple \
+            -t ucm-e2etest-sglang-h100:${{ steps.version.outputs.version }} \
+            -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 ./
+
+      - name: Test SGLang Online Inference in Docker
+        run: |
+          RESULT_DIR="${{ github.workspace }}/test_results"
+          RESULT_FILE="${{ steps.version.outputs.version }}-sglang-online.xml"
+          CONTAINER_NAME="ucm-e2etest-sglang-h100-${{ steps.version.outputs.version }}"
+          MODEL_DIR="${H100_E2E_MODEL_DIR:-/home/huangmy/models}"
+          MODEL_NAME="${SGLANG_E2E_MODEL_NAME:-Qwen2.5-1.5B-Instruct}"
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          mkdir -p "${RESULT_DIR}"
+          rm -f "${RESULT_DIR}/${RESULT_FILE}"
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          set +e
+          ${SUDO} docker run --name "${CONTAINER_NAME}" \
+            --gpus all \
+            --ipc=host \
+            --shm-size=32g \
+            -v "${MODEL_DIR}:/home/models:ro" \
+            -e http_proxy="${http_proxy:-}" \
+            -e https_proxy="${https_proxy:-}" \
+            -e no_proxy="${no_proxy:-}" \
+            -e SGLANG_E2E_MODEL_PATH="/home/models/${MODEL_NAME}" \
+            --entrypoint /bin/bash \
+            ucm-e2etest-sglang-h100:${{ steps.version.outputs.version }} \
+            -lc "mkdir -p /workspace/test_results && cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=sglang_online_inference --platform=gpu -k 'test_sglang_online_accuracy_from_persisted_cache_h100' --junitxml=/workspace/test_results/${RESULT_FILE}"
+          TEST_RC=$?
+          ${SUDO} docker cp "${CONTAINER_NAME}:/workspace/test_results/${RESULT_FILE}" "${RESULT_DIR}/${RESULT_FILE}" >/dev/null 2>&1 || true
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          exit "${TEST_RC}"
+
+      - name: Cleanup Docker Image
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          ${SUDO} docker rm -f "ucm-e2etest-sglang-h100-${{ steps.version.outputs.version }}" >/dev/null 2>&1 || true
+          ${SUDO} docker rmi ucm-e2etest-sglang-h100:${{ steps.version.outputs.version }} || true
+
+      - name: Cleanup Test Results
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          rm -f "${{ github.workspace }}/test_results/${{ steps.version.outputs.version }}-sglang-online.xml" || true
+
   test-build-mindie:
     timeout-minutes: 25
     runs-on: ubuntu-24.04-arm
