@@ -53,7 +53,7 @@ jobs:
             exit 0
           fi
 
-          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078" "SuperMarioYL")
+          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078" "SuperMarioYL" "lc1314555" "flesher0813")
 
           echo ".github changes detected, check if user is allowed..."
           ACTOR="${{ github.actor }}"
