@@ -72,6 +72,9 @@ class DumpQ {
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     size_t streamNumber_{1};
+    bool sdmaDirect_{false};
+    bool ioAggregation_{false};
+    bool useGdr_{false};
     std::vector<size_t> tensorSizes_{};
     SpscRingQueue<TaskPair> waiting_{};
     SpscRingQueue<DumpCtx> dumping_{};
@@ -90,7 +93,10 @@ public:
         buffer_ = buffer;
         backend_ = config.storeBackend;
         deviceId_ = config.deviceId;
-        streamNumber_ = config.streamNumber;
+        streamNumber_ = config.EffectiveStreamNumber();
+        sdmaDirect_ = config.sdmaDirect;
+        ioAggregation_ = config.ioAggregation;
+        useGdr_ = config.useGdr;
         tensorSizes_ = config.tensorSizes;
         waiting_.Setup(config.waitingQueueDepth);
         if (backend_ != nullptr) {
@@ -123,12 +129,19 @@ public:
 private:
     void DispatchStage(std::promise<Status>& started)
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_dump_d2h");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_d2h");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set dump d2h thread name.", nameStatus);
         }
         StreamT stream;
-        auto s = stream.Setup(deviceId_, streamNumber_);
+        auto s = Status::OK();
+        if (ioAggregation_) {
+            s = stream.SetupIoAggregation(deviceId_, useGdr_);
+        } else if (sdmaDirect_) {
+            s = stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_);
+        } else {
+            s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+        }
         started.set_value(s);
         if (s.Failure()) [[unlikely]] { return; }
         waiting_.ConsumerLoop(stop_, &DumpQ::DispatchOneTask, this, stream);
@@ -184,11 +197,14 @@ private:
             auto& pinned = ctx.bufferHandles.back();
             const auto hostAccessible = pinned.HostAccessible();
             if (pinned.GetState() != SlotState::Ready) {
-                auto s = hostAccessible
-                             ? stream.DeviceToHostGatherAsync(shard.addrs.data(), pinned.Data(),
-                                                              tensorSizes_)
-                             : stream.DeviceToDeviceGatherAsync(shard.addrs.data(),
-                                                                pinned.DeviceData(), tensorSizes_);
+                /* SDMA Direct feeds device descriptors, so the host side has to
+                 * be the device-visible alias rather than the CPU address. */
+                void* hostDst = sdmaDirect_ ? pinned.HostMappedData() : pinned.Data();
+                auto s =
+                    hostAccessible
+                        ? stream.DeviceToHostGatherAsync(shard.addrs.data(), hostDst, tensorSizes_)
+                        : stream.DeviceToDeviceGatherAsync(shard.addrs.data(), pinned.DeviceData(),
+                                                           tensorSizes_);
                 if (s.Failure()) [[unlikely]] {
                     UC_ERROR("Failed({}) to copy shard for dump task({}).", s, task->id);
                     Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
@@ -250,7 +266,7 @@ private:
     }
     void BackendWaitStage()
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_dump_wait");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_wait");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set dump wait thread name.", nameStatus);
         }

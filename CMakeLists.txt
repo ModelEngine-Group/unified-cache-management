@@ -14,7 +14,7 @@ option(BUILD_UCM_MINDIE "build ucm MindIE integration module." OFF)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
 option(UCM_ENABLE_GDR_STREAM "build GPUDirect RDMA stream support for CUDA runtime." OFF)
-option(ASCEND_SUPPORTS_REGISTER_PIN "enable Ascend register pin optimization (requires CANN >= 8.5)" OFF)
+option(ASCEND_SUPPORTS_REGISTER_PIN "enable Ascend register pin optimization (requires CANN >= 8.5)" ON)
 option(DOWNLOAD_DEPENDENCE "download dependence by cmake." ON)
 set(RUNTIME_ENVIRONMENT "simu" CACHE STRING "runtime: simu, ascend, ascend-a3, ascend-a5, musa or cuda.")
 set(UCM_CXX11_ABI "" CACHE STRING "glibc++ ABI for MindIE builds: 0 or 1")
@@ -23,6 +23,7 @@ set(UCM_RUNTIME_ASCEND_FAMILY OFF)
 set(UCM_RUNTIME_ASCEND_HAL OFF)
 set(UCM_RUNTIME_ASCEND_IO_AGGREGATION OFF)
 set(UCM_RUNTIME_ASCEND_SDMA_DIRECT OFF)
+set(UCM_CACHE_V2_USE_POSIX_SHM_BACKEND OFF)
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     set(UCM_RUNTIME_ASCEND_FAMILY ON)
     set(UCM_RUNTIME_ASCEND_IO_AGGREGATION ON)
@@ -31,7 +32,24 @@ elseif(RUNTIME_ENVIRONMENT STREQUAL "ascend-a3")
     set(UCM_RUNTIME_ASCEND_SDMA_DIRECT ON)
 elseif(RUNTIME_ENVIRONMENT STREQUAL "ascend-a5")
     set(UCM_RUNTIME_ASCEND_FAMILY ON)
-    # set(UCM_RUNTIME_ASCEND_HAL ON)
+    # Keep A5 aligned with upstream until the HAL backend is fully validated.
+    # PosixShm does not register the cache segments with the device runtime.
+    set(UCM_CACHE_V2_USE_POSIX_SHM_BACKEND ON)
+endif()
+
+# Which cache core each platform ships, and therefore which test suite can link.
+# The ascend family and cuda run cache.v2; musa/maca keep the cc core. simu
+# carries both, because the shared ucmstore.test binary runs the cc and v2
+# suites together and one library can only export a single MakeCacheStore
+# (v2/cache_store.cc hides its own while building tests).
+set(UCM_CACHE_STORE_BUILDS_CC ON)
+set(UCM_CACHE_STORE_BUILDS_V2 OFF)
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "ascend-a3" OR
+   RUNTIME_ENVIRONMENT STREQUAL "ascend-a5" OR RUNTIME_ENVIRONMENT STREQUAL "cuda")
+    set(UCM_CACHE_STORE_BUILDS_CC OFF)
+    set(UCM_CACHE_STORE_BUILDS_V2 ON)
+elseif(RUNTIME_ENVIRONMENT STREQUAL "simu")
+    set(UCM_CACHE_STORE_BUILDS_V2 ON)
 endif()
 
 execute_process(COMMAND git rev-parse HEAD OUTPUT_VARIABLE UCM_COMMIT_ID OUTPUT_STRIP_TRAILING_WHITESPACE)

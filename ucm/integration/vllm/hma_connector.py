@@ -747,6 +747,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         name, module_path, config = self._base_store_config(store_suffix)
         config["local_rank_size"] = self._get_world_size()
         self._set_default_shm_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)
         else:

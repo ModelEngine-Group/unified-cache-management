@@ -31,30 +31,56 @@
 #include <fmt/format.h>
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
 #include "ctrl_layout.h"
 #include "data_backend.h"
 #include "data_backend_ascend.h"
+#include "data_backend_memfd.h"
 #include "data_backend_posix.h"
 #include "logger/logger.h"
+#include "numa/numa_policy.h"
 #include "status/status.h"
 
+#ifndef UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+#define UCM_CACHE_V2_USE_POSIX_SHM_BACKEND 0
+#endif
+
 namespace UC::Cache2 {
+
+/* Everything needed to set up the data plane for one worker. Assembled from
+ * configuration plus connector-derived hints; not a user-facing knob set. */
+struct DataOptions {
+    std::string domainId{}; /* connector uniqueId; do not widen scope here */
+    int32_t deviceId{-1};   /* device ordinal */
+    size_t myRank{0};       /* control-plane partition index */
+    size_t slotSize{0};
+    size_t slotsPerRank{0};
+    size_t setupTimeoutMs{600000};            /* whole-Setup budget; 0 means no wait */
+    bool requireHostDeviceAddress{false};     /* derived from the copy mode, not a switch */
+    std::optional<int32_t> deviceNumaNode{};  /* device-layer probe; empty when unknown */
+    std::optional<size_t> fallbackNumaRank{}; /* local worker rank, NOT myRank */
+};
 
 class DataStrategy {
     size_t slotSize_{};
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
+    /* A5 stays on the upstream PosixShm path until its HAL backend is validated.
+     * Other ascend/cuda/simu platforms use memfd host segments. The HAL branch
+     * remains available for an explicitly enabled experimental build. */
     static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
     {
 #if UCM_RUNTIME_ASCEND_HAL
         (void)uniqueId;
         return std::make_unique<AscendHalDataBackend>();
-#else
+#elif UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
         return std::make_unique<PosixShmDataBackend>(uniqueId);
+#else
+        return std::make_unique<MemfdDataBackend>(uniqueId);
 #endif
     }
 
@@ -150,13 +176,16 @@ public:
     // Returns a failure status after releasing resources acquired by this call.
     // Ranks must set up concurrently: peer imports and the all-ranks-ready
     // barrier share timeoutMs; zero allows one read attempt per peer.
-    Status Setup(CtrlLayout& ctrl, const std::string& uniqueId, int32_t deviceId, size_t myRank,
-                 size_t slotSize, size_t nSlotsPerRank, size_t timeoutMs = 600 * 1000)
+    Status Setup(CtrlLayout& ctrl, const DataOptions& options)
     {
+        const size_t myRank = options.myRank;
+        const size_t slotSize = options.slotSize;
+        const size_t nSlotsPerRank = options.slotsPerRank;
+        const size_t timeoutMs = options.setupTimeoutMs;
         if (nSlotsPerRank_ != 0) {
             return Status::Error("cache2 data strategy is already initialized");
         }
-        if (uniqueId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
+        if (options.domainId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
         const size_t totalSlots = ctrl.SlotCount();
         const size_t nRanks = nSlotsPerRank != 0 ? totalSlots / nSlotsPerRank : 0;
         if (nRanks == 0 || myRank >= nRanks) {
@@ -165,11 +194,27 @@ public:
                 "slots_per_rank={}",
                 myRank, nRanks, totalSlots, nSlotsPerRank);
         }
-        auto backend = MakeBackend(uniqueId);
+        auto backend = MakeBackend(options.domainId);
         const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+        BackendOptions backendOptions;
+        backendOptions.deviceId = options.deviceId;
+        backendOptions.rankCount = nRanks;
+        backendOptions.rankBytes = slotSize * nSlotsPerRank;
+        backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
+        backendOptions.deadline = deadline;
+#if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+        auto placement = Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank, nRanks);
+        if (!placement) {
+            UC_ERROR("cache2 numa placement failed: owner={} device={} status={}", myRank,
+                     options.deviceId, placement.Error());
+            return {placement.Error().Underlying(),
+                    fmt::format("numa placement failed: {}", placement.Error())};
+        }
+        backendOptions.localPlacement = placement.Value();
+#endif
         Status status = Status::OK();
         try {
-            status = backend->Setup(deviceId, nRanks, slotSize * nSlotsPerRank);
+            status = backend->Setup(backendOptions);
             if (status.Success()) { status = backend->BindLocal(myRank); }
             if (status.Success()) { status = PublishLocal(ctrl, myRank, *backend); }
             if (status.Success()) {
@@ -187,7 +232,7 @@ public:
         }
         if (status.Failure()) {
             UC_ERROR("cache2 data setup failed: backend={} owner={} device={} status={}",
-                     backend->Name(), myRank, deviceId, status);
+                     backend->Name(), myRank, options.deviceId, status);
             return status;
         }
         slotSize_ = slotSize;
@@ -217,6 +262,18 @@ public:
         if (nSlotsPerRank_ == 0 || backend_ == nullptr) { return nullptr; }
         const size_t rank = slotIdx / nSlotsPerRank_;
         void* base = backend_->DeviceAddrOf(rank);
+        if (base == nullptr) { return nullptr; }
+        return static_cast<std::byte*>(base) + (slotIdx % nSlotsPerRank_) * slotSize_;
+    }
+
+    // Returns the device-visible alias of a host-accessible slot, or nullptr
+    // when the backend provides none. Only for transfer modes that need a device
+    // address (Memfd SDMA Direct); never use it for CPU access.
+    void* HostMappedDeviceDataAt(size_t slotIdx) const
+    {
+        if (nSlotsPerRank_ == 0 || backend_ == nullptr) { return nullptr; }
+        const size_t rank = slotIdx / nSlotsPerRank_;
+        void* base = backend_->HostMappedDeviceAddrOf(rank);
         if (base == nullptr) { return nullptr; }
         return static_cast<std::byte*>(base) + (slotIdx % nSlotsPerRank_) * slotSize_;
     }

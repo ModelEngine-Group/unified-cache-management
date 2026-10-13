@@ -56,10 +56,24 @@ struct BufferTestAccess {
         buffer.myRank_ = rank;
     }
 
-    static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
-                                 size_t attempts, bool& owner)
+    static void Attach(Buffer& buffer, void* memory, size_t rankCount, size_t slotsPerRank,
+                       size_t bucketCount, size_t lockCount, size_t rank)
     {
-        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner);
+        auto& layout = buffer.ctrl_.Layout();
+        layout.Bind(memory, rankCount, slotsPerRank, bucketCount, lockCount);
+        layout.InitSlotRange(rank);
+        buffer.myRank_ = rank;
+        buffer.rankCount_ = rankCount;
+        buffer.slotsPerRank_ = slotsPerRank;
+        buffer.slotSize_ = 4096;
+        buffer.bucketCount_ = bucketCount;
+        buffer.reservedSlots_ = 0;
+    }
+
+    static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
+                                 size_t attempts, bool& owner, size_t preferredRank = kInvalid)
+    {
+        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner, preferredRank);
     }
 
     static void Release(Buffer& buffer, size_t slot) { buffer.Release(slot); }
@@ -308,6 +322,94 @@ TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondCha
             EXPECT_EQ(meta.hash.load(std::memory_order_relaxed), kInvalid);
         }
     }
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, PreferredRankClaimsPreallocatedKeyInItsOwnSegment)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1000);
+    rank1.Prealloc(block, 0, false, 1);
+
+    bool owner = false;
+    auto wrongRank = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    EXPECT_EQ(wrongRank, kInvalid);
+
+    auto slot = BufferTestAccess::TryAcquireSlot(rank1, block, 0, 1, owner, 1);
+    ASSERT_NE(slot, kInvalid);
+    EXPECT_TRUE(owner);
+    EXPECT_GE(slot, kSlotsPerRank);
+    EXPECT_LT(slot, kRanks * kSlotsPerRank);
+    BufferTestAccess::MarkReady(rank1, slot);
+
+    auto reader = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    ASSERT_EQ(reader, slot);
+    EXPECT_FALSE(owner);
+    BufferTestAccess::Release(rank0, reader);
+    BufferTestAccess::Release(rank1, slot);
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, PreallocRunsOnlyOnPreferredRank)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1001);
+    rank0.Prealloc(block, 0, false, 1);
+    EXPECT_EQ(BufferTestAccess::FindSlot(rank0, block, 0), kInvalid);
+    rank1.Prealloc(block, 0, false, 1);
+    const auto slot = BufferTestAccess::FindSlot(rank0, block, 0);
+    EXPECT_GE(slot, kSlotsPerRank);
+    EXPECT_LT(slot, kRanks * kSlotsPerRank);
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, NonPreferredRankCanObserveFailedSlotWithoutTakingOwnership)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1002);
+    {
+        auto failedOwner = rank1.Get(block, 0, false, 1);
+        ASSERT_TRUE(failedOwner.Owner());
+        failedOwner.MarkFailed();
+    }
+
+    bool owner = true;
+    auto slot = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    ASSERT_NE(slot, kInvalid);
+    EXPECT_FALSE(owner);
+    EXPECT_EQ(BufferTestAccess::Layout(rank0).SlotMetaArr()[slot].state.load(),
+              CtrlLayout::SlotMeta::State::Failed);
+    BufferTestAccess::Release(rank0, slot);
     ::operator delete(memory, std::align_val_t{64});
 }
 
