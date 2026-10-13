@@ -53,7 +53,7 @@ public:
     ~AscendHalDataBackend() override;
 
     const char* Name() const override { return "ascend-hal"; }
-    Status Setup(int32_t deviceId, size_t nRanks, size_t rankBytes) override;
+    Status Setup(const BackendOptions& options) override;
     Status BindLocal(size_t rank) override;
     Status ExportLocal(uint64_t* handle) override;
     Status ImportPeer(size_t rank, uint64_t handle) override;

@@ -33,12 +33,14 @@ namespace Hal = Trans::Hal;
 
 AscendHalDataBackend::~AscendHalDataBackend() { Reset(); }
 
-Status AscendHalDataBackend::Setup(int32_t deviceId, size_t nRanks, size_t rankBytes)
+Status AscendHalDataBackend::Setup(const BackendOptions& options)
 {
+    const size_t nRanks = options.rankCount;
+    const size_t rankBytes = options.rankBytes;
     if (nRanks == 0 || rankBytes == 0) {
         return Status::InvalidParam("invalid HAL geometry: ranks={} bytes={}", nRanks, rankBytes);
     }
-    deviceId_ = deviceId;
+    deviceId_ = options.deviceId;
     rankBytes_ = rankBytes;
     nRanks_ = nRanks;
     mappings_.assign(nRanks, Mapping{});
