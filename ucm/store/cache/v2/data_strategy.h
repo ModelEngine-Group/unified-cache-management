@@ -31,6 +31,7 @@
 #include <fmt/format.h>
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -40,6 +41,7 @@
 #include "data_backend_memfd.h"
 #include "data_backend_posix.h"
 #include "logger/logger.h"
+#include "numa/numa_policy.h"
 #include "status/status.h"
 
 #ifndef UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
@@ -56,8 +58,10 @@ struct DataOptions {
     size_t myRank{0};       /* control-plane partition index */
     size_t slotSize{0};
     size_t slotsPerRank{0};
-    size_t setupTimeoutMs{600000};        /* whole-Setup budget; 0 means no wait */
-    bool requireHostDeviceAddress{false}; /* derived from the copy mode, not a switch */
+    size_t setupTimeoutMs{600000};            /* whole-Setup budget; 0 means no wait */
+    bool requireHostDeviceAddress{false};     /* derived from the copy mode, not a switch */
+    std::optional<int32_t> deviceNumaNode{};  /* device-layer probe; empty when unknown */
+    std::optional<size_t> fallbackNumaRank{}; /* local worker rank, NOT myRank */
 };
 
 class DataStrategy {
@@ -198,6 +202,16 @@ public:
         backendOptions.rankBytes = slotSize * nSlotsPerRank;
         backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
         backendOptions.deadline = deadline;
+#if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
+        auto placement = Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank, nRanks);
+        if (!placement) {
+            UC_ERROR("cache2 numa placement failed: owner={} device={} status={}", myRank,
+                     options.deviceId, placement.Error());
+            return {placement.Error().Underlying(),
+                    fmt::format("numa placement failed: {}", placement.Error())};
+        }
+        backendOptions.localPlacement = placement.Value();
+#endif
         Status status = Status::OK();
         try {
             status = backend->Setup(backendOptions);

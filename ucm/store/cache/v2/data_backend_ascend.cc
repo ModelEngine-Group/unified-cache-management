@@ -43,6 +43,7 @@ Status AscendHalDataBackend::Setup(const BackendOptions& options)
     deviceId_ = options.deviceId;
     rankBytes_ = rankBytes;
     nRanks_ = nRanks;
+    localPlacement_ = options.localPlacement;
     mappings_.assign(nRanks, Mapping{});
     Trans::Device device;
     auto status = device.Setup(deviceId_);
@@ -50,6 +51,17 @@ Status AscendHalDataBackend::Setup(const BackendOptions& options)
         UC_ERROR("device setup failed: owner={} device={} status={}", owner_, deviceId_, status);
         mappings_.clear();
         return status;
+    }
+    /* The HAL wrapper exposes no NUMA placement parameter yet -- hal_memory's
+     * MemCreate takes only a size and a page type -- so a resolved plan cannot be
+     * honoured at allocation time. Report it rather than pretending it landed;
+     * closing this needs the target SDK's allocation parameter. */
+    if (localPlacement_.node >= 0) {
+        UC_WARN(
+            "A5 HAL allocation cannot apply the NUMA plan yet: owner={} device={} node={} "
+            "placement={}",
+            owner_, deviceId_, localPlacement_.node,
+            localPlacement_.placement == Numa::Placement::Affinity ? "affinity" : "rank-slice");
     }
     return Status::OK();
 }

@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <utility>
 #include "logger/logger.h"
+#include "numa/numa_policy.h"
 #include "trans/buffer.h"
 #include "trans/device.h"
 
@@ -76,6 +77,7 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
     segments_ = std::vector<Segment>(options.rankCount);
     deviceId_ = options.deviceId;
     requireHostDeviceAddress_ = options.requireHostDeviceAddress;
+    localPlacement_ = options.localPlacement;
     deadline_ = options.deadline;
     UC_INFO("memfd setup: device={} ranks={} rank_bytes={} rank_stride={} host_device={}",
             deviceId_, options.rankCount, options.rankBytes, rankStride_,
@@ -226,8 +228,22 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
 Status MemfdDataBackend::PlaceAndRegister(size_t rank)
 {
     auto& segment = segments_[rank];
-    /* Touch before registration, which can pin the pages. A later NUMA-aware
-     * extension can insert placement immediately before this first touch. */
+    /* Placement has to be settled before the pages are touched, and touching has
+     * to happen before registration (which pins them). The bind itself is
+     * skipped only while no plan has been resolved yet. */
+    if (localPlacement_.node < 0) {
+        UC_WARN(
+            "memfd segment has no NUMA plan, leaving placement to the kernel: device={} "
+            "rank={}",
+            deviceId_, rank);
+    } else {
+        auto bindStatus = Numa::BindBeforeTouch(segment.mem->Addr(), rankStride_, localPlacement_);
+        if (bindStatus.Failure()) {
+            UC_ERROR("memfd NUMA bind failed: device={} rank={} node={} status={}", deviceId_, rank,
+                     localPlacement_.node, bindStatus);
+            return bindStatus;
+        }
+    }
     const long pageSize = ::sysconf(_SC_PAGESIZE);
     if (pageSize > 0) {
         auto* base = static_cast<std::byte*>(segment.mem->Addr());

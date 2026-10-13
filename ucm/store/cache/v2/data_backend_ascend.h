@@ -47,6 +47,7 @@ class AscendHalDataBackend : public DataBackend {
     size_t nRanks_{0};
     size_t rankStride_{0};
     size_t rankBytes_{0};
+    Numa::Plan localPlacement_{};
 
 public:
     AscendHalDataBackend() = default;

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include "numa/numa_policy.h"
 #include "status/status.h"
 
 namespace UC::Cache2 {
@@ -37,6 +38,7 @@ struct BackendOptions {
     int32_t deviceId{-1};
     size_t rankCount{0};
     size_t rankBytes{0};
+    Numa::Plan localPlacement{};
     bool requireHostDeviceAddress{false};
     std::chrono::steady_clock::time_point deadline{};
 };

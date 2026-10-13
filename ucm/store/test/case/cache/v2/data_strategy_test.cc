@@ -78,6 +78,9 @@ protected:
         return "/dev/shm/ucm_cache2_" + uniqueId_ + "_data_" + std::to_string(rank);
     }
 
+    /* A worker must supply either a detected affinity node or its index within
+     * the machine. These tests run in one process, so a deterministic per-rank
+     * index keeps the rank-sliced placement well defined. */
     static DataOptions MakeOptions(const std::string& uniqueId, int32_t deviceId, size_t myRank,
                                    size_t timeoutMs)
     {
@@ -88,6 +91,7 @@ protected:
         options.slotSize = kSlotSize;
         options.slotsPerRank = kSlotsPerRank;
         options.setupTimeoutMs = timeoutMs;
+        options.fallbackNumaRank = myRank;
         return options;
     }
 

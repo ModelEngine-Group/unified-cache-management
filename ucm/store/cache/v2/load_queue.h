@@ -80,6 +80,7 @@ class LoadQ {
     bool sdmaDirect_{false};
     bool ioAggregation_{false};
     bool useGdr_{false};
+    bool shareBufferEnable_{false};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     std::vector<size_t> tensorSizes_{};
@@ -105,6 +106,7 @@ public:
         sdmaDirect_ = config.sdmaDirect;
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
+        shareBufferEnable_ = config.shareBufferEnable;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         tensorSizes_ = config.tensorSizes;
@@ -159,12 +161,18 @@ private:
         const auto startTp = NowTime::Now();
         const auto nShard = task->desc.size();
         const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
+        std::vector<size_t> preallocRanks;
+        if (shareBufferEnable_) { preallocRanks.reserve(nShard); }
         size_t backendSubmitCount = 0;
         size_t waitShardCount = 0;
         for (size_t i = 0; i < nShard; ++i) {
-            auto& shard = task->desc[indexes[i]];
+            const auto originalIndex = indexes[i];
+            auto& shard = task->desc[originalIndex];
             ShardTask shardTask;
-            auto handle = buffer_->Get(shard.owner, shard.index, true);
+            auto handle = shareBufferEnable_ ? buffer_->Get(shard.owner, shard.index, true,
+                                                            originalIndex % localRankSize_)
+                                             : buffer_->Get(shard.owner, shard.index, true);
+            if (shareBufferEnable_) { preallocRanks.push_back(handle.Segment()); }
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
@@ -190,7 +198,7 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
         RecordLoadSourceShards(nShard, waitShardCount);
-        PreallocNextShards(task, indexes);
+        PreallocNextShards(task, indexes, preallocRanks);
     }
     Expected<Detail::TaskHandle> SubmitBackendLoad(const TaskPtr& task, const Detail::Shard& shard,
                                                    Handle& handle)
@@ -213,12 +221,18 @@ private:
         }
         return res;
     }
-    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes)
+    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes,
+                            const std::vector<size_t>& preallocRanks)
     {
-        for (auto i : indexes) {
+        for (size_t order = 0; order < indexes.size(); ++order) {
+            const auto i = indexes[order];
             auto& shard = task->desc[i];
             if (shard.index + 1 != nShardPerBlock_) {
-                buffer_->Prealloc(shard.owner, shard.index + 1, true);
+                if (shareBufferEnable_) {
+                    buffer_->Prealloc(shard.owner, shard.index + 1, true, preallocRanks[order]);
+                } else {
+                    buffer_->Prealloc(shard.owner, shard.index + 1, true);
+                }
             }
         }
     }

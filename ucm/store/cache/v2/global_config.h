@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <vector>
 #include "logger/logger.h"
@@ -54,6 +55,9 @@ struct Config {
     size_t waitingQueueDepth{8192};
     size_t runningQueueDepth{524288};
     size_t timeoutMs{30000};
+    /* Budget for the whole data-plane setup. Only bounds initialization; it has
+     * nothing to do with NUMA placement. */
+    size_t dataSetupTimeoutMs{600000};
     size_t streamNumber{4};
     /* Whether the user set cache_stream_number at all: SDMA Direct has a
      * different unconfigured default, so an explicit value has to win over it. */
@@ -65,6 +69,16 @@ struct Config {
     /* Keeps the cc core's single-stream aggregation instead of rotating copies. */
     bool ioAggregation{false};
     size_t localRankSize{8};
+    /* MLA workers share cache keys and can deterministically assign each
+     * missing key to one rank-local segment. GQA workers use rank-specific
+     * keys and must keep allocating from their own segment. */
+    bool shareBufferEnable{false};
+    /* Connector-derived hints, never user configuration. deviceNumaNode is the
+     * accelerator's real NUMA affinity, absent when topology does not expose
+     * one; fallbackNumaRank is this worker's index within its own machine,
+     * used only when there is no affinity. */
+    std::optional<int32_t> detectedNumaNode{};
+    std::optional<int64_t> fallbackNumaRank{};
 
     /* SDMA Direct needs one descriptor per stream, so its unconfigured default
      * is higher than the plain path's; an explicit cache_stream_number wins. */
@@ -97,12 +111,24 @@ struct Config {
         dict.GetNumber("waiting_queue_depth", config.waitingQueueDepth);
         dict.GetNumber("running_queue_depth", config.runningQueueDepth);
         dict.GetNumber("timeout_ms", config.timeoutMs);
+        dict.GetNumber("cache_data_setup_timeout_ms", config.dataSetupTimeoutMs);
         dict.GetNumber("cache_stream_number", config.streamNumber);
         config.streamNumberExplicit = dict.Contains("cache_stream_number");
         dict.Get("cache_sdma_direct", config.sdmaDirect);
         dict.Get("use_gdr", config.useGdr);
         dict.Get("cache_io_aggregation", config.ioAggregation);
         dict.GetNumber("local_rank_size", config.localRankSize);
+        dict.Get("share_buffer_enable", config.shareBufferEnable);
+        if (dict.Contains("cache_detected_numa_node")) {
+            int32_t numaNode = 0;
+            dict.GetNumber("cache_detected_numa_node", numaNode);
+            config.detectedNumaNode = numaNode;
+        }
+        if (dict.Contains("cache_fallback_numa_rank")) {
+            int64_t numaRank = 0;
+            dict.GetNumber("cache_fallback_numa_rank", numaRank);
+            config.fallbackNumaRank = numaRank;
+        }
         return config;
     }
     Status Validate() const
@@ -149,6 +175,12 @@ struct Config {
         if (localRankSize == 0) {
             return Status::InvalidParam("invalid local rank size({})", localRankSize);
         }
+        if (detectedNumaNode.has_value() && *detectedNumaNode < 0) {
+            return Status::InvalidParam("invalid detected numa node({})", *detectedNumaNode);
+        }
+        if (fallbackNumaRank.has_value() && *fallbackNumaRank < 0) {
+            return Status::InvalidParam("invalid fallback numa rank({})", *fallbackNumaRank);
+        }
         return Status::OK();
     }
     void Show() const
@@ -176,11 +208,20 @@ struct Config {
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, timeoutMs);
+        UC_INFO("Set {}::DataSetupTimeoutMs to {}.", ns, dataSetupTimeoutMs);
         UC_INFO("Set {}::StreamNumber to {} (configured={}).", ns, EffectiveStreamNumber(),
                 streamNumber);
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, sdmaDirect);
+        UC_INFO("Set {}::CacheIOAggregation to {}.", ns, ioAggregation);
         UC_INFO("Set {}::UseGdr to {}.", ns, useGdr);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
+        UC_INFO("Set {}::ShareBufferEnable to {}.", ns, shareBufferEnable);
+        if (detectedNumaNode.has_value()) {
+            UC_INFO("Set {}::DetectedNumaNode to {}.", ns, *detectedNumaNode);
+        }
+        if (fallbackNumaRank.has_value()) {
+            UC_INFO("Set {}::FallbackNumaRank to {}.", ns, *fallbackNumaRank);
+        }
     }
 };
 

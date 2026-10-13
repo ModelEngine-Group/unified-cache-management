@@ -57,6 +57,7 @@ class MemfdDataBackend : public DataBackend {
     size_t ownerRank_{0};
     int32_t deviceId_{-1};
     bool requireHostDeviceAddress_{false};
+    Numa::Plan localPlacement_{};
     std::chrono::steady_clock::time_point deadline_{};
     FdSocket fdServer_{};
     std::thread fdThread_{};
@@ -79,8 +80,8 @@ public:
 private:
     /* memfd_create -> ftruncate -> mmap, without MAP_POPULATE. */
     Status CreateLocalSegment(size_t rank);
-    /* First touch, then device registration. Registration pins pages, so a
-     * later NUMA-aware extension can insert placement before this step. */
+    /* Bind before first touch, then register with the device. Registration can
+     * pin pages, so it must remain the last step. */
     Status PlaceAndRegister(size_t rank);
     Status RegisterSegment(Segment& segment);
     /* memfd name, and the abstract socket a peer uses to fetch the fd. */

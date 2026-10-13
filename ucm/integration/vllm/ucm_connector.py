@@ -1535,6 +1535,36 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # (before store creation) if the tmpfs cannot hold it.
         _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
+    def _configure_numa_placement(self, config: dict[str, Any]) -> None:
+        """
+        Attach this worker's NUMA hint to the store config.
+
+        A real device affinity becomes cache_detected_numa_node and wins
+        outright: the store binds to it and never re-derives it. Otherwise
+        cache_fallback_numa_rank carries the worker's index within its own
+        machine, which the store maps to nodes[rank % node_count]. That index
+        must be the LOCAL data-parallel rank, so on a multi-node deployment
+        every machine numbers its own workers from zero instead of inheriting
+        an offset from the machines before it.
+        """
+        if self._role != KVConnectorRole.WORKER:
+            return
+        numa_node = self.device.get_numa_node(self.device_id)
+        if numa_node is not None:
+            config["cache_detected_numa_node"] = numa_node
+            return
+        parallel = self._vllm_config.parallel_config
+        dp_rank = getattr(parallel, "data_parallel_rank_local", None)
+        if dp_rank is None:
+            dp_rank = parallel.data_parallel_index
+        model_parallel_size = (
+            parallel.pipeline_parallel_size * parallel.tensor_parallel_size
+        )
+        model_parallel_rank = parallel.rank % model_parallel_size
+        config["cache_fallback_numa_rank"] = (
+            dp_rank * model_parallel_size + model_parallel_rank
+        )
+
     def _get_world_size(self) -> int:
         parallel = self._vllm_config.parallel_config
         world_size = int(parallel.world_size)
@@ -1562,6 +1592,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
