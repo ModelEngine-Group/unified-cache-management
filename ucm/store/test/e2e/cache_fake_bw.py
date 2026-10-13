@@ -25,8 +25,8 @@
 # Usage:
 # 1. Select model/mode and set worker_number/layer_number below.
 #    GLM defaults to 16/78; MiniMax to 8/62; DSV4 to 8 and ignores layer_number.
-# 2. Tune the workload and optional SDMA/CPU-affinity switches as needed.
-# 3. Run this script with python3.
+# 2. Select Cache|Fake or Cache|Posix; configure storage_backends for Posix.
+# 3. Tune the workload and optional SDMA/CPU-affinity switches, then run with python3.
 import multiprocessing
 import os
 import secrets
@@ -37,16 +37,18 @@ import time
 
 import torch
 
+# Cache|Fake measures Cache transfers; Cache|Posix also writes KV files.
+# Loads still prefer Cache hits on both pipelines.
 store_pipeline = "Cache|Fake"
 device_type = "npu"
 
 # =========================== User configuration ===========================
 # Model profile: glm-5.2, minimax-m2.7 tp8, or dsv4.
-model_name = "glm-5.2"
+model_name = "dsv4"
 # True uses layerwise transfer; False uses non-layerwise. DSV4 ignores it.
-use_layerwise = True
+use_layerwise = False
 # Worker process/NPU count: GLM defaults to 16; MiniMax/DSV4 default to 8.
-worker_number = 16
+worker_number = 8
 # Only used by GLM/MiniMax non-layerwise transfers: GLM=78, MiniMax=62.
 layer_number = 78
 
@@ -61,10 +63,20 @@ load_epoch_number = 128
 warmup_epoch_number = 5
 # Pause between adjacent epochs, in milliseconds.
 epoch_interval_ms = 15
+# Number of Cache copy streams per worker and transfer direction.
+cache_stream_number = 16
 # Enable Cache SDMA Direct transfers.
 cache_sdma_direct = False
+# Enable Cache IO aggregation.
+cache_io_aggregation = False
 # Bind each worker and its UCM store threads to NUMA-local CPU cores.
 worker_cpu_affinity_enable = False
+
+# Only used by Cache|Posix. All workers and the lookup observer share these paths.
+storage_backends = ["./build/data"]
+posix_io_engine = "psync"  # psync or aio; io_direct is enabled below.
+posix_data_trans_concurrency = 128
+posix_lookup_concurrency = 16
 
 # MLA writes once from worker 0 and all workers load the same block ids, while
 # GQA workers use their own block ids. GLM and MiniMax support layerwise and
@@ -72,6 +84,7 @@ worker_cpu_affinity_enable = False
 MODEL_PROFILES = {
     "glm-5.2": {
         "worker_mode": "mla",
+        "mla_dump_striping": True,
         "share_buffer_enable": True,
         "layer_tensor_size_list": [131072, 16384, 32768],
     },
@@ -83,6 +96,11 @@ MODEL_PROFILES = {
     },
     "dsv4": {
         "worker_mode": "mla",
+        # These 21 C4 and 20 C128 views form one FA row. The HMA connector
+        # stripes FA keys by absolute canonical block index; WA uses a
+        # separate store and is outside this benchmark profile.
+        "benchmark_scope": "FA-only",
+        "mla_dump_striping": True,
         "share_buffer_enable": True,
         "full_tensor_size_list": [
             131072,
@@ -191,6 +209,8 @@ if model_profile is None:
         f"unsupported model {model_name!r}; choose one of: {available_models}"
     )
 worker_mode = model_profile["worker_mode"]
+benchmark_scope = model_profile.get("benchmark_scope", "all KV views")
+mla_dump_striping = model_profile.get("mla_dump_striping", False)
 share_buffer_enable = model_profile["share_buffer_enable"]
 tensor_size_list = resolve_tensor_size_list(model_profile)
 shard_size = (sum(tensor_size_list) + 4095) // 4096 * 4096
@@ -293,6 +313,60 @@ def get_topology_cpu_pools(npu_ids, available_cpu_cores):
         )
         return None
     return cpu_pools
+
+
+def get_cache_numa_nodes():
+    """Use an unambiguous NPU affinity; otherwise use cache.v2 rank fallback."""
+    if device_type != "npu":
+        return [None] * worker_number
+
+    npu_ids = get_visible_npu_ids()
+    command_env = os.environ.copy()
+    command_env.update({"LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"})
+    try:
+        result = subprocess.run(
+            ["lscpu", "-e=CPU,NODE"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=command_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"warning: failed to map NPU affinity CPUs to NUMA nodes: {error}")
+        return [None] * worker_number
+    if result.returncode != 0:
+        print(f"warning: lscpu NUMA query failed: {result.stderr.strip()}")
+        return [None] * worker_number
+
+    cpu_to_node = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and all(part.lstrip("-").isdigit() for part in parts):
+            cpu_id, numa_node = map(int, parts)
+            if numa_node >= 0:
+                cpu_to_node[cpu_id] = numa_node
+
+    # Use the full topology, not the benchmark process's possibly restricted
+    # CPU set, when deciding whether an NPU maps to exactly one NUMA node.
+    cpu_pools = get_topology_cpu_pools(npu_ids, cpu_to_node)
+    if cpu_pools is None:
+        print("Cache NUMA plan: NPU affinity unavailable; using rank fallback")
+        return [None] * worker_number
+
+    numa_nodes = []
+    for worker_id, cpu_pool in enumerate(cpu_pools):
+        nodes = {cpu_to_node.get(cpu_id) for cpu_id in cpu_pool}
+        numa_node = next(iter(nodes)) if len(nodes) == 1 and None not in nodes else None
+        numa_nodes.append(numa_node)
+        placement = (
+            f"affinity node {numa_node}" if numa_node is not None else "rank fallback"
+        )
+        print(
+            f"Cache NUMA plan: worker={worker_id}, npu={npu_ids[worker_id]}, "
+            f"{placement}"
+        )
+    return numa_nodes
 
 
 def get_fallback_numa_cpu_pools(available_cpu_cores):
@@ -404,8 +478,29 @@ def configure_ucm_logging():
     os.environ["UC_LOGGER_LEVEL"] = "info"
 
 
+def configure_storage_backend(config):
+    if store_pipeline == "Cache|Posix":
+        config["storage_backends"] = storage_backends
+        config["posix_io_engine"] = posix_io_engine
+        config["posix_data_trans_concurrency"] = posix_data_trans_concurrency
+        config["posix_lookup_concurrency"] = posix_lookup_concurrency
+
+
+def prepare_storage_dirs():
+    if store_pipeline != "Cache|Posix":
+        return
+    if not storage_backends:
+        raise ValueError("Cache|Posix requires at least one storage_backends directory")
+    for path in storage_backends:
+        os.makedirs(path, exist_ok=True)
+
+
 def create_cache_worker(
-    pipeline_store_cls, unique_id: str, device_id: int, store_cpu_affinity_cores
+    pipeline_store_cls,
+    unique_id: str,
+    device_id: int,
+    store_cpu_affinity_cores,
+    cache_numa_node,
 ):
     config = {}
     config["store_pipeline"] = store_pipeline
@@ -417,12 +512,19 @@ def create_cache_worker(
     config["io_direct"] = True
     config["cache_load_backend_only"] = True
     config["cache_buffer_capacity_gb"] = 32
-    config["cache_stream_number"] = 4
+    config["local_rank_size"] = worker_number
+    config["cache_stream_number"] = cache_stream_number
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_io_aggregation"] = cache_io_aggregation
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
+    if cache_numa_node is not None:
+        config["cache_detected_numa_node"] = cache_numa_node
+    else:
+        config["cache_fallback_numa_rank"] = device_id
     if store_cpu_affinity_cores:
         config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    configure_storage_backend(config)
     return pipeline_store_cls(config)
 
 
@@ -430,7 +532,10 @@ def create_cache_scheduler(
     pipeline_store_cls, unique_id: str, store_cpu_affinity_cores
 ):
     config = {}
-    config["store_pipeline"] = store_pipeline
+    # Query Posix directly so Cache hits cannot hide pending backend commits.
+    config["store_pipeline"] = (
+        "Posix" if store_pipeline == "Cache|Posix" else store_pipeline
+    )
     config["cache_load_backend_only"] = True
     config["unique_id"] = unique_id
     # Keep scheduler tensor sizes and shard size unset so the C++ defaults are
@@ -439,11 +544,14 @@ def create_cache_scheduler(
     config["share_buffer_enable"] = share_buffer_enable
     config["io_direct"] = True
     config["cache_buffer_capacity_gb"] = 32
+    config["local_rank_size"] = worker_number
     config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_io_aggregation"] = cache_io_aggregation
     config["timeout_ms"] = 30000
     config["device_id"] = -1
     if store_cpu_affinity_cores:
         config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    configure_storage_backend(config)
     return pipeline_store_cls(config)
 
 
@@ -473,19 +581,42 @@ def make_sized_tensors(device: str, factory):
     return tensors
 
 
+def mla_dump_indexes(dump_block_start: int, device_id: int):
+    """Match the connector's absolute-block TP ownership for one dump batch."""
+    first = (device_id - dump_block_start) % worker_number
+    return range(first, block_number, worker_number)
+
+
 def dump(
-    epoch: int, device: str, device_id: int, worker, block_ids, warmup: bool
-) -> float:
+    epoch: int,
+    device: str,
+    device_id: int,
+    worker,
+    block_ids,
+    warmup: bool,
+) -> tuple[float, int]:
+    if mla_dump_striping:
+        # Each benchmark record has independent block IDs and starts at block 0.
+        indexes = mla_dump_indexes(0, device_id)
+        block_ids = [block_ids[index] for index in indexes]
+        if not block_ids:
+            return 0.0, 0
+    elif worker_mode == "mla" and device_id != 0:
+        return 0.0, 0
+    else:
+        indexes = range(block_number)
     src_tensors = make_tensors(device)
-    total_size = sum(tensor_size_list) * block_number
-    shard_indexes = [0 for _ in range(block_number)]
+    src_tensors = [src_tensors[index] for index in indexes]
+    block_count = len(block_ids)
+    total_size = bytes_per_block * block_count
+    shard_indexes = [0 for _ in range(block_count)]
     synchronize_device()
     tp = time.perf_counter()
     task = worker.dump(block_ids, shard_indexes, src_tensors)
     worker.wait(task)
     cost = time.perf_counter() - tp
-    print_result("dump", epoch, device_id, cost, total_size, warmup)
-    return cost
+    print_result("dump", epoch, device_id, cost, total_size, block_count, warmup)
+    return cost, total_size
 
 
 def load(
@@ -500,12 +631,12 @@ def load(
     worker.wait(task)
     synchronize_device()
     cost = time.perf_counter() - tp
-    print_result("load", epoch, device_id, cost, total_size, warmup)
+    print_result("load", epoch, device_id, cost, total_size, block_number, warmup)
     return cost
 
 
 def wait_blocks_available(scheduler, block_ids, timeout_s=60, poll_interval_s=0.001):
-    """Wait for a full prefix hit; Cache v2 may satisfy hits from Cache or backend."""
+    """Wait for a full prefix hit; the Posix observer checks committed files."""
     deadline = time.perf_counter() + timeout_s
     while True:
         last_hit = scheduler.lookup_on_prefix(block_ids)
@@ -524,12 +655,13 @@ def print_result(
     device_id: int,
     cost: float,
     total_size: int,
+    block_count: int,
     warmup: bool,
 ):
     phase = "warmup" if warmup else "benchmark"
     print(
         f"phase={phase}, epoch={epoch:03}, worker={device_id:02}, "
-        f"{direction}=[{sum(tensor_size_list)} x {block_number}], "
+        f"{direction}=[{bytes_per_block} x {block_count}], "
         f"cost={cost * 1e3:.3f}ms, "
         f"bw={total_size / cost / 1e9:.3f}GB/s."
     )
@@ -556,19 +688,27 @@ def format_statistics(values):
     return ", ".join(f"{name}={value:.3f}" for name, value in statistics)
 
 
-def print_benchmark_summary(dump_cost_records, load_cost_records):
-    total_size = sum(tensor_size_list) * block_number
+def print_benchmark_summary(dump_cost_records, dump_byte_records, load_cost_records):
     print("\n================ Benchmark summary ================")
     for direction, records in (
         ("dump", dump_cost_records),
         ("load", load_cost_records),
     ):
-        costs = [cost for cost in records if cost > 0]
-        latencies_ms = [cost * 1e3 for cost in costs]
-        bandwidths_gbps = [total_size / cost / 1e9 for cost in costs]
-        print(f"{direction}: samples={len(costs)}")
+        byte_records = (
+            dump_byte_records
+            if direction == "dump"
+            else [bytes_per_epoch] * len(records)
+        )
+        samples = [
+            (cost, byte_count)
+            for cost, byte_count in zip(records, byte_records)
+            if cost > 0
+        ]
+        latencies_ms = [cost * 1e3 for cost, _ in samples]
+        bandwidths_gbps = [byte_count / cost / 1e9 for cost, byte_count in samples]
+        print(f"{direction}: samples={len(samples)}")
         print(f"  latency(ms): {format_statistics(latencies_ms)}")
-        print(f"  bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
+        print(f"  per-worker bandwidth(GB/s): {format_statistics(bandwidths_gbps)}")
 
 
 def worker_loop(
@@ -577,9 +717,11 @@ def worker_loop(
     unique_id: str,
     worker_cpu_affinity_cores,
     store_cpu_affinity_cores,
+    cache_numa_node,
     block_id_records,
     backend_block_ids,
     dump_cost_records,
+    dump_byte_records,
     load_cost_records,
     completed_worker_number,
 ):
@@ -598,12 +740,17 @@ def worker_loop(
 
     logger = init_logger(__name__)
     logger.info(
-        "Cache Fake benchmark worker %d initialized UC logging at info level.",
+        "%s benchmark worker %d initialized UC logging at info level.",
+        store_pipeline,
         device_id,
     )
     device = setup_device(device_id)
     worker = create_cache_worker(
-        UcmPipelineStore, unique_id, device_id, store_cpu_affinity_cores
+        UcmPipelineStore,
+        unique_id,
+        device_id,
+        store_cpu_affinity_cores,
+        cache_numa_node,
     )
     scheduler = (
         create_cache_scheduler(UcmPipelineStore, unique_id, store_cpu_affinity_cores)
@@ -613,7 +760,9 @@ def worker_loop(
     print(
         f"{store_pipeline} benchmark: device={device}, "
         f"model={model_name}, transfer_mode={transfer_mode}, "
+        f"benchmark_scope={benchmark_scope}, "
         f"worker_mode={worker_mode}, layer_number={layer_number}, "
+        f"mla_dump_striping={mla_dump_striping}, "
         f"worker_number={worker_number}, "
         f"block_number={block_number}, tensor_number={len(tensor_size_list)}, "
         f"tensor_size_list={tensor_size_list}, "
@@ -622,22 +771,32 @@ def worker_loop(
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
         f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
+        f"cache_stream_number={cache_stream_number}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
+        f"cache_io_aggregation={cache_io_aggregation}, "
         f"share_buffer_enable={share_buffer_enable}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
         f"worker_cpu_affinity_cores={worker_cpu_affinity_cores}, "
         f"store_cpu_affinity_cores={store_cpu_affinity_cores}, "
         f"multiprocessing_start_method={multiprocessing.get_start_method()}"
     )
+    if store_pipeline == "Cache|Posix":
+        print(
+            f"Posix backend: worker={device_id}, storage_backends={storage_backends}, "
+            f"posix_io_engine={posix_io_engine}, "
+            f"posix_data_trans_concurrency={posix_data_trans_concurrency}, "
+            f"posix_lookup_concurrency={posix_lookup_concurrency}"
+        )
 
     barrier.wait()
     for record_idx, block_ids in enumerate(block_id_records):
         warmup = record_idx < warmup_epoch_number
         epoch = record_idx if warmup else record_idx - warmup_epoch_number
-        if worker_mode == "gqa" or device_id == 0:
-            cost = dump(epoch, device, device_id, worker, block_ids, warmup)
-            if not warmup:
-                dump_cost_records[device_id * dump_epoch_number + epoch] = cost
+        cost, byte_count = dump(epoch, device, device_id, worker, block_ids, warmup)
+        if not warmup:
+            index = device_id * dump_epoch_number + epoch
+            dump_cost_records[index] = cost
+            dump_byte_records[index] = byte_count
         barrier.wait()
         if record_idx + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
@@ -711,6 +870,7 @@ if __name__ == "__main__":
             "before running the benchmark"
         )
     configure_ucm_logging()
+    prepare_storage_dirs()
     process_context = multiprocessing.get_context("spawn")
     barrier = process_context.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
@@ -733,8 +893,12 @@ if __name__ == "__main__":
         block_id for block_ids in backend_block_id_records for block_id in block_ids
     ]
     worker_cpu_core_groups, store_cpu_core_groups = make_cpu_affinity_core_groups()
+    cache_numa_nodes = get_cache_numa_nodes()
     dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
+    )
+    dump_byte_records = process_context.Array(
+        "Q", worker_number * dump_epoch_number, lock=False
     )
     load_cost_records = process_context.Array(
         "d", worker_number * load_epoch_number, lock=False
@@ -752,9 +916,11 @@ if __name__ == "__main__":
                     unique_id,
                     worker_cpu_core_groups[device_id],
                     store_cpu_core_groups[device_id],
+                    cache_numa_nodes[device_id],
                     worker_block_id_records[device_id],
                     backend_block_ids if device_id == 0 else None,
                     dump_cost_records,
+                    dump_byte_records,
                     load_cost_records,
                     completed_worker_number,
                 ),
@@ -788,7 +954,7 @@ if __name__ == "__main__":
                     f"worker pid={failed.pid} exited with code {failed.exitcode}"
                 )
             raise RuntimeError("workers exited before completing the benchmark")
-        print_benchmark_summary(dump_cost_records, load_cost_records)
+        print_benchmark_summary(dump_cost_records, dump_byte_records, load_cost_records)
     except KeyboardInterrupt:
         print("benchmark interrupted; cleaning up workers and shared memory")
     finally:
