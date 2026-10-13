@@ -236,6 +236,83 @@ def _check_host_mem_available(cache_buffer_capacity_gb: int) -> None:
         )
 
 
+def _precheck_shared_buffer_capacity(
+    connector_configs: list[dict[str, Any]], is_mla: bool
+) -> None:
+    """Validate shared-buffer host resources from raw connector configs.
+
+    Single source of truth for the shared-buffer precheck gate: called by
+    ``UCMDirectConnector.__init__`` (connector-side fallback) and by
+    ``precheck_shared_buffer_resources`` (launch-time, via the EngineCore
+    startup patch), so both apply identical semantics. For FAWA-style
+    connectors that split the capacity across stores, the total (pre-split)
+    capacity is validated here.
+    """
+    if not connector_configs:
+        return
+    config = connector_configs[0].get("ucm_connector_config", {})
+    if not config.get("share_buffer_enable", is_mla):
+        return
+    capacity_gb = config.get("cache_buffer_capacity_gb")
+    _check_shm_capacity(
+        int(capacity_gb)
+        if capacity_gb is not None
+        else _DEFAULT_SHARED_BUFFER_CAPACITY_GB
+    )
+
+
+def precheck_shared_buffer_resources(vllm_config: Any) -> None:
+    """Launch-time shared-buffer validation, before workers or model load.
+
+    vLLM only constructs KV connectors during ``initialize_from_config``,
+    i.e. after ``load_model``, so connector-side checks fire long after the
+    model has been loaded (minutes for large models). The EngineCore
+    startup patch calls this at the very start of ``EngineCore.__init__``
+    to make shared-buffer misconfigurations (tmpfs size/free space,
+    pinnable host memory) fail within seconds instead.
+
+    The gate mirrors ``UCMDirectConnector.__init__`` and skips the dispatch
+    paths whose connectors do not use the shared buffer (``use_lite``,
+    ``use_inference_duration_monitor``), so this can only fail where the
+    connector-side check would fail too. Config problems other than
+    resource shortfalls are left to the connector, which reports them with
+    better context.
+    """
+    kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
+    if kv_transfer_config is None:
+        return  # KV transfer not enabled.
+    kv_connector = getattr(kv_transfer_config, "kv_connector", None)
+    if kv_connector is not None and "ucm" not in str(kv_connector).lower():
+        return  # A non-UCM KV connector; not our config to validate.
+    try:
+        launch_config = Config(kv_transfer_config).get_config()
+        is_mla = bool(getattr(vllm_config.model_config, "is_deepseek_mla", False))
+    except Exception:
+        logger.debug(
+            "Skip launch-time shared-buffer precheck: UCM config unreadable.",
+            exc_info=True,
+        )
+        return
+    if not isinstance(launch_config, dict):
+        return
+    if launch_config.get("use_lite", False):
+        return
+    if launch_config.get("use_inference_duration_monitor", False):
+        return
+    try:
+        _precheck_shared_buffer_capacity(
+            launch_config.get("ucm_connectors") or [], is_mla
+        )
+    except RuntimeError:
+        raise  # Resource shortfall: the misconfiguration to fail fast on.
+    except Exception:
+        # Malformed values surface later from the connector itself.
+        logger.debug(
+            "Skip launch-time shared-buffer precheck: malformed config.",
+            exc_info=True,
+        )
+
+
 def _drop_null_vllm_blocks(
     ucm_block_ids: list[bytes],
     vllm_block_ids: list[int],
@@ -1496,20 +1573,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             .get("share_buffer_enable", self.is_mla)
         )
         if share_buffer_enable:
-            # Fail fast, before the model is loaded, when the host cannot hold
-            # the shared buffer (tmpfs size/free space, pinnable host memory).
-            # For FAWA-style connectors that split the capacity across stores,
-            # the total (pre-split) capacity is validated here.
-            capacity_gb = (
-                self.connector_configs[0]
-                .get("ucm_connector_config", {})
-                .get("cache_buffer_capacity_gb")
-            )
-            _check_shm_capacity(
-                int(capacity_gb)
-                if capacity_gb is not None
-                else _DEFAULT_SHARED_BUFFER_CAPACITY_GB
-            )
+            # Connector-side shared-buffer resource validation (tmpfs
+            # size/free space, pinnable host memory). vLLM constructs KV
+            # connectors only in initialize_from_config, after load_model;
+            # the EngineCore startup patch runs the same gate pre-worker
+            # via precheck_shared_buffer_resources(), and this remains the
+            # fallback for unpatched vLLM (< 0.24 or ENABLE_UCM_PATCH off).
+            _precheck_shared_buffer_capacity(self.connector_configs, self.is_mla)
             if role == KVConnectorRole.WORKER:
                 self.unique_id = _worker_generate_unique_id()
             else:
