@@ -60,25 +60,9 @@ def _generate_extra_keys(
 
 
 class RequestHasher:
-    """Generate stable, namespaced UCM request and block identifiers."""
+    """Generate stable identifiers using caller-provided namespace metadata."""
 
-    def __init__(self, vllm_config, rank_id):
-        speculative_config = getattr(vllm_config, "speculative_config", None)
-        spec_info = ""
-        if speculative_config is not None:
-            spec_method = getattr(speculative_config, "method", "") or ""
-            spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
-            spec_info = f":{spec_method}:{spec_tokens}"
-        additional_config = getattr(vllm_config, "additional_config", None) or {}
-        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
-        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
-        model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
-        meta = (
-            f"{model_name}:"
-            f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
-        )
+    def __init__(self, meta: str):
         self.meta_bytes = meta.encode("utf-8")
         self.seed = self("UCM_HASH_SEED")
 
