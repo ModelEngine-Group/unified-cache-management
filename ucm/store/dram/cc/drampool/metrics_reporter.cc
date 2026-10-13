@@ -176,12 +176,17 @@ std::string MetricsReporter::Render() const
         AppendNumber(output, def.name, FindValue(gaugeValues_, def.name));
     }
     // Dynamic per-slot-size buffer-pool gauges, keyed by the suffixed name that
-    // the export side splits back into a slot_size label.
+    // the export side splits back into a slot_size label. A size only appears
+    // once its pool has served an allocation (the GC loop gates updates on
+    // BufferManager::IsRevealed), so configured-but-never-used pools stay
+    // absent from the snapshot instead of reporting a flat zero.
     for (const auto slotSize : g_config.poolBlockSizes) {
         const auto name = BufferPoolUsageRatioName(slotSize);
+        const auto gauge = gaugeValues_.find(name);
+        if (gauge == gaugeValues_.end()) { continue; }
         if (!first) { output << ','; }
         first = false;
-        AppendNumber(output, name, FindValue(gaugeValues_, name));
+        AppendNumber(output, name, gauge->second);
     }
     output << "},\"histograms\":{";
     first = true;

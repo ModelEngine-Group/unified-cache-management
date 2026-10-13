@@ -495,7 +495,12 @@ void DramPoolServer::GCThreadLoop()
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kMetadataEntryCount),
                                  static_cast<double>(metadataManager_->GetKeyCnt()));
+        // Reveal-on-first-use: a pool's usage gauge only enters exposition once
+        // the pool has served an allocation, then stays for the process
+        // lifetime (drained pools keep reporting 0). Pools that were configured
+        // but never used stay absent instead of drawing a flat 0% line.
         for (const auto slotSize : g_config.poolBlockSizes) {
+            if (!bufferManager_->IsRevealed(slotSize)) { continue; }
             UC::Metrics::UpdateStats(BufferPoolUsageRatioName(slotSize),
                                      bufferManager_->GetUsedSlotRatio(slotSize));
         }

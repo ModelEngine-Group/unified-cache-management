@@ -46,8 +46,10 @@ namespace UC::DramPool {
 // renders one single-line JSON record (event/timestamp plus the cumulative
 // counters/gauges/histograms) and atomically replaces
 // <output_dir>/drampool_metrics.json (tmp file + rename). The exposed metric
-// set is DrampoolMetricDefs() plus the dynamic per-slot-size gauges, i.e.
-// exactly the names registered by SetupDrampoolMetrics().
+// set is DrampoolMetricDefs() plus the dynamic per-slot-size gauges that the
+// GC loop has revealed (a pool enters exposition on its first successful
+// allocation, then stays), i.e. the registered names minus configured-but-
+// never-used pools.
 class MetricsReporter final {
 public:
     MetricsReporter() = default;

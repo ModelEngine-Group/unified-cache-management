@@ -69,6 +69,7 @@ public:
             region.type = transport::MemoryType::Host;
             memoryRegions_.push_back(region);
             pools_.emplace(slotSize, std::move(pool));
+            revealed_.emplace(slotSize, false);
             UC_DEBUG(
                 "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
                 slotSize, slotNum, region.length);
@@ -90,6 +91,7 @@ public:
             if (pool != nullptr) { pool->Reset(); }
         }
         pools_.clear();
+        revealed_.clear();
         memoryRegions_.clear();
     }
 
@@ -130,6 +132,7 @@ public:
         BufferPool::Slot slot;
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
+        MarkRevealed(size);
         buf.length = slot.length;
         buf.slot = slot.slotIndex;
         buf.addr = slot.localAddr;
@@ -171,8 +174,27 @@ public:
                static_cast<double>(it->second->GetSlotCount());
     }
 
+    /**
+     * @brief Whether the pool for the given size has ever served a successful
+     *        allocation. Sticky: stays true after the pool drains back to
+     *        zero used slots.
+     * @return false if the size was not registered at construction.
+     */
+    bool IsRevealed(std::size_t size) const
+    {
+        const auto it = revealed_.find(size);
+        return it != revealed_.end() && it->second.load(std::memory_order_acquire);
+    }
+
 private:
+    void MarkRevealed(std::size_t size)
+    {
+        const auto it = revealed_.find(size);
+        if (it != revealed_.end()) { it->second.store(true, std::memory_order_release); }
+    }
+
     std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
+    std::unordered_map<std::size_t, std::atomic_bool> revealed_;
     std::vector<transport::MemoryRegion> memoryRegions_;
 };
 
