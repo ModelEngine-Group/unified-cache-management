@@ -21,15 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
-#define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
+#ifndef UNIFIEDCACHE_STORE_DETAIL_STORE_HEALTH_CONFIG_H
+#define UNIFIEDCACHE_STORE_DETAIL_STORE_HEALTH_CONFIG_H
 
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include "status/status.h"
 
-namespace UC::PipelineStore {
+namespace UC::Detail {
 
 struct StoreHealthConfig {
     bool enabled{true};
@@ -68,6 +68,6 @@ struct StoreHealthConfig {
     }
 };
 
-}  // namespace UC::PipelineStore
+}  // namespace UC::Detail
 
 #endif
