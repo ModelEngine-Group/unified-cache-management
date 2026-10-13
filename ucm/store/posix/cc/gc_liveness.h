@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -60,7 +61,8 @@ public:
     GcHeartbeat& operator=(const GcHeartbeat&) = delete;
     ~GcHeartbeat();
 
-    void Setup(std::string path, std::string threadName, size_t intervalSec, OnMissing onMissing);
+    void Setup(std::function<Expected<std::string>()> selectPath, std::string threadName,
+               size_t intervalSec, OnMissing onMissing);
     Status Start();
     void RequestStop();
     void Stop();
@@ -68,7 +70,7 @@ public:
 private:
     void Loop();
 
-    std::string path_;
+    std::function<Expected<std::string>()> selectPath_;
     std::string threadName_;
     size_t intervalSec_{5};
     OnMissing onMissing_{OnMissing::Stop};

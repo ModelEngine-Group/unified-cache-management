@@ -92,7 +92,8 @@ public:
         bool success;
     };
 
-    ~BlockOperator()
+    ~BlockOperator() { Stop(); }
+    void Stop()
     {
         stop_ = true;
         {
@@ -107,9 +108,12 @@ public:
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    void Setup(const SpaceLayout* layout, const std::string& backend, size_t backendIndex,
+               const size_t nOpenWorker, const size_t nCommitWorker)
     {
         layout_ = layout;
+        backend_ = backend;
+        backendIndex_ = backendIndex;
         for (size_t i = 0; i < nOpenWorker; ++i) {
             workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
         }
@@ -171,7 +175,9 @@ private:
                 task = std::move(openQueue_.queue.front());
                 openQueue_.queue.pop_front();
             }
-            const auto path = layout_->DataFilePath(task.id, task.activated);
+            const auto path = task.activated
+                                  ? layout_->ActivatedFilePath(backend_, backendIndex_, task.id)
+                                  : layout_->ArchivedFilePath(backend_, task.id);
 #ifdef UCM_ENABLE_TEST_HOOKS
             auto hook = TestHooks::GetOpenHook();
             auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
@@ -198,7 +204,7 @@ private:
                 task = std::move(commitQueue_.queue.front());
                 commitQueue_.queue.pop_front();
             }
-            layout_->CommitFile(task.id, task.success);
+            layout_->CommitFile(backend_, backendIndex_, task.id, task.success);
         }
     }
 
@@ -211,6 +217,8 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
+    std::string backend_;
+    size_t backendIndex_{0};
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
     TaskQueue<CommitTask> commitQueue_;

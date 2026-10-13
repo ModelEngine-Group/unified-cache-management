@@ -40,7 +40,6 @@
 namespace UC::PosixStore {
 
 class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
-    static constexpr size_t kWatchdogGraceMs = 2000;
     struct Inflight {
         TaskPtr t;
         WaiterPtr w;
@@ -50,25 +49,26 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     };
     size_t shardSize_;
     size_t nShardPerBlock_;
-    const SpaceLayout* layout_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     BlockOperator blockOperator_;
     AioImpl aio_;
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    ~IoEngineAio() { blockOperator_.Stop(); }
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend,
+                 size_t backendIndex)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        layout_ = layout;
-        blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
+        blockOperator_.Setup(layout, backend, backendIndex, config.openConcurrency,
+                             config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
-            "AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
+            "AIO engine setup: timeoutMs={}, "
             "openConcurrency={}, commitConcurrency={}.",
-            timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
+            timeoutMs_, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(timeoutMs_);
     }
 
@@ -201,7 +201,7 @@ private:
         const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
         const auto wait = NowTime::Now() - tp;
-        w->SetEpilog([this, id, brief = std::move(brief), num, size, tp, isDump] {
+        w->SetEpilog([this, t, id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
             auto costMs = cost * 1e3;
             auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
@@ -216,19 +216,25 @@ private:
             UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
             UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
             UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
-            std::lock_guard<std::mutex> lk(regMutex_);
-            registry_.erase(id);
+            {
+                std::lock_guard<std::mutex> lk(regMutex_);
+                registry_.erase(id);
+            }
+            if (t->onComplete) {
+                auto onComplete = std::move(t->onComplete);
+                // The latch is complete, so Wait only reclaims the task and its status.
+                onComplete(Wait(id));
+            }
         });
         {
             std::lock_guard<std::mutex> lk(regMutex_);
-            auto deadline = timeoutMs_ > 0
-                                ? NowTime::Now() + (timeoutMs_ + kWatchdogGraceMs) / 1000.0
-                                : std::numeric_limits<double>::max();
+            auto deadline = timeoutMs_ > 0 ? NowTime::Now() + timeoutMs_ / 1000.0
+                                           : std::numeric_limits<double>::max();
             registry_[id] = Inflight{t, w, deadline, num, false};
         }
         if (timeoutMs_ > 0) {
             UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadlineMs={}.", id,
-                     isDump ? "dump" : "load", num, timeoutMs_ + kWatchdogGraceMs);
+                     isDump ? "dump" : "load", num, timeoutMs_);
         } else {
             UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadline=disabled.", id,
                      isDump ? "dump" : "load", num);
@@ -250,6 +256,7 @@ private:
             for (auto& [id, inf] : registry_) {
                 if (!inf.aborted && now >= inf.deadlineTp) {
                     inf.aborted = true;
+                    inf.t->Fail(Status::Timeout());
                     due.emplace_back(id, inf.w, inf.shardCount);
                 }
             }
@@ -278,6 +285,7 @@ private:
         }
         UC_ERROR("AIO task({}) cancelled on wait timeout; force-draining latch.", t->id);
         IncrementAioTimeoutMetric();
+        t->Fail(Status::Timeout());
         ForceComplete(t->id, w);
     }
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)

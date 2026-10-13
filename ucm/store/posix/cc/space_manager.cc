@@ -22,10 +22,10 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <algorithm>
 #include <atomic>
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "posix_file.h"
 
 namespace UC::PosixStore {
 
@@ -36,17 +36,29 @@ Status SpaceManager::Setup(const Config& config)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    s = backendMgr_.Setup(config, &layout_);
+    if (s.Failure()) { return s; }
     if (config.posixGcEnable) {
-        s = gcConfigGuard_.Setup(config);
+        s = gcConfigGuard_.Setup(config, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     if (hotnessTrackerEnable_) {
-        s = hotnessTracker_.Setup(&layout_);
+        s = hotnessTracker_.Setup(&layout_, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     if (gcEnable_) {
-        s = gcMgr_.Setup(&layout_, config);
+        s = gcMgr_.Setup(&layout_, &backendMgr_, config);
         if (s.Failure()) [[unlikely]] { return s; }
+    }
+    auto backendConfig = config;
+    backendConfig.timeoutMs = backendMgr_.IoTimeoutMs();
+    backendConfig.lookupConcurrency =
+        std::max<size_t>(1, config.lookupConcurrency / backendMgr_.BackendCount());
+    for (const auto& backend : backendMgr_.Backends()) {
+        auto manager = std::make_unique<LookupManager>();
+        s = manager->Setup(backendConfig, &layout_, backend);
+        if (s.Failure()) { return s; }
+        lookupManagers_.push_back(std::move(manager));
     }
     auto prefixSuccess =
         prefixLookupSrv_
@@ -121,16 +133,9 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
-    const auto& path = layout_.DataFilePath(*block, false);
-    PosixFile file{path};
-    constexpr auto mode =
-        PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
-    auto s = file.Access(mode);
-    if (s.Failure()) {
-        if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
-        return false;
-    }
-    return true;
+    const auto status = backendMgr_.RunOnAvailableBackend(
+        *block, [&](size_t backendIndex) { return lookupManagers_[backendIndex]->Lookup(*block); });
+    return status.Success();
 }
 
 void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)

@@ -30,9 +30,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "detail/health_tracker.h"
+#include "detail/store_health_config.h"
 #include "health_check_executor.h"
-#include "store_health_config.h"
-#include "store_health_state.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PipelineStore {
@@ -42,10 +42,10 @@ public:
     HealthBreakerStore() = default;
     ~HealthBreakerStore() override;
 
-    Status Setup(StoreV1* store, std::string storeId, const StoreHealthConfig& config);
+    Status Setup(StoreV1* store, std::string storeId, const Detail::StoreHealthConfig& config);
     Status Start();
     void Stop();
-    bool Enabled() const { return !healthState_ || healthState_->Enabled(); }
+    bool Enabled() const { return !health_ || health_->Healthy(); }
     size_t FailureCount() const;
     size_t SampleCount() const;
 
@@ -62,18 +62,15 @@ public:
     Status Wait(Detail::TaskHandle taskId) override;
 
 private:
-    void RecordPassiveResult(const Status& status, uint64_t generation);
-    void CheckNeedBreak(uint64_t generation);
-    void UpdateState(bool changed, const char* source);
+    bool RecordPassiveResult(const Status& status, uint64_t generation);
     void RecordProbeMetrics(bool healthy);
     void RecordEffectiveHealth();
     void ProbeLoop();
 
     StoreV1* store_{nullptr};
     std::string storeId_;
-    StoreHealthConfig config_{};
-    mutable std::mutex healthMutex_;
-    std::unique_ptr<StoreHealthState> healthState_;
+    Detail::StoreHealthConfig config_{};
+    std::unique_ptr<Detail::HealthTracker> health_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;
     bool stop_{false};

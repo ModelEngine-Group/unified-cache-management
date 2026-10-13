@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_TASK_H
 
 #include <atomic>
+#include <functional>
 #include "status/status.h"
 #include "type/types.h"
 
@@ -37,6 +38,8 @@ public:
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    // When set, the engine reclaims the handle before invoking this callback.
+    std::function<void(Status)> onComplete;
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
@@ -44,7 +47,8 @@ public:
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
-          failureStatus{other.failureStatus.load()}
+          failureStatus{other.failureStatus.load()},
+          onComplete{std::move(other.onComplete)}
     {
     }
     void Fail(const Status& status)

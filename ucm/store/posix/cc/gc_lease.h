@@ -27,6 +27,7 @@
 #include <atomic>
 #include <ctime>
 #include <string>
+#include "backend_manager.h"
 #include "gc_liveness.h"
 #include "global_config.h"
 #include "status/status.h"
@@ -46,7 +47,7 @@ public:
     GcLease& operator=(const GcLease&) = delete;
     ~GcLease();
 
-    void Setup(const Config& config);
+    void Setup(const Config& config, const BackendManager* backendMgr);
 
     Acquisition TryAcquire();
     void Release();
@@ -54,17 +55,21 @@ public:
     void RequestStop();
 
 private:
-    Status Claim();
-    bool EntryPresent() const;
-    Status ProbeHolder(bool& stale);
-    Status TakeOverStale();
-    void SweepParked() const;
+    struct Paths {
+        std::string backend;
+        std::string lockDir;
+        std::string checkTime;
+        std::string heartbeat;
+    };
+    Expected<Paths> SelectPaths() const;
+    Status Claim(const Paths& paths);
+    bool EntryPresent(const Paths& paths) const;
+    Status ProbeHolder(const Paths& paths, bool& stale);
+    Status TakeOverStale(const Paths& paths);
+    void SweepParked(const Paths& paths) const;
     void StopHeartbeat();
 
-    std::string backend_;
-    std::string lockDir_;
-    std::string checkTimePath_;
-    std::string heartbeatPath_;
+    const BackendManager* backendMgr_{nullptr};
     std::string identity_;
     size_t heartbeatIntervalSec_{5};
     size_t staleThresholdSec_{180};

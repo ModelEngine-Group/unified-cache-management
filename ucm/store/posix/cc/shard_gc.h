@@ -58,7 +58,7 @@ public:
     ShardGarbageCollector(const ShardGarbageCollector&) = delete;
     ShardGarbageCollector& operator=(const ShardGarbageCollector&) = delete;
     ~ShardGarbageCollector();
-    Status Setup(const SpaceLayout* layout, const Config& config);
+    Status Setup(const SpaceLayout* layout, const BackendManager* backendMgr, const Config& config);
 
 private:
     Status ValidateAndInitCapacity();
@@ -71,6 +71,7 @@ private:
     void GCCheckLoop();
     void StopBackgroundCheck();
     const SpaceLayout* layout_{nullptr};
+    const BackendManager* backendMgr_{nullptr};
     Config config_;
     size_t maxFileCount_{0};
     size_t capacityBytes_{0};
