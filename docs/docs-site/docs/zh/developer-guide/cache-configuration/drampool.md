@@ -6,7 +6,7 @@ DramPool 将主机 DRAM 组成 KV 缓存池，供多个推理实例复用。Dram
 
 ## 环境要求
 
-- 昇腾 A3 及以上硬件，CANN **9.1.0 及以上**，以及兼容的驱动和 HIXL 库。
+- 昇腾 A3 及以上硬件，**CANN 9.1.0 及以上**，以及兼容的驱动和 HIXL 库。
 - Linux 环境，DramPool 与推理节点之间具备 RDMA 网络，主机可用内存足以容纳配置的缓存池和运行时缓冲区。
 - 已安装 UCM 和兼容的 vLLM-Ascend。推理侧集成步骤参见 [Quickstart-vLLM-Ascend](../../user-guide/quick_start/index.md#vllm-ascend)。
 
@@ -119,7 +119,9 @@ vllm serve <model-path> \
 
 DramStore 操作指标和 DramPool 指标通过 vLLM 的 `/metrics` 暴露。按以下配置开启 DramPool 快照导出，并在 DramStore 侧读取快照。
 
-**DramPool 端：**按实际部署修改已复制的 `examples/drampool.yaml` 中的 `metrics` 配置：
+**DramPool 端**
+
+按实际部署修改已复制的 `examples/drampool.yaml` 中的 `metrics` 配置：
 
 ```yaml
 metrics:
@@ -130,7 +132,9 @@ metrics:
 
 服务每 10 秒原子替换 `output_dir` 下的 `drampool_metrics.json`。设置 `metrics.enabled: false` 可关闭快照采集和导出。示例 YAML 已开启导出，省略 `metrics.enabled` 时默认为 `false`。`output_dir` 为空时使用 `logger.dir`，开启时 `interval_ms` 必须大于 0。
 
-**DramStore 端：**将以下配置合并到推理侧 `Dram` 管线的 `ucm_connector_config` 中：
+**DramStore 端**
+
+将以下配置合并到推理侧 `Dram` 管线的 `ucm_connector_config` 中：
 
 ```yaml
 ucm_connectors:

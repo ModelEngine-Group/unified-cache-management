@@ -6,7 +6,7 @@ DramPool pools host DRAM for KV cache reuse across inference instances. DramStor
 
 ## Prerequisites
 
-- Ascend A3 or later hardware, with CANN **9.1.0 or later** and compatible drivers and HIXL libraries.
+- Ascend A3 or later hardware, with **CANN 9.1.0 or later** and compatible drivers and HIXL libraries.
 - A Linux environment with RDMA networking between DramPool and inference nodes, and enough available host memory for the configured pool and runtime buffers.
 - UCM and a compatible vLLM-Ascend installation. See [Quickstart-vLLM-Ascend](../../user-guide/quick_start/index.md#vllm-ascend) for inference integration.
 
@@ -119,7 +119,9 @@ Replace the model and configuration paths and adjust inference options for your 
 
 DramStore operation metrics and DramPool metrics are exposed through vLLM's `/metrics` endpoint. Enable DramPool snapshot export and configure the DramStore-side reader as follows.
 
-**DramPool:** adjust the `metrics` section in the copied `examples/drampool.yaml` for your deployment:
+**DramPool**
+
+Adjust the `metrics` section in the copied `examples/drampool.yaml` for your deployment:
 
 ```yaml
 metrics:
@@ -130,7 +132,9 @@ metrics:
 
 The daemon atomically replaces `drampool_metrics.json` in `output_dir` every 10 seconds. Set `metrics.enabled: false` to disable snapshot collection and export. The example YAML enables export; omitting `metrics.enabled` defaults to `false`. An empty `output_dir` uses `logger.dir`, and `interval_ms` must be positive when enabled.
 
-**DramStore:** merge the following into the inference-side `ucm_connector_config` for the `Dram` pipeline:
+**DramStore**
+
+Merge the following into the inference-side `ucm_connector_config` for the `Dram` pipeline:
 
 ```yaml
 ucm_connectors:
