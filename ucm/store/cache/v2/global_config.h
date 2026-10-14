@@ -75,10 +75,12 @@ struct Config {
     bool shareBufferEnable{false};
     /* Connector-derived hints, never user configuration. deviceNumaNode is the
      * accelerator's real NUMA affinity, absent when topology does not expose
-     * one; fallbackNumaRank is this worker's index within its own machine,
-     * used only when there is no affinity. */
+     * one; fallbackNumaRank and fallbackNumaRankCount describe this worker's
+     * position among all workers on its machine. They are independent of the
+     * number of ranks in this Cache domain. */
     std::optional<int32_t> detectedNumaNode{};
     std::optional<int64_t> fallbackNumaRank{};
+    std::optional<int64_t> fallbackNumaRankCount{};
 
     /* SDMA Direct needs one descriptor per stream, so its unconfigured default
      * is higher than the plain path's; an explicit cache_stream_number wins. */
@@ -128,6 +130,11 @@ struct Config {
             int64_t numaRank = 0;
             dict.GetNumber("cache_fallback_numa_rank", numaRank);
             config.fallbackNumaRank = numaRank;
+        }
+        if (dict.Contains("cache_fallback_numa_rank_count")) {
+            int64_t numaRankCount = 0;
+            dict.GetNumber("cache_fallback_numa_rank_count", numaRankCount);
+            config.fallbackNumaRankCount = numaRankCount;
         }
         return config;
     }
@@ -181,6 +188,15 @@ struct Config {
         if (fallbackNumaRank.has_value() && *fallbackNumaRank < 0) {
             return Status::InvalidParam("invalid fallback numa rank({})", *fallbackNumaRank);
         }
+        if (fallbackNumaRankCount.has_value() && *fallbackNumaRankCount <= 0) {
+            return Status::InvalidParam("invalid fallback numa rank count({})",
+                                        *fallbackNumaRankCount);
+        }
+        if (fallbackNumaRank.has_value() && fallbackNumaRankCount.has_value() &&
+            *fallbackNumaRank >= *fallbackNumaRankCount) {
+            return Status::InvalidParam("fallback numa rank({}) is outside rank count({})",
+                                        *fallbackNumaRank, *fallbackNumaRankCount);
+        }
         return Status::OK();
     }
     void Show() const
@@ -221,6 +237,9 @@ struct Config {
         }
         if (fallbackNumaRank.has_value()) {
             UC_INFO("Set {}::FallbackNumaRank to {}.", ns, *fallbackNumaRank);
+        }
+        if (fallbackNumaRankCount.has_value()) {
+            UC_INFO("Set {}::FallbackNumaRankCount to {}.", ns, *fallbackNumaRankCount);
         }
     }
 };

@@ -1570,10 +1570,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         A real device affinity becomes cache_detected_numa_node and wins
         outright: the store binds to it and never re-derives it. Otherwise
         cache_fallback_numa_rank carries the worker's index within its own
-        machine, which the store maps to nodes[rank % node_count]. That index
-        must be the LOCAL data-parallel rank, so on a multi-node deployment
-        every machine numbers its own workers from zero instead of inheriting
-        an offset from the machines before it.
+        machine, and cache_fallback_numa_rank_count carries the total number
+        of workers on that machine. The store uses both values to divide the
+        workers into contiguous NUMA-node slices. They are deliberately
+        independent of local_rank_size: internal DP instances use separate
+        Cache domains, while their memory placement still spans all workers
+        on the machine.
         """
         if self._role != KVConnectorRole.WORKER:
             return
@@ -1582,15 +1584,39 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["cache_detected_numa_node"] = numa_node
             return
         parallel = self._vllm_config.parallel_config
-        dp_rank = getattr(parallel, "data_parallel_rank_local", None)
-        if dp_rank is None:
-            dp_rank = parallel.data_parallel_index
         model_parallel_size = (
             parallel.pipeline_parallel_size * parallel.tensor_parallel_size
         )
-        model_parallel_rank = parallel.rank % model_parallel_size
-        config["cache_fallback_numa_rank"] = (
-            dp_rank * model_parallel_size + model_parallel_rank
+        local_dp_rank = getattr(parallel, "data_parallel_rank_local", None)
+        local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
+        if local_dp_rank is not None and local_dp_size > 0:
+            local_model_worker_count = int(parallel.local_world_size)
+            fallback_rank = (
+                int(local_dp_rank) * local_model_worker_count + self.local_rank
+            )
+            fallback_rank_count = local_dp_size * local_model_worker_count
+        else:
+            # External-launcher and legacy configurations do not always expose
+            # local DP metadata. Preserve their existing global worker index;
+            # external_launcher includes DP in world_size.
+            model_parallel_rank = parallel.rank % model_parallel_size
+            fallback_rank = (
+                int(parallel.data_parallel_index) * model_parallel_size
+                + model_parallel_rank
+            )
+            fallback_rank_count = int(parallel.world_size)
+
+        if not 0 <= fallback_rank < fallback_rank_count:
+            raise ValueError(
+                "Invalid fallback NUMA worker geometry: "
+                f"rank={fallback_rank}, count={fallback_rank_count}."
+            )
+        config["cache_fallback_numa_rank"] = fallback_rank
+        config["cache_fallback_numa_rank_count"] = fallback_rank_count
+        logger.info(
+            "UCM fallback NUMA placement: worker_rank=%s, worker_count=%s",
+            fallback_rank,
+            fallback_rank_count,
         )
 
     def _get_world_size(self) -> int:

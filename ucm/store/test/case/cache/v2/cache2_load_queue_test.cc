@@ -300,6 +300,20 @@ TEST(UCCache2ConfigTest, ReadsSharedBufferMode)
     EXPECT_TRUE(UC::Cache2::Config::From(dict).shareBufferEnable);
 }
 
+TEST(UCCache2ConfigTest, ReadsFallbackNumaWorkerGeometry)
+{
+    UC::Detail::Dictionary dict;
+    dict.SetNumber("cache_fallback_numa_rank", 11);
+    dict.SetNumber("cache_fallback_numa_rank_count", 16);
+
+    const auto config = UC::Cache2::Config::From(dict);
+
+    ASSERT_TRUE(config.fallbackNumaRank.has_value());
+    EXPECT_EQ(*config.fallbackNumaRank, 11);
+    ASSERT_TRUE(config.fallbackNumaRankCount.has_value());
+    EXPECT_EQ(*config.fallbackNumaRankCount, 16);
+}
+
 class UCCache2LoadQueueTest : public testing::Test {
 protected:
     static void SetUpTestSuite()
