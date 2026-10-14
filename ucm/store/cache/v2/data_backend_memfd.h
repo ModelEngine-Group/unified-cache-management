@@ -44,16 +44,23 @@ namespace UC::Cache2 {
  * SDMA Direct) and exposed through HostMappedDeviceAddrOf -- the alias is for
  * descriptors only, never for CPU access. */
 class MemfdDataBackend : public DataBackend {
+    struct Registration {
+        size_t offset{0};
+        size_t bytes{0};
+        void* deviceAddr{nullptr}; /* device-visible alias, nullptr unless required */
+    };
+
     struct Segment {
         std::unique_ptr<MemFd> mem{}; /* host mapping and fd; null until mapped */
-        void* deviceAddr{nullptr};    /* device-visible alias, nullptr unless required */
+        std::vector<Registration> registrations{};
         bool owner{false};
-        bool registered{false};
     };
 
     std::string domainId_{};
     std::vector<Segment> segments_{};
     size_t rankStride_{0};
+    size_t registrationChunkBytes_{0};
+    size_t registeredBytes_{0};
     size_t ownerRank_{0};
     int32_t deviceId_{-1};
     bool requireHostDeviceAddress_{false};
@@ -74,7 +81,7 @@ public:
     void FinalizeSetup() override;
     void* HostAddrOf(size_t rank) const override;
     void* DeviceAddrOf(size_t rank) const override;
-    void* HostMappedDeviceAddrOf(size_t rank) const override;
+    void* HostMappedDeviceAddrOf(size_t rank, size_t offset) const override;
     void Reset() override;
 
 private:
@@ -84,13 +91,18 @@ private:
      * Numa::BindBeforeTouch is wired: registering pins pages, so it must stay
      * last. */
     Status PlaceAndRegister(size_t rank);
-    Status RegisterSegment(Segment& segment);
+    Status RegisterSegment(size_t rank, Segment& segment);
+    void UnregisterSegment(Segment& segment);
+    static Status ResolveRegistrationChunkBytes(size_t rankStride, size_t slotSize, size_t pageSize,
+                                                size_t maxBytes, size_t& chunkBytes);
     /* memfd name, and the abstract socket a peer uses to fetch the fd. */
     std::string SegmentName(size_t rank) const;
     std::string SocketName(size_t rank) const;
     Status StartFdServer();
     void AcceptLoop(size_t peerCount);
     void StopFdServer();
+
+    friend struct MemfdDataBackendTestAccess;
 };
 
 }  // namespace UC::Cache2
