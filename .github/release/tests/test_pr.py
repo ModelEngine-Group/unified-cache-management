@@ -219,9 +219,9 @@ def test_ascend_stale_checked_builder_does_not_mask_newer_suffix_source() -> Non
         next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
     )
     inventory = _inventory(catalog, {raw["id"]})
-    inventory["builders"][0]["source_image"] = (
-        "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
-    )
+    inventory["builders"][0][
+        "source_image"
+    ] = "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
     raw["source_image"] = (
         "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
     )

@@ -79,11 +79,20 @@ def test_local_wheel_validation_uses_native_pinned_runtime_and_propagates_failur
     completed, calls, wheel = _run_install(tmp_path, status=status)
 
     assert completed.returncode == status, completed.stderr
-    assert len(calls) == 2  # Validation failure never retries another Runtime or Builder.
+    assert (
+        len(calls) == 2
+    )  # Validation failure never retries another Runtime or Builder.
     pinned_runtime = "quay.io/ascend/vllm-ascend@sha256:" + "a" * 64
     assert calls[0] == ["pull", "--platform", "linux/arm64", pinned_runtime]
     run = calls[1]
-    assert run[:6] == ["run", "--rm", "--platform", "linux/arm64", "--entrypoint", "bash"]
+    assert run[:6] == [
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "--entrypoint",
+        "bash",
+    ]
     assert f"{wheel}:/tmp/{wheel.name}:ro" in run
     assert run[-3:-1] == [pinned_runtime, "-c"]
     assert "EXPECTED_BACKEND_DISTRIBUTION=uc-manager-ascend-a2" in run
