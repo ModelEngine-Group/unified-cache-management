@@ -307,19 +307,24 @@ def _scheduler_read_unique_id(prefix: str = "ucm") -> str:
     )
 
 
-def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
+def _worker_publish_block_size(
+    block_size: int,
+    dp_rank: int,
+    store_suffix: str = "",
+) -> None:
     if dp_rank != 0 or get_world_group().rank_in_group != 0:
         return
 
     now = time.time()
-    for stale in glob.glob("/dev/shm/ucm_blocksize_*"):
+    for stale in glob.glob(os.path.join(_SHM_DIR, "ucm_blocksize_*")):
         try:
             if now - os.path.getmtime(stale) > 600:
                 os.remove(stale)
         except OSError:
             pass
 
-    path = f"/dev/shm/ucm_blocksize_{os.getppid()}"
+    suffix_part = f"_{store_suffix}" if store_suffix else ""
+    path = os.path.join(_SHM_DIR, f"ucm_blocksize_{os.getppid()}{suffix_part}")
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         f.write(str(int(block_size)))
@@ -330,9 +335,13 @@ def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
     )
 
 
-def _scheduler_read_block_size() -> int | None:
-    for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_blocksize_{pid}"
+def _scheduler_read_block_size(store_suffix: str = "") -> int | None:
+    suffix_part = f"_{store_suffix}" if store_suffix else ""
+    paths = [
+        os.path.join(_SHM_DIR, f"ucm_blocksize_{pid}{suffix_part}")
+        for pid in (os.getpid(), os.getppid())
+    ]
+    for path in paths:
         try:
             with open(path) as f:
                 content = f.read().strip()
@@ -342,14 +351,12 @@ def _scheduler_read_block_size() -> int | None:
             block_size = int(content)
         except ValueError:
             logger.warning(
-                f"block_size file {path} holds a non-integer value "
-                f"{content!r}, fall back to manual estimate"
+                f"block_size file {path} holds a non-integer value {content!r}."
             )
             return None
         if block_size <= 0:
             logger.warning(
-                f"block_size file {path} holds a non-positive value "
-                f"{block_size}, fall back to manual estimate"
+                f"block_size file {path} holds a non-positive value {block_size}."
             )
             return None
         logger.info(
@@ -357,11 +364,7 @@ def _scheduler_read_block_size() -> int | None:
             f"(pid={os.getpid()}, ppid={os.getppid()})."
         )
         return block_size
-    logger.warning(
-        "block_size file not found "
-        f"(looked for /dev/shm/ucm_blocksize_{os.getpid()} and "
-        f"/dev/shm/ucm_blocksize_{os.getppid()}), fall back to manual estimate"
-    )
+    logger.warning(f"block_size file not found (looked for {' and '.join(paths)}).")
     return None
 
 
@@ -1705,8 +1708,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         """
         return self._role != KVConnectorRole.WORKER and self._dp_rank == 0
 
-    def _publish_block_size(self, block_size: int) -> None:
-        _worker_publish_block_size(block_size, self._dp_rank)
+    def _publish_block_size(self, block_size: int, store_suffix: str = "") -> None:
+        _worker_publish_block_size(block_size, self._dp_rank, store_suffix)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
