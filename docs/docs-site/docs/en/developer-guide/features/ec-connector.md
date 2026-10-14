@@ -15,6 +15,10 @@ This page covers how to start the service, configure the YAML, and verify the ef
 ## Start the service (Qwen3.8-27B-w8a8 example)
 
 ```bash
+# Enable cache-reset endpoints for verification and EC load/save logs.
+export VLLM_SERVER_DEV_MODE=1
+export UCM_LOG_LEVEL=debug
+
 vllm serve /models/Qwen3.8-27B-w8a8/ \
   --host 0.0.0.0 --port 8000 \
   --data-parallel-size 1 --tensor-parallel-size 2 \
@@ -80,16 +84,16 @@ Width (`encoder_cache_hidden_dim`), namespace (`cache_namespace`), and the cross
 
 ### 1. Quick check: confirm hits from logs
 
-Send the same image request twice (any OpenAI-compatible client works; `/v1/chat/completions` with an `image_url`). Watch the worker logs:
+Send the same image request twice (any OpenAI-compatible client works; `/v1/chat/completions` with an `image_url`). After the first request finishes, run the cache-reset commands below before sending the second request to exclude KV prefix caching and local encoder caching. Watch the logs:
 
 - 1st request (miss then save): request finalization logs `EC request cache hits: req=..., mm_items=1, hits_total=0`, together with `EC dump item ...`;
 - 2nd request (EC hit): logs `EC request cache hits: req=..., mm_items=1, hits_total=1`, plus per-item `EC load item ...` entries under `UCM_LOG_LEVEL=debug`.
 
-You can also `ls` the cold-tier directory: the file count stops growing once every request hits (dump only happens on miss).
+A stable cold-tier file count is supporting evidence; use actual `EC load item ...` logs to confirm UCM reuse.
 
 ### 2. Benchmark: run the same seed twice
 
-Run the exact same command twice in a row: the first round builds the cache (all misses), the second round hits everything, and the two rounds' TTFT are compared:
+Run the same command twice, clearing vLLM's local caches between rounds: round 1 populates UCM, and round 2 verifies external EC reuse and compares TTFT. An all-miss baseline requires that the test media is not already stored in UCM.
 
 ```bash
 vllm bench serve \
@@ -106,7 +110,25 @@ vllm bench serve \
   --ignore-eos
 ```
 
-Why it works: with `--seed` fixed, random-mm generates an identical image sequence, so every request in the second round carries the same images as its counterpart in the first round — and the first round already wrote those encoder outputs into the UCM store. Do not restart the service or clean the cold-tier directory between the two rounds.
+After round 1 finishes and no other requests are in flight, run these commands. Start round 2 with the same benchmark command only after every reset succeeds:
+
+```bash
+set -euo pipefail
+
+# Clear local KV prefix caching; HTTP 200 can still return success=false.
+curl -fsS -X POST http://127.0.0.1:8000/reset_prefix_cache \
+  | python -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("success") is True else 1)'
+
+# Clear multimodal preprocessing caches.
+curl -fsS -X POST http://127.0.0.1:8000/reset_mm_cache
+
+# Clear the Scheduler and Worker's local encoder caches.
+curl -fsS -X POST http://127.0.0.1:8000/reset_encoder_cache
+```
+
+Set `VLLM_SERVER_DEV_MODE=1` before starting the service to expose these endpoints. `reset_mm_cache` does not clear encoder outputs, so `reset_encoder_cache` is also required. If a reset fails, ensure no requests are in flight and retry before starting round 2.
+
+With a fixed `--seed`, both rounds contain identical images. Outputs successfully saved in round 1 remain in UCM, while resetting vLLM's local caches makes round 2 load those outputs through UCM. Do not restart the service or clear UCM's hot tier or cold-tier directory between rounds.
 
 | Argument | Purpose |
 | --- | --- |
@@ -123,13 +145,13 @@ Why it works: with `--seed` fixed, random-mm generates an identical image sequen
 | Round | Expected TTFT | Meaning |
 | --- | --- | --- |
 | Round 1 (seed=1000) | High | All EC misses: encoder recomputation + cache dump |
-| Round 2 (same seed) | Well below round 1 | Every request carries the same images as round 1; all EC hits, no recomputation |
+| Round 2 (same seed, local caches reset) | Expected to decrease | Load outputs successfully saved in round 1 from UCM and skip encoder recomputation; confirm with actual load logs |
 
 Hit evidence:
 
 - Round 1 request finalization logs `EC request cache hits: req=..., mm_items=N, hits_total=0`, with `EC dump item ...` entries under `UCM_LOG_LEVEL=debug`;
-- Round 2 logs `hits_total=N` (matching the request's image count) plus `EC load item ...` entries;
-- The cold-tier directory file count stops growing in round 2.
+- Round 2 should log `EC load item ...`, proving actual UCM loading. Without repeated identifiers or local sharing within this round, expect `hits_total=N`, where N counts distinct media identifiers in the request;
+- A stable cold-tier file count is supporting evidence and cannot establish UCM hits by itself.
 
 ## Advanced: running alongside the KV Connector
 

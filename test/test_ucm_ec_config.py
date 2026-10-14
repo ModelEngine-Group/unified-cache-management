@@ -14,6 +14,7 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import torch
 import yaml
+from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 
 from ucm.integration.vllm import ucm_ec_connector as ec
 from ucm.utils import Config
@@ -1018,9 +1019,12 @@ class ECConnectorStateTest(unittest.TestCase):
         self.assertTrue(self.connector.has_cache_item(identifier))
         self.connector.update_state_after_alloc(request, index)
 
-    def metadata(self, **scheduled_tokens):
+    def metadata(self, *, freed_mm_hashes=(), **scheduled_tokens):
         return self.connector.build_connector_meta(
-            SimpleNamespace(num_scheduled_tokens=scheduled_tokens)
+            SimpleNamespace(
+                num_scheduled_tokens=scheduled_tokens,
+                free_encoder_mm_hashes=list(freed_mm_hashes),
+            )
         )
 
     def test_streaming_append_registers_new_items_once_and_reuses_shared_state(self):
@@ -1147,6 +1151,78 @@ class ECConnectorStateTest(unittest.TestCase):
         self.select_load(cancelled)
         # The cache manager can let surviving reuse X without a connector callback.
         self.assertEqual(set(self.metadata(surviving=1).loads), {"X"})
+
+    def test_evicted_load_is_filtered_despite_future_shared_identifier(self):
+        manager = EncoderCacheManager(cache_size=8)
+        preempted = FakeRequest("A", ("X", 4))
+        surviving = FakeRequest("B", ("Y", 4), ("X", 4))
+        other = FakeRequest("C", ("Z", 4))
+        for request in (preempted, surviving, other):
+            self.ensure(request)
+
+        self.assertTrue(manager.can_allocate(preempted, 0, 8, 0))
+        manager.allocate(preempted, 0)
+        self.select_load(preempted)
+        # B only uses Y in this step; its future X has no cache reference.
+        self.assertTrue(manager.can_allocate(surviving, 0, 8, 0))
+        manager.allocate(surviving, 0)
+        manager.free(preempted)
+        self.assertTrue(manager.can_allocate(other, 0, 8, 0))
+        manager.allocate(other, 0)
+        freed = manager.get_freed_mm_hashes()
+
+        self.assertEqual(set(manager.cached), {"Y", "Z"})
+        self.assertEqual(freed, ["X"])
+        metadata = self.metadata(freed_mm_hashes=freed, B=4, C=4)
+        self.assertNotIn("X", metadata.loads)
+        self.assertFalse(self.connector.pending_loads)
+        self.assertFalse(self.connector.step_verified_hits)
+
+    def test_referenced_shared_load_survives_preemption(self):
+        manager = EncoderCacheManager(cache_size=4)
+        preempted = FakeRequest("A", ("X", 4))
+        surviving = FakeRequest("B", ("X", 4))
+        for request in (preempted, surviving):
+            self.ensure(request)
+
+        self.assertTrue(manager.can_allocate(preempted, 0, 4, 0))
+        manager.allocate(preempted, 0)
+        self.select_load(preempted)
+        self.assertTrue(manager.check_and_update_cache(surviving, 0))
+        manager.free(preempted)
+        freed = manager.get_freed_mm_hashes()
+
+        self.assertEqual(manager.cached["X"], {"B"})
+        self.assertEqual(freed, [])
+        # B shares X without its own connector allocation callback.
+        metadata = self.metadata(freed_mm_hashes=freed, B=4)
+        self.assertEqual(set(metadata.loads), {"X"})
+
+    def test_same_step_reallocation_keeps_external_load(self):
+        manager = EncoderCacheManager(cache_size=4)
+        preempted = FakeRequest("A", ("X", 4))
+        other = FakeRequest("C", ("Z", 4))
+        surviving = FakeRequest("B", ("X", 4))
+        for request in (preempted, other, surviving):
+            self.ensure(request)
+
+        self.assertTrue(manager.can_allocate(preempted, 0, 4, 0))
+        manager.allocate(preempted, 0)
+        self.select_load(preempted)
+        manager.free(preempted)
+        self.assertTrue(manager.can_allocate(other, 0, 4, 0))
+        manager.allocate(other, 0)
+        self.assertNotIn("X", manager.cached)
+        manager.free(other)
+        self.assertTrue(manager.can_allocate(surviving, 0, 4, 0))
+        manager.allocate(surviving, 0)
+        self.select_load(surviving)
+        freed = manager.get_freed_mm_hashes()
+
+        self.assertEqual(manager.cached, {"X": {"B"}})
+        self.assertEqual(freed, ["Z"])
+        metadata = self.metadata(freed_mm_hashes=freed, B=4)
+        self.assertEqual(set(metadata.loads), {"X"})
 
     def test_no_scheduled_requests_produces_no_loads(self):
         request = FakeRequest("request", ("X", 4))

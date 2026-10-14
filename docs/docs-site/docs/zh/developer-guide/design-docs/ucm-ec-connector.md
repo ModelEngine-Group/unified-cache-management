@@ -395,8 +395,8 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 
 - 输入：`scheduler_output: SchedulerOutput`
 - 输出：`UCMECConnectorMetadata`（loads 可能为空但对象非 None，保证 producer Worker 仍进入 EC wrapper 保存输出）
-- 依赖：`scheduler_output.num_scheduled_tokens`、`req_to_state`、`pending_loads`
-- 行为：取 `num_scheduled_tokens > 0` 的最终请求的 identifier 并集，过滤 `pending_loads`（保守的请求级过滤，可覆盖"原请求被撤销、共享请求幸存"场景）；随后清空 `pending_loads` 与 `step_verified_hits`。
+- 依赖：`scheduler_output.num_scheduled_tokens`、`scheduler_output.free_encoder_mm_hashes`、`req_to_state`、`pending_loads`
+- 行为：取 `num_scheduled_tokens > 0` 的最终请求的 identifier 并集，过滤 `pending_loads`，再排除 `free_encoder_mm_hashes` 中最终已淘汰的条目，避免 Worker 删除后重新加载未分配的条目。保留本步合法共享；vLLM 的最终淘汰列表排除了同一步重新分配的条目，因此这些条目仍可加载。随后清空 `pending_loads` 与 `step_verified_hits`。
 
 **请求收尾 `request_finished`**
 

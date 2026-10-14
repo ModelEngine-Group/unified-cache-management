@@ -395,8 +395,8 @@ Key sequencing constraints:
 
 - Input: `scheduler_output: SchedulerOutput`
 - Output: `UCMECConnectorMetadata` (loads may be empty but the object is never None, ensuring producer Workers still enter the EC wrapper to save outputs)
-- Dependencies: `scheduler_output.num_scheduled_tokens`, `req_to_state`, `pending_loads`
-- Behavior: take the identifier union of finally scheduled requests with `num_scheduled_tokens > 0` and filter `pending_loads` (a conservative per-request filter that covers "the original request was preempted, a sharing request survived"); then clear `pending_loads` and `step_verified_hits`.
+- Dependencies: `scheduler_output.num_scheduled_tokens`, `scheduler_output.free_encoder_mm_hashes`, `req_to_state`, `pending_loads`
+- Behavior: filter `pending_loads` by the identifier union of finally scheduled requests with `num_scheduled_tokens > 0`, then exclude final evictions in `free_encoder_mm_hashes` so Workers do not reload entries after deleting their allocations. Valid sharing is retained; vLLM excludes items reallocated in the same step from its final eviction list, so these items can still load. Then clear `pending_loads` and `step_verified_hits`.
 
 **Request finalization `request_finished`**
 

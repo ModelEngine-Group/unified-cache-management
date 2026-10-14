@@ -15,6 +15,10 @@
 ## 拉起服务（以 Qwen3.8-27B-w8a8 为例）
 
 ```bash
+# 启用测试用缓存清理接口，并输出 EC 加载/保存日志。
+export VLLM_SERVER_DEV_MODE=1
+export UCM_LOG_LEVEL=debug
+
 vllm serve /models/Qwen3.8-27B-w8a8/ \
   --host 0.0.0.0 --port 8000 \
   --data-parallel-size 1 --tensor-parallel-size 2 \
@@ -80,16 +84,16 @@ ucm_ec_connector:
 
 ### 1. 快速验证：看日志确认命中
 
-向服务连发两次相同图片请求（可用任意 OpenAI 兼容客户端，`/v1/chat/completions` 携带 `image_url`）。观察 worker 日志：
+向服务发送两次相同图片请求（可用任意 OpenAI 兼容客户端，`/v1/chat/completions` 携带 `image_url`）。第一次请求完成后，先执行下文的缓存清理命令，再发送第二次请求，排除 KV 前缀缓存和本地 encoder cache 的收益。观察日志：
 
 - 第 1 次（miss 后保存）：请求收尾输出 `EC request cache hits: req=..., mm_items=1, hits_total=0`，同时出现 `EC dump item ...` 日志；
 - 第 2 次（EC 命中）：输出 `EC request cache hits: req=..., mm_items=1, hits_total=1`，`UCM_LOG_LEVEL=debug` 下可见 `EC load item ...` 逐项加载日志。
 
-也可以在外存目录 `ls` 验证：重复请求时文件数不再增长（dump 只在 miss 时发生）。
+外存目录文件数不再增长可作为辅助观察；确认 UCM 复用应以实际 `EC load item ...` 日志为准。
 
 ### 2. Benchmark：同 seed 连跑两轮对比
 
-同一条命令原样连跑两遍：第一轮建立缓存（全部 miss），第二轮全部命中，对比两轮 TTFT：
+同一条命令运行两遍，两轮之间清理 vLLM 本地缓存：第一轮建立 UCM 缓存，第二轮验证外部 EC 复用，并对比两轮 TTFT。第一轮 miss 基线需要待测媒体尚未存入 UCM。
 
 ```bash
 vllm bench serve \
@@ -106,7 +110,25 @@ vllm bench serve \
   --ignore-eos
 ```
 
-原理：`--seed` 固定时 random-mm 生成的图片序列完全一致，第二轮每条请求携带的图片内容都与第一轮相同，而第一轮已把这些 encoder 输出写入 UCM 存储，因此第二轮全部命中。两轮之间不要重启服务、不要清理外存目录。
+第一轮完成且服务没有其他在途请求后，执行以下命令；所有命令成功后，再原样执行第二轮 benchmark：
+
+```bash
+set -euo pipefail
+
+# 清理本地 KV prefix cache；HTTP 200 仍可能返回 success=false。
+curl -fsS -X POST http://127.0.0.1:8000/reset_prefix_cache \
+  | python -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("success") is True else 1)'
+
+# 清理多模态预处理缓存。
+curl -fsS -X POST http://127.0.0.1:8000/reset_mm_cache
+
+# 清理 Scheduler 和 Worker 的本地 encoder cache。
+curl -fsS -X POST http://127.0.0.1:8000/reset_encoder_cache
+```
+
+启动服务前必须设置 `VLLM_SERVER_DEV_MODE=1` 才会开放这些接口。`reset_mm_cache` 不清理 encoder 输出，因此必须同时调用 `reset_encoder_cache`。若清理失败，先确认没有在途请求并重试，成功后再开始第二轮。
+
+原理：固定 `--seed` 使两轮图片内容一致，第一轮保存成功的 encoder 输出仍保留在 UCM 中；清理 vLLM 本地缓存后，第二轮需要通过 UCM 加载这些输出。两轮之间不要重启服务、不要清理 UCM 热层或外存目录。
 
 | 参数 | 作用 |
 | --- | --- |
@@ -123,13 +145,13 @@ vllm bench serve \
 | 轮次 | 预期 TTFT | 含义 |
 | --- | --- | --- |
 | 第一轮（seed=1000） | 高 | 全部 EC miss：encoder 重算 + dump 写缓存 |
-| 第二轮（同 seed） | 显著降低 | 每条请求的图片与第一轮一致，全部 EC 命中，跳过重算 |
+| 第二轮（同 seed，已清理本地缓存） | 预期降低 | 从 UCM 加载第一轮保存成功的输出，跳过 encoder 重算；以实际加载日志确认 |
 
 命中证据：
 
 - 第一轮请求收尾日志 `EC request cache hits: req=..., mm_items=N, hits_total=0`，`UCM_LOG_LEVEL=debug` 下有 `EC dump item ...`；
-- 第二轮输出 `hits_total=N`（等于本请求图片数），并有 `EC load item ...`；
-- 外存目录文件数在第二轮不再增长。
+- 第二轮应出现 `EC load item ...`，证明实际发生 UCM 加载；无重复 identifier 或本轮本地共享时，预期 `hits_total=N`（N 为请求内不同媒体 identifier 数）；
+- 外存目录文件数在第二轮不再增长仅是辅助证据，不能单独证明 UCM 命中。
 
 ## 进阶：与 KV Connector 同时启用
 

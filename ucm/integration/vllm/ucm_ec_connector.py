@@ -514,11 +514,15 @@ class UCMECConnector(ECConnectorBase):
         for req_id, num_tokens in scheduler_output.num_scheduled_tokens.items():
             if num_tokens > 0 and (state := self.req_to_state.get(req_id)) is not None:
                 needed_identifiers.update(state.identifier_states)
+        # Do not recreate entries after the worker applies final evictions.
+        # vLLM excludes items reallocated in this step from this list.
+        freed_identifiers = set(scheduler_output.free_encoder_mm_hashes)
         metadata = UCMECConnectorMetadata(
             loads={
                 identifier: spec
                 for identifier, spec in self.pending_loads.items()
                 if identifier in needed_identifiers
+                and identifier not in freed_identifiers
             }
         )
         self.pending_loads = {}
