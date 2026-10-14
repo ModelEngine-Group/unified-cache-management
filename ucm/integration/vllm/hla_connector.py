@@ -58,7 +58,10 @@ logger = init_logger(__name__)
 
 def _kv_cache_tensor_layers(raw_tensor) -> list[str]:
     """Read layer names from both new and legacy vLLM tensor descriptors."""
-    return getattr(raw_tensor, "layers", getattr(raw_tensor, "shared_by", []))
+    names = getattr(raw_tensor, "layers", None)
+    if names is None:
+        names = getattr(raw_tensor, "shared_by", None)
+    return names if names is not None else []
 
 
 @dataclass
@@ -540,35 +543,36 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             getattr(spec, "tokens_per_state", getattr(spec, "compress_ratio", 1))
         )
 
-    @staticmethod
-    def _has_glm53_layout(kv_cache_config) -> bool:
-        """Identify GLM-5.3-Flash independently of allocation packing."""
-        raw_tensors = kv_cache_config.kv_cache_tensors
+    def _has_glm53_layout(self, kv_cache_config) -> bool:
+        """Identify GLM by an explicit spec tag or by structure plus architecture."""
         if (
             not (
                 current_platform.is_cuda_alike()
                 or current_platform.device_type == "npu"
             )
-            or not raw_tensors
+            or not kv_cache_config.kv_cache_tensors
         ):
             return False
-        # Ascend tags specs with model_version; upstream CUDA currently does
-        # not. Keep structural detection so CUDA reaches the explicit error.
+
+        # Other hybrid models may share this structure. Require an exact
+        # architecture match before selecting the GLM-specific layout.
+        architectures = (
+            getattr(self.vllm_config.model_config.hf_config, "architectures", None)
+            or []
+        )
+        if "Glm5NextForConditionalGeneration" not in architectures:
+            return False
+
+        # Ascend provides an explicit model_version tag. Untagged specs,
+        # including the current upstream CUDA path, need both the hybrid
+        # cache structure and the supported architecture to identify GLM.
         has_mla = False
         has_indexer = False
         has_mamba = False
         for group in kv_cache_config.kv_cache_groups:
             spec = group.kv_cache_spec
-            inner_specs = (
-                spec.kv_cache_specs.values()
-                if isinstance(spec, UniformTypeKVCacheSpecs)
-                else (spec,)
-            )
-            if any(
-                getattr(inner, "model_version", None) == "glm5_next"
-                for inner in inner_specs
-            ):
-                return True
+            # Trust the explicit model tag; this path returns before the
+            # structural and architecture checks used by the fallback.
             if not participates_in_prefix_caching(spec):
                 continue
             if is_mamba_align_kv_cache_spec(spec):
@@ -584,6 +588,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 ]
                 has_mla |= any(ratio == 1 for ratio in ratios)
                 has_indexer |= any(ratio > 1 for ratio in ratios)
+        # Untagged layouts must contain MLA, a compressed indexer and KDA
+        # state represented by a Mamba-align spec.
         return has_mla and has_indexer and has_mamba
 
     def _build_glm53_ascend_layout(self, kvcaches) -> None:
@@ -614,11 +620,16 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
             if not participates_in_prefix_caching(group.kv_cache_spec):
                 continue
-            # Separate MLA from its compressed indexer within the same group.
+            # Group components by compression within each cache group.
+            # The uncompressed family can contain MLA or KDA layers;
+            # compressed indexer layers form a separate family.
             families = defaultdict(list)
             for name in group.layer_names:
                 spec = specs[name][0]
-                families[self._tokens_per_state(spec) > 1].append(name)
+                family = (
+                    "compressed" if self._tokens_per_state(spec) > 1 else "uncompressed"
+                )
+                families[family].append(name)
             for names in families.values():
                 if not names:
                     continue
@@ -1067,9 +1078,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ):
             return False
 
-        if HybridLinearAttentionLayout._has_glm53_layout(kv_cache_config):
-            return True
-
         layer_to_specs = layer_name_to_kv_cache_spec(kv_cache_config)
         # Attention and Mamba layers may use separate tensor allocations.
         has_full_attention = False
@@ -1402,8 +1410,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         state_idx = max((seq_len - 1) // group.block_size, 0)
         state_indices = [state_idx]
         if reason == "load":
-            # Restore the hit checkpoint too: vLLM may expose it to local
-            # prefix-cache hits after this step.
+            # External-hit restoration initializes a new/resumed request before
+            # this step's KDA computation. Normal continuation steps do not reload
+            # the checkpoint, so no partially advanced state from this step is
+            # expected at the running destination.
+            # Restore the checkpoint slot for later prefix reuse and seed the
+            # worker-selected running slot for the upcoming computation.
+            # The destination need not be empty; do not select speculative or
+            # over-allocated table-tail slots instead.
             running_state_idx = max(
                 (seq_len + num_scheduled_tokens - 1) // group.block_size, 0
             )
