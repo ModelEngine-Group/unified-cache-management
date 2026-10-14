@@ -544,7 +544,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         )
 
     def _has_glm53_layout(self, kv_cache_config) -> bool:
-        """Identify GLM by an explicit spec tag or by structure plus architecture."""
+        """Identify GLM by the supported architecture and cache structure."""
         if (
             not (
                 current_platform.is_cuda_alike()
@@ -563,16 +563,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         if "Glm5NextForConditionalGeneration" not in architectures:
             return False
 
-        # Ascend provides an explicit model_version tag. Untagged specs,
-        # including the current upstream CUDA path, need both the hybrid
-        # cache structure and the supported architecture to identify GLM.
+        # The architecture alone is not enough: require the GLM cache components.
         has_mla = False
         has_indexer = False
         has_mamba = False
         for group in kv_cache_config.kv_cache_groups:
             spec = group.kv_cache_spec
-            # Trust the explicit model tag; this path returns before the
-            # structural and architecture checks used by the fallback.
+            # Request-local components such as KPoolTail are not reusable prefixes.
             if not participates_in_prefix_caching(spec):
                 continue
             if is_mamba_align_kv_cache_spec(spec):
@@ -588,8 +585,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 ]
                 has_mla |= any(ratio == 1 for ratio in ratios)
                 has_indexer |= any(ratio > 1 for ratio in ratios)
-        # Untagged layouts must contain MLA, a compressed indexer and KDA
-        # state represented by a Mamba-align spec.
+        # A matching layout has MLA, a compressed indexer, and KDA state
+        # represented by a Mamba-align spec.
         return has_mla and has_indexer and has_mamba
 
     def _build_glm53_ascend_layout(self, kvcaches) -> None:
