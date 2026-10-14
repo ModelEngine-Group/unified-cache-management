@@ -269,6 +269,76 @@ def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     assert fallback[0]["missing_required_fields"] == ["soc_version"]
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("CANN 9.2.0-beta.2", "9.2.0-beta.2"),
+        ("/usr/local/Ascend/cann-9.2.0-beta.10", "9.2.0-beta.10"),
+        ("9.2.0rc2", "9.2.0rc2"),
+        ("CANN 9.0", "9.0.0"),
+    ],
+)
+def test_cann_version_preserves_complete_identity(raw: str, expected: str) -> None:
+    assert runtime.cann_version(raw) == expected
+    assert runtime.parse_cann_version(f"cann-{expected}") == runtime.parse_cann_version(
+        expected
+    )
+
+
+@pytest.mark.parametrize("value", ["9.2", "9.2.0-unknown", "9.2.0.1"])
+def test_complete_cann_parser_rejects_uninterpretable_identity(value: str) -> None:
+    with pytest.raises(ValueError):
+        runtime.parse_cann_version(value)
+
+
+def test_complete_cann_config_identity_survives_abbreviated_toolkit_path() -> None:
+    config = _config(
+        "amd64",
+        env=(
+            "PYTHON_VERSION=3.12",
+            "CANN_VERSION=9.2.0-beta.2",
+            "ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.2.0",
+            "PATH=/usr/local/Ascend/cann-9.2.0/bin:/usr/bin",
+            "SOC_VERSION=ascend910b1",
+        ),
+    )
+    inspection = runtime.inspect_runtime_references(
+        ["quay.io/ascend/vllm-ascend:v0.30.0rc2"],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: config,
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    assert inspection["probe_matrix"] == {"include": []}
+    probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
+    assert probe["accelerator_runtime"] == "cann-9.2.0-beta.2"
+
+
+def test_explicit_cann_version_conflict_still_requires_native_probe() -> None:
+    config = _config(
+        "amd64",
+        env=(
+            "PYTHON_VERSION=3.12",
+            "CANN_VERSION=9.2.0-beta.2",
+            "SOC_VERSION=ascend910b1",
+        ),
+        history=("RUN |1 CANN_VERSION=9.2.0 /bin/sh -c true",),
+    )
+    inspection = runtime.inspect_runtime_references(
+        ["quay.io/ascend/vllm-ascend:v0.30.0rc2"],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: config,
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    assert len(inspection["probe_matrix"]["include"]) == 1
+    assert inspection["members"][0]["metadata_conflicts"]
+
+
 def test_conflicting_crane_facts_schedule_native_fallback() -> None:
     config = _config(
         "amd64",

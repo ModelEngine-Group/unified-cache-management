@@ -65,6 +65,19 @@ def _cuda_probe(*, dual_arch: bool = False) -> dict[str, object]:
     }
 
 
+def _ascend_probe() -> dict[str, object]:
+    probe = next(
+        item
+        for item in _inputs()[1]["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    return {
+        "kind": "ucm-runtime-probe",
+        "schema_version": 2,
+        "probes": [probe],
+    }
+
+
 def _inventory(catalog: dict[str, object], ids: set[str]) -> dict[str, object]:
     return {
         "kind": "ucm-builder-registry",
@@ -112,6 +125,9 @@ def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
         pr_number=30,
         author="SuperMarioYL",
         run_id=100,
+        raw_build_resolver=lambda _probes: pytest.fail(
+            "CUDA checked Builder reuse must not resolve raw sources"
+        ),
     )
 
     assert result["ok"] is True
@@ -127,6 +143,102 @@ def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
         "source_commit",
         "mooncake_version",
     } & _all_keys(result)
+
+
+def test_ascend_checked_builder_reuse_resolves_source_first() -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    probe = _ascend_probe()
+    raw = next(
+        item for item in selection["wheel_builds"] if item["backend"] == "cann-a2"
+    )
+    calls = []
+
+    def raw_resolver(probes):
+        calls.append(probes)
+        return [raw]
+
+    result = pr.resolve_pr_request(
+        formal,
+        probe,
+        _inventory(catalog, {raw["id"]}),
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=106,
+        raw_build_resolver=raw_resolver,
+    )
+
+    assert result["ok"] is True
+    assert calls == [probe["probes"]]
+    match = result["builder_matches"]["matches"][0]
+    assert (
+        match["builder"]["repository"] == "ghcr.io/release-org/ucm-builder-vllm-ascend"
+    )
+    assert result["selection"]["wheel_builds"] == [raw]
+
+
+@pytest.mark.parametrize(
+    ("field", "stale_value"),
+    [
+        (
+            "source_image",
+            "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12",
+        ),
+        ("source_image_digest", "sha256:" + "f" * 64),
+        ("recipe_revision", "ffffffffffff"),
+        ("accelerator_runtime", "cann-9.0.2"),
+    ],
+)
+def test_ascend_checked_builder_must_match_source_and_runtime(
+    field: str, stale_value: str
+) -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    raw = next(
+        item for item in selection["wheel_builds"] if item["backend"] == "cann-a2"
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    inventory["builders"][0][field] = stale_value
+
+    result = pr.resolve_pr_request(
+        formal,
+        _ascend_probe(),
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=107,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert "builder_record" not in result["builder_matches"]["matches"][0]
+
+
+def test_ascend_stale_checked_builder_does_not_mask_newer_suffix_source() -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    inventory["builders"][0]["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
+    )
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+
+    result = pr.resolve_pr_request(
+        formal,
+        _ascend_probe(),
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=108,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert "builder_record" not in result["builder_matches"]["matches"][0]
 
 
 def test_missing_registry_builder_resolves_one_raw_mirror_for_sync() -> None:

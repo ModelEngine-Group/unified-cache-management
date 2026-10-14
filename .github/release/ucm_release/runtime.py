@@ -15,6 +15,8 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 OCI_REPOSITORY_PATTERN = re.compile(
     "^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:(?:[._]|-+)[a-z0-9]+)*)+$"
 )
@@ -24,13 +26,15 @@ OCI_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 __all__ = [
     "aggregate_runtime_probes",
     "build_receipt",
+    "cann_version",
+    "image_publication_targets",
     "inspect_runtime_references",
     "match_runtime_builders",
+    "parse_cann_version",
     "parse_runtime_reference",
     "project_pr_publication",
     "project_pr_tag",
     "project_runtime_image_tag",
-    "image_publication_targets",
     "render_receipt_markdown",
     "sanitize_oci_tag_component",
 ]
@@ -53,6 +57,10 @@ OCI_MANIFEST_MEDIA_TYPES = frozenset(
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _PYTHON_VERSION = re.compile(r"(?<![0-9])(\d+)\.(\d+)(?:\.\d+)?")
 _NUMERIC_VERSION = re.compile(r"(?<![0-9])(\d+)\.(\d+)(?:\.(\d+))?")
+_CANN_VERSION = re.compile(
+    r"(?<![0-9])(?P<major>\d+)\.(?P<minor>\d+)"
+    r"(?:\.(?P<patch>\d+))?(?P<suffix>[A-Za-z0-9._-]*)"
+)
 _MANYLINUX = re.compile(r"manylinux_?(\d+)_(\d+)")
 _ASCEND_BACKEND_BY_SOC = {
     "ascend910b1": "cann-a2",
@@ -328,17 +336,52 @@ def _runtime_from_config(
                 sources.append((f"env:{name}", env[name]))
         for name in ("PATH", "LD_LIBRARY_PATH", "PYTHONPATH"):
             value = env.get(name, "")
-            for match in re.finditer(r"/cann[-_/]?(\d+\.\d+(?:\.\d+)?)", value):
+            for match in re.finditer(r"/cann[-_/]?([^/:\s]+)", value):
                 sources.append((f"env:{name}", match.group(1)))
         sources.extend(
             ("history:CANN_VERSION", value)
             for value in _history_assignments(config, "CANN_VERSION")
         )
-    version, conflict = _consistent_version(
-        [value for _, value in sources],
-        lambda value: _runtime_version(value, accelerator, context),
-        context,
-    )
+    if accelerator == "ascend":
+        versions: dict[Version, str] = {}
+        explicit_versions: set[Version] = set()
+        for name, value in sources:
+            try:
+                text = cann_version(value, context)
+                parsed = parse_cann_version(text)
+                versions.setdefault(parsed, f"cann-{text}")
+                if name in {"env:CANN_VERSION", "history:CANN_VERSION"}:
+                    explicit_versions.add(parsed)
+            except ValueError:
+                continue
+        # Toolkit paths can retain only X.Y.Z even when CANN_VERSION includes
+        # a suffix. That abbreviated hint must not erase the complete identity.
+        complete = {
+            key: text
+            for key, text in versions.items()
+            if re.fullmatch(r"cann-[0-9]+\.[0-9]+\.[0-9]+", text) is None
+        }
+        if len(complete) == 1:
+            full_version = next(iter(complete))
+            versions = {
+                key: text
+                for key, text in versions.items()
+                if key in complete
+                or key in explicit_versions
+                or key.release != full_version.release
+            }
+        version = next(iter(versions.values())) if len(versions) == 1 else None
+        conflict = (
+            f"{context} metadata conflicts: {sorted(versions.values())}"
+            if len(versions) > 1
+            else None
+        )
+    else:
+        version, conflict = _consistent_version(
+            [value for _, value in sources],
+            lambda value: _runtime_version(value, accelerator, context),
+            context,
+        )
     source = ",".join(sorted({name for name, _ in sources})) if version else None
     return version, source, conflict
 
@@ -614,11 +657,49 @@ def _python_coordinates(value: object, context: str) -> tuple[str, str]:
 
 
 def _runtime_version(value: object, accelerator: str, context: str) -> str:
+    if accelerator == "ascend":
+        return f"cann-{cann_version(value, context)}"
     match = _version_match(value, context)
-    major, minor, patch = match.groups()
-    if accelerator == "cuda":
-        return f"cuda-{int(major)}.{int(minor)}"
-    return f"cann-{int(major)}.{int(minor)}.{int(patch or 0)}"
+    major, minor, _patch = match.groups()
+    return f"cuda-{int(major)}.{int(minor)}"
+
+
+def parse_cann_version(value: str) -> Version:
+    """Parse a complete three-part CANN identity, with an optional suffix.
+
+    The numeric release must contain exactly major, minor and patch. Supported
+    suffixes follow ``packaging.version.Version``; unknown suffixes are errors.
+    A ``cann-`` capability prefix is accepted, but surrounding text is not.
+    """
+
+    if not isinstance(value, str):
+        raise ValueError("CANN version must be a string")
+    text = value.removeprefix("cann-")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9._-]*", text) is None:
+        raise ValueError(f"invalid complete CANN version {value!r}")
+    try:
+        parsed = Version(text)
+    except InvalidVersion as error:
+        raise ValueError(f"unparseable CANN version {value!r}") from error
+    if len(parsed.release) != 3:
+        raise ValueError(f"CANN version must have three release components: {value!r}")
+    return parsed
+
+
+def cann_version(value: object, context: str = "CANN version") -> str:
+    """Extract a CANN version from metadata without discarding its suffix."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{context} must be a string")
+    match = _CANN_VERSION.search(value.strip())
+    if match is None:
+        raise ValueError(f"{context} has no CANN version")
+    text = (
+        f"{int(match['major'])}.{int(match['minor'])}.{int(match['patch'] or 0)}"
+        f"{match['suffix'].casefold()}"
+    )
+    parse_cann_version(text)
+    return text
 
 
 def _unquote(value: object, context: str) -> str:

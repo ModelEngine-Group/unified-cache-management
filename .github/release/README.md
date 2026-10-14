@@ -89,12 +89,32 @@ Runtime Registry Tags
 
 Crane reads each immutable member manifest/config to obtain CUDA/CANN,
 SOC/backend, Python ABI, and CPU architecture without downloading
-image layers. Only a member missing Python, CUDA/CANN, or SOC metadata is pulled
-and probed on its native architecture. Runtime glibc does not gate planning:
+image layers. Only a member with missing or conflicting Python, CUDA/CANN, or
+SOC metadata is pulled and probed on its native architecture. Runtime glibc does not gate planning:
 the Wheel's actual GLIBC floor comes from `auditwheel`, then the final
 install-only Runtime image verifies its glibc floor, installs the Wheel, and
 runs `import ucm` before publication. Every runtime member resolves exactly one
 Wheel ID. Zero or ambiguous matches fail instead of guessing.
+
+Ascend Builder selection first filters SoC, Python ABI, native architecture and
+the configured manylinux policy. An exact complete CANN version wins. Only a
+bare Runtime version such as `9.2.0` may fall back to the highest parseable
+suffixed version with the same `X.Y.Z`, for example `9.2.0-beta.2`. Version
+ordering uses `packaging.Version`, not Registry order or creation time. A Runtime
+that explicitly reports a suffix requires that exact version. A selected
+Builder's verification or build failure never triggers an older-version retry.
+
+`accelerator_runtime` continues to describe the target Runtime requirement and
+therefore the Wheel's existing identity. The complete source Builder version is
+owned by `source_image`, with its native member pinned by `source_image_digest`;
+`checks.accelerator_runtime` is derived from that source for actual Toolkit
+verification. Ascend PRs select the current upstream source before reusing a
+checked GHCR mirror with the same source, digest and recipe revision.
+
+The Native Wheel Gate installs and loads each suffix-fallback Wheel in every
+matching Runtime member before passing. It reuses the release installation
+validator without publishing images. These checks cover glibc, dependencies and
+native loading; they do not exercise NPU operations or FFTS transfers.
 
 The explicit `-openeuler` Runtime Tag suffix is retained as an OS hint for
 Release mapping and final-image validation. OS hints never participate in the

@@ -258,6 +258,48 @@ def _wheel_task(
     }
 
 
+def fallback_runtime_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Project every Runtime member using a suffixed source CANN Builder.
+
+    This is an execution matrix, not a persisted plan field. Wheel identities
+    still describe Runtime requirements; source tags identify the actual
+    compiler environment that needs installation/load verification.
+    """
+    if document.get("kind") != "ucm-release-plan":
+        raise ValueError("fallback validation requires a release plan")
+    wheels = {str(item["id"]): item for item in document["wheels"]}
+    include = []
+    for image in document["images"]:
+        requirement = str(image["runtime"]["accelerator_runtime"])
+        if not requirement.startswith("cann-"):
+            continue
+        wheel = wheels[str(image["wheel_id"])]
+        source_version = builders.source_cann_version(wheel["builder"]["source_image"])
+        requested = runtime_ops.parse_cann_version(requirement)
+        actual = runtime_ops.parse_cann_version(source_version)
+        if requested == actual:
+            continue
+        if (
+            requested != Version(requested.base_version)
+            or requested.release != actual.release
+        ):
+            raise ValueError("plan contains an unsupported CANN Builder substitution")
+        include.append(
+            {
+                "id": wheel["id"],
+                "label": image["label"],
+                "runner": image["runner"],
+                "cpu_arch": image["cpu_arch"],
+                "distribution": wheel["dist_name"],
+                "platform_arg": wheel["build"]["platform_arg"],
+                "runtime_image": image["runtime"]["image_reference"],
+                "runtime_cann_version": requirement.removeprefix("cann-"),
+                "builder_cann_version": source_version,
+            }
+        )
+    return {"include": include}
+
+
 def resolve_plan(
     catalog: dict[str, Any],
     *,

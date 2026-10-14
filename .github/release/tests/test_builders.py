@@ -493,6 +493,191 @@ def test_raw_builder_selection_honors_configured_manylinux_policy() -> None:
     assert build["source_image"].endswith("9.0.1-910b-manylinux_2_34-py3.12")
 
 
+def _cann_inputs(
+    versions: list[str],
+    requested: str = "9.2.0",
+    architecture: str = "amd64",
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    fixture = _fixture()
+    probe = copy.deepcopy(
+        next(
+            item
+            for item in fixture["runtime_probe"]["probes"]
+            if item["backend"] == "cann-a2"
+        )
+    )
+    probe["accelerator_runtime"] = f"cann-{requested}"
+    probe["cpu_arch"] = architecture
+    repository = "quay.io/ascend/manylinux"
+    tags = [f"{version}-910b-manylinux_2_34-py3.12" for version in versions]
+    fixture["repositories"][repository] = {"pages": [{"tags": tags}]}
+    for index, tag in enumerate(tags, start=1):
+        fixture["source_image_members"][f"{repository}:{tag}"] = {
+            "amd64": f"sha256:{index:064x}",
+            "arm64": f"sha256:{index + 100:064x}",
+        }
+    return _policy(), fixture, probe
+
+
+@pytest.mark.parametrize(
+    ("requested", "available", "winner"),
+    [
+        ("9.2.0", ["9.2.0-beta.2", "9.2.0"], "9.2.0"),
+        ("9.2.0", ["9.2.0-beta.1", "9.2.0-beta.2"], "9.2.0-beta.2"),
+        ("9.2.0", ["9.2.0-beta.2", "9.2.0-beta.10"], "9.2.0-beta.10"),
+        ("9.2.0", ["9.2.0-beta.10", "9.2.0-rc.1"], "9.2.0-rc.1"),
+        (
+            "9.2.0-beta.1",
+            ["9.2.0-beta.2", "9.2.0-beta.1", "9.2.0"],
+            "9.2.0-beta.1",
+        ),
+    ],
+)
+def test_cann_selection_prefers_exact_then_latest_same_base_suffix(
+    requested: str, available: list[str], winner: str
+) -> None:
+    formal, fixture, probe = _cann_inputs(available, requested)
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == winner
+    assert build["accelerator_runtime"] == f"cann-{requested}"
+
+
+@pytest.mark.parametrize(
+    ("requested", "available"),
+    [
+        ("9.2.0-beta.1", ["9.2.0-beta.2", "9.2.0"]),
+        ("9.2.0", ["9.1.0-beta.9", "9.2.1-beta.1", "9.3.0-beta.1"]),
+    ],
+)
+def test_cann_selection_does_not_relax_explicit_suffix_or_numeric_base(
+    requested: str, available: list[str]
+) -> None:
+    formal, fixture, probe = _cann_inputs(available, requested)
+
+    with pytest.raises(ValueError, match="found 0"):
+        builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)
+
+
+def test_cann_fallback_preserves_target_names_and_records_actual_source_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2"])
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+    catalog = builders.catalog_from_builds(
+        [build], owner="release-org", formal_policy=formal
+    )
+    selected = catalog["builders"][0]
+
+    assert build["id"] == "cann920-a2-cp312-amd64"
+    assert build["runtime_variant"] == "cann920-a2"
+    assert selected["accelerator_runtime"] == "cann-9.2.0"
+    assert selected["checks"]["accelerator_runtime"] == "cann-9.2.0-beta.2"
+    labels = builders.builder_labels(selected)
+    reopened = builders.registry_builder_record(
+        selected["target_repository"],
+        selected["target_tag"],
+        {"created": "2026-10-14T00:00:00Z", "config": {"Labels": labels}},
+    )
+    assert reopened["source_image"] == build["source_image"]
+    assert reopened["source_image_digest"] == build["source_image_digest"]
+    diagnostic = capsys.readouterr()
+    assert diagnostic.out == ""
+    assert "same-base latest suffix" in diagnostic.err
+    assert "9.2.0-beta.2" in diagnostic.err
+
+
+def test_cann_selection_filters_capability_and_diagnoses_bad_tags_before_ranking(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0-unknown"])
+    tags = fixture["repositories"]["quay.io/ascend/manylinux"]["pages"][0]["tags"]
+    tags.extend(
+        [
+            "9.2.0-rc.1-a3-manylinux_2_34-py3.12",
+            "9.2.0-rc.1-910b-manylinux_2_34-py3.11",
+            "9.2.0-rc.1-910b-manylinux_2_28-py3.12",
+            "latest",
+        ]
+    )
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.2"
+    assert "unparseable CANN version" in capsys.readouterr().err
+
+
+def test_cann_ranks_only_builder_versions_that_supply_requested_architecture() -> None:
+    formal, fixture, probe = _cann_inputs(
+        ["9.2.0-beta.1", "9.2.0-beta.2"], architecture="arm64"
+    )
+    newest = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][newest]["arm64"]
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.1"
+    assert build["cpu_arch"] == "arm64"
+
+
+@pytest.mark.parametrize("invalid_member", ["duplicate", "bad-digest"])
+def test_cann_architecture_filter_preserves_manifest_errors(
+    invalid_member: str,
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2"])
+    reference = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][reference]
+    member = {
+        "platform": {"os": "linux", "architecture": "amd64"},
+        "digest": "sha256:" + "1" * 64,
+    }
+    members = (
+        [member, member]
+        if invalid_member == "duplicate"
+        else [{**member, "digest": "invalid"}]
+    )
+
+    with pytest.raises(ValueError, match="exactly one|invalid.*digest"):
+        builders.resolve_probe_builds(
+            formal,
+            [probe],
+            tag_fixture=fixture,
+            manifest_loader=lambda _reference: {"manifests": members},
+            digest_loader=lambda _reference: "sha256:" + "9" * 64,
+        )
+
+
+def test_cann_missing_architecture_in_real_index_is_ineligible() -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.1", "9.2.0-beta.2"])
+    newest = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][newest]
+
+    build = builders.resolve_probe_builds(
+        formal,
+        [probe],
+        tag_fixture=fixture,
+        manifest_loader=lambda _reference: {
+            "manifests": [
+                {
+                    "platform": {"os": "linux", "architecture": "arm64"},
+                    "digest": "sha256:" + "2" * 64,
+                }
+            ]
+        },
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.1"
+
+
+def test_cann_equal_version_aliases_remain_ambiguous() -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0b2"])
+
+    with pytest.raises(ValueError, match="found 2"):
+        builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)
+
+
 def test_runtime_glibc_is_not_required_for_wheel_or_builder_planning() -> None:
     fixture = _fixture()
     for probe in fixture["runtime_probe"]["probes"]:
