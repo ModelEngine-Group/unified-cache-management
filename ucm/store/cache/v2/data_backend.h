@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include "memfd_page_mode.h"
 #include "numa/numa_policy.h"
 #include "status/status.h"
 
@@ -40,6 +41,7 @@ struct BackendOptions {
     size_t rankBytes{0};
     Numa::Plan localPlacement{};
     bool requireHostDeviceAddress{false};
+    MemfdPageMode memfdPageMode{MemfdPageMode::Base};
     std::chrono::steady_clock::time_point deadline{};
 };
 

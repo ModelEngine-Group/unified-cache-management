@@ -9,9 +9,12 @@
 #define _GNU_SOURCE
 #endif
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
+#include <fmt/format.h>
 #include <string>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -30,18 +33,21 @@ public:
     MemFd(const MemFd&) = delete;
     MemFd& operator=(const MemFd&) = delete;
 
-    Status Create(const std::string& name, size_t size)
+    Status Create(const std::string& name, size_t size, uint32_t additionalFlags = 0)
     {
         Reset();
-        fd_ = ::memfd_create(name.c_str(), MFD_ALLOW_SEALING | MFD_CLOEXEC);
-        if (fd_ < 0) { return Status::OsApiError("memfd_create failed"); }
+        constexpr uint32_t baseFlags = MFD_ALLOW_SEALING | MFD_CLOEXEC;
+        fd_ = ::memfd_create(name.c_str(), baseFlags | additionalFlags);
+        if (fd_ < 0) { return OsError("memfd_create failed", errno); }
         if (::ftruncate(fd_, static_cast<off_t>(size)) != 0) {
+            const auto status = OsError("ftruncate failed", errno);
             Reset();
-            return Status::OsApiError("ftruncate failed");
+            return status;
         }
         if (::fcntl(fd_, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK) != 0) {
+            const auto status = OsError("F_ADD_SEALS failed", errno);
             Reset();
-            return Status::OsApiError("F_ADD_SEALS failed");
+            return status;
         }
         auto s = Map(size, "mmap failed");
         if (s.Failure()) { Reset(); }
@@ -77,11 +83,18 @@ private:
     {
         addr_ = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (addr_ == MAP_FAILED) {
+            const auto status = OsError(error, errno);
             addr_ = nullptr;
-            return Status::OsApiError(error);
+            return status;
         }
         size_ = size;
         return Status::OK();
+    }
+
+    static Status OsError(const char* operation, int error)
+    {
+        return Status::OsApiError(
+            fmt::format("{}: errno={} ({})", operation, error, std::strerror(error)));
     }
 
     void Reset()

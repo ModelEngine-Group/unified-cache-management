@@ -314,6 +314,20 @@ TEST(UCCache2ConfigTest, ReadsFallbackNumaWorkerGeometry)
     EXPECT_EQ(*config.fallbackNumaRankCount, 16);
 }
 
+TEST(UCCache2ConfigTest, ReadsMemfdPageMode)
+{
+    UC::Detail::Dictionary dict;
+    EXPECT_EQ(UC::Cache2::Config::From(dict).memfdPageMode, UC::Cache2::MemfdPageMode::Base);
+
+    dict.Set("cache_memfd_page_mode", std::string("hugetlb-2m"));
+    EXPECT_EQ(UC::Cache2::Config::From(dict).memfdPageMode, UC::Cache2::MemfdPageMode::HugeTlb2M);
+
+    dict.Set("cache_memfd_page_mode", std::string("unknown"));
+    const auto invalid = UC::Cache2::Config::From(dict);
+    EXPECT_EQ(invalid.memfdPageMode, UC::Cache2::MemfdPageMode::Invalid);
+    EXPECT_EQ(invalid.Validate().Underlying(), UC::Status::InvalidParam().Underlying());
+}
+
 class UCCache2LoadQueueTest : public testing::Test {
 protected:
     static void SetUpTestSuite()

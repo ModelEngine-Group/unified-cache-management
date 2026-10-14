@@ -63,6 +63,7 @@ struct DataOptions {
     std::optional<int32_t> deviceNumaNode{};       /* device-layer probe; empty when unknown */
     std::optional<size_t> fallbackNumaRank{};      /* local worker rank, NOT myRank */
     std::optional<size_t> fallbackNumaRankCount{}; /* all workers on this machine */
+    MemfdPageMode memfdPageMode{MemfdPageMode::Base};
 };
 
 class DataStrategy {
@@ -202,6 +203,7 @@ public:
         backendOptions.rankCount = nRanks;
         backendOptions.rankBytes = slotSize * nSlotsPerRank;
         backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
+        backendOptions.memfdPageMode = options.memfdPageMode;
         backendOptions.deadline = deadline;
 #if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
         const size_t numaRankCount = options.fallbackNumaRankCount.value_or(nRanks);
