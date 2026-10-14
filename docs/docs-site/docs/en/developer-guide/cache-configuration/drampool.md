@@ -119,8 +119,6 @@ Replace the model and configuration paths and adjust inference options for your 
 
 When both components run on the same host and DramPool uses a single NPU, select different physical devices for the pool and inference process. For example, use pool `device_ids: [0]` and set `ASCEND_RT_VISIBLE_DEVICES=1` for inference.
 
-To verify external reuse, send a prompt spanning several complete blocks and check that DramStore DUMP tasks succeed. Keep DramPool running, restart the inference process with the same configuration, and replay the prompt; confirm external hits and successful LOAD tasks. See [Verify external cache](../../user-guide/observability/verify-cache.md). A successful inference response alone does not establish cache reuse.
-
 ### Metrics
 
 DramStore operation metrics and DramPool metrics are exposed through vLLM's `/metrics` endpoint. Enable DramPool snapshot export and configure the DramStore-side reader as follows.

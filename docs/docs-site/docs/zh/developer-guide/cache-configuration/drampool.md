@@ -119,8 +119,6 @@ vllm serve <model-path> \
 
 两端部署在同一主机且 DramPool 仅使用一张 NPU 时，应为池端和推理进程选择不同的物理设备。例如，池端设置 `device_ids: [0]`，推理侧设置 `ASCEND_RT_VISIBLE_DEVICES=1`。
 
-验证外部缓存复用时，先发送覆盖多个完整块的 prompt，确认 DramStore 的 DUMP 任务成功。保持 DramPool 运行，以相同配置重启推理进程并重复该 prompt，确认外部命中及 LOAD 任务成功，详见[验证外部缓存](../../user-guide/observability/verify-cache.md)。仅收到正常推理响应不足以证明缓存复用成功。
-
 ### Metrics
 
 DramStore 操作指标和 DramPool 指标通过 vLLM 的 `/metrics` 暴露。按以下配置开启 DramPool 快照导出，并在 DramStore 侧读取快照。
