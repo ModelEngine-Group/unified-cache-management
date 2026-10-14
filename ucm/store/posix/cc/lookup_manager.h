@@ -28,6 +28,7 @@
 #include <future>
 #include <memory>
 #include "global_config.h"
+#include "logger/logger.h"
 #include "posix_file.h"
 #include "space_layout.h"
 #include "thread/thread_pool.h"
@@ -48,20 +49,33 @@ class LookupManager {
     };
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend)
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend,
+                 size_t backendIndex)
     {
         layout_ = layout;
         backend_ = backend;
+        backendTag_ = fmt::format("{}:{}", backendIndex, backend);
+        const auto timeoutMs = config.timeoutMs;
         const auto success =
             lookupSrv_
-                .SetWorkerFn([](std::shared_ptr<Task>& task, auto&) {
+                .SetWorkerFn([this](std::shared_ptr<Task>& task, auto&) {
                     constexpr auto mode = PosixFile::AccessMode::EXIST |
                                           PosixFile::AccessMode::READ |
                                           PosixFile::AccessMode::WRITE;
-                    task->Complete(PosixFile{task->path}.Access(mode));
+                    auto status = PosixFile{task->path}.Access(mode);
+                    // NotFound is a cache miss, not a backend error.
+                    if (status.Failure() && status != Status::NotFound()) {
+                        UC_ERROR("Failed({}) to look up file({}) in backend({}).", status,
+                                 task->path, backendTag_);
+                    }
+                    task->Complete(std::move(status));
                 })
                 .SetWorkerTimeoutFn(
-                    [](std::shared_ptr<Task>& task, auto) { task->Complete(Status::Timeout()); },
+                    [this, timeoutMs](std::shared_ptr<Task>& task, auto) {
+                        UC_ERROR("Lookup of file({}) in backend({}) timed out after {} ms.",
+                                 task->path, backendTag_, timeoutMs);
+                        task->Complete(Status::Timeout());
+                    },
                     config.timeoutMs, 100)
                 .SetNWorker(config.lookupConcurrency)
                 .SetCpuAffinity(config.cpuAffinityCores)
@@ -82,6 +96,8 @@ public:
 private:
     const SpaceLayout* layout_{nullptr};
     std::string backend_;
+    // "<index>:<path>", matching the backend health tracker name.
+    std::string backendTag_;
     ThreadPool<std::shared_ptr<Task>> lookupSrv_;
 };
 

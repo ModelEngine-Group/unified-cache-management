@@ -65,6 +65,8 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 void TransQueue::OnIoUnitTimeout(IoUnit& ios)
 {
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_timeout_total"), 1.0);
+    UC_ERROR("Posix io on block({}) in backend({}:{}) timed out after {} ms.", ios.shard.owner,
+             backendIndex_, backend_, timeoutMs_);
     ios.task->Fail(Status::Timeout());
     if (!failureSet_->Contains(ios.task->id)) { failureSet_->Insert(ios.task->id); }
     ios.waiter->Done();
@@ -148,7 +150,8 @@ Status TransQueue::H2S(IoUnit& ios)
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
+                 backendIndex_, backend_);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -156,7 +159,8 @@ Status TransQueue::H2S(IoUnit& ios)
     for (const auto& addr : ios.shard.addrs) {
         s = file.Write(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to write file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to write file({}:{}) in backend({}:{}).", s, path, offset,
+                     backendIndex_, backend_);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
@@ -173,7 +177,8 @@ Status TransQueue::S2H(IoUnit& ios)
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
+                 backendIndex_, backend_);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -181,7 +186,8 @@ Status TransQueue::S2H(IoUnit& ios)
     for (const auto& addr : ios.shard.addrs) {
         s = file.Read(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to read file({}:{}) in backend({}:{}).", s, path, offset,
+                     backendIndex_, backend_);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }

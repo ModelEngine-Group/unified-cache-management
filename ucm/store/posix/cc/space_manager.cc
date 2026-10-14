@@ -54,9 +54,10 @@ Status SpaceManager::Setup(const Config& config)
     backendConfig.timeoutMs = backendMgr_.IoTimeoutMs();
     backendConfig.lookupConcurrency =
         std::max<size_t>(1, config.lookupConcurrency / backendMgr_.BackendCount());
-    for (const auto& backend : backendMgr_.Backends()) {
+    const auto& backends = backendMgr_.Backends();
+    for (size_t index = 0; index < backends.size(); ++index) {
         auto manager = std::make_unique<LookupManager>();
-        s = manager->Setup(backendConfig, &layout_, backend);
+        s = manager->Setup(backendConfig, &layout_, backends[index], index);
         if (s.Failure()) { return s; }
         lookupManagers_.push_back(std::move(manager));
     }
