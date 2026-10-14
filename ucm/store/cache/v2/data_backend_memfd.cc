@@ -23,10 +23,15 @@
  * */
 #include "data_backend_memfd.h"
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <fmt/format.h>
 #include <limits>
+#include <linux/magic.h>
+#include <linux/memfd.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <unistd.h>
 #include <utility>
 #include "logger/logger.h"
@@ -45,6 +50,17 @@ constexpr auto kConnectBackoff = std::chrono::milliseconds(10);
 /* Upper bound on a single receive wait, so a huge setup budget cannot overflow
  * the millisecond count handed to the socket. */
 constexpr int64_t kMaxReceiveMs = 3600 * 1000;
+constexpr size_t kHugeTlb2MBytes = 2ULL << 20;
+
+#ifndef MFD_HUGETLB
+#define MFD_HUGETLB 0x0004U
+#endif
+#ifndef MFD_HUGE_SHIFT
+#define MFD_HUGE_SHIFT 26
+#endif
+#ifndef MFD_HUGE_2MB
+#define MFD_HUGE_2MB (21U << MFD_HUGE_SHIFT)
+#endif
 
 /* Deterministic across processes, unlike std::hash. */
 uint64_t HashName(const std::string& name)
@@ -71,17 +87,32 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
         return Status::InvalidParam("invalid memfd geometry: ranks={} bytes={}", options.rankCount,
                                     options.rankBytes);
     }
-    const long pageSize = ::sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
-    rankStride_ = (options.rankBytes + static_cast<size_t>(pageSize) - 1) / pageSize * pageSize;
+    if (options.memfdPageMode == MemfdPageMode::Invalid) {
+        return Status::InvalidParam("invalid memfd page mode");
+    }
+    pageMode_ = options.memfdPageMode;
+    if (pageMode_ == MemfdPageMode::HugeTlb2M) {
+        backingPageSize_ = kHugeTlb2MBytes;
+    } else {
+        const long pageSize = ::sysconf(_SC_PAGESIZE);
+        if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
+        backingPageSize_ = static_cast<size_t>(pageSize);
+    }
+    if (options.rankBytes > std::numeric_limits<size_t>::max() - (backingPageSize_ - 1)) {
+        return Status::InvalidParam("memfd rank bytes overflow while aligning: bytes={} page={}",
+                                    options.rankBytes, backingPageSize_);
+    }
+    rankStride_ = (options.rankBytes + backingPageSize_ - 1) / backingPageSize_ * backingPageSize_;
     segments_ = std::vector<Segment>(options.rankCount);
     deviceId_ = options.deviceId;
     requireHostDeviceAddress_ = options.requireHostDeviceAddress;
     localPlacement_ = options.localPlacement;
     deadline_ = options.deadline;
-    UC_INFO("memfd setup: device={} ranks={} rank_bytes={} rank_stride={} host_device={}",
-            deviceId_, options.rankCount, options.rankBytes, rankStride_,
-            requireHostDeviceAddress_);
+    UC_INFO(
+        "memfd setup: device={} ranks={} rank_bytes={} rank_stride={} host_device={} "
+        "page_mode={} page_bytes={} pages_per_rank={}",
+        deviceId_, options.rankCount, options.rankBytes, rankStride_, requireHostDeviceAddress_,
+        MemfdPageModeName(pageMode_), backingPageSize_, rankStride_ / backingPageSize_);
     return Status::OK();
 }
 
@@ -157,6 +188,11 @@ Status MemfdDataBackend::ImportPeer(size_t rank, uint64_t handle)
         return Status::InvalidParam("peer fd of rank({}) is shorter than rank bytes({})", rank,
                                     rankStride_);
     }
+    status = ValidatePageBacking(fd);
+    if (status.Failure()) {
+        ::close(fd);
+        return status;
+    }
     auto mem = std::make_unique<MemFd>();
     status = mem->Adopt(fd, rankStride_);
     if (status.Failure()) { return status; }
@@ -207,18 +243,34 @@ void MemfdDataBackend::Reset()
     }
     segments_.clear();
     rankStride_ = 0;
+    backingPageSize_ = 0;
+    pageMode_ = MemfdPageMode::Base;
 }
 
 Status MemfdDataBackend::CreateLocalSegment(size_t rank)
 {
     const auto name = SegmentName(rank);
     auto mem = std::make_unique<MemFd>();
-    auto status = mem->Create(name, rankStride_);
+    uint32_t additionalFlags = 0;
+    if (pageMode_ == MemfdPageMode::HugeTlb2M) { additionalFlags = MFD_HUGETLB | MFD_HUGE_2MB; }
+    auto status = mem->Create(name, rankStride_, additionalFlags);
     if (status.Failure()) {
-        UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} status={}", rank,
-                 deviceId_, name, rankStride_, status);
-        return {status.Underlying(), fmt::format("memfd create failed: name={} bytes={} status={}",
-                                                 name, rankStride_, status)};
+        UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} page_mode={} status={}",
+                 rank, deviceId_, name, rankStride_, MemfdPageModeName(pageMode_), status);
+        return {status.Underlying(),
+                fmt::format("memfd create failed: name={} bytes={} page_mode={} status={}", name,
+                            rankStride_, MemfdPageModeName(pageMode_), status)};
+    }
+    status = ValidatePageBacking(mem->Fd());
+    if (status.Failure()) {
+        UC_ERROR("memfd page backing invalid: owner={} device={} name={} page_mode={} status={}",
+                 rank, deviceId_, name, MemfdPageModeName(pageMode_), status);
+        return status;
+    }
+    if (pageMode_ == MemfdPageMode::HugeTlb2M) {
+        UC_INFO(
+            "memfd HugeTLB backing verified: owner={} device={} page_bytes={} pages={} bytes={}",
+            rank, deviceId_, backingPageSize_, rankStride_ / backingPageSize_, rankStride_);
     }
     segments_[rank].mem = std::move(mem);
     segments_[rank].owner = true;
@@ -244,14 +296,38 @@ Status MemfdDataBackend::PlaceAndRegister(size_t rank)
             return bindStatus;
         }
     }
-    const long pageSize = ::sysconf(_SC_PAGESIZE);
-    if (pageSize > 0) {
+    if (backingPageSize_ != 0) {
         auto* base = static_cast<std::byte*>(segment.mem->Addr());
-        for (size_t offset = 0; offset < rankStride_; offset += static_cast<size_t>(pageSize)) {
+        for (size_t offset = 0; offset < rankStride_; offset += backingPageSize_) {
             base[offset] = std::byte{0};
         }
     }
     return RegisterSegment(segment);
+}
+
+Status MemfdDataBackend::ValidatePageBacking(int32_t fd) const
+{
+    struct statfs fileSystem{};
+    if (::fstatfs(fd, &fileSystem) != 0) {
+        const auto error = errno;
+        return Status::OsApiError(
+            fmt::format("fstatfs memfd failed: errno={} ({})", error, std::strerror(error)));
+    }
+    const bool hugeTlbFs = static_cast<unsigned long>(fileSystem.f_type) ==
+                           static_cast<unsigned long>(HUGETLBFS_MAGIC);
+    if (pageMode_ == MemfdPageMode::Base) {
+        if (hugeTlbFs) {
+            return Status::Error("memfd expected base-page backing, but received HugeTLB backing");
+        }
+        return Status::OK();
+    }
+    const bool twoMiB = static_cast<size_t>(fileSystem.f_bsize) == kHugeTlb2MBytes;
+    if (!hugeTlbFs || !twoMiB) {
+        return Status::Error(
+            fmt::format("memfd expected 2MiB HugeTLB backing: fs_magic=0x{:x} block_bytes={}",
+                        static_cast<uint64_t>(fileSystem.f_type), fileSystem.f_bsize));
+    }
+    return Status::OK();
 }
 
 Status MemfdDataBackend::RegisterSegment(Segment& segment)

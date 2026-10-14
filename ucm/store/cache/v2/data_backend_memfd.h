@@ -57,6 +57,8 @@ class MemfdDataBackend : public DataBackend {
     size_t ownerRank_{0};
     int32_t deviceId_{-1};
     bool requireHostDeviceAddress_{false};
+    MemfdPageMode pageMode_{MemfdPageMode::Base};
+    size_t backingPageSize_{0};
     Numa::Plan localPlacement_{};
     std::chrono::steady_clock::time_point deadline_{};
     FdSocket fdServer_{};
@@ -80,6 +82,7 @@ public:
 private:
     /* memfd_create -> ftruncate -> mmap, without MAP_POPULATE. */
     Status CreateLocalSegment(size_t rank);
+    Status ValidatePageBacking(int32_t fd) const;
     /* First touch, then device registration. NUMA binding runs between them once
      * Numa::BindBeforeTouch is wired: registering pins pages, so it must stay
      * last. */

@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 #include "logger/logger.h"
+#include "memfd_page_mode.h"
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "ucmstore_v1.h"
@@ -73,6 +74,9 @@ struct Config {
      * missing key to one rank-local segment. GQA workers use rank-specific
      * keys and must keep allocating from their own segment. */
     bool shareBufferEnable{false};
+    /* Selects backing pages only for the Memfd data backend. Explicit HugeTLB
+     * never falls back to base pages when its pre-reserved pool is insufficient. */
+    MemfdPageMode memfdPageMode{MemfdPageMode::Base};
     /* Connector-derived hints, never user configuration. deviceNumaNode is the
      * accelerator's real NUMA affinity, absent when topology does not expose
      * one; fallbackNumaRank and fallbackNumaRankCount describe this worker's
@@ -121,6 +125,11 @@ struct Config {
         dict.Get("cache_io_aggregation", config.ioAggregation);
         dict.GetNumber("local_rank_size", config.localRankSize);
         dict.Get("share_buffer_enable", config.shareBufferEnable);
+        if (dict.Contains("cache_memfd_page_mode")) {
+            std::string pageMode;
+            dict.Get("cache_memfd_page_mode", pageMode);
+            config.memfdPageMode = ParseMemfdPageMode(pageMode);
+        }
         if (dict.Contains("cache_detected_numa_node")) {
             int32_t numaNode = 0;
             dict.GetNumber("cache_detected_numa_node", numaNode);
@@ -140,6 +149,10 @@ struct Config {
     }
     Status Validate() const
     {
+        if (memfdPageMode == MemfdPageMode::Invalid) {
+            return Status::InvalidParam(
+                "invalid cache_memfd_page_mode; expected 'base' or 'hugetlb-2m'");
+        }
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
         if (uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
         if (deviceId == -1) { return Status::OK(); }
@@ -232,6 +245,7 @@ struct Config {
         UC_INFO("Set {}::UseGdr to {}.", ns, useGdr);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, shareBufferEnable);
+        UC_INFO("Set {}::MemfdPageMode to {}.", ns, MemfdPageModeName(memfdPageMode));
         if (detectedNumaNode.has_value()) {
             UC_INFO("Set {}::DetectedNumaNode to {}.", ns, *detectedNumaNode);
         }

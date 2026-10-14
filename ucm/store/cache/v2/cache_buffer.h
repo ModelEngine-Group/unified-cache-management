@@ -163,6 +163,7 @@ public:
         dataOptions.slotsPerRank = slotsPerRank_;
         dataOptions.setupTimeoutMs = cfg.dataSetupTimeoutMs;
         dataOptions.deviceNumaNode = cfg.detectedNumaNode;
+        dataOptions.memfdPageMode = cfg.memfdPageMode;
         /* Derived from the transfer mode: only a path that puts the host
          * segment into a device descriptor needs its device-visible alias. */
         dataOptions.requireHostDeviceAddress = cfg.sdmaDirect;
