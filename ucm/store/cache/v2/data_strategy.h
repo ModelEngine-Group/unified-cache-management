@@ -200,6 +200,7 @@ public:
         backendOptions.deviceId = options.deviceId;
         backendOptions.rankCount = nRanks;
         backendOptions.rankBytes = slotSize * nSlotsPerRank;
+        backendOptions.slotSize = slotSize;
         backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
         backendOptions.deadline = deadline;
 #if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
@@ -273,9 +274,8 @@ public:
     {
         if (nSlotsPerRank_ == 0 || backend_ == nullptr) { return nullptr; }
         const size_t rank = slotIdx / nSlotsPerRank_;
-        void* base = backend_->HostMappedDeviceAddrOf(rank);
-        if (base == nullptr) { return nullptr; }
-        return static_cast<std::byte*>(base) + (slotIdx % nSlotsPerRank_) * slotSize_;
+        const size_t offset = (slotIdx % nSlotsPerRank_) * slotSize_;
+        return backend_->HostMappedDeviceAddrOf(rank, offset);
     }
 };
 
