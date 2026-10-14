@@ -20,6 +20,46 @@ TEST(NumaPolicyTest, SlicesSixteenRanksAcrossEightNodes)
     }
 }
 
+TEST(NumaPolicyTest, MapsDp2Tp8WhenPlacementCountCoversAllLocalWorkers)
+{
+    constexpr size_t dpSize = 2;
+    constexpr size_t tpSize = 8;
+    constexpr size_t nodeCount = 8;
+    constexpr size_t localWorkerCount = dpSize * tpSize;
+
+    for (size_t dpRank = 0; dpRank < dpSize; ++dpRank) {
+        for (size_t tpRank = 0; tpRank < tpSize; ++tpRank) {
+            const size_t fallbackRank = dpRank * tpSize + tpRank;
+            const size_t expectedNode = dpRank * (nodeCount / dpSize) + tpRank / 2;
+            auto index = RankSliceIndex(fallbackRank, localWorkerCount, nodeCount);
+            ASSERT_TRUE(index) << "dp=" << dpRank << " tp=" << tpRank << " "
+                               << index.Error().ToString();
+            EXPECT_EQ(expectedNode, index.Value()) << "dp=" << dpRank << " tp=" << tpRank;
+        }
+    }
+}
+
+TEST(NumaPolicyTest, SeparateTp8DomainsCannotUseGlobalDpFallbackRank)
+{
+    constexpr size_t tpSize = 8;
+    constexpr size_t nodeCount = 8;
+
+    /* DP0's global fallback ranks happen to fit an eight-rank Cache domain,
+     * but they spread one worker per node rather than two workers per node. */
+    for (size_t tpRank = 0; tpRank < tpSize; ++tpRank) {
+        auto index = RankSliceIndex(tpRank, tpSize, nodeCount);
+        ASSERT_TRUE(index) << index.Error().ToString();
+        EXPECT_EQ(tpRank, index.Value()) << "tp=" << tpRank;
+    }
+
+    /* DP1 carries machine-global fallback ranks 8..15.  Those ranks are out
+     * of range when the Cache domain itself advertises only eight ranks. */
+    for (size_t tpRank = 0; tpRank < tpSize; ++tpRank) {
+        const size_t fallbackRank = tpSize + tpRank;
+        EXPECT_FALSE(RankSliceIndex(fallbackRank, tpSize, nodeCount)) << "tp=" << tpRank;
+    }
+}
+
 TEST(NumaPolicyTest, DistributesUnevenRankCountContiguously)
 {
     const std::vector<size_t> expected{0, 0, 0, 0, 1, 1, 1, 2, 2, 2};

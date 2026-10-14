@@ -169,6 +169,9 @@ public:
         if (cfg.fallbackNumaRank.has_value()) {
             dataOptions.fallbackNumaRank = static_cast<size_t>(*cfg.fallbackNumaRank);
         }
+        if (cfg.fallbackNumaRankCount.has_value()) {
+            dataOptions.fallbackNumaRankCount = static_cast<size_t>(*cfg.fallbackNumaRankCount);
+        }
         return data_.Setup(layout, dataOptions);
     }
 

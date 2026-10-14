@@ -49,9 +49,9 @@ struct Plan {
  * device-layer probe result and stays empty when unknown -- this module never
  * fabricates an affinity. fallbackNumaRank is the connector-derived local
  * worker rank, not the control-plane myRank; a missing one is an error, never
- * a silent 0. rankCount is the number of worker-local segments and defines
- * the contiguous rank slices. The result stays fixed for the segment's
- * lifetime. */
+ * a silent 0. rankCount is the number of workers on the machine and defines
+ * the contiguous rank slices; it can be larger than the current Cache domain.
+ * The result stays fixed for the segment's lifetime. */
 Expected<size_t> RankSliceIndex(size_t rank, size_t rankCount, size_t nodeCount);
 
 Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank,
