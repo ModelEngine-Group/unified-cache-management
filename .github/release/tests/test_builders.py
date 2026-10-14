@@ -522,6 +522,7 @@ def _cann_inputs(
         ("9.2.0", ["9.2.0-beta.2", "9.2.0-beta.10"], "9.2.0-beta.10"),
         ("9.2.0", ["9.2.0-beta.10", "9.2.0-beta.2"], "9.2.0-beta.10"),
         ("9.2.0-beta.1", ["9.2.0", "9.2.0-beta.2", "9.2.0-beta.1"], "9.2.0-beta.1"),
+        ("9.2.0-beta.2", ["9.2.0b2"], "9.2.0b2"),
     ],
 )
 def test_cann_selection_prefers_exact_then_latest_same_base_suffix(

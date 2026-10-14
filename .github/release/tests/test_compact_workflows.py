@@ -546,6 +546,14 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     assert validation["runs-on"] == "${{ matrix.runner }}"
     assert validation["timeout-minutes"] == 45
     assert validation["permissions"] == {"contents": "read"}
+    download = next(
+        step
+        for step in validation["steps"]
+        if step.get("with", {}).get("path") == "input/wheel"
+    )
+    assert download["with"]["name"] == (
+        "ucm-wheel-${{ matrix.wheel_id }}-run-${{ github.run_id }}"
+    )
     step = next(
         step for step in validation["steps"] if step.get("id") == "runtime-validation"
     )

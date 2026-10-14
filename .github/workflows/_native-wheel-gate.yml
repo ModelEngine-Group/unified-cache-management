@@ -259,7 +259,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/download-artifact-retry
         with:
-          name: ucm-wheel-${{ matrix.id }}-run-${{ github.run_id }}
+          name: ucm-wheel-${{ matrix.wheel_id }}-run-${{ github.run_id }}
           path: input/wheel
       - id: runtime-validation
         name: Install and load the local Wheel in the target Runtime

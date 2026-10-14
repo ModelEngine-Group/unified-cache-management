@@ -330,7 +330,9 @@ def test_cann_inspection_reads_active_package_and_verifies_complete_version(
     )
     assert facts[f"file:{version}"] == package_version
     assert not any("mindstudio" in source for source in facts)
-    assert cann_check.verify_cann(facts, "cann-9.2.0-beta.2") == "9.2.0-beta.2"
+    assert (
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2") == "9.2.0-beta.2"
+    )
 
 
 @pytest.mark.parametrize(
@@ -345,7 +347,7 @@ def test_cann_inspection_reads_active_package_and_verifies_complete_version(
 )
 def test_cann_source_verification_blocks_mismatch_or_conflict(facts, message):
     with pytest.raises(ValueError, match=message):
-        cann_check.verify_cann(facts, "cann-9.2.0-beta.2")
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2")
 
 
 def test_raw_cann_inspection_uses_only_standard_library():

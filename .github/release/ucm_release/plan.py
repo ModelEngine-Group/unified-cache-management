@@ -275,18 +275,14 @@ def fallback_runtime_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
             continue
         wheel = wheels[str(image["wheel_id"])]
         source_version = builders.source_cann_version(wheel["builder"]["source_image"])
-        requested = runtime_ops.parse_cann_version(requirement)
-        actual = runtime_ops.parse_cann_version(source_version)
-        if requested == actual:
+        match_kind = runtime_ops.cann_match_kind(source_version, requirement)
+        if match_kind == "exact":
             continue
-        if (
-            requested != Version(requested.base_version)
-            or requested.release != actual.release
-        ):
+        if match_kind is None:
             raise ValueError("plan contains an unsupported CANN Builder substitution")
         include.append(
             {
-                "id": wheel["id"],
+                "wheel_id": wheel["id"],
                 "label": image["label"],
                 "runner": image["runner"],
                 "cpu_arch": image["cpu_arch"],

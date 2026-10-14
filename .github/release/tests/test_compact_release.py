@@ -119,11 +119,12 @@ def test_fallback_matrix_covers_every_runtime_member(cann_fallback_plan) -> None
     ]
     assert len(selected) == len(expected) == 3
     assert [
-        (item["id"], item["runtime_image"], item["runner"]) for item in selected
+        (item["wheel_id"], item["runtime_image"], item["runner"]) for item in selected
     ] == [
         (image["wheel_id"], image["runtime"]["image_reference"], image["runner"])
         for image in expected
     ]
+    assert all("id" not in item for item in selected)
     assert {item["runtime_cann_version"] for item in selected} == {"9.0.1"}
     assert {item["builder_cann_version"] for item in selected} == {"9.0.1-beta.2"}
 

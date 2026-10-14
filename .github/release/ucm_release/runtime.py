@@ -4,6 +4,10 @@ The workflow owns transport (``crane``, Docker fallback, artifacts, and PR
 comments). This module owns config-fact extraction and the data contracts
 between those operations so the arbitrary-runtime-tag path can be tested
 without a registry or container runtime.
+
+CANN identity, matching and fact reconciliation are shared here by Runtime
+inspection and Builder verification. Native collectors provide facts without
+owning version-selection policy.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import datetime as dt
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from packaging.version import InvalidVersion, Version
 
@@ -26,6 +30,8 @@ OCI_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 __all__ = [
     "aggregate_runtime_probes",
     "build_receipt",
+    "cann_installation_version",
+    "cann_match_kind",
     "cann_version",
     "image_publication_targets",
     "inspect_runtime_references",
@@ -37,6 +43,7 @@ __all__ = [
     "project_runtime_image_tag",
     "render_receipt_markdown",
     "sanitize_oci_tag_component",
+    "verify_cann_installation",
 ]
 
 SUPPORTED_ARCHITECTURES = ("amd64", "arm64")
@@ -343,39 +350,7 @@ def _runtime_from_config(
             for value in _history_assignments(config, "CANN_VERSION")
         )
     if accelerator == "ascend":
-        versions: dict[Version, str] = {}
-        explicit_versions: set[Version] = set()
-        for name, value in sources:
-            try:
-                text = cann_version(value, context)
-                parsed = parse_cann_version(text)
-                versions.setdefault(parsed, f"cann-{text}")
-                if name in {"env:CANN_VERSION", "history:CANN_VERSION"}:
-                    explicit_versions.add(parsed)
-            except ValueError:
-                continue
-        # Toolkit paths can retain only X.Y.Z even when CANN_VERSION includes
-        # a suffix. That abbreviated hint must not erase the complete identity.
-        complete = {
-            key: text
-            for key, text in versions.items()
-            if re.fullmatch(r"cann-[0-9]+\.[0-9]+\.[0-9]+", text) is None
-        }
-        if len(complete) == 1:
-            full_version = next(iter(complete))
-            versions = {
-                key: text
-                for key, text in versions.items()
-                if key in complete
-                or key in explicit_versions
-                or key.release != full_version.release
-            }
-        version = next(iter(versions.values())) if len(versions) == 1 else None
-        conflict = (
-            f"{context} metadata conflicts: {sorted(versions.values())}"
-            if len(versions) > 1
-            else None
-        )
+        version, conflict = _cann_metadata_version(sources, context)
     else:
         version, conflict = _consistent_version(
             [value for _, value in sources],
@@ -700,6 +675,115 @@ def cann_version(value: object, context: str = "CANN version") -> str:
     )
     parse_cann_version(text)
     return text
+
+
+def cann_match_kind(
+    source_version: str, requested_version: str
+) -> Literal["exact", "suffix-fallback"] | None:
+    """Classify a complete source version against a Runtime requirement.
+
+    Exact matching uses Version equality, including equivalent suffix spellings.
+    Only a bare X.Y.Z requirement admits a suffixed source with the same numeric
+    release. Other valid pairs return None; malformed versions raise ValueError.
+    Either input may carry the ``cann-`` capability prefix.
+    """
+
+    actual = parse_cann_version(source_version)
+    requested = parse_cann_version(requested_version)
+    if actual == requested:
+        return "exact"
+    if (
+        re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", requested_version.removeprefix("cann-"))
+        is not None
+        and actual.release == requested.release
+    ):
+        return "suffix-fallback"
+    return None
+
+
+def cann_installation_version(facts: Mapping[str, str]) -> str:
+    """Resolve collected active-installation facts to one complete CANN version.
+
+    Bare ENV/package versions may abbreviate the active toolkit path's suffix.
+    Conflicting numeric releases or complete identities raise ValueError, as do
+    invalid declared/package versions and an absence of readable version facts.
+    Unversioned paths are ignored. The returned text has no ``cann-`` prefix.
+    """
+
+    versions: list[tuple[str, str, Version]] = []
+    for source, value in facts.items():
+        try:
+            text = cann_version(value, source)
+        except ValueError:
+            if source.startswith("file:") or source == "env:CANN_VERSION":
+                raise
+            continue
+        versions.append((source, text, parse_cann_version(text)))
+    if not versions:
+        raise ValueError("CANN installation has no readable active version")
+    bases = {item[2].release for item in versions}
+    full = [item for item in versions if str(item[2]) != item[2].base_version]
+    if len(bases) != 1 or len({item[2] for item in full}) > 1:
+        raise ValueError(f"CANN installation version facts disagree: {versions}")
+    return (full or versions)[0][1]
+
+
+def verify_cann_installation(facts: Mapping[str, str], expected: str) -> str:
+    """Require collected installation facts to match the complete source version.
+
+    Equivalent Version spellings are accepted. A mismatch raises ValueError;
+    success returns the observed complete version without the ``cann-`` prefix.
+    """
+
+    observed = cann_installation_version(facts)
+    if parse_cann_version(observed) != parse_cann_version(expected):
+        raise ValueError(
+            f"CANN installation version differs: expected {expected}, observed {observed}"
+        )
+    return observed
+
+
+def _cann_metadata_version(
+    sources: Sequence[tuple[str, str]], context: str
+) -> tuple[str | None, str | None]:
+    """Resolve OCI hints, retaining conflicts between explicit declarations.
+
+    Short toolkit paths can omit a suffix. ENV and history CANN_VERSION values
+    are explicit claims whose disagreement requests a native installation probe.
+    """
+
+    versions: dict[Version, str] = {}
+    explicit_versions: set[Version] = set()
+    for name, value in sources:
+        try:
+            text = cann_version(value, context)
+            parsed = parse_cann_version(text)
+            versions.setdefault(parsed, f"cann-{text}")
+            if name in {"env:CANN_VERSION", "history:CANN_VERSION"}:
+                explicit_versions.add(parsed)
+        except ValueError:
+            continue
+    # Toolkit paths can retain only X.Y.Z even when CANN_VERSION includes
+    # a suffix. That abbreviated hint must not erase the complete identity.
+    complete = {
+        key: text for key, text in versions.items() if str(key) != key.base_version
+    }
+    if len(complete) == 1:
+        full_version = next(iter(complete))
+        versions = {
+            key: text
+            for key, text in versions.items()
+            if key in complete
+            or key in explicit_versions
+            or key.release != full_version.release
+        }
+    version = next(iter(versions.values())) if len(versions) == 1 else None
+    conflict = (
+        f"{context} metadata conflicts: {sorted(versions.values())}"
+        if len(versions) > 1
+        else None
+    )
+    return version, conflict
 
 
 def _unquote(value: object, context: str) -> str:

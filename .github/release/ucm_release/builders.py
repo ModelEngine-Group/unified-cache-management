@@ -644,20 +644,6 @@ def source_cann_version(source_image: str) -> str:
     return version
 
 
-def _cann_version_matches(candidate: str, requested: str) -> bool:
-    actual = runtime.parse_cann_version(candidate)
-    target = runtime.parse_cann_version(requested)
-    if actual == target:
-        return True
-    return (
-        re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", requested.removeprefix("cann-"))
-        is not None
-        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", candidate.removeprefix("cann-"))
-        is None
-        and actual.release == target.release
-    )
-
-
 class _BuilderArchitectureUnavailable(ValueError):
     """A valid source image does not supply the requested architecture."""
 
@@ -902,7 +888,8 @@ def _raw_builder_candidates(
                 and requested_variant == variant
                 and requested_python == python_abi
                 and requested_architecture == architecture
-                and _cann_version_matches(runtime_value, requested_runtime)
+                and runtime.cann_match_kind(runtime_value, requested_runtime)
+                is not None
                 for (
                     accelerator,
                     requested_runtime,
@@ -969,7 +956,8 @@ def _build_for_probe(
         for candidate in candidates
         if candidate["accelerator"] == accelerator
         and (
-            _cann_version_matches(candidate["accelerator_runtime"], runtime_value)
+            runtime.cann_match_kind(candidate["accelerator_runtime"], runtime_value)
+            is not None
             if accelerator == "ascend"
             else candidate["accelerator_runtime"] == runtime_value
         )
@@ -978,12 +966,11 @@ def _build_for_probe(
         and candidate["python_abi"] in {"*", python_abi}
     ]
     if accelerator == "ascend" and matches:
-        requested_version = runtime.parse_cann_version(runtime_value)
         exact = [
             item
             for item in matches
-            if runtime.parse_cann_version(item["accelerator_runtime"])
-            == requested_version
+            if runtime.cann_match_kind(item["accelerator_runtime"], runtime_value)
+            == "exact"
         ]
         if exact:
             matches = exact
@@ -1019,8 +1006,8 @@ def _build_for_probe(
     if accelerator == "ascend":
         selection_rule = (
             "exact version"
-            if runtime.parse_cann_version(raw["accelerator_runtime"])
-            == runtime.parse_cann_version(runtime_value)
+            if runtime.cann_match_kind(raw["accelerator_runtime"], runtime_value)
+            == "exact"
             else "same-base latest suffix"
         )
         print(
