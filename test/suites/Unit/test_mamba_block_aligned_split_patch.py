@@ -46,14 +46,20 @@ def patched_ascend():
     )
     hook = hooks["vllm_ascend.patch.platform.patch_mamba_block_aligned_split"]
     hook(ascend)
-    assert ascend.Scheduler._mamba_block_aligned_split is ascend._mamba_block_aligned_split
+    assert (
+        ascend.Scheduler._mamba_block_aligned_split is ascend._mamba_block_aligned_split
+    )
     return ascend, hook
 
 
 def _scheduler(role="kv_both", sparse=True):
-    config = None if role is None else SimpleNamespace(
-        is_kv_consumer=role in ("kv_both", "kv_consumer"),
-        is_kv_producer=role in ("kv_both", "kv_producer"),
+    config = (
+        None
+        if role is None
+        else SimpleNamespace(
+            is_kv_consumer=role in ("kv_both", "kv_consumer"),
+            is_kv_producer=role in ("kv_both", "kv_producer"),
+        )
     )
     return SimpleNamespace(
         vllm_config=SimpleNamespace(
@@ -74,9 +80,13 @@ def _request(computed=640, prompt=128359, total=128359):
     )
 
 
-@pytest.mark.parametrize("computed,local,external", [(640, 0, 0), (0, 640, 0), (0, 0, 640)])
+@pytest.mark.parametrize(
+    "computed,local,external", [(640, 0, 0), (0, 640, 0), (0, 0, 640)]
+)
 @pytest.mark.parametrize("prompt", [128359, 640])
-def test_continue_alignment_after_chunk_or_partial_hit(patched_ascend, computed, local, external, prompt):
+def test_continue_alignment_after_chunk_or_partial_hit(
+    patched_ascend, computed, local, external, prompt
+):
     ascend, _ = patched_ascend
     result = ascend.Scheduler._mamba_block_aligned_split(
         _scheduler(), _request(computed, prompt), 4096, local, external
@@ -85,8 +95,12 @@ def test_continue_alignment_after_chunk_or_partial_hit(patched_ascend, computed,
     assert (computed + local + external + result) % 640 == 0
 
 
-@pytest.mark.parametrize("computed,local,external", [(1279, 0, 0), (0, 1279, 0), (0, 0, 1279), (1280, 0, 0)])
-def test_preserve_final_token_verifier_and_decode(patched_ascend, computed, local, external):
+@pytest.mark.parametrize(
+    "computed,local,external", [(1279, 0, 0), (0, 1279, 0), (0, 0, 1279), (1280, 0, 0)]
+)
+def test_preserve_final_token_verifier_and_decode(
+    patched_ascend, computed, local, external
+):
     ascend, _ = patched_ascend
     result = ascend.Scheduler._mamba_block_aligned_split(
         _scheduler(), _request(computed, 1280, 1280), 8, local, external

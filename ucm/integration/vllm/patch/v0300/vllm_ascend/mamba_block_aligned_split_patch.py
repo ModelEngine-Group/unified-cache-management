@@ -48,7 +48,9 @@ def patch_mamba_block_aligned_split(mod):
             + num_new_local_computed_tokens
             + num_external_computed_tokens
         )
-        remaining_tokens = max(request.num_prompt_tokens, request.num_tokens) - num_computed_tokens
+        remaining_tokens = (
+            max(request.num_prompt_tokens, request.num_tokens) - num_computed_tokens
+        )
         if (
             kv_transfer_config is not None
             and kv_transfer_config.is_kv_consumer
@@ -62,14 +64,22 @@ def patch_mamba_block_aligned_split(mod):
         # early-return path below must observe it too (it previously ran under
         # a temporary bit clear from the outer producer wrapper).
         if mod._get_sparse_index_kpool(self.vllm_config.model_config) is not None:
-            num_computed_tokens = request.num_computed_tokens + num_new_local_computed_tokens + num_external_computed_tokens
+            num_computed_tokens = (
+                request.num_computed_tokens
+                + num_new_local_computed_tokens
+                + num_external_computed_tokens
+            )
             if num_computed_tokens < max(
                 request.num_prompt_tokens,
                 request.num_tokens - 1,
             ):
                 block_size = self.block_size
-                last_cache_position = request.num_tokens - request.num_tokens % block_size
-                if self.use_eagle and not mod._skips_eagle_block_drop(kv_transfer_config):
+                last_cache_position = (
+                    request.num_tokens - request.num_tokens % block_size
+                )
+                if self.use_eagle and not mod._skips_eagle_block_drop(
+                    kv_transfer_config
+                ):
                     last_cache_position = max(last_cache_position - block_size, 0)
                 scheduled_end = num_computed_tokens + num_new_tokens
                 if scheduled_end < last_cache_position:
@@ -93,8 +103,8 @@ def patch_mamba_block_aligned_split(mod):
         # wrapper layers consult different attributes, so clear every
         # attribute that exists and restore all of them after the call.
         drop_attrs = tuple(
-            name 
-            for name in ("use_eagle", "use_eagle_block_drop") 
+            name
+            for name in ("use_eagle", "use_eagle_block_drop")
             if hasattr(self, name)
         )
         original_drop_values = {name: getattr(self, name) for name in drop_attrs}
