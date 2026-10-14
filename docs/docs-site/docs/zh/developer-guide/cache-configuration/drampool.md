@@ -46,13 +46,15 @@ health:
   port: 9100
 ```
 
-将上述设置合并到复制的配置文件，在仓库根目录启动程序（editable 编译会将程序安装到 `bin/`）：
+将上述设置合并到复制的配置文件。editable 编译会将程序安装到 `bin/`，从仓库根目录运行。
+
+启动池端前先确定支持的张量大小。DramPool 须支持 DramStore 的 `tensor_size_list` 中每种不同的字节大小，而非这些大小的总和。标准 GQA 且 K/V 张量分开存储时，每个大小为“每块 token 数 × 每个 worker 的 KV head 数 × head 维度 × 每个元素字节数”。Qwen3-0.6B 在 TP=1、block size=128、BF16 下为 `128 × 8 × 128 × 2 = 262144` 字节，对应下方命令。其它模型和布局应使用实际张量大小，可在 worker 的 `create UcmPipelineStore with config` 日志中核对。
 
 ```bash
 ./bin/drampool \
   --addr 192.168.1.10:9000 \
   --pool-size-gb 64 \
-  --kvcache-block-sizes 1048576 \
+  --kvcache-block-sizes 262144 \
   --config /absolute/path/to/drampool.yaml
 ```
 
@@ -102,7 +104,7 @@ use_layerwise: true
 | `enable_hixl_cs` | 是否启用 HIXL CS，默认 `false`。 |
 | `router_type` | 路由策略，默认 `ring_hash`。 |
 
-`device_id`、`tensor_size_list` 和 KV 缓冲区地址由 connector 在运行时提供，无需手工填写。DramPool 支持的块大小应匹配 DramStore 发送的张量大小；池端命令中的 `1048576` 字节仅为示例，不是所有模型通用的值。保持 `enable_event_sync: true`，使 dump 在远程访问 KV 内存前等待计算流事件。
+`device_id`、`tensor_size_list` 和 KV 缓冲区地址由 connector 在运行时提供，无需手工填写。保持 `enable_event_sync: true`，使 dump 在远程访问 KV 内存前等待计算流事件。
 
 DramPool 就绪且完成 vLLM-Ascend 集成后，可启动单卡推理实例：
 
@@ -110,10 +112,15 @@ DramPool 就绪且完成 vLLM-Ascend 集成后，可启动单卡推理实例：
 vllm serve <model-path> \
   --tensor-parallel-size 1 \
   --block-size 128 \
+  --enforce-eager \
   --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"/etc/ucm/dramstore.yaml"}}'
 ```
 
 按实际部署替换模型和配置路径，并调整推理参数。
+
+两端部署在同一主机且 DramPool 仅使用一张 NPU 时，应为池端和推理进程选择不同的物理设备。例如，池端设置 `device_ids: [0]`，推理侧设置 `ASCEND_RT_VISIBLE_DEVICES=1`。
+
+验证外部缓存复用时，先发送覆盖多个完整块的 prompt，确认 DramStore 的 DUMP 任务成功。保持 DramPool 运行，以相同配置重启推理进程并重复该 prompt，确认外部命中及 LOAD 任务成功，详见[验证外部缓存](../../user-guide/observability/verify-cache.md)。仅收到正常推理响应不足以证明缓存复用成功。
 
 ### Metrics
 

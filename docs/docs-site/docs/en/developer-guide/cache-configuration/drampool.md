@@ -46,13 +46,15 @@ health:
   port: 9100
 ```
 
-Merge these settings into the copied file, then start the executable from the repository root (the editable build installs it under `bin/`):
+Merge these settings into the copied file. Run the executable from the repository root; the editable build installs it under `bin/`.
+
+Choose the supported tensor sizes before starting the pool. DramPool must support each distinct byte size in DramStore's `tensor_size_list`, not their sum. For standard GQA with separate K/V tensors, each size is `tokens per block × KV heads per worker × head dimension × bytes per element`. Qwen3-0.6B with TP=1, block size 128 and BF16 uses `128 × 8 × 128 × 2 = 262144` bytes, as in the command below. Other models and layouts require their actual tensor sizes; confirm them in the worker's `create UcmPipelineStore with config` log.
 
 ```bash
 ./bin/drampool \
   --addr 192.168.1.10:9000 \
   --pool-size-gb 64 \
-  --kvcache-block-sizes 1048576 \
+  --kvcache-block-sizes 262144 \
   --config /absolute/path/to/drampool.yaml
 ```
 
@@ -102,7 +104,7 @@ use_layerwise: true
 | `enable_hixl_cs` | Whether to enable HIXL CS, default `false`. |
 | `router_type` | Routing strategy, default `ring_hash`. |
 
-The connector supplies `device_id`, `tensor_size_list` and KV buffer addresses at runtime; do not fill them manually. Configure DramPool's supported block sizes to match the tensor sizes sent by DramStore. The `1048576` bytes in the pool command is an example, not a model-independent value. Keep `enable_event_sync: true` so dumping waits for the compute-stream event before remote access to KV memory.
+The connector supplies `device_id`, `tensor_size_list` and KV buffer addresses at runtime; do not fill them manually. Keep `enable_event_sync: true` so dumping waits for the compute-stream event before remote access to KV memory.
 
 After DramPool is ready and vLLM-Ascend integration is configured, start a single-device inference instance:
 
@@ -110,10 +112,15 @@ After DramPool is ready and vLLM-Ascend integration is configured, start a singl
 vllm serve <model-path> \
   --tensor-parallel-size 1 \
   --block-size 128 \
+  --enforce-eager \
   --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"/etc/ucm/dramstore.yaml"}}'
 ```
 
 Replace the model and configuration paths and adjust inference options for your deployment.
+
+When both components run on the same host and DramPool uses a single NPU, select different physical devices for the pool and inference process. For example, use pool `device_ids: [0]` and set `ASCEND_RT_VISIBLE_DEVICES=1` for inference.
+
+To verify external reuse, send a prompt spanning several complete blocks and check that DramStore DUMP tasks succeed. Keep DramPool running, restart the inference process with the same configuration, and replay the prompt; confirm external hits and successful LOAD tasks. See [Verify external cache](../../user-guide/observability/verify-cache.md). A successful inference response alone does not establish cache reuse.
 
 ### Metrics
 
