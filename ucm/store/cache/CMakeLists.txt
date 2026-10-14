@@ -3,7 +3,10 @@ file(GLOB_RECURSE UCM_CACHE_STORE_V2_CC_SOURCE_FILES "./v2/*.cc")
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend-a5")
     add_library(cachestore SHARED ${UCM_CACHE_STORE_V2_CC_SOURCE_FILES})
 elseif(RUNTIME_ENVIRONMENT STREQUAL "simu")
-    add_library(cachestore SHARED ${UCM_CACHE_STORE_CC_SOURCE_FILES} ${UCM_CACHE_STORE_V2_CC_SOURCE_FILES})
+    add_library(cachestore SHARED
+        ${UCM_CACHE_STORE_CC_SOURCE_FILES}
+        ${UCM_CACHE_STORE_V2_CC_SOURCE_FILES}
+    )
     target_include_directories(cachestore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 else()
     add_library(cachestore SHARED ${UCM_CACHE_STORE_CC_SOURCE_FILES})
