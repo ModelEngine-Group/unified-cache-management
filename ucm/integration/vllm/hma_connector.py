@@ -19,6 +19,8 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _check_shm_capacity,
+    _get_store_gc_block_size,
+    _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
@@ -730,11 +732,37 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"GC file size of {label} does not match real file size. "
                     f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
                 )
+            gc_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                padded_size,
+                padded_size,
+            )
+            # Count load/save metrics with the same per-record size as GC.
+            self.file_size[label] = gc_size
+            self._publish_block_size(gc_size, store_suffix=store_suffix)
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
+            if self._gc_owner:
+                # EngineCore finishes worker KV cache registration (which
+                # publishes this size) synchronously before it creates the
+                # scheduler. The file is keyed by the worker's ppid, which
+                # equals the EngineCore pid only for the multiproc executor;
+                # Ray and external_launcher keep the layer-count estimate.
+                size = _scheduler_read_block_size(
+                    store_suffix=store_suffix,
+                )
+                if size is not None:
+                    self.file_size[label] = size
+                else:
+                    logger.warning(
+                        f"FAWA {label} worker-published record size not found "
+                        "(expected with Ray or external_launcher); falling "
+                        f"back to estimated block_size {self.file_size[label]}."
+                    )
             config["block_size"] = self.file_size[label]
         logger.info(
             f"create FAWA {label} {name} with config: "
