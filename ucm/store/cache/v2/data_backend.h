@@ -38,7 +38,6 @@ struct BackendOptions {
     int32_t deviceId{-1};
     size_t rankCount{0};
     size_t rankBytes{0};
-    size_t slotSize{0};
     Numa::Plan localPlacement{};
     bool requireHostDeviceAddress{false};
     std::chrono::steady_clock::time_point deadline{};
@@ -71,18 +70,12 @@ public:
     virtual void* HostAddrOf(size_t rank) const = 0;
     /* Returns the device-accessible segment address, nullptr if unmapped. */
     virtual void* DeviceAddrOf(size_t rank) const = 0;
-    /* Returns the device-visible alias at offset within a host-accessible
-     * segment, nullptr when the backend provides none. This is a third address
-     * category: neither HostAddrOf nor DeviceAddrOf, it refers to the same
-     * physical pages as HostAddrOf and is meant for device descriptors only,
-     * never CPU access. Defaults to nullptr so backends that never need it stay
-     * unchanged. */
-    virtual void* HostMappedDeviceAddrOf(size_t rank, size_t offset) const
-    {
-        (void)rank;
-        (void)offset;
-        return nullptr;
-    }
+    /* Returns the device-visible alias of a host-accessible segment, nullptr
+     * when the backend provides none. This is a third address category: neither
+     * HostAddrOf nor DeviceAddrOf, it refers to the same physical pages as
+     * HostAddrOf and is meant for device descriptors only, never CPU access.
+     * Defaults to nullptr so backends that never need it stay unchanged. */
+    virtual void* HostMappedDeviceAddrOf(size_t rank) const { return nullptr; }
     /* Releases every mapping and the local segment; idempotent. */
     virtual void Reset() = 0;
 
