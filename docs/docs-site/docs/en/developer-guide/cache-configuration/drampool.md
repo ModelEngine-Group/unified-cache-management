@@ -112,7 +112,6 @@ After DramPool is ready and vLLM-Ascend integration is configured, start a singl
 vllm serve <model-path> \
   --tensor-parallel-size 1 \
   --block-size 128 \
-  --enforce-eager \
   --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"/etc/ucm/dramstore.yaml"}}'
 ```
 
