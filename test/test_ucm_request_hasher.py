@@ -56,14 +56,14 @@ def test_caller_meta_preserves_hash_and_seed_encoding(meta):
         ),
     ],
 )
-def test_kv_meta_keeps_existing_namespace_bytes(spec, additional, expected_suffix):
+def test_kv_meta_includes_dcp_and_layout_isolation(spec, additional, expected_suffix):
     config = _config()
     config.model_config.model = "/models/model/"
     config.model_config.dtype = "float16"
     config.parallel_config.tensor_parallel_size = 4
     config.speculative_config = spec
     config.additional_config = additional
-    expected = "model:4:float16:1" + expected_suffix
+    expected = "model:4:float16:1" + expected_suffix + ":dcp=1:layout=test-layout"
     meta = build_kv_hash_meta(config, 1)
     assert meta == expected
     assert RequestHasher(meta).seed == RequestHasher(expected).seed
@@ -73,7 +73,28 @@ def test_kv_meta_supports_configs_without_optional_fields():
     config = _config()
     del config.speculative_config
     del config.additional_config
-    assert build_kv_hash_meta(config, 0) == _META
+    assert build_kv_hash_meta(config, 0) == _META + ":dcp=1:layout=test-layout"
+
+
+def test_kv_dcp_size_changes_namespace_and_seed():
+    config = _config()
+    default_meta = build_kv_hash_meta(config, 0)
+    config.parallel_config.decode_context_parallel_size = 2
+    dcp_meta = build_kv_hash_meta(config, 0)
+    assert ":dcp=1:" in default_meta
+    assert ":dcp=2:" in dcp_meta
+    assert RequestHasher(default_meta).seed != RequestHasher(dcp_meta).seed
+
+
+def test_kv_layout_digest_changes_namespace_and_seed(monkeypatch):
+    config = _config()
+    original_meta = build_kv_hash_meta(config, 0)
+    monkeypatch.setattr(
+        request_hasher_module, "_layout_source_digest", lambda: "new-layout"
+    )
+    changed_meta = build_kv_hash_meta(config, 0)
+    assert changed_meta.endswith(":layout=new-layout")
+    assert RequestHasher(original_meta).seed != RequestHasher(changed_meta).seed
 
 
 def _request(token_ids, **kwargs):
@@ -125,6 +146,9 @@ def _semantic_extra_keys(request, start, end, start_mm_idx):
 
 @pytest.fixture(autouse=True)
 def _install_extra_key_helper(monkeypatch):
+    monkeypatch.setattr(
+        request_hasher_module, "_layout_source_digest", lambda: "test-layout"
+    )
     monkeypatch.setattr(
         request_hasher_module,
         "generate_block_hash_extra_keys",
@@ -443,7 +467,7 @@ def test_namespace_isolation_and_reproducibility_across_instances(
 ):
     """Same deployment config across two hasher instances yields identical
     block IDs; rank/parallelism/model differences do not."""
-    left = RequestHasher(_META).make_request_block_hasher(4)
+    left = RequestHasher(build_kv_hash_meta(_config(), 0)).make_request_block_hasher(4)
     right = RequestHasher(
         build_kv_hash_meta(right_config(), 0)
     ).make_request_block_hasher(4)

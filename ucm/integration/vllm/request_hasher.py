@@ -1,5 +1,8 @@
+import ast
 import hashlib
+import inspect
 import pickle
+import textwrap
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +60,49 @@ def _generate_extra_keys(
             "Failed to generate vLLM block hash extra keys for UCM: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
+
+
+def _collect_layout_classes() -> list[type]:
+    """KVCacheLayout subclasses (recursive) plus the standalone HMA layout.
+    The explicit imports pin the class set so scheduler and worker compute
+    an identical digest.
+    """
+    import ucm.integration.vllm.hla_connector
+    import ucm.integration.vllm.hma_connector as hma_module
+    import ucm.integration.vllm.ucm_connector as ucm_module
+
+    classes: set[type] = set()
+
+    def walk(cls: type) -> None:
+        classes.add(cls)
+        for subclass in cls.__subclasses__():
+            walk(subclass)
+
+    walk(ucm_module.KVCacheLayout)
+    classes.add(hma_module.KVCacheGroupLayout)
+    return sorted(classes, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
+
+
+def _layout_source_digest() -> str:
+    """Digest of the normalized source of all layout classes; any
+    behavior-relevant layout change re-keys every block hash. Falls back
+    to the installed package version when sources are unavailable."""
+    try:
+        digest = hashlib.sha256()
+        for cls in _collect_layout_classes():
+            source = inspect.getsource(cls)
+            tree = ast.parse(textwrap.dedent(source))
+            digest.update(f"{cls.__module__}.{cls.__qualname__}:".encode("utf-8"))
+            digest.update(ast.dump(tree, include_attributes=False).encode("utf-8"))
+        return digest.hexdigest()[:16]
+    except OSError:
+        # Sourceless deployment: fall back to per-version isolation.
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("uc-manager")
+        except PackageNotFoundError:
+            return "unknown"
 
 
 class RequestHasher:
