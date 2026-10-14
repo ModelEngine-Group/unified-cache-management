@@ -2,6 +2,7 @@ import copy
 import math
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
@@ -19,6 +20,8 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _check_shm_capacity,
+    _get_store_gc_block_size,
+    _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
@@ -310,6 +313,35 @@ class FAWADumpTask:
     event_handle: int
 
 
+@dataclass(frozen=True)
+class BlockGeometry:
+    logical: int
+    physical: int
+
+
+@lru_cache(maxsize=None)
+def _ascend_block_size_is_logical() -> bool:
+    """Detect once whether Ascend specs report logical block sizes.
+
+    vLLM-Ascend introduced get_storage_block_size together with the runner
+    switch to logical block sizes (block_size = physical * compress_ratio).
+    """
+    try:
+        from vllm_ascend.core.kv_cache_interface import (  # noqa: F401
+            get_storage_block_size,
+        )
+    except ImportError:
+        is_logical = False
+    else:
+        is_logical = True
+    logger.info(
+        "Ascend KV cache block_size convention: "
+        f"{'logical' if is_logical else 'physical'} "
+        f"(block_size_is_logical={is_logical})."
+    )
+    return is_logical
+
+
 class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """UCM connector for mixed full-attention and window KV cache groups.
 
@@ -386,6 +418,56 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return self.hash_block_size
 
     @classmethod
+    def ascend_block_geometry(
+        cls, spec, *, block_size_is_logical: bool | None = None
+    ) -> BlockGeometry:
+        """Follow Ascend's block convention, not the inherited storage property.
+
+        Old v1 runners allocate block_size rows even if vLLM exposes an inherited
+        storage_block_size = block_size // compress_ratio property. The newer
+        logical-block implementation exposes get_storage_block_size in Ascend.
+        Detection assumes that helper and the runner's logical-block convention
+        are introduced together; partial cherry-picks must explicitly provide
+        block_size_is_logical to match their runner.
+        """
+        if block_size_is_logical is None:
+            block_size_is_logical = _ascend_block_size_is_logical()
+
+        nested = getattr(spec, "kv_cache_specs", None)
+        if nested:
+            layers_by_geometry: dict[BlockGeometry, list[str]] = {}
+            for layer_name, member in nested.items():
+                geometry = cls.ascend_block_geometry(
+                    member, block_size_is_logical=block_size_is_logical
+                )
+                layers_by_geometry.setdefault(geometry, []).append(layer_name)
+            if len(layers_by_geometry) != 1:
+                details = {
+                    f"(logical={g.logical}, physical={g.physical})": (
+                        f"{len(names)} layers, e.g. {names[0]}"
+                    )
+                    for g, names in layers_by_geometry.items()
+                }
+                raise ValueError(
+                    "All layers in one Ascend KV cache group must share one "
+                    "block geometry (block_size_is_logical="
+                    f"{block_size_is_logical}); got {details}."
+                )
+            return next(iter(layers_by_geometry))
+
+        size = int(spec.block_size)
+        ratio = int(getattr(spec, "compress_ratio", 1))
+        if min(size, ratio) <= 0:
+            raise ValueError("Ascend block size and compress ratio must be positive.")
+        if block_size_is_logical:
+            if size % ratio:
+                raise ValueError(
+                    "Logical block size must be divisible by compress ratio."
+                )
+            return BlockGeometry(size, size // ratio)
+        return BlockGeometry(size * ratio, size)
+
+    @classmethod
     def can_handle_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
@@ -452,7 +534,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(spec, "sliding_window", None) is None
                 and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
             ):
-                c4_block_sizes.add(kv_cache_spec.block_size)
+                c4_block_sizes.add(cls.ascend_block_geometry(kv_cache_spec).physical)
 
         if len(c4_block_sizes) != 1:
             raise ValueError(
@@ -496,12 +578,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
             spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
             window_size = getattr(spec, "sliding_window", None)
-            compress_ratio = getattr(spec, "compress_ratio", 1)
             token_block_size = kv_cache_spec.block_size
             if self.is_ascend_layout:
                 # Ascend compressed groups expose a logical block span scaled by
                 # the compression ratio.
-                token_block_size = kv_cache_spec.block_size * compress_ratio
+                geometry = self.ascend_block_geometry(kv_cache_spec)
+                token_block_size = geometry.logical
+                logger.info(
+                    f"FAWA Ascend group {group_id} block geometry: "
+                    f"spec.block_size={kv_cache_spec.block_size}, "
+                    f"logical={geometry.logical}, physical={geometry.physical}"
+                )
 
             if window_size is None:
                 # FA groups store one canonical hash block per row.
@@ -517,7 +604,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     layer_index = extract_layer_index(tensor_name)
                     tail_tokens = window_size - layer_compress_ratios[layer_index]
 
-                tail_blocks = tail_tokens // token_block_size
                 self.window_group_ids.append(group_id)
 
             tail_blocks = max(tail_tokens // token_block_size, 1)
@@ -730,11 +816,37 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"GC file size of {label} does not match real file size. "
                     f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
                 )
+            gc_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                padded_size,
+                padded_size,
+            )
+            # Count load/save metrics with the same per-record size as GC.
+            self.file_size[label] = gc_size
+            self._publish_block_size(gc_size, store_suffix=store_suffix)
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
+            if self._gc_owner:
+                # EngineCore finishes worker KV cache registration (which
+                # publishes this size) synchronously before it creates the
+                # scheduler. The file is keyed by the worker's ppid, which
+                # equals the EngineCore pid only for the multiproc executor;
+                # Ray and external_launcher keep the layer-count estimate.
+                size = _scheduler_read_block_size(
+                    store_suffix=store_suffix,
+                )
+                if size is not None:
+                    self.file_size[label] = size
+                else:
+                    logger.warning(
+                        f"FAWA {label} worker-published record size not found "
+                        "(expected with Ray or external_launcher); falling "
+                        f"back to estimated block_size {self.file_size[label]}."
+                    )
             config["block_size"] = self.file_size[label]
         logger.info(
             f"create FAWA {label} {name} with config: "
@@ -775,7 +887,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             layout = KVCacheGroupLayout(
                 group_caches,
                 is_ascend_layout=self.is_ascend_layout,
-                expected_block_size=group_spec.kv_cache_spec.block_size,
+                expected_block_size=(
+                    self.ascend_block_geometry(group_spec.kv_cache_spec).physical
+                    if self.is_ascend_layout
+                    else group_spec.kv_cache_spec.block_size
+                ),
             )
             self.group_layouts[group_id] = layout
 
@@ -1751,7 +1867,15 @@ class UCMFAWALiteConnector(UCMLiteConnector):
             cr = max(cr, 1)
             bs_g = spec.block_size
             block_sizes_for_gcd.append(bs_g)
-            lbs = bs_g * cr if (is_ascend and window is None) else bs_g
+            # Ascend block_size may be physical (<=0.26) or logical (>=0.27).
+            # DS V4 window groups (SWA and compressor state caches) never set
+            # compress_ratio, so it defaults to 1 and logical == block_size,
+            # matching the previous "window is None" special case.
+            lbs = (
+                UCMFAWAConnector.ascend_block_geometry(spec).logical
+                if is_ascend
+                else bs_g
+            )
             effective_block_sizes.append(lbs)
             mtype = (
                 "compress"
