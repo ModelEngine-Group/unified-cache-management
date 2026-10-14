@@ -63,8 +63,8 @@ public:
     // Requires localRankSize in [1, kMaxRanks], checked by Buffer::Setup.
     Status Setup(const Config& cfg)
     {
-        if (cfg.uniqueId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
-        socketName_ = "ucm_cache2_" + cfg.uniqueId + "_ctrl";
+        if (cfg.InstanceId().empty()) { return Status::InvalidParam("cache2 instanceId is empty"); }
+        socketName_ = "ucm_cache2_" + cfg.InstanceId() + "_ctrl";
         auto s = socket_.Listen(socketName_);
         if (s.Success()) {
             auto result = SetupCreator(cfg);

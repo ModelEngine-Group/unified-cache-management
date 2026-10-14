@@ -39,6 +39,7 @@ namespace UC::Cache2 {
 struct Config {
     StoreV1* storeBackend{};
     std::string uniqueId{};
+    std::string instanceId{};
     int32_t deviceId{-1};
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
@@ -56,6 +57,8 @@ struct Config {
         Config config;
         dict.Get("store_backend", config.storeBackend);
         dict.Get("unique_id", config.uniqueId);
+        config.instanceId = config.uniqueId;
+        dict.Get("cache2_instance_id", config.instanceId);
         dict.GetNumber("device_id", config.deviceId);
         size_t tensorSize = 0;
         dict.GetNumber("tensor_size", tensorSize);
@@ -81,6 +84,7 @@ struct Config {
     {
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
         if (uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
+        if (InstanceId().empty()) { return Status::InvalidParam("invalid cache2 instance id"); }
         if (deviceId == -1) { return Status::OK(); }
         if (tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
@@ -112,6 +116,7 @@ struct Config {
         }
         return Status::OK();
     }
+    const std::string& InstanceId() const { return instanceId.empty() ? uniqueId : instanceId; }
     void Show() const
     {
         constexpr const char* ns = "CacheStore";
@@ -121,6 +126,7 @@ struct Config {
         UC_INFO("Set {}::StoreBackend to {}.", ns,
                 storeBackend ? storeBackend->Readme() : "nullptr");
         UC_INFO("Set {}::UniqueId to {}.", ns, uniqueId);
+        UC_INFO("Set {}::InstanceId to {}.", ns, InstanceId());
         UC_INFO("Set {}::DeviceId to {}.", ns, deviceId);
         const auto& v = tensorSizes;
         if (v.empty()) {

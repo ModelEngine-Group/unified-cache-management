@@ -49,7 +49,7 @@ class PosixShmDataBackend : public DataBackend {
     bool nameUnlinked_{false};
 
 public:
-    explicit PosixShmDataBackend(const std::string& uniqueId);
+    explicit PosixShmDataBackend(const std::string& instanceId);
     ~PosixShmDataBackend() override;
 
     const char* Name() const override { return "posix-shm"; }

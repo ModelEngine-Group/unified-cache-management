@@ -1593,7 +1593,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
+        self.cache2_instance_id = vllm_config.kv_transfer_config.engine_id
+        self.engine_id = self.cache2_instance_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
@@ -1742,6 +1743,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # (before store creation) if the tmpfs cannot hold it.
         _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
+    def _get_world_size(self) -> int:
+        world_size = int(self._vllm_config.parallel_config.world_size)
+        if world_size <= 0:
+            raise ValueError(f"world_size must be positive, got {world_size}.")
+        return world_size
+
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
@@ -1757,12 +1764,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.unique_id}"
+        config["cache2_instance_id"] = self.cache2_instance_id
         config["tensor_layout"] = "mla" if self.is_mla else "gqa"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.device_id
@@ -1791,7 +1800,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"logical_block_size={logical_block_size}, "
                     f"store_block_size={store_block_size}."
                 )
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()

@@ -205,7 +205,8 @@ TEST(Cache2CtrlStrategyTest, WorkerStillRequiresMatchingShardSize)
 }
 
 [[noreturn]] void RunParticipant(int startFd, int releaseFd, int reportFd, ProcessState* state,
-                                 int group, int rank, const std::string& uniqueId)
+                                 int group, int rank, const std::string& uniqueId,
+                                 const std::string& instanceId)
 {
     ParticipantReport report;
     report.group = group;
@@ -216,7 +217,9 @@ TEST(Cache2CtrlStrategyTest, WorkerStillRequiresMatchingShardSize)
 
     {
         CtrlStrategy strategy;
-        auto setup = strategy.Setup(MakeControlConfig(uniqueId, rank));
+        auto config = MakeControlConfig(uniqueId, rank);
+        config.instanceId = instanceId;
+        auto setup = strategy.Setup(config);
         report.setupOk = setup.Success();
         if (setup.Success()) {
             if (rank >= 0) { state->controlReady[group].store(1, std::memory_order_release); }
@@ -259,7 +262,7 @@ TEST(Cache2CtrlStrategyTest, WorkerStillRequiresMatchingShardSize)
     ::_exit(report.setupOk && report.sharedValuesVisible ? 0 : 5);
 }
 
-TEST(Cache2CtrlStrategyProcessTest, TwoDpEightTpShareExactlyTwoControlRegions)
+TEST(Cache2CtrlStrategyProcessTest, Cache2InstanceIdIsolatesDpControlRegions)
 {
     constexpr size_t kGroups{2};
     constexpr size_t kParticipantsPerGroup{9};
@@ -278,7 +281,8 @@ TEST(Cache2CtrlStrategyProcessTest, TwoDpEightTpShareExactlyTwoControlRegions)
 
     auto nonce = std::to_string(::getpid()) + "_" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-    std::array<std::string, kGroups> uniqueIds = {"cache2_dp0_" + nonce, "cache2_dp1_" + nonce};
+    const std::string uniqueId = "cache2_shared_" + nonce;
+    std::array<std::string, kGroups> instanceIds = {"cache2_dp0_" + nonce, "cache2_dp1_" + nonce};
     std::vector<pid_t> children;
     children.reserve(kParticipants);
     for (size_t group = 0; group < kGroups; ++group) {
@@ -290,7 +294,7 @@ TEST(Cache2CtrlStrategyProcessTest, TwoDpEightTpShareExactlyTwoControlRegions)
                 ::close(releasePipe[1]);
                 ::close(reportPipe[0]);
                 RunParticipant(startPipe[0], releasePipe[0], reportPipe[1], state,
-                               static_cast<int>(group), rank, uniqueIds[group]);
+                               static_cast<int>(group), rank, uniqueId, instanceIds[group]);
             }
             children.push_back(child);
         }

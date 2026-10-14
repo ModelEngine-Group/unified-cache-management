@@ -150,7 +150,8 @@ public:
         myRank_ = static_cast<size_t>(cfg.deviceId);
         myRank_ = myRank_ % rankCount_;
         layout.InitSlotRange(myRank_);
-        return data_.Setup(layout, cfg.uniqueId, cfg.deviceId, myRank_, slotSize_, slotsPerRank_);
+        return data_.Setup(layout, cfg.InstanceId(), cfg.deviceId, myRank_, slotSize_,
+                           slotsPerRank_);
     }
 
     // Requires successful worker-side Setup; observers must not call Get.

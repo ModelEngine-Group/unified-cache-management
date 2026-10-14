@@ -736,6 +736,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 path for path in config["storage_backends"].split(":")
             ]
         config["unique_id"] = f"{self.unique_id}_fawa_{store_suffix}"
+        config["cache2_instance_id"] = f"{self.cache2_instance_id}_fawa_{store_suffix}"
         self._namespace_storage_backends(config, store_suffix)
         dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
@@ -796,6 +797,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
+        config["local_rank_size"] = self._get_world_size()
         self._set_default_shm_buffer_capacity(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)
@@ -825,8 +827,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # Count load/save metrics with the same per-record size as GC.
             self.file_size[label] = gc_size
             self._publish_block_size(gc_size, store_suffix=store_suffix)
-            # MLA stores aggregate TP shards under one logical rank group.
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:

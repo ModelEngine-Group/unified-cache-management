@@ -48,13 +48,13 @@ class DataStrategy {
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
-    static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
+    static std::unique_ptr<DataBackend> MakeBackend(const std::string& instanceId)
     {
 #if UCM_RUNTIME_ASCEND_HAL
-        (void)uniqueId;
+        (void)instanceId;
         return std::make_unique<AscendHalDataBackend>();
 #else
-        return std::make_unique<PosixShmDataBackend>(uniqueId);
+        return std::make_unique<PosixShmDataBackend>(instanceId);
 #endif
     }
 
@@ -150,13 +150,13 @@ public:
     // Returns a failure status after releasing resources acquired by this call.
     // Ranks must set up concurrently: peer imports and the all-ranks-ready
     // barrier share timeoutMs; zero allows one read attempt per peer.
-    Status Setup(CtrlLayout& ctrl, const std::string& uniqueId, int32_t deviceId, size_t myRank,
+    Status Setup(CtrlLayout& ctrl, const std::string& instanceId, int32_t deviceId, size_t myRank,
                  size_t slotSize, size_t nSlotsPerRank, size_t timeoutMs = 600 * 1000)
     {
         if (nSlotsPerRank_ != 0) {
             return Status::Error("cache2 data strategy is already initialized");
         }
-        if (uniqueId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
+        if (instanceId.empty()) { return Status::InvalidParam("cache2 instanceId is empty"); }
         const size_t totalSlots = ctrl.SlotCount();
         const size_t nRanks = nSlotsPerRank != 0 ? totalSlots / nSlotsPerRank : 0;
         if (nRanks == 0 || myRank >= nRanks) {
@@ -165,7 +165,7 @@ public:
                 "slots_per_rank={}",
                 myRank, nRanks, totalSlots, nSlotsPerRank);
         }
-        auto backend = MakeBackend(uniqueId);
+        auto backend = MakeBackend(instanceId);
         const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
         Status status = Status::OK();
         try {

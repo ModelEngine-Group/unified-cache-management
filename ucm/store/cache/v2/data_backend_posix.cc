@@ -48,8 +48,8 @@ uint64_t HashName(const std::string& name)
 
 }  // namespace
 
-PosixShmDataBackend::PosixShmDataBackend(const std::string& uniqueId)
-    : baseName_("/ucm_cache2_" + uniqueId + "_data")
+PosixShmDataBackend::PosixShmDataBackend(const std::string& instanceId)
+    : baseName_("/ucm_cache2_" + instanceId + "_data")
 {
 }
 
@@ -153,7 +153,7 @@ Status PosixShmDataBackend::MapSegment(size_t rank, bool create, void*& addr)
     PosixShm shm{name};
     auto status = shm.ShmOpen(flags);
     if (status == Status::DuplicateKey()) {
-        /* A leftover segment of a crashed run (same uniqueId): unlink and
+        /* A leftover segment of a crashed run (same instanceId): unlink and
          * retry; mappings held by other processes stay valid. */
         UC_WARN("posix-shm segment exists, recreating: name={}", name);
         shm.ShmUnlink();
