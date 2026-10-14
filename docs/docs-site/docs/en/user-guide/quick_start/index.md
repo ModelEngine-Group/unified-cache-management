@@ -442,9 +442,9 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
 === "Standard SGLang image"
 
-    #### Start the standard image {#sglang-sglang-image}
+    #### Start the standard SGLang image {#sglang-sglang-image}
 
-    Select the SGLang image and UCM package from the release manifest in the Quickstart selector above.
+    Run these commands on the host. The standard SGLang image matches the environment selected above and does not yet include UCM.
 
     <div data-requires="standard" hidden markdown="1">
 
@@ -518,7 +518,7 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
     #### Start the UCM image {#sglang-ucm-image}
 
-    This image already contains UCM. After entering the container, continue directly with the configuration below.
+    Run these commands on the host. This image builds on the same standard SGLang image and already includes UCM. After entering the container, continue directly with the configuration below.
 
     <div data-requires="image" hidden markdown="1">
     <div data-runtime="cuda" hidden markdown="1">

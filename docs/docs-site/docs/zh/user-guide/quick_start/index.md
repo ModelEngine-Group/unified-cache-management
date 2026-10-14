@@ -418,6 +418,8 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 ## SGLang {#sglang}
 
+### 环境与前置条件 {#sglang-environment}
+
 <ul data-environment-summary hidden>
 <li>引擎：<span data-env-value="engine_version"></span></li>
 <li>CUDA / CANN：<span data-env-value="runtime"></span></li>
@@ -426,20 +428,18 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 <li>镜像 Python：<span data-env-value="python_version"></span></li>
 </ul>
 
-### 环境与前置条件 {#sglang-environment}
-
 为 `--tensor-parallel-size 2` 准备两个可用设备和匹配的宿主机驱动。将
 `Qwen/Qwen2.5-14B-Instruct` 模型文件放在宿主机的 `<path_to_your_models>`，并准备可写的
 `<path_to_your_storage>` 缓存目录。两个镜像都会将它们分别挂载到 `/workspace/model` 和
 `/workspace/storage`，并将 `/workspace` 作为工作目录。
 
-### 选择镜像 {#sglang-image}
+### 选择镜像方式 {#sglang-image}
 
-=== "标准 SGLang 镜像"
+=== "SGLang 标准镜像"
 
-    #### 启动标准镜像 {#sglang-sglang}
+    #### 启动标准 SGLang 镜像 {#sglang-sglang-image}
 
-    请使用上方 Quickstart 选择器根据发布清单选择 SGLang 镜像和 UCM 安装包。
+    在宿主机执行。这里使用与上方环境一致的标准 SGLang 镜像，容器内尚未安装 UCM。
 
     <div data-requires="standard" hidden markdown="1">
     <div data-runtime="cuda" hidden markdown="1">
@@ -461,7 +461,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
     </div>
 
     <div data-runtime="cann" hidden markdown="1">
-    <div data-runtime="cann" hidden markdown="1">
     <div data-command-template markdown="1">
     ```bash
     docker pull --platform {{ docker_platform }} "{{ standard_image }}"
@@ -469,27 +468,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
         --platform {{ docker_platform }} \
         --entrypoint /bin/bash \
         --workdir /workspace \
-        --device /dev/davinci0 \
-        --device /dev/davinci1 \
-        --device /dev/davinci_manager \
-        --device /dev/devmm_svm \
-        --device /dev/hisi_hdc \
-        -v /usr/local/dcmi:/usr/local/dcmi \
-        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-        -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64 \
-        -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
-        -v /etc/ascend_install.info:/etc/ascend_install.info \
-        --network=host \
-        --ipc=host \
-        -v "<path_to_your_models>:/workspace/model" \
-        -v "<path_to_your_storage>:/workspace/storage" \
-        --name ucm-quickstart "{{ standard_image }}"
-    ```
-    </div>
-    </div>
-    ```bash
-    docker pull --platform {{ docker_platform }} "{{ standard_image }}"
-    docker run --rm -it --platform {{ docker_platform }} --entrypoint /bin/bash --workdir /workspace \
         --device /dev/davinci0 \
         --device /dev/davinci1 \
         --device /dev/davinci_manager \
@@ -532,9 +510,10 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
     #### 启动 UCM 镜像 {#sglang-ucm-image}
 
-    该镜像已经包含 UCM，进入容器后直接执行下面的配置步骤。
+    在宿主机执行。这个镜像基于相同的标准 SGLang 镜像构建，并已安装 UCM；进入容器后直接继续下方配置。
 
     <div data-requires="image" hidden markdown="1">
+    <div data-runtime="cuda" hidden markdown="1">
     <div data-command-template markdown="1">
 
     ```bash
@@ -575,6 +554,8 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
         --name ucm-quickstart "{{ image }}"
     ```
     </div>
+    </div>
+
     </div>
 
 ### 配置 HiCache {#sglang-hicache}
