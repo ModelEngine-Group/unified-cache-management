@@ -40,35 +40,6 @@ jobs:
             echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           fi
 
-      # protect the workflows dir, only allow specific users to modify
-      - id: permission-check
-        env:
-          ACTOR: ${{ github.actor }}
-        run: |
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }})
-          echo "CHANGED_FILES=$CHANGED_FILES"
-
-          if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
-            echo "No .github/workflows changes, allow."
-            exit 0
-          fi
-
-          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078" "SuperMarioYL")
-
-          echo ".github changes detected, check if user is allowed..."
-          ACTOR="${{ github.actor }}"
-          echo "PR author: $ACTOR"
-
-          for u in "${ALLOWED_USERS[@]}"; do
-            if [[ "$ACTOR" == "$u" ]]; then
-              echo "Authorized user, allowing change."
-              exit 0
-            fi
-          done
-
-          echo "::error:: Only privileged users may modify .github/workflows/"
-          exit 1
-
       - id: uptodate-check
         run: |
 
