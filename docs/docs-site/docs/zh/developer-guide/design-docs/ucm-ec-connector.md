@@ -304,7 +304,7 @@ store_config 注入: unique_id / device_id / local_rank_size=TP / use_gdr=False
 
 ### 5.1 一个执行 step 的端到端流程
 
-![请求处理时序：状态容器独立成生命线；生命线边框颜色=所属进程（蓝=Scheduler，含 req_to_state/identifier_to_blocks/step_verified_hits/pending_loads；绿=Worker；紫=跨进程）；箭头颜色：绿=写入/更新，红=清理/删除，灰虚线=读取/返回/Store I/O](../_static/images/ec_seq.png)
+![请求处理时序：状态容器独立成生命线；生命线边框颜色=所属进程（蓝=Scheduler，含 req_to_state/identifier_to_blocks/step_verified_hits/pending_loads；绿=Worker；紫=跨进程）；箭头颜色：绿=写入/更新，红=清理/删除，灰虚线=读取/返回/Store I/O](../../assets/images/ec-connector-sequence.png)
 
 ```mermaid
 sequenceDiagram
