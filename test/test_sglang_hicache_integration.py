@@ -200,12 +200,8 @@ def test_store_v1_methods_delegate_to_connector_with_extra_info():
 
     assert store.batch_get_v1(keys, host_indices, extra_info) == [True]
     assert store.batch_set_v1(keys, host_indices, extra_info) == [False]
-    store.connector.batch_get_v1.assert_called_once_with(
-        keys, host_indices, extra_info
-    )
-    store.connector.batch_set_v1.assert_called_once_with(
-        keys, host_indices, extra_info
-    )
+    store.connector.batch_get_v1.assert_called_once_with(keys, host_indices, extra_info)
+    store.connector.batch_set_v1.assert_called_once_with(keys, host_indices, extra_info)
 
 
 def test_v2_creates_one_fixed_size_store_per_pool(connector):

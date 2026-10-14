@@ -45,22 +45,16 @@ def test_sglang_online_accuracy_from_persisted_cache_a2():
 
     assert torch_npu.npu.is_available(), "SGLang A2 E2E requires an Ascend NPU"
     device_name = torch_npu.npu.get_device_name(0)
-    assert "910B" in device_name.upper() or "A2" in device_name.upper(), (
-        f"Expected an Ascend A2/910B device, got {device_name!r}"
-    )
+    assert (
+        "910B" in device_name.upper() or "A2" in device_name.upper()
+    ), f"Expected an Ascend A2/910B device, got {device_name!r}"
 
-    model_path = os.getenv(
-        "SGLANG_E2E_MODEL_PATH", "/home/models/Qwen3-0.6B"
-    )
-    storage_path = os.getenv(
-        "SGLANG_E2E_STORAGE_PATH", "/tmp/ucm_sglang_e2e_cache"
-    )
+    model_path = os.getenv("SGLANG_E2E_MODEL_PATH", "/home/models/Qwen3-0.6B")
+    storage_path = os.getenv("SGLANG_E2E_STORAGE_PATH", "/tmp/ucm_sglang_e2e_cache")
     ensure_storage_dir(storage_path, clear_existing=True)
 
     prompt, standard_answers = load_prompt_from_file(
-        get_path_relative_to_test_root(
-            "suites/E2E/prompts/test_offline_inference.json"
-        )
+        get_path_relative_to_test_root("suites/E2E/prompts/test_offline_inference.json")
     )
     assert standard_answers, "The SGLang E2E prompt has no standard answers"
     messages = [
@@ -85,18 +79,18 @@ def test_sglang_online_accuracy_from_persisted_cache_a2():
         first_output = _request_document_answer(server.url, model_path, messages)
 
     persisted_files = [path for path in Path(storage_path).rglob("*") if path.is_file()]
-    assert persisted_files, (
-        "SGLang completed inference but UCM persisted no cache files"
-    )
+    assert (
+        persisted_files
+    ), "SGLang completed inference but UCM persisted no cache files"
 
     # Restarting SGLang clears its process-local radix/HBM cache. The second
     # request can therefore exercise the persistent UCM HiCache path.
     with SGLangServerManager(**server_args) as server:
         restored_output = _request_document_answer(server.url, model_path, messages)
 
-    assert match_any_answer(first_output, standard_answers), (
-        f"SGLang baseline output is incorrect: {first_output!r}"
-    )
-    assert match_any_answer(restored_output, standard_answers), (
-        f"SGLang output after UCM cache restore is incorrect: {restored_output!r}"
-    )
+    assert match_any_answer(
+        first_output, standard_answers
+    ), f"SGLang baseline output is incorrect: {first_output!r}"
+    assert match_any_answer(
+        restored_output, standard_answers
+    ), f"SGLang output after UCM cache restore is incorrect: {restored_output!r}"

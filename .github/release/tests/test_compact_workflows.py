@@ -513,9 +513,7 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     sglang_e2e_text = yaml.safe_dump(sglang_e2e)
     assert "Dockerfile.ucm-sglang-ascend.a2-v0.5.18" in sglang_e2e_text
     assert "sglang_online_inference" in sglang_e2e_text
-    assert "test_sglang_online_accuracy_from_persisted_cache_a2" in (
-        sglang_e2e_text
-    )
+    assert "test_sglang_online_accuracy_from_persisted_cache_a2" in (sglang_e2e_text)
 
     text = (WORKFLOWS / "pull-request.yml").read_text(encoding="utf-8")
     assert "./.github/workflows/release-ucm.yml" not in text
