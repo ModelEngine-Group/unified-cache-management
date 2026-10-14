@@ -252,6 +252,10 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
 // and first registration wins; unregistered names are silently dropped by
 // UpdateStats. Call after the runtime config is parsed so the dynamic
 // per-slot-size gauges follow g_config.poolBlockSizes.
+// Mirroring the Python gate (setup_ucm_metrics() skips set_up() when metrics
+// are disabled), the daemon only calls this when metrics are enabled: the
+// skipped SetUp() leaves UC::Metrics uninitialized, so every UpdateStats()
+// no-ops at its isInited_ guard and no stats are accumulated at all.
 inline void SetupDrampoolMetrics()
 {
     UC::Metrics::SetUp();

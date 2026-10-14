@@ -48,8 +48,11 @@ int DramPoolDaemon::Run(int argc, char** argv)
         return 1;
     }
 
-    // One-shot metrics registration; unregistered names are dropped.
-    SetupDrampoolMetrics();
+    // Same gate as the Python side (setup_ucm_metrics() only calls set_up() when
+    // metrics are enabled): skipping registration leaves UC::Metrics uninitialized
+    // (isInited_ false), so every UpdateStats() no-ops at its first guard instead
+    // of accumulating stats nobody drains.
+    if (g_config.metricsEnabled) { SetupDrampoolMetrics(); }
 
     status = SetupLogger();
     if (status.Failure()) {
