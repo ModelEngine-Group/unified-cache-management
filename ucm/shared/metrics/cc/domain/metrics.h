@@ -94,19 +94,18 @@ struct MetricBuffer {
         int idx_;
     };
 
-    int SwitchBuffer()
-    {
-        int oldIdx = writeIdx_.exchange(1 - writeIdx_.load(std::memory_order_acquire),
-                                        std::memory_order_acq_rel);
-        return oldIdx;
-    }
+    // The writer stores activeWriteIdx_ then loads writeIdx_, and the collector switches
+    // writeIdx_ then loads activeWriteIdx_. Each side must see the other's store, so
+    // these four operations need seq_cst. With acquire/release, both sides can miss
+    // each other and touch the same buffer at the same time.
+    int SwitchBuffer() { return writeIdx_.fetch_xor(1, std::memory_order_seq_cst); }
 
     int BeginWrite()
     {
         while (true) {
             int idx = writeIdx_.load(std::memory_order_acquire);
-            activeWriteIdx_.store(idx, std::memory_order_release);
-            if (writeIdx_.load(std::memory_order_acquire) == idx) { return idx; }
+            activeWriteIdx_.store(idx, std::memory_order_seq_cst);
+            if (writeIdx_.load(std::memory_order_seq_cst) == idx) { return idx; }
             activeWriteIdx_.store(NO_ACTIVE_WRITER, std::memory_order_release);
         }
     }
@@ -115,7 +114,7 @@ struct MetricBuffer {
 
     void WaitNoActiveWriter(int idx) const
     {
-        while (activeWriteIdx_.load(std::memory_order_acquire) == idx) {
+        while (activeWriteIdx_.load(std::memory_order_seq_cst) == idx) {
             std::this_thread::yield();
         }
     }
