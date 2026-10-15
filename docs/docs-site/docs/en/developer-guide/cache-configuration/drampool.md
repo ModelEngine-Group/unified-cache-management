@@ -346,7 +346,7 @@ logger:
   max_size_mb: 5
 ```
 
-### Test Description
+### Test Results
 
 The following results show UCM performance with DramPool in the prefix caching scenario. Input lengths are 4,000, 8,000, 16,000, and 32,000 tokens; maximum concurrency levels are 1, 4, 16, and 32; and the average output length is 1,000 tokens. The table compares TTFT (time to first token) and speedup for the baseline, hit - 50, and hit - 90 scenarios. TTFT speedup is calculated as **(baseline TTFT / scenario TTFT − 1) × 100%**, rounded to one decimal place.
 
