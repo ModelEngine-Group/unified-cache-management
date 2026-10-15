@@ -222,8 +222,129 @@ Prometheus 通过 vLLM 的 `/metrics` 接口采集 DramStore 和 DramPool 指标
 ### 测试环境
 
 - 测试模型：DeepSeek-V3.1-Terminus-w8a8。
-- 硬件环境：单机昇腾 A3，16 卡。
+- 硬件环境：单机昇腾 A3。
 - 测试工具：AISBench。
+
+### 测试部署参数
+
+#### 基线推理服务
+
+基线推理服务部署参数如下。
+
+```bash
+vllm serve <model-path> \
+  --port <port> \
+  --tensor-parallel-size 4 \
+  --data-parallel-size 4 \
+  --quantization ascend \
+  --seed 1024 \
+  --enable-expert-parallel \
+  --max-num-seqs 16 \
+  --max-model-len 130000 \
+  --max-num-batched-tokens 2048 \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.95 \
+  --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
+  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+```
+
+#### DramPool 测试推理服务
+
+推理参数与基线一致，仅增加通过 `--kv-transfer-config` 加载 DramStore 配置文件的参数。
+
+```bash
+vllm serve <model-path> \
+  --port <port> \
+  --tensor-parallel-size 4 \
+  --data-parallel-size 4 \
+  --quantization ascend \
+  --seed 1024 \
+  --enable-expert-parallel \
+  --max-num-seqs 16 \
+  --max-model-len 130000 \
+  --max-num-batched-tokens 2048 \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.95 \
+  --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
+  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
+  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"<dramstore-config-path>"}}'
+```
+
+#### DramPool 启动参数
+
+DramPool 性能测试启动参数如下。
+
+```bash
+./bin/drampool \
+  --addr <ip:port> \
+  --pool-size-gb 64 \
+  --kvcache-block-sizes 131072 16384 \
+  --config <drampool-config-path>
+```
+
+#### DramStore 测试配置
+
+DramStore 性能测试配置如下。
+
+```yaml
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Dram"
+      local_addr: "127.0.0.1:4502"
+      peer_addrs: ["127.0.0.1:4501"]
+      hixl_listen_port: 36666
+      enable_hixl_cs: false
+      manager_max_threads: 4
+      max_io_entries: 10000
+      lookup_timeout_ms: 1000
+      dump_timeout_ms: 3000
+      load_timeout_ms: 3000
+      reconnect_interval_ms: 3000
+      router_type: "ring_hash"
+      transport_worker_count: 1
+      node_runner_count: 1
+enable_event_sync: true
+use_layerwise: true
+```
+
+#### DramPool 测试配置
+
+DramPool 性能测试配置如下。
+
+```yaml
+transport:
+  device_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  manager_max_threads: 4
+  hixl:
+    listen_port: 26666
+    enable_hixl_cs: false
+queue:
+  request_depth: 65536
+  completion_depth: 65536
+request_receiver:
+  idle_wait_us: 100
+poller:
+  pending_depth: 64
+flag_buffer:
+  capacity_mb: 64
+  slot_size_bytes: 128
+gc:
+  enabled: true
+  interval_ms: 1000
+metadata:
+  periodic_eviction_policy: TTL
+  deep_eviction_policy: POSITION
+  lease_time_ms: 5000
+  default_evict_ratio: 0.0
+  evict_period_ms: 31536000000
+operation:
+  timeout_ms: 5000
+logger:
+  dir: ./logs
+  max_files: 10
+  max_size_mb: 5
+```
 
 ### 测试说明
 

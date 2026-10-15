@@ -222,8 +222,129 @@ Import the [Dram dashboard](https://github.com/ModelEngine-Group/unified-cache-m
 ### Test Environment
 
 - Test model: DeepSeek-V3.1-Terminus-w8a8.
-- Hardware: A single Ascend A3 host with 16 devices.
+- Hardware: A single Ascend A3 host.
 - Test tool: AISBench.
+
+### Test Deployment Parameters
+
+#### Baseline Inference Service
+
+Deployment parameters for the baseline inference service are listed below.
+
+```bash
+vllm serve <model-path> \
+  --port <port> \
+  --tensor-parallel-size 4 \
+  --data-parallel-size 4 \
+  --quantization ascend \
+  --seed 1024 \
+  --enable-expert-parallel \
+  --max-num-seqs 16 \
+  --max-model-len 130000 \
+  --max-num-batched-tokens 2048 \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.95 \
+  --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
+  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+```
+
+#### Inference Service for the DramPool Test
+
+Inference parameters match the baseline, with only the addition of `--kv-transfer-config` to load the DramStore configuration file.
+
+```bash
+vllm serve <model-path> \
+  --port <port> \
+  --tensor-parallel-size 4 \
+  --data-parallel-size 4 \
+  --quantization ascend \
+  --seed 1024 \
+  --enable-expert-parallel \
+  --max-num-seqs 16 \
+  --max-model-len 130000 \
+  --max-num-batched-tokens 2048 \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.95 \
+  --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
+  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
+  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"<dramstore-config-path>"}}'
+```
+
+#### DramPool Startup Parameters
+
+DramPool startup parameters for the performance test are listed below.
+
+```bash
+./bin/drampool \
+  --addr <ip:port> \
+  --pool-size-gb 64 \
+  --kvcache-block-sizes 131072 16384 \
+  --config <drampool-config-path>
+```
+
+#### DramStore Test Configuration
+
+DramStore configuration for the performance test is listed below.
+
+```yaml
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Dram"
+      local_addr: "127.0.0.1:4502"
+      peer_addrs: ["127.0.0.1:4501"]
+      hixl_listen_port: 36666
+      enable_hixl_cs: false
+      manager_max_threads: 4
+      max_io_entries: 10000
+      lookup_timeout_ms: 1000
+      dump_timeout_ms: 3000
+      load_timeout_ms: 3000
+      reconnect_interval_ms: 3000
+      router_type: "ring_hash"
+      transport_worker_count: 1
+      node_runner_count: 1
+enable_event_sync: true
+use_layerwise: true
+```
+
+#### DramPool Test Configuration
+
+DramPool configuration for the performance test is listed below.
+
+```yaml
+transport:
+  device_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  manager_max_threads: 4
+  hixl:
+    listen_port: 26666
+    enable_hixl_cs: false
+queue:
+  request_depth: 65536
+  completion_depth: 65536
+request_receiver:
+  idle_wait_us: 100
+poller:
+  pending_depth: 64
+flag_buffer:
+  capacity_mb: 64
+  slot_size_bytes: 128
+gc:
+  enabled: true
+  interval_ms: 1000
+metadata:
+  periodic_eviction_policy: TTL
+  deep_eviction_policy: POSITION
+  lease_time_ms: 5000
+  default_evict_ratio: 0.0
+  evict_period_ms: 31536000000
+operation:
+  timeout_ms: 5000
+logger:
+  dir: ./logs
+  max_files: 10
+  max_size_mb: 5
+```
 
 ### Test Description
 
