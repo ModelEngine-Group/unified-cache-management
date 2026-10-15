@@ -61,6 +61,7 @@ def test_dispatcher_owns_version_routing_without_generated_manifest(
         "0.27.0",
         "0.27.1",
         "0.28.0",
+        "0.30.0",
     ]
     source = PATCH_SOURCE.read_text(encoding="utf-8")
     assert "match version:" in source

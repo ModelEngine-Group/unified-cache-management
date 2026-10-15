@@ -74,6 +74,11 @@ _ASCEND_BACKEND_BY_SOC = {
     "ascend910_9391": "cann-a3",
     "ascend950dt_9582": "cann-a5",
 }
+_SGLANG_CANN_TAG_SOC = {
+    "910b": "ascend910b1",
+    "a3": "ascend910_9391",
+}
+_SGLANG_CANN_TAG = re.compile(r"-cann\d+(?:\.\d+){2}-(910b|a3)$", re.IGNORECASE)
 _UNREPORTED = "unreported"
 
 JsonLoader = Callable[[str], object]
@@ -172,8 +177,8 @@ def _policy_by_repository(
             raise ValueError(f"{context}: invalid runtime_repository")
         if OCI_REPOSITORY_PATTERN.fullmatch(target_repository) is None:
             raise ValueError(f"{context}: invalid target_repository")
-        if accelerator not in {"cuda", "ascend"}:
-            raise ValueError(f"{context}: accelerator must be cuda or ascend")
+        if accelerator not in {"cuda", "ascend", "dynamic"}:
+            raise ValueError(f"{context}: accelerator must be cuda, ascend, or dynamic")
 
         backend = product.get("backend", "cuda" if product_id == "vllm" else "")
         backend_by_soc = product.get(
@@ -190,7 +195,7 @@ def _policy_by_repository(
             normalized_backend_by_soc: dict[str, str] = {}
         else:
             mapping = _mapping(backend_by_soc, f"{context}.backend_by_soc")
-            if not mapping:
+            if accelerator == "ascend" and not mapping:
                 raise ValueError(f"{context}: Ascend product requires backend_by_soc")
             normalized_backend_by_soc = {}
             for soc, soc_backend in mapping.items():
@@ -199,7 +204,10 @@ def _policy_by_repository(
                 if not isinstance(soc_backend, str) or not soc_backend.strip():
                     raise ValueError(f"{context}: backend_by_soc value is invalid")
                 normalized_backend_by_soc[soc.strip().casefold()] = soc_backend.strip()
-            backend = ""
+            if accelerator == "ascend":
+                backend = ""
+            elif not isinstance(backend, str) or not backend:
+                raise ValueError(f"{context}: dynamic product requires CUDA backend")
 
         result[repository] = {
             "product_id": product_id,
@@ -212,6 +220,29 @@ def _policy_by_repository(
     if not result:
         raise ValueError("runtime products policy must not be empty")
     return result
+
+
+def _dynamic_accelerator(
+    config: Mapping[str, object], env: Mapping[str, str], tag: str, context: str
+) -> str:
+    """Identify the accelerator from immutable runtime-image facts.
+
+    SGLang publishes CUDA and CANN variants under one repository.  The tag is
+    deliberately not treated as the authority when the image reports its
+    toolkit runtime.  If metadata is unavailable, the narrowly validated
+    CUDA/CANN tag form selects the native-probe contract so the existing
+    fallback can collect the authoritative runtime facts.
+    """
+
+    cuda, _, _ = _runtime_from_config(config, env, "cuda", f"{context}.cuda")
+    cann, _, _ = _runtime_from_config(config, env, "ascend", f"{context}.cann")
+    if bool(cuda) != bool(cann):
+        return "cuda" if cuda else "ascend"
+    if re.search(r"(?:^|-)cu[0-9]+(?:-|$)", tag):
+        return "cuda"
+    if re.search(r"(?:^|-)cann[0-9]+\.[0-9]+\.[0-9]+(?:-|$)", tag):
+        return "ascend"
+    raise ValueError(f"{context}: dynamic product must report one CUDA or CANN runtime")
 
 
 def _config_platform(config: Mapping[str, object], context: str) -> tuple[str, str]:
@@ -372,6 +403,9 @@ def _config_facts(
         config, env, accelerator, f"{context}.{accelerator}_version"
     )
     os_id = "openeuler" if "openeuler" in tag.casefold() else "linux"
+    soc_version = env.get("SOC_VERSION", "").strip().casefold()
+    if soc_version == "na":
+        soc_version = ""
     facts = {
         "python_version": python_version or "",
         "os_id": os_id,
@@ -382,9 +416,7 @@ def _config_facts(
         "cann_version": (
             runtime_version if accelerator == "ascend" and runtime_version else ""
         ),
-        "soc_version": (
-            "na" if accelerator == "cuda" else env.get("SOC_VERSION", "").casefold()
-        ),
+        "soc_version": "na" if accelerator == "cuda" else soc_version,
     }
     sources = {"os": "tag:openeuler" if os_id == "openeuler" else "oci"}
     if python_source:
@@ -559,10 +591,16 @@ def inspect_runtime_references(
             probe_id = f"{request_id}-{architecture}"
             probe_ids.append(probe_id)
             context = f"runtime config {member['image_reference']}"
+            config = _mapping(member.get("config"), context)
+            accelerator = str(policy["accelerator"])
+            if accelerator == "dynamic":
+                accelerator = _dynamic_accelerator(
+                    config, _config_env(config, context), tag, context
+                )
             facts, fact_sources, missing, conflicts = _config_facts(
-                _mapping(member.get("config"), context),
+                config,
                 tag=tag,
-                accelerator=str(policy["accelerator"]),
+                accelerator=accelerator,
                 context=context,
             )
             request = {
@@ -573,7 +611,7 @@ def inspect_runtime_references(
                 "repository": repository,
                 "tag": tag,
                 "target_repository": policy["target_repository"],
-                "accelerator": policy["accelerator"],
+                "accelerator": accelerator,
                 "backend": policy["backend"],
                 "backend_by_soc": copy.deepcopy(policy["backend_by_soc"]),
                 "cpu_arch": architecture,
@@ -792,6 +830,25 @@ def _unquote(value: object, context: str) -> str:
     return value.strip().strip("'\"")
 
 
+def _sglang_cann_soc_from_tag(request: Mapping[str, object]) -> str | None:
+    """Infer the canonical Ascend SOC for SGLang CANN tags.
+
+    SGLang publishes the device family in the tag, but its CANN images do not
+    consistently expose ``SOC_VERSION``. GitHub-hosted runners also cannot
+    discover it natively because they have no Ascend device.
+    """
+
+    if request.get("product_id") != "sglang":
+        return None
+    tag = request.get("tag")
+    if not isinstance(tag, str):
+        return None
+    match = _SGLANG_CANN_TAG.search(tag.strip())
+    if match is None:
+        return None
+    return _SGLANG_CANN_TAG_SOC[match.group(1).casefold()]
+
+
 def aggregate_runtime_probes(
     inspection: Mapping[str, object], raw_probes: Sequence[Mapping[str, object]]
 ) -> dict[str, Any]:
@@ -866,9 +923,22 @@ def aggregate_runtime_probes(
             )
             if raw.get("cuda_version") not in (None, ""):
                 raise ValueError(f"{context}: Ascend probe cannot report CUDA")
-            soc_version = _unquote(
-                raw.get("soc_version"), f"{context}.soc_version"
-            ).casefold()
+            raw_soc_version = raw.get("soc_version")
+            inferred_soc_version = _sglang_cann_soc_from_tag(request)
+            if (
+                fallback
+                and inferred_soc_version is not None
+                and (
+                    not isinstance(raw_soc_version, str)
+                    or not raw_soc_version.strip()
+                    or raw_soc_version.strip().casefold() == "na"
+                )
+            ):
+                soc_version = inferred_soc_version
+            else:
+                soc_version = _unquote(
+                    raw_soc_version, f"{context}.soc_version"
+                ).casefold()
             backend_by_soc = _mapping(
                 request.get("backend_by_soc"), f"{context}.backend_by_soc"
             )
