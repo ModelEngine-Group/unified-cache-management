@@ -247,16 +247,6 @@ jobs:
                 nvcc --version | grep -F "release ${EXPECTED_RUNTIME#cuda-}"
               fi
               if [[ "${EXPECTED_RUNTIME}" == cann-* ]]; then
-                actual_cann="${CANN_VERSION:-${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-}}}"
-                if [ -z "${actual_cann}" ]; then
-                  version_file="$(find /usr/local/Ascend -type f \
-                    \( -name version.info -o -name version.cfg \) \
-                    -print -quit 2>/dev/null || true)"
-                  [ -z "${version_file}" ] || actual_cann="$(head -n 1 "${version_file}")"
-                fi
-                actual_cann="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
-                  <<<"${actual_cann}" | head -n 1)"
-                test "cann-${actual_cann}" = "${EXPECTED_RUNTIME}"
                 if [ -n "${SOC_VERSION:-}" ]; then
                   test "${SOC_VERSION}" = "${EXPECTED_SOC}"
                 fi
@@ -266,7 +256,17 @@ jobs:
                     | grep -q .
                 done
               fi
-            '
+          '
+          expected_cann="$(jq -r '.accelerator_runtime' <<<"${CHECKS}")"
+          if [[ "${expected_cann}" == cann-* ]]; then
+            docker run --pull=never --platform "linux/${CPU_ARCH}" --rm \
+              --entrypoint python3 \
+              -v "${PWD}/.github/release/check-builder-cann.py:/tmp/check-builder-cann.py:ro" \
+              "${validation_image}" /tmp/check-builder-cann.py inspect \
+              >out/cann-facts.json
+            python .github/release/check-builder-cann.py verify \
+              --facts out/cann-facts.json --expected "${expected_cann}"
+          fi
           # Backticks in these format strings are literal Markdown.
           # shellcheck disable=SC2016
           {

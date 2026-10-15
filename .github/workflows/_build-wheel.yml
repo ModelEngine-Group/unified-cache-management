@@ -113,6 +113,13 @@ jobs:
           builder_rate_limit_scope="${builder_repository#ghcr.io/}"
           source_builder="${source_repository}@$(jq -er \
             '.builder.source_image_digest' out/wheel-task.json)"
+          source_cann_version="$(PYTHONPATH=.github/release python -c '
+          import json, sys
+          from ucm_release.builders import source_cann_version
+          task = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(source_cann_version(task["builder"]["source_image"])
+                if task["backend"].startswith("cann-") else "")
+          ' out/wheel-task.json)"
           build_wheel() {
             local builder_image="$1"
             local log_path="$2"
@@ -137,6 +144,7 @@ jobs:
               --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
               --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
               --build-arg "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag' out/wheel-task.json)" \
+              --build-arg "UCM_SOURCE_CANN_VERSION=${source_cann_version}" \
               --build-arg "SOURCE_DATE_EPOCH=${{ steps.task.outputs.source_date_epoch }}" \
               --output type=local,dest=out/wheel \
               --progress plain .
