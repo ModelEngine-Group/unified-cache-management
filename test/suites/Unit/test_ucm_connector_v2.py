@@ -1599,7 +1599,11 @@ class SchedulerChunkContractTest(unittest.TestCase):
     def test_fa_subchunks_repeat_physical_id_in_shared_chunk_order(self):
         raw = config(group(["model.layers.0.attn"], FullAttentionSpec(8)))
         spec = parse_kv_cache_config(
-            raw, scheduler_block_size=4, tokens_per_chunk=4, num_hidden_layers=64
+            raw,
+            scheduler_block_size=4,
+            tokens_per_chunk=4,
+            num_hidden_layers=64,
+            device_type="cpu",
         )
         dispatcher = make_dispatcher(spec)
         keys = dispatcher._chain_keys(tuple(range(16)))
@@ -1779,8 +1783,9 @@ class TransferMatrixTest(unittest.TestCase):
         self.assertEqual(memory.read(2064, 16), b"0123456789abcdef")
 
     def test_adapter_retains_async_buffers_and_accepts_broadcast_descriptors(self):
-        proxy = mock.Mock()
-        proxy.dump.return_value = "in-flight"
+        proxy = SimpleNamespace(
+            dump=mock.Mock(return_value="in-flight"), wait=mock.Mock()
+        )
         adapter = UCMProxyAdapter(proxy)
         ptrs = np.arange(12, dtype=np.uint64).reshape(3, 4)[:, ::2]
         sizes = np.broadcast_to(np.array([2, 3], dtype=np.uint64), ptrs.shape)
