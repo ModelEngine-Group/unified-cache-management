@@ -86,6 +86,74 @@ def _plan(
     )
 
 
+@pytest.fixture
+def cann_fallback_plan():
+    document = _plan()
+    for wheel in document["wheels"]:
+        if wheel["backend"].startswith("cann-"):
+            wheel["builder"]["source_image"] = wheel["builder"]["source_image"].replace(
+                "9.0.1-", "9.0.1-beta.2-"
+            )
+    return document
+
+
+def test_fallback_matrix_covers_every_runtime_member(cann_fallback_plan) -> None:
+    document = cann_fallback_plan
+    image = next(
+        image
+        for image in document["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    )
+    second = copy.deepcopy(image)
+    second["id"] += "-openeuler"
+    second["runtime"]["image_reference"] = (
+        "quay.io/ascend/vllm-ascend@sha256:" + "d" * 64
+    )
+    document["images"].append(second)
+
+    selected = planner.fallback_runtime_matrix(document)["include"]
+    expected = [
+        image
+        for image in document["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    ]
+    assert len(selected) == len(expected) == 3
+    assert [
+        (item["wheel_id"], item["runtime_image"], item["runner"]) for item in selected
+    ] == [
+        (image["wheel_id"], image["runtime"]["image_reference"], image["runner"])
+        for image in expected
+    ]
+    assert all("id" not in item for item in selected)
+    assert {item["runtime_cann_version"] for item in selected} == {"9.0.1"}
+    assert {item["builder_cann_version"] for item in selected} == {"9.0.1-beta.2"}
+
+
+@pytest.mark.parametrize("version", ["9.0.1", "9.0.1-beta.2"])
+def test_exact_cann_versions_need_no_fallback_matrix(cann_fallback_plan, version):
+    document = cann_fallback_plan
+    for image in document["images"]:
+        if image["runtime"]["accelerator_runtime"].startswith("cann-"):
+            image["runtime"]["accelerator_runtime"] = "cann-" + version
+    for wheel in document["wheels"]:
+        wheel["builder"]["source_image"] = wheel["builder"]["source_image"].replace(
+            "9.0.1-beta.2-", version + "-"
+        )
+    assert planner.fallback_runtime_matrix(document) == {"include": []}
+
+
+@pytest.mark.parametrize("version", ["9.1.0", "9.0.1-beta.1"])
+def test_fallback_matrix_rejects_unapproved_substitution(cann_fallback_plan, version):
+    image = next(
+        image
+        for image in cann_fallback_plan["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    )
+    image["runtime"]["accelerator_runtime"] = "cann-" + version
+    with pytest.raises(ValueError, match="unsupported CANN Builder substitution"):
+        planner.fallback_runtime_matrix(cann_fallback_plan)
+
+
 def _write_wheel_fixture(
     path: Path,
     metadata_tag: str,

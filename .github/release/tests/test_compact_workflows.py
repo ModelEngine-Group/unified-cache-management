@@ -348,19 +348,9 @@ def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
         if step.get("name")
         == "Install and validate the local Wheel in its matching Runtime"
     )
-    assert "docker run --rm" in run
-    assert '-e UCM_WHEEL="/tmp/${wheel_name}"' in run
-    assert '"${UCM_WHEEL}"' in run
-    assert "validate_wheel_runtime.py" in run
-    assert "python3 -m venv" in run
-    assert "DEFERRED_EXTERNAL_LIBRARIES" in run
-    assert "EXPECTED_RUNTIME_REQUIREMENTS" in run
-    assert '.dependencies | select(type == "array")' in run
-    assert ".deferred_external_libraries" in run
-    assert 'if [[ "${PLATFORM_ARG}" == ascend* ]]' not in run
-    assert "python -m pip check" not in run
-    assert 're.search(r\\"[0-9]+' in run
-    assert "re.search(r'[0-9]+" not in run
+    assert run.strip() == (
+        "bash .github/release/install-validate-wheel-runtime.sh input/wheel"
+    )
     assert "validate-wheel-runtimes" in jobs["publish-release-artifacts"]["needs"]
     assert set(jobs["publish-pypi"]["needs"]) == {
         "plan",
@@ -524,6 +514,7 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
         "resolve-upstreams",
         "plan-wheels",
         "build-wheels",
+        "validate-fallback-runtimes",
     }
     assert jobs["probe-runtimes"]["uses"] == ("./.github/workflows/_probe-runtime.yml")
     assert jobs["build-wheels"]["strategy"]["fail-fast"] is False
@@ -543,6 +534,36 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     assert "docker push" not in text
     assert "open-release" not in text
     assert "publish" not in text.lower()
+    validation = jobs["validate-fallback-runtimes"]
+    assert set(validation["needs"]) == {"plan-wheels", "build-wheels"}
+    assert "needs.plan-wheels.result == 'success'" in validation["if"]
+    assert "needs.build-wheels.result == 'success'" in validation["if"]
+    assert "needs.plan-wheels.outputs.has_suffix_fallback == 'true'" in validation["if"]
+    assert validation["strategy"] == {
+        "fail-fast": False,
+        "matrix": "${{ fromJSON(needs.plan-wheels.outputs.fallback_runtime_matrix) }}",
+    }
+    assert validation["runs-on"] == "${{ matrix.runner }}"
+    assert validation["timeout-minutes"] == 45
+    assert validation["permissions"] == {"contents": "read"}
+    download = next(
+        step
+        for step in validation["steps"]
+        if step.get("with", {}).get("path") == "input/wheel"
+    )
+    assert download["with"]["name"] == (
+        "ucm-wheel-${{ matrix.wheel_id }}-run-${{ github.run_id }}"
+    )
+    step = next(
+        step for step in validation["steps"] if step.get("id") == "runtime-validation"
+    )
+    assert step["run"].strip() == (
+        "bash .github/release/install-validate-wheel-runtime.sh input/wheel"
+    )
+    assert step["env"]["RUNTIME_IMAGE"] == "${{ matrix.runtime_image }}"
+    assert step["env"]["RUNTIME_PLATFORM"] == "linux/${{ matrix.cpu_arch }}"
+    assert not validation.get("continue-on-error")
+    assert not step.get("continue-on-error")
 
 
 def test_finalizer_downloads_pypi_receipt_only_when_publication_is_enabled() -> None:
