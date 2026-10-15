@@ -68,8 +68,6 @@ DramStore 的主要配置项如下。
 
 #### 启动 DramPool
 
-启动池端前先确定支持的张量大小。DramPool 须支持 DramStore 的 `tensor_size_list` 中每种不同的字节大小，而非这些大小的总和。标准 GQA 且 K/V 张量分开存储时，每个大小为“每块 token 数 × 每个 worker 的 KV head 数 × head 维度 × 每个元素字节数”。Qwen3-0.6B 在 TP=1、block size=128、BF16 下为 `128 × 8 × 128 × 2 = 262144` 字节，对应下方命令。其它模型和布局应使用实际张量大小，可在 worker 的 `create UcmPipelineStore with config` 日志中核对。
-
 在 UCM 仓库根目录执行以下命令启动 DramPool：
 
 ```bash
@@ -124,8 +122,6 @@ vllm serve <model-path> \
 | `kv_role` | KV 缓存传输角色，`kv_both` 表示支持缓存 load 和 dump。 |
 | `kv_connector_module_path` | UCM connector 模块路径，使用 `ucm.integration.vllm.ucm_connector`。 |
 | `kv_connector_extra_config.UCM_CONFIG_FILE` | DramStore 配置文件路径。 |
-
-两端部署在同一主机且 DramPool 仅使用一张 NPU 时，应为池端和推理进程选择不同的物理设备。例如，池端设置 `device_ids: [0]`，推理侧设置 `ASCEND_RT_VISIBLE_DEVICES=1`。
 
 ## Metrics
 
