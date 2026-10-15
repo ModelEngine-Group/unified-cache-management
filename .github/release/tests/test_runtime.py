@@ -930,3 +930,46 @@ def test_receipt_rejects_plan_only_image_run_as_false_success() -> None:
         for problem in receipt["problems"]
         if problem["reason"] == "required-stage-incomplete"
     } == {"wheel", "image", "member"}
+
+
+def test_inspect_can_restrict_members_to_one_architecture() -> None:
+    reference = "docker.io/vllm/vllm-openai:cu129-nightly-deadbeef"
+    repository = reference.rpartition(":")[0]
+    manifest = _index("amd64", "arm64")
+    configs = {
+        f"{repository}@{DIGESTS[architecture]}": _config(architecture)
+        for architecture in ("amd64", "arm64")
+    }
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: manifest,
+        config_loader=lambda member: configs[member],
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+        architectures=["amd64"],
+    )
+
+    assert {member["cpu_arch"] for member in inspection["members"]} == {"amd64"}
+    assert inspection["runtimes"][0]["architectures"] == ["amd64"]
+    assert {member["cpu_arch"] for member in inspection["probe_matrix"]["include"]} <= {
+        "amd64"
+    }
+
+
+def test_inspect_rejects_an_architecture_the_runtime_does_not_publish() -> None:
+    reference = "docker.io/vllm/vllm-openai:cu129-nightly-deadbeef"
+    repository = reference.rpartition(":")[0]
+    manifest = _index("amd64")
+    configs = {f"{repository}@{DIGESTS['amd64']}": _config("amd64")}
+
+    with pytest.raises(ValueError, match="no member for architectures"):
+        runtime.inspect_runtime_references(
+            [reference],
+            products=PRODUCTS,
+            runners=RUNNERS,
+            manifest_loader=lambda _reference: manifest,
+            config_loader=lambda member: configs[member],
+            digest_loader=lambda _reference: "sha256:" + "9" * 64,
+            architectures=["arm64"],
+        )

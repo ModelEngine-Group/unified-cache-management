@@ -19,8 +19,9 @@ ENV PLATFORM="${UCM_PLATFORM}" \
     PYTHONDONTWRITEBYTECODE=1 \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
 
-COPY . /workspace/ucm
-WORKDIR /workspace/ucm
+# Copy the generated dependency pin set first so the (slow) build-tool install
+# layer is cached across source changes; the full source is copied afterwards.
+COPY .ucm-compact/build-requirements.txt /tmp/ucm-build-requirements.txt
 
 RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python"; \
     if [[ -x "${python_candidate}" ]]; then \
@@ -37,7 +38,11 @@ RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python
       = "${UCM_PYTHON_VERSION}"
 
 RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
-      -r .ucm-compact/build-requirements.txt
+      -r /tmp/ucm-build-requirements.txt
+
+COPY . /workspace/ucm
+WORKDIR /workspace/ucm
+
 RUN if [[ "${PLATFORM}" == ascend* ]]; then \
       ucm-python .github/release/check-builder-cann.py verify \
         --expected "${UCM_SOURCE_CANN_VERSION}"; \

@@ -171,6 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     upstreams_candidates.add_argument("--tag-fixture", type=Path)
     upstreams_candidates.add_argument("--pr-default", action="store_true")
+    upstreams_candidates.add_argument(
+        "--latest-per-product",
+        action="append",
+        default=[],
+        metavar="PRODUCT",
+        help="Keep only the newest selector for this product id (repeatable)",
+    )
     upstreams_candidates.add_argument("--output", type=Path, required=True)
 
     def _cmd_upstreams_candidates(a):
@@ -180,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
                 serialization.load_json(a.tag_fixture) if a.tag_fixture else None
             ),
             pr_default=a.pr_default,
+            latest_per_product=a.latest_per_product,
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)
@@ -447,6 +455,13 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_inspect = runtime_actions.add_parser("inspect")
     runtime_inspect.add_argument("--reference", action="append", default=[])
     runtime_inspect.add_argument("--references-file", type=Path)
+    runtime_inspect.add_argument(
+        "--architecture",
+        action="append",
+        choices=sorted(runtime.SUPPORTED_ARCHITECTURES),
+        default=[],
+        help="Restrict inspection to this CPU architecture (repeatable)",
+    )
     runtime_inspect.add_argument("--output", type=Path, required=True)
 
     def _cmd_runtime_inspect(a):
@@ -465,6 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
             manifest_loader=lambda reference: registry.read_json("manifest", reference),
             config_loader=lambda reference: registry.read_json("config", reference),
             digest_loader=lambda reference: registry.read("digest", reference).strip(),
+            architectures=a.architecture or None,
         )
         a.output.parent.mkdir(parents=True, exist_ok=True)
         _write(a.output, result)

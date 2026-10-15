@@ -286,6 +286,63 @@ def test_sglang_selection_rejects_main_channels_but_preserves_pinned(
             upstream.validate_selection(selection)
 
 
+def test_latest_only_selector_uses_the_newest_version() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "runtime_selectors": [_selector("0.23"), _selector("0.24")],
+    }
+
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        ["v0.23.0", "v0.24.0"],
+        latest_only=True,
+    ) == [{"runtime_tag": "v0.24.0", "version": "0.24.0", "channel": "stable"}]
+
+
+def test_latest_per_product_narrows_only_the_named_product() -> None:
+    release = _policy()
+    release["products"].append(
+        {
+            "id": "sglang",
+            "runtime_repository": "docker.io/lmsysorg/sglang",
+            "runtime_selectors": [
+                _selector("0.5.18"),
+                _selector("0.5.19"),
+                _selector("0.5.20"),
+            ],
+        }
+    )
+    tags = {
+        "docker.io/vllm/vllm-openai": ["v0.22.1"],
+        "quay.io/ascend/vllm-ascend": ["v0.22.1"],
+        "docker.io/lmsysorg/sglang": [
+            "v0.5.18-cu129",
+            "v0.5.19-cu129",
+            "v0.5.20-cu129",
+        ],
+    }
+
+    candidates = upstream.resolve_runtime_candidates(
+        release,
+        tag_loader=lambda repository: tags[repository],
+        latest_per_product=["sglang"],
+    )
+
+    sglang = [item for item in candidates["runtimes"] if item["product_id"] == "sglang"]
+    assert [item["runtime_tag"] for item in sglang] == ["v0.5.20-cu129"]
+    # Unnamed products still resolve their full configured selector range.
+    assert any(item["product_id"] == "vllm" for item in candidates["runtimes"])
+
+
+def test_latest_per_product_rejects_an_unknown_product() -> None:
+    with pytest.raises(ValueError, match="unknown products"):
+        upstream.resolve_runtime_candidates(
+            _policy(),
+            tag_loader=lambda _repository: [],
+            latest_per_product=["vllm-does-not-exist"],
+        )
+
+
 def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
     probe = next(
         item
