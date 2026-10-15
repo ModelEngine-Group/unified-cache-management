@@ -94,7 +94,6 @@ Status BufferPool::Allocate(Slot& slot)
     slot.length = slotCapacity_;
     slot.slotIndex = index;
     slot.offset = offset;
-    used_.fetch_add(1, std::memory_order_relaxed);
     return Status::OK();
 }
 
@@ -110,7 +109,6 @@ Status BufferPool::Free(std::uint32_t slotIndex)
     }
 
     indexPool_.Release(static_cast<IndexPool::Index>(slotIndex));
-    used_.fetch_sub(1, std::memory_order_relaxed);
     return Status::OK();
 }
 
@@ -123,7 +121,6 @@ void BufferPool::Reset()
     slotNum_ = 0;
     memoryType_ = MemoryType::Host;
     enableZero_ = false;
-    used_.store(0, std::memory_order_relaxed);
 }
 
 bool BufferPool::IsValidPointer(const void* ptr) const

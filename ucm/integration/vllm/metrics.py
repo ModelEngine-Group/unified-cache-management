@@ -380,6 +380,10 @@ if UCM_HAS_PROM_METRICS:
                         label_value,
                     ]
                 else:
+                    # Normal path: a metric with no dynamic-label suffix, so it
+                    # carries only the engine labels plus worker_rank. The name is
+                    # guaranteed registered — every caller resolves it through
+                    # _definition() before reaching _metric().
                     metric = self._metrics_by_name[metric_name]
                     labelvalues = self._engine_labelvalues[engine_idx] + [worker_rank]
                 self._labeled_metrics[key] = metric.labels(*labelvalues)

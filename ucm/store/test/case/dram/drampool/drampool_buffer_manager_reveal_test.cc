@@ -87,5 +87,61 @@ TEST_F(UCDrampoolBufferManagerRevealTest, ResetClearsRevealState)
     EXPECT_FALSE(manager_->IsRevealed(64));
 }
 
+// The used-slot counter now lives in BufferManager (per size) instead of
+// shared BufferPool, so its Allocate/Free semantics are asserted here.
+
+TEST_F(UCDrampoolBufferManagerRevealTest, AllocateBumpsUsedSlotRatio)
+{
+    Buffer first;
+    Buffer second;
+    ASSERT_TRUE(manager_->Allocate(64, first).Success());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.25);
+    ASSERT_TRUE(manager_->Allocate(64, second).Success());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.5);
+}
+
+TEST_F(UCDrampoolBufferManagerRevealTest, FreeDecreasesUsedSlotRatio)
+{
+    Buffer buf;
+    ASSERT_TRUE(manager_->Allocate(64, buf).Success());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.25);
+
+    ASSERT_TRUE(manager_->Free(64, buf.slot).Success());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.0);
+}
+
+TEST_F(UCDrampoolBufferManagerRevealTest, FailedAllocateDoesNotChangeRatio)
+{
+    // The 4096 pool has 2 slots; exhausting it then over-allocating must leave
+    // the used ratio pinned at 1.0.
+    Buffer first;
+    Buffer second;
+    Buffer third;
+    ASSERT_TRUE(manager_->Allocate(4096, first).Success());
+    ASSERT_TRUE(manager_->Allocate(4096, second).Success());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(4096), 1.0);
+
+    EXPECT_TRUE(manager_->Allocate(4096, third).Failure());
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(4096), 1.0);
+}
+
+TEST_F(UCDrampoolBufferManagerRevealTest, UsedSlotCountersAreIndependentPerSize)
+{
+    Buffer buf;
+    ASSERT_TRUE(manager_->Allocate(64, buf).Success());
+
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.25);
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(4096), 0.0);
+}
+
+TEST_F(UCDrampoolBufferManagerRevealTest, ResetClearsUsedSlotRatio)
+{
+    Buffer buf;
+    ASSERT_TRUE(manager_->Allocate(64, buf).Success());
+    manager_->Reset();
+
+    EXPECT_DOUBLE_EQ(manager_->GetUsedSlotRatio(64), 0.0);
+}
+
 }  // namespace
 }  // namespace UC::DramPool

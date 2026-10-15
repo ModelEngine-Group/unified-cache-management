@@ -34,19 +34,6 @@
 namespace UC::DramPool {
 namespace {
 
-void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
-{
-    const auto releasedSlot = record.local_resp_slot.slotIndex;
-    const auto releaseStatus = flagBufferPool.Free(releasedSlot);
-    record.local_resp_slot = {};
-    if (releaseStatus.Failure()) {
-        UC_ERROR(
-            "CompletionPoller release response flag buffer failed, request_id={}, slot={}, "
-            "error={}",
-            record.request_id, releasedSlot, releaseStatus);
-    }
-}
-
 // Batch outcome counters, reported once at the first SubmitResponse entry
 // thanks to the batch_outcome_reported flag, so flag-pool NoSpace retries that
 // re-enter SubmitResponse do not double-report. The batch end-to-end duration
@@ -123,16 +110,18 @@ void ReportDataTransferMetrics(const CompletionRecord& record,
     }
 }
 
+}  // namespace
+
 // Response-buffer release and RTT terminal exit shared by every terminal path:
 // observed from the response-transfer submission
 // (submit_ms, set in SubmitResponse) to the terminal state. Failed responses only
 // bump the failure counter: their latency is not a meaningful RTT observation.
 // Reaching this settle point means the response transfer is terminal, so the
 // batch end-to-end duration is also reported here.
-void SettleResponseTransfer(BufferPool& flagBufferPool, CompletionRecord& record, bool failed)
+void CompletionPoller::SettleResponseTransfer(CompletionRecord& record, bool failed)
 {
     ReportBatchEndToEnd(record);
-    ReleaseResponseBuffer(flagBufferPool, record);
+    ReleaseResponseBuffer(record);
     if (failed) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
         return;
@@ -141,7 +130,20 @@ void SettleResponseTransfer(BufferPool& flagBufferPool, CompletionRecord& record
                              static_cast<double>(SteadyNowMs() - record.submit_ms));
 }
 
-}  // namespace
+void CompletionPoller::ReleaseResponseBuffer(CompletionRecord& record)
+{
+    const auto releasedSlot = record.local_resp_slot.slotIndex;
+    const auto releaseStatus = runtime_.flagBufferPool.Free(releasedSlot);
+    record.local_resp_slot = {};
+    if (releaseStatus.Success()) {
+        --flagPoolUsed_;
+        return;
+    }
+    UC_ERROR(
+        "CompletionPoller release response flag buffer failed, request_id={}, slot={}, "
+        "error={}",
+        record.request_id, releasedSlot, releaseStatus);
+}
 
 void CompletionPoller::Run(const std::atomic_bool& stop)
 {
@@ -221,7 +223,7 @@ void CompletionPoller::PollPendingCompletions()
                              static_cast<double>(pending_.size()));
     if (g_config.flagBufferSlotCount > 0) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kFlagPoolUsageRatio),
-                                 static_cast<double>(runtime_.flagBufferPool.GetUsedCount()) /
+                                 static_cast<double>(flagPoolUsed_) /
                                      g_config.flagBufferSlotCount);
     }
 }
@@ -297,6 +299,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         ReportBatchEndToEnd(record);
         return true;
     }
+    ++flagPoolUsed_;
     UC_DEBUG("CompletionPoller allocated response slot, request_id={}, slot={}", record.request_id,
              record.local_resp_slot.slotIndex);
 
@@ -306,7 +309,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         runtime_.protocol.PackResponse(record.local_resp_slot.localAddr, record.opcode,
                                        KvResponse{record.request_id, record.results});
     if (protocolStatus.Failure()) {
-        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        ReleaseResponseBuffer(record);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
                  record.request_id, static_cast<int>(record.opcode), protocolStatus);
@@ -329,7 +332,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseSubmitDurationMs),
                              static_cast<double>(SteadyNowUs() - submitStartUs) / 1000.0);
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
-        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        ReleaseResponseBuffer(record);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
         UC_ERROR(
             "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
@@ -360,7 +363,7 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",
                  record.request_id, record.response_handle, queryStatus);
-        SettleResponseTransfer(runtime_.flagBufferPool, record, true);
+        SettleResponseTransfer(record, true);
         return true;
     }
     if (transportStatus == transport::TransferStatus::Waiting) {
@@ -379,11 +382,11 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     if (transportStatus != transport::TransferStatus::Completed) {
         UC_ERROR("CompletionPoller response transfer failed, request_id={}, handle={}, status={}",
                  record.request_id, record.response_handle, static_cast<int>(transportStatus));
-        SettleResponseTransfer(runtime_.flagBufferPool, record, true);
+        SettleResponseTransfer(record, true);
         return true;
     }
 
-    SettleResponseTransfer(runtime_.flagBufferPool, record, false);
+    SettleResponseTransfer(record, false);
     UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.response_handle, static_cast<int>(transportStatus));
 

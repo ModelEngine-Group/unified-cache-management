@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -70,6 +71,7 @@ public:
             memoryRegions_.push_back(region);
             pools_.emplace(slotSize, std::move(pool));
             revealed_.emplace(slotSize, false);
+            usedBySize_.emplace(slotSize, 0);
             UC_DEBUG(
                 "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
                 slotSize, slotNum, region.length);
@@ -92,6 +94,7 @@ public:
         }
         pools_.clear();
         revealed_.clear();
+        usedBySize_.clear();
         memoryRegions_.clear();
     }
 
@@ -133,6 +136,7 @@ public:
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
         MarkRevealed(size);
+        AdjustUsed(size, 1);
         buf.length = slot.length;
         buf.slot = slot.slotIndex;
         buf.addr = slot.localAddr;
@@ -155,8 +159,13 @@ public:
             UC_ERROR("BufferManager::Free: no pool registered for size {}.", size);
             return Status::NotFound();
         }
-        // BufferPool::Free updates its own used-slot count on success.
-        return pool->Free(slot);
+        // The used-slot counter lives here (per size), not in BufferPool: only
+        // DramPool reports it, so shared BufferPool users should not pay for it.
+        // Callers must Free with the same size used at Allocate, or the counter
+        // for the mismatched size drifts.
+        auto st = pool->Free(slot);
+        if (st.Success()) { AdjustUsed(size, -1); }
+        return st;
     }
 
     /**
@@ -170,7 +179,9 @@ public:
         if (it == pools_.end() || it->second == nullptr || it->second->GetSlotCount() == 0) {
             return 0.0;
         }
-        return static_cast<double>(it->second->GetUsedCount()) /
+        const auto usedIt = usedBySize_.find(size);
+        if (usedIt == usedBySize_.end()) { return 0.0; }
+        return static_cast<double>(usedIt->second.load(std::memory_order_relaxed)) /
                static_cast<double>(it->second->GetSlotCount());
     }
 
@@ -193,8 +204,20 @@ private:
         if (it != revealed_.end()) { it->second.store(true, std::memory_order_release); }
     }
 
+    void AdjustUsed(std::size_t size, std::int64_t delta)
+    {
+        const auto it = usedBySize_.find(size);
+        if (it == usedBySize_.end()) { return; }
+        if (delta > 0) {
+            it->second.fetch_add(static_cast<std::uint64_t>(delta), std::memory_order_relaxed);
+        } else if (delta < 0) {
+            it->second.fetch_sub(static_cast<std::uint64_t>(-delta), std::memory_order_relaxed);
+        }
+    }
+
     std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
     std::unordered_map<std::size_t, std::atomic_bool> revealed_;
+    std::unordered_map<std::size_t, std::atomic<std::uint64_t>> usedBySize_;
     std::vector<transport::MemoryRegion> memoryRegions_;
 };
 
