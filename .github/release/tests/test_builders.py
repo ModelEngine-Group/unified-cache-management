@@ -695,6 +695,8 @@ def test_cann_equal_version_aliases_remain_ambiguous() -> None:
     formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0b2"])
     with pytest.raises(ValueError, match="found 2"):
         builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)
+
+
 def test_ascend_builder_floor_can_vary_by_runtime() -> None:
     fixture = _fixture()
     repository = "quay.io/ascend/manylinux"
