@@ -16,11 +16,11 @@ ENV PLATFORM="${UCM_PLATFORM}" \
     UCM_BUILD_CPU_ARCH="${UCM_CPU_ARCH}" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
+    PYTHONDONTWRITEBYTECODE=1
 
-COPY . /workspace/ucm
-WORKDIR /workspace/ucm
+# Copy the generated dependency pin set first so the (slow) build-tool install
+# layer is cached across source changes; the full source is copied afterwards.
+COPY .ucm-compact/build-requirements.txt /tmp/ucm-build-requirements.txt
 
 RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python"; \
     if [[ -x "${python_candidate}" ]]; then \
@@ -37,7 +37,17 @@ RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python
       = "${UCM_PYTHON_VERSION}"
 
 RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
-      -r .ucm-compact/build-requirements.txt
+      -r /tmp/ucm-build-requirements.txt
+
+# Only the final build/auditwheel RUN consumes SOURCE_DATE_EPOCH. Declaring it
+# here instead of in the ENV block above keeps the resolved commit timestamp out
+# of the dependency install layer's cache key: an ENV that references a build arg
+# re-keys every later layer, and SOURCE_DATE_EPOCH changes on every commit.
+ENV SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
+
+COPY . /workspace/ucm
+WORKDIR /workspace/ucm
+
 RUN if [[ "${PLATFORM}" == ascend* ]]; then \
       ucm-python .github/release/check-builder-cann.py verify \
         --expected "${UCM_SOURCE_CANN_VERSION}"; \
