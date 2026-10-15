@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .layout import UCMKVCacheGroupInfo, UCMKVCacheLayout
+from .layout import UCMKVCacheGroupSpec, UCMKVCacheLayout
 from .layout.view import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import UCMProxyTransfer
 from .ucm_scheduler import dispatch_routes
@@ -21,7 +21,7 @@ class UCMTransferBuilder:
 
     def __init__(self, layout: UCMKVCacheLayout) -> None:
         self.layout = layout
-        self._routes_by_kind: Mapping[str, tuple[UCMKVCacheGroupInfo, ...]] = dict(
+        self._routes_by_kind: Mapping[str, tuple[UCMKVCacheGroupSpec, ...]] = dict(
             dispatch_routes(layout.spec)
         )
 
@@ -66,9 +66,7 @@ class UCMTransferBuilder:
         transfers = []
         for plan in plans:
             groups = [
-                g
-                for g in self._iter_plan_segments(plan, layer_names)
-                if g[2].shape[1]
+                g for g in self._iter_plan_segments(plan, layer_names) if g[2].shape[1]
             ]
             if not groups:
                 continue
@@ -115,35 +113,23 @@ class UCMTransferBuilder:
         if LAYOUT_DEBUG:
             layout_debug(
                 f"plan hash_group={plan.hash_group} "
-                f"tokens=[{plan.token_start},{plan.token_end}) "
+                f"first_chunk_start={int(plan.token_starts[0])} "
                 f"keys={len(plan.keys)} "
                 f"groups={[group.group_id for group in physical_groups]}"
             )
-        key_count = len(plan.keys)
         group_record_offset = 0
         for group, blocks in zip(physical_groups, plan.group_block_ids, strict=True):
             if group.group_id not in self.layout.group_layouts:
                 continue
             group_layout = self.layout.group_layouts[group.group_id]
-            # Normalize at the pickle boundary: int64 ids mixed into the
-            # uint64 stride arithmetic below would silently promote.
-            blocks = np.asarray(blocks, dtype=np.uint64)
             store_layout = self.layout.store_layouts[group.group_id]
             mask = (
                 None
                 if layer_names is None
                 else group_layout.segment_mask(layer_names=layer_names)
             )
-            token_offsets = None
-            if store_layout.dynamic_token_offsets:
-                first_key = plan.token_start // self.layout.spec.ucm_cache_block_size
-                token_offsets = (
-                    np.arange(first_key, first_key + key_count, dtype=np.uint64)
-                    * self.layout.spec.ucm_cache_block_size
-                    % group_layout.token_block_size
-                )
             offsets, ptrs, sizes = store_layout.resolve_matrices(
-                blocks, key_count, token_offsets=token_offsets, segment_mask=mask
+                blocks, plan.token_starts, segment_mask=mask
             )
             if group_record_offset:
                 offsets = np.broadcast_to(
@@ -151,7 +137,7 @@ class UCMTransferBuilder:
                 )
             if LAYOUT_DEBUG:
                 layout_debug(
-                    f"record group={group.group_id} keys={key_count} "
+                    f"record group={group.group_id} keys={len(plan.keys)} "
                     f"blocks={len(blocks)} segments_per_key={ptrs.shape[1]} "
                     f"record_size={group_record_offset + store_layout.store_bytes}"
                 )

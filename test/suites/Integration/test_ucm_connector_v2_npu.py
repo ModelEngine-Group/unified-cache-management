@@ -18,7 +18,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 for package_name, package_path in (
@@ -31,6 +30,7 @@ for package_name, package_path in (
     sys.modules.setdefault(package_name, package)
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
+
 from ucm.integration.vllm.v2.ucm_connector import UCMConnector
 from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
 from ucm.integration.vllm.v2.ucm_proxy import (
@@ -60,22 +60,33 @@ def _metadata(layout, kind, groups, key, block_base, attribute):
     group_block_ids = []
     cursor = block_base
     for group in groups:
-        group_block_ids.append(np.arange(cursor, cursor + group.tail_blocks, dtype=np.uint64))
-        cursor += group.tail_blocks
+        group_block_ids.append(
+            np.arange(
+                cursor,
+                cursor + layout.spec.blocks_per_chunk[group.group_id],
+                dtype=np.uint64,
+            )
+        )
+        cursor += layout.spec.blocks_per_chunk[group.group_id]
     plan = UCMGroupDispatchPlan(
-        kind, (key,), 0, layout.spec.ucm_cache_block_size, tuple(group_block_ids)
+        kind,
+        (key,),
+        np.array([0], dtype=np.uint64),
+        tuple(group_block_ids),
     )
     return UCMConnectorMetadata(
-        requests={"v2-npu-probe": RequestDispatchMeta(
-            "v2-npu-probe", **{attribute: (plan,)}
-        )}
+        requests={
+            "v2-npu-probe": RequestDispatchMeta("v2-npu-probe", **{attribute: (plan,)})
+        }
     )
 
 
 def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
     # Groups share a native block pool: use distinct IDs across groups and
     # disjoint source/target windows, rather than overwriting shared slots.
-    window_blocks = sum(group.tail_blocks for group in groups)
+    window_blocks = sum(
+        layout.spec.blocks_per_chunk[group.group_id] for group in groups
+    )
     for group in groups:
         if group.group_id in layout.group_layouts:
             if 2 * window_blocks > layout.group_layouts[group.group_id].num_blocks:
@@ -94,8 +105,7 @@ def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
     for index, (ptr, size) in enumerate(zip(source_ptrs, sizes, strict=True)):
         ptr, size = int(ptr), int(size)
         pattern = bytes(
-            (sequence * 29 + index * 17 + byte_index) % 251
-            for byte_index in range(251)
+            (sequence * 29 + index * 17 + byte_index) % 251 for byte_index in range(251)
         )
         payload = (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
         byte_access.write(ptr, payload)

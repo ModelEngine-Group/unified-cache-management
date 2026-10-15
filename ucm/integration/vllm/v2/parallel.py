@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
 import os
-from math import lcm
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from math import lcm
 from typing import TYPE_CHECKING, Any
 
 from .ucm_proxy import KVCacheValue, UCMProxy
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+
     from .layout import UCMKVCacheSpec
 
 
@@ -35,10 +36,10 @@ class ParallelLayout:
             dcp=p.decode_context_parallel_size,
             interleave=p.cp_kv_cache_interleave_size,
         )
-        if min(result.tp, result.pp, result.pcp, result.dcp, result.interleave) < 1:
-            raise ValueError("Parallel dimensions must be positive")
+        # UCM's shard mapping treats DCP as a TP subgroup. Upstream also
+        # permits PCP-spanning DCP, which this implementation does not handle.
         if result.tp % result.dcp:
-            raise ValueError("DCP must divide TP; DCP is a TP subgroup")
+            raise ValueError("v2 CP requires DCP to be a TP subgroup")
         return replace(result, pp_partition=os.getenv("VLLM_PP_LAYER_PARTITION", ""))
 
     @property
@@ -58,7 +59,7 @@ class ParallelLayout:
         return value
 
     def apply_context_parallel(
-        self, spec: UCMKVCacheSpec, requested_block_size: int | None = None
+        self, spec: UCMKVCacheSpec, requested_tokens_per_chunk: int | None = None
     ) -> UCMKVCacheSpec:
         cp = self.pcp * self.dcp
         if cp == 1:
@@ -66,26 +67,25 @@ class ParallelLayout:
         if spec.wa_groups or spec.state_groups:
             raise NotImplementedError("v2 CP currently supports full attention only")
         groups = tuple(
-            replace(g, token_block_size=g.token_block_size * cp)
-            if g.is_persistent else g
+            (
+                replace(g, tokens_per_block=g.tokens_per_block * cp)
+                if g.is_persistent
+                else g
+            )
             for g in spec.groups
         )
         persistent_groups = tuple(g for g in groups if g.is_persistent)
         # Only complete distributed pages: a fractional CP page needs explicit
         # striped-token mapping, not proportional source offsets.
-        ucm_block_size = requested_block_size or lcm(
-            *(g.token_block_size for g in persistent_groups)
+        tokens_per_chunk = requested_tokens_per_chunk or lcm(
+            *(g.tokens_per_block for g in persistent_groups)
         )
-        if any(ucm_block_size % g.token_block_size for g in persistent_groups):
+        if any(tokens_per_chunk % g.tokens_per_block for g in persistent_groups):
             raise ValueError("CP UCM blocks must contain whole distributed KV pages")
         return replace(
             spec,
-            groups=tuple(
-                replace(g, tail_blocks=ucm_block_size // g.token_block_size)
-                if g.is_persistent else g
-                for g in groups
-            ),
-            ucm_cache_block_size=ucm_block_size,
+            groups=groups,
+            tokens_per_chunk=tokens_per_chunk,
         )
 
 

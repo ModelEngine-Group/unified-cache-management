@@ -7,7 +7,7 @@ import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, runtime_checkable
 from uuid import uuid4
 
 import numpy as np
@@ -120,8 +120,6 @@ class TorchTensorByteAccess:
                 ).set_(storage, 0, (size,), (1,))
                 buffers.append((base, base + size, byte_view))
                 devices.add(tensor.device)
-        if not buffers:
-            raise ValueError("No non-empty KV cache tensor storage was registered")
         self._buffers = buffers
         self._devices = devices
 
@@ -131,10 +129,7 @@ class TorchTensorByteAccess:
             if device.type == "cuda":
                 torch_module.cuda.synchronize(device)
             elif device.type == "npu":
-                npu = getattr(torch_module, "npu", None)
-                if npu is None:
-                    raise RuntimeError("Torch NPU support is unavailable")
-                npu.synchronize(device)
+                torch_module.npu.synchronize(device)
 
     def _view(self, ptr: int, size: int) -> torch.Tensor:
         # Callers hand us numpy scalars (the batch arrays are uint64);
@@ -182,7 +177,7 @@ class SimpleFileUCMProxy:
         self.byte_access.register_tensors(kv_caches)
 
     def _path(self, key: bytes) -> Path:
-        return self.root / f"{bytes(key).hex()}{self._SUFFIX}"
+        return self.root / f"{key.hex()}{self._SUFFIX}"
 
     def lookup(self, block_ids: Sequence[bytes]) -> tuple[bool, ...]:
         return tuple(self._path(key).is_file() for key in block_ids)
@@ -210,29 +205,19 @@ class SimpleFileUCMProxy:
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> Iterable[tuple[bytes, Iterable[tuple[int, int, int]]]]:
-        if np.ndim(ptrs) == 2:
-            if np.shape(offsets) != np.shape(ptrs) or np.shape(sizes) != np.shape(ptrs):
-                raise ValueError("Transfer arrays must have identical [K, S] shapes")
-            if ptrs.shape[1] == 1:
-                # A single segment needs no row views or three map iterators.
-                # Column views also work for strided/broadcast matrices.
-                return (
-                    (bytes(key), ((int(o), int(p), int(s)),))
-                    for key, o, p, s in zip(
-                        block_ids, offsets[:, 0], ptrs[:, 0], sizes[:, 0], strict=True
-                    )
-                )
+        # TransferBuilder supplies matching native [K,S] arrays. The backend
+        # consumes them directly, including strided and broadcast views.
+        if ptrs.shape[1] == 1:
             return (
-                (bytes(key), zip(map(int, o), map(int, p), map(int, s)))
-                for key, o, p, s in zip(block_ids, offsets, ptrs, sizes, strict=True)
+                (key, ((int(o), int(p), int(s)),))
+                for key, o, p, s in zip(
+                    block_ids, offsets[:, 0], ptrs[:, 0], sizes[:, 0], strict=True
+                )
             )
-        # Compatibility for the legacy flat test/toolkit API only.
-        records: dict[bytes, list[tuple[int, int, int]]] = {}
-        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes, strict=True):
-            records.setdefault(bytes(key), []).append(
-                (int(offset), int(ptr), int(size))
-            )
-        return records.items()
+        return (
+            (key, zip(map(int, o), map(int, p), map(int, s)))
+            for key, o, p, s in zip(block_ids, offsets, ptrs, sizes, strict=True)
+        )
 
     def dump(
         self,
@@ -339,45 +324,29 @@ class UCMProxyAdapter:
     def __init__(self, proxy: UCMProxy) -> None:
         self._proxy = proxy
 
-    @staticmethod
-    def _keys(block_ids: Sequence[bytes]) -> tuple[bytes, ...]:
-        # Native transfers already carry bytes: validate in one pass and
-        # preserve identity for subsequent layer callbacks.
-        if type(block_ids) is tuple and all(
-            type(key) is bytes and len(key) == 16 for key in block_ids
-        ):
-            return block_ids
-        keys = tuple(bytes(key) for key in block_ids)
-        invalid = [index for index, key in enumerate(keys) if len(key) != 16]
-        if invalid:
-            raise ValueError(
-                f"UCM block IDs must be 16 bytes; invalid indexes={invalid}"
-            )
-        return keys
-
     def lookup(self, block_ids: Sequence[bytes]) -> tuple[bool, ...]:
-        keys = self._keys(block_ids)
         try:
-            result = tuple(bool(value) for value in self._proxy.lookup(keys))
+            result = tuple(self._proxy.lookup(block_ids))
         except Exception as exc:
             raise UCMProxyError("Proxy lookup failed") from exc
-        if len(result) != len(keys):
+        if len(result) != len(block_ids):
             raise UCMProxyError(
-                f"Proxy lookup returned {len(result)} results for {len(keys)} keys"
+                f"Proxy lookup returned {len(result)} results for {len(block_ids)} keys"
             )
         return result
 
-    def _scan(self, operation: str, block_ids: Sequence[bytes]) -> int:
-        keys = self._keys(block_ids)
+    def _scan(
+        self, operation: Literal["prefix", "reverse"], block_ids: Sequence[bytes]
+    ) -> int:
         try:
             method = getattr(self._proxy, f"lookup_on_{operation}")
-            result = int(method(keys))
+            result = int(method(block_ids))
         except Exception as exc:
             raise UCMProxyError(f"Proxy lookup_on_{operation} failed") from exc
-        if not -1 <= result < len(keys):
+        if not -1 <= result < len(block_ids):
             raise UCMProxyError(
                 f"Proxy lookup_on_{operation} returned {result} "
-                f"for {len(keys)} keys"
+                f"for {len(block_ids)} keys"
             )
         return result
 
@@ -412,10 +381,10 @@ class UCMProxyAdapter:
                 raise
             raise UCMProxyError("Proxy commit failed") from exc
 
-    def enqueue(self, operation: str, transfer: UCMProxyTransfer) -> UCMProxyTask:
+    def enqueue(
+        self, operation: Literal["load", "dump"], transfer: UCMProxyTransfer
+    ) -> UCMProxyTask:
         """Submit unchanged descriptors; the returned task retains their lifetime."""
-        if operation not in ("load", "dump"):
-            raise ValueError(f"Unknown transfer operation: {operation}")
         try:
             handle = None
             if transfer.keys:
@@ -439,6 +408,8 @@ class UCMProxyAdapter:
                 raise
             raise UCMProxyError(f"Proxy {task.operation} failed") from exc
 
-    def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
+    def submit(
+        self, operation: Literal["load", "dump"], transfer: UCMProxyTransfer
+    ) -> None:
         """Submit and wait for a bulk transfer."""
         self.wait(self.enqueue(operation, transfer))

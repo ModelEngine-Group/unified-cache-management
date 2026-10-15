@@ -9,10 +9,9 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
-from .layout import UCMKVCacheGroupInfo, UCMKVCacheSpec
+from .layout import UCMKVCacheGroupSpec, UCMKVCacheSpec
 from .ucm_proxy import UCMProxyAdapter
 
 if TYPE_CHECKING:
@@ -23,9 +22,7 @@ if TYPE_CHECKING:
 
 def dispatch_routes(
     spec: UCMKVCacheSpec,
-) -> tuple[
-    tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...
-]:
+) -> tuple[tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupSpec", ...]], ...]:
     """The routing table every dump/load works over: key kind -> groups.
 
     FA holds the full-attention groups; WA the sliding groups that
@@ -35,13 +32,11 @@ def dispatch_routes(
     """
 
     routes: list[
-        tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]]
+        tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupSpec", ...]]
     ] = []
     if spec.fa_groups:
         routes.append(("FA", spec.fa_groups))
-    wa_stored = tuple(
-        group for group in spec.wa_groups if (group.tail_tokens or 0) > 0
-    )
+    wa_stored = tuple(group for group in spec.wa_groups if (group.tail_tokens or 0) > 0)
     if wa_stored:
         routes.append(("WA", wa_stored))
     if spec.state_groups:
@@ -105,11 +100,11 @@ class UCMGroupDispatchPlan:
 
     hash_group: Literal["FA", "WA", "State"]
     keys: tuple[bytes, ...]
-    token_start: int
-    token_end: int
+    # Logical chunk starts, one per key; shared by all participating groups.
+    token_starts: np.ndarray
     # Physical block IDs per participating group, in dispatch_routes()
-    # order, block-major (tail_blocks blocks per key) -- the static
-    # window shape lives on the spec's groups (``tail_blocks``), so
+    # order, block-major (blocks_per_chunk blocks per key) -- the static
+    # window shape lives on UCMKVCacheSpec.blocks_per_chunk, so
     # only the ids travel.
     group_block_ids: tuple[np.ndarray, ...]
 
@@ -200,20 +195,16 @@ class UCMDispatcher:
             result.append(parent)
         return tuple(result)
 
-    def _chain_keys(
-        self, token_ids: Sequence[int]
-    ) -> tuple[tuple[bytes, ...], ...]:
+    def _chain_keys(self, token_ids: Sequence[int]) -> tuple[tuple[bytes, ...], ...]:
         """Per-chain keys: one shared hash chain, each chain's tag appended.
 
-        The chain runs over ucm_cache_block_size token blocks from the
+        The chain runs over tokens_per_chunk token blocks from the
         base seed; a key is the chain value's first 14 bytes plus the
         chain's 2-byte tag, so the FA and boundary keys at one boundary
         differ only in their tag.
         """
 
-        values = self._chain(
-            token_ids, self.spec.ucm_cache_block_size, self.base_seed
-        )
+        values = self._chain(token_ids, self.spec.tokens_per_chunk, self.base_seed)
         return tuple(
             tuple(value[:14] + tag for value in values)
             for _label, tag in self._chain_tags
@@ -236,12 +227,10 @@ class UCMDispatcher:
         )
         return result
 
-    def _lookup(
-        self, token_ids: Sequence[int], hbm: int
-    ) -> UCMLookupResult:
+    def _lookup(self, token_ids: Sequence[int], hbm: int) -> UCMLookupResult:
         """FA prefix restore; WA/State additionally need their boundary.
 
-        All chains share one hash chain at ucm_cache_block_size, so every
+        All chains share one hash chain at tokens_per_chunk, so every
         chain has a key at the same boundary.  The FA chain is a prefix
         requirement; the WA (window tail) and State (mamba snapshot)
         chains are boundary records -- restoring requires a complete FA
@@ -249,19 +238,19 @@ class UCMDispatcher:
         Boundary chains must all exist at the same restore boundary.
         """
 
-        ucm_block_size = self.spec.ucm_cache_block_size
+        tokens_per_chunk = self.spec.tokens_per_chunk
         group_ucm_block_ids = self._chain_keys(token_ids)
         # Every chain scans up to the last complete block below the
         # recompute margin; the margin's block is left to recompute (v1
         # semantics -- a full hit still recomputes recompute_tokens).
-        last = max(len(token_ids) - self.recompute_tokens, 0) // ucm_block_size
-        first = hbm // ucm_block_size
+        last = max(len(token_ids) - self.recompute_tokens, 0) // tokens_per_chunk
+        first = hbm // tokens_per_chunk
         fa_end = hbm
         for (label, _tag), keys in zip(self._chain_tags, group_ucm_block_ids):
             if label == "FA":
                 hits = self.proxy.lookup_on_prefix(keys[first:last])
                 if hits >= 0:
-                    fa_end = max((first + hits + 1) * ucm_block_size, hbm)
+                    fa_end = max((first + hits + 1) * tokens_per_chunk, hbm)
                 break
         boundary_keys = [
             keys
@@ -270,20 +259,18 @@ class UCMDispatcher:
         ]
         restore_end = fa_end
         while boundary_keys and restore_end > hbm:
-            end = restore_end // ucm_block_size
+            end = restore_end // tokens_per_chunk
             hits = [
-                self.proxy.lookup_on_reverse(keys[first:end])
-                for keys in boundary_keys
+                self.proxy.lookup_on_reverse(keys[first:end]) for keys in boundary_keys
             ]
             if min(hits) < 0:
                 restore_end = hbm
                 break
-            candidate = (first + min(hits) + 1) * ucm_block_size
+            candidate = (first + min(hits) + 1) * tokens_per_chunk
             if candidate == restore_end:
                 break
             restore_end = candidate
         return UCMLookupResult(max(restore_end - hbm, 0), group_ucm_block_ids)
-
 
     def update_blocks(
         self,
@@ -340,7 +327,7 @@ class UCMDispatcher:
             i for i, (kind, _) in enumerate(self._routes) if kind == "State"
         )
         groups = self._routes[route_index][1]
-        ucm_block_size = self.spec.ucm_cache_block_size
+        tokens_per_chunk = self.spec.tokens_per_chunk
         matched_prefix = state.hbm_hit_tokens + state.external_hit_tokens
         boundaries: dict[int, dict[int, int]] = {}
         for group_id, block_id, boundary in offloads:
@@ -350,20 +337,21 @@ class UCMDispatcher:
             # computed after that hit can be offered on a later step.
             if (
                 matched_prefix < boundary <= state.num_token_ids
-                and boundary % ucm_block_size == 0
+                and boundary % tokens_per_chunk == 0
             ):
                 boundaries.setdefault(boundary, {})[group_id] = block_id
         plans = []
         for boundary, blocks in sorted(boundaries.items()):
             if not all(group.group_id in blocks for group in groups):
                 continue
-            key = state.group_ucm_block_ids[route_index][boundary // ucm_block_size - 1]
+            key = state.group_ucm_block_ids[route_index][
+                boundary // tokens_per_chunk - 1
+            ]
             plans.append(
                 UCMGroupDispatchPlan(
                     "State",
                     (key,),
-                    boundary - ucm_block_size,
-                    boundary,
+                    np.asarray([boundary - tokens_per_chunk], dtype=np.uint64),
                     tuple(
                         np.asarray([blocks[group.group_id]], dtype=np.uint64)
                         for group in groups
@@ -387,9 +375,7 @@ class UCMDispatcher:
         # engine registers that block as a reusable local checkpoint. Imported
         # boundaries are excluded from State dump plans.
         state_target_tokens = (
-            load_end
-            if self.spec.device_type == "npu"
-            else load_end + scheduled_tokens
+            load_end if self.spec.device_type == "npu" else load_end + scheduled_tokens
         )
         load = self._plans(
             state,
@@ -423,13 +409,13 @@ class UCMDispatcher:
         plans: list[UCMGroupDispatchPlan] = []
         if token_end <= token_start:
             return ()
-        ucm_block_size = self.spec.ucm_cache_block_size
+        tokens_per_chunk = self.spec.tokens_per_chunk
         # Route-invariant key bounds: the first key the range touches and
         # the boundary it ends on.  No complete key in range means no
         # plan for any kind: FA has nothing to store or load, and the
         # WA/State boundary was not reached.
-        first_key = token_start // ucm_block_size
-        last_key = token_end // ucm_block_size
+        first_key = token_start // tokens_per_chunk
+        last_key = token_end // tokens_per_chunk
         if last_key <= first_key:
             return ()
         for route_index, (hash_group, groups) in enumerate(self._routes):
@@ -455,15 +441,14 @@ class UCMDispatcher:
                 # anyway.  Skipping keeps every dumped key's record
                 # complete, so reverse lookup never selects a partial
                 # one (the load branch above cannot select one either).
-                if end * ucm_block_size < max(
+                if end * tokens_per_chunk < max(
                     group.tail_tokens or 0 for group in groups
                 ):
                     continue
             plan = UCMGroupDispatchPlan(
                 hash_group,
                 tuple(keys_available[start:end]),
-                start * ucm_block_size,
-                end * ucm_block_size,
+                np.arange(start, end, dtype=np.uint64) * np.uint64(tokens_per_chunk),
                 tuple(
                     self._group_blocks(
                         hash_group,
@@ -488,7 +473,11 @@ class UCMDispatcher:
                         plan,
                         group_block_ids=tuple(
                             self._group_blocks(
-                                hash_group, group, state, start, end,
+                                hash_group,
+                                group,
+                                state,
+                                start,
+                                end,
                                 state_target_tokens=token_end,
                             )
                             for group in groups
@@ -500,7 +489,7 @@ class UCMDispatcher:
     def _group_blocks(
         self,
         hash_group: Literal["FA", "WA", "State"],
-        group: UCMKVCacheGroupInfo,
+        group: UCMKVCacheGroupSpec,
         state: RequestState,
         start: int,
         end: int,
@@ -509,48 +498,42 @@ class UCMDispatcher:
     ) -> np.ndarray:
         """One group's window block ids for the plan's keys, vectorized.
 
-        Every window is ``tail_blocks`` vllm blocks ending at the block
+        Every window is ``blocks_per_chunk`` vllm blocks ending at the block
         containing the window's last token -- HMA's boundary indices: a
-        FA key's last token is (k + 1) * ucm_block_size - 1; a WA key anchors its
+        FA key's last token is (k + 1) * tokens_per_chunk - 1; a WA key anchors its
         window at the restore boundary. State uses a platform load slot.
         The _plans clamp gate keeps the WA gather non-negative and the
         parse-time divisibility checks keep an FA key inside one shared
         block.  Block-major per key.
         """
 
-        ucm_block_size = self.spec.ucm_cache_block_size
+        tokens_per_chunk = self.spec.tokens_per_chunk
         table = state.group_vllm_block_ids[group.group_id]
-        tail_blocks = group.tail_blocks
+        blocks_per_chunk = self.spec.blocks_per_chunk[group.group_id]
         if hash_group == "State":
             # The caller resolves CUDA's current running slot versus
             # Ascend's precopy source slot from the load/copy ordering.
-            index = (state_target_tokens - 1) // group.token_block_size
+            index = (state_target_tokens - 1) // group.tokens_per_block
             block_id = table[index]
             assert block_id != 0
             return np.asarray([block_id], dtype=np.uint64)
         if hash_group == "FA":
             boundary_tokens = (
-                np.arange(start + 1, end + 1, dtype=np.uint64)
-                * ucm_block_size
-                - 1
+                np.arange(start + 1, end + 1, dtype=np.uint64) * tokens_per_chunk - 1
             )
         else:
             # WA: one boundary key at the plan's newest boundary.
-            boundary_tokens = np.asarray(
-                [end * ucm_block_size - 1], dtype=np.uint64
-            )
-        boundary_block_idx = boundary_tokens // group.token_block_size
+            boundary_tokens = np.asarray([end * tokens_per_chunk - 1], dtype=np.uint64)
+        boundary_block_idx = boundary_tokens // group.tokens_per_block
         # Convert only the table range the windows touch -- a WA group's
         # table spans the whole request while its window holds a couple
         # of blocks.  The clamp gate and the FA divisibility checks keep
         # first_idx non-negative.
-        first_idx = int(boundary_block_idx.min()) - (tail_blocks - 1)
+        first_idx = int(boundary_block_idx.min()) - (blocks_per_chunk - 1)
         last_idx = int(boundary_block_idx.max())
-        table_ids = np.asarray(
-            table[first_idx : last_idx + 1], dtype=np.uint64
-        )
+        table_ids = np.asarray(table[first_idx : last_idx + 1], dtype=np.uint64)
         within = boundary_block_idx - first_idx
-        if tail_blocks == 1:
+        if blocks_per_chunk == 1:
             return table_ids[within]
-        steps_back = np.arange(tail_blocks, dtype=np.uint64)[::-1]
+        steps_back = np.arange(blocks_per_chunk, dtype=np.uint64)[::-1]
         return table_ids[(within[:, None] - steps_back[None, :]).reshape(-1)]

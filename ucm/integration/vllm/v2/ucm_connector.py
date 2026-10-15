@@ -20,6 +20,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     SupportsHMA,
 )
 
+from ucm.utils import Config
+
 from .layout import (
     UCMKVCacheLayout,
     UCMKVCacheSpec,
@@ -39,7 +41,6 @@ from .ucm_scheduler import (
     UCMDispatcher,
     dispatch_routes,
 )
-from ucm.utils import Config
 
 if TYPE_CHECKING:
     import torch
@@ -107,22 +108,15 @@ def _storage_root(launch_config: dict[str, Any]) -> Path:
     if explicit:
         return Path(str(explicit))
 
-    connectors = launch_config.get("ucm_connectors")
-    if (
-        not isinstance(connectors, (list, tuple))
-        or len(connectors) != 1
-        or not isinstance(connectors[0], dict)
-    ):
+    connectors = launch_config["ucm_connectors"]
+    if len(connectors) != 1:
         raise ValueError(
             "connector v2 requires exactly one ucm_connectors entry or "
             "v2_storage_path"
         )
-    store_config = connectors[0].get("ucm_connector_config") or {}
-    if not isinstance(store_config, dict):
-        raise ValueError("ucm_connector_config must be a mapping")
-    backends = store_config.get("storage_backends")
+    backends = connectors[0]["ucm_connector_config"]["storage_backends"]
     if isinstance(backends, (list, tuple)):
-        backends = backends[0] if backends else None
+        backends = backends[0]
     elif isinstance(backends, str) and os.pathsep in backends:
         backends = backends.split(os.pathsep, 1)[0]
     if not backends:
@@ -140,7 +134,8 @@ def _jsonable(value: Any) -> Any:
     """Best-effort JSON rendering for raw KVCacheConfig payloads."""
 
     import enum as _enum
-    from dataclasses import fields as _fields, is_dataclass as _is_dataclass
+    from dataclasses import fields as _fields
+    from dataclasses import is_dataclass as _is_dataclass
 
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -192,10 +187,7 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
                 "kv_cache_spec": _jsonable(group.kv_cache_spec),
             }
         )
-    tensors = [
-        _jsonable(tensor)
-        for tensor in kv_cache_config.kv_cache_tensors
-    ]
+    tensors = [_jsonable(tensor) for tensor in kv_cache_config.kv_cache_tensors]
     payload = {
         "num_blocks": kv_cache_config.num_blocks,
         "kv_cache_tensors": tensors,
@@ -245,9 +237,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         scheduler_block_size, _ = resolve_kv_cache_block_sizes(
             kv_cache_config, vllm_config
         )
-        ucm_cache_block_size = launch_config.get("ucm_cache_block_size")
-        if ucm_cache_block_size is not None:
-            ucm_cache_block_size = int(ucm_cache_block_size)
+        tokens_per_chunk = launch_config.get("tokens_per_chunk")
+        if tokens_per_chunk is not None:
+            tokens_per_chunk = int(tokens_per_chunk)
         rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank()
         _dump_raw_kv_cache_config(kv_cache_config, rank)
         self.parallel_layout = ParallelLayout.from_config(vllm_config)
@@ -263,23 +255,27 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         num_layers = text_config.num_hidden_layers
         self._num_hidden_layers = num_layers
         compressor_tokens_per_state = {
-            index: max(1, int(ratio))
-            for index, ratio in enumerate(compress_ratios)
+            index: max(1, int(ratio)) for index, ratio in enumerate(compress_ratios)
         }
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
             scheduler_block_size=scheduler_block_size,
-            ucm_cache_block_size=ucm_cache_block_size,
+            tokens_per_chunk=tokens_per_chunk,
             device_type=self.context.device_type,
             compressor_tokens_per_state=compressor_tokens_per_state,
             num_hidden_layers=num_layers,
+            num_attn_module=(
+                2
+                if vllm_config.model_config.hf_config.model_type == "longcat_flash"
+                else 1
+            ),
         )
         if self.spec.state_groups and vllm_config.use_v2_model_runner:
             raise NotImplementedError(
                 "State restore currently targets V1 model-runner load/copy ordering"
             )
         self.spec = self.parallel_layout.apply_context_parallel(
-            self.spec, ucm_cache_block_size
+            self.spec, tokens_per_chunk
         )
         dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         schema = {
@@ -304,7 +300,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         namespace = (
             f"{self.context.device_type}-{dtype}"
             f"-{digest}-b{self.spec.scheduler_block_size}"
-            f"-c{self.spec.ucm_cache_block_size}-r7"
+            f"-c{self.spec.tokens_per_chunk}-r7"
         )
         self.use_layerwise = bool(launch_config.get("use_layerwise", False))
         if self.use_layerwise:
@@ -371,10 +367,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return None
 
     def register_kv_caches(self, kv_caches: dict[str, "torch.Tensor"]) -> None:
-        if self.context.role != KVConnectorRole.WORKER:
-            raise RuntimeError("KV cache registration is only available on worker")
         self.layout = UCMKVCacheLayout(
-            self.spec, kv_caches,
+            self.spec,
+            kv_caches,
             kv_cache_config=self._kv_cache_config,
             num_hidden_layers=self._num_hidden_layers,
             use_layerwise=self.use_layerwise,
@@ -433,9 +428,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             # before forward, including attention caches sharing a layer index.
             state_layer_ids = {
                 layer.layer_index
-                for group_layout in self.layout.group_layouts.values()
-                if group_layout.is_state_snapshot
-                for layer in group_layout.layers
+                for group in self.spec.state_groups
+                if group.group_id in self.layout.group_layouts
+                for layer in self.layout.group_layouts[group.group_id].layer_specs
             }
             for layer_id in state_layer_ids:
                 self._wait_layer_load(layer_id)
@@ -502,8 +497,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def _dump_empty_shards(
         self, metadata: UCMConnectorMetadata
     ) -> list[tuple[bytes, ...]]:
-        from .ucm_proxy import UCMProxyTransfer
         import numpy as np
+
+        from .ucm_proxy import UCMProxyTransfer
 
         assert self.layout is not None
         empty_kinds = {

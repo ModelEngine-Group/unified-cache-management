@@ -614,8 +614,7 @@ def assert_shared_dispatch(metadata):
             phase,
             plan.hash_group,
             plan.keys,
-            plan.token_start,
-            plan.token_end,
+            tuple(int(x) for x in plan.token_starts),
             tuple(tuple(int(x) for x in blocks) for blocks in plan.group_block_ids),
         )
         for request_id, request in metadata.requests.items()
@@ -1759,7 +1758,7 @@ def schedule(
         prompt_token_ids,
         fixture.kv_cache_config,
         hash_block_size,
-        getattr(connector_spec, "ucm_cache_block_size", None),
+        getattr(connector_spec, "tokens_per_chunk", None),
     )
     source = schedule_source(
         fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups

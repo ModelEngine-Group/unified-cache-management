@@ -6,13 +6,13 @@ import os
 import sys
 import tempfile
 import types
-import numpy as np
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
@@ -101,6 +101,11 @@ class KVConnectorBaseV1:
         return self._connector_metadata
 
 
+@dataclass
+class KVConnectorTransferResults:
+    pass
+
+
 class KVConnectorMetadata:
     pass
 
@@ -114,6 +119,7 @@ class SupportsHMA:
     pass
 
 
+vllm_base.KVConnectorTransferResults = KVConnectorTransferResults
 vllm_base.KVConnectorBase_V1 = KVConnectorBaseV1
 vllm_base.KVConnectorMetadata = KVConnectorMetadata
 vllm_base.KVConnectorRole = KVConnectorRole
@@ -125,14 +131,12 @@ vllm_model_utils = types.ModuleType("vllm.model_executor.models.utils")
 
 
 def extract_layer_index(layer_name, num_attn_module=1):
-    subnames = layer_name.split(".")
-    int_vals = []
-    for subname in subnames:
-        try:
-            int_vals.append(int(subname))
-        except ValueError:
-            continue
-    return int_vals[-1] if int_vals else 0
+    values = [int(part) for part in layer_name.split(".") if part.isdecimal()]
+    if num_attn_module == 1 or "attn" not in layer_name:
+        assert len(values) == 1
+        return values[0]
+    assert 1 <= len(values) <= 2
+    return values[0] * num_attn_module + values[1] if len(values) == 2 else values[0]
 
 
 vllm_model_utils.extract_layer_index = extract_layer_index
@@ -154,147 +158,58 @@ class KVCacheSpecKind(str, enum.Enum):
     SLIDING_WINDOW = "sliding_window"
     SLIDING_WINDOW_MLA = "sliding_window_mla"
     MAMBA = "mamba"
+    CHUNKED_LOCAL_ATTENTION = "chunked_local_attention"
+    SINK_FULL_ATTENTION = "sink_full_attention"
+    ENCODER_ONLY_ATTENTION = "encoder_only_attention"
+    CROSS_ATTENTION = "cross_attention"
     UNKNOWN = "unknown"
 
 
-class _KVCacheSpec:
-    pass
-
-
-class _AttentionSpec(_KVCacheSpec):
-    pass
-
-
-class _FullAttentionSpec(_AttentionSpec):
-    pass
-
-
-class _MLAAttentionSpec(_FullAttentionSpec):
-    pass
-
-
-class _SlidingWindowSpec(_AttentionSpec):
-    pass
-
-
-class _SlidingWindowMLASpec(_SlidingWindowSpec):
-    pass
-
-
-class _MambaSpec(_KVCacheSpec):
-    pass
-
-
-def get_kv_cache_spec_kind(spec):
-    if isinstance(spec, _SlidingWindowMLASpec):
-        return KVCacheSpecKind.SLIDING_WINDOW_MLA
-    if isinstance(spec, _MLAAttentionSpec):
-        return KVCacheSpecKind.MLA_ATTENTION
-    if isinstance(spec, _FullAttentionSpec):
-        return KVCacheSpecKind.FULL_ATTENTION
-    if isinstance(spec, _SlidingWindowSpec):
-        return KVCacheSpecKind.SLIDING_WINDOW
-    if isinstance(spec, _MambaSpec):
-        return KVCacheSpecKind.MAMBA
-    return KVCacheSpecKind.UNKNOWN
-
-
-for name, value in (
-    ("KVCacheSpecKind", KVCacheSpecKind),
-    ("KVCacheSpec", _KVCacheSpec),
-    ("AttentionSpec", _AttentionSpec),
-    ("FullAttentionSpec", _FullAttentionSpec),
-    ("MLAAttentionSpec", _MLAAttentionSpec),
-    ("SlidingWindowSpec", _SlidingWindowSpec),
-    ("SlidingWindowMLASpec", _SlidingWindowMLASpec),
-    ("MambaSpec", _MambaSpec),
-    ("get_kv_cache_spec_kind", get_kv_cache_spec_kind),
-):
-    setattr(vllm_kv_cache_interface, name, value)
-sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
-
-# The connector resolves its scheduler granularity through vLLM's
-# resolve_kv_cache_block_sizes; mirror its dcp=1 semantics (single group =
-# cache_config.block_size, multiple groups = LCM of group block sizes).
-vllm_v1_core = types.ModuleType("vllm.v1.core")
-vllm_v1_core.__path__ = []
-sys.modules.setdefault("vllm.v1.core", vllm_v1_core)
-vllm_kv_cache_utils = types.ModuleType("vllm.v1.core.kv_cache_utils")
-
-
-def resolve_kv_cache_block_sizes(kv_cache_config, vllm_config):
-    dcp = int(
-        getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1) or 1
-    )
-    groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()) or ())
-    if len(groups) <= 1:
-        size = int(vllm_config.cache_config.block_size) * dcp
-        return size, size
-    scheduler = math.lcm(*(int(g.kv_cache_spec.block_size) for g in groups))
-    return scheduler, scheduler
-
-
-vllm_kv_cache_utils.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
-sys.modules.setdefault(vllm_kv_cache_utils.__name__, vllm_kv_cache_utils)
-
-from ucm.integration.vllm.v2.layout import (  # noqa: E402
-    UCMKVCacheLayout,
-    parse_kv_cache_config,
-)
-from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder  # noqa: E402
-from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
-    UCMConnector,
-    UCMWorkerMetadata,
-)
-from ucm.integration.vllm.v2.ucm_proxy import (  # noqa: E402
-    SimpleFileUCMProxy,
-    UCMProxyAdapter,
-    UCMProxyError,
-)
-from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
-    RequestHasher,
-    RequestState,
-    UCMConnectorMetadata,
-    UCMDispatcher,
-)
-
-
 @dataclass
-class FullAttentionSpec(_FullAttentionSpec):
+class FullAttentionSpec:
     block_size: int
     tokens_per_state: int = 1
     sliding_window: int | None = None
+    prefix_cacheable: bool = True
 
 
 @dataclass
-class MLAAttentionSpec(_MLAAttentionSpec):
-    block_size: int
-    tokens_per_state: int = 1
-    sliding_window: int | None = None
+class MLAAttentionSpec(FullAttentionSpec):
+    pass
 
 
 @dataclass
-class AscendMLAAttentionSpec(MLAAttentionSpec):
-    """Ascend 0.26 spelling: the compression ratio is compress_ratio."""
-
-    compress_ratio: int = 1
+class HiddenStateCacheSpec(MLAAttentionSpec):
+    pass
 
 
 @dataclass
-class MambaSpec(_MambaSpec):
+class SlidingWindowMLASpec(FullAttentionSpec):
+    pass
+
+
+@dataclass
+class AscendSlidingWindowMLASpec(SlidingWindowMLASpec):
+    @property
+    def storage_block_size(self):
+        return self.block_size // self.tokens_per_state
+
+
+@dataclass
+class AscendSFAIndexerCacheSpec(MLAAttentionSpec):
+    sfa_dcp_replicated_indexer_size: int = 1
+
+
+@dataclass
+class MambaSpec:
     block_size: int
     mamba_cache_mode: str = "align"
-    shapes: tuple[tuple[int, ...], ...] | None = None
-    dtypes: tuple[object, ...] | None = None
-    page_size_bytes: int | None = None
+    prefix_cacheable: bool = True
 
 
 @dataclass
-class AscendSlidingWindowMLASpec(_SlidingWindowMLASpec):
-    block_size: int
-    compress_ratio: int
-    sliding_window: int
-    tokens_per_state: int = 1
+class UnsupportedSpec(FullAttentionSpec):
+    kind: KVCacheSpecKind = KVCacheSpecKind.UNKNOWN
 
 
 @dataclass
@@ -305,73 +220,172 @@ class UniformTypeKVCacheSpecs:
     def block_size(self):
         return next(iter(self.kv_cache_specs.values())).block_size
 
+    @property
+    def prefix_cacheable(self):
+        return all(spec.prefix_cacheable for spec in self.kv_cache_specs.values())
 
-def group(names, specs):
-    if not isinstance(specs, dict):
-        spec = specs
+
+def get_kv_cache_spec_kind(spec):
+    if isinstance(spec, UnsupportedSpec):
+        return spec.kind
+    if isinstance(spec, MambaSpec):
+        return KVCacheSpecKind.MAMBA
+    if isinstance(spec, SlidingWindowMLASpec):
+        return KVCacheSpecKind.SLIDING_WINDOW_MLA
+    if isinstance(spec, MLAAttentionSpec):
+        return KVCacheSpecKind.MLA_ATTENTION
+    if isinstance(spec, FullAttentionSpec):
+        return KVCacheSpecKind.FULL_ATTENTION
+    return KVCacheSpecKind.UNKNOWN
+
+
+for name in (
+    "KVCacheSpecKind",
+    "UniformTypeKVCacheSpecs",
+    "HiddenStateCacheSpec",
+    "MLAAttentionSpec",
+    "SlidingWindowMLASpec",
+    "get_kv_cache_spec_kind",
+):
+    setattr(vllm_kv_cache_interface, name, globals()[name])
+sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
+
+vllm_envs = types.ModuleType("vllm.envs")
+vllm_envs.VLLM_KV_CACHE_LAYOUT = "LBNHC"
+sys.modules[vllm_envs.__name__] = vllm_envs
+sys.modules["vllm"].envs = vllm_envs
+
+parallel_state = types.ModuleType("vllm.distributed.parallel_state")
+parallel_state.get_world_group = lambda: SimpleNamespace(rank=0)
+sys.modules[parallel_state.__name__] = parallel_state
+
+native_layout = types.ModuleType("vllm.v1.kv_cache_layout")
+
+
+class KVCacheLayout(enum.Enum):
+    LBNHC = "LBNHC"
+    LBHNC = "LBHNC"
+    BLNHC = "BLNHC"
+    BLHNC = "BLHNC"
+
+    @property
+    def is_block_outermost(self):
+        return self.name.startswith("B")
+
+    @property
+    def is_block_compact(self):
+        return self.name in ("BLNHC", "BLHNC")
+
+
+native_layout.KVCacheLayout = KVCacheLayout
+sys.modules[native_layout.__name__] = native_layout
+
+for name in ("vllm_ascend", "vllm_ascend.core"):
+    package = types.ModuleType(name)
+    package.__path__ = []
+    sys.modules.setdefault(name, package)
+ascend_specs = types.ModuleType("vllm_ascend.core.kv_cache_interface")
+ascend_specs.AscendSFAIndexerCacheSpec = AscendSFAIndexerCacheSpec
+ascend_specs.AscendSlidingWindowMLASpec = AscendSlidingWindowMLASpec
+sys.modules[ascend_specs.__name__] = ascend_specs
+
+vllm_v1_core = types.ModuleType("vllm.v1.core")
+vllm_v1_core.__path__ = []
+sys.modules.setdefault("vllm.v1.core", vllm_v1_core)
+vllm_kv_cache_utils = types.ModuleType("vllm.v1.core.kv_cache_utils")
+
+
+def resolve_kv_cache_block_sizes(raw, cfg):
+    if len(raw.kv_cache_groups) == 1:
+        size = (
+            cfg.cache_config.block_size
+            * cfg.parallel_config.decode_context_parallel_size
+        )
     else:
-        spec = UniformTypeKVCacheSpecs(specs)
-    return SimpleNamespace(layer_names=list(names), kv_cache_spec=spec)
+        size = math.lcm(*(g.kv_cache_spec.block_size for g in raw.kv_cache_groups))
+    return size, size
 
 
-def config(*groups, num_blocks=8, tensors=()):
+vllm_kv_cache_utils.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
+sys.modules[vllm_kv_cache_utils.__name__] = vllm_kv_cache_utils
+
+from ucm.integration.vllm.v2.layout import (  # noqa: E402
+    UCMKVCacheLayout,
+    parse_kv_cache_config,
+)
+from ucm.integration.vllm.v2.parallel import (  # noqa: E402
+    AllShardLookup,
+    ParallelLayout,
+)
+from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
+    UCMConnector,
+    UCMWorkerMetadata,
+)
+from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder  # noqa: E402
+from ucm.integration.vllm.v2.ucm_proxy import (  # noqa: E402
+    SimpleFileUCMProxy,
+    UCMProxyAdapter,
+    UCMProxyError,
+    UCMProxyTransfer,
+)
+from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
+    RequestDispatchMeta,
+    RequestHasher,
+    RequestState,
+    UCMConnectorMetadata,
+    UCMDispatcher,
+    UCMGroupDispatchPlan,
+)
+
+
+def group(names, specs, *, enable_kv_transfer=True):
+    spec = UniformTypeKVCacheSpecs(specs) if isinstance(specs, dict) else specs
+    return SimpleNamespace(
+        layer_names=list(names),
+        kv_cache_spec=spec,
+        is_eagle_group=False,
+        enable_kv_transfer=enable_kv_transfer,
+    )
+
+
+def config(*groups, num_blocks=8, tensors=(), layout="LBNHC"):
     return SimpleNamespace(
         kv_cache_groups=list(groups),
         num_blocks=num_blocks,
         kv_cache_tensors=tensors,
+        kv_cache_layout=layout,
+        prefix_cache_retention_interval=0,
+        prefix_cacheable_group_ids=tuple(
+            i
+            for i, g in enumerate(groups)
+            if g.enable_kv_transfer and g.kv_cache_spec.prefix_cacheable
+        ),
     )
 
 
-def captured_spec(value, layer_name=""):
-    fields = {key: item for key, item in value.items() if key != "kv_cache_specs"}
-    if "kv_cache_specs" in value:
-        nested = {
-            name: captured_spec(item, name)
-            for name, item in value["kv_cache_specs"].items()
-        }
-        spec_type = type("UniformTypeKVCacheSpecs", (), {})
-        result = spec_type()
-        result.kv_cache_specs = nested
-        result.block_size = value["block_size"]
-        return result
-    if "shapes" in value:
-        name = "MambaSpec"
-        base = _MambaSpec
-    elif fields.get("sliding_window") is not None:
-        name = "AscendSlidingWindowMLASpec"
-        base = _SlidingWindowMLASpec
-    else:
-        name = "MLAAttentionSpec"
-        base = _MLAAttentionSpec
-    spec_type = type(name, (base,), {})
-    result = spec_type()
-    for key, item in fields.items():
-        setattr(result, key, item)
-    return result
-
-
-def captured_config(path):
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(payload, list):
-        payload = payload[0]
-    groups = []
-    for item in payload["kv_cache_groups"]:
-        groups.append(
-            SimpleNamespace(
-                layer_names=item["layer_names"],
-                kv_cache_spec=captured_spec(item["kv_cache_spec"]),
-            )
-        )
-    return SimpleNamespace(kv_cache_groups=groups)
+class ModelConfig(SimpleNamespace):
+    def to_dict(self):
+        return vars(self)
 
 
 def vllm_config():
+    hf = ModelConfig(num_hidden_layers=64, model_type="fixture", compress_ratios=[])
     return SimpleNamespace(
-        model_config=SimpleNamespace(model="org/model", dtype="torch.bfloat16"),
-        cache_config=SimpleNamespace(block_size=4),
+        model_config=SimpleNamespace(
+            model="org/model",
+            dtype="torch.bfloat16",
+            hf_config=hf,
+            hf_text_config=hf,
+        ),
+        cache_config=SimpleNamespace(
+            block_size=4,
+            cache_dtype="auto",
+            mamba_cache_dtype="auto",
+            mamba_ssm_cache_dtype="auto",
+        ),
         kv_transfer_config=SimpleNamespace(
             kv_connector_extra_config={
-                "v2_storage_path": str(Path(tempfile.gettempdir()) / "ucm-v2-test")
+                "v2_storage_path": str(Path(tempfile.gettempdir()) / "ucm-v2-test"),
             }
         ),
         device_config=SimpleNamespace(device_type="cpu"),
@@ -379,10 +393,73 @@ def vllm_config():
             tensor_parallel_size=2,
             pipeline_parallel_size=1,
             data_parallel_size=1,
-            rank=0,
+            prefill_context_parallel_size=1,
+            decode_context_parallel_size=1,
+            cp_kv_cache_interleave_size=1,
+            world_size=2,
         ),
         speculative_config=None,
         additional_config={},
+        instance_id="fixture",
+        use_v2_model_runner=False,
+    )
+
+
+class FakeTensor:
+    """Explicit registered BHNC/BNHC geometry; no legacy-shape normalization."""
+
+    def __init__(self, ptr, shape, strides, element_size=1):
+        self._ptr, self.shape = ptr, shape
+        self._strides, self._element_size = strides, element_size
+        self.ndim = len(shape)
+
+    def data_ptr(self):
+        return self._ptr
+
+    def numel(self):
+        return math.prod(self.shape)
+
+    def stride(self, index=None):
+        return self._strides if index is None else self._strides[index]
+
+    def element_size(self):
+        return self._element_size
+
+    def permute(self, *axes):
+        return FakeTensor(
+            self._ptr,
+            tuple(self.shape[i] for i in axes),
+            tuple(self._strides[i] for i in axes),
+            self._element_size,
+        )
+
+
+def make_layout(
+    raw,
+    caches,
+    *,
+    tokens_per_chunk=None,
+    scheduler=8,
+    device="cpu",
+    layerwise=False,
+    ratios=None,
+    num_attn_module=1,
+):
+    spec = parse_kv_cache_config(
+        raw,
+        scheduler_block_size=scheduler,
+        num_hidden_layers=64,
+        tokens_per_chunk=tokens_per_chunk,
+        device_type=device,
+        compressor_tokens_per_state=ratios,
+        num_attn_module=num_attn_module,
+    )
+    return UCMKVCacheLayout(
+        spec,
+        caches,
+        kv_cache_config=raw,
+        num_hidden_layers=64,
+        use_layerwise=layerwise,
     )
 
 
@@ -392,8 +469,34 @@ class FakeRequest:
         self.all_token_ids = list(range(token_count))
 
 
+class FakeProxy:
+    def __init__(self):
+        self.present = set()
+        self.lookup_calls, self.load_calls, self.dump_calls = [], [], []
+
+    def lookup(self, keys):
+        self.lookup_calls.append(tuple(keys))
+        return [key in self.present for key in keys]
+
+    def lookup_on_prefix(self, keys):
+        return next(
+            (i - 1 for i, key in enumerate(keys) if key not in self.present),
+            len(keys) - 1,
+        )
+
+    def lookup_on_reverse(self, keys):
+        return next(
+            (i for i in range(len(keys) - 1, -1, -1) if keys[i] in self.present), -1
+        )
+
+    def load(self, keys, offsets, ptrs, sizes):
+        self.load_calls.append((keys, offsets, ptrs, sizes))
+
+    def dump(self, keys, offsets, ptrs, sizes):
+        self.dump_calls.append((keys, offsets, ptrs, sizes))
+
+
 def make_dispatcher(parsed, proxy=None, hasher=None, **kwargs):
-    """A UCMDispatcher for dispatch-only tests (lookup never runs)."""
     return UCMDispatcher(
         parsed,
         UCMProxyAdapter(proxy or FakeProxy()),
@@ -404,13 +507,8 @@ def make_dispatcher(parsed, proxy=None, hasher=None, **kwargs):
 
 
 def seed_request_state(
-    dispatcher,
-    request,
-    external_hit_tokens=0,
-    group_ucm_block_ids=(),
-    hbm_hit_tokens=0,
+    dispatcher, request, external_hit_tokens=0, group_ucm_block_ids=(), hbm_hit_tokens=0
 ):
-    """Record a synthetic lookup result the way UCMDispatcher.lookup would."""
     state = RequestState(
         hbm_hit_tokens=hbm_hit_tokens,
         external_hit_tokens=external_hit_tokens,
@@ -424,101 +522,58 @@ def seed_request_state(
     return state
 
 
-class FakeProxy:
-    def __init__(self):
-        self.present = set()
-        self.lookup_calls = []
-        self.load_calls = []
-        self.dump_calls = []
-
-    def lookup(self, keys):
-        self.lookup_calls.append(tuple(keys))
-        return [key in self.present for key in keys]
-
-    def lookup_on_prefix(self, keys):
-        for index, key in enumerate(keys):
-            if key not in self.present:
-                return index - 1
-        return len(keys) - 1
-
-    def lookup_on_reverse(self, keys):
-        for index in range(len(keys) - 1, -1, -1):
-            if keys[index] in self.present:
-                return index
-        return -1
-
-    def load(self, block_ids, offsets, ptrs, sizes):
-        self.load_calls.append((block_ids, offsets, ptrs, sizes))
-
-    def dump(self, block_ids, offsets, ptrs, sizes):
-        self.dump_calls.append((block_ids, offsets, ptrs, sizes))
-
-
-def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
-    """Flatten the native matrices only for existing byte-address assertions."""
-    transfers = getattr(UCMTransferBuilder(layout), f"build_{operation}_transfers")(
-        metadata, *args, **kwargs
+def _scheduler_metadata(
+    dispatcher,
+    scheduled_tokens,
+    *,
+    offloads=None,
+    preempted_req_ids=(),
+    finished_req_ids=(),
+):
+    block_state = SimpleNamespace(
+        req_ids=tuple(r for r in scheduled_tokens if r in dispatcher.requests),
+        get_block_ids=lambda r: dispatcher.requests[r].group_vllm_block_ids,
+        boundary_state_offloads=offloads or {},
     )
-    block_ids = tuple(
-        key for t in transfers for key in t.keys for _ in range(t.ptrs.shape[1])
-    )
-    fields = {
-        field: np.concatenate([getattr(t, attr).reshape(-1) for t in transfers])
-        if transfers else np.empty(0, dtype=np.uint64)
-        for field, attr in (
-            ("offsets", "ucm_block_offsets"), ("ptrs", "ptrs"), ("sizes", "sizes")
+    return dispatcher.build_from_scheduler_output(
+        SimpleNamespace(
+            kv_connector_block_state=block_state,
+            num_scheduled_tokens=scheduled_tokens,
+            total_num_scheduled_tokens=sum(scheduled_tokens.values()),
+            preempted_req_ids=set(preempted_req_ids),
+            finished_req_ids=set(finished_req_ids),
         )
-    }
-    return SimpleNamespace(block_ids=block_ids, **fields)
+    )
+
+
+def metadata(kind, blocks, *, keys=(b"a" * 16,), start=0, end=8, load=False):
+    plan = UCMGroupDispatchPlan(
+        kind,
+        keys,
+        np.linspace(start, end, len(keys), endpoint=False, dtype=np.uint64),
+        tuple(np.asarray(b, dtype=np.uint64) for b in blocks),
+    )
+    return UCMConnectorMetadata(
+        requests={
+            "r": RequestDispatchMeta(
+                "r",
+                load_plans=(plan,) if load else (),
+                dump_plans=() if load else (plan,),
+            ),
+        }
+    )
 
 
 def _submit_segments(adapter, operation, keys, offsets, ptrs, sizes):
-    """Feed the existing byte fixtures through the native [K,S] adapter."""
-    from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
-
     grouped = {}
     for key, offset, ptr, size in zip(keys, offsets, ptrs, sizes, strict=True):
         grouped.setdefault(key, []).append((offset, ptr, size))
     for key, segments in grouped.items():
         offsets, ptrs, sizes = np.asarray(segments, dtype=np.uint64).T
-        adapter.submit(operation, UCMProxyTransfer(
-            (key,), ptrs[None, :], sizes[None, :], offsets[None, :]
-        ))
-
-
-def _resolved_access(access, blocks, *, token_offsets=None, segment_mask=None):
-    """Pair native pointers with template sizes for existing array assertions."""
-    ptrs = access.resolve_ptrs(
-        blocks, token_offsets=token_offsets, segment_mask=segment_mask
-    )
-    columns = slice(None) if segment_mask is None else segment_mask
-    sizes = np.tile(
-        access.segment_bytes[:, columns], (len(blocks) // len(access.segment_bytes), 1)
-    )
-    return ptrs, sizes
-
-
-def _flat_record_access(record, blocks, key_count, **kwargs):
-    offsets, ptrs, sizes = record.resolve_matrices(blocks, key_count, **kwargs)
-    return offsets.reshape(-1), ptrs.reshape(-1), sizes.reshape(-1), ptrs.shape[1]
-
-
-def _scheduler_metadata(dispatcher, scheduled_tokens, *,
-                        preempted_req_ids=(), finished_req_ids=()):
-    """Use the scheduler-output entry point for existing dispatch fixtures."""
-    block_state = SimpleNamespace(
-        req_ids=tuple(r for r in scheduled_tokens if r in dispatcher.requests),
-        get_block_ids=lambda r: dispatcher.requests[r].group_vllm_block_ids,
-        boundary_state_offloads={},
-    )
-    output = SimpleNamespace(
-        kv_connector_block_state=block_state,
-        num_scheduled_tokens=scheduled_tokens,
-        total_num_scheduled_tokens=sum(scheduled_tokens.values()),
-        preempted_req_ids=set(preempted_req_ids),
-        finished_req_ids=set(finished_req_ids),
-    )
-    return dispatcher.build_from_scheduler_output(output)
+        adapter.submit(
+            operation,
+            UCMProxyTransfer((key,), ptrs[None, :], sizes[None, :], offsets[None, :]),
+        )
 
 
 class ByteMemory:
@@ -533,52 +588,6 @@ class ByteMemory:
     def read(self, ptr, size):
         ptr, size = int(ptr), int(size)
         return bytes(self.values.get(ptr + index, 0) for index in range(size))
-
-
-class InMemoryByteProxy(FakeProxy):
-    """Synchronous test-only Proxy; one dump call publishes complete records."""
-
-    def __init__(self, memory):
-        super().__init__()
-        self.memory = memory
-        self.records = {}
-
-    def lookup(self, keys):
-        return [key in self.records for key in keys]
-
-    def lookup_on_prefix(self, keys):
-        for index, key in enumerate(keys):
-            if key not in self.records:
-                return index - 1
-        return len(keys) - 1
-
-    def lookup_on_reverse(self, keys):
-        for index in range(len(keys) - 1, -1, -1):
-            if keys[index] in self.records:
-                return index
-        return -1
-
-    def dump(self, block_ids, offsets, ptrs, sizes):
-        pending = {}
-        if np.ndim(ptrs) == 2:
-            block_ids = tuple(key for key in block_ids for _ in range(ptrs.shape[1]))
-            offsets, ptrs, sizes = (np.asarray(a).reshape(-1) for a in (offsets, ptrs, sizes))
-        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes):
-            # NumPy 1.x uint64 + Python int can promote to float64.
-            offset, ptr, size = int(offset), int(ptr), int(size)
-            record = pending.setdefault(key, bytearray())
-            required = offset + size
-            record.extend(b"\x00" * max(required - len(record), 0))
-            record[offset:required] = self.memory.read(ptr, size)
-        self.records.update({key: bytes(value) for key, value in pending.items()})
-
-    def load(self, block_ids, offsets, ptrs, sizes):
-        if np.ndim(ptrs) == 2:
-            block_ids = tuple(key for key in block_ids for _ in range(ptrs.shape[1]))
-            offsets, ptrs, sizes = (np.asarray(a).reshape(-1) for a in (offsets, ptrs, sizes))
-        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes):
-            offset, ptr, size = int(offset), int(ptr), int(size)
-            self.memory.write(ptr, self.records[key][offset : offset + size])
 
 
 class MemoryByteAccess:
@@ -598,376 +607,6 @@ class MemoryByteAccess:
 
     def write(self, ptr, payload):
         self.memory.write(ptr, payload)
-
-
-class FakeTensor:
-    def __init__(self, ptr, shape, strides, element_size=1):
-        self._ptr = ptr
-        self.shape = shape
-        self._strides = strides
-        self._element_size = element_size
-
-    def data_ptr(self):
-        return self._ptr
-
-    def stride(self, index):
-        return self._strides[index]
-
-    def element_size(self):
-        return self._element_size
-
-
-class KVCacheSpecTest(unittest.TestCase):
-    def test_direct_custom_chunk_keeps_base_hash_size(self):
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
-            ucm_cache_block_size=512,
-        )
-
-        self.assertEqual(parsed.ucm_cache_block_size, 512)
-        self.assertEqual(parsed.layer_to_group["model.layers.0.attn"], 0)
-
-    def test_hybrid_classifies_attention_and_state(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(128)),
-            ),
-            scheduler_block_size=128,
-        )
-
-        self.assertEqual(
-            tuple(g.group_id for g in parsed.groups if g.is_attention), (0,)
-        )
-        self.assertEqual(tuple(g.group_id for g in parsed.state_groups), (1,))
-
-    def test_hybrid_rejects_non_align_mamba(self):
-        with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                    group(
-                        ["model.layers.1.mixer"],
-                        MambaSpec(128, mamba_cache_mode="none"),
-                    ),
-                ),
-                scheduler_block_size=128,
-            )
-
-    def test_hybrid_rejects_misaligned_mamba_block(self):
-        with self.assertRaisesRegex(ValueError, "Mamba align block size"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                    group(["model.layers.1.mixer"], MambaSpec(256)),
-                ),
-                scheduler_block_size=128,
-            )
-
-    def test_hybrid_rejects_misaligned_attention_block(self):
-        with self.assertRaisesRegex(ValueError, "every KV group block size"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(256)),
-                    group(["model.layers.1.mixer"], MambaSpec(128)),
-                ),
-                scheduler_block_size=128,
-            )
-
-    def test_dsv4_derives_canonical_size_once(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
-                ),
-                group(
-                    ["model.layers.0.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 128),
-                ),
-                group(
-                    ["model.layers.2.compressor.state_cache"],
-                    AscendSlidingWindowMLASpec(128, 4, 128),
-                ),
-            ),
-            scheduler_block_size=16,
-        )
-
-        self.assertEqual(parsed.ucm_cache_block_size, 512)
-        self.assertEqual(parsed.groups[2].token_block_size, 512)
-        self.assertEqual(
-            parsed.groups[2].kinds,
-            frozenset((KVCacheSpecKind.SLIDING_WINDOW_MLA,)),
-        )
-        self.assertTrue(parsed.groups[2].is_attention)
-        self.assertTrue(parsed.groups[2].is_sliding_window)
-
-    def test_parse_rejects_non_divisible_fa_token_blocks(self):
-        # Flat plan windows need a uniform per-key block count; an FA group
-        # whose token block neither divides nor is divided by the cache
-        # block would make keys straddle blocks. Fail at startup.
-        with self.assertRaisesRegex(ValueError, "neither divides nor is a multiple"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(512)),
-                    group(["model.layers.1.attn"], FullAttentionSpec(768)),
-                ),
-                scheduler_block_size=256,
-            )
-
-    def test_parse_rejects_misaligned_sliding_groups(self):
-        # A sliding tail keeps a static window shape: the boundary must
-        # land on the group's block grid, so its token block must divide
-        # the cache block.
-        with self.assertRaisesRegex(ValueError, "must divide"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                    group(
-                        ["model.layers.1.swa_cache"],
-                        AscendSlidingWindowMLASpec(192, 1, 512),
-                    ),
-                ),
-                scheduler_block_size=128,
-            )
-
-    def test_full_attention_with_window_metadata_is_not_sliding(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn"],
-                    FullAttentionSpec(128, sliding_window=4096),
-                )
-            ),
-            scheduler_block_size=128,
-        )
-
-        self.assertEqual(
-            parsed.groups[0].kinds,
-            frozenset((KVCacheSpecKind.FULL_ATTENTION,)),
-        )
-        self.assertTrue(parsed.groups[0].is_attention)
-        self.assertFalse(parsed.groups[0].is_sliding_window)
-
-    def test_hybrid_rejects_custom_chunk(self):
-        with self.assertRaisesRegex(ValueError, "custom ucm_cache_block_size"):
-            parse_kv_cache_config(
-                config(
-                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                    group(["model.layers.1.mixer"], MambaSpec(128)),
-                ),
-                scheduler_block_size=128,
-                ucm_cache_block_size=512,
-            )
-
-    def test_real_ascend_runtime_captures_classify_groups(self):
-        capture_dir = (
-            REPO_ROOT.parent
-            / "docs"
-            / "kv-layout-ascend-20260905"
-            / "vllm-ascend-026"
-            / "results"
-            / "runtime"
-        )
-        required = {
-            "glm": capture_dir / "glm.runtime_kvcache_config.json",
-            "kimi": capture_dir / "kimi.runtime_kvcache_config.json",
-            "dsv4": capture_dir / "dsv4.runtime_kvcache_config.json",
-        }
-        if not all(path.exists() for path in required.values()):
-            self.skipTest("workspace Ascend runtime captures are unavailable")
-
-        glm = parse_kv_cache_config(
-            captured_config(required["glm"]), scheduler_block_size=128
-        )
-        dsv4 = parse_kv_cache_config(
-            captured_config(required["dsv4"]), scheduler_block_size=8
-        )
-
-        self.assertEqual(len(glm.groups), 1)
-        self.assertEqual(len(dsv4.groups), 6)
-        self.assertEqual(dsv4.ucm_cache_block_size, 512)
-        self.assertEqual(tuple(group.group_id for group in dsv4.fa_groups), (0, 1))
-        self.assertEqual(
-            tuple(group.group_id for group in dsv4.wa_groups), (2, 3, 4, 5)
-        )
-        self.assertEqual(
-            tuple(group.tail_tokens for group in dsv4.groups[2:]),
-            (128, 128, 4, 0),
-        )
-
-        # This A-chain capture predates platform block-size alignment. It has
-        # Attention=768, Mamba=1024 and mamba_cache_mode=none, so it must not
-        # be accepted as a production Kimi align layout.
-        with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
-            parse_kv_cache_config(
-                captured_config(required["kimi"]), scheduler_block_size=768
-            )
-
-    def test_real_cpu_dsv4_capture_uses_fa_and_wa_groups(self):
-        path = (
-            REPO_ROOT.parent
-            / "docs"
-            / "kv-layout-ascend-20260905"
-            / "vllm-029"
-            / "results"
-            / "runtime"
-            / "dsv4_official_029_256.runtime_kvcache_config.json"
-        )
-        if not path.exists():
-            self.skipTest("workspace vLLM 0.29 runtime capture is unavailable")
-
-        parsed = parse_kv_cache_config(
-            captured_config(path),
-            scheduler_block_size=256,
-            device_type="cpu",
-        )
-
-        self.assertEqual(parsed.ucm_cache_block_size, 256)
-        # FA is the 256-token indexer+attention group; WA covers both SWA
-        # groups and both compressor state groups.
-        self.assertEqual(tuple(group.group_id for group in parsed.fa_groups), (2,))
-        self.assertEqual(
-            tuple(group.group_id for group in parsed.wa_groups), (0, 1, 3, 4)
-        )
-        self.assertEqual(
-            tuple(group.tail_tokens for group in parsed.wa_groups), (128, 128, 4, 0)
-        )
-        # Replay the captured 43-layer worker config through the scheduler's
-        # representative-spec conversion, using the captured per-layer ratios
-        # as the model metadata. Tensor placement is irrelevant on this side.
-        ratios = {
-            layer.layer_index: layer.kv_cache_spec.tokens_per_state
-            for fa_group in parsed.fa_groups
-            for layer in fa_group.layers
-        }
-        scheduler_groups = []
-        for raw_group in captured_config(path).kv_cache_groups:
-            nested = raw_group.kv_cache_spec.kv_cache_specs
-            scheduler_groups.append(
-                group(raw_group.layer_names, next(iter(nested.values())))
-            )
-        scheduler_spec = parse_kv_cache_config(
-            config(*scheduler_groups),
-            scheduler_block_size=256,
-            device_type="cpu",
-            attention_tokens_per_state=ratios,
-        )
-        self.assertEqual(
-            tuple(group.tail_tokens for group in scheduler_spec.wa_groups),
-            (128, 128, 4, 0),
-        )
-
-    def test_dsv4_scheduler_and_worker_share_model_compression_ratios(self):
-        c4_name = "model.layers.2.attn"
-        c128_name = "model.layers.3.attn"
-        fa_specs = {
-            c4_name: MLAAttentionSpec(256, tokens_per_state=4),
-            c128_name: MLAAttentionSpec(256, tokens_per_state=128),
-        }
-        windows = (
-            group(
-                ["model.layers.2.attn.swa_cache"],
-                AscendSlidingWindowMLASpec(64, 1, 128),
-            ),
-            group(
-                ["model.layers.2.attn.compressor.state_cache"],
-                AscendSlidingWindowMLASpec(4, 1, 8),
-            ),
-            group(
-                ["model.layers.3.attn.compressor.state_cache"],
-                AscendSlidingWindowMLASpec(8, 1, 128),
-            ),
-        )
-        runtime_config = vllm_config()
-        runtime_config.cache_config.block_size = 256
-        runtime_config.model_config.hf_text_config = SimpleNamespace(
-            compress_ratios=[0, 0, 4, 128],
-            num_hidden_layers=4,
-        )
-        worker = UCMConnector(
-            runtime_config,
-            KVConnectorRole.WORKER,
-            config(group(fa_specs, fa_specs), *windows),
-        )
-        self.assertEqual([g.tail_tokens for g in worker.spec.wa_groups], [128, 4, 0])
-        for representative in fa_specs.values():
-            with self.subTest(representative=representative.tokens_per_state):
-                scheduler = UCMConnector(
-                    runtime_config,
-                    KVConnectorRole.SCHEDULER,
-                    config(group(fa_specs, representative), *windows),
-                )
-                self.assertEqual(
-                    [g.tail_tokens for g in scheduler.spec.wa_groups],
-                    [128, 4, 0],
-                )
-                self.assertEqual(
-                    [
-                        layer.storage_block_size
-                        for layer in scheduler.spec.groups[0].layers
-                    ],
-                    [64, 2],
-                )
-
-
-class MtpLayerIndexTest(unittest.TestCase):
-    def test_native_numbering(self):
-        from ucm.integration.vllm.v2.layout.kv_cache import _layer_index
-
-        for name, device, expected in (
-            ("model.layers.0.attn", "npu", 0),
-            ("mtp.0.attn", "npu", 43),
-            ("model.mtp.1.indexer", "npu", 44),
-            ("mtp.43.attn", "npu", 43),
-            ("model.layers.43.attn", "cpu", 43),
-            ("model.layers.44.attn", "cuda", 44),
-        ):
-            with self.subTest(name=name, device=device):
-                self.assertEqual(_layer_index(name, device, 43), expected)
-        with self.assertRaisesRegex(ValueError, "num_hidden_layers"):
-            _layer_index("mtp.0.attn", "npu", None)
-
-    def test_mtp_identity_is_shared_by_selection_ratio_and_tail(self):
-        raw = config(
-            group(
-                ["model.layers.0.attn"], AscendMLAAttentionSpec(4, compress_ratio=128)
-            ),
-            group(["mtp.0.attn"], AscendMLAAttentionSpec(4, compress_ratio=128)),
-            group(["mtp.0.swa_cache"], AscendSlidingWindowMLASpec(4, 1, 4)),
-            group(
-                ["mtp.0.compressor.state_cache"], AscendSlidingWindowMLASpec(4, 1, 128)
-            ),
-        )
-        cfg = vllm_config()
-        cfg.device_config.device_type = "npu"
-        cfg.model_config.hf_text_config = SimpleNamespace(
-            num_hidden_layers=4, compress_ratios=[4, 0, 0, 0]
-        )
-        with tempfile.TemporaryDirectory() as path:
-            cfg.kv_transfer_config.kv_connector_extra_config["v2_storage_path"] = path
-            parsed = UCMConnector(cfg, KVConnectorRole.SCHEDULER, raw).spec
-        self.assertEqual(parsed.groups[1].token_block_size, 512)
-        self.assertEqual(parsed.groups[3].tail_tokens, 0)
-        names = [layer.layer_name for g in parsed.groups for layer in g.layers]
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                name: FakeTensor(0x1000 * (i + 1), (8, 4, 1), (4, 1, 1))
-                for i, name in enumerate(names)
-            },
-        )
-        self.assertEqual(layout.layer_names_by_id[0], {"model.layers.0.attn"})
-        self.assertEqual(set(layout.layer_names_by_id[4]), set(names[1:]))
-        # Group-level columns: model layer 0 belongs to group 0 only, so
-        # group 1 answers nothing for it; layer 4 names live in group 1.
-        self.assertFalse(layout.group_layouts[1].segment_mask(layer_ids=[0]).any())
-        group1 = layout.group_layouts[1]
-        whole = _resolved_access(
-            group1.compile_access(), [1], segment_mask=group1.segment_mask(layer_ids=[4])
-        )
-        self.assertTrue(whole[0].size)
 
 
 class ConnectorSPIContractTest(unittest.TestCase):
@@ -1033,6 +672,7 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         coordinator = UCMDispatcher(
@@ -1051,8 +691,9 @@ class HashAndLookupTest(unittest.TestCase):
     def test_custom_cache_block_chains_at_the_cache_block(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            num_hidden_layers=64,
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         proxy = FakeProxy()
         coordinator = UCMDispatcher(
@@ -1070,6 +711,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_prefix_stops_at_first_miss(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         proxy = FakeProxy()
@@ -1087,8 +729,9 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_miss_never_moves_an_unaligned_hbm_boundary_backwards(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            num_hidden_layers=64,
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         proxy = FakeProxy()
         coordinator = UCMDispatcher(
@@ -1105,6 +748,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_full_hit_leaves_the_recompute_margin_block(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         proxy = FakeProxy()
@@ -1127,6 +771,7 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         proxy = FakeProxy()
@@ -1148,6 +793,7 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         proxy = FakeProxy()
@@ -1168,6 +814,7 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
+            num_hidden_layers=64,
             scheduler_block_size=128,
         )
         coordinator = UCMDispatcher(
@@ -1189,7 +836,7 @@ class HashAndLookupTest(unittest.TestCase):
             config(
                 group(
                     ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
+                    MLAAttentionSpec(512, tokens_per_state=4),
                 ),
                 group(
                     ["model.layers.0.swa_cache"],
@@ -1197,6 +844,7 @@ class HashAndLookupTest(unittest.TestCase):
                 ),
                 num_blocks=4,
             ),
+            num_hidden_layers=64,
             scheduler_block_size=16,
         )
         proxy = FakeProxy()
@@ -1218,7 +866,7 @@ class HashAndLookupTest(unittest.TestCase):
             config(
                 group(
                     ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
+                    MLAAttentionSpec(512, tokens_per_state=4),
                 ),
                 group(
                     ["model.layers.0.swa_cache"],
@@ -1226,6 +874,7 @@ class HashAndLookupTest(unittest.TestCase):
                 ),
                 num_blocks=4,
             ),
+            num_hidden_layers=64,
             scheduler_block_size=16,
         )
         proxy = FakeProxy()
@@ -1239,449 +888,6 @@ class HashAndLookupTest(unittest.TestCase):
         result = coordinator.lookup(request, 0)
 
         self.assertEqual(result.external_hit_tokens, 1024)
-
-
-class ParallelShardTest(unittest.TestCase):
-    def test_lookup_requires_all_committed_shards_and_loads_own_bytes(self):
-        from ucm.integration.vllm.v2.parallel import AllShardLookup
-
-        key = b"p" * 16
-        with tempfile.TemporaryDirectory() as directory:
-            memory = ByteMemory()
-            memory.write(100, b"rankzero")
-            memory.write(200, b"rank-one")
-            shards = [
-                SimpleFileUCMProxy(Path(directory) / str(i), MemoryByteAccess(memory))
-                for i in range(2)
-            ]
-            scheduler = AllShardLookup(shards[0], shards)
-            for i in range(2):
-                shards[i].dump((key,), (0,), (100 + i * 100,), (8,))
-            shards[0].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (False,))
-            self.assertEqual(scheduler.lookup_on_prefix((key,)), -1)
-            self.assertEqual(scheduler.lookup_on_reverse((key,)), -1)
-            shards[1].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (True,))
-            for i in range(2):
-                AllShardLookup(shards[i], shards).load(
-                    (key,), (0,), (300 + 100 * i,), (8,)
-                )
-            self.assertEqual(memory.read(300, 8), b"rankzero")
-            self.assertEqual(memory.read(400, 8), b"rank-one")
-
-    def test_empty_pp_shard_marker_is_not_visible_before_commit(self):
-        from ucm.integration.vllm.v2.parallel import AllShardLookup
-
-        key = b"s" * 16
-        empty = np.empty((1, 0), dtype=np.uint64)
-        with tempfile.TemporaryDirectory() as directory:
-            shards = [
-                SimpleFileUCMProxy(
-                    Path(directory) / str(i), MemoryByteAccess(ByteMemory())
-                )
-                for i in range(2)
-            ]
-            shards[0].dump((key,), empty, empty, empty)
-            shards[1].dump((key,), np.array([[0]]), np.array([[10]]), np.array([[4]]))
-            shards[1].commit((key,))
-            scheduler = AllShardLookup(shards[0], shards)
-            self.assertEqual(scheduler.lookup((key,)), (False,))
-            shards[0].commit((key,))
-            self.assertEqual(scheduler.lookup((key,)), (True,))
-            self.assertEqual(shards[0]._path(key).stat().st_size, 0)
-
-    def test_topologies_do_not_share_a_namespace(self):
-        from ucm.integration.vllm.v2.parallel import ParallelLayout
-
-        variants = [
-            ParallelLayout(tp=2),
-            ParallelLayout(pp=2),
-            ParallelLayout(pcp=2),
-            ParallelLayout(tp=2, dcp=2),
-            ParallelLayout(tp=2, dcp=2, interleave=128),
-            ParallelLayout(pp=2, pp_partition="1,3"),
-        ]
-        self.assertEqual(len({p.namespace for p in variants}), len(variants))
-
-    def test_cp_whole_page_scaling_and_fractional_rejection(self):
-        from ucm.integration.vllm.v2.parallel import ParallelLayout
-
-        spec = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
-        )
-        parallel = ParallelLayout(tp=4, pp=2, pcp=2, dcp=2)
-        self.assertEqual(parallel.world_size, 16)
-        scaled = parallel.apply_context_parallel(spec)
-        self.assertEqual(scaled.groups[0].token_block_size, 16)
-        self.assertEqual(scaled.groups[0].layers[0].storage_block_size, 4)
-        self.assertEqual(scaled.ucm_cache_block_size, 16)
-        self.assertEqual(scaled.groups[0].tail_blocks, 1)
-        with self.assertRaisesRegex(ValueError, "whole distributed"):
-            parallel.apply_context_parallel(spec, 8)
-
-    def test_ascend_dcp_indexer_replication_folds_adjacent_kernel_rows(self):
-        from ucm.integration.vllm.v2.parallel import ParallelLayout
-
-        native_spec = FullAttentionSpec(4)
-        native_spec.sfa_dcp_replicated_indexer_size = 2
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.indexer"], native_spec), num_blocks=3),
-            scheduler_block_size=8,
-            device_type="npu",
-        )
-        parsed = ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
-        self.assertEqual(parsed.groups[0].layers[0].storage_block_size, 8)
-        layout = UCMKVCacheLayout(
-            parsed,
-            {"model.layers.0.indexer": FakeTensor(1000, (6, 4, 1, 2), (8, 2, 2, 1))},
-        )
-        access = layout.group_layouts[0].compile_access(
-            token_offsets=np.array([0]), token_counts=np.array([8])
-        )
-        ptrs, sizes = _resolved_access(access, np.array([2], dtype=np.uint64))
-        self.assertEqual(ptrs.reshape(-1).tolist(), [1032])
-        self.assertEqual(sizes.reshape(-1).tolist(), [16])
-
-    def test_pp_empty_group_preserves_global_route_without_allocating_view(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group([], FullAttentionSpec(4)),
-                group(["model.layers.2.attn"], FullAttentionSpec(4)),
-            ),
-            scheduler_block_size=4,
-        )
-        layout = UCMKVCacheLayout(
-            parsed, {"model.layers.2.attn": FakeTensor(1000, (8, 4, 2), (8, 2, 1))}
-        )
-        self.assertEqual(tuple(layout.group_layouts), (1,))
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (b"p" * 16,),
-            0,
-            4,
-            (np.array([1], dtype=np.uint64), np.array([2], dtype=np.uint64)),
-        )
-        meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
-        )
-        (transfer,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
-        self.assertEqual(transfer.ptrs.tolist(), [[1016]])
-        self.assertEqual(transfer.ucm_block_offsets.tolist(), [[0]])
-
-    def test_pp_empty_sliding_group_uses_retained_global_layer_specs(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(4)),
-                group(
-                    [],
-                    {"model.layers.9.swa_cache": AscendSlidingWindowMLASpec(4, 1, 8)},
-                ),
-            ),
-            scheduler_block_size=4,
-        )
-        self.assertEqual(parsed.wa_groups[0].tail_tokens, 8)
-        self.assertEqual(parsed.wa_groups[0].tail_blocks, 2)
-        self.assertEqual(parsed.wa_groups[0].layers, ())
-
-    def test_pp_empty_state_spec_can_be_parsed(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(4)),
-                group([], {"model.layers.1.state": MambaSpec(4)}),
-            ),
-            scheduler_block_size=4,
-        )
-        self.assertEqual(len(parsed.state_groups), 1)
-        self.assertEqual(parsed.state_groups[0].layers, ())
-
-
-class LayerwiseLifecycleTest(unittest.TestCase):
-    def _worker(self, directory, *, state=False, deferred=False):
-        memory = ByteMemory()
-        backend = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
-        if deferred:
-
-            class DeferredProxy:
-                def __init__(self):
-                    self.events = []
-                    self.fail = None
-
-                def register_tensors(self, caches):
-                    backend.register_tensors(caches)
-
-                def load(self, *args):
-                    self.events.append(("load", args[0]))
-                    return ("load", args)
-
-                def dump(self, *args):
-                    self.events.append(("dump", args[0]))
-                    return ("dump", args)
-
-                def wait(self, task):
-                    operation, args = task
-                    self.events.append(("wait", operation))
-                    if self.fail == operation:
-                        raise OSError("deferred failure")
-                    getattr(backend, operation)(*args)
-
-                def commit(self, keys):
-                    self.events.append(("commit", keys))
-                    backend.commit(keys)
-
-            proxy = DeferredProxy()
-        else:
-            proxy = backend
-        names = ("model.layers.0.attn", "model.layers.1.attn")
-        groups = [group(names, FullAttentionSpec(4))]
-        caches = {
-            name: FakeTensor(0x1000 + i * 0x1000, (8, 4, 2), (8, 2, 1))
-            for i, name in enumerate(names)
-        }
-        if state:
-            groups.append(group(["model.layers.2.state"], MambaSpec(4)))
-            caches["model.layers.2.state"] = FakeTensor(0x3000, (8, 8), (8, 1))
-        cfg = vllm_config()
-        cfg.kv_transfer_config.kv_connector_extra_config["use_layerwise"] = True
-        with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
-            return_value=proxy,
-        ):
-            worker = UCMConnector(cfg, KVConnectorRole.WORKER, config(*groups))
-        worker.register_kv_caches(caches)
-        return worker, backend, proxy, memory, names
-
-    def _meta(self, *, load=False, state=False):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        kinds = ("FA", "State") if state else ("FA",)
-        plans = tuple(
-            UCMGroupDispatchPlan(
-                kind,
-                (bytes([i + 1]) * 16,),
-                0,
-                4,
-                (np.array([2 if load else 1], dtype=np.uint64),),
-            )
-            for i, kind in enumerate(kinds)
-        )
-        return UCMConnectorMetadata(
-            requests={
-                "r": RequestDispatchMeta(
-                    "r",
-                    load_plans=plans if load else (),
-                    dump_plans=() if load else plans,
-                )
-            }
-        )
-
-    def test_layerwise_roundtrip_deferred_wait_commit_and_step_reset(self):
-        with tempfile.TemporaryDirectory() as directory:
-            worker, backend, proxy, memory, names = self._worker(
-                directory, deferred=True
-            )
-            memory.write(0x1008, b"abcdefgh")
-            memory.write(0x2008, b"ijklmnop")
-            worker.bind_connector_metadata(self._meta())
-            worker.start_load_kv(None)
-            worker.save_kv_layer(names[0], None, None)
-            worker.save_kv_layer(names[0], None, None)
-            worker.save_kv_layer(names[1], None, None)
-            self.assertEqual([e[0] for e in proxy.events], ["dump", "dump"])
-            self.assertEqual(backend.lookup((bytes([1]) * 16,)), (False,))
-            worker.wait_for_save()
-            self.assertEqual(
-                [e[0] for e in proxy.events], ["dump", "dump", "wait", "wait", "commit"]
-            )
-            self.assertEqual(
-                backend._path(bytes([1]) * 16).read_bytes(), b"abcdefghijklmnop"
-            )
-            count = len(proxy.events)
-            worker.wait_for_save()
-            self.assertEqual(len(proxy.events), count)
-            # New step, same worker; only each selected layer becomes ready at wait.
-            worker.bind_connector_metadata(self._meta(load=True))
-            worker.start_load_kv(None)
-            self.assertEqual(memory.read(0x1010, 8), bytes(8))
-            worker.wait_for_layer_load(names[0])
-            self.assertEqual(memory.read(0x1010, 8), b"abcdefgh")
-            self.assertEqual(memory.read(0x2010, 8), bytes(8))
-            worker.wait_for_layer_load(names[0])
-            worker.wait_for_layer_load(names[1])
-            self.assertEqual(memory.read(0x2010, 8), b"ijklmnop")
-            worker.wait_for_save()
-
-    def test_no_hook_state_is_saved_at_end_and_loaded_before_forward(self):
-        with tempfile.TemporaryDirectory() as directory:
-            worker, backend, proxy, memory, names = self._worker(directory, state=True)
-            for ptr, payload in (
-                (0x1008, b"abcdefgh"),
-                (0x2008, b"ijklmnop"),
-                (0x3008, b"state123"),
-            ):
-                memory.write(ptr, payload)
-            worker.bind_connector_metadata(self._meta(state=True))
-            worker.start_load_kv(None)
-            worker.save_kv_layer(names[0], None, None)
-            # Missing attention hook is also covered at end of forward.
-            worker.wait_for_save()
-            self.assertEqual(
-                backend.lookup((bytes([1]) * 16, bytes([2]) * 16)), (True, True)
-            )
-            worker.bind_connector_metadata(self._meta(load=True, state=True))
-            worker.start_load_kv(None)
-            self.assertEqual(memory.read(0x3010, 8), b"state123")
-            worker.wait_for_save()
-            self.assertEqual(memory.read(0x2010, 8), b"ijklmnop")
-
-    def test_roundtrip_all_physical_orders_and_partial_blocks(self):
-        for order in ("LBNHC", "LBHNC", "LHBNC", "BLNHC", "BLHNC", "BHLNC"):
-            for unit in (4, 8):
-                with (
-                    self.subTest(order=order, unit=unit),
-                    tempfile.TemporaryDirectory() as directory,
-                ):
-                    worker, backend, _, memory, names = self._worker(directory)
-                    worker.layout, strides = LayerViewSegmentsTest()._layout(
-                        order, unit=unit
-                    )
-                    worker.spec = worker.layout.spec
-
-                    def address(layer, block, head, token, content):
-                        return 1000 + sum(
-                            i * strides[a]
-                            for a, i in zip(
-                                "LBHNC", (layer, block, head, token, content)
-                            )
-                        )
-
-                    for layer in range(2):
-                        for head in range(2):
-                            for token in range(8):
-                                for content in range(2):
-                                    value = (
-                                        1 + layer * 64 + head * 24 + token * 2 + content
-                                    )
-                                    memory.write(
-                                        address(layer, 1, head, token, content),
-                                        bytes([value]),
-                                    )
-                                    memory.write(
-                                        address(layer, 2, head, token, content), b"\xff"
-                                    )
-                    worker.bind_connector_metadata(self._meta())
-                    worker.start_load_kv(None)
-                    for name in reversed(names):
-                        worker.save_kv_layer(name, None, None)
-                    worker.wait_for_save()
-                    worker.bind_connector_metadata(self._meta(load=True))
-                    worker.start_load_kv(None)
-                    for name in names:
-                        worker.wait_for_layer_load(name)
-                    worker.wait_for_save()
-                    for layer in range(2):
-                        for head in range(2):
-                            for token in range(8):
-                                for content in range(2):
-                                    expected = (
-                                        memory.read(
-                                            address(layer, 1, head, token, content), 1
-                                        )
-                                        if token < unit
-                                        else b"\xff"
-                                    )
-                                    self.assertEqual(
-                                        memory.read(
-                                            address(layer, 2, head, token, content), 1
-                                        ),
-                                        expected,
-                                    )
-
-    def test_model_check_layerwise_oracle_uses_payloads_not_bulk_padding(self):
-        import importlib.util
-
-        common_path = REPO_ROOT / "toolkit/ucm_toolkit/tools/model_check/common.py"
-        spec = importlib.util.spec_from_file_location(
-            "layerwise_check_common", common_path
-        )
-        common = importlib.util.module_from_spec(spec)
-        with mock.patch.dict(
-            sys.modules, {"torch": types.ModuleType("torch"), spec.name: common}
-        ):
-            spec.loader.exec_module(common)
-        name = "model.layers.0.attn"
-        layout = SimpleNamespace(layer_id_by_name={name: 0})
-
-        def build(metadata, layer_name=None):
-            from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
-            return (UCMProxyTransfer(
-                (b"a" * 16,), np.array([[100]], dtype=np.uint64),
-                np.array([[8 if layer_name else 16]], dtype=np.uint64),
-                np.array([[4]], dtype=np.uint64),
-            ),)
-
-        worker = SimpleNamespace(
-            layout=layout, use_layerwise=True,
-            transfer_builder=SimpleNamespace(build_dump_transfers=build),
-        )
-        batch = common._v2_batch(worker, SimpleNamespace(requests={}), "dump")
-        self.assertEqual(batch.sizes, (8,))
-        worker.use_layerwise = False
-        self.assertEqual(
-            common._v2_batch(worker, SimpleNamespace(requests={}), "dump").sizes, (16,)
-        )
-        self.assertEqual(
-            len(common._v2_segment_payload(b"a" * 16, np.uint64(4), np.uint64(8))), 8
-        )
-
-    def test_failed_write_drains_other_tasks_without_commit(self):
-        with tempfile.TemporaryDirectory() as directory:
-            worker, backend, proxy, memory, names = self._worker(
-                directory, deferred=True
-            )
-            worker.bind_connector_metadata(self._meta())
-            worker.start_load_kv(None)
-            for name in names:
-                worker.save_kv_layer(name, None, None)
-            proxy.fail = "dump"
-            with self.assertRaisesRegex(UCMProxyError, "dump failed"):
-                worker.wait_for_save()
-            self.assertEqual(sum(e == ("wait", "dump") for e in proxy.events), 2)
-            self.assertFalse(any(e[0] == "commit" for e in proxy.events))
-            self.assertFalse(worker._dump_tasks)
-            self.assertEqual(backend.lookup((bytes([1]) * 16,)), (False,))
-
-    def test_failed_load_reports_blocks_and_suppresses_save(self):
-        with tempfile.TemporaryDirectory() as directory:
-            worker, backend, proxy, memory, names = self._worker(
-                directory, deferred=True
-            )
-            metadata = self._meta(load=True)
-            from dataclasses import replace
-
-            metadata.requests["r"] = replace(
-                metadata.requests["r"], dump_plans=self._meta().requests["r"].dump_plans
-            )
-            worker.bind_connector_metadata(metadata)
-            worker.start_load_kv(None)
-            proxy.fail = "load"
-            worker.wait_for_layer_load(names[0])
-            worker.save_kv_layer(names[0], None, None)
-            worker.wait_for_save()
-            self.assertEqual(worker.get_block_ids_with_load_errors(), {2})
-            self.assertEqual(
-                worker.build_connector_worker_meta().load_failed_reqs, {"r"}
-            )
-            self.assertFalse(any(e[0] in ("dump", "commit") for e in proxy.events))
 
 
 class ProxyAdapterTest(unittest.TestCase):
@@ -1698,7 +904,7 @@ class ProxyAdapterTest(unittest.TestCase):
             proxy = SimpleFileUCMProxy(directory, access)
             adapter = UCMProxyAdapter(proxy)
             adapter.register_tensors(registered)
-            _submit_segments(adapter, 'dump', (key, key), (0, 5), (4096, 8192), (5, 7))
+            _submit_segments(adapter, "dump", (key, key), (0, 5), (4096, 8192), (5, 7))
 
             self.assertEqual(adapter.lookup((key,)), (False,))
             adapter.commit((key,))
@@ -1707,7 +913,9 @@ class ProxyAdapterTest(unittest.TestCase):
                 (Path(directory) / f"{key.hex()}.ucm").read_bytes(), source
             )
 
-            _submit_segments(adapter, 'load', (key, key), (0, 5), (12288, 16384), (5, 7))
+            _submit_segments(
+                adapter, "load", (key, key), (0, 5), (12288, 16384), (5, 7)
+            )
 
         self.assertEqual(access.register_calls, [registered])
         self.assertEqual(memory.read(0x3000, 5), source[:5])
@@ -1723,18 +931,18 @@ class ProxyAdapterTest(unittest.TestCase):
             proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
             adapter = UCMProxyAdapter(proxy)
             # Later layer first; repeated writes must preserve earlier ranges.
-            _submit_segments(adapter, 'dump', (key,), (4,), (8192,), (4,))
-            _submit_segments(adapter, 'dump', (other,), (0,), (8192,), (4,))
+            _submit_segments(adapter, "dump", (key,), (4,), (8192,), (4,))
+            _submit_segments(adapter, "dump", (other,), (0,), (8192,), (4,))
             self.assertEqual(adapter.lookup((key, other)), (False, False))
-            _submit_segments(adapter, 'dump', (key,), (0,), (4096,), (4,))
+            _submit_segments(adapter, "dump", (key,), (0,), (4096,), (4,))
             adapter.commit((key,))
             self.assertEqual(adapter.lookup((key, other)), (True, False))
             self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
             adapter.commit((key,))  # Idempotent retry.
-            _submit_segments(adapter, 'load', (key,), (0,), (12288,), (8,))
+            _submit_segments(adapter, "load", (key,), (0,), (12288,), (8,))
             self.assertEqual(memory.read(0x3000, 8), b"abcdefgh")
             # A replacement remains hidden behind the previous complete block.
-            _submit_segments(adapter, 'dump', (key,), (0,), (8192,), (4,))
+            _submit_segments(adapter, "dump", (key,), (0,), (8192,), (4,))
             self.assertEqual(proxy._path(key).read_bytes(), b"abcdefgh")
             adapter.commit((key, other))
             self.assertEqual(proxy._path(key).read_bytes(), b"efgh")
@@ -1743,6 +951,8 @@ class ProxyAdapterTest(unittest.TestCase):
     def test_wait_for_save_commits_after_all_dumps_and_not_on_dump_failure(self):
         connector = UCMConnector.__new__(UCMConnector)
         connector.use_layerwise = False
+        connector._save_complete = False
+        connector._failed_load_reqs = set()
         connector.spec = SimpleNamespace(fa_groups=(), wa_groups=(), state_groups=())
         connector.has_connector_metadata = lambda: True
         connector._get_connector_metadata = lambda: UCMConnectorMetadata()
@@ -1751,7 +961,9 @@ class ProxyAdapterTest(unittest.TestCase):
             SimpleNamespace(keys=(b"b" * 16,)),
         )
         connector.layout = SimpleNamespace(spec=connector.spec, group_layouts={})
-        connector.transfer_builder = SimpleNamespace(build_dump_transfers=lambda _: batches)
+        connector.transfer_builder = SimpleNamespace(
+            build_dump_transfers=lambda _: batches
+        )
         connector._proxy = mock.Mock()
         connector.wait_for_save()
         self.assertEqual(
@@ -1764,6 +976,7 @@ class ProxyAdapterTest(unittest.TestCase):
             ],
         )
         connector._proxy.reset_mock()
+        connector._save_complete = False
         connector._proxy.submit.side_effect = [None, UCMProxyError("write failed")]
         with self.assertRaises(UCMProxyError):
             connector.wait_for_save()
@@ -1831,8 +1044,8 @@ class ProxyAdapterTest(unittest.TestCase):
         adapter = UCMProxyAdapter(proxy)
         key = b"x" * 16
 
-        _submit_segments(adapter, 'load', (key,), (0,), (4096,), (32,))
-        _submit_segments(adapter, 'dump', (key,), (0,), (8192,), (32,))
+        _submit_segments(adapter, "load", (key,), (0,), (4096,), (32,))
+        _submit_segments(adapter, "dump", (key,), (0,), (8192,), (32,))
 
         self.assertEqual(
             proxy.wait_calls,
@@ -1847,2772 +1060,1114 @@ class ProxyAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(UCMProxyError, "does not provide wait"):
             _submit_segments(
                 UCMProxyAdapter(IncompleteAsyncProxy()),
-                'load',
-                (b'x' * 16,),
+                "load",
+                (b"x" * 16,),
                 (0,),
                 (4096,),
                 (32,),
             )
 
-    def test_worker_load_failure_reports_request_and_block_ids_once(self):
-        class BrokenLoadProxy(FakeProxy):
-            def load(self, block_ids, offsets, ptrs, sizes):
-                raise OSError("device copy failed")
 
-        with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
-            return_value=BrokenLoadProxy(),
+class ChunkMetadataTest(unittest.TestCase):
+    def test_group_block_counts_are_shared_and_recomputed_after_cp(self):
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(["model.layers.1.attn"], FullAttentionSpec(16)),
+            group(
+                ["model.layers.2.scratch"], UnsupportedSpec(7), enable_kv_transfer=False
+            ),
+        )
+        spec = parse_kv_cache_config(
+            raw, scheduler_block_size=8, num_hidden_layers=64, device_type="cpu"
+        )
+        self.assertEqual((spec.tokens_per_chunk, spec.blocks_per_chunk), (8, (1, 1, 0)))
+        scaled = ParallelLayout(dcp=2).apply_context_parallel(spec)
+        self.assertEqual(
+            (scaled.tokens_per_chunk, scaled.blocks_per_chunk), (32, (2, 1, 0))
+        )
+        self.assertEqual(scaled.groups[2].tokens_per_block, 7)
+        with self.assertRaisesRegex(ValueError, "whole distributed"):
+            ParallelLayout(dcp=2).apply_context_parallel(spec, 8)
+
+    def test_fa_swa_state_counts_use_their_own_semantics(self):
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(
+                ["model.layers.1.swa_cache"], SlidingWindowMLASpec(8, sliding_window=12)
+            ),
+            group(["model.layers.2.state"], MambaSpec(8)),
+        )
+        spec = parse_kv_cache_config(
+            raw, scheduler_block_size=8, tokens_per_chunk=32, num_hidden_layers=64
+        )
+        self.assertEqual(spec.blocks_per_chunk, (4, 2, 1))
+        self.assertFalse(hasattr(spec.groups[0], "tail_blocks"))
+
+    def test_disabled_native_groups_are_not_classified(self):
+        for enabled, cacheable in ((False, True), (True, False)):
+            raw = config(
+                group(["model.layers.0.attn"], FullAttentionSpec(8)),
+                group(
+                    ["model.layers.1.scratch"],
+                    UnsupportedSpec(7, prefix_cacheable=cacheable),
+                    enable_kv_transfer=enabled,
+                ),
+            )
+            spec = parse_kv_cache_config(
+                raw, scheduler_block_size=8, num_hidden_layers=64
+            )
+            self.assertEqual(spec.blocks_per_chunk, (1, 0))
+            self.assertEqual(spec.groups[1].kinds, frozenset())
+
+    def test_unsupported_restore_semantics_are_rejected(self):
+        for kind in (
+            KVCacheSpecKind.UNKNOWN,
+            KVCacheSpecKind.CHUNKED_LOCAL_ATTENTION,
+            KVCacheSpecKind.ENCODER_ONLY_ATTENTION,
+            KVCacheSpecKind.CROSS_ATTENTION,
         ):
-            connector = UCMConnector(
-                vllm_config(),
-                KVConnectorRole.WORKER,
-                config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            )
-        connector.register_kv_caches(
-            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))}
-        )
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (b"x" * 16,),
-            0,
-            4,
-            (
-                np.array(
-                    [
-                        5,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        connector.bind_connector_metadata(
-            UCMConnectorMetadata(
-                requests={"failed": RequestDispatchMeta("failed", (plan,))}
-            )
-        )
-
-        connector.start_load_kv(None)
-
-        self.assertEqual(
-            connector.build_connector_worker_meta().load_failed_reqs, {"failed"}
-        )
-        self.assertIsNone(connector.build_connector_worker_meta())
-        self.assertEqual(connector.get_block_ids_with_load_errors(), {5})
-        self.assertEqual(connector.get_block_ids_with_load_errors(), set())
-
-    def test_worker_load_failure_is_isolated_to_its_request(self):
-        class SelectiveLoadProxy(FakeProxy):
-            def load(self, block_ids, offsets, ptrs, sizes):
-                if b"x" * 16 in block_ids:
-                    raise OSError("one request failed")
-                super().load(block_ids, offsets, ptrs, sizes)
-
-        proxy = SelectiveLoadProxy()
-        with mock.patch(
-            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
-            return_value=proxy,
-        ):
-            connector = UCMConnector(
-                vllm_config(),
-                KVConnectorRole.WORKER,
-                config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            )
-        connector.register_kv_caches(
-            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))}
-        )
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        def request_meta(request_id, key, block_id):
-            plan = UCMGroupDispatchPlan(
-                "FA",
-                (key,),
-                0,
-                4,
-                (
-                    np.array(
-                        [
-                            block_id,
-                        ],
-                        dtype=np.uint64,
-                    ),
-                ),
-            )
-            return RequestDispatchMeta(request_id, (plan,))
-
-        connector.bind_connector_metadata(
-            UCMConnectorMetadata(
-                requests={
-                    "failed": request_meta("failed", b"x" * 16, 5),
-                    "loaded": request_meta("loaded", b"y" * 16, 6),
-                }
-            )
-        )
-
-        connector.start_load_kv(None)
-
-        self.assertEqual(
-            connector.build_connector_worker_meta().load_failed_reqs, {"failed"}
-        )
-        self.assertEqual(connector.get_block_ids_with_load_errors(), {5})
-        self.assertEqual(len(proxy.load_calls), 1)
-
-
-class DispatcherLifecycleTest(unittest.TestCase):
-    def setUp(self):
-        self.parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
-        )
-        self.dispatcher = make_dispatcher(self.parsed)
-
-    @staticmethod
-    def scheduler_output(
-        *,
-        new=(),
-        cached_ids=(),
-        cached_blocks=(),
-        resumed=(),
-        scheduled=None,
-        preempted=(),
-        finished=(),
-    ):
-        return SimpleNamespace(
-            scheduled_new_reqs=list(new),
-            scheduled_cached_reqs=SimpleNamespace(
-                req_ids=list(cached_ids),
-                new_block_ids=list(cached_blocks),
-                resumed_req_ids=set(resumed),
-            ),
-            num_scheduled_tokens=scheduled or {},
-            preempted_req_ids=set(preempted),
-            finished_req_ids=set(finished),
-        )
-
-    def add_state(self, request_id="r"):
-        request = FakeRequest(request_id, 512)
-        keys = tuple(bytes([index]) * 16 for index in range(4))
-        return seed_request_state(self.dispatcher, request, group_ucm_block_ids=(keys,))
-
-    def test_new_replaces_and_cached_appends_block_tables(self):
-        state = self.add_state()
-        self.dispatcher.build_from_scheduler_output(
-            self.scheduler_output(
-                new=(SimpleNamespace(req_id="r", block_ids=([3, 4],)),),
-                scheduled={"r": 128},
-            )
-        )
-        self.assertEqual(state.group_vllm_block_ids, ([3, 4],))
-
-        self.dispatcher.build_from_scheduler_output(
-            self.scheduler_output(
-                cached_ids=("r",),
-                cached_blocks=((([5],)),),
-                scheduled={"r": 128},
-            )
-        )
-        self.assertEqual(state.group_vllm_block_ids, ([3, 4, 5],))
-
-    def test_resumed_request_replaces_stale_blocks(self):
-        state = self.add_state()
-        state.group_vllm_block_ids = ([1, 2, 3],)
-
-        self.dispatcher.build_from_scheduler_output(
-            self.scheduler_output(
-                cached_ids=("r",),
-                cached_blocks=((([7, 6],)),),
-                resumed=("r",),
-                scheduled={"r": 128},
-            )
-        )
-
-        self.assertEqual(state.group_vllm_block_ids, ([7, 6],))
-
-    def test_preempt_and_finish_remove_request_snapshots(self):
-        self.add_state("preempted")
-        self.add_state("finished")
-
-        metadata = self.dispatcher.build_from_scheduler_output(
-            self.scheduler_output(
-                preempted=("preempted",),
-                finished=("finished",),
-            )
-        )
-
-        self.assertEqual(metadata.preempted_req_ids, {"preempted"})
-        self.assertEqual(metadata.finished_req_ids, {"finished"})
-        self.assertEqual(self.dispatcher.requests, {})
-
-    def test_direct_custom_chunk_completes_once_across_steps(self):
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
-            ucm_cache_block_size=512,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("chunked", 1024)
-        keys = (b"a" * 16, b"b" * 16)
-        state = seed_request_state(dispatcher, request, group_ucm_block_ids=(keys,))
-        state.group_vllm_block_ids = ([1, 2, 3, 4, 5, 6, 7, 8],)
-
-        first = _scheduler_metadata(dispatcher, {'chunked': 128})
-        second = _scheduler_metadata(dispatcher, {'chunked': 384})
-        third = _scheduler_metadata(dispatcher, {'chunked': 512})
-
-        self.assertEqual(first.requests["chunked"].dump_plans, ())
-        second_plan = second.requests["chunked"].dump_plans[0]
-        self.assertEqual(
-            (second_plan.keys, second_plan.token_start, second_plan.token_end),
-            ((keys[0],), 0, 512),
-        )
-        self.assertEqual(
-            second_plan.group_block_ids[0].tolist(),
-            [1, 2, 3, 4],
-        )
-        third_plan = third.requests["chunked"].dump_plans[0]
-        self.assertEqual(
-            (third_plan.keys, third_plan.token_start, third_plan.token_end),
-            ((keys[1],), 512, 1024),
-        )
-        self.assertEqual(third_plan.group_block_ids[0].tolist(), [5, 6, 7, 8])
-
-    def test_external_load_plan_is_consumed_after_first_scheduled_step(self):
-        state = self.add_state()
-        state.external_hit_tokens = 128
-        state.token_processed = 128
-        state.load_pending = True
-        state.group_vllm_block_ids = ([3, 4, 5, 6],)
-
-        first = _scheduler_metadata(self.dispatcher, {'r': 128})
-        second = _scheduler_metadata(self.dispatcher, {'r': 128})
-
-        self.assertEqual(len(first.requests["r"].load_plans), 1)
-        self.assertEqual(first.requests["r"].load_plans[0].token_start, 0)
-        self.assertEqual(first.requests["r"].load_plans[0].token_end, 128)
-        self.assertEqual(second.requests["r"].load_plans, ())
-
-    def test_boundary_chain_dumps_straddled_boundaries(self):
-        # A step may advance past a cache boundary without ending on it
-        # (eagle-style multi-token steps, odd chunked-prefill sizes): the
-        # boundary record must still be dumped -- the newest boundary the
-        # step completed -- and a step completing no new boundary dumps
-        # nothing.
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(128)),
-            ),
-            scheduler_block_size=128,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("r", 2048)
-        fa_keys = tuple(bytes([index]) * 16 for index in range(16))
-        state_keys = tuple(bytes([index + 32]) * 16 for index in range(16))
-        seed_request_state(
-            dispatcher, request, group_ucm_block_ids=(fa_keys, state_keys)
-        )
-        for request_id, state in dispatcher.requests.items():
-            state.group_vllm_block_ids = (list(range(16)), list(range(16)))
-
-        first = _scheduler_metadata(dispatcher, {'r': 1000})
-        state_plan = next(
-            plan
-            for plan in first.requests["r"].dump_plans
-            if plan.hash_group == "State"
-        )
-        # [0, 1000) completes boundaries up to 896: the newest is 896's.
-        self.assertEqual(state_plan.keys, (state_keys[6],))
-
-        # [1000, 1100) straddles boundary 1024 without ending on it.
-        second = _scheduler_metadata(dispatcher, {'r': 100})
-        state_plan = next(
-            plan
-            for plan in second.requests["r"].dump_plans
-            if plan.hash_group == "State"
-        )
-        self.assertEqual(state_plan.keys, (state_keys[7],))
-        self.assertEqual(state_plan.token_end, 1024)
-        # The snapshot block is the boundary's (1024th token's) block,
-        # not the step end's (1100th token's) block.
-        self.assertEqual(state_plan.group_block_ids[0].tolist(), [7])
-
-        # [1100, 1124) completes no new boundary: nothing more to record.
-        third = _scheduler_metadata(dispatcher, {'r': 24})
-        self.assertFalse(
-            any(plan.hash_group == "State" for plan in third.requests["r"].dump_plans)
-        )
-
-    def test_dsv4_wa_dispatch_uses_only_final_boundary_and_real_tails(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
-                ),
-                group(
-                    ["model.layers.3.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=128),
-                ),
-                group(
-                    ["model.layers.0.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 128),
-                ),
-                group(
-                    ["model.layers.2.compressor.state_cache"],
-                    AscendSlidingWindowMLASpec(8, 1, 8),
-                ),
-                group(
-                    ["model.layers.3.compressor.state_cache"],
-                    AscendSlidingWindowMLASpec(32, 1, 128),
-                ),
-            ),
-            scheduler_block_size=8,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("dsv4", 1024)
-        fa_keys = (b"a" * 16, b"b" * 16)
-        wa_keys = (b"c" * 16, b"d" * 16)
-        state = seed_request_state(dispatcher, request, 1024, (fa_keys, wa_keys))
-        state.group_vllm_block_ids = (
-            [1, 2],
-            [3],
-            list(range(8)),
-            list(range(128)),
-            list(range(32)),
-        )
-
-        metadata = _scheduler_metadata(dispatcher, {'dsv4': 1})
-        fa_plan = next(
-            plan
-            for plan in metadata.requests["dsv4"].load_plans
-            if plan.hash_group == "FA"
-        )
-        wa_plan = next(
-            plan
-            for plan in metadata.requests["dsv4"].load_plans
-            if plan.hash_group == "WA"
-        )
-
-        self.assertEqual(len(fa_plan.group_block_ids), 2)
-        self.assertEqual(wa_plan.keys, (wa_keys[1],))
-        # Windows carry only block ids; the static shapes live in the spec
-        # (swa: one whole 128-token block; C4 compressor: the [4, 8)
-        # half-block sub-span) and the worker derives them from templates.
-        self.assertEqual(
-            tuple(blocks.tolist() for blocks in wa_plan.group_block_ids),
-            ([7], [127]),
-        )
-
-    def test_wa_dump_skips_incomplete_tail_windows(self):
-        # A tail window longer than the cache block clamps at the request
-        # head on early boundaries; those partial windows are the
-        # request's own prefix (restored with it), so nothing is dumped
-        # until the boundary outgrows the tail.
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(
-                    ["model.layers.1.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 512),
-                ),
-            ),
-            scheduler_block_size=128,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("r", 1024)
-        fa_keys = tuple(bytes([index]) * 16 for index in range(8))
-        wa_keys = tuple(bytes([index + 32]) * 16 for index in range(8))
-        seed_request_state(dispatcher, request, group_ucm_block_ids=(fa_keys, wa_keys))
-        dispatcher.requests["r"].group_vllm_block_ids = (
-            list(range(8)),
-            list(range(8)),
-        )
-
-        # [0, 384): every completed boundary (128..384) is shorter than
-        # the 512-token tail -- no WA record.
-        early = _scheduler_metadata(dispatcher, {'r': 384})
-        self.assertTrue(
-            any(plan.hash_group == "FA" for plan in early.requests["r"].dump_plans)
-        )
-        self.assertFalse(
-            any(plan.hash_group == "WA" for plan in early.requests["r"].dump_plans)
-        )
-
-        # [384, 640): the newest boundary 640 outgrows the tail -- the
-        # full window [128, 640) is one WA record at that boundary.
-        later = _scheduler_metadata(dispatcher, {'r': 256})
-        wa_plan = next(
-            plan for plan in later.requests["r"].dump_plans if plan.hash_group == "WA"
-        )
-        self.assertEqual(wa_plan.keys, (wa_keys[4],))
-        self.assertEqual(wa_plan.group_block_ids[0].tolist(), [1, 2, 3, 4])
-
-    def test_wa_window_not_dividing_block_keeps_partial_head(self):
-        # ceil, not HMA's floor: a 96-token window over 64-token blocks
-        # spans two blocks -- the head block keeps its trailing 32 tokens
-        # at a 32-token in-block offset, the newest block stays whole,
-        # and the two IO spans are memory-adjacent.
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(
-                    ["model.layers.1.swa_cache"],
-                    AscendSlidingWindowMLASpec(64, 1, 96),
-                ),
-            ),
-            scheduler_block_size=128,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("r", 512)
-        fa_keys = tuple(bytes([index]) * 16 for index in range(4))
-        wa_keys = tuple(bytes([index + 32]) * 16 for index in range(4))
-        seed_request_state(dispatcher, request, group_ucm_block_ids=(fa_keys, wa_keys))
-        dispatcher.requests["r"].group_vllm_block_ids = (
-            list(range(4)),
-            list(range(8)),
-        )
-
-        metadata = _scheduler_metadata(dispatcher, {'r': 384})
-        wa_plan = next(
-            plan
-            for plan in metadata.requests["r"].dump_plans
-            if plan.hash_group == "WA"
-        )
-        # Window [288, 384): the head half of block 4 plus all of block 5.
-        self.assertEqual(wa_plan.keys, (wa_keys[2],))
-        self.assertEqual(wa_plan.group_block_ids[0].tolist(), [4, 5])
-
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(
-                    0x1000,
-                    (8, 128, 1, 512),
-                    (65536, 512, 512, 1),
-                    element_size=2,
-                ),
-                "model.layers.1.swa_cache": FakeTensor(
-                    0x3000,
-                    (8, 64, 1, 512),
-                    (32768, 512, 512, 1),
-                    element_size=2,
-                ),
-            },
-        )
-        batch = _flat_layout_records(layout, 'dump', metadata, 'model.layers.1.swa_cache')
-        self.assertEqual(batch.sizes.tolist(), [32768, 65536])
-        self.assertEqual(batch.offsets.tolist(), [0, 32768])
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [0x3000 + 4 * 65536 + 32768, 0x3000 + 5 * 65536],
-        )
-
-    def test_dsv4_fa_windows_encode_n_to_one_keys_flat(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
-                ),
-                group(
-                    ["model.layers.3.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=128),
-                ),
-            ),
-            scheduler_block_size=16,
-        )
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("r", 2048)
-        c4_keys = tuple(bytes([index]) * 16 for index in range(4))
-        c128_keys = tuple(bytes([index + 16]) * 16 for index in range(4))
-        seed_request_state(
-            dispatcher, request, group_ucm_block_ids=(c4_keys, c128_keys)
-        )
-        dispatcher.requests["r"].group_vllm_block_ids = ([1, 2, 3, 4], [5, 6])
-
-        metadata = _scheduler_metadata(dispatcher, {'r': 2048})
-        plan = metadata.requests["r"].dump_plans[0]
-
-        # Group 0 (token block 512 == unit): one whole block per key.
-        self.assertEqual(
-            plan.group_block_ids[0].tolist(),
-            [1, 2, 3, 4],
-        )
-        # Group 1 (token block 16384): four keys share one page -- the
-        # same id four times, flat; each key's 512-token sub-span head is
-        # derived on the worker from the plan's token range.
-        self.assertEqual(
-            plan.group_block_ids[1].tolist(),
-            [5, 5, 5, 5],
-        )
-
-    def test_large_prefill_plan_stays_flat_and_compact(self):
-        # 8192 keys in one step (unit 128 => a 1M-token prefill): the
-        # flat encoding keeps the pickled metadata well under a megabyte.
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
-        )
-        dispatcher = make_dispatcher(parsed)
-        keys = tuple(bytes([index % 256]) * 16 for index in range(8192))
-        state = seed_request_state(
-            dispatcher,
-            FakeRequest("r", 8192 * 128),
-            group_ucm_block_ids=(keys,),
-        )
-        state.group_vllm_block_ids = (list(range(8192)),)
-
-        metadata = _scheduler_metadata(dispatcher, {'r': 8192 * 128})
-        plan = metadata.requests["r"].dump_plans[0]
-
-        self.assertEqual(len(plan.keys), 8192)
-        self.assertEqual(plan.group_block_ids[0].tolist(), list(range(8192)))
-
-        import pickle
-
-        self.assertLess(len(pickle.dumps(metadata)), 1024 * 1024)
-
-
-class RaggedLayoutTest(unittest.TestCase):
-    def test_cpu_attention_derives_storage_axis_from_tokens_per_state(self):
-        # vLLM 0.29 dropped spec.storage_block_size; the storage axis is
-        # derived as block_size // tokens_per_state (DSV4 C4A: 256/4 = 64).
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn"],
-                    FullAttentionSpec(256, tokens_per_state=4),
-                )
-            ),
-            scheduler_block_size=256,
-            device_type="cpu",
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(
-                    0x1000,
-                    (8, 64, 8),
-                    (512, 8, 1),
-                )
-            },
-        )
-
-        component = layout.group_layouts[0]
-        self.assertEqual(parsed.groups[0].token_block_size, 256)
-        # One stored state per 4 tokens: the block spans 64 states.
-        self.assertEqual(
-            (int(component.states_per_block[0]), int(component.state_strides[0])),
-            (64, 8),
-        )
-
-    def test_combined_mamba_raw_page_uses_one_io_region(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(4)),
-                group(
-                    ["model.layers.1.mixer"],
-                    MambaSpec(
-                        4,
-                        shapes=((2, 2), (2,)),
-                        dtypes=(
-                            SimpleNamespace(itemsize=2),
-                            SimpleNamespace(itemsize=4),
-                        ),
-                        page_size_bytes=64,
-                    ),
-                ),
-            ),
-            scheduler_block_size=4,
-            device_type="cpu",
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(0x800, (8, 4, 1), (4, 1, 1)),
-                "model.layers.1.mixer": FakeTensor(
-                    0x1000,
-                    (8, 1, 1, 64),
-                    (64, 64, 64, 1),
-                ),
-            },
-        )
-
-        # The combined byte page stays a single component: whole-block
-        # state IO is a byte copy, so the conv/SSM split the spec
-        # describes adds no addressing information.  The view carries
-        # the content (16B); the page padding (64-byte stride) stays
-        # outside the record.
-        group_layout = layout.group_layouts[1]
-        self.assertEqual(len(group_layout.layer_names), 1)
-        self.assertEqual(
-            (
-                int(group_layout.base_ptrs[0]),
-                int(group_layout.block_strides[0]),
-                int(group_layout.payload_bytes[0]),
-                int(
-                    layout.store_layouts[group_layout.group_id].group_block_offsets[0]
-                ),
-            ),
-            (0x1000, 64, 16, 0),
-        )
-
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"m" * 16
-        plan = UCMGroupDispatchPlan(
-            "State",
-            (key,),
-            0,
-            4,
-            (
-                np.array(
-                    [
-                        3,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [
-                0x1000 + 3 * 64,
-            ],
-        )
-        self.assertEqual(
-            batch.sizes.tolist(),
-            [
-                16,
-            ],
-        )
-        self.assertEqual(
-            batch.offsets.tolist(),
-            [
-                0,
-            ],
-        )
-
-    def test_explicit_components_and_4d_ascend_view_are_supported(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(4),
-                        "model.layers.1.attn": FullAttentionSpec(4),
-                    },
-                )
-            ),
-            scheduler_block_size=4,
-        )
-        components = (
-            FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
-            FakeTensor(0x2000, (8, 4, 3), (12, 3, 1)),
-        )
-        ascend_4d = FakeTensor(0x3000, (8, 4, 2, 3), (24, 6, 3, 1))
-
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": components,
-                "model.layers.1.attn": ascend_4d,
-            },
-        )
-
-        self.assertEqual(
-            tuple(
-                zip(
-                    layout.group_layouts[0].layer_names,
-                    layout.group_layouts[0].base_ptrs.tolist(),
-                )
-            ),
-            (
-                ("model.layers.0.attn", 0x1000),
-                ("model.layers.0.attn", 0x2000),
-                ("model.layers.1.attn", 0x3000),
-            ),
-        )
-        # One column per component, straight from its view: layer 0's two
-        # tensors, then layer 1's single 4-D view (trailing dims permuted,
-        # 24-byte payload == row stride).
-        group_layout = layout.group_layouts[0]
-        self.assertEqual(
-            tuple(
-                (int(base_ptr), int(payload))
-                for base_ptr, payload in zip(
-                    group_layout.base_ptrs, group_layout.payload_bytes
-                )
-            ),
-            ((0x1000, 12), (0x2000, 12), (0x3000, 24)),
-        )
-
-    def test_unknown_5d_axis_order_fails_fast(self):
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
-        )
-
-        with self.assertRaisesRegex(ValueError, "2-D, 3-D, or 4-D"):
-            UCMKVCacheLayout(
-                parsed,
-                {
-                    "model.layers.0.attn": FakeTensor(
-                        0x1000,
-                        (2, 8, 4, 2, 3),
-                        (192, 24, 6, 3, 1),
-                    )
-                },
-            )
-
-    def test_partial_range_keeps_block_wise_entries(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 192),
-                )
-            ),
-            scheduler_block_size=128,
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.swa_cache": FakeTensor(
-                    0x1000,
-                    (8, 128, 1),
-                    (128, 1, 1),
-                )
-            },
-        )
-
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"p" * 16
-        # A WA tail shorter than two blocks: the [64, 128) half-block head
-        # of block 2 plus the whole block 3.  Only the ids travel; the
-        # static tail pattern places the sub-spans.
-        plan = UCMGroupDispatchPlan(
-            "WA",
-            (key,),
-            0,
-            192,
-            (np.array([2, 3], dtype=np.uint64),),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        # The half-block head and the whole trailing block stay separate
-        # entries even though they are contiguous in memory: record
-        # positions are a function of the logical enumeration, never of
-        # physical adjacency.  Segments pack back to back -- the proxy
-        # requires a gapless record.
-        self.assertEqual(batch.block_ids, (key, key))
-        self.assertEqual(batch.ptrs.tolist(), [0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128])
-        self.assertEqual(batch.sizes.tolist(), [64, 128])
-        self.assertEqual(batch.offsets.tolist(), [0, 64])
-
-    def test_partial_records_roundtrip_through_real_file_proxy(self):
-        # Exercise the real Proxy's complete-record contract. A memory stub
-        # that silently zero-fills holes can hide incorrect file offsets.
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 192),
-                )
-            ),
-            scheduler_block_size=128,
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {"model.layers.0.swa_cache": FakeTensor(0x1000, (8, 128, 1), (128, 1, 1))},
-        )
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"p" * 16
-
-        def batch(phase, block_ids):
-            plan = UCMGroupDispatchPlan(
-                "WA",
-                (key,),
-                0,
-                192,
-                (np.array(block_ids, dtype=np.uint64),),
-            )
-            metadata = UCMConnectorMetadata(
-                requests={
-                    "r": RequestDispatchMeta("r", **{phase + "_plans": (plan,)}),
-                }
-            )
-            return _flat_layout_records(layout, phase, metadata)
-
-        memory = ByteMemory()
-        memory.write(0x1000, b"\xef" * 1024)
-        memory.write(0x1000 + 2 * 128, bytes(range(128)))
-        memory.write(0x1000 + 3 * 128, bytes(range(128, 256)))
-        # The tail record: block 2's [64, 128) half-block head plus the
-        # whole block 3.
-        expected = bytes(range(64, 256))
-        dumped = batch("dump", (2, 3))
-        loaded = batch("load", (7, 5))
-        with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
-            proxy.dump(dumped.block_ids, dumped.offsets, dumped.ptrs, dumped.sizes)
-            proxy.commit(dumped.block_ids)
-            self.assertEqual(
-                (Path(directory) / (key.hex() + ".ucm")).read_bytes(), expected
-            )
-            proxy.load(loaded.block_ids, loaded.offsets, loaded.ptrs, loaded.sizes)
-        self.assertEqual(
-            memory.read(0x1000 + 7 * 128, 128), b"\xef" * 64 + expected[:64]
-        )
-        self.assertEqual(memory.read(0x1000 + 5 * 128, 128), expected[64:])
-
-    def test_dump_and_load_survive_different_physical_block_layouts(self):
-        # Dump and load address different vLLM blocks (the source request is
-        # freed before the target allocates), so their physical adjacency
-        # differs.  Record positions must stay a function of the logical
-        # dispatch plan alone: entry merging may only join ranges that are
-        # contiguous in both the record and memory, never reorder or drop
-        # them based on physical addresses.
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
-            scheduler_block_size=8,
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(
-                    0x1000,
-                    (8, 8, 6),
-                    (48, 6, 1),
-                )
-            },
-        )
-        memory = ByteMemory()
-        source_first = bytes(range(48))
-        source_second = bytes(value + 100 for value in range(48))
-        memory.write(0x1000 + 3 * 48, source_first)
-        memory.write(0x1000 + 4 * 48, source_second)
-
-        from ucm.integration.vllm.v2.ucm_proxy import UCMProxyAdapter
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key_a, key_b = b"d" * 16, b"e" * 16
-        adapter = UCMProxyAdapter(InMemoryByteProxy(memory))
-        dump_plan = UCMGroupDispatchPlan(
-            "FA",
-            (key_a, key_b),
-            0,
-            16,
-            (np.array([3, 4], dtype=np.uint64),),
-        )
-        dump_meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", dump_plans=(dump_plan,))}
-        )
-        dump_batch = _flat_layout_records(layout, 'dump', dump_meta)
-        # Blocks 3 and 4 are enumerated separately even though adjacent.
-        self.assertEqual(dump_batch.sizes.tolist(), [48, 48])
-
-        # The load lands on scattered blocks; each key's record keeps its
-        # own byte position.
-        load_plan = UCMGroupDispatchPlan(
-            "FA",
-            (key_a, key_b),
-            0,
-            16,
-            (np.array([6, 2], dtype=np.uint64),),
-        )
-        load_meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(load_plan,))}
-        )
-        load_batch = _flat_layout_records(layout, 'load', load_meta)
-        self.assertEqual(load_batch.sizes.tolist(), [48, 48])
-        self.assertEqual(load_batch.offsets.tolist(), [0, 0])
-        self.assertEqual(load_batch.ptrs.tolist(), [0x1000 + 6 * 48, 0x1000 + 2 * 48])
-
-        _submit_segments(
-            adapter,
-            'dump',
-            dump_batch.block_ids,
-            dump_batch.offsets,
-            dump_batch.ptrs,
-            dump_batch.sizes,
-        )
-        _submit_segments(
-            adapter,
-            'load',
-            load_batch.block_ids,
-            load_batch.offsets,
-            load_batch.ptrs,
-            load_batch.sizes,
-        )
-        self.assertEqual(memory.read(0x1000 + 6 * 48, 48), source_first)
-        self.assertEqual(memory.read(0x1000 + 2 * 48, 48), source_second)
-
-    def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768)),
-                num_blocks=2,
-            ),
-            scheduler_block_size=768,
-        )
-        caches = {
-            "model.layers.3.self_attn.attn": (
-                FakeTensor(
-                    0x1000,
-                    (12, 128, 1, 512),
-                    (65536, 512, 512, 1),
-                    element_size=2,
-                ),
-                FakeTensor(
-                    0x200000,
-                    (12, 128, 1, 64),
-                    (8192, 64, 64, 1),
-                    element_size=2,
-                ),
-            )
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        key = b"k" * 16
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            768,
-            (
-                np.array(
-                    [
-                        1,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        self.assertEqual(batch.sizes.tolist(), [786432, 98304])
-        self.assertEqual(batch.offsets.tolist(), [0, 786432])
-        self.assertEqual(batch.ptrs.tolist(), [0x1000 + 786432, 0x200000 + 98304])
-
-    def test_kimi_state_components_copy_payload_not_shared_page_stride(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.3.attn"], FullAttentionSpec(768)),
-                group(
-                    ["model.layers.0.self_attn"],
-                    MambaSpec(
-                        768,
-                        shapes=((3, 4608), (12, 128, 128)),
-                    ),
-                ),
-                num_blocks=2,
-            ),
-            scheduler_block_size=768,
-        )
-        num_blocks = 2
-        conv_bytes = 27648
-        ssm_bytes = 786432
-        caches = {
-            "model.layers.3.attn": FakeTensor(
-                0x1000,
-                (12, 128, 1, 576),
-                (73728, 576, 576, 1),
-                element_size=2,
-            ),
-            "model.layers.0.self_attn": (
-                FakeTensor(
-                    0x5000,
-                    (2, 3, 4608),
-                    (conv_bytes // 2, 4608, 1),
-                    element_size=2,
-                ),
-                FakeTensor(
-                    0x5000 + num_blocks * conv_bytes,
-                    (2, 12, 128, 128),
-                    (ssm_bytes // 4, 16384, 128, 1),
-                    element_size=4,
-                ),
-            ),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        key = b"s" * 16
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "State",
-            (key,),
-            1536,
-            2304,
-            (
-                np.array(
-                    [
-                        1,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [
-                0x5000 + conv_bytes,
-                0x5000 + num_blocks * conv_bytes + ssm_bytes,
-            ],
-        )
-        self.assertEqual(batch.sizes.tolist(), [conv_bytes, ssm_bytes])
-        self.assertEqual(batch.offsets.tolist(), [0, conv_bytes])
-
-    def test_component_major_layout_spans_multiple_physical_blocks(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(128),
-                        "model.layers.1.attn": FullAttentionSpec(128),
-                    },
-                )
-            ),
-            scheduler_block_size=128,
-            ucm_cache_block_size=256,
-        )
-        caches = {
-            "model.layers.0.attn": (
-                FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
-                FakeTensor(0x3000, (8, 128, 2), (256, 2, 1)),
-            ),
-            "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        proxy = FakeProxy()
-        coordinator = UCMDispatcher(
-            parsed,
-            UCMProxyAdapter(proxy),
-            RequestHasher(vllm_config(), 0),
-            b"seed",
-            recompute_tokens=0,
-        )
-        request = FakeRequest("r", 256)
-        dispatcher = coordinator
-        result = dispatcher.lookup(request, 0)
-        state = dispatcher.requests["r"]
-        state.group_vllm_block_ids = ([2, 5],)
-        state.external_hit_tokens = 256
-        state.load_pending = True
-        metadata = _scheduler_metadata(dispatcher, {'r': 1})
-
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        # Records are block-major: block 0's views, then block 1's -- each
-        # block's layer pages land at the per-block anchor (K/V of layer 0
-        # then layer 1), so one ucm block is the byte-concatenation of its
-        # two vllm blocks.
-        self.assertEqual(batch.offsets.tolist(), [0, 512, 768, 1152, 1664, 1920])
-        self.assertEqual(batch.sizes.tolist(), [512, 256, 384, 512, 256, 384])
-        self.assertEqual(
-            batch.ptrs.tolist(), [0x1400, 0x3200, 0x5300, 0x1A00, 0x3500, 0x5780]
-        )
-        # A layerwise (filtered) batch must address the very same record
-        # coordinates: a layerwise load lands exactly where the full record
-        # was dumped.
-        layer_batch = _flat_layout_records(layout, 'load', metadata, 'model.layers.1.attn')
-        self.assertEqual(layer_batch.offsets.tolist(), [768, 1920])
-        self.assertEqual(layer_batch.sizes.tolist(), [384, 384])
-        self.assertEqual(layer_batch.ptrs.tolist(), [0x5300, 0x5780])
-        full_positions = {
-            (ptr, size): offset
-            for ptr, size, offset in zip(batch.ptrs, batch.sizes, batch.offsets)
-        }
-        for ptr, size, offset in zip(
-            layer_batch.ptrs, layer_batch.sizes, layer_batch.offsets
-        ):
-            self.assertEqual(full_positions[(ptr, size)], offset)
-
-    def test_interleaved_declarations_take_one_span_per_block(self):
-        # Block First (DSV4 0.29): one descriptor's layer pages tile each
-        # block slot (layer_stride < block_stride).  Whole batches collapse
-        # to one descriptor-sized span per block -- paddings riding inside
-        # -- while layered and sub-block queries stay per-view exact and
-        # address the very same record coordinates.
-        num_blocks = 4
-        page = 4096  # 64 states x 64B, dense
-        layer_stride = page
-        block_stride = 2 * page  # both layers' pages tile one slot
-        declarations = (
-            SimpleNamespace(
-                size=num_blocks * block_stride,
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=layer_stride,
-                block_stride=block_stride,
-            ),
-        )
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(256, 4),
-                        "model.layers.1.attn": FullAttentionSpec(256, 4),
-                    },
-                ),
-                num_blocks=4,
-                tensors=declarations,
-            ),
-            scheduler_block_size=256,
-            device_type="cpu",
-        )
-        caches = {
-            "model.layers.0.attn": FakeTensor(
-                0x1000, (num_blocks, 64, 64), (block_stride, 64, 1)
-            ),
-            "model.layers.1.attn": FakeTensor(
-                0x1000 + page, (num_blocks, 64, 64), (block_stride, 64, 1)
-            ),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        group_layout = layout.group_layouts[0]
-        span = group_layout.block_first
-        self.assertIsNotNone(span)
-        self.assertEqual(
-            (span.base_ptr, span.block_stride, span.block_size_bytes),
-            (0x1000, block_stride, 2 * layer_stride),
-        )
-        # The record is slot-sized: both layers' page slots, paddings and all.
-        self.assertEqual(
-            layout.store_layouts[group_layout.group_id].whole_block_bytes,
-            2 * layer_stride,
-        )
-
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"b" * 16
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            256,
-            (
-                np.array(
-                    [
-                        2,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-        # Whole batch: one span covering both layers' pages of block 2.
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [
-                0x1000 + 2 * block_stride,
-            ],
-        )
-        self.assertEqual(
-            batch.sizes.tolist(),
-            [
-                2 * layer_stride,
-            ],
-        )
-        self.assertEqual(
-            batch.offsets.tolist(),
-            [
-                0,
-            ],
-        )
-
-        # Layered batch: layer 1's page only, at its in-slot record offset
-        # (one page in) -- the same bytes the whole-batch span covered.
-        layer_batch = _flat_layout_records(layout, 'load', metadata, 'model.layers.1.attn')
-        self.assertEqual(
-            layer_batch.ptrs.tolist(),
-            [
-                0x1000 + page + 2 * block_stride,
-            ],
-        )
-        self.assertEqual(
-            layer_batch.sizes.tolist(),
-            [
-                page,
-            ],
-        )
-        self.assertEqual(
-            layer_batch.offsets.tolist(),
-            [
-                page,
-            ],
-        )
-
-        # Whole spans and compiled access templates expose the same bytes:
-        # the span covers the group, while the grid has one column per segment.
-        span_ptrs, span_sizes = group_layout.block_first_segments((2,))
-        self.assertEqual(
-            (span_ptrs.tolist(), span_sizes.tolist()),
-            ([0x1000 + 2 * block_stride], [2 * page]),
-        )
-        grid_ptrs, grid_sizes = _resolved_access(group_layout.compile_access(token_counts=256), [2])
-        self.assertEqual(grid_ptrs[:, 1].tolist(), [0x1000 + page + 2 * block_stride])
-        self.assertEqual(grid_sizes[:, 1].tolist(), [page])
-
-        # Sub-block token windows never use the descriptor span: they walk
-        # the layer's own view and stay payload-exact (128 tokens at the
-        # 4:1 compression = 32 states x 64B = 2048B).
-        window_ptrs, window_sizes = _resolved_access(
-            group_layout.compile_access(token_counts=128),
-            [2],
-        )
-        self.assertEqual(window_ptrs[:, 0].tolist(), [0x1000 + 2 * block_stride])
-        self.assertEqual(window_sizes[:, 0].tolist(), [2048])
-
-    def test_tiled_group_spans_chain_two_descriptors(self):
-        # The DSV4 shape: one group, several descriptors tiling the block
-        # slot back to back, with their layers interleaved in layer order.
-        # The whole group is one span per block; each layer's record
-        # anchor is its page slot inside its own descriptor's tile --
-        # not the layer-order running sum (which would interleave two
-        # tiles' strides and land layered queries at wrong offsets).
-        num_blocks = 4
-        slot = 12288
-        declarations = (
-            SimpleNamespace(
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=4096,
-                block_stride=slot,
-            ),
-            SimpleNamespace(
-                layers=("model.layers.0.indexer.k", "model.layers.1.indexer.k"),
-                offset=2 * 4096,  # right after the first tile
-                layer_stride=2048,
-                block_stride=slot,
-            ),
-        )
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    [
-                        "model.layers.0.attn",
-                        "model.layers.1.attn",
-                        "model.layers.0.indexer.k",
-                        "model.layers.1.indexer.k",
-                    ],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(256, 4),
-                        "model.layers.1.attn": FullAttentionSpec(256, 4),
-                        "model.layers.0.indexer.k": FullAttentionSpec(256, 8),
-                        "model.layers.1.indexer.k": FullAttentionSpec(256, 8),
-                    },
-                ),
-                num_blocks=num_blocks,
-                tensors=declarations,
-            ),
-            scheduler_block_size=256,
-            device_type="cpu",
-        )
-        caches = {
-            "model.layers.0.attn": FakeTensor(
-                0x1000, (num_blocks, 64, 64), (slot, 64, 1)
-            ),
-            "model.layers.1.attn": FakeTensor(
-                0x1000 + 4096, (num_blocks, 64, 64), (slot, 64, 1)
-            ),
-            "model.layers.0.indexer.k": FakeTensor(
-                0x1000 + 8192, (num_blocks, 32, 64), (slot, 64, 1)
-            ),
-            "model.layers.1.indexer.k": FakeTensor(
-                0x1000 + 8192 + 2048, (num_blocks, 32, 64), (slot, 64, 1)
-            ),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        group_layout = layout.group_layouts[0]
-
-        # One group-level span: both tiles chained, slot-sized.
-        span = group_layout.block_first
-        self.assertIsNotNone(span)
-        self.assertEqual(
-            (span.base_ptr, span.block_stride, span.block_size_bytes),
-            (0x1000, slot, slot),
-        )
-        self.assertEqual(
-            layout.store_layouts[group_layout.group_id].whole_block_bytes, slot
-        )
-
-        self.assertEqual(
-            layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
-            [0],
-        )
-        from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
-
-        layerwise_store = GroupStoreLayout.build(
-            parsed.groups[group_layout.group_id], group_layout,
-            parsed.ucm_cache_block_size, use_layerwise=True,
-        )
-        self.assertFalse(layerwise_store.merge_whole_blocks)
-        self.assertEqual(
-            layerwise_store.group_block_offsets.tolist(), [0, 4096, 6144, 10240]
-        )
-        # Layerwise positions come from the physical view, not storage slots.
-        offsets = dict(
-            zip(
-                group_layout.layer_names,
-                (group_layout.base_ptrs - np.uint64(span.base_ptr)).tolist(),
-            )
-        )
-        self.assertEqual(
-            offsets,
-            {
-                "model.layers.0.attn": 0,
-                "model.layers.0.indexer.k": 8192,
-                "model.layers.1.attn": 4096,
-                "model.layers.1.indexer.k": 10240,
-            },
-        )
-
-        # A whole batch is one span per block; the layered batch for
-        # layer 1's attention lands at its tile-slot record offset.
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"c" * 16
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            256,
-            (
-                np.array(
-                    [
-                        3,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [
-                0x1000 + 3 * slot,
-            ],
-        )
-        self.assertEqual(
-            batch.sizes.tolist(),
-            [
-                slot,
-            ],
-        )
-        layer_batch = _flat_layout_records(layout, 'load', metadata, 'model.layers.1.attn')
-        self.assertEqual(
-            layer_batch.ptrs.tolist(),
-            [
-                0x1000 + 4096 + 3 * slot,
-            ],
-        )
-        self.assertEqual(
-            layer_batch.sizes.tolist(),
-            [
-                4096,
-            ],
-        )
-        self.assertEqual(
-            layer_batch.offsets.tolist(),
-            [
-                4096,
-            ],
-        )
-
-    def test_layer_contiguous_views_compile_to_one_entry_per_layer(self):
-        # GLM-style placement: layer 1 sits after *all* of layer 0's
-        # blocks.  Each layer keeps its own whole-block entry read
-        # straight off its view; nothing merges by probing pointers
-        # (0.26's per-view allocations and layer-contiguous layouts are
-        # never adjacent inside a block by design).
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(4),
-                        "model.layers.1.attn": FullAttentionSpec(4),
-                    },
-                )
-            ),
-            scheduler_block_size=4,
-            ucm_cache_block_size=8,
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
-                "model.layers.1.attn": FakeTensor(
-                    0x1000 + 8 * 12, (8, 4, 3), (12, 3, 1)
-                ),
-            },
-        )
-        group_layout = layout.group_layouts[0]
-        self.assertEqual(
-            tuple(
-                (int(base_ptr), int(stride), int(payload))
-                for base_ptr, stride, payload in zip(
-                    group_layout.base_ptrs,
-                    group_layout.block_strides,
-                    group_layout.payload_bytes,
-                )
-            ),
-            ((0x1000, 12, 12), (0x1000 + 8 * 12, 12, 12)),
-        )
-        self.assertEqual(
-            layout.store_layouts[group_layout.group_id].whole_block_bytes, 24
-        )
-        self.assertEqual(
-            group_layout.layer_names,
-            ("model.layers.0.attn", "model.layers.1.attn"),
-        )
-        self.assertEqual(
-            layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
-            [0],
-        )
-
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"r" * 16
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            8,
-            (np.array([2, 5], dtype=np.uint64),),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-        # Block-major record: block 0's views, then block 1's -- adjacent
-        # physical blocks never merge into one entry; cross-block
-        # adjacency is an allocation accident, not a record fact.
-        self.assertEqual(batch.sizes.tolist(), [12, 12, 12, 12])
-        self.assertEqual(batch.offsets.tolist(), [0, 12, 24, 36])
-        self.assertEqual(
-            batch.ptrs.tolist(),
-            [
-                0x1000 + 2 * 12,
-                0x1000 + 8 * 12 + 2 * 12,
-                0x1000 + 5 * 12,
-                0x1000 + 8 * 12 + 5 * 12,
-            ],
-        )
-
-        # The compiled access grid answers the same spans without
-        # records: rows are blocks, columns views.
-        grid_ptrs, grid_sizes = _resolved_access(group_layout.compile_access(), [2, 5])
-        self.assertEqual(
-            grid_ptrs.tolist(),
-            [
-                [0x1000 + 2 * 12, 0x1000 + 8 * 12 + 2 * 12],
-                [0x1000 + 5 * 12, 0x1000 + 8 * 12 + 5 * 12],
-            ],
-        )
-        self.assertEqual(grid_sizes.tolist(), [[12, 12], [12, 12]])
-        mask = group_layout.segment_mask(layer_names=("model.layers.1.attn",))
-        self.assertEqual(
-            grid_ptrs[:, mask].tolist(),
-            [[0x1000 + 8 * 12 + 2 * 12], [0x1000 + 8 * 12 + 5 * 12]],
-        )
-
-    def test_layerwise_batches_of_every_layer_tile_the_full_record(self):
-        # Whatever the layout, unioning each layer's filtered batch must
-        # reproduce the full batch exactly -- same entries, same record
-        # coordinates.  This is the layerwise-consumer contract.
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(128),
-                        "model.layers.1.attn": FullAttentionSpec(128),
-                    },
-                )
-            ),
-            scheduler_block_size=128,
-            ucm_cache_block_size=256,
-        )
-        caches = {
-            "model.layers.0.attn": (
-                FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
-                FakeTensor(0x3000, (8, 128, 2), (256, 2, 1)),
-            ),
-            "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"t" * 16
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            256,
-            (np.array([2, 5], dtype=np.uint64),),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        full = _flat_layout_records(layout, 'load', metadata)
-        union: dict[tuple[int, int, int], None] = {}
-        for layer_name in ("model.layers.0.attn", "model.layers.1.attn"):
-            layer_batch = _flat_layout_records(layout, 'load', metadata, layer_name)
-            self.assertTrue(layer_batch.block_ids)
-            for ptr, size, offset in zip(
-                layer_batch.ptrs, layer_batch.sizes, layer_batch.offsets
+            with (
+                self.subTest(kind=kind),
+                self.assertRaisesRegex(TypeError, "Unsupported"),
             ):
-                self.assertNotIn((ptr, size, offset), union)
-                union[(ptr, size, offset)] = None
-        self.assertEqual(
-            sorted(union),
-            sorted(
-                (ptr, size, offset)
-                for ptr, size, offset in zip(full.ptrs, full.sizes, full.offsets)
+                parse_kv_cache_config(
+                    config(
+                        group(["model.layers.0.attn"], UnsupportedSpec(8, kind=kind))
+                    ),
+                    scheduler_block_size=8,
+                    num_hidden_layers=64,
+                )
+
+    def test_sink_attention_is_an_explicit_supported_kind(self):
+        raw = config(
+            group(
+                ["model.layers.0.attn"],
+                UnsupportedSpec(8, kind=KVCacheSpecKind.SINK_FULL_ATTENTION),
+            )
+        )
+        spec = parse_kv_cache_config(raw, scheduler_block_size=8, num_hidden_layers=64)
+        self.assertEqual(tuple(g.group_id for g in spec.fa_groups), (0,))
+
+    def test_chunk_alignment_and_state_mode_are_checked(self):
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(["model.layers.1.state"], MambaSpec(8)),
+        )
+        for size in (0, -8, 12):
+            with (
+                self.subTest(size=size),
+                self.assertRaisesRegex(ValueError, "positive multiple"),
+            ):
+                parse_kv_cache_config(
+                    raw,
+                    scheduler_block_size=8,
+                    tokens_per_chunk=size,
+                    num_hidden_layers=64,
+                )
+        raw.kv_cache_groups[1].kv_cache_spec.mamba_cache_mode = "all"
+        with self.assertRaisesRegex(ValueError, "align"):
+            parse_kv_cache_config(raw, scheduler_block_size=8, num_hidden_layers=64)
+
+    def test_empty_pp_group_keeps_metadata_and_route_position(self):
+        raw = config(
+            group([], {"model.layers.0.attn": FullAttentionSpec(8)}),
+            group(["model.layers.1.attn"], FullAttentionSpec(8)),
+        )
+        layout = make_layout(
+            raw, {"model.layers.1.attn": FakeTensor(1000, (8, 1, 8, 2), (16, 16, 2, 1))}
+        )
+        self.assertEqual(layout.spec.blocks_per_chunk, (1, 1))
+        self.assertEqual(tuple(layout.group_layouts), (1,))
+        (batch,) = UCMTransferBuilder(layout).build_dump_transfers(
+            metadata("FA", ([7], [2]))
+        )
+        self.assertEqual(batch.ptrs.tolist(), [[1032]])
+        self.assertEqual(batch.ucm_block_offsets.tolist(), [[0]])
+
+    def test_legacy_compressor_tail_uses_model_ratio_only(self):
+        raw = config(
+            group(["model.layers.0.attn"], MLAAttentionSpec(8, tokens_per_state=4)),
+            group(
+                ["model.layers.0.compressor.state_cache"],
+                SlidingWindowMLASpec(4, sliding_window=8),
             ),
+        )
+        spec = parse_kv_cache_config(
+            raw,
+            scheduler_block_size=8,
+            num_hidden_layers=64,
+            compressor_tokens_per_state={0: 4},
+        )
+        self.assertEqual(
+            (spec.groups[1].tail_tokens, spec.blocks_per_chunk), (4, (1, 1))
         )
 
-    def test_glm_indexer_k_and_scale_keep_separate_runtime_addressing(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.indexer"], FullAttentionSpec(128)), num_blocks=4
-            ),
-            scheduler_block_size=128,
-        )
-        num_blocks = 4
-        k_base = 0x1000
-        scale_base = k_base + num_blocks * 16384
-        layout = UCMKVCacheLayout(
-            parsed,
+    def test_longcat_layer_ids_match_native_attention_module_numbering(self):
+        names = ("model.layers.2.attn.0", "model.layers.2.attn.1")
+        raw = config(group(names, FullAttentionSpec(8)))
+        caches = {
+            name: FakeTensor(1000 + i * 1000, (8, 1, 8, 1), (8, 8, 1, 1))
+            for i, name in enumerate(names)
+        }
+        layout = make_layout(raw, caches, num_attn_module=2)
+        self.assertEqual(layout.layer_id_by_name, {names[0]: 4, names[1]: 5})
+        from ucm.integration.vllm.v2.layout.kv_cache import _layer_index
+
+        self.assertEqual(_layer_index("mtp.0.attn", "npu", 64), 64)
+
+
+class HBMAddressTest(unittest.TestCase):
+    def test_group_resolves_arbitrary_block_order_without_chunk_shape(self):
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        layout = make_layout(
+            config(group(names, FullAttentionSpec(8))),
             {
-                "model.layers.0.indexer": (
-                    FakeTensor(k_base, (4, 128, 1, 128), (16384, 128, 128, 1)),
-                    FakeTensor(
-                        scale_base,
-                        (4, 128, 1, 1),
-                        (128, 1, 1, 1),
-                        element_size=2,
-                    ),
-                )
+                names[0]: FakeTensor(1000, (8, 1, 8, 2), (32, 16, 2, 1)),
+                names[1]: FakeTensor(2000, (8, 1, 8, 3), (48, 24, 3, 1)),
             },
         )
-        key = b"g" * 16
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            128,
-            (
-                np.array(
-                    [
-                        2,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-
-        batch = _flat_layout_records(layout, 'load', metadata)
-
+        group_layout = layout.group_layouts[0]
         self.assertEqual(
-            batch.ptrs.tolist(), [k_base + 2 * 16384, scale_base + 2 * 256]
+            group_layout.resolve_ptrs([3, 1, 3]).tolist(),
+            [[1096, 2144], [1032, 2048], [1096, 2144]],
         )
-        self.assertEqual(batch.sizes.tolist(), [16384, 256])
-        self.assertEqual(batch.offsets.tolist(), [0, 16384])
-
-    def test_model_layer_selection_spans_cache_names_and_groups(self):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        packed_names = [
-            "model.layers.1.attn",
-            "model.layers.2.attn",
-            "model.layers.2.indexer",
-            "model.layers.3.attn",
-        ]
-        aux_names = ["model.layers.1.aux", "model.layers.2.aux"]
-        parsed = parse_kv_cache_config(
-            config(
-                group(packed_names, FullAttentionSpec(4)),
-                group(aux_names, FullAttentionSpec(4)),
-                tensors=(
-                    SimpleNamespace(
-                        layers=packed_names,
-                        offset=0,
-                        layer_stride=8,
-                        block_stride=64,
-                    ),
-                ),
-            ),
-            scheduler_block_size=4,
-            device_type="cpu",
-        )
-        caches = {
-            name: FakeTensor(0x1000 + index * 8, (8, 4, 1), (64, 1, 1))
-            for index, name in enumerate(packed_names)
-        }
-        caches.update(
-            {
-                name: FakeTensor(0x4000 + index * 0x1000, (8, 4, 1), (4, 1, 1))
-                for index, name in enumerate(aux_names)
-            }
-        )
-        layout = UCMKVCacheLayout(parsed, caches)
-        layer_id = layout.layer_id_by_name["model.layers.2.attn"]
-        self.assertEqual(layer_id, 2)
+        mask = group_layout.segment_mask(layer_ids=[1])
         self.assertEqual(
-            layout.layer_names_by_id[layer_id],
-            frozenset(
-                (
-                    "model.layers.2.attn",
-                    "model.layers.2.indexer",
-                    "model.layers.2.aux",
-                )
-            ),
+            group_layout.resolve_ptrs([2], segment_mask=mask).tolist(), [[2096]]
         )
+        self.assertEqual(group_layout.resolve_ptrs([]).shape, (0, 2))
+        self.assertFalse(hasattr(group_layout, "spec"))
+        self.assertFalse(hasattr(group_layout, "tokens_per_chunk"))
 
-        def metadata(block0, block1):
-            # One whole-block key over both groups: the packed declared
-            # group answers at its slot anchors, the aux layer-first
-            # group at its payload slots.
-            plan = UCMGroupDispatchPlan(
-                "FA",
-                (b"record",),
-                0,
-                4,
-                (
-                    np.array([block0], dtype=np.uint64),
-                    np.array([block1], dtype=np.uint64),
-                ),
-            )
-            return UCMConnectorMetadata(
-                requests={
-                    "r": RequestDispatchMeta(
-                        "r", load_plans=(plan,), dump_plans=(plan,)
-                    ),
-                }
-            )
-
-        # Whole Block First IO includes padding; sub-span IO (FA sharing a
-        # block, WA tails) is covered by its own tests.  Model-layer
-        # selection must preserve the record coordinates either way.
-        offsets = (8, 16, 36)
-        with (
-            self.subTest(window=(0, 4)),
-            tempfile.TemporaryDirectory() as path,
-        ):
-            source_meta = metadata(1, 2)
-            target_meta = metadata(3, 4)
-            source = _flat_layout_records(layout, 'dump', source_meta)
-            target = _flat_layout_records(layout, 'load', target_meta)
-            source_layer = _flat_layout_records(layout, 'dump', source_meta, layer_id=layer_id)
-            target_layer = _flat_layout_records(layout, 'load', target_meta, layer_id=layer_id)
-            self.assertEqual(source_layer.offsets.tolist(), list(offsets))
-            self.assertEqual(target_layer.offsets.tolist(), list(offsets))
-            exact = _flat_layout_records(layout, 'load', target_meta, 'model.layers.2.attn')
-            self.assertEqual(exact.offsets.tolist(), [offsets[0]])
-            window = _resolved_access(
-                layout.group_layouts[0].compile_access(token_counts=4),
-                [3],
-                segment_mask=layout.group_layouts[0].segment_mask(layer_ids=[2]),
-            )
-            self.assertEqual(
-                tuple(
-                    zip(window[0].reshape(-1).tolist(), window[1].reshape(-1).tolist())
-                ),
-                tuple(zip(target_layer.ptrs[:2], target_layer.sizes[:2])),
-            )
-            with self.assertRaisesRegex(ValueError, "either"):
-                _flat_layout_records(layout, 'load', target_meta, 'model.layers.2.attn', layer_id=2)
-            with self.assertRaises(KeyError):
-                _flat_layout_records(layout, 'load', target_meta, layer_id=99)
-
-            memory = ByteMemory()
-            for ptr, size in zip(target.ptrs, target.sizes):
-                memory.write(ptr, b"\xef" * size)
-            for offset, ptr, size in zip(source.offsets, source.ptrs, source.sizes):
-                memory.write(ptr, bytes((int(offset) + i) % 251 for i in range(size)))
-            proxy = SimpleFileUCMProxy(Path(path), byte_access=MemoryByteAccess(memory))
-            proxy.dump(source.block_ids, source.offsets, source.ptrs, source.sizes)
-            proxy.commit(source.block_ids)
-            proxy.load(
-                target_layer.block_ids,
-                target_layer.offsets,
-                target_layer.ptrs,
-                target_layer.sizes,
-            )
-            for offset, ptr, size in zip(target.offsets, target.ptrs, target.sizes):
-                expected = bytearray(b"\xef" * size)
-                for selected_offset, selected_size in zip(
-                    target_layer.offsets, target_layer.sizes
-                ):
-                    if offset <= selected_offset < offset + size:
-                        begin = selected_offset - offset
-                        expected[begin : begin + selected_size] = bytes(
-                            (int(selected_offset) + i) % 251
-                            for i in range(selected_size)
-                        )
-                self.assertEqual(memory.read(ptr, size), bytes(expected))
-
-    def test_dsv4_canonical_subrange_selects_intersecting_large_page(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.2.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=4),
-                ),
-                group(
-                    ["model.layers.3.attn"],
-                    AscendMLAAttentionSpec(128, compress_ratio=128),
-                ),
-                group(
-                    ["model.layers.0.swa_cache"],
-                    AscendSlidingWindowMLASpec(128, 1, 128),
-                ),
-                num_blocks=4,
-            ),
-            scheduler_block_size=16,
-        )
-        caches = {
-            "model.layers.2.attn": FakeTensor(
-                0x1000,
-                (4, 128, 1, 512),
-                (65536, 512, 512, 1),
-                element_size=2,
-            ),
-            # One physical page covers 16384 source tokens; a 512-token key
-            # maps to four physical tokens inside that page.
-            "model.layers.3.attn": FakeTensor(
-                0x5000,
-                (4, 128, 1, 512),
-                (65536, 512, 512, 1),
-                element_size=2,
-            ),
-            "model.layers.0.swa_cache": FakeTensor(
-                0x3000,
-                (4, 128, 1, 512),
-                (65536, 512, 512, 1),
-                element_size=2,
-            ),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        key = b"k" * 16
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            512,
-            1024,
-            # One window per FA group in route order: group 0 is 1:1
-            # (one whole block); group 1 is N:1 -- the key is one
-            # 512-token sub-span inside a 16384-token page.
-            (np.array([1], dtype=np.uint64), np.array([2], dtype=np.uint64)),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        # Group 0's whole block, then group 1's sub-span: 512-token page
-        # window selected by token start inside the large page.
-        self.assertEqual(batch.sizes[-1], 4096)
-        self.assertEqual(batch.ptrs[-1], 0x5000 + 2 * 131072 + 4 * 1024)
-
-    def test_hybrid_state_uses_one_complete_checkpoint_block(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(128)),
-            ),
-            scheduler_block_size=128,
-        )
-        caches = {
-            "model.layers.0.attn": FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
-            "model.layers.1.mixer": FakeTensor(0x5000, (8, 64, 4), (256, 4, 1)),
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        dispatcher = make_dispatcher(parsed)
-        request = FakeRequest("r", 512)
-        state = seed_request_state(
-            dispatcher,
-            request,
-            512,
-            ((b"a" * 16,) * 4, (b"s" * 16,) * 4),
-        )
-        state.group_vllm_block_ids = ([1, 2, 3, 4], [0, 1, 2, 6])
-
-        metadata = _scheduler_metadata(dispatcher, {'r': 1})
-        batch = _flat_layout_records(layout, 'load', metadata)
-
-        state_segments = [
-            (ptr, size)
-            for key, ptr, size in zip(batch.block_ids, batch.ptrs, batch.sizes)
-            if key == b"s" * 16
-        ]
-        self.assertEqual(state_segments, [(0x5000 + 6 * 256, 256)])
-
-    def test_synchronous_proxy_dump_load_to_different_blocks_is_byte_exact(self):
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
-        )
-        caches = {
-            "model.layers.0.attn": (
-                FakeTensor(0x1000, (8, 4, 2), (8, 2, 1)),
-                FakeTensor(0x2000, (8, 4, 3), (12, 3, 1)),
-            )
-        }
-        layout = UCMKVCacheLayout(parsed, caches)
-        key = b"z" * 16
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        dump_plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            4,
-            (
-                np.array(
-                    [
-                        1,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        load_plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            4,
-            (
-                np.array(
-                    [
-                        6,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        dump_meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", dump_plans=(dump_plan,))}
-        )
-        load_meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(load_plan,))}
-        )
-        memory = ByteMemory()
-        source_k = bytes((index * 7 + 3) % 256 for index in range(8))
-        source_v = bytes((index * 11 + 5) % 256 for index in range(12))
-        memory.write(0x1000 + 8, source_k)
-        memory.write(0x2000 + 12, source_v)
-        proxy = InMemoryByteProxy(memory)
-        adapter = UCMProxyAdapter(proxy)
-
-        dump_batch = _flat_layout_records(layout, 'dump', dump_meta)
-        _submit_segments(
-            adapter,
-            'dump',
-            dump_batch.block_ids,
-            dump_batch.offsets,
-            dump_batch.ptrs,
-            dump_batch.sizes,
-        )
-        self.assertEqual(adapter.lookup([key]), (True,))
-        load_batch = _flat_layout_records(layout, 'load', load_meta)
-        _submit_segments(
-            adapter,
-            'load',
-            load_batch.block_ids,
-            load_batch.offsets,
-            load_batch.ptrs,
-            load_batch.sizes,
-        )
-
-        self.assertEqual(memory.read(0x1000 + 6 * 8, 8), source_k)
-        self.assertEqual(memory.read(0x2000 + 6 * 12, 12), source_v)
-
-        class DeferredByteProxy(InMemoryByteProxy):
-            def dump(self, block_ids, offsets, ptrs, sizes):
-                return ("dump", (block_ids, offsets, ptrs, sizes))
-
-            def load(self, block_ids, offsets, ptrs, sizes):
-                return ("load", (block_ids, offsets, ptrs, sizes))
-
-            def wait(self, task):
-                operation, arguments = task
-                if operation == "dump":
-                    InMemoryByteProxy.dump(self, *arguments)
-                else:
-                    InMemoryByteProxy.load(self, *arguments)
-
-        deferred_proxy = DeferredByteProxy(memory)
-        deferred_adapter = UCMProxyAdapter(deferred_proxy)
-        _submit_segments(
-            deferred_adapter,
-            'dump',
-            dump_batch.block_ids,
-            dump_batch.offsets,
-            dump_batch.ptrs,
-            dump_batch.sizes,
-        )
-        deferred_load_plan = UCMGroupDispatchPlan(
-            "FA",
-            (key,),
-            0,
-            4,
-            (
-                np.array(
-                    [
-                        7,
-                    ],
-                    dtype=np.uint64,
-                ),
-            ),
-        )
-        deferred_load_meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(deferred_load_plan,))}
-        )
-        deferred_load_batch = _flat_layout_records(layout, 'load', deferred_load_meta)
-        _submit_segments(
-            deferred_adapter,
-            'load',
-            deferred_load_batch.block_ids,
-            deferred_load_batch.offsets,
-            deferred_load_batch.ptrs,
-            deferred_load_batch.sizes,
-        )
-
-        self.assertEqual(memory.read(0x1000 + 7 * 8, 8), source_k)
-        self.assertEqual(memory.read(0x2000 + 7 * 12, 12), source_v)
-
-
-class DeclaredLayoutModelTest(unittest.TestCase):
-    """The declared mode must mirror vLLM's own packed-tensor placements."""
-
-    def _fixture(self, tensors=None):
-        # Two dense per-layer tensors, 12-byte blocks, 8 blocks each; the
-        # default declared placement packs them 96 bytes apart in one backing.
-        declarations = (
-            SimpleNamespace(
-                size=192,
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=96,
-                block_stride=12,
-            ),
-        )
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(4),
-                        "model.layers.1.attn": FullAttentionSpec(4),
-                    },
-                ),
-                tensors=declarations if tensors is None else tensors,
-            ),
-            scheduler_block_size=4,
-            device_type="cpu",
-        )
-        caches = {
-            "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
-            "model.layers.1.attn": FakeTensor(0x1060, (8, 4, 3), (12, 3, 1)),
-        }
-        return parsed, caches
-
-    def test_declarations_only_feed_the_block_first_special_case(self):
-        # Layer-contiguous placements (layer_stride >= block_stride is
-        # false here: 96 > 12 means layer-outermost) do not tile block
-        # slots, so declarations change nothing: with or without them the
-        # entries and the records are identical.
-        declared = UCMKVCacheLayout(*self._fixture())
-        undeclared = UCMKVCacheLayout(*self._fixture(tensors=()))
-
-        for group_id, declared_layout in declared.group_layouts.items():
-            undeclared_layout = undeclared.group_layouts[group_id]
-            self.assertEqual(declared_layout.layer_names, undeclared_layout.layer_names)
-            for column in (
-                "base_ptrs",
-                "block_strides",
-                "payload_bytes",
-            ):
-                self.assertEqual(
-                    getattr(declared_layout, column).tolist(),
-                    getattr(undeclared_layout, column).tolist(),
-                )
-            self.assertEqual(
-                declared.store_layouts[group_id].whole_block_bytes,
-                undeclared.store_layouts[group_id].whole_block_bytes,
-            )
-            np.testing.assert_array_equal(
-                declared.store_layouts[group_id].group_block_offsets,
-                undeclared.store_layouts[group_id].group_block_offsets,
-            )
-            self.assertIsNone(declared_layout.block_first)
-
-    def test_disagreeing_block_stride_is_rejected(self):
-        bad = (
-            SimpleNamespace(
-                size=192,
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=96,
-                block_stride=13,
-            ),
-        )
-        with self.assertRaisesRegex(ValueError, "block stride"):
-            UCMKVCacheLayout(*self._fixture(tensors=bad))
-
-
-class RawConfigDumpTest(unittest.TestCase):
-    """UCM_V2_DUMP_CONFIG serializes the raw KVCacheConfig vLLM handed over."""
-
-    def _connector(self, tmp, path_template):
-        from ucm.integration.vllm.v2.ucm_connector import UCMConnector
-
-        kv_cache_config = SimpleNamespace(
-            num_blocks=4,
-            kv_cache_tensors=(
+    def test_npu_split_components_use_view_strides_not_whole_page_descriptor(self):
+        name = "model.layers.0.attn"
+        raw = config(
+            group([name], FullAttentionSpec(8)),
+            tensors=(
                 SimpleNamespace(
-                    size=192,
-                    layers=("model.layers.0.attn", "model.layers.1.attn"),
+                    layers=(name,),
                     offset=0,
-                    layer_stride=96,
-                    block_stride=12,
+                    layer_stride=512,
+                    block_stride=64,
                 ),
             ),
-            kv_cache_groups=(
-                SimpleNamespace(
-                    layer_names=["model.layers.0.attn", "model.layers.1.attn"],
-                    is_eagle_group=False,
-                    kv_cache_spec=FullAttentionSpec(12),
-                ),
-            ),
-            prefix_cache_retention_interval=0,
         )
-        os.environ["UCM_V2_DUMP_CONFIG"] = str(tmp / path_template)
-        try:
-            return UCMConnector(
-                vllm_config(),
-                KVConnectorRole.WORKER,
-                kv_cache_config,
-            )
-        finally:
-            os.environ.pop("UCM_V2_DUMP_CONFIG", None)
-
-    def test_dumps_raw_config_json(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            self._connector(tmp, "raw_config.json")
-            payload = json.loads((tmp / "raw_config.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["num_blocks"], 4)
-            self.assertEqual(len(payload["kv_cache_tensors"]), 1)
-            tensor = payload["kv_cache_tensors"][0]
-            self.assertEqual(tensor["block_stride"], 12)
-            self.assertEqual(
-                tensor["layers"], ["model.layers.0.attn", "model.layers.1.attn"]
-            )
-            group = payload["kv_cache_groups"][0]
-            self.assertEqual(group["layer_names"], group["layer_names"])
-            self.assertIn("block_size", group["kv_cache_spec"])
-
-    def test_percent_d_receives_rank(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            self._connector(tmp, "raw_config_rank%d.json")
-            self.assertTrue((tmp / "raw_config_rank0.json").exists())
-
-
-class BlockAccessTest(unittest.TestCase):
-    def setUp(self):
-        names = ["model.layers.0.attn", "model.layers.1.attn"]
-        parsed = parse_kv_cache_config(
-            config(group(names, FullAttentionSpec(8)), num_blocks=4),
-            scheduler_block_size=8,
-        )
-        self.layout = UCMKVCacheLayout(
-            parsed,
+        layout = make_layout(
+            raw,
             {
-                names[0]: FakeTensor(1000, (4, 8, 2), (16, 2, 1)),
-                names[1]: FakeTensor(2000, (4, 8, 3), (24, 3, 1)),
+                name: (
+                    FakeTensor(1000, (8, 8, 1, 2), (16, 2, 2, 1)),
+                    FakeTensor(2000, (8, 8, 1, 1), (8, 1, 1, 1)),
+                )
             },
-        ).group_layouts[0]
-
-    def test_fixed_partial_window_repeats_across_physical_blocks(self):
-        access = self.layout.compile_access(token_offsets=[4, 0], token_counts=[4, 8])
-        ptrs, sizes = _resolved_access(access, [1, 2, 0, 3])
-        np.testing.assert_array_equal(
-            ptrs, [[1024, 2036], [1032, 2048], [1008, 2012], [1048, 2072]]
+            device="npu",
         )
-        np.testing.assert_array_equal(sizes, [[8, 12], [16, 24]] * 2)
-
-    def test_dynamic_subblocks_and_layer_selection(self):
-        access = self.layout.compile_access(token_counts=4)
-        mask = self.layout.segment_mask(layer_ids=[1])
-        ptrs, sizes = _resolved_access(
-            access, [2, 2], token_offsets=np.array([0, 4]), segment_mask=mask
-        )
-        np.testing.assert_array_equal(ptrs, [[2048], [2060]])
-        np.testing.assert_array_equal(sizes, [[12], [12]])
-        # Reuse the compiled template without mutating its fixed offsets.
-        ptrs, _ = _resolved_access(
-            access, [0], token_offsets=np.array([2]), segment_mask=mask
-        )
-        np.testing.assert_array_equal(ptrs, [[2006]])
-
-    def test_resolved_arrays_do_not_alias_templates_or_other_calls(self):
-        access = self.layout.compile_access(token_offsets=[4, 0], token_counts=[4, 8])
-        first = _resolved_access(access, [1, 2, 0, 3])
-        second = _resolved_access(access, [1, 2, 0, 3])
-        expected = tuple(array.copy() for array in second)
-        for array in first:
-            array[:] = 0
-        for actual, wanted in zip(second, expected):
-            np.testing.assert_array_equal(actual, wanted)
-        for actual, wanted in zip(_resolved_access(access, [1, 2, 0, 3]), expected):
-            np.testing.assert_array_equal(actual, wanted)
-
-    def test_dynamic_ranges_with_empty_blocks_or_selection(self):
-        access = self.layout.compile_access(token_counts=4)
-        ptrs, sizes = _resolved_access(access, [], token_offsets=np.array([], dtype=np.int64))
-        self.assertEqual(ptrs.shape, (0, 2))
-        self.assertEqual(sizes.shape, (0, 2))
-        ptrs, sizes = _resolved_access(
-            access,
-            [2],
-            token_offsets=np.array([4]),
-            segment_mask=np.array([False, False]),
-        )
-        self.assertEqual(ptrs.shape, (1, 0))
-        self.assertEqual(sizes.shape, (1, 0))
-
-    def test_invalid_ranges_and_incomplete_windows_are_rejected(self):
-        with self.assertRaises(ValueError):
-            self.layout.compile_access(token_offsets=6, token_counts=4)
-        access = self.layout.compile_access(token_counts=4)
-        with self.assertRaises(ValueError):
-            _resolved_access(access, [0], token_offsets=np.array([6]))
-        with self.assertRaises(ValueError):
-            _resolved_access(access, [4])
-        window = self.layout.compile_access(token_counts=[4, 8])
-        with self.assertRaises(ValueError):
-            _resolved_access(window, [0])
-
-
-class LayerViewSegmentsTest(unittest.TestCase):
-    def test_separate_backings_do_not_merge_from_declarations_alone(self):
-        names = ["model.layers.0.attn", "model.layers.1.attn"]
-        parsed = parse_kv_cache_config(
-            config(
-                group(names, FullAttentionSpec(8)),
-                num_blocks=3,
-                tensors=tuple(
-                    SimpleNamespace(
-                        layers=(name,), offset=i * 16, layer_stride=16, block_stride=32
-                    )
-                    for i, name in enumerate(names)
-                ),
-            ),
-            scheduler_block_size=8,
-            device_type="cpu",
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                names[0]: FakeTensor(1000, (3, 8, 1), (32, 1, 1)),
-                names[1]: FakeTensor(5000, (3, 8, 1), (32, 1, 1)),
-            },
+        self.assertEqual(
+            layout.group_layouts[0].resolve_ptrs([3]).tolist(), [[1048, 2024]]
         )
         self.assertIsNone(layout.group_layouts[0].block_first)
-        record = layout.store_layouts[0]
-        offsets, ptrs, sizes, entries = _flat_record_access(record, np.array([2]), 1)
-        self.assertEqual(
-            (offsets.tolist(), ptrs.tolist(), sizes.tolist(), entries),
-            ([0, 8], [1064, 5064], [8, 8], 2),
-        )
+        self.assertEqual(layout.store_layouts[0].store_bytes, 24)
 
-    def test_head_separated_wa_partial_head_then_whole_block(self):
-        from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
-
-        name = "model.layers.1.swa_cache"
-        parsed = parse_kv_cache_config(
-            config(
-                group(["model.layers.0.attn"], FullAttentionSpec(8)),
-                group([name], AscendSlidingWindowMLASpec(8, 1, 12)),
-                num_blocks=3,
-            ),
-            scheduler_block_size=8,
-            device_type="cpu",
-        )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeTensor(100, (3, 8, 2), (16, 2, 1)),
-                name: FakeTensor(1000, (3, 2, 8, 2), (32, 16, 2, 1)),
-            },
-        )
-        record = GroupStoreLayout.build(
-            parsed.groups[1], layout.group_layouts[1], 8, use_layerwise=True
-        )
-        offsets, ptrs, sizes, entries = _flat_record_access(record, np.array([1, 2]), 1)
-        # Logical tokens 4..7 in block 1, then 0..7 in block 2, per head.
-        self.assertEqual(ptrs.tolist(), [1040, 1056, 1064, 1080])
-        self.assertEqual(sizes.tolist(), [8, 8, 16, 16])
-        self.assertEqual(offsets.tolist(), [0, 8, 16, 32])
-        self.assertEqual(entries, 4)
-
-    def test_equal_axis_sizes_use_backend_semantics(self):
+    def test_cpu_native_descriptor_stride_is_still_validated(self):
         name = "model.layers.0.attn"
-        for device, strides, expected in (
-            ("cpu", (16, 4, 1, 1), [[1013, 1017, 1021, 1025]]),
-            ("npu", (16, 4, 1, 1), [[1016]]),
-        ):
-            parsed = parse_kv_cache_config(
-                config(group([name], FullAttentionSpec(4)), num_blocks=3),
-                scheduler_block_size=4,
-                device_type=device,
-            )
-            gl = UCMKVCacheLayout(
-                parsed,
-                {
-                    name: FakeTensor(996, (3, 4, 4, 1), strides),
-                },
-            ).group_layouts[0]
-            ptrs, sizes = _resolved_access(gl.compile_access(token_offsets=1, token_counts=2), [1])
-            self.assertEqual(ptrs.tolist(), expected)
-            self.assertEqual(int(sizes.sum()), 8)
-
-    def test_multirow_head_separated_range_is_explicitly_rejected(self):
-        name = "model.layers.0.attn"
-        parsed = parse_kv_cache_config(
-            config(group([name], FullAttentionSpec(8)), num_blocks=3),
-            scheduler_block_size=8,
-            device_type="cpu",
-        )
-        with self.assertRaisesRegex(ValueError, "ragged range mapping"):
-            UCMKVCacheLayout(
-                parsed,
-                {
-                    name: FakeTensor(1000, (6, 2, 4, 2), (16, 8, 2, 1)),
-                },
-            )
-
-    def _layout(self, order, *, unit=4, declared=False):
-        # Physical backing axes, independently turned into logical BHNC views.
-        dims = {"L": 2, "B": 3, "H": 2, "N": 8, "C": 2}
-        strides = {}
-        stride = 1
-        for axis in reversed(order):
-            strides[axis] = stride
-            stride *= dims[axis]
-        names = ["model.layers.0.attn", "model.layers.1.attn"]
-        tensors = ()
-        if declared:
-            tensors = (
+        raw = config(
+            group([name], FullAttentionSpec(8)),
+            tensors=(
                 SimpleNamespace(
-                    layers=tuple(names),
+                    layers=(name,),
                     offset=0,
-                    layer_stride=strides["L"],
-                    block_stride=strides["B"],
+                    layer_stride=512,
+                    block_stride=64,
                 ),
-            )
-        parsed = parse_kv_cache_config(
-            config(group(names, FullAttentionSpec(8)), num_blocks=3, tensors=tensors),
-            scheduler_block_size=4,
-            ucm_cache_block_size=unit,
-            device_type="cpu",
+            ),
         )
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                name: FakeTensor(
-                    1000 + layer * strides["L"],
-                    (3, 2, 8, 2),
-                    tuple(strides[a] for a in "BHNC"),
-                )
-                for layer, name in enumerate(names)
-            },
-        )
-        return layout, strides
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            make_layout(raw, {name: FakeTensor(1000, (8, 1, 8, 2), (16, 16, 2, 1))})
 
-    def test_layout_permutations_select_exact_logical_elements(self):
-        for order in ("LBNHC", "LBHNC", "BLNHC", "BLHNC", "LHBNC", "BHLNC"):
-            with self.subTest(order=order):
-                layout, strides = self._layout(order)
-                group_layout = layout.group_layouts[0]
-                access = group_layout.compile_access(token_counts=4)
-                ptrs, sizes = _resolved_access(
-                    access, [2, 2], token_offsets=np.array([0, 4]),
-                    segment_mask=group_layout.segment_mask(layer_ids=[1]),
-                )
-                for row, start in enumerate((0, 4)):
-                    actual = [
-                        address
-                        for ptr, size in zip(ptrs[row], sizes[row])
-                        for address in range(int(ptr), int(ptr + size))
-                    ]
-                    expected = sorted(
-                        1000
-                        + strides["L"]
-                        + 2 * strides["B"]
-                        + h * strides["H"]
-                        + n * strides["N"]
-                        + c
-                        for h in range(2)
-                        for n in range(start, start + 4)
-                        for c in range(2)
-                    )
-                    self.assertEqual(actual, expected)
-                lv = group_layout.layer_views["model.layers.1.attn"]
-                self.assertEqual(len(lv.components), 1)
-                self.assertEqual(len(lv.segments), 1 if order.endswith("NHC") else 2)
-
-    def test_ucm_offsets_and_layerwise_selection_share_one_mapping(self):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
-        )
-
-        for order in ("LBHNC", "LHBNC", "BHLNC"):
-            with self.subTest(order=order):
-                layout, strides = self._layout(order)
-                plan = UCMGroupDispatchPlan(
-                    "FA",
-                    (b"a" * 16, b"b" * 16),
-                    0,
-                    8,
-                    (np.array([2, 2], dtype=np.uint64),),
-                )
-                meta = UCMConnectorMetadata(
-                    requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-                )
-                batch = _flat_layout_records(layout, 'load', meta)
-                self.assertEqual(batch.offsets.tolist(), [0, 8, 16, 24] * 2)
-                self.assertEqual(batch.sizes.tolist(), [8] * 8)
-                selected = _flat_layout_records(layout, 'load', meta, layer_id=1)
-                self.assertEqual(selected.offsets.tolist(), [16, 24] * 2)
-                self.assertEqual(
-                    selected.ptrs.tolist(), batch.ptrs[[2, 3, 6, 7]].tolist()
-                )
-                # Independent memory oracle checks byte content, not roundtrip alone.
-                memory = ByteMemory()
-                for address in range(1000, 1192):
-                    memory.write(address, bytes([address % 251]))
-                dump = _flat_layout_records(
-                    layout,
-                    'dump',
-                    UCMConnectorMetadata(requests={'r': RequestDispatchMeta('r', dump_plans=(plan,))}),
-                )
-                with tempfile.TemporaryDirectory() as tmp:
-                    proxy = SimpleFileUCMProxy(tmp, MemoryByteAccess(memory))
-                    proxy.dump(dump.block_ids, dump.offsets, dump.ptrs, dump.sizes)
-                    proxy.commit(dump.block_ids)
-                    for k, start in zip(plan.keys, (0, 4)):
-                        expected = bytes(
-                            (
-                                1000
-                                + l * strides["L"]
-                                + 2 * strides["B"]
-                                + h * strides["H"]
-                                + n * strides["N"]
-                                + c
-                            )
-                            % 251
-                            for l in range(2)
-                            for h in range(2)
-                            for n in range(start, start + 4)
-                            for c in range(2)
-                        )
-                        self.assertEqual(
-                            (Path(tmp) / (k.hex() + ".ucm")).read_bytes(), expected
-                        )
-
-    def test_compact_declared_heads_keep_bulk_fast_path(self):
-        layout, _ = self._layout("BLHNC", unit=8, declared=True)
-        group_layout = layout.group_layouts[0]
-        self.assertIsNotNone(group_layout.block_first)
-        access = group_layout.compile_access()
-        ptrs, sizes = _resolved_access(
-            access, [1], segment_mask=group_layout.segment_mask(layer_ids=[1])
-        )
-        self.assertEqual(ptrs.tolist(), [[1096, 1112]])
-        self.assertEqual(sizes.tolist(), [[16, 16]])
+    def test_chunk_alignment_is_validated_at_initialization(self):
+        name = "model.layers.0.attn"
+        raw = config(group([name], MLAAttentionSpec(128, tokens_per_state=4)))
+        caches = {name: FakeTensor(1000, (8, 1, 32, 16), (512, 512, 16, 1))}
+        with self.assertRaisesRegex(ValueError, "stored states"):
+            make_layout(raw, caches, scheduler=2, tokens_per_chunk=2)
+        layout = make_layout(
+            raw,
+            caches,
+            scheduler=128,
+        ).group_layouts[0]
         self.assertEqual(
-            layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
-            [0],
+            layout.tokens_to_bytes(np.array([4], dtype=np.uint64), 128).tolist(),
+            [[16]],
         )
-        # BHLNC interleaves other layers between heads: must not copy a
-        # presumed contiguous layer page via the declaration fast path.
-        fragmented, _ = self._layout("BHLNC", unit=8, declared=True)
-        self.assertIsNone(fragmented.group_layouts[0].block_first)
 
-    def test_real_kimi_kernel_rows_and_shared_components(self):
+    def test_compressed_entries_follow_native_tokens_per_state(self):
         name = "model.layers.0.attn"
-        for device, blocks, tensors, expected_ptrs in (
-            (
-                "cpu",
-                30,
-                FakeTensor(1000, (2880, 1, 64, 576), (36864, 576, 576, 1), 2),
-                [1000 + 2 * 7077888 + 512 * 1152],
-            ),
-            (
-                "npu",
-                27,
-                (
-                    FakeTensor(1000, (1296, 128, 1, 512), (65536, 512, 512, 1), 2),
-                    FakeTensor(90000000, (1296, 128, 1, 64), (8192, 64, 64, 1), 2),
-                ),
-                [1000 + 2 * 6291456 + 512 * 1024, 90000000 + 2 * 786432 + 512 * 128],
-            ),
-        ):
-            with self.subTest(device=device):
-                parsed = parse_kv_cache_config(
-                    config(group([name], FullAttentionSpec(6144)), num_blocks=blocks),
-                    scheduler_block_size=6144,
-                    device_type=device,
-                )
-                gl = UCMKVCacheLayout(parsed, {name: tensors}).group_layouts[0]
-                ptrs, sizes = _resolved_access(
-                    gl.compile_access(token_counts=512),
-                    [2],
-                    token_offsets=np.array([512]),
-                )
-                self.assertEqual(ptrs.tolist(), [expected_ptrs])
-                self.assertEqual(int(sizes.sum()), 512 * 1152)
-
-    def test_documented_fa_subblocks_preserve_layer_offsets(self):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
+        layout = make_layout(
+            config(group([name], MLAAttentionSpec(16, tokens_per_state=4))),
+            {name: FakeTensor(1000, (8, 1, 4, 3), (12, 12, 3, 1))},
+            scheduler=4,
+            tokens_per_chunk=4,
         )
-
-        names = ["model.layers.0.attn", "model.layers.1.attn"]
-        parsed = parse_kv_cache_config(
-            config(group(names, FullAttentionSpec(16384)), num_blocks=3),
-            scheduler_block_size=512,
-            ucm_cache_block_size=512,
-            device_type="npu",
+        _, ptrs, sizes = layout.store_layouts[0].resolve_matrices(
+            np.array([2, 2]), np.array([4, 8], dtype=np.uint64)
         )
-        layout = UCMKVCacheLayout(
-            parsed,
+        self.assertEqual(ptrs.tolist(), [[1027], [1030]])
+        self.assertEqual(sizes.tolist(), [[3], [3]])
+
+    def test_multirow_compact_heads_stay_one_segment(self):
+        name = "model.layers.0.attn"
+        layout = make_layout(
+            config(group([name], FullAttentionSpec(8)), num_blocks=3),
+            {name: FakeTensor(1000, (6, 2, 4, 2), (16, 8, 2, 1))},
+        )
+        physical = layout.group_layouts[0]
+        self.assertEqual(physical.payload_bytes.tolist(), [32])
+        self.assertEqual(physical.resolve_ptrs([2]).tolist(), [[1064]])
+        self.assertFalse(physical.supports_partial_tokens)
+
+    def test_group_partial_capability_cannot_be_bypassed_by_layer_selection(self):
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        raw = config(group(names, FullAttentionSpec(8)))
+        with self.assertRaisesRegex(ValueError, "whole-block"):
+            make_layout(
+                raw,
+                {
+                    names[0]: FakeTensor(1000, (8, 1, 8, 2), (16, 16, 2, 1)),
+                    names[1]: FakeTensor(2000, (8, 2, 8, 2), (32, 16, 2, 1)),
+                },
+                tokens_per_chunk=4,
+                scheduler=4,
+            )
+
+
+class StoreChunkTest(unittest.TestCase):
+    def _two_layers(self, *, tokens_per_chunk=4):
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        return make_layout(
+            config(group(names, FullAttentionSpec(8)), num_blocks=4),
             {
-                name: FakeTensor(base, (3, 16384, 2, 2), (65536, 4, 2, 1))
-                for name, base in zip(names, (1000000, 2000000))
+                names[0]: FakeTensor(1000, (4, 1, 8, 2), (16, 16, 2, 1)),
+                names[1]: FakeTensor(2000, (4, 1, 8, 3), (24, 24, 3, 1)),
             },
-        )
-        plan = UCMGroupDispatchPlan(
-            "FA", (b"a" * 16, b"b" * 16), 0, 1024, (np.array([2, 2], dtype=np.uint64),)
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = _flat_layout_records(layout, 'load', metadata)
-        self.assertEqual(batch.ptrs.tolist(), [1131072, 2131072, 1133120, 2133120])
-        self.assertEqual(batch.sizes.tolist(), [2048] * 4)
-        self.assertEqual(batch.offsets.tolist(), [0, 2048, 0, 2048])
-        selected = _flat_layout_records(layout, 'load', metadata, layer_id=1)
-        self.assertEqual(selected.ptrs.tolist(), [2131072, 2133120])
-        self.assertEqual(selected.offsets.tolist(), [2048, 2048])
-        # A single-group batch now avoids concatenate; its buffers must still
-        # be independent from another dispatch and from compiled templates.
-        expected = [array.copy() for array in (batch.offsets, batch.ptrs, batch.sizes)]
-        retained = _flat_layout_records(layout, 'load', metadata)
-        for array in (batch.offsets, batch.ptrs, batch.sizes):
-            array[:] = 0
-        later = _flat_layout_records(layout, 'load', metadata)
-        for other in (retained, later):
-            for actual, wanted in zip(
-                (other.offsets, other.ptrs, other.sizes), expected
-            ):
-                np.testing.assert_array_equal(actual, wanted)
-
-    def test_fa_16384_tokens_to_32_ucm_keys(self):
-        name = "model.layers.0.attn"
-        parsed = parse_kv_cache_config(
-            config(group([name], FullAttentionSpec(16384)), num_blocks=3),
-            scheduler_block_size=512,
-            ucm_cache_block_size=512,
-            device_type="npu",
-        )
-        layout = UCMKVCacheLayout(
-            parsed, {name: FakeTensor(1000, (3, 16384, 2, 2), (65536, 4, 2, 1))}
-        )
-        access = layout.group_layouts[0].compile_access(token_counts=512)
-        ptrs, sizes = _resolved_access(access, [2] * 32, token_offsets=np.arange(32) * 512)
-        np.testing.assert_array_equal(
-            ptrs[:, 0], 1000 + 2 * 65536 + np.arange(32) * 2048
-        )
-        np.testing.assert_array_equal(sizes, np.full((32, 1), 2048))
-
-
-class MatrixTransferTest(unittest.TestCase):
-    def _metadata(self, keys=(b"a" * 16, b"b" * 16)):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
+            tokens_per_chunk=tokens_per_chunk,
+            scheduler=4,
         )
 
-        plan = UCMGroupDispatchPlan(
-            "FA", keys, 0, 8, (np.array([2, 2], dtype=np.uint64),)
+    def test_subblock_starts_follow_chunk_position_and_keep_layer_offsets(self):
+        layout = self._two_layers()
+        store = layout.store_layouts[0]
+        offsets, ptrs, sizes = store.resolve_matrices(
+            np.array([2, 2]), np.array([0, 4], dtype=np.uint64)
         )
-        return UCMConnectorMetadata(
-            requests={
-                "r": RequestDispatchMeta("r", load_plans=(plan,), dump_plans=(plan,))
-            }
+        self.assertEqual(ptrs.tolist(), [[1032, 2048], [1040, 2060]])
+        self.assertEqual(offsets.tolist(), [[0, 8], [0, 8]])
+        self.assertEqual(sizes.tolist(), [[8, 12], [8, 12]])
+        _, ptrs, _ = store.resolve_matrices(
+            np.array([2, 3]), np.array([4, 16], dtype=np.uint64)
         )
-
-    def test_matrix_bytes_and_layerwise_offsets(self):
-        layout, _ = LayerViewSegmentsTest()._layout("LHBNC")
-        meta = self._metadata()
-        (batch,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
-        self.assertEqual(batch.keys, (b"a" * 16, b"b" * 16))
-        self.assertEqual(batch.ptrs.shape, (2, 4))
-        self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8, 16, 24]] * 2)
-        self.assertEqual(batch.sizes.tolist(), [[8] * 4] * 2)
-        self.assertEqual(batch.sizes.strides[0], 0)
-        self.assertFalse(batch.sizes.flags.writeable)
-        (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
-        np.testing.assert_array_equal(selected.ptrs, batch.ptrs[:, 2:])
-        self.assertEqual(selected.ucm_block_offsets.tolist(), [[16, 24]] * 2)
-        legacy = _flat_layout_records(layout, 'dump', meta)
-        memory = ByteMemory()
-        for address in range(1000, 1192):
-            memory.write(address, bytes([address % 251]))
-        with tempfile.TemporaryDirectory() as directory:
-            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
-            adapter = UCMProxyAdapter(proxy)
-            adapter.submit("dump", batch)
-            adapter.commit(batch.keys)
-            expected = []
-            for key in batch.keys:
-                pieces = [
-                    (int(o), memory.read(int(p), int(n)))
-                    for k, o, p, n in zip(
-                        legacy.block_ids, legacy.offsets, legacy.ptrs, legacy.sizes
-                    )
-                    if k == key
-                ]
-                expected.append(b"".join(payload for _, payload in sorted(pieces)))
-                self.assertEqual(
-                    (Path(directory) / (key.hex() + ".ucm")).read_bytes(), expected[-1]
-                )
-            for address in range(1000, 1192):
-                memory.write(address, b"\0")
-            adapter.submit("load", batch)
-            for i in range(2):
-                self.assertEqual(
-                    b"".join(
-                        memory.read(int(p), int(n))
-                        for p, n in zip(batch.ptrs[i], batch.sizes[i])
-                    ),
-                    expected[i],
-                )
-
-    def test_multiple_groups_match_legacy_record_positions(self):
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupDispatchPlan,
+        self.assertEqual(ptrs.tolist(), [[1040, 2060], [1048, 2072]])
+        offsets, ptrs, sizes = store.resolve_matrices(
+            np.array([2]),
+            np.array([4], dtype=np.uint64),
+            segment_mask=layout.group_layouts[0].segment_mask(layer_ids=[1]),
+        )
+        self.assertEqual(
+            (offsets.tolist(), ptrs.tolist(), sizes.tolist()), ([[8]], [[2060]], [[12]])
         )
 
-        names = ["model.layers.0.attn", "model.layers.1.attn"]
-        spec = parse_kv_cache_config(
+    def test_multiple_blocks_are_packed_per_chunk_in_table_order(self):
+        layout = self._two_layers(tokens_per_chunk=16)
+        offsets, ptrs, sizes = layout.store_layouts[0].resolve_matrices(
+            np.array([3, 1, 0, 2]), np.array([0, 16], dtype=np.uint64)
+        )
+        self.assertEqual(
+            ptrs.tolist(), [[1048, 2072, 1016, 2024], [1000, 2000, 1032, 2048]]
+        )
+        self.assertEqual(offsets.tolist(), [[0, 16, 40, 56]] * 2)
+        self.assertEqual(sizes.tolist(), [[16, 24, 16, 24]] * 2)
+        self.assertEqual(layout.store_layouts[0].store_bytes, 80)
+
+    def test_swa_tail_starts_at_end_of_partial_first_block(self):
+        names = ("model.layers.0.attn", "model.layers.1.swa_cache")
+        layout = make_layout(
             config(
                 group([names[0]], FullAttentionSpec(8)),
-                group([names[1]], FullAttentionSpec(16)),
-                num_blocks=4,
+                group([names[1]], SlidingWindowMLASpec(8, sliding_window=12)),
             ),
-            scheduler_block_size=8,
-        )
-        layout = UCMKVCacheLayout(
-            spec,
             {
-                names[0]: FakeTensor(1000, (4, 8, 1), (8, 1, 1)),
-                names[1]: FakeTensor(2000, (4, 16, 1), (16, 1, 1)),
+                names[0]: FakeTensor(100, (8, 1, 8, 1), (8, 8, 1, 1)),
+                names[1]: FakeTensor(1000, (8, 1, 8, 2), (16, 16, 2, 1)),
             },
         )
-        plan = UCMGroupDispatchPlan(
-            "FA", (b"a" * 16, b"b" * 16), 0, 16, (np.array([0, 1]), np.array([2, 2]))
+        offsets, ptrs, sizes = layout.store_layouts[1].resolve_matrices(
+            np.array([1, 2]), np.array([0], dtype=np.uint64)
         )
-        meta = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        self.assertEqual(
+            (offsets.tolist(), ptrs.tolist(), sizes.tolist()),
+            ([[0, 8]], [[1024, 1032]], [[8, 16]]),
         )
-        (batch,) = UCMTransferBuilder(layout).build_load_transfers(meta)
-        self.assertEqual(batch.ptrs.tolist(), [[1000, 2032], [1008, 2040]])
-        self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8], [0, 8]])
-        self.assertEqual(batch.sizes.tolist(), [[8, 8], [8, 8]])
-        (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
-        self.assertEqual(selected.ucm_block_offsets.tolist(), [[8], [8]])
+        self.assertEqual(layout.spec.blocks_per_chunk, (1, 2))
 
-    def test_shared_keys_across_requests_keep_separate_destinations(self):
-        from dataclasses import replace
-
-        layout, _ = LayerViewSegmentsTest()._layout("LHBNC")
-        metadata = self._metadata()
-        first = metadata.requests["r"]
-        plan = first.load_plans[0]
-        other_plan = replace(plan, group_block_ids=(np.array([1, 1], dtype=np.uint64),))
-        metadata.requests["other"] = replace(
-            first,
-            request_id="other",
-            load_plans=(other_plan,),
-            dump_plans=(other_plan,),
+    def test_state_saves_one_complete_snapshot_when_chunk_spans_many_blocks(self):
+        names = ("model.layers.0.attn", "model.layers.1.state")
+        layout = make_layout(
+            config(
+                group([names[0]], FullAttentionSpec(8)), group([names[1]], MambaSpec(8))
+            ),
+            {
+                names[0]: FakeTensor(100, (8, 1, 8, 1), (8, 8, 1, 1)),
+                names[1]: FakeTensor(1000, (8, 1, 1, 12), (32, 12, 12, 1)),
+            },
+            tokens_per_chunk=32,
         )
+        store = layout.store_layouts[1]
+        offsets, ptrs, sizes = store.resolve_matrices(
+            np.array([3]), np.array([0], dtype=np.uint64)
+        )
+        self.assertEqual(
+            (offsets.tolist(), ptrs.tolist(), sizes.tolist()), ([[0]], [[1096]], [[12]])
+        )
+        self.assertEqual(layout.spec.blocks_per_chunk, (4, 1))
+
+    def test_block_matrix_shape_matches_chunk_contract(self):
+        store = self._two_layers().store_layouts[0]
+        with self.assertRaises(ValueError):
+            store.resolve_matrices(
+                np.array([0, 1, 2]), np.array([0, 4], dtype=np.uint64)
+            )
+
+    def test_empty_block_batch_and_empty_selection_keep_matrix_shape(self):
+        store = self._two_layers().store_layouts[0]
+        for array in store.resolve_matrices(
+            np.array([], dtype=np.uint64), np.array([], dtype=np.uint64)
+        ):
+            self.assertEqual(array.shape, (0, 2))
+        for array in store.resolve_matrices(
+            np.array([1]),
+            np.array([0], dtype=np.uint64),
+            segment_mask=np.array([False, False]),
+        ):
+            self.assertEqual(array.shape, (1, 0))
+
+    def test_retained_transfers_cannot_mutate_templates_or_later_calls(self):
+        store = self._two_layers().store_layouts[0]
+        first = store.resolve_matrices(np.array([1]), np.array([0], dtype=np.uint64))
+        second = store.resolve_matrices(np.array([1]), np.array([0], dtype=np.uint64))
+        expected = tuple(a.copy() for a in second)
+        first[1][:] = 0
+        for a in (first[0], first[2]):
+            a.base[:] = 0
+        for actual, wanted in zip(second, expected):
+            np.testing.assert_array_equal(actual, wanted)
+        for actual, wanted in zip(
+            store.resolve_matrices(np.array([1]), np.array([0], dtype=np.uint64)),
+            expected,
+        ):
+            np.testing.assert_array_equal(actual, wanted)
+
+    def test_zero_tail_has_no_placeholder_storage(self):
+        names = ("model.layers.0.attn", "model.layers.1.compressor.state_cache")
+        layout = make_layout(
+            config(
+                group([names[0]], MLAAttentionSpec(8, tokens_per_state=4)),
+                group([names[1]], SlidingWindowMLASpec(4, sliding_window=4)),
+            ),
+            {
+                names[0]: FakeTensor(100, (8, 1, 2, 1), (2, 2, 1, 1)),
+                names[1]: FakeTensor(1000, (8, 1, 4, 1), (4, 4, 1, 1)),
+            },
+            ratios={1: 4},
+        )
+        self.assertEqual(layout.spec.blocks_per_chunk, (1, 0))
+        self.assertEqual(layout.store_layouts[1].store_bytes, 0)
+
+    def _block_first(self, layerwise):
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        descriptor = SimpleNamespace(
+            layers=names, offset=0, layer_stride=16, block_stride=64
+        )
+        return make_layout(
+            config(
+                group(names, FullAttentionSpec(8)),
+                tensors=(descriptor,),
+                layout="BLNHC",
+            ),
+            {
+                names[0]: FakeTensor(1000, (8, 1, 8, 1), (64, 8, 1, 1)),
+                names[1]: FakeTensor(1016, (8, 1, 8, 1), (64, 8, 1, 1)),
+            },
+            layerwise=layerwise,
+        )
+
+    def test_block_first_bulk_preserves_group_padding_without_global_slack(self):
+        layout = self._block_first(False)
+        store = layout.store_layouts[0]
+        self.assertEqual(store.store_bytes, 32)
+        self.assertEqual(
+            store.resolve_matrices(np.array([2]), np.array([0], dtype=np.uint64))[
+                1
+            ].tolist(),
+            [[1128]],
+        )
+        self.assertEqual(
+            store.resolve_matrices(np.array([2]), np.array([0], dtype=np.uint64))[
+                2
+            ].tolist(),
+            [[32]],
+        )
+        offsets, ptrs, sizes = store.resolve_matrices(
+            np.array([2]),
+            np.array([0], dtype=np.uint64),
+            segment_mask=layout.group_layouts[0].segment_mask(layer_ids=[1]),
+        )
+        self.assertEqual(
+            (offsets.tolist(), ptrs.tolist(), sizes.tolist()), ([[16]], [[1144]], [[8]])
+        )
+
+    def test_block_first_layerwise_always_uses_compact_payload(self):
+        layout = self._block_first(True)
+        store = layout.store_layouts[0]
+        self.assertEqual(store.store_bytes, 16)
+        self.assertEqual(
+            store.resolve_matrices(np.array([2]), np.array([0], dtype=np.uint64))[
+                0
+            ].tolist(),
+            [[0, 8]],
+        )
+        self.assertEqual(
+            store.resolve_matrices(np.array([2]), np.array([0], dtype=np.uint64))[
+                2
+            ].tolist(),
+            [[8, 8]],
+        )
+
+    def test_multiple_descriptor_spans_include_state_page_padding(self):
+        names = ("model.layers.0.state", "model.layers.1.state")
+        raw = config(
+            group(["model.layers.2.attn"], FullAttentionSpec(8)),
+            group(names, MambaSpec(8)),
+            tensors=(
+                SimpleNamespace(
+                    layers=(names[0],), offset=0, layer_stride=16, block_stride=64
+                ),
+                SimpleNamespace(
+                    layers=(names[1],), offset=16, layer_stride=24, block_stride=64
+                ),
+            ),
+            layout="BLNHC",
+        )
+        layout = make_layout(
+            raw,
+            {
+                "model.layers.2.attn": FakeTensor(4000, (8, 1, 8, 1), (8, 8, 1, 1)),
+                names[0]: FakeTensor(1000, (8, 1, 1, 12), (64, 12, 12, 1)),
+                names[1]: FakeTensor(1016, (8, 1, 1, 20), (64, 20, 20, 1)),
+            },
+        )
+        store = layout.store_layouts[1]
+        self.assertEqual(store.store_bytes, 40)
+        self.assertEqual(
+            store.resolve_matrices(np.array([2]), np.array([0], dtype=np.uint64))[
+                2
+            ].tolist(),
+            [[40]],
+        )
+
+    def test_split_heads_follow_physical_addresses_and_reject_partial_tokens(self):
+        name = "model.layers.0.attn"
+        raw = config(group([name], FullAttentionSpec(8)), num_blocks=3)
+        tensor = FakeTensor(1000, (6, 2, 4, 2), (32, 192, 2, 1))
+        layout = make_layout(raw, {name: tensor})
+        store = layout.store_layouts[0]
+        self.assertEqual(
+            store.resolve_matrices(np.array([1]), np.array([0], dtype=np.uint64))[
+                1
+            ].tolist(),
+            [[1064, 1096, 1256, 1288]],
+        )
+        self.assertEqual(
+            store.resolve_matrices(np.array([1]), np.array([0], dtype=np.uint64))[
+                2
+            ].tolist(),
+            [[8, 8, 8, 8]],
+        )
+        with self.assertRaisesRegex(ValueError, "whole-block"):
+            make_layout(raw, {name: tensor}, tokens_per_chunk=4, scheduler=4)
+
+
+class SchedulerChunkContractTest(unittest.TestCase):
+    def test_fa_subchunks_repeat_physical_id_in_shared_chunk_order(self):
+        raw = config(group(["model.layers.0.attn"], FullAttentionSpec(8)))
+        spec = parse_kv_cache_config(
+            raw, scheduler_block_size=4, tokens_per_chunk=4, num_hidden_layers=64
+        )
+        dispatcher = make_dispatcher(spec)
+        keys = dispatcher._chain_keys(tuple(range(16)))
+        state = seed_request_state(
+            dispatcher, FakeRequest("r", 16), group_ucm_block_ids=keys
+        )
+        state.group_vllm_block_ids = ([2, 3],)
+        meta = _scheduler_metadata(dispatcher, {"r": 16})
+        (plan,) = meta.requests["r"].dump_plans
+        self.assertEqual(plan.group_block_ids[0].tolist(), [2, 2, 3, 3])
+        self.assertEqual(plan.token_starts.tolist(), [0, 4, 8, 12])
+        layout = UCMKVCacheLayout(
+            spec,
+            {"model.layers.0.attn": FakeTensor(1000, (8, 1, 8, 1), (8, 8, 1, 1))},
+            kv_cache_config=raw,
+            num_hidden_layers=64,
+        )
+        (transfer,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
+        self.assertEqual(transfer.ptrs.tolist(), [[1016], [1020], [1024], [1028]])
+
+    def test_swa_short_boundary_is_skipped_and_complete_tail_gathers_two_blocks(self):
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(
+                ["model.layers.1.swa_cache"], SlidingWindowMLASpec(8, sliding_window=12)
+            ),
+        )
+        spec = parse_kv_cache_config(raw, scheduler_block_size=8, num_hidden_layers=64)
+        dispatcher = make_dispatcher(spec)
+        state = seed_request_state(
+            dispatcher,
+            FakeRequest("r", 32),
+            group_ucm_block_ids=dispatcher._chain_keys(tuple(range(32))),
+        )
+        state.group_vllm_block_ids = ([1, 2, 3, 4], [4, 5, 6, 7])
+        first = _scheduler_metadata(dispatcher, {"r": 8}).requests["r"]
+        self.assertEqual(tuple(p.hash_group for p in first.dump_plans), ("FA",))
+        second = _scheduler_metadata(dispatcher, {"r": 8}).requests["r"]
+        (wa,) = (p for p in second.dump_plans if p.hash_group == "WA")
+        self.assertEqual(wa.group_block_ids[0].tolist(), [4, 5])
+
+    def test_state_offloads_use_exact_handoff_and_initial_hit_filter(self):
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(["model.layers.1.state"], MambaSpec(8)),
+        )
+        spec = parse_kv_cache_config(raw, scheduler_block_size=8, num_hidden_layers=64)
+        dispatcher = make_dispatcher(spec)
+        state = seed_request_state(
+            dispatcher,
+            FakeRequest("r", 64),
+            external_hit_tokens=8,
+            group_ucm_block_ids=dispatcher._chain_keys(tuple(range(64))),
+        )
+        state.load_pending = False
+        state.token_processed = 32
+        state.group_vllm_block_ids = ([1] * 8, [0] * 8)
+        meta = _scheduler_metadata(
+            dispatcher, {"r": 0}, offloads={"r": [(1, 3, 8), (1, 5, 16)]}
+        )
+        (plan,) = meta.requests["r"].dump_plans
+        self.assertEqual(
+            (
+                plan.hash_group,
+                plan.token_starts.tolist(),
+                plan.group_block_ids[0].tolist(),
+            ),
+            ("State", [8], [5]),
+        )
+        self.assertTrue(meta.no_forward)
+
+    def test_state_load_targets_follow_platform_copy_order(self):
+        for device, targets in (("cpu", [6, 5]), ("npu", [5])):
+            with self.subTest(device=device):
+                raw = config(
+                    group(["model.layers.0.attn"], FullAttentionSpec(8)),
+                    group(["model.layers.1.state"], MambaSpec(8)),
+                )
+                spec = parse_kv_cache_config(
+                    raw,
+                    scheduler_block_size=8,
+                    num_hidden_layers=64,
+                    device_type=device,
+                )
+                dispatcher = make_dispatcher(spec)
+                state = seed_request_state(
+                    dispatcher,
+                    FakeRequest("r", 32),
+                    external_hit_tokens=8,
+                    group_ucm_block_ids=dispatcher._chain_keys(tuple(range(32))),
+                )
+                state.group_vllm_block_ids = ([2, 3, 4, 7], [5, 6, 0, 0])
+                meta = _scheduler_metadata(dispatcher, {"r": 8})
+                self.assertEqual(
+                    [
+                        int(p.group_block_ids[0][0])
+                        for p in meta.requests["r"].load_plans
+                        if p.hash_group == "State"
+                    ],
+                    targets,
+                )
+                self.assertFalse(
+                    _scheduler_metadata(dispatcher, {"r": 8}).requests["r"].load_plans
+                )
+
+    def test_preemption_and_finish_remove_request_snapshots(self):
+        spec = parse_kv_cache_config(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
+            scheduler_block_size=8,
+            num_hidden_layers=64,
+        )
+        dispatcher = make_dispatcher(spec)
+        for rid in ("preempt", "finish"):
+            seed_request_state(dispatcher, FakeRequest(rid, 8))
+        _scheduler_metadata(
+            dispatcher, {}, preempted_req_ids=("preempt",), finished_req_ids=("finish",)
+        )
+        self.assertEqual(dispatcher.requests, {})
+
+
+class TransferMatrixTest(unittest.TestCase):
+    def _layout(self):
+        names = ("model.layers.0.attn", "model.layers.0.indexer")
+        raw = config(*(group([name], FullAttentionSpec(8)) for name in names))
+        return make_layout(
+            raw,
+            {
+                names[0]: FakeTensor(1000, (8, 1, 8, 1), (8, 8, 1, 1)),
+                names[1]: FakeTensor(2000, (8, 1, 8, 2), (16, 16, 2, 1)),
+            },
+        )
+
+    def test_group_record_offsets_are_added_and_layer_id_selects_all_caches(self):
+        layout = self._layout()
         builder = UCMTransferBuilder(layout)
-        for build in (builder.build_load_transfers, builder.build_dump_transfers):
-            for layer_id in (None, 1):
-                batches = build(metadata, layer_id=layer_id)
-                self.assertEqual(len(batches), 2)
-                self.assertEqual([b.keys for b in batches], [plan.keys, plan.keys])
-                self.assertFalse(np.array_equal(batches[0].ptrs, batches[1].ptrs))
+        meta = metadata("FA", ([2], [3]))
+        (transfer,) = builder.build_dump_transfers(meta, layer_id=0)
+        self.assertEqual(transfer.ptrs.tolist(), [[1016, 2048]])
+        self.assertEqual(transfer.ucm_block_offsets.tolist(), [[0, 8]])
+        self.assertEqual(transfer.sizes.tolist(), [[8, 16]])
+        (selected,) = builder.build_dump_transfers(
+            meta, layer_name="model.layers.0.indexer"
+        )
+        self.assertEqual(selected.ucm_block_offsets.tolist(), [[8]])
 
-    def test_templates_and_retained_transfers_are_independent(self):
-        layout, _ = LayerViewSegmentsTest()._layout("LBHNC")
-        meta = self._metadata()
-        (first,) = UCMTransferBuilder(layout).build_load_transfers(meta)
-        (retained,) = UCMTransferBuilder(layout).build_load_transfers(meta)
-        expected = retained.ptrs.copy()
-        first.ptrs[:] = 1
-        # Even a caller deliberately changing a broadcast view's backing
-        # cannot change the compiled layout or another retained submission.
-        first.sizes.base[:] = 1
-        (later,) = UCMTransferBuilder(layout).build_load_transfers(meta)
-        np.testing.assert_array_equal(retained.ptrs, expected)
-        np.testing.assert_array_equal(later.ptrs, expected)
-        self.assertEqual(later.sizes.tolist(), [[8] * 4] * 2)
+    def test_shared_key_for_different_requests_keeps_distinct_targets(self):
+        builder = UCMTransferBuilder(self._layout())
+        first = metadata("FA", ([2], [3]), load=True).requests["r"]
+        second = metadata("FA", ([4], [5]), load=True).requests["r"]
+        batches = builder.build_load_transfers(
+            UCMConnectorMetadata(requests={"a": first, "b": second})
+        )
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0].keys, batches[1].keys)
+        self.assertEqual(batches[1].ptrs.tolist(), [[1032, 2080]])
 
-    def test_submit_passes_through_strided_and_broadcast_matrices(self):
-        from ucm.integration.vllm.v2.ucm_proxy import UCMProxyTransfer
+    def test_real_file_roundtrip_uses_different_source_and_destination_blocks(self):
+        layout = self._layout()
+        memory = ByteMemory()
+        memory.write(1008, b"abcdefgh")
+        memory.write(2016, b"0123456789abcdef")
+        memory.write(1032, b"!" * 8)
+        memory.write(2064, b"!" * 16)
+        builder = UCMTransferBuilder(layout)
+        with tempfile.TemporaryDirectory() as path:
+            adapter = UCMProxyAdapter(
+                SimpleFileUCMProxy(path, MemoryByteAccess(memory))
+            )
+            for batch in builder.build_dump_transfers(metadata("FA", ([1], [1]))):
+                adapter.submit("dump", batch)
+                adapter.commit(batch.keys)
+            for batch in builder.build_load_transfers(
+                metadata("FA", ([4], [4]), load=True)
+            ):
+                adapter.submit("load", batch)
+        self.assertEqual(memory.read(1032, 8), b"abcdefgh")
+        self.assertEqual(memory.read(2064, 16), b"0123456789abcdef")
 
-        class CaptureProxy(FakeProxy):
-            def load(self, *args):
-                self.received = args
-
-            dump = load
-
-        keys = (b"a" * 16, b"b" * 16)
-        ptrs = np.array([[10, 11], [20, 21]], dtype=np.uint64)[:, 1:]
-        sizes = np.broadcast_to(np.array([5], dtype=np.uint64), (2, 1))
-        offsets = np.broadcast_to(np.array([3], dtype=np.uint64), (2, 1))
-        transfer = UCMProxyTransfer(keys, ptrs, sizes, offsets)
-        proxy = CaptureProxy()
+    def test_adapter_retains_async_buffers_and_accepts_broadcast_descriptors(self):
+        proxy = mock.Mock()
+        proxy.dump.return_value = "in-flight"
         adapter = UCMProxyAdapter(proxy)
-        for operation in ("load", "dump"):
-            adapter.submit(operation, transfer)
-            for actual, original in zip(proxy.received, (keys, offsets, ptrs, sizes)):
-                self.assertIs(actual, original)
+        ptrs = np.arange(12, dtype=np.uint64).reshape(3, 4)[:, ::2]
+        sizes = np.broadcast_to(np.array([2, 3], dtype=np.uint64), ptrs.shape)
+        offsets = np.broadcast_to(np.array([0, 2], dtype=np.uint64), ptrs.shape)
+        batch = UCMProxyTransfer(
+            (b"a" * 16, b"b" * 16, b"c" * 16), ptrs, sizes, offsets
+        )
+        task = adapter.enqueue("dump", batch)
+        self.assertIs(task.transfer.ptrs, ptrs)
+        self.assertIs(proxy.dump.call_args.args[2], ptrs)
+        adapter.wait(task)
+        proxy.wait.assert_called_once_with("in-flight")
 
-    def test_single_column_strided_rows_keep_key_and_segment_order(self):
-        keys = (b"a" * 16, b"b" * 16)
-        ptrs = np.array([[10, 11], [20, 21]], dtype=np.uint64)[:, 1:]
-        offsets = np.broadcast_to(np.array([3], dtype=np.uint64), (2, 1))
-        sizes = np.broadcast_to(np.array([5], dtype=np.uint64), (2, 1))
-        records = [
-            (key, list(segments))
-            for key, segments in SimpleFileUCMProxy._records(keys, offsets, ptrs, sizes)
+
+class WorkerLifecycleTest(unittest.TestCase):
+    def _worker(self, directory, *, layerwise=True):
+        memory = ByteMemory()
+        backend = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+        cfg = vllm_config()
+        cfg.cache_config.block_size = 8
+        cfg.parallel_config.tensor_parallel_size = cfg.parallel_config.world_size = 1
+        cfg.kv_transfer_config.kv_connector_extra_config.update(
+            v2_storage_path=directory, use_layerwise=layerwise
+        )
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        with mock.patch(
+            "ucm.integration.vllm.v2.ucm_connector.SimpleFileUCMProxy",
+            return_value=backend,
+        ):
+            worker = UCMConnector(
+                cfg, KVConnectorRole.WORKER, config(group(names, FullAttentionSpec(8)))
+            )
+        worker.register_kv_caches(
+            {
+                names[0]: FakeTensor(1000, (8, 1, 8, 1), (8, 8, 1, 1)),
+                names[1]: FakeTensor(2000, (8, 1, 8, 1), (8, 8, 1, 1)),
+            }
+        )
+        return worker, backend, memory, names
+
+    def test_layerwise_commit_occurs_after_all_layers_then_step_state_resets(self):
+        with tempfile.TemporaryDirectory() as path:
+            worker, backend, memory, names = self._worker(path)
+            memory.write(1008, b"abcdefgh")
+            memory.write(2008, b"01234567")
+            worker.bind_connector_metadata(metadata("FA", ([1],)))
+            worker.save_kv_layer(names[0], None, None)
+            self.assertEqual(backend.lookup((b"a" * 16,)), (False,))
+            worker.wait_for_save()
+            self.assertEqual(backend.lookup((b"a" * 16,)), (True,))
+            worker.bind_connector_metadata(metadata("FA", ([3],), load=True))
+            worker.start_load_kv(None)
+            worker.wait_for_layer_load(names[0])
+            worker.wait_for_layer_load(names[1])
+            self.assertEqual(memory.read(1024, 8), b"abcdefgh")
+            self.assertEqual(memory.read(2024, 8), b"01234567")
+            worker.wait_for_save()
+
+    def test_missing_record_reports_failed_blocks_and_suppresses_save(self):
+        with tempfile.TemporaryDirectory() as path:
+            worker, backend, memory, names = self._worker(path, layerwise=False)
+            meta = metadata("FA", ([3],), load=True)
+            req = meta.requests["r"]
+            meta.requests["r"] = replace(
+                req, dump_plans=metadata("FA", ([3],)).requests["r"].dump_plans
+            )
+            worker.bind_connector_metadata(meta)
+            worker.start_load_kv(None)
+            self.assertEqual(
+                worker.build_connector_worker_meta().load_failed_reqs, {"r"}
+            )
+            self.assertEqual(worker.get_block_ids_with_load_errors(), {3})
+            worker.wait_for_save()
+            self.assertEqual(backend.lookup((b"a" * 16,)), (False,))
+
+    def test_chunk_launch_option_reaches_shared_spec(self):
+        cfg = vllm_config()
+        cfg.kv_transfer_config.kv_connector_extra_config["tokens_per_chunk"] = 16
+        with tempfile.TemporaryDirectory() as directory:
+            cfg.kv_transfer_config.kv_connector_extra_config["v2_storage_path"] = (
+                directory
+            )
+            worker = UCMConnector(
+                cfg,
+                KVConnectorRole.SCHEDULER,
+                config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
+            )
+        self.assertEqual(
+            (worker.spec.tokens_per_chunk, worker.spec.blocks_per_chunk), (16, (4,))
+        )
+
+    def test_failed_deferred_write_drains_remaining_tasks_without_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker, backend, memory, names = self._worker(directory)
+
+            class DeferredProxy:
+                def __init__(self):
+                    self.waited = []
+                    self.committed = []
+
+                def dump(self, *args):
+                    return args
+
+                def wait(self, args):
+                    self.waited.append(args)
+                    if len(self.waited) == 1:
+                        raise OSError("first deferred copy failed")
+                    backend.dump(*args)
+
+                def commit(self, keys):
+                    self.committed.append(keys)
+                    backend.commit(keys)
+
+            proxy = DeferredProxy()
+            worker._proxy = UCMProxyAdapter(proxy)
+            worker.bind_connector_metadata(metadata("FA", ([1],)))
+            with self.assertRaises(UCMProxyError):
+                worker.wait_for_save()
+            self.assertEqual(len(proxy.waited), 2)
+            self.assertEqual(proxy.committed, [])
+            self.assertEqual(worker._dump_tasks, [])
+            self.assertEqual(backend.lookup((b"a" * 16,)), (False,))
+
+    def test_raw_config_dump_preserves_native_descriptor_fields(self):
+        from ucm.integration.vllm.v2.ucm_connector import _dump_raw_kv_cache_config
+
+        raw = config(
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            tensors=(
+                SimpleNamespace(
+                    layers=("model.layers.0.attn",),
+                    offset=0,
+                    layer_stride=64,
+                    block_stride=8,
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "rank-%d.json"
+            with mock.patch.dict(os.environ, {"UCM_V2_DUMP_CONFIG": str(target)}):
+                _dump_raw_kv_cache_config(raw, 3)
+            payload = json.loads((Path(directory) / "rank-3.json").read_text())
+            self.assertEqual(payload["kv_cache_tensors"][0]["block_stride"], 8)
+            self.assertEqual(payload["prefix_cache_retention_interval"], 0)
+
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+@unittest.skipIf(torch is None, "requires torch for native dtype views")
+class StateBytePageTest(unittest.TestCase):
+    def test_dense_permutation_preserves_storage_offset_stride_and_aliasing(self):
+        from ucm.integration.vllm.v2.layout.view import _as_byte_page
+
+        backing = torch.arange(300, dtype=torch.float32).to(torch.bfloat16)
+        original = torch.as_strided(
+            backing, (4, 2, 3), (64, 3, 1), storage_offset=5
+        ).transpose(1, 2)
+        byte_page = _as_byte_page(original)
+        self.assertEqual(tuple(byte_page.shape), (4, 1, 1, 12))
+        self.assertEqual(byte_page.stride(0), 128)
+        self.assertEqual(byte_page.data_ptr(), original.data_ptr())
+        for block in range(4):
+            expected = backing[5 + 64 * block : 11 + 64 * block].view(torch.uint8)
+            self.assertTrue(torch.equal(byte_page[block, 0, 0], expected))
+        byte_page[0, 0, 0].zero_()
+        self.assertEqual(backing[5:11].tolist(), [0] * 6)
+
+    def test_npu_state_binding_uses_typed_component_payloads(self):
+        names = ("model.layers.0.attn", "model.layers.1.state")
+        backing = torch.zeros(300, dtype=torch.float32)
+        component = torch.as_strided(
+            backing, (4, 2, 3), (64, 3, 1), storage_offset=5
+        ).transpose(1, 2)
+        raw = config(
+            group([names[0]], FullAttentionSpec(8)),
+            group([names[1]], MambaSpec(8)),
+            num_blocks=4,
+            tensors=(
+                SimpleNamespace(
+                    layers=(names[1],), offset=0, layer_stride=1024, block_stride=128
+                ),
+            ),
+        )
+        layout = make_layout(
+            raw,
+            {
+                names[0]: FakeTensor(1000, (4, 8, 1, 1), (8, 1, 1, 1)),
+                names[1]: (component,),
+            },
+            device="npu",
+        )
+        _, ptrs, sizes = layout.store_layouts[1].resolve_matrices(
+            np.array([2]), np.array([0], dtype=np.uint64)
+        )
+        self.assertEqual(ptrs.tolist(), [[component.data_ptr() + 512]])
+        self.assertEqual(sizes.tolist(), [[24]])
+
+    def test_non_dense_state_payload_is_rejected(self):
+        from ucm.integration.vllm.v2.layout.view import _as_byte_page
+
+        with self.assertRaisesRegex(ValueError, "dense"):
+            _as_byte_page(torch.zeros((4, 8, 6))[:, :, ::2])
+
+
+class ParallelShardTest(unittest.TestCase):
+    def test_lookup_requires_all_committed_shards_and_loads_own_bytes(self):
+        from ucm.integration.vllm.v2.parallel import AllShardLookup
+
+        key = b"p" * 16
+        with tempfile.TemporaryDirectory() as directory:
+            memory = ByteMemory()
+            memory.write(100, b"rankzero")
+            memory.write(200, b"rank-one")
+            shards = [
+                SimpleFileUCMProxy(Path(directory) / str(i), MemoryByteAccess(memory))
+                for i in range(2)
+            ]
+            scheduler = AllShardLookup(shards[0], shards)
+            for i in range(2):
+                shards[i].dump(
+                    (key,),
+                    np.array([[0]], dtype=np.uint64),
+                    np.array([[100 + i * 100]], dtype=np.uint64),
+                    np.array([[8]], dtype=np.uint64),
+                )
+            shards[0].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (False,))
+            self.assertEqual(scheduler.lookup_on_prefix((key,)), -1)
+            self.assertEqual(scheduler.lookup_on_reverse((key,)), -1)
+            shards[1].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (True,))
+            for i in range(2):
+                AllShardLookup(shards[i], shards).load(
+                    (key,),
+                    np.array([[0]], dtype=np.uint64),
+                    np.array([[300 + 100 * i]], dtype=np.uint64),
+                    np.array([[8]], dtype=np.uint64),
+                )
+            self.assertEqual(memory.read(300, 8), b"rankzero")
+            self.assertEqual(memory.read(400, 8), b"rank-one")
+
+    def test_empty_pp_shard_marker_is_not_visible_before_commit(self):
+        from ucm.integration.vllm.v2.parallel import AllShardLookup
+
+        key = b"s" * 16
+        empty = np.empty((1, 0), dtype=np.uint64)
+        with tempfile.TemporaryDirectory() as directory:
+            shards = [
+                SimpleFileUCMProxy(
+                    Path(directory) / str(i), MemoryByteAccess(ByteMemory())
+                )
+                for i in range(2)
+            ]
+            shards[0].dump((key,), empty, empty, empty)
+            shards[1].dump((key,), np.array([[0]]), np.array([[10]]), np.array([[4]]))
+            shards[1].commit((key,))
+            scheduler = AllShardLookup(shards[0], shards)
+            self.assertEqual(scheduler.lookup((key,)), (False,))
+            shards[0].commit((key,))
+            self.assertEqual(scheduler.lookup((key,)), (True,))
+            self.assertEqual(shards[0]._path(key).stat().st_size, 0)
+
+    def test_topologies_do_not_share_a_namespace(self):
+        from ucm.integration.vllm.v2.parallel import ParallelLayout
+
+        variants = [
+            ParallelLayout(tp=2),
+            ParallelLayout(pp=2),
+            ParallelLayout(pcp=2),
+            ParallelLayout(tp=2, dcp=2),
+            ParallelLayout(tp=2, dcp=2, interleave=128),
+            ParallelLayout(pp=2, pp_partition="1,3"),
         ]
-        self.assertEqual(records, [(keys[0], [(3, 11, 5)]), (keys[1], [(3, 21, 5)])])
+        self.assertEqual(len({p.namespace for p in variants}), len(variants))
 
-    def test_matrix_buffers_live_until_async_wait(self):
-        layout, _ = LayerViewSegmentsTest()._layout("LBHNC")
-        (batch,) = UCMTransferBuilder(layout).build_load_transfers(self._metadata())
 
-        class Deferred(FakeProxy):
-            def load(self, keys, offsets, ptrs, sizes):
-                self.refs = (keys, offsets, ptrs, sizes)
-                return object()
+class PhysicalOrderOracleTest(unittest.TestCase):
+    def test_all_six_physical_orders_match_independent_element_addresses(self):
+        # The oracle enumerates logical elements from physical axis strides;
+        # it does not call UCM's range compiler to compute expected addresses.
+        dims = {"L": 2, "B": 4, "H": 2, "N": 8, "C": 2}
+        names = ("model.layers.0.attn", "model.layers.1.attn")
+        for order in ("LBNHC", "LBHNC", "BLNHC", "BLHNC", "LHBNC", "BHLNC"):
+            with self.subTest(order=order):
+                strides, stride = {}, 1
+                for axis in reversed(order):
+                    strides[axis] = stride
+                    stride *= dims[axis]
+                raw = config(group(names, FullAttentionSpec(8)), num_blocks=4)
+                caches = {
+                    name: FakeTensor(
+                        1000 + layer * strides["L"],
+                        (4, 2, 8, 2),
+                        tuple(strides[axis] for axis in "BHNC"),
+                    )
+                    for layer, name in enumerate(names)
+                }
+                layout = make_layout(raw, caches, layerwise=True)
+                _, ptrs, sizes = layout.store_layouts[0].resolve_matrices(
+                    np.array([2]), np.array([0], dtype=np.uint64)
+                )
+                actual = [
+                    address
+                    for ptr, size in zip(ptrs[0], sizes[0])
+                    for address in range(int(ptr), int(ptr) + int(size))
+                ]
+                expected = []
+                for layer in range(2):
+                    expected.extend(
+                        sorted(
+                            1000
+                            + layer * strides["L"]
+                            + 2 * strides["B"]
+                            + head * strides["H"]
+                            + token * strides["N"]
+                            + channel
+                            for head in range(2)
+                            for token in range(8)
+                            for channel in range(2)
+                        )
+                    )
+                self.assertEqual(actual, expected)
+                if order.endswith("NHC"):
+                    partial = make_layout(raw, caches, tokens_per_chunk=4, scheduler=4)
+                    _, ptrs, sizes = partial.store_layouts[0].resolve_matrices(
+                        np.array([2]), np.array([4], dtype=np.uint64)
+                    )
+                    actual = [
+                        a
+                        for ptr, size in zip(ptrs[0], sizes[0])
+                        for a in range(int(ptr), int(ptr) + int(size))
+                    ]
+                    expected = []
+                    for layer in range(2):
+                        expected.extend(
+                            sorted(
+                                1000
+                                + layer * strides["L"]
+                                + 2 * strides["B"]
+                                + head * strides["H"]
+                                + token * strides["N"]
+                                + channel
+                                for head in range(2)
+                                for token in range(4, 8)
+                                for channel in range(2)
+                            )
+                        )
+                    self.assertEqual(actual, expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, "whole-block"):
+                        make_layout(raw, caches, tokens_per_chunk=4, scheduler=4)
 
-            def wait(self, task):
-                self.checked = self.refs[2].shape == (2, 4) and self.refs[3][0, 0] == 8
+    def test_cp_global_token_span_keeps_local_physical_rows(self):
+        name = "model.layers.0.attn"
+        raw = config(group([name], FullAttentionSpec(8)))
+        spec = parse_kv_cache_config(
+            raw, scheduler_block_size=8, num_hidden_layers=64, device_type="cpu"
+        )
+        spec = ParallelLayout(dcp=2).apply_context_parallel(spec, 32)
+        layout = UCMKVCacheLayout(
+            spec,
+            {name: FakeTensor(1000, (8, 1, 8, 1), (8, 8, 1, 1))},
+            kv_cache_config=raw,
+            num_hidden_layers=64,
+        )
+        self.assertEqual(layout.spec.blocks_per_chunk, (2,))
+        _, ptrs, sizes = layout.store_layouts[0].resolve_matrices(
+            np.array([1, 3]), np.array([0], dtype=np.uint64)
+        )
+        self.assertEqual((ptrs.tolist(), sizes.tolist()), ([[1008, 1024]], [[8, 8]]))
 
-        proxy = Deferred()
-        UCMProxyAdapter(proxy).submit("load", batch)
-        self.assertTrue(proxy.checked)
+    def test_native_replicated_indexer_rows_use_one_logical_block_stride(self):
+        name = "model.layers.0.indexer"
+        raw = config(
+            group(
+                [name], AscendSFAIndexerCacheSpec(8, sfa_dcp_replicated_indexer_size=2)
+            )
+        )
+        layout = make_layout(
+            raw, {name: FakeTensor(1000, (16, 8, 1, 1), (8, 1, 1, 1))}, device="npu"
+        )
+        self.assertEqual(layout.group_layouts[0].resolve_ptrs([2]).tolist(), [[1032]])
+        self.assertEqual(layout.store_layouts[0].store_bytes, 16)
 
 
 if __name__ == "__main__":

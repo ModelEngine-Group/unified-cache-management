@@ -13,12 +13,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from .group import BlockAccess, BlockFirstView, KVCacheGroupLayout, TensorDescriptor
+from .group import BlockFirstView, KVCacheGroupLayout, TensorDescriptor
 from .kv_cache import (
-    UCMLayerSpec,
-    UCMKVCacheGroupInfo,
+    UCMKVCacheGroupSpec,
     UCMKVCacheLayout,
     UCMKVCacheSpec,
+    UCMLayerSpec,
     _concrete_specs,
     _layer_index,
     parse_kv_cache_config,
@@ -89,7 +89,9 @@ def _attention_view_order(
 def build_group_layouts(
     spec: "UCMKVCacheSpec",
     kv_cache_config: "KVCacheConfig",
-    kv_caches: Mapping[str, "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]"],
+    kv_caches: Mapping[
+        str, "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]"
+    ],
     *,
     num_hidden_layers: int,
 ) -> dict[int, KVCacheGroupLayout]:
@@ -109,7 +111,7 @@ def build_group_layouts(
         native_group = kv_cache_config.kv_cache_groups[group.group_id]
         if not group.is_persistent or not native_group.layer_names:
             continue
-        layers = []
+        layer_specs = []
         for name, native_spec in _concrete_specs(native_group):
             storage_block_size = (
                 1  # State is one indivisible checkpoint, not a token-row array.
@@ -117,10 +119,12 @@ def build_group_layouts(
                 else _storage_block_size(native_spec, spec.device_type)
             )
             descriptor, position = declared_at.get(name, (None, 0))
-            layers.append(
+            layer_specs.append(
                 UCMLayerSpec(
                     layer_name=name,
-                    layer_index=_layer_index(name, spec.device_type, num_hidden_layers),
+                    layer_index=_layer_index(
+                        name, spec.device_type, num_hidden_layers, spec.num_attn_module
+                    ),
                     kv_cache_spec=native_spec,
                     storage_block_size=storage_block_size,
                     num_blocks=kv_cache_config.num_blocks,
@@ -132,9 +136,10 @@ def build_group_layouts(
                 )
             )
         layouts[group.group_id] = KVCacheGroupLayout(
-            group,
+            group.group_id,
             kv_caches,
-            layers=layers,
+            layer_specs=layer_specs,
+            state_snapshot=group.is_state_snapshot,
             device_type=spec.device_type,
             block_first_layout=block_first_layout,
         )
@@ -142,7 +147,6 @@ def build_group_layouts(
 
 
 __all__ = [
-    "BlockAccess",
     "BlockFirstView",
     "ComponentView",
     "GroupStoreLayout",
@@ -151,7 +155,7 @@ __all__ = [
     "MemorySegment",
     "TensorDescriptor",
     "UCMLayerSpec",
-    "UCMKVCacheGroupInfo",
+    "UCMKVCacheGroupSpec",
     "UCMKVCacheLayout",
     "UCMKVCacheSpec",
     "build_group_layouts",

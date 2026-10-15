@@ -1,177 +1,123 @@
-# v2 KV 寻址与 UCM block 排布
+# v2 chunk 元数据、HBM 寻址与外存排布
 
-完整设计见 [UCM Connector v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，包含 scheduler、hash/窗口规则、worker 生命周期和验证边界。本文件保留布局接口与数值示例。图文材料统一维护在 qyh 的 `docs/v2-layout` 分支：[Layout 详细设计与8张图](https://github.com/qyh111/unified-cache-management/blob/docs/v2-layout/docs/connector-v2-layout-design.md)。配套 HTML、SVG 和生成脚本也在该分支，下载后可离线阅读。
+2026-10-15：按公共 chunk 契约、实际物理布局和存储模板分清职责。当前参考 vLLM 0.30.0；本批仅静态检查，未运行组件/模型测试或设备 IO。
 
-## 模块边界
+完整链路见 [v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，更新说明见 [0.30 适配记录](../../../../../docs/connector-v2-030-adaptation.md)。历史图文位于 [qyh/docs/v2-layout](https://github.com/qyh111/unified-cache-management/tree/docs/v2-layout)，其中旧的 BlockAccess 和命名需按本文更新；主开发目录不维护 HTML/SVG/生成脚本。
 
-Layout 统一负责三部分，不按文件数量强行拆分：
+## 对象与职责
 
-- `kv_cache.py`：解析 KVCacheConfig 的 group/persistence/token 元数据；`UCMKVCacheLayout` 汇总元数据、HBM 布局和外存模板。
-- `__init__.py`、`group.py`、`view.py`：绑定 worker 原生 spec/descriptor 和真实 tensor views，解析 LayerView/ComponentView/MemorySegment，并提供 block IDs 与 token 范围的寻址。
-- `store_layout.py`：编译每个 group 的外存 offsets、sizes、store_bytes，以及通用或整块 Block First 模板。
+| 对象 | 内容与职责 |
+| --- | --- |
+| `UCMKVCacheGroupSpec` | 原生 group ID、`tokens_per_block`、kinds、tail、参与标记；不含 tensor 指针或存储模板 |
+| `UCMKVCacheSpec` | groups、`tokens_per_chunk`、scheduler 粒度和按原生 group ID 索引的 `blocks_per_chunk`；scheduler/worker 共用 |
+| `UCMLayerSpec` | worker 逐层原生 spec、storage entries、descriptor、轴约定；不含物理指针 |
+| `LayerView` / `ComponentView` | 实际 tensor 的 shape/stride 和连续 `MemorySegment`；不分配或复制 KV storage |
+| `KVCacheGroupLayout` | HBM 几何、`layer_specs`/层选择、block ID 到 segment 起始地址、token→byte 物理换算；不持有 GroupSpec/chunk 参数 |
+| `GroupStoreLayout` | 持有公共 spec 和 group_layout；选择 token 范围，调用 HBM 换算并编译源 byte offsets、sizes、外存 offsets 和 store_bytes |
+| `UCMKVCacheLayout` | worker 注册时汇总上述对象与层索引 |
+| 外部 `UCMTransferBuilder` | 解释 plan、传递逻辑起点/IDs、累加各 group 外存起点、关联 keys 并生成二维 Transfer |
 
-`layout` 不依赖 scheduler 或 proxy，不接收请求 metadata/plan，不生成 Transfer。调用方可以给出 block IDs、token offsets 和 segment mask，使用布局计算 byte ranges；这仍是寻址，不是调度。
+Layout 不依赖 scheduler/proxy，不接收请求 metadata/plan，不生成 Transfer。HBM 提供物理 byte 换算和 segment 起始地址，由 Store 选择范围并添加块内 byte offset；原 `BlockAccess` / HBM `compile_access` 已删除。
 
-外部 `../ucm_kv_cache.py / UCMTransferBuilder` 解释 plan、关联 keys、累计 participating groups 的外存起点、拼接二维 Transfer；connector 持有独立的 `layout` 与 `transfer_builder`。路由 `dispatch_routes(spec)` 在 scheduler 中。
+## chunk 的公共约定
+
+启动配置和内部字段统一使用 `tokens_per_chunk`，替代 `ucm_cache_block_size`。开发期只使用当前字段，不保留旧名兼容或迁移校验。
+
+`tokens_per_chunk` 是逻辑记录/恢复边界的 token 粒度，不是固定字节数，也不保证每推进这些 token 就立即执行 IO。`UCMKVCacheSpec.blocks_per_chunk[group_id]` 是一个 key 要引用的物理 block ID 数，在 spec 构造时统一派生；CP 修改有效 token span 后通过同一入口重新派生。
+
+| group | 每 chunk block 数 | 保存范围 |
+| --- | --- | --- |
+| FA | `ceil(tokens_per_chunk / tokens_per_block)` | chunk 的 token 区间；部分、一个或多个完整 block |
+| SWA | `ceil(tail_tokens / tokens_per_block)` | chunk 恢复边界前的 tail；首块可以只保存后半部分 |
+| State | 1 | 恢复边界上的一个完整快照，与 chunk 跨几个 State token spans 无关 |
+| 原生不参与项 / 零 tail | 0 | 不进入存储路由；不参与项也不创建 HBM/Store layout |
+
+显式 chunk 粒度必须为 scheduler 粒度的正整数倍；FA 的 chunk/block token 数须互相整除；非零 SWA 和 State 的 block token span 须整除 chunk 粒度。HBM 不支持部分 token 时，Store 在初始化阶段拒绝该范围，按层选择不放宽整组能力限制。State token/state 换算必须整除，因此不允许部分快照。State 的 chunk 粒度已保证整除其 block span，所以 Store 直接与 FA 共用 `tokens_per_chunk % tokens_per_block` 的分支。
+
+持久化集合直接取 `KVCacheConfig.prefix_cacheable_group_ids`；scratch 重建属于引擎。未支持的持久 spec（chunked local、cross、encoder-only、UNKNOWN）明确拒绝，Sink Full Attention 为显式允许项。
+
+## HBM 与 Store 的接口
 
 ```python
-from ucm.integration.vllm.v2.layout import UCMKVCacheLayout, parse_kv_cache_config
-from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
-
 layout = UCMKVCacheLayout(
     spec, kv_caches, kv_cache_config=worker_config,
     num_hidden_layers=num_hidden_layers, use_layerwise=use_layerwise,
 )
-transfer_builder = UCMTransferBuilder(layout)
-for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
-    proxy_adapter.submit("load", transfer)
-```
-
-2026-10-12：持久化 group 直接取原生 `KVCacheConfig.prefix_cacheable_group_ids`，即同时满足 `enable_kv_transfer` 和 `prefix_cacheable`。`is_persistent=False` 的 group 保留原生编号，但不参与存取、物理布局、UCM/CP block-size 约束；scratch 重建和 pool 恢复边界由引擎负责。已删除模型专属 transient/indexer ratio 解析。segment 寻址、padding 和 bulk/layerwise 外存模板仍使用 r7；namespace 摘要加入 store group IDs，隔离存取集合变化。当前开发 proxy 同步执行，State layerwise 流水仍待实现；本批仅静态检查，未运行测试。
-
-建议按 `kv_cache.py -> __init__.py -> view.py -> group.py -> store_layout.py` 阅读；理解 plan 与传输时再读外部 `../ucm_kv_cache.py`。
-
-## 谁负责什么
-
-| 对象 | 输入 | 输出/职责 |
-|---|---|---|
-| `LayerView` | 一个 layer_name 注册的一个或多个 tensor views | 逻辑层描述，不分配 KV storage |
-| `ComponentView` | 一个注册 tensor view 的 shape/stride | 一个或多个连续 `MemorySegment`；components 可共享 storage |
-| `KVCacheGroupLayout` | 一个 group 的 LayerViews | 把源地址几何编译成 NumPy segment 列，按 layer_id/name 选择列 |
-| `BlockAccess` | 固定 token 范围模板；运行时 block IDs、starts | 源内存 `ptrs/sizes`，形状 `[block, segment]` |
-| `GroupStoreLayout` | group 的 FA/WA/State 规则与物理布局 | 在 UCM block 中放置数据，维护目标 offsets，判断能否合并 IO |
-| `UCMKVCacheLayout` | 元数据、worker KVCacheConfig 与真实 views | 汇总 group_layouts/store_layouts，建立层名与层号索引 |
-| 外部 `UCMTransferBuilder` | Layout、scheduler plan 与层选择 | 关联 keys，组合各 group，构造 proxy Transfer |
-
-`view` 表示逻辑视图；`segment` 表示能连续复制的一段。两者不是一一对应关系。`segment_mask` 针对展开后的列。
-
-`supports_partial_tokens` 是 group 级布尔策略：初始化时对全部 ComponentView 的布局能力取 `all`。只要任意 view 不支持部分 token，整个 group 只允许完整 block，按层选择也不能绕过此限制。MemorySegment 只保留寻址参数，不保存逐 segment 的策略标志；固定范围和动态 offset 共用 group 策略。
-
-`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + block_id * block_stride + fixed_offset + dynamic_offset`；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
-
-`BlockFirstView` 留在 group 中，它只描述源内存中带 padding 的连续 span。当前只在 CUDA/CPU 的 BLHNC/BLNHC 下根据原生 descriptor 创建，要求 `0 < layer_stride < block_stride` 且本组 descriptors 的 block stride 一致；信任 0.30 原生 allocator 的连续放置契约，不再逐层检查地址或 offset 链。NPU 直接使用 per-layer segments；GLM 专用 slot descriptor 不符合 stride 条件。store 层仅在 use_layerwise=False、完整块且 BlockFirstView 存在时使用独立的整组 IO 路径；layerwise 继续按通用紧凑模板存取物理 segments。
-
-State group 同样参与该路径：符合条件时，bulk 复制整个 group span，保留各层 page padding，不复制 span 之外的全局 block 空闲容量。use_layerwise=True 时始终使用 payload 前缀和模板，State 整快照与加载等待规则继续由原有策略处理。记录格式使用 r7 namespace，隔离旧版带 page 间隙的 layerwise 文件。
-
-## 两种 offset
-
-`compile_access` 的 token offsets/counts 与字节数组统一使用 uint64：先检查起点小于 block token span，再以 `counts <= block_tokens - starts` 检查范围，避免无符号减法下溢或 `starts + counts` 溢出，不经 int64 中转。
-
-- `block_byte_offsets`：源 segment 内，从块起点跳过多少字节；用于计算 ptr。
-- `ucm_block_offsets`：目标 UCM block 中放在哪；每个 group 模板内先存 group 相对值，最终加 group 基址。
-
-`GroupStoreLayout.group_block_offsets` 是**一个完整 vLLM block** 的目标排布，完整 Block First bulk 为单元素 `[0]`，layerwise 则为有效 payload 的前缀和；`ucm_block_offsets` 是**一个 UCM key 覆盖的窗口**排布。窗口可能是部分 block、多个 blocks 或整页 State，因此不能混用。`whole_block_bytes` 是完整 block 的目标空间，`store_bytes` 是这个 group 在一个 UCM block 中的总空间。
-
-默认排列：
-
-```text
-一个 FA hash key -> 一个 UCM block
-  group 0
-    window block 0
-      layer 0 / component 0 / segments ...
-      layer 1 / component 0 / segments ...
-    window block 1
-      ...
-  group 1
-    ...
-```
-
-完整 Block First 有两条存取路径：use_layerwise=False 时每个原生 block 只有一项，offset 为0、size 为 BlockFirstView.block_size_bytes（含 padding）；use_layerwise=True 时保留通用模板，offset=cumsum(payload_bytes)-payload_bytes、block bytes=sum(payload_bytes)，与是否 Block First 无关。部分块也走通用模板。构造 UCMKVCacheLayout 时显式传入 connector 的 use_layerwise，避免只凭 segment_mask 选择存储格式。
-
-## FA 16384 / 512 完整例子
-
-假设一个 FA group 有两层，都是 Ascend BNHC 的连续 view：
-
-```text
-shape = [3 blocks, 16384 tokens, 2 heads, 2 channels]
-dtype = uint8
-strides = [65536, 4, 2, 1]  # 元素单位，此处等于字节
-layer 0 base_ptr = 1000000
-layer 1 base_ptr = 2000000
-```
-
-每层每 token 4 字节，一个源 block 为 65536 字节。每个 UCM key 保存 512 tokens，每层 2048 字节；整个 UCM block 为 4096 字节。
-
-### 1. 注册时编译
-
-`UCMKVCacheLayout(spec, kv_caches, kv_cache_config=..., num_hidden_layers=..., use_layerwise=...)` 创建两个 group 相关对象：
-
-```python
 group_layout = layout.group_layouts[group_id]
 store_layout = layout.store_layouts[group_id]
+mask = group_layout.segment_mask(layer_ids=[7])
+
+# HBM 只返回 [block, segment] 的起始地址，不解释 chunk 或 token 范围。
+bases = group_layout.resolve_ptrs(block_ids, segment_mask=mask)
+
+# Store 返回 [key, IO entry] 的三个矩阵。
+offsets, ptrs, sizes = store_layout.resolve_matrices(
+    block_ids, token_starts, segment_mask=mask,
+)
 ```
 
-record 层确定固定长度 512，并调用：
+HBM 几何列包含 `base_ptrs`、`block_strides`、`states_per_block`、`payload_bytes`。每层可以有多个 components/segments，layer ID 不必只返回一个地址。
 
-```python
-access = group_layout.compile_access(token_counts=512)
-# access.segment_bytes = [[2048, 2048]]
-# store_layout.ucm_block_offsets = [[0, 2048]]
-# store_layout.store_bytes = 4096
-```
+Store 在注册时把每 chunk 的固定 starts/counts 换成 `[window block, segment]` 的 `block_byte_offsets` 与 `segment_bytes`。`group_layout.tokens_to_bytes(tokens, tokens_per_block, segment_mask)` 直接计算 `tokens * payload_bytes // tokens_per_block`，先乘后整除，不经过 stored states。逻辑 block span 由调用方传入，HBM 不保存 chunk/window 信息。物理部分访问能力与完整 entry 对齐在 Store 初始化的固定范围编译中统一校验；states_per_block 仅用于该初始化检查，删除无其他用途的 state_strides。
 
-sizes 在这里算好。运行时无需 ends；范围长度改变时需要重新选择或编译 access 模板。
+运行时 HBM 只计算 `base + block_id * stride`；Store 把它组织为 `[key, window block, segment]`，添加固定/动态 byte offsets，最后展平。scheduler 在 plan.token_starts 中提供与 keys 一一对应的 uint64 逻辑 chunk 起点；TransferBuilder 原样传递，Store 对非 SWA 直接用 `token_starts % tokens_per_block` 得到块内偏移，不生成起点序列、不判断 chunk/block 余数。每 key 的偏移广播到该 key 的各个 block；完整 block 情况自然为0。SWA 使用固定 tail 模板。
 
-### 2. scheduler 给物理 blocks，worker 算块内 starts
+token offsets/counts 与字节数组使用 uint64。starts/counts 由 build 根据 block span 和余数直接构造，不重复校验块内范围或正长度；仅 partial_tokens 非零时检查整组部分访问能力及完整 entry 对齐，完整块跳过。动态换算不重复检查。scheduler 保证起点为 chunk 大小 U 的整数倍，初始化保证 U 与 block span T 互相整除：U<T 时起点余数最大为 T-U，U>=T 时余数为0，因此不逐批重复检查动态 payload 边界。block IDs 信任引擎/公共计划契约，不在 HBM 重复扫描范围。
 
-假设前两个逻辑 UCM keys 对应的数据都在物理 block 2（物理 block ID 不要求等于逻辑序号）：
+## 存储字节格式与 padding
+
+通用记录顺序是 group → window block → layer/component/segment；每段紧凑累计 offsets。选择某层仅筛列，保留它在完整记录中的 offset。
+
+- `use_layerwise=True`：始终使用紧凑 payload 前缀和模板。
+- `use_layerwise=False`、完整 block、已有 `BlockFirstView`：每个物理 block 可以复制整个 group span，含组内 page padding。
+- partial token：使用通用 segment 模板。
+
+HBM 发现连续 span 并提供 base/stride/长度；Store 决定是否采用它。仅 CUDA/CPU 原生 BLHNC/BLNHC 尝试整组路径；NPU 使用实际 per-component views。State 同样可走完整 padded span；不复制本组 span 之外的 global block 空闲容量。
+
+本批不改变已有非空记录的 payload 顺序、padding 或目标 offsets，namespace 保持 r7，继续隔离 bulk/layerwise。零 tail 不再构造无路由使用的占位存储模板。
+
+## FA 16384 / 512 数值例子
+
+两层均为每 token 4 bytes；block-0 基址分别 1000000 / 2000000，物理 block stride=65536 bytes，B=16384，U=512。
 
 ```python
 block_ids = np.array([2, 2], dtype=np.uint64)
-starts = np.array([0, 512], dtype=np.uint64)
-ptrs = access.resolve_ptrs(block_ids, token_offsets=starts)
-sizes = np.broadcast_to(access.segment_bytes, ptrs.shape)
+token_starts = np.array([0, 512], dtype=np.uint64)
+offsets, ptrs, sizes = store_layout.resolve_matrices(
+    block_ids, token_starts,
+)
 ```
-
-逐列使用同一公式：`base_ptr + block_id * block_stride + start * bytes_per_token`。
 
 ```text
-                 layer 0     layer 1
-key A start 0    1131072     2131072
-key B start 512  1133120     2133120
-sizes              2048        2048  # 每行相同
+ptrs   = [[1131072, 2131072], [1133120, 2133120]]
+sizes  = [[2048, 2048],       [2048, 2048]]
+offsets= [[0, 2048],          [0, 2048]]
+store_bytes = 4096
 ```
 
-完整 32 个子块的 starts 为 `0, 512, ..., 15872`。HNC 时一层可能有多个 head segments，公式对每个 segment 计算，不能把它们误当成一个连续 token 区间。
+选择第二层时 offset 仍是 2048。源/目标物理 block ID 来自 scheduler 的 table，与 key 序号无直接相等关系。SWA 的 B=8、tail=12 则编译 starts=[4,0]、counts=[4,8]。
 
-### 3. 关联目标 offsets 与 keys
+## ABI、并行和生命周期边界
 
-`GroupStoreLayout.resolve_matrices` 把相同 offset 模板重复到两个 key：
+- view 明确归一化到四维 BHNC，不按 shape 猜轴，不恢复二维/三维通用路径。
+- Ascend 原生独立 K/V 或去 padding views 的组件 stride 可不同于 descriptor 整页 stride；直接使用实际 view。CUDA/CPU 保留原生 descriptor 一致性校验。
+- Ascend typed State 先把首块的稠密物理 payload 零拷贝展平，再转 byte page；保留 dense permutation、storage_offset、block stride。不调用 contiguous() 复制 KV。
+- compact HNC 整块保留连续段；分离 heads 按物理地址分段/合并。多 head HNC 不接受部分 token。
+- CP 仅支持完整分布式 FA 页：公共 tokens_per_block 是有效全局跨度，本地物理 states/stride 仍来自原生 view。
+- PP 空 group 保留公共 spec 和计划位置，不构建本地 layout；分片可见性与 commit 不属于 HBM。
+- State 精确保存边界、CUDA A+B / Ascend A→B、等待与错误处理保持。State layerwise 计算流水仍待实现。
+- ptrs 是每次调用独立数组；sizes/offsets 广播自本次复制的小模板，在途 Transfer 不被下一次 dispatch 覆盖。源 KV 内存生命周期另由 worker 处理。
 
-```text
-key A: offset 0    <- layer 0 的 2048 字节
-       offset 2048 <- layer 1 的 2048 字节
-key B: offset 0    <- layer 0 的下一段 2048 字节
-       offset 2048 <- layer 1 的下一段 2048 字节
-```
+组件夹具位于 `test/suites/Unit/test_ucm_connector_v2.py`：按 0.30 接口重整，保留 hash/proxy 检查并覆盖上述范围、独立元素地址 oracle 与 State byte page。当前没有执行，不能据夹具数量宣称通过。
 
-外部 `UCMTransferBuilder._iter_plan_segments` 加 group 起点并关联 keys，最终扁平化为：
+## 开发期契约与检查边界
 
-```text
-keys:    [A,       A,       B,       B      ]
-offsets: [0,       2048,    0,       2048   ]
-ptrs:    [1131072, 2131072, 1133120, 2133120]
-sizes:   [2048,    2048,    2048,    2048   ]
-```
+内部 Transfer 使用匹配的二维 `[K,S]` 数组和已生成的 bytes keys；Adapter/File Proxy 不重复扫描 key 长度、重验矩阵 shape 或兼容旧 flat 输入。block IDs 在 HBM 求址入口统一为 uint64，Builder 不再重复转换。Store 在 build 内直接创建 starts/counts 并换算字节模板，不保留 _compile_ranges 包装入口。
 
-若只请求 layer_id=1，先选 segment 列再展开地址，得到 `ptrs=[2131072,2133120]`、`offsets=[2048,2048]`。目标 offset 不变成零，因为同一个 UCM block 中 layer 0 的位置仍被保留。
+并行正数参数由引擎配置验证；UCM 保留 DCP 为 TP 子组的实现限制（上游允许的 PCP-spanning DCP 尚未实现），以及 CP 整页和不支持 State/SWA 的限制。实际 view 初始化不变量、chunk/窗口范围与物理对齐、proxy 返回命中数量/下标、短读/文件范围、任务排空与失败处理仍保留。可选 tensor 注册与异步 wait 使用 Protocol，不改成吞异常或猜默认值。
 
-对应夹具为 `LayerViewSegmentsTest.test_documented_fa_subblocks_preserve_layer_offsets`；当前未运行，不能据此声称新接口已验证。实际 connector 通过外部 transfer_builder 的 `build_load_transfers/build_dump_transfers` 下发对应二维矩阵，不需要自己展开 head 或解释 strides。
+### 部分 token 能力的来源与使用
 
-## 当前边界
+`ComponentView.supports_partial_tokens` 在 `_build_bhnc_view` 按真实 shape/stride 设置：物理 NHC 或 singleton head 的 token-contiguous view 为 True，多 head HNC/分离 heads 为 False。GroupLayout 对全部 components 取 all，得到整组能力。Store 在初始化编译固定范围时检查它，layer mask 不放宽整组能力。运行时 token→byte 仅按 payload 比例换算。
 
-- 官方 0.29 四维 view 按 BHNC 语义；Ascend 0.26 按 BNHC 语义。不能靠轴大小猜测。
-- State 整页；token/state 换算必须整除。
-- 多个连续 kernel rows 支持；多个 kernel rows 且 head 分离仍明确拒绝。
-- NumPy 做批量地址计算，不保证多核并行。本轮职责整理不引入地址结果的长期缓存。
-
-
-## 输出数组的生命周期
-
-物理寻址 `BlockAccess.resolve_ptrs` 返回独立可写的 ptrs；二维 Transfer 则使用独立 ptrs，以及本次调用小模板广播出的只读 sizes/offsets。单组直接持有这次结果，多组再拼接；后续 dispatch 不会覆盖已下发的描述符。这里的独立性针对描述符数组，KV 源内存本身的在途保护仍由既有生命周期机制负责。
-
-## 并行分片
-
-布局只描述当前 rank 注册的逻辑 views。PP 的空 group 保留全局 group/plan 位置，但不生成本地物理 segments。CP 整页换算在 `ParallelLayout` 完成；Ascend replicated indexer 根据原生 spec 展开连续 kernel rows。rank 隔离与全分片 commit 可见性在存储包装层完成，不进入 LayerView 的寻址算法。
-
-TP/PP/DCP 的验证范围、PCP 引擎限制及复现入口见 [并行验证记录](../../../../../docs/connector-v2-parallel-validation-20260926.md)。
+该 bool 只说明物理排布能否按比例切 token 范围，不替代完整 stored-entry 对齐。State 通过公共 spec 的完整快照约束与固定范围初始化检查保证完整存取，不在每次 byte 换算时重新判断。

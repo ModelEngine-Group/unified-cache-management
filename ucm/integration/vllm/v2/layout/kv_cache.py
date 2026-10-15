@@ -8,7 +8,7 @@ connector metadata or proxy transfers are interpreted here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from vllm.model_executor.models.utils import extract_layer_index
@@ -50,16 +50,13 @@ class UCMLayerSpec:
 
 
 @dataclass(frozen=True)
-class UCMKVCacheGroupInfo:
-    """Shared persistence policy; token_block_size is tokens per block ID."""
+class UCMKVCacheGroupSpec:
+    """Shared persistence policy; tokens_per_block is tokens per block ID."""
 
     group_id: int
-    token_block_size: int
+    tokens_per_block: int
     kinds: frozenset[KVCacheSpecKind]
     tail_tokens: int | None = None
-    # vLLM blocks one ucm key's window spans (0 = the group stores
-    # nothing); the parser stamps it once the cache block size is known.
-    tail_blocks: int = 0
     is_eagle_group: bool = False
     # Native transfer/cacheability flags select hash-addressed store groups.
     is_persistent: bool = True
@@ -84,24 +81,37 @@ class UCMKVCacheSpec:
     scheduler_block_size is what vLLM's
     ``resolve_kv_cache_block_sizes`` reports for this engine -- the
     token-alignment invariant of the resident KV pool (single group:
-    ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
+    ``cache_config.block_size``; multiple groups: LCM).  tokens_per_chunk
     counts tokens per record and per shared hash-chain key, defining the
     restore boundaries. An explicit size must be a multiple of
     scheduler_block_size; State defaults to that common alignment, while
     attention-only models default to their smallest FA block span.
     """
 
-    groups: tuple[UCMKVCacheGroupInfo, ...]
+    groups: tuple[UCMKVCacheGroupSpec, ...]
     scheduler_block_size: int
-    ucm_cache_block_size: int
+    tokens_per_chunk: int
     device_type: str
+    num_attn_module: int = 1
+    # Original native group IDs index this shared scheduler/worker contract.
+    blocks_per_chunk: tuple[int, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "blocks_per_chunk",
+            tuple(
+                _group_blocks_per_chunk(group, self.tokens_per_chunk)
+                for group in self.groups
+            ),
+        )
 
     @property
-    def state_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def state_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(group for group in self.groups if group.is_state_snapshot)
 
     @property
-    def fa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def fa_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(
             group
             for group in self.groups
@@ -109,22 +119,19 @@ class UCMKVCacheSpec:
         )
 
     @property
-    def wa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def wa_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(group for group in self.groups if group.is_sliding_window)
 
 
-def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
+def _group_blocks_per_chunk(group: UCMKVCacheGroupSpec, tokens_per_chunk: int) -> int:
     """vLLM blocks one ucm key's window spans (0 = the group stores nothing).
 
-    HMA's ``tail_blocks`` with the one generalization v2 needs: a tail
-    that does not divide the block still keeps its partial head block
-    (ceil, not HMA's floor).  A state snapshot is one indivisible
-    checkpoint page; a full-attention key spans the whole ucm block
-    (several blocks when the UCM block is larger than a native block,
-    the containing block otherwise).
+    Non-aligned tails retain their partial first block. A State snapshot is
+    one indivisible checkpoint page; full attention spans the chunk's tokens,
+    using several native blocks or a subrange of the containing block.
     """
 
-    token_block = group.token_block_size
+    token_block = group.tokens_per_block
     if not group.is_persistent:
         return 0
     if group.is_state_snapshot:
@@ -132,7 +139,7 @@ def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
     if group.is_sliding_window:
         tail = group.tail_tokens or 0
         return (tail + token_block - 1) // token_block if tail > 0 else 0
-    return (ucm_block_size + token_block - 1) // token_block
+    return (tokens_per_chunk + token_block - 1) // token_block
 
 
 def _concrete_specs(
@@ -147,9 +154,11 @@ def _concrete_specs(
     return tuple((name, group_spec) for name in group.layer_names)
 
 
-def _layer_index(name: str, device_type: str, num_hidden_layers: int) -> int:
+def _layer_index(
+    name: str, device_type: str, num_hidden_layers: int, num_attn_module: int = 1
+) -> int:
     """Ascend MTP uses local IDs; upstream uses global IDs."""
-    index = extract_layer_index(name)
+    index = extract_layer_index(name, num_attn_module)
     if device_type.lower() == "npu" and "mtp" in name.split("."):
         if index < num_hidden_layers:
             index += num_hidden_layers
@@ -168,7 +177,15 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     unknown = tuple(
         type(spec).__qualname__
         for spec, kind in zip(specs, spec_kinds)
-        if kind == KVCacheSpecKind.UNKNOWN
+        if kind
+        not in {
+            KVCacheSpecKind.FULL_ATTENTION,
+            KVCacheSpecKind.MLA_ATTENTION,
+            KVCacheSpecKind.SINK_FULL_ATTENTION,
+            KVCacheSpecKind.SLIDING_WINDOW,
+            KVCacheSpecKind.SLIDING_WINDOW_MLA,
+            KVCacheSpecKind.MAMBA,
+        }
     )
     if unknown:
         raise TypeError(f"Unsupported KV cache spec types: {sorted(set(unknown))}")
@@ -184,6 +201,7 @@ def _sliding_tail_tokens(
     compressor_ratios: Mapping[int, int],
     device_type: str,
     num_hidden_layers: int,
+    num_attn_module: int,
 ) -> int:
     """Resolve logical history retention; only legacy compressors subtract a pool."""
     # Empty PP groups keep the global UniformType map. A representative
@@ -197,7 +215,9 @@ def _sliding_tail_tokens(
     for name, spec in pairs:
         tail = spec.sliding_window
         if name.endswith(".compressor.state_cache"):
-            layer_index = _layer_index(name, device_type, num_hidden_layers)
+            layer_index = _layer_index(
+                name, device_type, num_hidden_layers, num_attn_module
+            )
             tail -= compressor_ratios[layer_index]
         if tail < 0:
             raise ValueError(f"Negative sliding tail for {name}: {tail}")
@@ -207,8 +227,8 @@ def _sliding_tail_tokens(
     return tails.pop()
 
 
-def _select_cache_block_size(
-    groups: Sequence[UCMKVCacheGroupInfo],
+def _select_tokens_per_chunk(
+    groups: Sequence[UCMKVCacheGroupSpec],
     scheduler_block_size: int,
     requested: int | None,
 ) -> int:
@@ -221,15 +241,15 @@ def _select_cache_block_size(
     if requested is not None:
         if requested <= 0 or requested % scheduler_block_size:
             raise ValueError(
-                "ucm_cache_block_size must be a positive multiple of scheduler_block_size"
+                "tokens_per_chunk must be a positive multiple of scheduler_block_size"
             )
-        ucm_block_size = requested
+        tokens_per_chunk = requested
     elif state_groups:
         # Complete shared restore boundaries, even if FA/State spans differ.
-        ucm_block_size = scheduler_block_size
+        tokens_per_chunk = scheduler_block_size
     else:
-        ucm_block_size = min(
-            (group.token_block_size for group in fa_groups),
+        tokens_per_chunk = min(
+            (group.tokens_per_block for group in fa_groups),
             default=scheduler_block_size,
         )
 
@@ -237,21 +257,21 @@ def _select_cache_block_size(
         if not group.is_persistent:
             continue
         if group.is_state_snapshot or (group.is_sliding_window and group.tail_tokens):
-            if ucm_block_size % group.token_block_size:
+            if tokens_per_chunk % group.tokens_per_block:
                 raise ValueError(
-                    f"Group {group.group_id} block span {group.token_block_size} "
-                    f"must divide UCM block size {ucm_block_size}"
+                    f"Group {group.group_id} block span {group.tokens_per_block} "
+                    f"must divide tokens_per_chunk {tokens_per_chunk}"
                 )
         elif not group.is_sliding_window:
             if (
-                ucm_block_size % group.token_block_size
-                and group.token_block_size % ucm_block_size
+                tokens_per_chunk % group.tokens_per_block
+                and group.tokens_per_block % tokens_per_chunk
             ):
                 raise ValueError(
-                    f"FA group {group.group_id} block span {group.token_block_size} "
-                    f"and UCM block size {ucm_block_size} must divide each other"
+                    f"FA group {group.group_id} block span {group.tokens_per_block} "
+                    f"and tokens_per_chunk {tokens_per_chunk} must divide each other"
                 )
-    return ucm_block_size
+    return tokens_per_chunk
 
 
 def parse_kv_cache_config(
@@ -259,7 +279,8 @@ def parse_kv_cache_config(
     *,
     scheduler_block_size: int,
     num_hidden_layers: int,
-    ucm_cache_block_size: int | None = None,
+    num_attn_module: int = 1,
+    tokens_per_chunk: int | None = None,
     device_type: str = "npu",
     compressor_tokens_per_state: Mapping[int, int] | None = None,
 ) -> UCMKVCacheSpec:
@@ -291,43 +312,45 @@ def parse_kv_cache_config(
             tail_tokens = 0
         elif sliding:
             tail_tokens = _sliding_tail_tokens(
-                group, compressor_ratios, device_type, num_hidden_layers
+                group,
+                compressor_ratios,
+                device_type,
+                num_hidden_layers,
+                num_attn_module,
             )
         else:
             tail_tokens = None
         groups.append(
-            UCMKVCacheGroupInfo(
+            UCMKVCacheGroupSpec(
                 group_id=group_id,
-                token_block_size=group.kv_cache_spec.block_size,
+                tokens_per_block=group.kv_cache_spec.block_size,
                 kinds=kinds,
                 tail_tokens=tail_tokens,
                 is_eagle_group=group.is_eagle_group,
                 is_persistent=is_persistent,
             )
         )
-    ucm_block_size = _select_cache_block_size(
-        groups, scheduler_block_size, ucm_cache_block_size
+    tokens_per_chunk = _select_tokens_per_chunk(
+        groups, scheduler_block_size, tokens_per_chunk
     )
     result = UCMKVCacheSpec(
-        tuple(
-            replace(group, tail_blocks=_group_tail_blocks(group, ucm_block_size))
-            for group in groups
-        ),
+        tuple(groups),
         scheduler_block_size,
-        ucm_block_size,
+        tokens_per_chunk,
         device_type,
+        num_attn_module,
     )
     if LAYOUT_DEBUG:
         for group in result.groups:
             layout_debug(
                 f"policy group={group.group_id} "
                 f"kinds={sorted(kind.value for kind in group.kinds)} "
-                f"persistent={group.is_persistent} token_block={group.token_block_size} "
-                f"tail={group.tail_tokens} tail_blocks={group.tail_blocks}"
+                f"persistent={group.is_persistent} token_block={group.tokens_per_block} "
+                f"tail={group.tail_tokens} blocks_per_chunk={result.blocks_per_chunk[group.group_id]}"
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
-            f"ucm_cache_block={ucm_block_size} device={device_type}"
+            f"tokens_per_chunk={tokens_per_chunk} device={device_type}"
         )
     return result
 
@@ -338,7 +361,9 @@ class UCMKVCacheLayout:
     def __init__(
         self,
         spec: UCMKVCacheSpec,
-        kv_caches: Mapping[str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]],
+        kv_caches: Mapping[
+            str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]
+        ],
         *,
         kv_cache_config: "KVCacheConfig",
         num_hidden_layers: int,
@@ -352,7 +377,8 @@ class UCMKVCacheLayout:
         )
         self.store_layouts = {
             group.group_id: GroupStoreLayout.build(
-                group, self.group_layouts[group.group_id], spec.ucm_cache_block_size,
+                spec,
+                self.group_layouts[group.group_id],
                 use_layerwise=use_layerwise,
             )
             for group in spec.groups
@@ -363,7 +389,7 @@ class UCMKVCacheLayout:
         self.layer_id_by_name = {
             layer.layer_name: layer.layer_index
             for layout in self.group_layouts.values()
-            for layer in layout.layers
+            for layer in layout.layer_specs
         }
         names_by_id: dict[int, list[str]] = {}
         for name, layer_id in self.layer_id_by_name.items():

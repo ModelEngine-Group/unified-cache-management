@@ -4,6 +4,43 @@
 
 用户要求当前先改代码，暂不测试。本批没有运行组件测试、模型构造、CUDA/NPU IO 或 forward。仅做 Python AST 语法检查、diff 空白检查与源码核对；不能作为模型支持或通过验收的证明。
 
+## 2026-10-15 Layout 后续逐项 review（当前）
+
+- GroupLayout 的 layers 改为 layer_specs，绑定/聚合/State 等待入口同步，不改原生 TensorDescriptor.layers。
+- 删除 HBM _checked_blocks 及其逐批扫描，信任 scheduler/原生 allocator 的 block ID 契约；保留动态 token 范围、物理布局能力、完整 stored-entry 对齐和实际 IO 地址范围检查。
+- token→byte 物理换算移回 KVCacheGroupLayout.tokens_to_bytes；Store 只选范围、编译 sizes/offsets 模板。tokens_per_block 由调用方传入，HBM 不保存 chunk/window 元数据。
+- tokens_to_bytes 简化为 tokens*payload_bytes//tokens_per_block，先乘后整除，不经过 stored states。部分访问能力和完整 entry 对齐移到 Store 初始化的固定范围编译，states_per_block 仅用于初始化校验；删除无其他用途的 state_strides。对应夹具改为验证初始化拒绝不对齐配置，删除手工注入非法 State 起点的运行时负例，未执行。
+- State 的 tokens_per_chunk 已要求整除原生 token span，因此合并其 partial_tokens=0 特判，与 FA 共用余数分支；State 每 chunk 仍只保存一份快照。
+- 删除 dynamic_token_offsets 派生字段；scheduler 在 plan.token_starts 提供与 keys 一一对应的 uint64 逻辑 chunk 起点，TransferBuilder 原样传递。Store 对非 SWA 直接取模得到块内偏移，按 key 广播到各 block；不生成起点序列、不判断 chunk/block 余数。SWA 保留固定 tail 模板。
+- 删除无生产调用的 resolve_matrices.token_offsets 参数及覆盖分支，仅使用 token_starts；SWA 保留固定 tail，非 SWA 直接取模，保留物理对齐。scheduler 起点均为 k×U，初始化要求 U 与 block span T 互相整除，因此删除逐批 remaining/dynamic_offsets 的 payload 范围重验，以及手工传入不合法起点的对应负例。静态 starts/counts 范围由 build 的构造保证，删除 _compile_ranges 及块内范围/正长度重验，只在 partial_tokens 非零时检查切片能力和完整 entry 对齐。
+- 删除 plan 冗余的 token_start/token_end 字段；日志读取首个 token_starts，model-check 按逐 key 起点比较 rank 一致性。scheduler 内部生成计划的区间变量保留。
+- supports_partial_tokens 仍由真实 view 初始化、group 对所有 components 取 all，在 Store 初始化编译固定范围时检查；层筛选不放宽整组能力。State 由公共 spec 和初始化固定范围保证整快照。
+- 仅 AST/编译、格式、引用/diff 静态检查，未执行组件/模型测试，存储字节格式与 r7 不变。
+
+## 2026-10-15 开发期防御分支清理（用户追加要求）
+
+- 删除旧 ucm_cache_block_size 配置名检查及其专属测试；只读取当前 tokens_per_chunk。
+- Adapter lookup 不再逐 key 校验长度/类型或转换 bytes；内部 hasher/plan 已提供 bytes keys。文件 Proxy 只消费二维 `[K,S]`，删除 flat 兼容、逐批矩阵 shape 重验和重复 key bytes 转换。迁移剩余分片夹具的 flat 调用。
+- Builder 不重复归一化 block ID dtype，由 HBM 求址入口完成。Store 私有范围编译只接收初始化创建的数组，删除未使用的标量/省略 counts/广播兼容。
+- 配置路径解析直接使用已约定的字典结构；保留 UCM 单后端约束与空路径拒绝。删除 worker 注册回调的角色重验、并行参数的通用正数重验和 NPU 已有 tensor 下的插件可用性探测。允许空 tensor 注册用于无本地数据的分片，实际 IO 仍检查注册地址范围。
+- 保留 DCP 为 TP 子组的 UCM 支持限制；上游可允许 PCP-spanning DCP，不意味着当前 UCM 分片映射支持它。保留初始化布局/恢复粒度、动态越界、短读、外部 proxy 命中结果、Protocol 可选能力、任务等待/排空和失败上报检查。
+- 本批仅静态语法、引用、格式/diff 检查，未执行组件或模型测试；记录格式与 namespace 不变。
+
+## 2026-10-15 chunk/HBM/Store 职责调整与审查修复（当前）
+
+基线 UCM `3c23ec11`，vLLM `ced6857a`，本地 Ascend `5f828ad6`；后者与审查 PDF 的 `8fde6d4e` 不同。本批为未提交代码，仅语法/引用/diff 静态检查，未运行组件测试、模型构造、设备 IO 或远端验证。下列约定覆盖后文历史同名 API/字段描述。
+
+- 配置与内部字段统一为 `tokens_per_chunk`；开发期不保留旧配置名兼容或迁移校验。group 元数据为 `UCMKVCacheGroupSpec.tokens_per_block`，逐层仍是 UCMLayerSpec。
+- `UCMKVCacheSpec.blocks_per_chunk` 是按原生 group ID 索引的公共 tuple，由最终 groups/chunk 参数统一派生；非参与项/零 tail 为0、State 为1。CP 不再重写 group.tail_blocks，通过 spec 构造重算；scheduler 与 worker 共用。
+- HBM GroupLayout 只保留实际几何、层选择与 block IDs→segment bases，不接收 GroupSpec/chunk 字段。删除 BlockAccess/compile_access；State 的生命周期判定从公共 spec 查询。
+- StoreLayout 直接持有公共 spec 与 GroupLayout，编译固定 token 范围、byte offsets/sizes、store_bytes，并在运行时添加偏移、组织 chunk 矩阵。scheduler 提供 plan.token_starts，TransferBuilder 原样传递，Store 通过取模计算块内偏移。
+- Ascend 独立 K/V、去 padding views 不再强制匹配原始 descriptor 整页 stride；CUDA/CPU 原生校验保留。实际寻址仍使用注册 shape/stride，不猜测页比例。
+- 对持久 spec 显式允许 FA/MLA/Sink、SWA 与 State；chunked local、cross、encoder-only 等未实现恢复语义的类型在解析阶段拒绝。原生不参与项仍先跳过。
+- Ascend State byte-page 先把稠密物理 payload 展成一维 view，再转 uint8，避免 dense permutation 的末维 stride 限制；保留 storage_offset、block stride，不复制 KV。
+- Longcat 从原生模型配置绑定 num_attn_module=2，使逻辑层号与原生 bind 一致。审查报告中“_save_complete 已删除”的解释不成立，生产属性保留；修复手工构造 connector 的测试夹具初始化。
+- 旧测试桩补齐 envs、TransferResults、UniformType、HiddenState、parallel_state 等；以当前四维 native ABI、完整 worker config 与精确 State hand-off 重整旧夹具，保留 hash/proxy 检查，加入独立元素地址 oracle、范围/padding/CP/State dtype view 和真实文件往返断言。没有运行，不宣称通过或沿用旧测试数量。
+- 原有非空 r7 记录的 payload 顺序、sizes/offsets/padding 和 bulk/layerwise 隔离保持；零 tail 不再创建无路由使用的占位模板。不推进生产 proxy 或 State layerwise 流水。HTML/SVG 仍在既定 qyh 文档分支维护，本批只同步开发目录 Markdown。
+
 ## 本批实现
 
 ### Scheduler 与 State
@@ -55,7 +92,7 @@ UCM 直接使用 `KVCacheConfig.prefix_cacheable_group_ids`，组合 `group.enab
 
 ## 尚未完成与下一步
 
-1. 将既有轻量单测的 SPI/spec doubles 更新为 0.30，替换依赖旧 State 位置推断和 0.26 Ascend 语义的用例。本批没有修改或运行这些测试；此前 111 项基线结果不能代表本批。
+1. 2026-10-15 已重整 0.30 SPI/spec 与新布局夹具，仍待可用环境执行并处理运行时差异；此前 111 项基线结果不能代表本批。
 2. 补精确 CoW/offload 源块、State 加载目标、缺少任一 State group、WA/State 不同命中边界、无 forward 和 deferred draft finalization 的契约验证。
 3. 核对 terminal/finished 请求的 State handoff、源块复用、抢占/取消和 checkpoint 数值；缺少有效边界时当前只会漏存，不能用位置推断补造快照。
 4. GLM5.3 原生构造与 IO 尚未验证；Qwen-Next 的 QSA backend 仍声明 `supports_kv_connector=False`，Ascend 的 QSA/PLE 原生模型构造也未打通。本批 parser 能表达角色，不等于引擎已允许运行。
