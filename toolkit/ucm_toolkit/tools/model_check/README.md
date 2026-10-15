@@ -102,7 +102,10 @@ alignment rules. The environment equivalent is `UCM_MODEL_CHECK_TOKENS_PER_CHUNK
 
 On vLLM 0.30 / current Ascend, scheduler configuration conversion and manager
 selection use the native APIs. The checker no longer installs the obsolete
-Ascend UniformType manager-factory patch. For v2 dump/load verification it
+Ascend UniformType manager-factory patch. The no-weight configuration uses the
+native `dummy` load format, and the Ascend runner path registers custom kernels
+through `enable_custom_op()` after selecting the device, as native Worker does.
+For v2 dump/load verification it
 evicts source prefix hashes through the native manager while keeping source
 blocks allocated, then poisons target IO ranges with `0xff` before loading.
 The expected dump pattern only contains bytes in `[0,250]`; loaded bytes must

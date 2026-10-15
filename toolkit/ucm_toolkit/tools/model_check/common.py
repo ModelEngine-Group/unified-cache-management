@@ -159,6 +159,7 @@ def make_config(
             "model": model,
             "tokenizer": None,
             "skip_tokenizer_init": True,
+            "load_format": "dummy",
             "trust_remote_code": trust_remote_code,
             "dtype": dtype,
             "kv_cache_dtype": kv_cache_dtype,

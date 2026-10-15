@@ -232,6 +232,11 @@ def make_runner(
 
 
 def make_cache(vllm_config: Any, active_device: torch.device) -> CacheFixture:
+    # Native Worker.init_device registers extension/meta kernels after selecting
+    # the device. This standalone path constructs the runner directly.
+    from vllm_ascend.utils import enable_custom_op
+
+    enable_custom_op()
     return make_common_cache(
         vllm_config,
         active_device,
