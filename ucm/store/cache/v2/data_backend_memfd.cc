@@ -30,6 +30,7 @@
 #include <linux/magic.h>
 #include <linux/memfd.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <unistd.h>
@@ -51,6 +52,7 @@ constexpr auto kConnectBackoff = std::chrono::milliseconds(10);
  * the millisecond count handed to the socket. */
 constexpr int64_t kMaxReceiveMs = 3600 * 1000;
 constexpr size_t kHugeTlb2MBytes = 2ULL << 20;
+constexpr size_t kHugeTlb1GBytes = 1ULL << 30;
 
 #ifndef MFD_HUGETLB
 #define MFD_HUGETLB 0x0004U
@@ -61,6 +63,14 @@ constexpr size_t kHugeTlb2MBytes = 2ULL << 20;
 #ifndef MFD_HUGE_2MB
 #define MFD_HUGE_2MB (21U << MFD_HUGE_SHIFT)
 #endif
+#ifndef MFD_HUGE_1GB
+#define MFD_HUGE_1GB (30U << MFD_HUGE_SHIFT)
+#endif
+#ifndef UCM_RUNTIME_ASCEND_A5
+#define UCM_RUNTIME_ASCEND_A5 0
+#endif
+
+constexpr bool kRegisterHostMemory = UCM_RUNTIME_ASCEND_A5 == 0;
 
 /* Deterministic across processes, unlike std::hash. */
 uint64_t HashName(const std::string& name)
@@ -81,28 +91,43 @@ MemfdDataBackend::MemfdDataBackend(const std::string& domainId) : domainId_(doma
 
 MemfdDataBackend::~MemfdDataBackend() { Reset(); }
 
+const char* MemfdDataBackend::PageBackingName(PageBacking backing)
+{
+    switch (backing) {
+        case PageBacking::Base: return "base";
+        case PageBacking::HugeTlb2M: return "hugetlb-2m";
+        case PageBacking::HugeTlb1G: return "hugetlb-1g";
+    }
+    return "unknown";
+}
+
+size_t MemfdDataBackend::PageSizeOf(PageBacking backing, size_t systemPageSize)
+{
+    switch (backing) {
+        case PageBacking::Base: return systemPageSize;
+        case PageBacking::HugeTlb2M: return kHugeTlb2MBytes;
+        case PageBacking::HugeTlb1G: return kHugeTlb1GBytes;
+    }
+    return 0;
+}
+
 Status MemfdDataBackend::Setup(const BackendOptions& options)
 {
     if (options.rankCount == 0 || options.rankBytes == 0) {
         return Status::InvalidParam("invalid memfd geometry: ranks={} bytes={}", options.rankCount,
                                     options.rankBytes);
     }
-    if (options.memfdPageMode == MemfdPageMode::Invalid) {
-        return Status::InvalidParam("invalid memfd page mode");
-    }
-    pageMode_ = options.memfdPageMode;
-    if (pageMode_ == MemfdPageMode::HugeTlb2M) {
-        backingPageSize_ = kHugeTlb2MBytes;
-    } else {
-        const long pageSize = ::sysconf(_SC_PAGESIZE);
-        if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
-        backingPageSize_ = static_cast<size_t>(pageSize);
-    }
-    if (options.rankBytes > std::numeric_limits<size_t>::max() - (backingPageSize_ - 1)) {
+    const long pageSize = ::sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
+    systemPageSize_ = static_cast<size_t>(pageSize);
+    tryHugeTlb1G_ = options.rankBytes >= kHugeTlb1GBytes;
+    const size_t allocationAlignment = tryHugeTlb1G_ ? kHugeTlb1GBytes : kHugeTlb2MBytes;
+    if (options.rankBytes > std::numeric_limits<size_t>::max() - (allocationAlignment - 1)) {
         return Status::InvalidParam("memfd rank bytes overflow while aligning: bytes={} page={}",
-                                    options.rankBytes, backingPageSize_);
+                                    options.rankBytes, allocationAlignment);
     }
-    rankStride_ = (options.rankBytes + backingPageSize_ - 1) / backingPageSize_ * backingPageSize_;
+    rankStride_ =
+        (options.rankBytes + allocationAlignment - 1) / allocationAlignment * allocationAlignment;
     segments_ = std::vector<Segment>(options.rankCount);
     deviceId_ = options.deviceId;
     requireHostDeviceAddress_ = options.requireHostDeviceAddress;
@@ -110,9 +135,9 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
     deadline_ = options.deadline;
     UC_INFO(
         "memfd setup: device={} ranks={} rank_bytes={} rank_stride={} host_device={} "
-        "page_mode={} page_bytes={} pages_per_rank={}",
+        "page_policy=hugetlb-auto first_attempt={} alignment_bytes={} register_host={}",
         deviceId_, options.rankCount, options.rankBytes, rankStride_, requireHostDeviceAddress_,
-        MemfdPageModeName(pageMode_), backingPageSize_, rankStride_ / backingPageSize_);
+        tryHugeTlb1G_ ? "hugetlb-1g" : "hugetlb-2m", allocationAlignment, kRegisterHostMemory);
     return Status::OK();
 }
 
@@ -188,29 +213,32 @@ Status MemfdDataBackend::ImportPeer(size_t rank, uint64_t handle)
         return Status::InvalidParam("peer fd of rank({}) is shorter than rank bytes({})", rank,
                                     rankStride_);
     }
-    status = ValidatePageBacking(fd);
-    if (status.Failure()) {
+    auto actualPageBacking = PageBackingOf(fd);
+    if (!actualPageBacking) {
         ::close(fd);
-        return status;
+        return actualPageBacking.Error();
     }
     auto mem = std::make_unique<MemFd>();
     status = mem->Adopt(fd, rankStride_);
     if (status.Failure()) { return status; }
     auto& segment = segments_[rank];
     segment.mem = std::move(mem);
-    /* The owner already placed and touched this segment; here it only gets
-     * registered in this process's device context. */
+    segment.pageBacking = actualPageBacking.Value();
+    segment.touchPageSize = PageSizeOf(segment.pageBacking, systemPageSize_);
+    /* The owner already placed and touched this segment. Platforms that need
+     * host registration apply it in this process's device context here. */
     status = RegisterSegment(segment);
     if (status.Failure()) { return status; }
-    UC_INFO("memfd peer segment: owner={} device={} rank={} bytes={}", ownerRank_, deviceId_, rank,
-            rankStride_);
+    UC_INFO("memfd peer segment: owner={} device={} rank={} bytes={} page_backing={}", ownerRank_,
+            deviceId_, rank, rankStride_, PageBackingName(segment.pageBacking));
     return Status::OK();
 }
 
 void MemfdDataBackend::FinalizeSetup()
 {
     /* Every peer has fetched the local fd, so the socket can go: closing the
-     * listener releases the abstract name. Mappings and registrations stay. */
+     * listener releases the abstract name. Mappings (and any registrations)
+     * stay. */
     StopFdServer();
 }
 
@@ -243,37 +271,73 @@ void MemfdDataBackend::Reset()
     }
     segments_.clear();
     rankStride_ = 0;
-    backingPageSize_ = 0;
-    pageMode_ = MemfdPageMode::Base;
+    systemPageSize_ = 0;
+    tryHugeTlb1G_ = false;
 }
 
 Status MemfdDataBackend::CreateLocalSegment(size_t rank)
 {
     const auto name = SegmentName(rank);
     auto mem = std::make_unique<MemFd>();
-    uint32_t additionalFlags = 0;
-    if (pageMode_ == MemfdPageMode::HugeTlb2M) { additionalFlags = MFD_HUGETLB | MFD_HUGE_2MB; }
-    auto status = mem->Create(name, rankStride_, additionalFlags);
+    PageBacking actualPageBacking = PageBacking::Base;
+    auto create = [&](PageBacking backing) {
+        uint32_t additionalFlags = 0;
+        if (backing == PageBacking::HugeTlb1G) {
+            additionalFlags = MFD_HUGETLB | MFD_HUGE_1GB;
+        } else if (backing == PageBacking::HugeTlb2M) {
+            additionalFlags = MFD_HUGETLB | MFD_HUGE_2MB;
+        }
+        auto status = mem->Create(name, rankStride_, additionalFlags);
+        if (status.Failure()) { return status; }
+        auto detected = PageBackingOf(mem->Fd());
+        if (!detected) { return detected.Error(); }
+        if (detected.Value() != backing) {
+            return Status::Error(fmt::format("memfd page backing mismatch: expected={} actual={}",
+                                             PageBackingName(backing),
+                                             PageBackingName(detected.Value())));
+        }
+        actualPageBacking = detected.Value();
+        return Status::OK();
+    };
+
+    auto firstAttempt = tryHugeTlb1G_ ? PageBacking::HugeTlb1G : PageBacking::HugeTlb2M;
+    auto status = create(firstAttempt);
+    if (status.Failure() && firstAttempt == PageBacking::HugeTlb1G) {
+        UC_WARN(
+            "memfd 1GiB HugeTLB create failed, falling back to 2MiB HugeTLB: owner={} "
+            "device={} name={} bytes={} status={}",
+            rank, deviceId_, name, rankStride_, status);
+        status = create(PageBacking::HugeTlb2M);
+    }
     if (status.Failure()) {
-        UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} page_mode={} status={}",
-                 rank, deviceId_, name, rankStride_, MemfdPageModeName(pageMode_), status);
-        return {status.Underlying(),
-                fmt::format("memfd create failed: name={} bytes={} page_mode={} status={}", name,
-                            rankStride_, MemfdPageModeName(pageMode_), status)};
+        UC_WARN(
+            "memfd 2MiB HugeTLB create failed, falling back to base pages: owner={} device={} "
+            "name={} bytes={} status={}",
+            rank, deviceId_, name, rankStride_, status);
+        status = create(PageBacking::Base);
+        if (status.Success() && ::madvise(mem->Addr(), rankStride_, MADV_HUGEPAGE) != 0) {
+            const auto error = errno;
+            UC_WARN(
+                "memfd fallback MADV_HUGEPAGE failed: owner={} device={} name={} bytes={} "
+                "errno={} ({})",
+                rank, deviceId_, name, rankStride_, error, std::strerror(error));
+        }
     }
-    status = ValidatePageBacking(mem->Fd());
     if (status.Failure()) {
-        UC_ERROR("memfd page backing invalid: owner={} device={} name={} page_mode={} status={}",
-                 rank, deviceId_, name, MemfdPageModeName(pageMode_), status);
-        return status;
+        UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} status={}", rank,
+                 deviceId_, name, rankStride_, status);
+        return {status.Underlying(), fmt::format("memfd create failed: name={} bytes={} status={}",
+                                                 name, rankStride_, status)};
     }
-    if (pageMode_ == MemfdPageMode::HugeTlb2M) {
-        UC_INFO(
-            "memfd HugeTLB backing verified: owner={} device={} page_bytes={} pages={} bytes={}",
-            rank, deviceId_, backingPageSize_, rankStride_ / backingPageSize_, rankStride_);
-    }
-    segments_[rank].mem = std::move(mem);
-    segments_[rank].owner = true;
+    auto& segment = segments_[rank];
+    segment.mem = std::move(mem);
+    segment.pageBacking = actualPageBacking;
+    segment.touchPageSize = PageSizeOf(actualPageBacking, systemPageSize_);
+    segment.owner = true;
+    UC_INFO(
+        "memfd page backing ready: owner={} device={} actual={} page_bytes={} pages={} bytes={}",
+        rank, deviceId_, PageBackingName(actualPageBacking), segment.touchPageSize,
+        rankStride_ / segment.touchPageSize, rankStride_);
     return Status::OK();
 }
 
@@ -296,16 +360,16 @@ Status MemfdDataBackend::PlaceAndRegister(size_t rank)
             return bindStatus;
         }
     }
-    if (backingPageSize_ != 0) {
+    if (segment.touchPageSize != 0) {
         auto* base = static_cast<std::byte*>(segment.mem->Addr());
-        for (size_t offset = 0; offset < rankStride_; offset += backingPageSize_) {
+        for (size_t offset = 0; offset < rankStride_; offset += segment.touchPageSize) {
             base[offset] = std::byte{0};
         }
     }
     return RegisterSegment(segment);
 }
 
-Status MemfdDataBackend::ValidatePageBacking(int32_t fd) const
+Expected<MemfdDataBackend::PageBacking> MemfdDataBackend::PageBackingOf(int32_t fd) const
 {
     struct statfs fileSystem{};
     if (::fstatfs(fd, &fileSystem) != 0) {
@@ -315,23 +379,21 @@ Status MemfdDataBackend::ValidatePageBacking(int32_t fd) const
     }
     const bool hugeTlbFs = static_cast<unsigned long>(fileSystem.f_type) ==
                            static_cast<unsigned long>(HUGETLBFS_MAGIC);
-    if (pageMode_ == MemfdPageMode::Base) {
-        if (hugeTlbFs) {
-            return Status::Error("memfd expected base-page backing, but received HugeTLB backing");
-        }
-        return Status::OK();
-    }
-    const bool twoMiB = static_cast<size_t>(fileSystem.f_bsize) == kHugeTlb2MBytes;
-    if (!hugeTlbFs || !twoMiB) {
-        return Status::Error(
-            fmt::format("memfd expected 2MiB HugeTLB backing: fs_magic=0x{:x} block_bytes={}",
-                        static_cast<uint64_t>(fileSystem.f_type), fileSystem.f_bsize));
-    }
-    return Status::OK();
+    if (!hugeTlbFs) { return PageBacking::Base; }
+    const auto blockSize = static_cast<size_t>(fileSystem.f_bsize);
+    if (blockSize == kHugeTlb1GBytes) { return PageBacking::HugeTlb1G; }
+    if (blockSize == kHugeTlb2MBytes) { return PageBacking::HugeTlb2M; }
+    return Status::Error(
+        fmt::format("memfd has unsupported HugeTLB backing: fs_magic=0x{:x} block_bytes={}",
+                    static_cast<uint64_t>(fileSystem.f_type), fileSystem.f_bsize));
 }
 
 Status MemfdDataBackend::RegisterSegment(Segment& segment)
 {
+    /* A5 copies from ordinary host mappings and must not consume device host-
+     * registration resources. Other platforms retain registration, including
+     * the optional device-visible alias used by SDMA Direct. */
+    if (!kRegisterHostMemory) { return Status::OK(); }
     /* Registration acts on the process's current device context, which nothing
      * else here establishes; without it a standalone store could register the
      * segment against the wrong device, or get an unusable SDMA alias. */
@@ -341,9 +403,8 @@ Status MemfdDataBackend::RegisterSegment(Segment& segment)
         UC_ERROR("memfd device setup failed: device={} status={}", deviceId_, status);
         return status;
     }
-    /* Registration itself is unconditional: the device has to be able to reach
-     * this host memory whichever copy path runs. Only the device-visible alias
-     * is SDMA-specific, so it is fetched on demand and stays nullptr otherwise. */
+    /* Only the device-visible alias is SDMA-specific, so it is fetched on
+     * demand and stays nullptr otherwise. */
     void* deviceAddr = nullptr;
     void** aliasOut = requireHostDeviceAddress_ ? &deviceAddr : nullptr;
     status = Trans::Buffer::RegisterHostBuffer(segment.mem->Addr(), rankStride_, aliasOut);

@@ -120,8 +120,10 @@ Parameters inside `ucm_connector_config`:
 * **cache_buffer_capacity_gb** *(optional, default: 256)*  
   The capacity of the Cache Store host-side buffer in GB.  
   The default value of 256 GB is sufficient in most cases.  
-  When using models like MLA, make sure `/dev/shm` has enough space,  
-  or set this parameter to a smaller value.  
+  Cache2 uses memfd-backed host memory rather than `/dev/shm`. Memfd
+  automatically tries 1 GiB HugeTLB for segments of at least 1 GiB, then
+  2 MiB HugeTLB, and finally a base-page memfd with transparent-huge-page
+  advice. Reserve the desired explicit huge-page capacity per NUMA node.
   Note: when multiple data-parallel instances run on the same node,  
   each creates its own Cache Store buffer.
 

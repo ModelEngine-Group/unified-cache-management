@@ -117,14 +117,14 @@ unknown store pipeline: <name>
 
 **常见原因**：
 
-- `cache_buffer_capacity_gb` 超出可用 `/dev/shm` 容量。
+- `cache_buffer_capacity_gb` 超出可用主机内存容量。
 - 同节点多个 DP 实例分别分配 CacheStore buffer。
 - MLA 模型需要更多共享内存。
 
 **处理方法**：
 
 1. 用 `free -h` 检查主机内存。
-2. 用 `df -h /dev/shm` 检查共享内存。
+2. 通过 sysfs 检查各 NUMA 节点的 1 GiB 和 2 MiB HugeTLB 预留；显式大页不足时 Cache2 会自动按 1 GiB、2 MiB、普通页的顺序回退。
 3. 根据主机容量显式设置正数 `cache_buffer_capacity_gb`。省略时，原生 Cache Store 的共享 buffer 默认为 256 GiB，非共享模式默认为每个 worker 32 GiB；vLLM 共享 buffer 路径会提供 128 GiB。非共享模式需计入主机上的每个 worker。
 4. 同节点运行多个 DP 实例时，按实例数量分配容量预算。
 

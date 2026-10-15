@@ -61,7 +61,6 @@ enable_metrics: true
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 原生 Cache Store 启用共享 buffer 时默认为 256 GiB，`share_buffer_enable` 为 false 时默认为每个 worker 32 GiB。启用共享 buffer 且省略容量时，vLLM connector 会提供 128 GiB。MLA 默认启用共享 buffer。显式设置正数容量会覆盖原生默认值；非共享模式需汇总主机上所有 worker 的预算。 |
-| `cache_memfd_page_mode` | 选填 | string | `base`（默认）、`hugetlb-2m` | 选择 Cache2 Memfd 数据段的页面类型。`hugetlb-2m` 严格要求预留足够的 2 MiB HugeTLB，不会退回普通页；对 PosixShm 和 HAL 后端不生效。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
 | `cache_load_backend_only` | 选填 | bool | 默认 `false` | 即使在 cache 层命中还是会强制从 SSD 上加载，仅供测试使用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |

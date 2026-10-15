@@ -61,7 +61,6 @@ These fields apply to pipelines containing Cache. Budget shared buffers per shar
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | Optional | int | See description | Native Cache Store defaults to 256 GiB with shared buffers, or 32 GiB per worker when `share_buffer_enable` is false. The vLLM connector supplies 128 GiB when shared buffers are enabled and capacity is omitted. Shared buffers default on for MLA. A positive explicit capacity overrides the native defaults; budget all unshared workers on the host. |
-| `cache_memfd_page_mode` | Optional | string | `base` (default), `hugetlb-2m` | Select backing pages for Cache2 Memfd data segments. `hugetlb-2m` strictly requires a pre-reserved 2 MiB HugeTLB pool and never falls back to base pages. It has no effect on PosixShm or HAL backends. |
 | `cache_sdma_direct` | Optional | bool | Depends on build env: `true` when `PLATFORM=ascend-a3`, `false` otherwise | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
 | `cache_load_backend_only` | Optional | bool | Default: `false` | Force load from SSD even on cache hit. Test only. |
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
