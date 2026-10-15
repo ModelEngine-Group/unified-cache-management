@@ -232,8 +232,8 @@ Prometheus 通过 vLLM 的 `/metrics` 接口采集 DramStore 和 DramPool 指标
 基线推理服务部署参数如下。
 
 ```bash
-vllm serve <model-path> \
-  --port <port> \
+vllm serve /model/DeepSeek-V3.1-Terminus-w8a8 \
+  --port 8015 \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
   --quantization ascend \
@@ -253,8 +253,8 @@ vllm serve <model-path> \
 推理参数与基线一致，仅增加通过 `--kv-transfer-config` 加载 DramStore 配置文件的参数。
 
 ```bash
-vllm serve <model-path> \
-  --port <port> \
+vllm serve /model/DeepSeek-V3.1-Terminus-w8a8 \
+  --port 8015 \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
   --quantization ascend \
@@ -267,7 +267,7 @@ vllm serve <model-path> \
   --gpu-memory-utilization 0.95 \
   --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
   --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"<dramstore-config-path>"}}'
+  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"examples/ucm_config_dramstore.yaml"}}'
 ```
 
 #### DramPool 启动参数
@@ -276,10 +276,10 @@ DramPool 性能测试启动参数如下。
 
 ```bash
 ./bin/drampool \
-  --addr <ip:port> \
+  --addr 127.0.0.1:4501 \
   --pool-size-gb 64 \
   --kvcache-block-sizes 131072 16384 \
-  --config <drampool-config-path>
+  --config examples/drampool.yaml
 ```
 
 #### DramStore 测试配置

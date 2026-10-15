@@ -232,8 +232,8 @@ Import the [Dram dashboard](https://github.com/ModelEngine-Group/unified-cache-m
 Deployment parameters for the baseline inference service are listed below.
 
 ```bash
-vllm serve <model-path> \
-  --port <port> \
+vllm serve /model/DeepSeek-V3.1-Terminus-w8a8 \
+  --port 8015 \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
   --quantization ascend \
@@ -253,8 +253,8 @@ vllm serve <model-path> \
 Inference parameters match the baseline, with only the addition of `--kv-transfer-config` to load the DramStore configuration file.
 
 ```bash
-vllm serve <model-path> \
-  --port <port> \
+vllm serve /model/DeepSeek-V3.1-Terminus-w8a8 \
+  --port 8015 \
   --tensor-parallel-size 4 \
   --data-parallel-size 4 \
   --quantization ascend \
@@ -267,7 +267,7 @@ vllm serve <model-path> \
   --gpu-memory-utilization 0.95 \
   --speculative-config '{"num_speculative_tokens":3, "method":"mtp"}' \
   --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"<dramstore-config-path>"}}'
+  --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"examples/ucm_config_dramstore.yaml"}}'
 ```
 
 #### DramPool Startup Parameters
@@ -276,10 +276,10 @@ DramPool startup parameters for the performance test are listed below.
 
 ```bash
 ./bin/drampool \
-  --addr <ip:port> \
+  --addr 127.0.0.1:4501 \
   --pool-size-gb 64 \
   --kvcache-block-sizes 131072 16384 \
-  --config <drampool-config-path>
+  --config examples/drampool.yaml
 ```
 
 #### DramStore Test Configuration
