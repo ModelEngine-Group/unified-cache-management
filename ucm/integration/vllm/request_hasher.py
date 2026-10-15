@@ -108,7 +108,14 @@ def _layout_source_digest() -> str:
 class RequestHasher:
     """Generate stable, namespaced UCM request and block identifiers."""
 
-    def __init__(self, vllm_config, rank_id):
+    def __init__(
+        self,
+        vllm_config,
+        rank_id,
+        kv_cache_config=None,
+        *,
+        is_v41_layout: bool | None = None,
+    ):
         speculative_config = getattr(vllm_config, "speculative_config", None)
         spec_info = ""
         if speculative_config is not None:
@@ -119,16 +126,92 @@ class RequestHasher:
         sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
         sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+        hf_config = getattr(vllm_config.model_config, "hf_config", None)
+        compress_ratios = getattr(hf_config, "compress_ratios", None)
+        if is_v41_layout is None:
+            is_v41_layout = bool(
+                getattr(hf_config, "kv_source_layer_ids", None)
+                or getattr(hf_config, "index_source_layer_ids", None)
+                or (
+                    compress_ratios is not None
+                    and {int(ratio) for ratio in compress_ratios}.issubset({0, 1, 2})
+                    and bool({int(ratio) for ratio in compress_ratios} & {1, 2})
+                )
+            )
+        layout_info = ""
+        if is_v41_layout:
+            cache_config = getattr(vllm_config, "cache_config", None)
+            if cache_config is None:
+                raise ValueError("DeepSeek V4.1 cache namespace needs cache_config.")
+            ratios = ",".join(str(int(ratio)) for ratio in compress_ratios or ())
+            layout_info = (
+                ":kv_layout=v41_packed_v3"
+                f":cache_dtype={cache_config.cache_dtype}"
+                f":block_size={cache_config.block_size}"
+                f":compress_ratios={ratios}"
+            )
+            if kv_cache_config is not None:
+                # The Ascend adapter transfers one aliased physical page per
+                # owner, not the CUDA value/scale segments. Never reuse files
+                # written by the old Ascend C4 adapter or a GPU deployment.
+                if any(
+                    type(inner).__name__.startswith("Ascend")
+                    and getattr(inner, "model_version", None) == "deepseek_v41"
+                    for group in kv_cache_config.kv_cache_groups
+                    for inner in (
+                        getattr(group.kv_cache_spec, "kv_cache_specs", None)
+                        or {"": group.kv_cache_spec}
+                    ).values()
+                ):
+                    layout_info += ":ascend_v41_page_transfer=v1"
+                tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
+                has_placement = bool(tensors) and hasattr(tensors[0], "layer_stride")
+                groups = []
+                for group in kv_cache_config.kv_cache_groups:
+                    spec = group.kv_cache_spec
+                    nested = getattr(spec, "kv_cache_specs", None)
+                    layers = []
+                    for name in sorted(group.layer_names):
+                        if has_placement:
+                            layers.append(name)
+                            continue
+                        inner = nested[name] if nested else spec
+                        layers.append(
+                            (
+                                name,
+                                getattr(inner, "tokens_per_state", 1),
+                                getattr(inner, "state_content_size_bytes", None),
+                                str(getattr(inner, "dtype", None)),
+                                str(getattr(inner, "kv_quant_mode", None)),
+                            )
+                        )
+                    groups.append(
+                        (
+                            spec.block_size,
+                            getattr(spec, "prefix_cacheable", True),
+                            getattr(spec, "prefix_replay_tokens", 0),
+                            getattr(group, "enable_kv_transfer", True),
+                            tuple(layers),
+                        )
+                    )
+                layout_info += f":transfer_layout=v4:{tuple(groups)!r}"
+                if has_placement:
+                    placement = tuple(
+                        (tuple(t.layers), t.layer_stride, t.block_stride, t.offset)
+                        for t in tensors
+                    )
+                    layout_info += f":placement={placement!r}"
         model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
         dcp_size = getattr(
             vllm_config.parallel_config, "decode_context_parallel_size", 1
         )
         dcp_info = f":dcp={dcp_size}"
-        layout_info = f":layout={_layout_source_digest()}"
+        layout_source_info = f":layout={_layout_source_digest()}"
         meta = (
             f"{model_name}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}{dcp_info}{layout_info}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}"
+            f"{sparse_c8_info}{dcp_info}{layout_source_info}{layout_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
         self.seed = self("UCM_HASH_SEED")
