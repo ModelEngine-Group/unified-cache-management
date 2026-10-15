@@ -263,8 +263,10 @@ def test_logical_anchor_defers_store_creation_to_v2_pool(monkeypatch, tmp_path):
     assert len(stores) == 1
 
 
-def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch):
+@pytest.mark.parametrize("layout", ["page_first", "page_first_direct"])
+def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch, layout):
     anchor_pool = FakeHostPool(page_size=2, component_sizes=[64, 64])
+    anchor_pool.layout = layout
     host_pool_group = SimpleNamespace(
         anchor_entry=SimpleNamespace(host_pool=anchor_pool),
         layout=anchor_pool.layout,
@@ -285,6 +287,19 @@ def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch):
     assert seen == [anchor_pool]
     assert value.mem_pool_host is anchor_pool
     assert value.connector.mem_pool_host is anchor_pool
+
+
+def test_store_rejects_unsupported_host_layout():
+    anchor_pool = FakeHostPool(page_size=2, component_sizes=[64, 64])
+    anchor_pool.layout = "layer_first"
+    host_pool_group = SimpleNamespace(
+        anchor_entry=SimpleNamespace(host_pool=anchor_pool),
+        layout=anchor_pool.layout,
+    )
+    value = UnifiedCacheStore(storage_config=SimpleNamespace())
+
+    with pytest.raises(ValueError, match="page_first or page_first_direct"):
+        value.register_mem_pool_host(host_pool_group)
 
 
 def test_v2_round_trip_groups_component_results_by_logical_page(connector):
