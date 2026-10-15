@@ -236,8 +236,6 @@ def get_free_gpu(required_memory_mb):
 
 @pytest.fixture(autouse=True)
 def setup_gpu_resource(request):
-    import fcntl
-
     gpu_mem_marker = request.node.get_closest_marker("gpu_mem")
     gpu_count_marker = request.node.get_closest_marker("gpu_count")
 
@@ -251,6 +249,10 @@ def setup_gpu_resource(request):
     ):
         yield
         return
+
+    # POSIX-only; imported lazily so CPU-only hosts (e.g. Windows) can
+    # still collect and run marker-less unit tests.
+    import fcntl
 
     if gpu_count_marker:
         gpu_count = gpu_count_marker.args[0]

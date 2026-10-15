@@ -74,6 +74,8 @@ developer-guide/contribute
 developer-guide/deepdive_ucm
 developer-guide/add_metrics
 developer-guide/extending_store
+developer-guide/runtime_mode_control
+developer-guide/runtime_mode_control_verification
 :::
 
 :::{toctree}

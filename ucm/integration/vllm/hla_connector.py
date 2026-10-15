@@ -755,6 +755,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     specialization for shared KV tensor pages.
     """
 
+    # Overrides get_num_new_matched_tokens without delegating to
+    # UCMDirectConnector, so the online runtime mode switch does not apply.
+    supports_runtime_mode_control = False
+
     @classmethod
     def supports_kv_cache_layout(cls, kv_cache_config) -> bool:
         if kv_cache_config is None:
