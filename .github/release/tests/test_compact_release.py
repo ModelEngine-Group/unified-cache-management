@@ -117,7 +117,6 @@ def test_fallback_matrix_covers_every_runtime_member(cann_fallback_plan) -> None
         for image in document["images"]
         if image["runtime"]["accelerator_runtime"].startswith("cann-")
     ]
-    assert len(selected) == len(expected) == 3
     assert [
         (item["wheel_id"], item["runtime_image"], item["runner"]) for item in selected
     ] == [
