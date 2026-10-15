@@ -274,11 +274,17 @@ def _redirect_to_meta_device(
 @contextmanager
 def no_real_device_move_from_meta_context(
     factory_kwargs_redirect: Callable[[dict[str, Any]], dict[str, Any]],
+    cpu_control_plane_functions: tuple[tuple[Any, str], ...] = (),
 ) -> Any:
     """Keep model-construction device moves and factories on meta tensors."""
 
     original_module_to = torch.nn.Module.to
     original_tensor_to = torch.Tensor.to
+    in_cpu_control_plane = False
+    original_cpu_functions = [
+        (owner, name, getattr(owner, name))
+        for owner, name in cpu_control_plane_functions
+    ]
     factory_names = (
         "arange",
         "empty",
@@ -335,17 +341,36 @@ def no_real_device_move_from_meta_context(
         def checker_meta_safe_factory(*args: Any, **kwargs: Any) -> torch.Tensor:
             """Call the factory after applying the platform redirect callback."""
 
-            return factory(*args, **factory_kwargs_redirect(kwargs))
+            if not in_cpu_control_plane:
+                kwargs = factory_kwargs_redirect(kwargs)
+            return factory(*args, **kwargs)
 
         return checker_meta_safe_factory
+
+    def native_cpu_control_plane(function: Any) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            nonlocal in_cpu_control_plane
+            previous = in_cpu_control_plane
+            in_cpu_control_plane = True
+            try:
+                with torch.device("cpu"):
+                    return function(*args, **kwargs)
+            finally:
+                in_cpu_control_plane = previous
+
+        return call
 
     torch.nn.Module.to = checker_meta_safe_to  # type: ignore[assignment]
     torch.Tensor.to = checker_meta_safe_tensor_to  # type: ignore[assignment]
     for name, factory in original_factories.items():
         setattr(torch, name, make_meta_safe_factory(factory))
+    for owner, name, function in original_cpu_functions:
+        setattr(owner, name, native_cpu_control_plane(function))
     try:
         yield
     finally:
+        for owner, name, function in original_cpu_functions:
+            setattr(owner, name, function)
         for name, factory in original_factories.items():
             setattr(torch, name, factory)
         torch.Tensor.to = original_tensor_to  # type: ignore[assignment]

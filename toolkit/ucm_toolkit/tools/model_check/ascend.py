@@ -165,6 +165,15 @@ def make_model(
     with current_vllm_config_context(init_vllm_config):
         init_ascend_model_parallel(init_vllm_config.parallel_config)
 
+    cpu_control_plane_functions = ()
+    if init_vllm_config.model_config.hf_config.model_type == "deepseek_v41":
+        # Engram executes the real Gloo node-locality check during construction.
+        # Its small control tensors must stay on CPU while model weights use meta.
+        embedding = importlib.import_module(
+            "vllm_ascend.models.deepseek_v41.engram.embedding"
+        )
+        cpu_control_plane_functions = ((embedding, "in_the_same_node_as"),)
+
     previous_dtype = torch.get_default_dtype()
     try:
         # vLLM's real load path constructs modules under the configured model
@@ -173,7 +182,9 @@ def make_model(
         init_vllm_config.compilation_config.static_forward_context.clear()
         with (
             current_vllm_config_context(init_vllm_config),
-            no_real_device_move_from_meta_context(_factory_kwargs_redirect_to_meta),
+            no_real_device_move_from_meta_context(
+                _factory_kwargs_redirect_to_meta, cpu_control_plane_functions
+            ),
             torch.device("meta"),
         ):
             model = initialize_model(init_vllm_config, prefix="")

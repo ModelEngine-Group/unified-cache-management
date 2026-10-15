@@ -105,6 +105,10 @@ selection use the native APIs. The checker no longer installs the obsolete
 Ascend UniformType manager-factory patch. The no-weight configuration uses the
 native `dummy` load format, and the Ascend runner path registers custom kernels
 through `enable_custom_op()` after selecting the device, as native Worker does.
+For Ascend Engram construction, its native node-locality check executes with
+real CPU control tensors and real Gloo collectives; model parameters remain
+on meta. Cache specs, grouping, cache allocation, and scheduler block IDs are
+obtained from the native runtime without replacing their values.
 For v2 dump/load verification it
 evicts source prefix hashes through the native manager while keeping source
 blocks allocated, then poisons target IO ranges with `0xff` before loading.
