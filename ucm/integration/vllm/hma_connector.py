@@ -29,6 +29,7 @@ from ucm.integration.vllm.ucm_connector import (
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    build_kv_hash_meta,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
@@ -44,6 +45,74 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+
+def _build_v41_hash_meta(
+    vllm_config: "VllmConfig", rank_id: int, kv_cache_config: "KVCacheConfig"
+) -> str:
+    """Extend the common KV namespace with the resolved V4.1 transfer layout."""
+    hf_config = getattr(vllm_config.model_config, "hf_config", None)
+    compress_ratios = getattr(hf_config, "compress_ratios", None)
+    cache_config = getattr(vllm_config, "cache_config", None)
+    if cache_config is None:
+        raise ValueError("DeepSeek V4.1 cache namespace needs cache_config.")
+    ratios = ",".join(str(int(ratio)) for ratio in compress_ratios or ())
+    layout_info = (
+        ":kv_layout=v41_packed_v3"
+        f":cache_dtype={cache_config.cache_dtype}"
+        f":block_size={cache_config.block_size}"
+        f":compress_ratios={ratios}"
+    )
+    # The Ascend adapter transfers one aliased physical page per
+    # owner, not the CUDA value/scale segments. Never reuse files
+    # written by the old Ascend C4 adapter or a GPU deployment.
+    if any(
+        type(inner).__name__.startswith("Ascend")
+        and getattr(inner, "model_version", None) == "deepseek_v41"
+        for group in kv_cache_config.kv_cache_groups
+        for inner in (
+            getattr(group.kv_cache_spec, "kv_cache_specs", None)
+            or {"": group.kv_cache_spec}
+        ).values()
+    ):
+        layout_info += ":ascend_v41_page_transfer=v1"
+    tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
+    has_placement = bool(tensors) and hasattr(tensors[0], "layer_stride")
+    groups = []
+    for group in kv_cache_config.kv_cache_groups:
+        spec = group.kv_cache_spec
+        nested = getattr(spec, "kv_cache_specs", None)
+        layers = []
+        for name in sorted(group.layer_names):
+            if has_placement:
+                layers.append(name)
+                continue
+            inner = nested[name] if nested else spec
+            layers.append(
+                (
+                    name,
+                    getattr(inner, "tokens_per_state", 1),
+                    getattr(inner, "state_content_size_bytes", None),
+                    str(getattr(inner, "dtype", None)),
+                    str(getattr(inner, "kv_quant_mode", None)),
+                )
+            )
+        groups.append(
+            (
+                spec.block_size,
+                getattr(spec, "prefix_cacheable", True),
+                getattr(spec, "prefix_replay_tokens", 0),
+                getattr(group, "enable_kv_transfer", True),
+                tuple(layers),
+            )
+        )
+    layout_info += f":transfer_layout=v4:{tuple(groups)!r}"
+    if has_placement:
+        placement = tuple(
+            (tuple(t.layers), t.layer_stride, t.block_stride, t.offset) for t in tensors
+        )
+        layout_info += f":placement={placement!r}"
+    return build_kv_hash_meta(vllm_config, rank_id) + layout_info
 
 
 @dataclass(frozen=True)
@@ -695,10 +764,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 0 if role == KVConnectorRole.SCHEDULER else self.tp_rank % self.tp_size
             )
             self.request_hasher = RequestHasher(
-                vllm_config,
-                rank_id,
-                kv_cache_config=self._kv_cache_config,
-                is_v41_layout=self.is_v41_layout,
+                _build_v41_hash_meta(vllm_config, rank_id, self._kv_cache_config)
             )
             if role == KVConnectorRole.SCHEDULER:
                 self._seed = self.request_hasher.seed

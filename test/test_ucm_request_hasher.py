@@ -1,4 +1,6 @@
+import hashlib
 import os
+import pickle
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -7,6 +9,9 @@ import pytest
 
 import ucm.integration.vllm.request_hasher as request_hasher_module
 from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
+from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
+
+_META = "model:2:bfloat16:0:sfa_c8=0:li_c8=0"
 
 
 def _config():
@@ -16,6 +21,87 @@ def _config():
         speculative_config=None,
         additional_config={},
     )
+
+
+@pytest.mark.parametrize("meta", ["", "caller-defined-namespace", "模型:bf16"])
+def test_caller_meta_preserves_hash_and_seed_encoding(meta):
+    hasher = RequestHasher(meta)
+    assert hasher.meta_bytes == meta.encode("utf-8")
+    for value in (b"block", ("item", 128), "UCM_HASH_SEED"):
+        payload = (
+            value
+            if isinstance(value, bytes)
+            else pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        )
+        expected = hashlib.md5(meta.encode("utf-8") + payload).digest()
+        assert hasher(value) == expected
+        if value == "UCM_HASH_SEED":
+            assert hasher.seed == expected
+
+
+@pytest.mark.parametrize(
+    "spec,additional,expected_suffix",
+    [
+        (None, {}, ":sfa_c8=0:li_c8=0"),
+        (SimpleNamespace(), None, "::0:sfa_c8=0:li_c8=0"),
+        (
+            SimpleNamespace(method=None, num_speculative_tokens=2),
+            {"enable_sparse_li_c8": True},
+            "::2:sfa_c8=0:li_c8=1",
+        ),
+        (
+            SimpleNamespace(method="mtp", num_speculative_tokens=3),
+            {"enable_sparse_sfa_c8": True, "enable_sparse_li_c8": True},
+            ":mtp:3:sfa_c8=1:li_c8=1",
+        ),
+    ],
+)
+def test_kv_meta_includes_dcp_and_layout_isolation(spec, additional, expected_suffix):
+    config = _config()
+    config.model_config.model = "/models/model/"
+    config.model_config.dtype = "float16"
+    config.parallel_config.tensor_parallel_size = 4
+    config.speculative_config = spec
+    config.additional_config = additional
+    expected = "model:4:float16:1" + expected_suffix + ":dcp=1:layout=test-layout"
+    meta = build_kv_hash_meta(config, 1)
+    assert meta == expected
+    assert RequestHasher(meta).seed == RequestHasher(expected).seed
+
+
+def test_kv_meta_supports_configs_without_optional_fields():
+    config = _config()
+    del config.speculative_config
+    del config.additional_config
+    assert build_kv_hash_meta(config, 0) == _META + ":dcp=1:layout=test-layout"
+
+
+def test_kv_dcp_size_changes_namespace_and_seed():
+    config = _config()
+    default_meta = build_kv_hash_meta(config, 0)
+    config.parallel_config.decode_context_parallel_size = 2
+    dcp_meta = build_kv_hash_meta(config, 0)
+    assert ":dcp=1:" in default_meta
+    assert ":dcp=2:" in dcp_meta
+    assert RequestHasher(default_meta).seed != RequestHasher(dcp_meta).seed
+
+
+def test_kv_layout_digest_changes_namespace_and_seed(monkeypatch):
+    config = _config()
+    original_meta = build_kv_hash_meta(config, 0)
+    monkeypatch.setattr(
+        request_hasher_module, "_layout_source_digest", lambda: "new-layout"
+    )
+    changed_meta = build_kv_hash_meta(config, 0)
+    assert changed_meta.endswith(":layout=new-layout")
+    assert RequestHasher(original_meta).seed != RequestHasher(changed_meta).seed
+
+
+def test_common_kv_meta_does_not_inspect_model_specific_layout():
+    config = _config()
+    config.model_config.hf_config = SimpleNamespace(compress_ratios=(1, 2))
+    # Model-specific cache settings belong to the selected connector.
+    assert build_kv_hash_meta(config, 0) == _META + ":dcp=1:layout=test-layout"
 
 
 def _request(token_ids, **kwargs):
@@ -68,6 +154,9 @@ def _semantic_extra_keys(request, start, end, start_mm_idx):
 @pytest.fixture(autouse=True)
 def _install_extra_key_helper(monkeypatch):
     monkeypatch.setattr(
+        request_hasher_module, "_layout_source_digest", lambda: "test-layout"
+    )
+    monkeypatch.setattr(
         request_hasher_module,
         "generate_block_hash_extra_keys",
         _semantic_extra_keys,
@@ -75,7 +164,7 @@ def _install_extra_key_helper(monkeypatch):
 
 
 def test_multimodal_identifier_changes_covering_and_following_blocks():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(16)
     small_image = _request(
         tokens, mm_features=[_mm_feature("small-image", offset=4, length=5)]
@@ -93,7 +182,7 @@ def test_multimodal_identifier_changes_covering_and_following_blocks():
 
 
 def test_multimodal_position_is_part_of_block_semantics():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(12)
 
     at_boundary = _request(
@@ -121,7 +210,7 @@ def test_multimodal_position_is_part_of_block_semantics():
     ],
 )
 def test_other_request_semantics_change_hashes(left, right):
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(8)
     assert block_hasher(_request(tokens, **left)) != block_hasher(
         _request(tokens, **right)
@@ -129,7 +218,7 @@ def test_other_request_semantics_change_hashes(left, right):
 
 
 def test_closure_resets_parent_and_multimodal_cursor_for_each_request():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(
         range(12), mm_features=[_mm_feature("image", offset=3, length=6)]
     )
@@ -138,7 +227,7 @@ def test_closure_resets_parent_and_multimodal_cursor_for_each_request():
 
 
 def test_partial_tail_is_not_hashed_and_new_tuple_breaks_old_keys():
-    hasher = RequestHasher(_config(), 0)
+    hasher = RequestHasher("model:2:bfloat16:0:sfa_c8=0:li_c8=0")
     block_hasher = hasher.make_request_block_hasher(4)
     request = _request(range(6))
 
@@ -151,7 +240,7 @@ def test_partial_tail_is_not_hashed_and_new_tuple_breaks_old_keys():
 
 def test_helper_unavailable_allows_only_token_only_requests(monkeypatch):
     monkeypatch.setattr(request_hasher_module, "generate_block_hash_extra_keys", None)
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
 
     assert len(block_hasher(_request(range(4)))) == 1
     with pytest.raises(RequestHashError):
@@ -168,7 +257,7 @@ def test_helper_unavailable_allows_only_token_only_requests(monkeypatch):
 
 
 def test_missing_multimodal_identifier_fails_closed():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(range(4), mm_features=[_mm_feature(None, offset=0, length=4)])
 
     with pytest.raises(RequestHashError):
@@ -176,7 +265,7 @@ def test_missing_multimodal_identifier_fails_closed():
 
 
 def test_unhashed_tail_does_not_prevalidate_multimodal_identifier():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(range(2), mm_features=[_mm_feature(None, offset=0, length=2)])
 
     assert block_hasher(request) == []
@@ -186,20 +275,13 @@ def test_hash_is_independent_of_pythonhashseed():
     module_path = request_hasher_module.__file__
     script = f"""
 import importlib.util
-from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location(
     "request_hasher_seed_test", {module_path!r}
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-config = SimpleNamespace(
-    model_config=SimpleNamespace(model="org/model", dtype="bfloat16"),
-    parallel_config=SimpleNamespace(tensor_parallel_size=2),
-    speculative_config=None,
-    additional_config={{}},
-)
-hasher = module.RequestHasher(config, 0)
+hasher = module.RequestHasher("model:2:bfloat16:0:sfa_c8=0:li_c8=0")
 print(hasher((b"parent", (1, 2, 3), None)).hex())
 """
 
@@ -237,7 +319,7 @@ def _shared_prefix_len(hashes_a, hashes_b):
 def test_different_image_shares_only_text_prefix_before_image():
     """Core anti-false-hit property: same text prefix + different image must
     hit only up to the last text block before the image, then diverge."""
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(16)
     req_a = _request(tokens, mm_features=[_mm_feature("img-a", offset=4, length=4)])
     req_b = _request(tokens, mm_features=[_mm_feature("img-b", offset=4, length=4)])
@@ -250,14 +332,14 @@ def test_different_image_shares_only_text_prefix_before_image():
 
 
 def test_identical_request_shares_full_prefix():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(range(16), mm_features=[_mm_feature("img", offset=4, length=4)])
     hashes = block_hasher(request)
     assert _shared_prefix_len(hashes, block_hasher(request)) == len(hashes)
 
 
 def test_image_position_change_moves_hit_boundary():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(16)
     early = _request(tokens, mm_features=[_mm_feature("img", offset=4, length=4)])
     late = _request(tokens, mm_features=[_mm_feature("img", offset=8, length=4)])
@@ -277,7 +359,7 @@ def test_multimodal_cursor_advances_monotonically_across_blocks(monkeypatch):
     monkeypatch.setattr(
         request_hasher_module, "generate_block_hash_extra_keys", recording_helper
     )
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(
         range(16),
         mm_features=[
@@ -295,7 +377,7 @@ def test_multimodal_cursor_advances_monotonically_across_blocks(monkeypatch):
 def test_second_image_change_diverges_only_at_second_image_block():
     """Changing only the second image keeps image-1 blocks reusable and
     diverges from image 2's block onward."""
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(16)
     both = _request(
         tokens,
@@ -318,7 +400,7 @@ def test_second_image_change_diverges_only_at_second_image_block():
 
 
 def test_pure_image_requests_diverge_from_block_zero():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     tokens = range(16)
     req_a = _request(tokens, mm_features=[_mm_feature("img-a", offset=0, length=16)])
     req_b = _request(tokens, mm_features=[_mm_feature("img-b", offset=0, length=16)])
@@ -326,30 +408,30 @@ def test_pure_image_requests_diverge_from_block_zero():
 
 
 def test_identical_pure_image_request_shares_all_blocks():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(range(16), mm_features=[_mm_feature("img", offset=0, length=16)])
     hashes = block_hasher(request)
     assert _shared_prefix_len(hashes, block_hasher(request)) == len(hashes)
 
 
 def test_pure_image_partial_tail_not_hashed():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     request = _request(range(10), mm_features=[_mm_feature("img", offset=0, length=10)])
     assert len(block_hasher(request)) == 2
 
 
 def test_empty_token_list_returns_empty():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(4)
     assert block_hasher(_request([])) == []
 
 
 def test_block_size_larger_than_sequence_returns_empty():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(100)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(100)
     assert block_hasher(_request(range(4))) == []
 
 
 def test_block_size_one_hashes_every_token():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(1)
+    block_hasher = RequestHasher(_META).make_request_block_hasher(1)
     base = _request(range(8))
     changed = _request(range(8))
     changed_tokens = list(changed.all_token_ids)
@@ -392,8 +474,10 @@ def test_namespace_isolation_and_reproducibility_across_instances(
 ):
     """Same deployment config across two hasher instances yields identical
     block IDs; rank/parallelism/model differences do not."""
-    left = RequestHasher(_config(), 0).make_request_block_hasher(4)
-    right = RequestHasher(right_config(), 0).make_request_block_hasher(4)
+    left = RequestHasher(build_kv_hash_meta(_config(), 0)).make_request_block_hasher(4)
+    right = RequestHasher(
+        build_kv_hash_meta(right_config(), 0)
+    ).make_request_block_hasher(4)
     request = _request(range(16))
     result = left(request) == right(request)
     assert result is expect_equal

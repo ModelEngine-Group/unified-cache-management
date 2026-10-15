@@ -9,6 +9,11 @@ Understand how UCM connects the engine's KV Cache lifecycle to external storage,
 3. [Request lifecycle](request-lifecycle.md): Scheduler/Worker metadata handoff and load/save completion.
 4. [PD integration](pd-integration.md): how cross-request reuse combines with the current request's P/D handoff.
 
+## Features and design documents
+
+- [Features](features/index.md): usage-oriented guides for supported capabilities — what the feature does, how to enable it, how to verify the effect.
+- [Design documents](design-docs/index.md): in-depth design records behind those features — data structures, algorithms and failure semantics.
+
 ## Continue by task
 
 | Development task | Guide |

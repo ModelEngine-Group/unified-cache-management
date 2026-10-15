@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import glob
 import math
 import os
@@ -35,7 +35,12 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import RequestStatus
 
-from ucm.integration.vllm.device import create_device, get_current_device_id
+import ucm.integration.vllm.request_hasher as request_hasher_module
+from ucm.integration.vllm.device import (
+    create_device,
+    get_current_device_id,
+    get_ucm_worker_torch_device,
+)
 from ucm.integration.vllm.metrics import (
     UCM_HAS_PROM_METRICS,
     UCMConnectorStats,
@@ -75,6 +80,30 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+
+def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
+    """Build the KV namespace with DCP and layout compatibility isolation."""
+    speculative_config = getattr(vllm_config, "speculative_config", None)
+    spec_info = ""
+    if speculative_config is not None:
+        spec_method = getattr(speculative_config, "method", "") or ""
+        spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
+        spec_info = f":{spec_method}:{spec_tokens}"
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+    model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
+    dcp_size = getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1)
+    dcp_info = f":dcp={dcp_size}"
+    layout_info = f":layout={request_hasher_module._layout_source_digest()}"
+    return (
+        f"{model_name}:"
+        f"{vllm_config.parallel_config.tensor_parallel_size}:"
+        f"{vllm_config.model_config.dtype}:{rank_id}"
+        f"{spec_info}{sparse_c8_info}{dcp_info}{layout_info}"
+    )
 
 
 def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
@@ -240,12 +269,16 @@ def _use_ucm_connector_cpu_affinity() -> bool:
     )
 
 
-def _worker_generate_unique_id() -> str:
-    """Worker-side: broadcast a uuid and write to a per-instance file."""
+def _worker_generate_unique_id(prefix: str = "ucm") -> str:
+    """Worker-side: broadcast a uuid and write to a per-instance file.
+
+    The file slot is keyed by parent pid under ``prefix`` so parallel
+    connectors in one engine (KV and EC) never overwrite each other's id.
+    """
     world_group = get_world_group()
     if world_group.rank_in_group == 0:
         now = time.time()
-        for f in glob.glob("/dev/shm/ucm_uniqueid_*"):
+        for f in glob.glob(f"/dev/shm/{prefix}_uniqueid_*"):
             try:
                 if now - os.path.getmtime(f) > 600:
                     os.remove(f)
@@ -255,7 +288,7 @@ def _worker_generate_unique_id() -> str:
     else:
         local_uid = None
     uid = world_group.broadcast_object(local_uid, src=0)
-    path = f"/dev/shm/ucm_uniqueid_{os.getppid()}"
+    path = f"/dev/shm/{prefix}_uniqueid_{os.getppid()}"
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         f.write(uid)
@@ -263,10 +296,10 @@ def _worker_generate_unique_id() -> str:
     return uid
 
 
-def _scheduler_read_unique_id() -> str:
+def _scheduler_read_unique_id(prefix: str = "ucm") -> str:
     """Scheduler-side: read the uuid from the per-instance file."""
     for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_uniqueid_{pid}"
+        path = f"/dev/shm/{prefix}_uniqueid_{pid}"
         try:
             with open(path) as f:
                 uid = f.read().strip()
@@ -1572,19 +1605,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self._kv_cache_config = kv_cache_config
 
-        if current_platform.is_cuda_alike():
-            logger.info("CUDA device is available.")
-            torch_dev = torch
-            dev_name = "cuda"
-        elif current_platform.device_type == "npu":
-            logger.info("NPU device is available.")
-            torch_dev = torch.npu
-            dev_name = "npu"
-        else:
-            raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
-
         if self.device_id >= 0:
-            self.device = torch_dev.device(f"{dev_name}:{self.device_id}")
+            self.device = get_ucm_worker_torch_device(self.device_id)
 
         self.store: UcmKVStoreBaseV1
         self.rope_store: Optional[UcmKVStoreBaseV1] = None
@@ -1621,7 +1643,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
+            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
@@ -1629,8 +1651,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(
-                vllm_config,
-                self.tp_rank % self.tp_size,
+                build_kv_hash_meta(vllm_config, self.tp_rank % self.tp_size)
             )
             self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
 
@@ -1710,7 +1731,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.is_mla:
             return []
         tp_size = vllm_config.parallel_config.tensor_parallel_size
-        return [RequestHasher(vllm_config, rank_id) for rank_id in range(1, tp_size)]
+        return [
+            RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
+            for rank_id in range(1, tp_size)
+        ]
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
         invalid_blocks = set(block_ids)
@@ -3082,13 +3106,15 @@ class UCMCPConnector(UCMLayerWiseConnector):
             vllm_config.parallel_config.tensor_parallel_size //= self.dcp_world_size
 
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
+            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
             self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
+            self.request_hasher = RequestHasher(
+                build_kv_hash_meta(vllm_config, self.tp_rank)
+            )
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
         self._bind_request_block_hasher()
@@ -3231,7 +3257,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
 
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
         self._seed = self.request_hasher.seed
         self.request_block_hasher = self.request_hasher.make_request_block_hasher(
             self.hash_block_size, self._seed
