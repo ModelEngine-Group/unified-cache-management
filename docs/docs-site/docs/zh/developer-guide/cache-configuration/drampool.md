@@ -1,16 +1,19 @@
 # DramPool
 
-[English](../../../en/developer-guide/cache-configuration/drampool.md) | [中文](../../../zh/developer-guide/cache-configuration/drampool.md)
+[English](../../../en/developer-guide/cache-configuration/drampool.md) | [中文](drampool.md)
 
-DramPool 将主机 DRAM 组成 KV 缓存池，供多个推理实例复用。DramStore 是 UCM 的客户端，通过 HIXL 读写池中的 KV 块。缓存块设有过期时间，重启 DramPool 会清空内存缓存。
+DramPool 将主机 DRAM 组织为可供多个推理实例共享的 KV 缓存池，推理实例通过 DramStore 接入 DramPool。目前仅支持基于 HIXL 的数据传输。
 
-## 环境要求
+## 快速开始
 
-- 昇腾 A3 及以上硬件，**CANN 9.1.0 及以上**，以及兼容的驱动和 HIXL 库。
-- Linux 环境，DramPool 与推理节点之间具备 RDMA 网络，主机可用内存足以容纳配置的缓存池和运行时缓冲区。
-- 已安装 UCM 和兼容的 vLLM-Ascend。推理侧集成步骤参见 [Quickstart-vLLM-Ascend](../../user-guide/quick_start/index.md#vllm-ascend)。
+### 当前环境与准备要求
 
-## 启动 DramPool
+- 设备：昇腾 A3 及以上。
+- CANN：9.1.0 及以上。
+- 驱动与通信库：与设备及 CANN 版本兼容的昇腾驱动和 HIXL 库。
+- 操作系统：Linux。
+- 网络：DramPool 与推理节点之间需具备 RDMA 网络。
+- 主机内存：可用容量需满足 KV 缓存池及运行时缓冲区的内存需求。
 
 ### 编译
 
@@ -27,28 +30,47 @@ pip install -v -e . --no-build-isolation
 - `ucm/store/dram/libdramstore.so`：DramStore 客户端库，选择 `store_pipeline: "Dram"` 时由 `UcmPipelineStore` 加载。
 - `bin/drampool`：独立运行的 DramPool 服务端程序。
 
-两者均包含在 UCM 的昇腾构建中，无需分别执行编译命令。推理节点随 UCM 部署客户端库，池端节点运行服务端程序。
+### 配置
 
-### 配置与启动
+#### DramPool 配置
 
-复制 [examples/drampool.yaml](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/drampool.yaml) 作为运行配置。将 `transport.device_ids` 设置为可用设备 ID，服务地址通过 `--addr` 指定，池端无需配置客户端地址列表。
+DramPool 的主要配置项如下。
 
-例如，DramPool 对应的配置为：
+| 配置项 | 说明 |
+| --- | --- |
+| `transport.device_ids` | 用于数据传输的设备 ID 列表。 |
+| `transport.hixl.listen_port` | HIXL 通信监听端口。 |
+| `transport.hixl.enable_hixl_cs` | 是否启用 HIXL CS。 |
+| `health.port` | 健康检查服务端口，设置为 `0` 时关闭。 |
+| `logger.dir` | 日志输出目录。 |
 
-```yaml
-transport:
-  device_ids: [0]
-  manager_max_threads: 4
-  hixl:
-    listen_port: 26666
-    enable_hixl_cs: false
-health:
-  port: 9100
-```
+完整配置示例参见 [drampool.yaml](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/drampool.yaml)。
 
-将上述设置合并到复制的配置文件。editable 编译会将程序安装到 `bin/`，从仓库根目录运行。
+#### DramStore 配置
+
+DramStore 的主要配置项如下。
+
+| 配置项 | 说明 |
+| --- | --- |
+| `ucm_connector_name` | UCM connector 名称，DramStore 使用 `UcmPipelineStore`。 |
+| `store_pipeline` | 存储管线，`Dram` 表示使用 DramStore。 |
+| `local_addr` | 必填，DramStore 本地服务 IP 和基准端口，格式为 `IP:port`。实际端口根据物理设备 ID 和 scheduler/worker 角色偏移，各实例应预留互不重叠的端口范围。 |
+| `peer_addrs` | 必填，非空的 DramPool 服务地址列表，与各 DramPool 实例的 `--addr` 一致。 |
+| `hixl_listen_port` | 本地 HIXL 基准端口，默认 `36666`。实际端口根据物理设备 ID 和 scheduler/worker 角色偏移，各实例应预留互不重叠的端口范围。 |
+| `enable_hixl_cs` | 是否启用 HIXL CS，默认 `false`。 |
+| `router_type` | 路由策略，支持 `ring_hash`、`maglev`、`contiguous_block_affinity` 和 `batch_topk_affinity`，默认 `ring_hash`。 |
+| `enable_event_sync` | 是否启用计算流事件同步，默认 `true`。启用后，远程访问 KV 内存前等待计算流事件。 |
+| `use_layerwise` | 是否启用逐层 KV 缓存传输，默认 `true`。 |
+
+完整配置示例参见 [ucm_config_dramstore.yaml](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/ucm_config_dramstore.yaml)。
+
+### 启动
+
+#### 启动 DramPool
 
 启动池端前先确定支持的张量大小。DramPool 须支持 DramStore 的 `tensor_size_list` 中每种不同的字节大小，而非这些大小的总和。标准 GQA 且 K/V 张量分开存储时，每个大小为“每块 token 数 × 每个 worker 的 KV head 数 × head 维度 × 每个元素字节数”。Qwen3-0.6B 在 TP=1、block size=128、BF16 下为 `128 × 8 × 128 × 2 = 262144` 字节，对应下方命令。其它模型和布局应使用实际张量大小，可在 worker 的 `create UcmPipelineStore with config` 日志中核对。
+
+在 UCM 仓库根目录执行以下命令启动 DramPool：
 
 ```bash
 ./bin/drampool \
@@ -58,55 +80,34 @@ health:
   --config /absolute/path/to/drampool.yaml
 ```
 
-按实际部署替换 IP、容量和块大小，并确保 DramPool 与 DramStore 服务地址及 HIXL 通信端口之间的网络连通。
+启动参数说明如下。
 
 | 参数 | 说明 |
 | --- | --- |
-| `--addr` | DramPool 控制地址，所有 DramStore 客户端均需能够访问。 |
-| `--pool-size-gb` | 当前进程贡献的主机内存容量，单位为 GiB；需为操作系统和运行时缓冲区预留内存。 |
-| `--kvcache-block-sizes` | 支持的 KV 块大小，单位为**字节**，须与 DramStore 发送的块匹配；与 vLLM 按 token 计的 `block_size` 含义不同。多个值以空格分隔。 |
-| `--kvcache-block-proportions` | 可选，各块大小对应的容量权重；默认等分，每种块大小需对应一个权重。 |
-| `--ttl-minutes` | 可选，缓存块的绝对有效期，默认 `120` 分钟。 |
-| `--config` | 运行配置路径；默认 `examples/drampool.yaml`，相对于当前工作目录。 |
+| `--addr` | DramPool 控制服务地址，需对所有 DramStore 客户端可达。 |
+| `--pool-size-gb` | KV 缓存池容量，单位为 GiB。主机内存需为操作系统和运行时缓冲区预留容量。 |
+| `--kvcache-block-sizes` | 支持的 KV 缓存块大小，单位为字节，需与 DramStore 传输的张量大小一致。多个值以空格分隔。该参数与 vLLM 中以 token 为单位的 `block_size` 不同。 |
+| `--kvcache-block-proportions` | 各块大小对应的容量权重，默认等分。权重数量需与块大小数量一致。 |
+| `--ttl-minutes` | 缓存块的绝对有效期，单位为分钟，默认 `120`。 |
+| `--config` | 运行配置文件路径，默认 `examples/drampool.yaml`，相对于当前工作目录解析。 |
 
-日志出现 `DramPool service ready` 表示服务已就绪。启用 `health.port` 后可检查：
+服务启动完成后，日志输出以下信息：
+
+```text
+DramPool service ready
+```
+
+启用健康检查（`health.port` 非零）后，可通过以下命令检查服务状态，IP 与 `--addr` 一致，端口与 `health.port` 一致：
 
 ```bash
 curl --fail http://192.168.1.10:9100/health
 ```
 
-向 DramPool 发送 `SIGINT` 或 `SIGTERM` 可正常退出。
+停止服务时，向 DramPool 进程发送 `SIGINT` 或 `SIGTERM` 信号。
 
-### 配置 DramStore 并启动推理
+#### 启动推理服务
 
-复制 [examples/ucm_config_dramstore.yaml](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/ucm_config_dramstore.yaml) 作为推理侧配置，例如 `/etc/ucm/dramstore.yaml`，按实际部署设置本地服务地址和 DramPool 地址：
-
-```yaml
-ucm_connectors:
-  - ucm_connector_name: "UcmPipelineStore"
-    ucm_connector_config:
-      store_pipeline: "Dram"
-      local_addr: "192.168.1.20:9001"
-      peer_addrs: ["192.168.1.10:9000"]
-      hixl_listen_port: 36666
-      enable_hixl_cs: false
-      router_type: "ring_hash"
-
-enable_event_sync: true
-use_layerwise: true
-```
-
-| 参数 | 说明 |
-| --- | --- |
-| `local_addr` | DramStore 本地服务 IP 和基准端口；使用推理节点 IP，同一节点的每个推理实例应使用不同的基准端口。 |
-| `peer_addrs` | DramPool 服务地址，与各池端的 `--addr` 一致；可列出多个池端。 |
-| `hixl_listen_port` | 本地 HIXL 基准端口，默认 `36666`。实际端口根据物理设备 ID 和 scheduler/worker 角色偏移，各实例应预留互不重叠的端口范围。 |
-| `enable_hixl_cs` | 是否启用 HIXL CS，默认 `false`。 |
-| `router_type` | 路由策略，默认 `ring_hash`。 |
-
-`device_id`、`tensor_size_list` 和 KV 缓冲区地址由 connector 在运行时提供，无需手工填写。保持 `enable_event_sync: true`，使 dump 在远程访问 KV 内存前等待计算流事件。
-
-DramPool 就绪且完成 vLLM-Ascend 集成后，可启动单卡推理实例：
+DramPool 就绪后，执行以下命令启动单卡推理服务：
 
 ```bash
 vllm serve <model-path> \
@@ -115,59 +116,96 @@ vllm serve <model-path> \
   --kv-transfer-config '{"kv_connector":"UCMConnector","kv_role":"kv_both","kv_connector_module_path":"ucm.integration.vllm.ucm_connector","kv_connector_extra_config":{"UCM_CONFIG_FILE":"/etc/ucm/dramstore.yaml"}}'
 ```
 
-按实际部署替换模型和配置路径，并调整推理参数。
+模型及推理参数说明参见 [vLLM 启动参数文档](https://docs.vllm.ai/en/latest/cli/serve/)。`--kv-transfer-config` 中的 UCM 接入配置如下。
+
+| 配置项 | 说明 |
+| --- | --- |
+| `kv_connector` | UCM connector 名称，使用 `UCMConnector`。 |
+| `kv_role` | KV 缓存传输角色，`kv_both` 表示支持缓存加载和保存。 |
+| `kv_connector_module_path` | UCM connector 模块路径，使用 `ucm.integration.vllm.ucm_connector`。 |
+| `kv_connector_extra_config.UCM_CONFIG_FILE` | DramStore 配置文件路径。 |
 
 两端部署在同一主机且 DramPool 仅使用一张 NPU 时，应为池端和推理进程选择不同的物理设备。例如，池端设置 `device_ids: [0]`，推理侧设置 `ASCEND_RT_VISIBLE_DEVICES=1`。
 
-### Metrics
+## Metrics
 
-DramStore 操作指标和 DramPool 指标通过 vLLM 的 `/metrics` 暴露。按以下配置开启 DramPool 快照导出，并在 DramStore 侧读取快照。
+DramStore 指标和 DramPool 指标通过 vLLM 的 `/metrics` 接口导出。
 
-**DramPool 端**
+### 启用指标
 
-按实际部署修改已复制的 `examples/drampool.yaml` 中的 `metrics` 配置：
+UCM 指标默认启用，也可在 DramStore 配置文件中显式配置：
+
+```yaml
+enable_metrics: true
+```
+
+#### DramPool 配置
+
+在 `drampool.yaml` 中配置：
 
 ```yaml
 metrics:
   enabled: true
-  output_dir: /var/log/ucm/drampool
+  output_dir: ./logs
   interval_ms: 10000
 ```
 
-服务每 10 秒原子替换 `output_dir` 下的 `drampool_metrics.json`。设置 `metrics.enabled: false` 可关闭快照采集和导出。示例 YAML 已开启导出，省略 `metrics.enabled` 时默认为 `false`。`output_dir` 为空时使用 `logger.dir`，开启时 `interval_ms` 必须大于 0。
+| 配置项 | 说明 |
+| --- | --- |
+| `metrics.enabled` | 是否启用指标快照导出。 |
+| `metrics.output_dir` | 快照输出目录，为空时使用 `logger.dir`。上述配置对应的快照文件为 `./logs/drampool_metrics.json`。 |
+| `metrics.interval_ms` | 快照导出周期，单位为毫秒，启用时需大于 `0`。 |
 
-**DramStore 端**
+#### DramStore 配置
 
-将以下配置合并到推理侧 `Dram` 管线的 `ucm_connector_config` 中：
+在 `ucm_config_dramstore.yaml` 中配置：
 
 ```yaml
-ucm_connectors:
-  - ucm_connector_name: "UcmPipelineStore"
-    ucm_connector_config:
-      store_pipeline: "Dram"
-      # 保留其它 DramStore 连接配置。
-      drampool_resource_metrics_enable: true
-      drampool_resource_log_path: /var/log/ucm/drampool/drampool_metrics.json
-      drampool_resource_metrics_interval_sec: 15
+drampool_resource_log_path: "./logs/drampool_metrics.json"
+drampool_resource_metrics_enable: true
+drampool_resource_metrics_interval_sec: 15
 ```
 
-这三个参数控制客户端读取 DramPool 快照，不控制 DramStore 自身的操作指标。配置非空路径后默认启用读取，设置 `drampool_resource_metrics_enable: false` 可关闭；读取周期默认 15 秒，仅在 scheduler 进程（`device_id < 0`）运行。快照须对该进程可见且可读；池端与推理端位于不同容器或主机时，需将输出目录挂载到读取端，路径以推理进程的文件系统为准。
+| 配置项 | 说明 |
+| --- | --- |
+| `drampool_resource_log_path` | DramPool 指标快照文件路径。 |
+| `drampool_resource_metrics_enable` | 是否启用快照读取，配置非空路径后默认启用。 |
+| `drampool_resource_metrics_interval_sec` | 快照读取周期，单位为秒，默认 `15`。 |
 
-发送推理请求后，通过 vLLM 检查 DramStore 和导入的 DramPool 指标：
+快照由 scheduler 进程读取。相对路径基于进程工作目录解析；跨主机或容器部署时，需共享或挂载快照目录，确保该进程可读取文件。
+
+### 访问指标
+
+启动推理服务并发送推理请求后，执行以下命令查看指标：
 
 ```bash
-curl http://<vllm-ip>:<vllm-port>/metrics | grep -E '^ucm:(dramstore_|drampool_)'
+curl http://<vllm-ip>:<vllm-port>/metrics \
+  | grep -E '^ucm:(dramstore_|drampool_)'
 ```
 
-DramPool 导出文件快照，不提供 HTTP `/metrics`，`health.port` 仅提供 `/health`。可使用 [Dram 大盘](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/metrics/grafana_dram.json) 查看两端指标。vLLM 在推理过程中收集 connector 统计时，指标才会更新；Prometheus 和 Grafana 配置参见 [UCM Metrics Observability](../../user-guide/observability/metrics.md)。
+`dramstore_` 为 DramStore 指标，`drampool_` 为导入的 DramPool 指标。指标更新依赖 vLLM 收集 connector 统计，无推理请求时可能不刷新。
+
+DramPool 不提供 HTTP `/metrics` 接口，`health.port` 仅用于健康检查。
+
+### Prometheus 和 Grafana 集成
+
+Prometheus 抓取 vLLM 的 `/metrics` 接口，无需为 DramPool 或 DramStore 配置独立抓取端点。部署步骤参见[接入指标监控](https://ucm.readthedocs.io/zh-cn/latest/user-guide/observability/metrics/)。
+
+在 Grafana 中导入 [Dram 仪表板](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/metrics/grafana_dram.json)，并选择对应的 Prometheus 数据源。
 
 ## 性能
 
+### 测试环境
+
+- 测试模型：DeepSeek-V3.1-Terminus-w8a8。
+- 硬件环境：单机昇腾 A3，16 卡。
+- 测试工具：AISBench。
+
 ### 测试说明
 
-以下为 DramPool 在前缀缓存复用场景下的 TTFT（首 token 延迟）测试结果。输入长度分别为 4,000、8,000、16,000 和 32,000 tokens，最大并发数分别为 1、4、16 和 32，平均输出长度为 1,000 tokens。表格对比了“基线”、“hit - 50”和“hit - 90”三个场景的性能。
+以下为 UCM 在前缀缓存场景下使用 DramPool 的多并发性能测试结果。输入长度为 4,000、8,000、16,000 和 32,000 tokens，最大并发数为 1、4、16 和 32，平均输出长度为 1,000 tokens。下表展示基线、hit - 50 和 hit - 90 场景下的 TTFT（首 token 延迟）及加速比。
 
-TTFT 加速百分比按 **（基线 TTFT / 对应场景 TTFT − 1）× 100%** 计算，保留一位小数。该值表示 TTFT 倒数的提升，不是延迟下降百分比。
+TTFT 加速比按 **（基线 TTFT / 对应场景 TTFT − 1）× 100%** 计算，结果保留一位小数。
 
 | **输入长度** | **请求数** | **最大并发数** | **基线 TTFT** | **hit - 50 TTFT** | **TTFT 加速 (%)** | **hit - 90 TTFT** | **TTFT 加速 (%)** |
 | -----------: | ---------: | -------------: | ------------: | ----------------: | ----------------: | ----------------: | ----------------: |
