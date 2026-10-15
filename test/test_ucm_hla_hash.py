@@ -6,6 +6,7 @@ pytest.importorskip("vllm")
 
 from ucm.integration.vllm.hla_connector import GroupInfo, KVCacheGroupManager
 from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
+from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
 
 
 def _config():
@@ -33,7 +34,7 @@ def _request(identifier):
 
 
 def _manager_with_groups(full_attention_block_sizes):
-    hasher = RequestHasher(_config(), 0)
+    hasher = RequestHasher(build_kv_hash_meta(_config(), 0))
     manager = KVCacheGroupManager.__new__(KVCacheGroupManager)
     manager.request_hasher = hasher
     manager.groups_by_id = []

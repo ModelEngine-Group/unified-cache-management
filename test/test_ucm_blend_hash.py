@@ -7,6 +7,7 @@ pytest.importorskip("triton")
 
 from ucm.integration.vllm.blend_connector import UCMBlendConnector
 from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
+from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
 
 
 def _config():
@@ -31,7 +32,7 @@ def _plain_text_request():
 def _connector_for_hash_test():
     connector = UCMBlendConnector.__new__(UCMBlendConnector)
     connector.block_size = 4
-    connector.request_hasher = RequestHasher(_config(), 0)
+    connector.request_hasher = RequestHasher(build_kv_hash_meta(_config(), 0))
     connector._seed = connector.request_hasher.seed
     connector.request_block_hasher = connector.request_hasher.make_request_block_hasher(
         connector.block_size, connector._seed

@@ -48,6 +48,19 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: false
+      - uses: actions/checkout@v4.2.2
+        if: ${{ inputs.enabled }}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        if: ${{ inputs.enabled }}
+        with:
+          python-version: "3.12"
+      - if: ${{ inputs.enabled }}
+        run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: -r .github/release/requirements.txt
       - id: probe
         name: Read Runtime capability
         if: ${{ inputs.enabled }}
@@ -73,6 +86,7 @@ jobs:
           trap write_probe_failure ERR
           docker pull --platform "${PLATFORM}" "${IMAGE_REFERENCE}"
           facts="$(docker run --rm --platform "${PLATFORM}" --entrypoint sh \
+            -v "${PWD}/.github/release/check-builder-cann.py:/tmp/check-builder-cann.py:ro" \
             -e EXPECTED_ACCELERATOR="${ACCELERATOR}" "${IMAGE_REFERENCE}" -c '
               set -eu
               python_bin="$(command -v python3 || command -v python)"
@@ -89,16 +103,8 @@ jobs:
                  ! has_numeric_version "${cuda_version}"; then
                 cuda_version="$(nvcc --version 2>/dev/null | tail -n 1 || true)"
               fi
-              if [ "${EXPECTED_ACCELERATOR}" = ascend ] && \
-                 ! has_numeric_version "${cann_version}"; then
-                cann_root="${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-/usr/local/Ascend}}"
-                version_file="$(find -L "${cann_root}" -type f \
-                  \( -name version.info -o -name version.cfg \) -print -quit 2>/dev/null || true)"
-                if [ -z "${version_file}" ] && [ "${cann_root}" != /usr/local/Ascend ]; then
-                  version_file="$(find /usr/local/Ascend -type f \
-                    \( -name version.info -o -name version.cfg \) -print -quit 2>/dev/null || true)"
-                fi
-                [ -z "${version_file}" ] || cann_version="$(head -n 1 "${version_file}")"
+              if [ "${EXPECTED_ACCELERATOR}" = ascend ]; then
+                cann_version="$("${python_bin}" /tmp/check-builder-cann.py inspect)"
               fi
               printf "%s\037%s\037%s\037%s\037%s\037%s\037%s" \
                 "${python_version}" "${ID}" "${VERSION_ID}" "${glibc_version}" \
@@ -106,6 +112,11 @@ jobs:
             ')"
           IFS=$'\x1f' read -r python_version os_id os_version glibc_version \
             cuda_version cann_version soc_version <<<"${facts}"
+          if [ "${ACCELERATOR}" = ascend ]; then
+            printf '%s\n' "${cann_version}" >out/cann-facts.json
+            cann_version="$(python .github/release/check-builder-cann.py version \
+              --facts out/cann-facts.json)"
+          fi
           jq -n \
             --arg probe_id "${PROBE_ID}" \
             --arg python_version "${python_version}" \

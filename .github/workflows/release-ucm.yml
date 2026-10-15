@@ -871,51 +871,11 @@ jobs:
       - name: Install and validate the local Wheel in its matching Runtime
         env:
           RUNTIME_IMAGE: ${{ matrix.runtime_image }}
+          RUNTIME_PLATFORM: linux/${{ matrix.cpu_arch }}
           BACKEND_DISTRIBUTION: ${{ matrix.distribution }}
           PLATFORM_ARG: ${{ matrix.platform_arg }}
         run: |
-          set -euo pipefail
-          result=input/wheel/wheel-result.json
-          wheel="$(find input/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
-          test -n "${wheel}"
-          test "$(jq -r '.distribution' "${result}")" = "${BACKEND_DISTRIBUTION}"
-          wheel="$(realpath "${wheel}")"
-          wheel_name="$(basename "${wheel}")"
-          external_libraries="$(jq -c '.external_libraries' "${result}")"
-          deferred_external_libraries="$(jq -c \
-            '.deferred_external_libraries' "${result}")"
-          runtime_requirements="$(jq -ce '.dependencies | select(type == "array")' \
-            "${result}")"
-          wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' \
-            "${result}")"
-          ucm_version="$(jq -er '.version' "${result}")"
-          docker pull "${RUNTIME_IMAGE}"
-          docker run --rm --entrypoint bash \
-            -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
-            -e PLATFORM="${PLATFORM_ARG}" \
-            -e EXPECTED_UCM_VERSION="${ucm_version}" \
-            -e EXPECTED_BACKEND_DISTRIBUTION="${BACKEND_DISTRIBUTION}" \
-            -e EXPECTED_EXTERNAL_LIBRARIES="${external_libraries}" \
-            -e EXPECTED_RUNTIME_REQUIREMENTS="${runtime_requirements}" \
-            -e EXPECTED_WHEEL_GLIBC_FLOOR="${wheel_glibc_floor}" \
-            -e UCM_WHEEL="/tmp/${wheel_name}" \
-            -v "${wheel}:/tmp/${wheel_name}:ro" \
-            -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
-            "${RUNTIME_IMAGE}" -c '
-              set -euo pipefail
-              ldd_output="$(ldd --version 2>&1)"
-              actual_glibc="$(python3 -c "import re, sys; match = re.search(r\"[0-9]+(?:\\.[0-9]+)+\", sys.stdin.read()); print(match.group(0) if match else \"\")" \
-                <<<"${ldd_output}")"
-              test -n "${actual_glibc}"
-              required_glibc="${EXPECTED_WHEEL_GLIBC_FLOOR#GLIBC_}"
-              python3 -c "import sys; parse=lambda value: tuple(map(int, value.split(\".\"))); sys.exit(0 if parse(sys.argv[1]) >= parse(sys.argv[2]) else 1)" \
-                "${actual_glibc}" "${required_glibc}"
-              python3 -m venv /tmp/ucm-wheel-venv
-              . /tmp/ucm-wheel-venv/bin/activate
-              python -m pip install --disable-pip-version-check --no-cache-dir \
-                --index-url https://pypi.org/simple "${UCM_WHEEL}"
-              python /tmp/validate_wheel_runtime.py
-            '
+          bash .github/release/install-validate-wheel-runtime.sh input/wheel
 
   package-chart:
     name: Chart · Helm package
@@ -940,6 +900,7 @@ jobs:
       }}
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix: ${{ fromJSON(needs.plan.outputs.image_matrix) }}
     permissions:
       contents: read

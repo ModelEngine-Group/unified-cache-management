@@ -19,6 +19,43 @@ UCM_PATH = ROOT / "ucm/integration/vllm/ucm_connector.py"
 HASHER_PATH = ROOT / "ucm/integration/vllm/request_hasher.py"
 
 
+def _load_hash_helpers():
+    namespace = {
+        "hashlib": hashlib,
+        "pickle": pickle,
+        "Callable": Callable,
+        "request_hasher_module": types.SimpleNamespace(
+            _layout_source_digest=lambda: "test-layout"
+        ),
+    }
+    for path, name in (
+        (HASHER_PATH, "RequestHasher"),
+        (UCM_PATH, "build_kv_hash_meta"),
+        (HMA_PATH, "_build_v41_hash_meta"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        node = next(n for n in tree.body if getattr(n, "name", None) == name)
+        module = ast.Module(body=[node], type_ignores=[])
+        exec(compile(module, str(path), "exec"), namespace)
+    return namespace
+
+
+def _hash_config(ratios=(1, 2), cache_dtype="fp8_ds_mla", block_size=64, **hf_fields):
+    return types.SimpleNamespace(
+        speculative_config=None,
+        additional_config={},
+        cache_config=types.SimpleNamespace(
+            cache_dtype=cache_dtype, block_size=block_size
+        ),
+        model_config=types.SimpleNamespace(
+            model="deepseek",
+            dtype="bfloat16",
+            hf_config=types.SimpleNamespace(compress_ratios=ratios, **hf_fields),
+        ),
+        parallel_config=types.SimpleNamespace(tensor_parallel_size=1),
+    )
+
+
 def _load_hma_methods(names):
     tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if getattr(n, "name", None) == "UCMFAWAConnector")
@@ -658,46 +695,22 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                         ids, 64, __import__("numpy").array([32])
                     )
 
-    def test_request_hasher_versions_v41_packed_layout_only(self):
-        # RequestHasher now lives in its own module upstream (#1326); only the
-        # class node is executed so the test stays free of vLLM imports.
-        tree = ast.parse(HASHER_PATH.read_text(encoding="utf-8-sig"))
-        node = next(n for n in tree.body if getattr(n, "name", None) == "RequestHasher")
-        module = ast.Module(body=[node], type_ignores=[])
-        ast.fix_missing_locations(module)
-        namespace = {
-            "hashlib": hashlib,
-            "pickle": pickle,
-            "Callable": Callable,
-            "_layout_source_digest": lambda: "test-layout",
-        }
-        exec(compile(module, str(HASHER_PATH), "exec"), namespace)
+    def test_v41_hash_meta_isolates_physical_layout(self):
+        namespace = _load_hash_helpers()
+        empty_layout = types.SimpleNamespace(kv_cache_groups=[])
 
-        def config(ratios, cache_dtype="fp8_ds_mla", block_size=64, **hf_fields):
-            hf_config = types.SimpleNamespace(compress_ratios=ratios, **hf_fields)
-            return types.SimpleNamespace(
-                speculative_config=None,
-                additional_config={},
-                cache_config=types.SimpleNamespace(
-                    cache_dtype=cache_dtype, block_size=block_size
-                ),
-                model_config=types.SimpleNamespace(
-                    model="deepseek", dtype="bfloat16", hf_config=hf_config
-                ),
-                parallel_config=types.SimpleNamespace(tensor_parallel_size=1),
+        def hasher(config, kv_config):
+            return namespace["RequestHasher"](
+                namespace["_build_v41_hash_meta"](config, 0, kv_config)
             )
 
-        hasher = namespace["RequestHasher"]
         methods, ascend = self._ascend_v41_connector()
-        ascend._vllm_config = config((4, 128))
+        # Ascend V4.1 can retain legacy-looking ratios. The resolved FAWA
+        # layout, rather than a second model-config heuristic, selects hashing.
+        ascend._vllm_config = _hash_config((4, 128))
         methods["_init_group_metas"](ascend)
         self.assertTrue(ascend.is_v41_layout)
-        explicit = hasher(
-            ascend._vllm_config,
-            0,
-            ascend._kv_cache_config,
-            is_v41_layout=ascend.is_v41_layout,
-        )
+        explicit = hasher(ascend._vllm_config, ascend._kv_cache_config)
         for marker in (
             b"kv_layout=v41_packed_v3",
             b"ascend_v41_page_transfer=v1",
@@ -707,47 +720,35 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             self.assertIn(marker, explicit.meta_bytes)
         self.assertNotEqual(
             explicit.meta_bytes,
-            hasher(ascend._vllm_config, 0, ascend._kv_cache_config).meta_bytes,
+            namespace["build_kv_hash_meta"](ascend._vllm_config, 0).encode(),
         )
-        self.assertNotIn(
-            b"kv_layout=",
-            hasher(config((1, 2)), 0, is_v41_layout=False).meta_bytes,
+        v41 = hasher(_hash_config(), empty_layout)
+        base_config = _hash_config()
+        base = hasher(base_config, empty_layout)
+        self.assertIn(b":dcp=1:layout=test-layout", base.meta_bytes)
+        base_config.parallel_config.decode_context_parallel_size = 2
+        self.assertNotEqual(base.seed, hasher(base_config, empty_layout).seed)
+        base_config.parallel_config.decode_context_parallel_size = 1
+        namespace["request_hasher_module"]._layout_source_digest = (
+            lambda: "changed-layout"
         )
-        v4 = hasher(config((4, 128)), 0)
-        v41 = hasher(
-            config(
-                (1, 2),
-                kv_source_layer_ids=(0,),
-                index_source_layer_ids=(0,),
-            ),
-            0,
-        )
-        self.assertNotIn(b"kv_layout=v41_packed_v3", v4.meta_bytes)
-        self.assertIn(b"kv_layout=v41_packed_v3", v41.meta_bytes)
-        for ratios in ((4, 128), (1, 2)):
-            with self.subTest(ratios=ratios):
-                base_config = config(ratios)
-                base = hasher(base_config, 0)
-                self.assertIn(b":dcp=1:layout=test-layout", base.meta_bytes)
-                base_config.parallel_config.decode_context_parallel_size = 2
-                self.assertNotEqual(base.seed, hasher(base_config, 0).seed)
-                base_config.parallel_config.decode_context_parallel_size = 1
-                namespace["_layout_source_digest"] = lambda: "changed-layout"
-                try:
-                    self.assertNotEqual(base.seed, hasher(base_config, 0).seed)
-                finally:
-                    namespace["_layout_source_digest"] = lambda: "test-layout"
+        try:
+            self.assertNotEqual(base.seed, hasher(base_config, empty_layout).seed)
+        finally:
+            namespace["request_hasher_module"]._layout_source_digest = (
+                lambda: "test-layout"
+            )
         self.assertNotEqual(
             v41.meta_bytes,
-            hasher(
-                config(
-                    (1, 2),
-                    cache_dtype="bfloat16",
-                    kv_source_layer_ids=(0,),
-                    index_source_layer_ids=(0,),
-                ),
-                0,
-            ).meta_bytes,
+            hasher(_hash_config(cache_dtype="bfloat16"), empty_layout).meta_bytes,
+        )
+        self.assertNotEqual(
+            v41.meta_bytes,
+            hasher(_hash_config(block_size=256), empty_layout).meta_bytes,
+        )
+        self.assertNotEqual(
+            v41.meta_bytes,
+            hasher(_hash_config((1,)), empty_layout).meta_bytes,
         )
 
         spec = types.SimpleNamespace(
@@ -758,17 +759,15 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         group = types.SimpleNamespace(kv_cache_spec=spec, layer_names=("l0",))
         kv_config = types.SimpleNamespace(kv_cache_groups=[group])
-        fingerprint = hasher(config((1, 2)), 0, kv_config).meta_bytes
-        self.assertNotEqual(fingerprint, hasher(config((1, 2)), 0).meta_bytes)
-        spec.state_content_size_bytes = 528
+        fingerprint = hasher(_hash_config(), kv_config).meta_bytes
         self.assertNotEqual(
-            fingerprint, hasher(config((1, 2)), 0, kv_config).meta_bytes
+            fingerprint, hasher(_hash_config(), empty_layout).meta_bytes
         )
+        spec.state_content_size_bytes = 528
+        self.assertNotEqual(fingerprint, hasher(_hash_config(), kv_config).meta_bytes)
         spec.state_content_size_bytes = 584
         spec.prefix_replay_tokens = 128
-        self.assertNotEqual(
-            fingerprint, hasher(config((1, 2)), 0, kv_config).meta_bytes
-        )
+        self.assertNotEqual(fingerprint, hasher(_hash_config(), kv_config).meta_bytes)
         spec.prefix_replay_tokens = 0
         kv_config.kv_cache_tensors = [
             types.SimpleNamespace(
@@ -778,32 +777,67 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         group.kv_cache_spec = types.SimpleNamespace(
             block_size=64, kv_cache_specs={"l0": spec}
         )
-        worker_hash = hasher(config((1, 2)), 0, kv_config).meta_bytes
+        worker = hasher(_hash_config(), kv_config)
         group.kv_cache_spec = spec
-        self.assertEqual(worker_hash, hasher(config((1, 2)), 0, kv_config).meta_bytes)
+        scheduler = hasher(_hash_config(), kv_config)
+        self.assertEqual(worker.meta_bytes, scheduler.meta_bytes)
+        self.assertEqual(worker.seed, scheduler.seed)
         ascend_spec = type("AscendMLAAttentionSpec", (types.SimpleNamespace,), {})(
             **vars(spec), model_version="deepseek_v41"
         )
         group.kv_cache_spec = ascend_spec
-        ascend_hash = hasher(config((1, 2)), 0, kv_config).meta_bytes
-        self.assertIn(b"ascend_v41_page_transfer=v1", ascend_hash)
-        self.assertNotEqual(worker_hash, ascend_hash)
+        ascend_hasher = hasher(_hash_config(), kv_config)
+        self.assertIn(b"ascend_v41_page_transfer=v1", ascend_hasher.meta_bytes)
+        self.assertNotEqual(worker.meta_bytes, ascend_hasher.meta_bytes)
         group.kv_cache_spec = types.SimpleNamespace(
             block_size=64, kv_cache_specs={"l0": ascend_spec}
         )
-        self.assertEqual(ascend_hash, hasher(config((1, 2)), 0, kv_config).meta_bytes)
-        self.assertNotEqual(
-            v41.meta_bytes,
-            hasher(
-                config(
-                    (1, 2),
-                    block_size=256,
-                    kv_source_layer_ids=(0,),
-                    index_source_layer_ids=(0,),
-                ),
-                0,
-            ).meta_bytes,
+        self.assertEqual(
+            ascend_hasher.meta_bytes, hasher(_hash_config(), kv_config).meta_bytes
         )
+        self.assertEqual(ascend_hasher.seed, hasher(_hash_config(), kv_config).seed)
+
+    def test_v41_meta_preserves_packed_layout_encoding(self):
+        namespace = _load_hash_helpers()
+        config = _hash_config()
+        kv_config = types.SimpleNamespace(
+            kv_cache_groups=[
+                types.SimpleNamespace(
+                    layer_names=("l0",),
+                    kv_cache_spec=types.SimpleNamespace(
+                        block_size=64,
+                        tokens_per_state=2,
+                        state_content_size_bytes=584,
+                        dtype="uint8",
+                        kv_quant_mode="fp8",
+                    ),
+                )
+            ]
+        )
+        # Preserve the V4.1 namespace encoding from #1507 across the refactor.
+        expected = (
+            "deepseek:1:bfloat16:0:sfa_c8=0:li_c8=0:dcp=1:layout=test-layout"
+            ":kv_layout=v41_packed_v3:cache_dtype=fp8_ds_mla:block_size=64"
+            ":compress_ratios=1,2"
+            ":transfer_layout=v4:((64, True, 0, True, "
+            "(('l0', 2, 584, 'uint8', 'fp8'),)),)"
+        )
+        meta = namespace["_build_v41_hash_meta"](config, 0, kv_config)
+        self.assertEqual(meta, expected)
+        self.assertEqual(
+            namespace["RequestHasher"](meta).seed,
+            namespace["RequestHasher"](expected).seed,
+        )
+
+    def test_v41_meta_requires_cache_config(self):
+        namespace = _load_hash_helpers()
+        config = _hash_config()
+        del config.cache_config
+        kv_config = types.SimpleNamespace(kv_cache_groups=[])
+        with self.assertRaisesRegex(ValueError, "needs cache_config"):
+            namespace["_build_v41_hash_meta"](config, 0, kv_config)
+        # The generic KV builder remains usable without V4.1-specific settings.
+        self.assertNotIn("kv_layout=", namespace["build_kv_hash_meta"](config, 0))
 
     def test_v41_store_uses_per_segment_sizes_even_with_legacy_tensor_size(self):
         method = _load_hma_methods({"_create_store"})["_create_store"]

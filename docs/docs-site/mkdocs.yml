@@ -109,6 +109,9 @@ plugins:
             How Caching Works: 缓存工作原理
             Request Lifecycle: 请求生命周期
             PD Integration: PD 集成原理
+            Features: 特性
+            Encoder Cache Reuse: Encoder Cache 复用
+            Design Documents: 设计文档
             Build from Source: 源码构建
             Extending Store: 扩展 Store
             Add Metrics: 指标开发
@@ -201,6 +204,12 @@ nav:
       - How Caching Works: developer-guide/capability-principles.md
       - Request Lifecycle: developer-guide/request-lifecycle.md
       - PD Integration: developer-guide/pd-integration.md
+      - Features:
+          - developer-guide/features/index.md
+          - Encoder Cache Reuse: developer-guide/features/ec-connector.md
+      - Design Documents:
+          - developer-guide/design-docs/index.md
+          - UCM EC Connector: developer-guide/design-docs/ucm-ec-connector.md
       - Build from Source: developer-guide/build_from_source.md
       - Cache Configuration:
           - developer-guide/cache-configuration/index.md
