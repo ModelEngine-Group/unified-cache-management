@@ -468,7 +468,9 @@ def test_completed_release_runs_retention_and_manual_cleanup_reuses_the_module()
 
 def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     workflow = _load("pull-request.yml")
-    assert "feature/**" in workflow["on"]["pull_request"]["branches"]
+    assert {"feature*", "feature/**", "a5-lite"} <= set(
+        workflow["on"]["pull_request"]["branches"]
+    )
     jobs = workflow["jobs"]
     pre_check = jobs["pre-check"]
     build = jobs["native-wheel-build"]

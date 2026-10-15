@@ -61,7 +61,8 @@ and actual channel; the pin is not expanded. Overlapping selectors such as
 `0.26,0.26.0`, missing ranges, missing explicit Tags, and selector sets that
 produce no publishable Runtime fail the release. All four Release Profiles
 consume the same selectors. After a winning version is chosen, 310P is filtered
-and A5 is reported as blocked; neither condition causes fallback.
+and A5 is included when its backend policy is supported; excluded or blocked
+variants do not cause fallback.
 
 These range rules apply only to `UCM_SUPPORTED_VLLM_VERSIONS` and
 `UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `UCM_VERSION` remains a canonical PEP 440
