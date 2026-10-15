@@ -190,6 +190,37 @@ def test_ready_counts_hashes_before_native_cp_conversion(connector, computed, ex
     connector.store.store_.LookupOnPrefix.assert_not_called()
 
 
+@pytest.mark.parametrize("cp_world_size", [1, 2])
+@pytest.mark.parametrize("hbm_blocks", [0, 2, 5])
+def test_ready_waiting_retries_do_not_expand_partial_prefix(connector, cp_world_size, hbm_blocks):
+    connector.hash_block_size = 64
+    connector.cp_world_size = cp_world_size
+    connector.block_size = 64 * cp_world_size
+    request = Request(token_count=20 * connector.block_size + 9)
+    job = prepare(connector, request, hit=12 * cp_world_size)
+    job.blocks = [i.to_bytes(16, "big") for i in range(20 * cp_world_size)]
+    computed = hbm_blocks * connector.block_size
+    expected = (12 - hbm_blocks) * connector.block_size
+    # A waiting request is queried again before allocation succeeds. The native
+    # connector resumes at its previous total hit minus one logical block.
+    for _ in range(4):
+        assert connector.get_num_new_matched_tokens(request, computed) == (expected, False)
+        assert connector.requests_meta[request.request_id].total_hit_block_num == 12
+    connector.request_hasher.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
+def test_ready_retry_at_swe_failure_boundary(connector):
+    connector.block_size = connector.hash_block_size = 64
+    request = Request(token_count=66537)
+    job = prepare(connector, request, hit=1037)
+    job.blocks = [i.to_bytes(16, "big") for i in range(1039)]
+    for _ in range(3):
+        assert connector.get_num_new_matched_tokens(request, 0) == (66368, False)
+        assert connector.requests_meta[request.request_id].total_hit_block_num == 1037
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
 def test_pending_returns_without_native_work(connector):
     request = Request()
     prepare(connector, request, state="PENDING")

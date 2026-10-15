@@ -123,9 +123,23 @@ class EarlyPipelineStore(UcmPipelineStore):
                 return -1
             job = context.job
             if job is not None and job.state == "READY":
-                # Native rank-consistency filtering may shorten this prefix.
-                # Never claim data beyond the protected all-rank result.
-                count = min(max(job.hit - context.hbm_hit_hashes, 0), len(block_ids))
+                # A waiting-request retry may start at the previous hit minus
+                # one block, beyond the HBM boundary. Count relative to the
+                # actual query slice, or native resume accounting double-counts
+                # the earlier hits and claims unprotected suffix blocks.
+                if not block_ids or job.blocks is None:
+                    return -1
+                try:
+                    start = job.blocks.index(block_ids[0], context.hbm_hit_hashes)
+                except ValueError:
+                    return -1
+                # Rank-consistency filtering may also shorten the query.
+                count = min(
+                    max(job.hit - start, 0), len(block_ids), len(job.blocks) - start
+                )
+                for index in range(count):
+                    if job.blocks[start + index] != block_ids[index]:
+                        return index - 1
                 return count - 1
         return super().lookup_on_prefix(block_ids)
 
