@@ -816,12 +816,10 @@ def log_cache_layout(fixture: CacheFixture) -> None:
             signature = (
                 type(layer_spec).__name__,
                 int(getattr(layer_spec, "block_size", 0)),
-                int(
-                    getattr(
-                        layer_spec,
-                        "storage_block_size",
-                        getattr(layer_spec, "block_size", 0),
-                    )
+                getattr(
+                    layer_spec,
+                    "storage_block_size",
+                    getattr(layer_spec, "block_size", 0),
                 ),
                 tuple(getattr(layer_spec, "shapes", ()) or ()),
                 raw_signature,
