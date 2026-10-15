@@ -86,7 +86,7 @@ def resolve_pr_request(
         Callable[[Sequence[Mapping[str, object]]], list[dict[str, object]]] | None
     ) = None,
 ) -> dict[str, object]:
-    """Resolve a single opaque Runtime tag without consulting upstream source."""
+    """Resolve one Runtime image, choosing Ascend source before checked mirrors."""
 
     probe_document = _mapping(runtime_probe, "runtime probe")
     if (
@@ -111,6 +111,7 @@ def resolve_pr_request(
     records = inventory.get("builders")
     if not isinstance(records, list):
         raise ValueError("Builder Registry inventory builders must be a list")
+    records = [_mapping(record, "Builder Registry record") for record in records]
 
     backend_policies = _mapping(
         formal_policy.get("backends"), "formal backend policies"
@@ -148,15 +149,18 @@ def resolve_pr_request(
             "problems": failures,
         }
 
-    checked = runtime.match_runtime_builders(
-        {
-            "kind": "ucm-runtime-probe",
-            "schema_version": runtime.RUNTIME_PROBE_SCHEMA_VERSION,
-            "probes": supported,
-        },
-        records,
-    )
-    existing_matches = list(checked["matches"])
+    cuda_probes = [probe for probe in supported if probe["backend"] == "cuda"]
+    existing_matches: list[dict[str, object]] = []
+    if cuda_probes:
+        checked = runtime.match_runtime_builders(
+            {
+                "kind": "ucm-runtime-probe",
+                "schema_version": runtime.RUNTIME_PROBE_SCHEMA_VERSION,
+                "probes": cuda_probes,
+            },
+            records,
+        )
+        existing_matches.extend(checked["matches"])
     existing_probe_ids = {str(item["probe_id"]) for item in existing_matches}
     unresolved = [
         probe for probe in supported if str(probe["probe_id"]) not in existing_probe_ids
@@ -174,6 +178,32 @@ def resolve_pr_request(
             if len(resolved) != 1:
                 raise ValueError(f"expected one raw Builder, resolved {len(resolved)}")
             build = resolved[0]
+            if str(probe["backend"]).startswith("cann-"):
+                # A cached mirror must not override the current source version
+                # selected by the shared exact-then-suffix policy.
+                source_records = [
+                    record
+                    for record in records
+                    if all(
+                        record.get(field) == build[field]
+                        for field in (
+                            "source_image",
+                            "source_image_digest",
+                            "recipe_revision",
+                        )
+                    )
+                ]
+                checked = runtime.match_runtime_builders(
+                    {
+                        "kind": "ucm-runtime-probe",
+                        "schema_version": runtime.RUNTIME_PROBE_SCHEMA_VERSION,
+                        "probes": [probe],
+                    },
+                    source_records,
+                )
+                if checked["matches"]:
+                    existing_matches.extend(checked["matches"])
+                    continue
             raw_builds.append(build)
             raw_matches.append(_match_for_build(probe, build))
         except (OSError, ValueError, KeyError, TypeError) as error:

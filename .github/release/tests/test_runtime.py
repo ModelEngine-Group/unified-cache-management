@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +16,13 @@ RELEASE_ROOT = ROOT / ".github" / "release"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 runtime = importlib.import_module("ucm_release.runtime")
+
+cann_spec = importlib.util.spec_from_file_location(
+    "check_builder_cann", RELEASE_ROOT / "check-builder-cann.py"
+)
+assert cann_spec is not None and cann_spec.loader is not None
+cann_check = importlib.util.module_from_spec(cann_spec)
+cann_spec.loader.exec_module(cann_check)
 
 RUNNERS = {"amd64": "ubuntu-24.04", "arm64": "ubuntu-24.04-arm"}
 PRODUCTS = [
@@ -267,6 +277,85 @@ def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     fallback = inspection["probe_matrix"]["include"]
     assert [item["cpu_arch"] for item in fallback] == ["arm64"]
     assert fallback[0]["missing_required_fields"] == ["soc_version"]
+
+
+@pytest.mark.parametrize(
+    ("history", "requires_probe"),
+    [((), False), (("RUN |1 CANN_VERSION=9.2.0 /bin/sh -c true",), True)],
+)
+def test_cann_metadata_keeps_full_identity_or_probes_explicit_conflict(
+    history: tuple[str, ...], requires_probe: bool
+) -> None:
+    config = _config(
+        "amd64",
+        env=(
+            "PYTHON_VERSION=3.12",
+            "CANN_VERSION=9.2.0-beta.2",
+            "ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.2.0",
+            "SOC_VERSION=ascend910b1",
+        ),
+        history=history,
+    )
+    inspection = runtime.inspect_runtime_references(
+        ["quay.io/ascend/vllm-ascend:v0.30.0rc2"],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: config,
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    assert bool(inspection["probe_matrix"]["include"]) == requires_probe
+    if requires_probe:
+        assert inspection["members"][0]["metadata_conflicts"]
+    else:
+        probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
+        assert probe["accelerator_runtime"] == "cann-9.2.0-beta.2"
+
+
+@pytest.mark.parametrize("package_version", ["9.2.0-beta.2", "9.2.0"])
+def test_cann_inspection_reads_active_package_and_verifies_complete_version(
+    tmp_path, package_version
+):
+    root = tmp_path / "cann-9.2.0-beta.2"
+    version = root / "share/info/runtime/version.info"
+    version.parent.mkdir(parents=True)
+    version.write_text(f"Component=runtime\nVersion={package_version}\n")
+    other = root / "share/info/mindstudio-profiler/version.info"
+    other.parent.mkdir(parents=True)
+    other.write_text("Version=26.2.0\n")
+
+    facts = cann_check.inspect_cann(
+        {"CANN_VERSION": "9.2.0", "ASCEND_TOOLKIT_HOME": str(root)}
+    )
+    assert facts[f"file:{version}"] == package_version
+    assert not any("mindstudio" in source for source in facts)
+    assert (
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2") == "9.2.0-beta.2"
+    )
+
+
+@pytest.mark.parametrize(
+    ("facts", "message"),
+    [
+        ({"env:CANN_VERSION": "9.2.0"}, "differs"),
+        (
+            {"env:CANN_VERSION": "9.2.0-beta.1", "file:version.info": "9.2.0-beta.2"},
+            "disagree",
+        ),
+    ],
+)
+def test_cann_source_verification_blocks_mismatch_or_conflict(facts, message):
+    with pytest.raises(ValueError, match=message):
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2")
+
+
+def test_raw_cann_inspection_uses_only_standard_library():
+    output = subprocess.check_output(
+        [sys.executable, "-S", str(RELEASE_ROOT / "check-builder-cann.py"), "inspect"],
+        text=True,
+    )
+    assert isinstance(json.loads(output), dict)
 
 
 def test_conflicting_crane_facts_schedule_native_fallback() -> None:
