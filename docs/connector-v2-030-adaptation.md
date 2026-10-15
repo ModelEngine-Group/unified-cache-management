@@ -1,8 +1,14 @@
 # Connector v2：0.30.0 第一批适配
 
-日期：2026-10-06。工作分支 `dev_connector`，基线 `c6324b8a5d1a6ae3dc8447b390a664869bc84698`；以下实现为未提交改动。源码参考 vLLM `ced6857afa0ea7b2e3f0846a62e1394e90f15607`、Ascend main `f6992d8c4657d02ae75b7d4b92bf450f9f3dbeba`。
+初始日期：2026-10-06。工作分支 `dev_connector`，初始基线 `c6324b8a5d1a6ae3dc8447b390a664869bc84698`；下文保留逐次实现记录。初始源码参考 vLLM `ced6857afa0ea7b2e3f0846a62e1394e90f15607`、Ascend main `f6992d8c4657d02ae75b7d4b92bf450f9f3dbeba`。
 
-用户要求当前先改代码，暂不测试。本批没有运行组件测试、模型构造、CUDA/NPU IO 或 forward。仅做 Python AST 语法检查、diff 空白检查与源码核对；不能作为模型支持或通过验收的证明。
+本段及下文逐项记录保留当时的验证状态；最新运行结果以[2026-10-15—16 Layout 验证](connector-v2-layout-validation-20261016.md)为准。当前已完成固定快照的组件测试和重点模型无权重 Layout/文件 IO 验证，未执行真实 forward 或权重推理。
+
+## 2026-10-16 运行验证更新
+
+最终工具/代码快照为已推送的 `1c806f56`。74项 v2 组件测试、8项工具测试通过；GLM5.3、DSV4.1 使用真实 Ascend KV 分配与 IO，Qwen-Flash-Next 使用用户确认的 CPU 模拟 CUDA 布局。bulk/layerwise 分别验证，完整命令、结果和限制见上述报告。后续运行修正均在夹具和 model-check 工具，生产 Layout 保持 `fd43490d` 的实现。
+
+Qwen 的单轮合成请求在默认稀疏 State 保留策略下未交出快照，不能算恢复通过；正式 Layout/IO 用例显式使用原生 checkpoint 保留间隔1664。CPU 模拟结果不代表真实 CUDA 或完整服务支持，QSA backend 的 `supports_kv_connector=False` 仍存在。三个材料目录缺少配套权重，按用户要求跳过真实推理；State layerwise 加载/计算流水仍待实现。
 
 ## 2026-10-15 Layout 后续逐项 review（当前）
 
@@ -92,16 +98,16 @@ UCM 直接使用 `KVCacheConfig.prefix_cacheable_group_ids`，组合 `group.enab
 
 ## 尚未完成与下一步
 
-1. 2026-10-15 已重整 0.30 SPI/spec 与新布局夹具，仍待可用环境执行并处理运行时差异；此前 111 项基线结果不能代表本批。
+1. 本批74项组件和8项工具测试已通过；后续新改动需按其自身SHA验证，不沿用此前111项历史基线。
 2. 补精确 CoW/offload 源块、State 加载目标、缺少任一 State group、WA/State 不同命中边界、无 forward 和 deferred draft finalization 的契约验证。
 3. 核对 terminal/finished 请求的 State handoff、源块复用、抢占/取消和 checkpoint 数值；缺少有效边界时当前只会漏存，不能用位置推断补造快照。
-4. GLM5.3 原生构造与 IO 尚未验证；Qwen-Next 的 QSA backend 仍声明 `supports_kv_connector=False`，Ascend 的 QSA/PLE 原生模型构造也未打通。本批 parser 能表达角色，不等于引擎已允许运行。
-5. DSV4.1 的同源 ring 恢复语义、A5 FULL/indexer K/scale alias owner、量化组件与 SWA 有效窗口还需独立适配。禁止重叠范围重复保存/恢复。
-6. State + V2 model runner 暂未实现。现有 PP/CP 等能力也没有新验收，不将 TP 或历史结果外推到这些路径。
+4. GLM5.3 Ascend 构造/字节IO已验证；Qwen-Next CPU 模拟已验证指定配置下的 Layout/IO，QSA backend 仍声明 `supports_kv_connector=False`，不能据此宣称完整引擎推理支持。Ascend QSA 原生构造仍缺少 FlashAttention。
+5. DSV4.1 Ascend 原生参与组、SWA窗口与文件往返已验证；真实 forward、ring/量化数值语义及其他硬件变体仍未验收。禁止重叠范围重复保存/恢复。
+6. State + V2 model runner 暂未实现。补充GQA TP2/PP2通过，不外推到重点模型的所有并行拓扑；DCP模型case尚未通过。
 7. 生产变长 store/proxy、IO stream/event 契约与发布完整性仍需开发；file commit 不能证明 fsync durability 或跨 rank 原子发布。
 8. State layerwise 加载与计算流水尚未实现，用户已确认先记录为待实现项，当前继续 review 其余代码；具体范围见下节。
 
-远端仍按用户最后说明视为下电，不尝试连接。恢复后先验证固定 SHA 的无权重原生构造、再做真实 IO/数值/生命周期与权重推理，bulk 和 layerwise 分别记录结果。
+远端已按用户最新说明恢复并用于固定SHA验证。后续重点为真实计算、State多轮生命周期和生产proxy；有相应权重时再做推理验收，bulk和layerwise继续分别记录。
 
 ## State layerwise 待实现（2026-10-06）
 

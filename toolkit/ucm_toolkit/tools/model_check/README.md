@@ -28,18 +28,19 @@ The checker ships one launcher per serving stack in this directory
 |---|---|---|---|
 | `ascend.py` | vLLM + vLLM-Ascend | `npu` | **Ascend-specific** layout (vLLM-Ascend patches: non-packed tuples, int8 SFA C8 pages, mamba-aligned blocks, …) |
 | `cuda.py` | official vLLM (CUDA build) | `cuda` | **Official vLLM layout** |
-| `cpu.py` | official vLLM (CPU build) | `cpu` | **Official vLLM layout — identical to `cuda.py`** |
+| `cpu.py` | official vLLM (CPU build) | `cpu` | **CUDA layout simulation through the native GPUModelRunner allocator** |
 
 **Layout-identity notes**
 
-- `cpu.py` and `cuda.py` run the *same* official vLLM code: the CPU build and
-  the CUDA build are the same v0.26.0 sources compiled with different targets,
-  and the KV-cache planning pipeline (`get_kv_cache_spec` → grouping →
-  `_get_kv_cache_config_packed`) is platform-independent arithmetic. The two
-  launchers differ only in the runtime platform: `cpu.py` needs no GPU (and no
-  CUDA driver), `cuda.py` requires an NVIDIA GPU; both report the same layout.
-  The only expected deltas are backend-name-driven fields (e.g. sparse-MLA
-  `kv_cache_dtype` normalization) that follow the actually-selected GPU backend.
+- `cpu.py` uses the installed official vLLM GPUModelRunner's spec, grouping,
+  config and allocation code with real CPU tensors. It substitutes unexecuted
+  attention/MoE computation dependencies and CUDA stream/event interfaces.
+  Backend constraints must be checked against the target vLLM source; a CPU
+  PASS does not prove CUDA hardware, kernel execution or full serving support.
+  For Qwen4Exp it also skips only the construction-time QSA FlashAttention
+  availability probe, keeping the native owner/spec/cache construction.
+- The standalone checker publishes the resolved layout name into the worker
+  KVCacheConfig, matching EngineCore's hand-off after native config creation.
 - The **Ascend layout is a different design**: page sizes/dtypes/shared-tensor
   structure differ (e.g. GLM-5.2: Ascend int8 packed 656 B/token vs official
   bf16 1,152 B/token; DSV4: Ascend bf16 non-packed tuples vs official
