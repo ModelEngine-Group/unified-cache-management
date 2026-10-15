@@ -3,16 +3,37 @@ name: 'Pull Request Gate'
 on:
   pull_request:
     branches: [ "dev*", "main", "*release", "feature*", "feature/**" ]
+    paths-ignore:
+      # Prose and repository metadata never change compiled artifacts, so a
+      # documentation-only or housekeeping-only Pull Request must not spend
+      # native Wheel or container build capacity.
+      - 'docs/**'
+      - 'docs-next/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '.readthedocs.yaml'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
 
 permissions:
   contents: read
   pull-requests: write
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   pre-check:
     runs-on: ubuntu-latest
     outputs:
       native_wheel_required: ${{ steps.build-impact.outputs.required }}
+      container_images_required: ${{ steps.build-impact.outputs.images_required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,20 +72,26 @@ jobs:
           fi
 
       - id: build-impact
-        name: Detect native Wheel build inputs
+        name: Detect native Wheel and container image build inputs
         run: |
           set -euo pipefail
-          required=false
+          diff_range="origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}"
+          native_required=false
+          images_required=false
           while IFS= read -r path; do
             case "${path}" in
               CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/requirements*.txt|requirements-build.txt|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
-                required=true
-                break
+                native_required=true
                 ;;
             esac
-          done < <(git diff --name-only \
-            "origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}")
-          echo "required=${required}" >>"${GITHUB_OUTPUT}"
+            case "${path}" in
+              docker/*|ucm/*|cmake/*|CMakeLists.txt|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|install.sh|requirements*.txt|scripts/*|examples/ucm_config_example.yaml|.github/workflows/pull-request.yml)
+                images_required=true
+                ;;
+            esac
+          done < <(git diff --name-only "${diff_range}")
+          echo "required=${native_required}" >>"${GITHUB_OUTPUT}"
+          echo "images_required=${images_required}" >>"${GITHUB_OUTPUT}"
 
   lint-and-unit-tests:
     needs: pre-check
@@ -112,9 +139,31 @@ jobs:
           fi
           echo "All planned native Wheels compiled successfully"
 
-  test-build-vllm-ascend:
+  test-build-container-images:
+    name: Container Image · ${{ matrix.label }}
+    needs: pre-check
+    if: needs.pre-check.outputs.container_images_required == 'true'
     timeout-minutes: 25
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: vllm-ascend-a2-v0.20.2rc1
+            runner: ubuntu-24.04-arm
+            file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.20.2rc1
+            tag: ucm-npu:latest
+            scope: npu
+          - label: sglang-cuda-v0.5.5
+            runner: ubuntu-24.04
+            file: ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5
+            tag: ucm-sglang:latest
+            scope: gpu
+          - label: mindie-ascend-a2-v2
+            runner: ubuntu-24.04-arm
+            file: ./docker/Dockerfile.ucm-mindie-ascend.a2-v2
+            tag: ucm-mindie:latest
+            scope: npu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,86 +176,14 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.20.2rc1
+          file: ${{ matrix.file }}
           build-args: |
             PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-npu:latest
+          tags: ${{ matrix.tag }}
           push: false
           load: false
-          cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
-
-  test-build-vllm-cuda-v0-20-2:
-    timeout-minutes: 25
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile.ucm-vllm-cuda-v0.20.2
-          build-args: |
-            PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-gpu-v0.20.2:latest
-          push: false
-          load: false
-          cache-from: type=gha,scope=gpu-v0.20.2
-          cache-to: type=gha,mode=max,scope=gpu-v0.20.2,ignore-error=true
-
-  test-build-sglang:
-    timeout-minutes: 25
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5
-          build-args: |
-            PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-sglang:latest
-          push: false
-          load: false
-          cache-from: type=gha,scope=gpu
-          cache-to: type=gha,mode=max,scope=gpu,ignore-error=true
-
-  test-build-mindie:
-    timeout-minutes: 25
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile.ucm-mindie-ascend.a2-v2
-          build-args: |
-            PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-mindie:latest
-          push: false
-          load: false
-          cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }},ignore-error=true
 
   test-e2e-pc-a2:
     timeout-minutes: 20
