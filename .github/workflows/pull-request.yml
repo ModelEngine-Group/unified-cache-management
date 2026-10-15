@@ -245,7 +245,7 @@ jobs:
           ${SUDO} docker build \
             --build-arg http_proxy="${http_proxy:-}" \
             --build-arg https_proxy="${https_proxy:-}" \
-            --build-arg no_proxy="${no_proxy:-}" \
+            --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
             --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
             -t ucm-e2etest-sglang-a2:${{ steps.version.outputs.version }} \
             -f ./docker/Dockerfile.ucm-sglang-ascend.a2-v0.5.18 ./
