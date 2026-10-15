@@ -145,7 +145,11 @@ def _meta_package(
 def _runtime_label(runtime: Mapping[str, Any]) -> str:
     accelerator = str(runtime["accelerator_runtime"])
     os_label = f"{runtime['os_id']} {runtime['os_version']}"
-    product = "vLLM Ascend" if runtime["product_id"] == "vllm-ascend" else "vLLM"
+    product = {
+        "vllm": "vLLM",
+        "vllm-ascend": "vLLM Ascend",
+        "sglang": "SGLang",
+    }.get(str(runtime["product_id"]), str(runtime["product_id"]))
     prefix = f"{product} {runtime['version']}"
     if accelerator.startswith("cuda-"):
         return f"{prefix} · CUDA {accelerator.removeprefix('cuda-')} · {os_label}"
@@ -256,6 +260,44 @@ def _wheel_task(
         },
         "runtime_requirements": copy.deepcopy(requirements["wheel_runtime"]),
     }
+
+
+def fallback_runtime_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Project every Runtime member using a suffixed source CANN Builder.
+
+    This is an execution matrix, not a persisted plan field. Wheel identities
+    still describe Runtime requirements; source tags identify the actual
+    compiler environment that needs installation/load verification.
+    """
+    if document.get("kind") != "ucm-release-plan":
+        raise ValueError("fallback validation requires a release plan")
+    wheels = {str(item["id"]): item for item in document["wheels"]}
+    include = []
+    for image in document["images"]:
+        requirement = str(image["runtime"]["accelerator_runtime"])
+        if not requirement.startswith("cann-"):
+            continue
+        wheel = wheels[str(image["wheel_id"])]
+        source_version = builders.source_cann_version(wheel["builder"]["source_image"])
+        match_kind = runtime_ops.cann_match_kind(source_version, requirement)
+        if match_kind == "exact":
+            continue
+        if match_kind is None:
+            raise ValueError("plan contains an unsupported CANN Builder substitution")
+        include.append(
+            {
+                "wheel_id": wheel["id"],
+                "label": image["label"],
+                "runner": image["runner"],
+                "cpu_arch": image["cpu_arch"],
+                "distribution": wheel["dist_name"],
+                "platform_arg": wheel["build"]["platform_arg"],
+                "runtime_image": image["runtime"]["image_reference"],
+                "runtime_cann_version": requirement.removeprefix("cann-"),
+                "builder_cann_version": source_version,
+            }
+        )
+    return {"include": include}
 
 
 def resolve_plan(

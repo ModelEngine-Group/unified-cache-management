@@ -31,6 +31,9 @@ def _fixture_policy():
         "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
         "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
     }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -112,6 +115,9 @@ def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
         pr_number=30,
         author="SuperMarioYL",
         run_id=100,
+        raw_build_resolver=lambda _probes: pytest.fail(
+            "CUDA checked Builder reuse must not resolve raw sources"
+        ),
     )
 
     assert result["ok"] is True
@@ -127,6 +133,66 @@ def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
         "source_commit",
         "mooncake_version",
     } & _all_keys(result)
+
+
+@pytest.mark.parametrize(
+    "stale_field",
+    [
+        None,
+        "source_image",
+        "source_image_digest",
+        "recipe_revision",
+        "accelerator_runtime",
+    ],
+)
+def test_ascend_cache_requires_current_source_and_runtime(
+    stale_field: str | None,
+) -> None:
+    formal, fixture, selection, _catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+    catalog = builders.catalog_from_builds(
+        [raw], owner="release-org", formal_policy=formal
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    if stale_field is not None:
+        stale_values = {
+            "source_image": raw["source_image"].replace("beta.2", "beta.1"),
+            "source_image_digest": "sha256:" + "f" * 64,
+            "recipe_revision": "ffffffffffff",
+            "accelerator_runtime": "cann-9.0.2",
+        }
+        inventory["builders"][0][stale_field] = stale_values[stale_field]
+    probe = next(
+        item
+        for item in fixture["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    calls = []
+
+    def raw_resolver(probes):
+        calls.append(probes)
+        return [raw]
+
+    result = pr.resolve_pr_request(
+        formal,
+        {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": [probe]},
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=106,
+        raw_build_resolver=raw_resolver,
+    )
+
+    assert result["ok"] is True
+    assert calls == [[probe]]
+    assert result["selection"]["wheel_builds"] == [raw]
+    match = result["builder_matches"]["matches"][0]
+    assert ("builder_record" in match) == (stale_field is None)
 
 
 def test_missing_registry_builder_resolves_one_raw_mirror_for_sync() -> None:

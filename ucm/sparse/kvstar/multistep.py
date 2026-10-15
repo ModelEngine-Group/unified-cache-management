@@ -10,7 +10,7 @@ from vllm.forward_context import ForwardContext
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_connector import RequestHasher
+from ucm.integration.vllm.ucm_connector import RequestHasher, build_kv_hash_meta
 from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
@@ -656,7 +656,7 @@ class KVStarMultiStep(UcmSparseBase):
         self.block_hashes: dict[int, dict[int, list[str]]] = {}
         self.rank = vllm_config.parallel_config.rank
         self.is_mla = vllm_config.model_config.is_deepseek_mla
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
         if self.role == UcmSparseRole.WORKER:
             ratio = 0.75
             bind_info_list, alloc_numa_ids = get_bind_cpus_for_rank(
@@ -804,7 +804,9 @@ class KVStarMultiStep(UcmSparseBase):
             parent_block_hash_value = hash_value
 
         if self.rank != 0 and not self.is_mla:
-            self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+            self.newqrequest_hasher = RequestHasher(
+                build_kv_hash_meta(self._vllm_config, self.rank)
+            )
             for i, ucm_block_id in enumerate(self.block_hashes[req_id][self.rank]):
                 self.block_hashes[req_id][self.rank][i] = str(
                     self.newqrequest_hasher(ucm_block_id)

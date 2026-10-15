@@ -115,6 +115,20 @@ def test_default_and_all_alternatives_use_preferred_publication(plan, channel):
     assert chart.render_values(plan, source) == rendered
 
 
+def test_sglang_families_are_not_rendered_into_the_chart(plan):
+    plan["families"].append(
+        _family(
+            "sglang",
+            "0.5.18",
+            "cann-9.0.0",
+            suffix="-a3",
+            architectures=("arm64",),
+        )
+    )
+    rendered = chart.render_values(plan, (CHART / "values.yaml").read_text())
+    assert "sglang" not in rendered
+
+
 def test_default_without_upstream_default_uses_highest_cuda_and_os(plan):
     plan["families"].pop(1)
     plan["families"][1]["runtime"]["os_version"] = "unreported"

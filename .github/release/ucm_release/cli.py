@@ -432,6 +432,18 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_parser = groups.add_parser("runtime")
     runtime_actions = runtime_parser.add_subparsers(dest="action", required=True)
 
+    runtime_fallback_matrix = runtime_actions.add_parser("fallback-matrix")
+    runtime_fallback_matrix.add_argument("--plan", type=Path, required=True)
+    runtime_fallback_matrix.add_argument("--output", type=Path, required=True)
+
+    def _cmd_runtime_fallback_matrix(a):
+        result = plan.fallback_runtime_matrix(serialization.load_json(a.plan))
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        _write(a.output, result)
+        return result
+
+    runtime_fallback_matrix.set_defaults(func=_cmd_runtime_fallback_matrix)
+
     runtime_inspect = runtime_actions.add_parser("inspect")
     runtime_inspect.add_argument("--reference", action="append", default=[])
     runtime_inspect.add_argument("--references-file", type=Path)

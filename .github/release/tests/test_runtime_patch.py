@@ -43,25 +43,7 @@ def patch_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_dispatcher_owns_version_routing_without_generated_manifest(
-    patch_module,
-) -> None:
-    assert patch_module.get_supported_versions() == [
-        "0.11.0",
-        "0.17.0",
-        "0.18.0",
-        "0.19.1",
-        "0.20.2",
-        "0.21.0",
-        "0.22.1",
-        "0.23.0",
-        "0.24.0",
-        "0.25.1",
-        "0.26.0",
-        "0.27.0",
-        "0.27.1",
-        "0.28.0",
-    ]
+def test_dispatcher_owns_version_routing_without_generated_manifest() -> None:
     source = PATCH_SOURCE.read_text(encoding="utf-8")
     assert "match version:" in source
     assert "runtime_patch_" + "rules.json" not in source

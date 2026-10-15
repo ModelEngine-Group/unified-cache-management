@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Iterable
 from . import registry, runtime, serialization
 
 _BUILDER_LABEL_PREFIX = "io.ucm.builder."
+_SHARED_BUILDER_LEGACY_PRODUCT_IDS = frozenset({"vllm", "vllm-ascend", "sglang"})
 _BUILDER_METADATA_FIELDS = (
     "id",
     "product_id",
@@ -172,7 +174,13 @@ def catalog_from_builds(
                 "blocking": backend_policy.get("status") == "supported",
                 "python_version": group["python_version"],
                 "python_abi": python_abi,
-                "accelerator_runtime": group["accelerator_runtime"],
+                # Wheel capability describes the target Runtime; verification
+                # checks the toolkit actually supplied by the source Builder.
+                "accelerator_runtime": (
+                    f"cann-{source_cann_version(str(group['source_image']))}"
+                    if family_id == "ascend"
+                    else group["accelerator_runtime"]
+                ),
                 "soc_version": group["soc_version"],
                 "variant": group["variant"],
                 "required_files": required_files(  # noqa: SLF001
@@ -306,7 +314,15 @@ def finalize_catalog(catalog: object, observations: object) -> dict[str, object]
                 f"Builder observation {builder_id} is not checked schema 2"
             )
         for field in _BUILDER_METADATA_FIELDS:
-            if record.get(field) != expected.get(field):
+            observed_value = record.get(field)
+            expected_value = expected.get(field)
+            if (
+                field == "product_id"
+                and expected_value == "shared"
+                and observed_value in _SHARED_BUILDER_LEGACY_PRODUCT_IDS
+            ):
+                continue
+            if observed_value != expected_value:
                 raise ValueError(
                     f"Builder observation {builder_id} label {field} differs"
                 )
@@ -613,11 +629,32 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MANYLINUX = re.compile(r"manylinux_(\d+)_(\d+)")
 _CUDA_BUILDER_TAG = re.compile(r"^cuda(?P<runtime>[0-9]+\.[0-9]+)$")
 _ASCEND_BUILDER_TAG = re.compile(
-    r"^(?P<runtime>[0-9]+\.[0-9]+\.[0-9]+)-"
+    r"^(?P<runtime>.+)-"
     r"(?P<variant>310p|910b|a3|950)-"
     r"(?P<manylinux>manylinux_[0-9]+_[0-9]+)-"
     r"py(?P<python>[0-9]+\.[0-9]+)$"
 )
+
+
+def source_cann_version(source_image: str) -> str:
+    """Return the complete CANN version from an Ascend manylinux source tag.
+
+    ``source_image`` must be an opaque ``repository:tag`` reference. The source
+    tag is the authority for the Builder version; target Runtime capability and
+    generated mirror tags can describe a different version.
+    """
+
+    _, tag = runtime.parse_runtime_reference(source_image)
+    match = _ASCEND_BUILDER_TAG.fullmatch(tag)
+    if match is None:
+        raise ValueError(f"invalid Ascend Builder source tag: {source_image}")
+    version = match.group("runtime")
+    runtime.parse_cann_version(version)
+    return version
+
+
+class _BuilderArchitectureUnavailable(ValueError):
+    """A valid source image does not supply the requested architecture."""
 
 
 def _manylinux_floor(value: str) -> tuple[int, int]:
@@ -654,6 +691,10 @@ def _manifest_member_digest(
             members = _require_mapping(
                 values[reference], f"source image fixture {reference}"
             )
+            if architecture not in members:
+                raise _BuilderArchitectureUnavailable(
+                    f"source image fixture {reference} has no {architecture} member"
+                )
             digest = members.get(architecture)
             if isinstance(digest, str) and _DIGEST.fullmatch(digest):
                 return digest
@@ -709,11 +750,14 @@ def _manifest_member_digest(
                     f"raw Builder config {reference} is malformed"
                 ) from error
         config = _require_mapping(raw_config, f"raw Builder config {reference}")
-        if (
-            config.get("os", "linux") != "linux"
-            or config.get("architecture") != architecture
-        ):
+        if config.get("os", "linux") != "linux":
             raise ValueError(f"raw Builder {reference} is not linux/{architecture}")
+        if config.get("architecture") not in SUPPORTED_ARCHITECTURES:
+            raise ValueError(f"raw Builder {reference} has an invalid architecture")
+        if config.get("architecture") != architecture:
+            raise _BuilderArchitectureUnavailable(
+                f"raw Builder {reference} is not linux/{architecture}"
+            )
         return root_digest
     matches: list[str] = []
     for raw_descriptor in descriptors:
@@ -728,8 +772,15 @@ def _manifest_member_digest(
             and platform.get("architecture") == architecture
         ):
             digest = descriptor.get("digest")
-            if isinstance(digest, str) and _DIGEST.fullmatch(digest):
-                matches.append(digest)
+            if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+                raise ValueError(
+                    f"raw Builder {reference} has an invalid linux/{architecture} digest"
+                )
+            matches.append(digest)
+    if not matches:
+        raise _BuilderArchitectureUnavailable(
+            f"raw Builder {reference} has no linux/{architecture} member"
+        )
     if len(matches) != 1:
         raise ValueError(
             f"raw Builder {reference} must have exactly one "
@@ -782,10 +833,10 @@ def _raw_builder_candidates(
             match = _CUDA_BUILDER_TAG.fullmatch(tag)
             if match is None:
                 continue
-            runtime = f"cuda-{match.group('runtime')}"
+            runtime_value = f"cuda-{match.group('runtime')}"
             if not any(
                 accelerator == "cuda"
-                and accelerator_runtime == runtime
+                and accelerator_runtime == runtime_value
                 and required_architecture == architecture
                 for (
                     accelerator,
@@ -800,7 +851,7 @@ def _raw_builder_candidates(
             values.append(
                 {
                     "accelerator": "cuda",
-                    "accelerator_runtime": runtime,
+                    "accelerator_runtime": runtime_value,
                     "variant": "default",
                     "python_abi": "*",
                     "manylinux": cuda_manylinux,
@@ -814,41 +865,89 @@ def _raw_builder_candidates(
     ascend_repositories = _source_repositories(ascend, "Ascend Builder family")
     ascend_manylinux = _require_string(ascend, "manylinux", "Ascend Builder family")
     _manylinux_floor(ascend_manylinux)
+    raw_manylinux_by_runtime = ascend.get("manylinux_by_runtime", {})
+    manylinux_by_runtime = _require_mapping(
+        raw_manylinux_by_runtime, "Ascend Builder family manylinux_by_runtime"
+    )
+    for configured_runtime, configured_manylinux in manylinux_by_runtime.items():
+        if (
+            not isinstance(configured_runtime, str)
+            or re.fullmatch(r"cann-[0-9]+\.[0-9]+\.[0-9]+", configured_runtime) is None
+        ):
+            raise ValueError(
+                "Ascend Builder family manylinux_by_runtime has invalid runtime"
+            )
+        if not isinstance(configured_manylinux, str):
+            raise ValueError(
+                f"Ascend Builder family manylinux_by_runtime[{configured_runtime!r}] "
+                "must be a string"
+            )
+        _manylinux_floor(configured_manylinux)
     seen_ascend: set[tuple[str, str]] = set()
     variant_by_token = {"910b": "a2", "a3": "a3", "950": "a5"}
     for architecture, repository in ascend_repositories.items():
         for tag in tags(repository):
             match = _ASCEND_BUILDER_TAG.fullmatch(tag)
-            if match is None or match.group("variant") == "310p":
+            if match is None:
+                print(
+                    f"Skipping Ascend Builder tag {repository}:{tag}: "
+                    "unsupported tag format",
+                    file=sys.stderr,
+                )
                 continue
-            if match.group("manylinux") != ascend_manylinux:
+            if match.group("variant") == "310p":
                 continue
-            runtime = f"cann-{match.group('runtime')}"
+            runtime_value = f"cann-{match.group('runtime')}"
+            try:
+                runtime.parse_cann_version(runtime_value)
+            except ValueError as error:
+                print(
+                    f"Skipping Ascend Builder tag {repository}:{tag}: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            selected_manylinux = str(
+                manylinux_by_runtime.get(runtime_value, ascend_manylinux)
+            )
+            if match.group("manylinux") != selected_manylinux:
+                continue
             variant = variant_by_token[match.group("variant")]
             python_abi = "cp" + match.group("python").replace(".", "")
-            if (
-                "ascend",
-                runtime,
-                variant,
-                python_abi,
-                architecture,
-            ) not in required:
+            if not any(
+                accelerator == "ascend"
+                and requested_variant == variant
+                and requested_python == python_abi
+                and requested_architecture == architecture
+                and runtime.cann_match_kind(runtime_value, requested_runtime)
+                is not None
+                for (
+                    accelerator,
+                    requested_runtime,
+                    requested_variant,
+                    requested_python,
+                    requested_architecture,
+                ) in required
+            ):
                 continue
             reference = f"{repository}:{tag}"
             key = (reference, architecture)
             if key in seen_ascend:
                 continue
             seen_ascend.add(key)
+            try:
+                source_digest = member(reference, architecture)
+            except _BuilderArchitectureUnavailable:
+                continue
             values.append(
                 {
                     "accelerator": "ascend",
-                    "accelerator_runtime": runtime,
+                    "accelerator_runtime": runtime_value,
                     "variant": variant,
                     "python_abi": python_abi,
                     "manylinux": match.group("manylinux"),
                     "cpu_arch": architecture,
                     "source_image": reference,
-                    "source_image_digest": member(reference, architecture),
+                    "source_image_digest": source_digest,
                 }
             )
     return values
@@ -886,11 +985,35 @@ def _build_for_probe(
         dict(candidate)
         for candidate in candidates
         if candidate["accelerator"] == accelerator
-        and candidate["accelerator_runtime"] == runtime_value
+        and (
+            runtime.cann_match_kind(candidate["accelerator_runtime"], runtime_value)
+            is not None
+            if accelerator == "ascend"
+            else candidate["accelerator_runtime"] == runtime_value
+        )
         and candidate["variant"] == variant
         and candidate["cpu_arch"] == architecture
         and candidate["python_abi"] in {"*", python_abi}
     ]
+    if accelerator == "ascend" and matches:
+        exact = [
+            item
+            for item in matches
+            if runtime.cann_match_kind(item["accelerator_runtime"], runtime_value)
+            == "exact"
+        ]
+        if exact:
+            matches = exact
+        else:
+            latest = max(
+                runtime.parse_cann_version(item["accelerator_runtime"])
+                for item in matches
+            )
+            matches = [
+                item
+                for item in matches
+                if runtime.parse_cann_version(item["accelerator_runtime"]) == latest
+            ]
     if matches:
         lowest_floor = min(_manylinux_floor(item["manylinux"]) for item in matches)
         matches = [
@@ -910,6 +1033,19 @@ def _build_for_probe(
             f"found {len(matches)}: {detail}"
         )
     raw = matches[0]
+    if accelerator == "ascend":
+        selection_rule = (
+            "exact version"
+            if runtime.cann_match_kind(raw["accelerator_runtime"], runtime_value)
+            == "exact"
+            else "same-base latest suffix"
+        )
+        print(
+            f"Ascend Builder selection: target {runtime_value}/{variant}/{python_abi} "
+            f"linux/{architecture} -> {raw['source_image']}@{raw['source_image_digest']} "
+            f"({raw['accelerator_runtime']}, {raw['manylinux']}, {selection_rule})",
+            file=sys.stderr,
+        )
     families = _require_mapping(release.get("builder_families"), "Builder families")
     family = _require_mapping(
         families.get(accelerator), f"Builder family {accelerator}"
@@ -922,7 +1058,10 @@ def _build_for_probe(
     required = required_files(family, variant)
     build: dict[str, object] = {
         "id": f"{build_group}-{python_abi}-{architecture}",
-        "product_id": _require_string(probe, "product_id", "runtime probe"),
+        # A UCM Wheel is determined by its native capability, not the Runtime
+        # product consuming it.  Keeping this value product-neutral lets vLLM
+        # and SGLang share an identical CUDA/CANN build task.
+        "product_id": "shared",
         "build_group": build_group,
         "backend": _require_string(probe, "backend", "runtime probe"),
         "accelerator": accelerator,
