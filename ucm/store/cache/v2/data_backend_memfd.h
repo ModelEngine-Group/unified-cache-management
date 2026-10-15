@@ -36,17 +36,26 @@
 namespace UC::Cache2 {
 
 /* Generic backend for platforms without a vendor host-memory path
- * (ascend/ascend-a3/cuda/simu): one memfd segment per rank, imported over an
- * abstract Unix socket with SCM_RIGHTS. Every participant maps all segments, so
- * all slots are host-accessible and DeviceAddrOf stays nullptr. Every segment is
- * registered with the device so the device can reach it on any copy path; the
+ * (ascend/ascend-a3/ascend-a5/cuda/simu): one memfd segment per rank, imported
+ * over an abstract Unix socket with SCM_RIGHTS. Every participant maps all
+ * segments, so all slots are host-accessible and DeviceAddrOf stays nullptr.
+ * Every segment is registered with the device on platforms that require pinned
+ * host memory; A5 deliberately uses the mapping without host registration. The
  * device-visible alias is fetched only when the transfer mode needs it (Memfd
  * SDMA Direct) and exposed through HostMappedDeviceAddrOf -- the alias is for
  * descriptors only, never for CPU access. */
 class MemfdDataBackend : public DataBackend {
+    enum class PageBacking {
+        Base,
+        HugeTlb2M,
+        HugeTlb1G,
+    };
+
     struct Segment {
         std::unique_ptr<MemFd> mem{}; /* host mapping and fd; null until mapped */
         void* deviceAddr{nullptr};    /* device-visible alias, nullptr unless required */
+        PageBacking pageBacking{PageBacking::Base};
+        size_t touchPageSize{0};
         bool owner{false};
         bool registered{false};
     };
@@ -57,8 +66,8 @@ class MemfdDataBackend : public DataBackend {
     size_t ownerRank_{0};
     int32_t deviceId_{-1};
     bool requireHostDeviceAddress_{false};
-    MemfdPageMode pageMode_{MemfdPageMode::Base};
-    size_t backingPageSize_{0};
+    bool tryHugeTlb1G_{false};
+    size_t systemPageSize_{0};
     Numa::Plan localPlacement_{};
     std::chrono::steady_clock::time_point deadline_{};
     FdSocket fdServer_{};
@@ -82,7 +91,9 @@ public:
 private:
     /* memfd_create -> ftruncate -> mmap, without MAP_POPULATE. */
     Status CreateLocalSegment(size_t rank);
-    Status ValidatePageBacking(int32_t fd) const;
+    Expected<PageBacking> PageBackingOf(int32_t fd) const;
+    static const char* PageBackingName(PageBacking backing);
+    static size_t PageSizeOf(PageBacking backing, size_t systemPageSize);
     /* First touch, then device registration. NUMA binding runs between them once
      * Numa::BindBeforeTouch is wired: registering pins pages, so it must stay
      * last. */

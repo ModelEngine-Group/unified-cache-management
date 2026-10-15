@@ -39,14 +39,9 @@
 #include "data_backend.h"
 #include "data_backend_ascend.h"
 #include "data_backend_memfd.h"
-#include "data_backend_posix.h"
 #include "logger/logger.h"
 #include "numa/numa_policy.h"
 #include "status/status.h"
-
-#ifndef UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
-#define UCM_CACHE_V2_USE_POSIX_SHM_BACKEND 0
-#endif
 
 namespace UC::Cache2 {
 
@@ -63,7 +58,6 @@ struct DataOptions {
     std::optional<int32_t> deviceNumaNode{};       /* device-layer probe; empty when unknown */
     std::optional<size_t> fallbackNumaRank{};      /* local worker rank, NOT myRank */
     std::optional<size_t> fallbackNumaRankCount{}; /* all workers on this machine */
-    MemfdPageMode memfdPageMode{MemfdPageMode::Base};
 };
 
 class DataStrategy {
@@ -71,16 +65,13 @@ class DataStrategy {
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
-    /* A5 stays on the upstream PosixShm path until its HAL backend is validated.
-     * Other ascend/cuda/simu platforms use memfd host segments. The HAL branch
-     * remains available for an explicitly enabled experimental build. */
+    /* Every host-memory platform uses memfd. The HAL branch remains available
+     * for an explicitly enabled experimental build. */
     static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
     {
 #if UCM_RUNTIME_ASCEND_HAL
         (void)uniqueId;
         return std::make_unique<AscendHalDataBackend>();
-#elif UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
-        return std::make_unique<PosixShmDataBackend>(uniqueId);
 #else
         return std::make_unique<MemfdDataBackend>(uniqueId);
 #endif
@@ -203,9 +194,7 @@ public:
         backendOptions.rankCount = nRanks;
         backendOptions.rankBytes = slotSize * nSlotsPerRank;
         backendOptions.requireHostDeviceAddress = options.requireHostDeviceAddress;
-        backendOptions.memfdPageMode = options.memfdPageMode;
         backendOptions.deadline = deadline;
-#if !UCM_CACHE_V2_USE_POSIX_SHM_BACKEND
         const size_t numaRankCount = options.fallbackNumaRankCount.value_or(nRanks);
         auto placement =
             Numa::Resolve(options.deviceNumaNode, options.fallbackNumaRank, numaRankCount);
@@ -216,7 +205,6 @@ public:
                     fmt::format("numa placement failed: {}", placement.Error())};
         }
         backendOptions.localPlacement = placement.Value();
-#endif
         Status status = Status::OK();
         try {
             status = backend->Setup(backendOptions);

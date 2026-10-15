@@ -18,7 +18,6 @@ from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
-    _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
@@ -698,7 +697,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
 
-    def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
+    def _set_default_shared_buffer_capacity(self, config: dict[str, object]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
 
@@ -714,9 +713,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"{config['cache_buffer_capacity_gb']}GB by splitting the "
             f"{capacity}GB shared-buffer capacity across FA/WA stores."
         )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold the FA+WA total.
-        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
@@ -746,7 +742,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         name, module_path, config = self._base_store_config(store_suffix)
         config["local_rank_size"] = self._get_world_size()
-        self._set_default_shm_buffer_capacity(config)
+        self._set_default_shared_buffer_capacity(config)
         self._configure_numa_placement(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)

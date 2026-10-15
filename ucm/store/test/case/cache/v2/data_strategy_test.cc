@@ -73,11 +73,6 @@ protected:
         return true;
     }
 
-    std::string ShmPath(size_t rank) const
-    {
-        return "/dev/shm/ucm_cache2_" + uniqueId_ + "_data_" + std::to_string(rank);
-    }
-
     /* A worker must supply either a detected affinity node or its index within
      * the machine. These tests run in one process, so a deterministic per-rank
      * index keeps the rank-sliced placement well defined. */
@@ -121,7 +116,6 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
     const auto statuses = SetupAllRanks(ranks);
     for (const auto& s : statuses) { ASSERT_TRUE(s.Success()) << s.ToString(); }
     auto& owner = ranks[0];
-    /* Only referenced by the posix-shm assertions. */
     [[maybe_unused]] auto& peer = ranks[1];
 
     const size_t totalSlots = kRankCount * kSlotsPerRank;
@@ -129,7 +123,7 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
 #if UCM_RUNTIME_ASCEND_HAL
         EXPECT_EQ(slot < kSlotsPerRank, owner.HostAccessibleOf(slot));
 #else
-        /* Posix backend: every slot is host-accessible from every rank. */
+        /* Memfd maps every rank segment into every participant. */
         EXPECT_TRUE(owner.HostAccessibleOf(slot));
         EXPECT_TRUE(peer.HostAccessibleOf(slot));
         EXPECT_NE(nullptr, owner.DataAt(slot));
@@ -146,7 +140,7 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
 TEST_F(DataStrategyTest, SegmentsAreSharedAcrossRanks)
 {
 #if UCM_RUNTIME_ASCEND_HAL
-    GTEST_SKIP() << "cross-rank host access requires the posix backend";
+    GTEST_SKIP() << "cross-rank host access requires the memfd backend";
 #else
     std::vector<DataStrategy> ranks(kRankCount);
     const auto statuses = SetupAllRanks(ranks);
@@ -154,10 +148,6 @@ TEST_F(DataStrategyTest, SegmentsAreSharedAcrossRanks)
     auto& owner = ranks[0];
     auto& peer = ranks[1];
 
-    /* Setup released the segment names; the mappings live on. */
-    for (size_t rank = 0; rank < kRankCount; ++rank) {
-        EXPECT_NE(0, ::access(ShmPath(rank).c_str(), F_OK));
-    }
     /* Rank 0 writes its own slot; rank 1 observes it through its mapping. */
     FillSlot(owner.DataAt(0), 0x5a);
     EXPECT_TRUE(SlotIsFilled(peer.DataAt(0), 0x5a));
@@ -203,7 +193,7 @@ TEST_F(DataStrategyTest, MissingPeerTimesOut)
 TEST_F(DataStrategyTest, PeerHandleMismatchIsRejected)
 {
 #if UCM_RUNTIME_ASCEND_HAL
-    GTEST_SKIP() << "handle validation is a posix backend capability";
+    GTEST_SKIP() << "handle validation is a memfd backend capability";
 #else
     CtrlLayout::RankDataDesc poisoned;
     poisoned.handle.store(0x1234567812345678ULL, std::memory_order_relaxed);
@@ -231,27 +221,6 @@ TEST_F(DataStrategyTest, PeerPollingWaitsForDelayedPublish)
     auto s = peer.Setup(layout_, MakeOptions(uniqueId_, 1, /*myRank=*/1, 5000));
     EXPECT_TRUE(s.Success()) << s.ToString();
     publisher.join();
-}
-
-TEST_F(DataStrategyTest, SegmentNamesAreReleasedAfterSetup)
-{
-#if UCM_RUNTIME_ASCEND_HAL
-    GTEST_SKIP() << "shm lifecycle is a posix backend capability";
-#else
-    {
-        std::vector<DataStrategy> ranks(kRankCount);
-        const auto statuses = SetupAllRanks(ranks);
-        for (const auto& s : statuses) { ASSERT_TRUE(s.Success()) << s.ToString(); }
-        /* Names are released right after every rank finished mapping, not at
-         * destruction; the mappings keep the segments usable. */
-        EXPECT_NE(0, ::access(ShmPath(0).c_str(), F_OK));
-        EXPECT_NE(0, ::access(ShmPath(1).c_str(), F_OK));
-        EXPECT_NE(nullptr, ranks[0].DataAt(0));
-        EXPECT_NE(nullptr, ranks[1].DataAt(kSlotsPerRank));
-    }
-    EXPECT_NE(0, ::access(ShmPath(0).c_str(), F_OK));
-    EXPECT_NE(0, ::access(ShmPath(1).c_str(), F_OK));
-#endif
 }
 
 }  // namespace
