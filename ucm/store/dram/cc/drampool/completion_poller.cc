@@ -223,8 +223,7 @@ void CompletionPoller::PollPendingCompletions()
                              static_cast<double>(pending_.size()));
     if (g_config.flagBufferSlotCount > 0) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kFlagPoolUsageRatio),
-                                 static_cast<double>(flagPoolUsed_) /
-                                     g_config.flagBufferSlotCount);
+                                 static_cast<double>(flagPoolUsed_) / g_config.flagBufferSlotCount);
     }
 }
 
