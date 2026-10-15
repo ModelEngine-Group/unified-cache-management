@@ -39,13 +39,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - id: inspect
         name: Select and inspect Runtime manifests
         env:
@@ -118,13 +112,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.inspect-runtimes.outputs.inputs_artifact }}
