@@ -121,6 +121,7 @@ def make_config() -> Any:
         use_layerwise,
         "npu",
         connector_module_path,
+        tokens_per_chunk=config.tokens_per_chunk,
     )
 
 
@@ -243,69 +244,6 @@ def make_cache(vllm_config: Any, active_device: torch.device) -> CacheFixture:
     )
 
 
-def patch_groups(fixture: CacheFixture) -> None:
-    """Let vLLM's single-group coordinator create managers for Ascend UniformType specs.
-
-    vLLM-Ascend's external-store coordinator handles UniformTypeKVCacheSpecs by
-    unwrapping the scheduler-equivalent inner spec before selecting a manager.
-    The patched platform coordinator, however, delegates single-group configs
-    back to upstream vLLM, whose module-level manager factory does not know this
-    Ascend wrapper.  Patch that factory binding for this standalone checker so
-    the native KVCacheManager allocation follows the Ascend manager path without
-    modifying KVCacheConfig or UCM's real tensor/layout inputs.
-    """
-
-    try:
-        import vllm.v1.core.kv_cache_coordinator as kv_cache_coordinator
-        import vllm.v1.core.single_type_kv_cache_manager as single_type_manager
-        from vllm.v1.kv_cache_interface import UniformTypeKVCacheSpecs
-        from vllm_ascend.core.single_type_kv_cache_manager import (
-            get_manager_for_kv_cache_spec as ascend_get_manager_for_kv_cache_spec,
-        )
-        from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.coordinator import (
-            _unwrap_spec as ascend_unwrap_uniform_spec,
-        )
-    except Exception as exc:
-        raise UnsupportedEnvironment(
-            "Ascend UniformTypeKVCacheSpecs were detected, but the checker "
-            "could not import vLLM-Ascend's native UniformType unwrapping and "
-            f"manager factory. Original error: {type(exc).__name__}: {exc}"
-        ) from exc
-
-    has_uniform_group = any(
-        isinstance(getattr(group, "kv_cache_spec", None), UniformTypeKVCacheSpecs)
-        for group in fixture.kv_cache_config.kv_cache_groups
-    )
-    if not has_uniform_group:
-        return
-
-    current_factory = getattr(kv_cache_coordinator, "get_manager_for_kv_cache_spec")
-    if getattr(current_factory, "_ucm_checker_ascend_uniform_patch", False):
-        return
-
-    def checker_ascend_get_manager_for_kv_cache_spec(
-        kv_cache_spec: Any, *args: Any, **kwargs: Any
-    ) -> Any:
-        if isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
-            kv_cache_spec = ascend_unwrap_uniform_spec(kv_cache_spec)
-        return ascend_get_manager_for_kv_cache_spec(kv_cache_spec, *args, **kwargs)
-
-    checker_ascend_get_manager_for_kv_cache_spec._ucm_checker_ascend_uniform_patch = True  # type: ignore[attr-defined]
-
-    kv_cache_coordinator.get_manager_for_kv_cache_spec = checker_ascend_get_manager_for_kv_cache_spec  # type: ignore[assignment]
-    single_type_manager.get_manager_for_kv_cache_spec = checker_ascend_get_manager_for_kv_cache_spec  # type: ignore[assignment]
-    log(
-        "installed checker patch: upstream single-group KVCacheCoordinator "
-        "will create managers for Ascend UniformTypeKVCacheSpecs through "
-        "vLLM-Ascend's native unwrap + manager factory"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
 def check_config() -> None:
     if tokens <= 0 or block_size <= 0:
         raise ValueError("tokens and block_size must be positive")
@@ -329,7 +267,7 @@ def main() -> int:
         # the worker-published id, so initialize the worker before Scheduler.
         worker = make_worker(fixture)
         torch.npu.set_device(active_device)
-        dispatch = schedule(fixture, tokens, request_token_salt, patch_groups, worker)
+        dispatch = schedule(fixture, tokens, request_token_salt, None, worker)
         verify(fixture, dispatch, worker, torch.npu.synchronize)
         return 0
     finally:

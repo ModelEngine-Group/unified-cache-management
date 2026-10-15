@@ -23,6 +23,7 @@ from .config import (
     STORAGE_BACKENDS_ENV,
     STORE_PIPELINE_ENV,
     TOKENS_ENV,
+    TOKENS_PER_CHUNK_ENV,
     USE_LAYERWISE_ENV,
 )
 
@@ -76,6 +77,9 @@ class ModelCheckTool(ToolAdapter):
         for dimension in ("tp", "pp", "pcp", "dcp"):
             parser.add_argument(f"--{dimension}", type=int, default=1)
         parser.add_argument("--tokens", type=int, help="synthetic request length")
+        parser.add_argument(
+            "--tokens-per-chunk", type=int, help="connector-v2 tokens per UCM key"
+        )
         parser.add_argument(
             "--block-size", type=int, help="vLLM KV-cache block size in tokens"
         )
@@ -138,6 +142,7 @@ class ModelCheckTool(ToolAdapter):
         string_options = (
             ("model", MODEL_ENV),
             ("tokens", TOKENS_ENV),
+            ("tokens_per_chunk", TOKENS_PER_CHUNK_ENV),
             ("block_size", BLOCK_SIZE_ENV),
             ("store_pipeline", STORE_PIPELINE_ENV),
             ("storage_backends", STORAGE_BACKENDS_ENV),

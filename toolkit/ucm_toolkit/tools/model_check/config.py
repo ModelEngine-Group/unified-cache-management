@@ -9,6 +9,7 @@ from typing import Any
 
 MODEL_ENV = "UCM_MODEL_CHECK_MODEL"
 TOKENS_ENV = "UCM_MODEL_CHECK_TOKENS"
+TOKENS_PER_CHUNK_ENV = "UCM_MODEL_CHECK_TOKENS_PER_CHUNK"
 BLOCK_SIZE_ENV = "UCM_MODEL_CHECK_BLOCK_SIZE"
 USE_LAYERWISE_ENV = "UCM_MODEL_CHECK_USE_LAYERWISE"
 ADDITIONAL_CONFIG_ENV = "UCM_MODEL_CHECK_ADDITIONAL_CONFIG"
@@ -71,6 +72,7 @@ class ModelCheckConfig:
     dtype: str
     kv_cache_dtype: str
     connector_module_path: str
+    tokens_per_chunk: int | None = None
     tp: int = 1
     pp: int = 1
     pcp: int = 1
@@ -86,6 +88,11 @@ def load_config() -> ModelCheckConfig:
         dcp=_int_env("UCM_MODEL_CHECK_DCP", 1),
         model=os.environ.get(MODEL_ENV, "/models/Qwen2.5-14B-Instruct"),
         tokens=_int_env(TOKENS_ENV, 4096),
+        tokens_per_chunk=(
+            _int_env(TOKENS_PER_CHUNK_ENV, 0)
+            if TOKENS_PER_CHUNK_ENV in os.environ
+            else None
+        ),
         block_size=_int_env(BLOCK_SIZE_ENV, 64),
         use_layerwise=_bool_env(USE_LAYERWISE_ENV, True),
         additional_config=_dict_env(ADDITIONAL_CONFIG_ENV),

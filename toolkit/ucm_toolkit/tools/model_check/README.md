@@ -95,6 +95,19 @@ ucm-toolkit run model-check \
     --storage-backends /path/to/ucm_storage
 ```
 
+For connector v2, `--tokens-per-chunk` sets the token span of each UCM key,
+independently of the native `--block-size`. Omit it to use the connector's
+default. Explicit values must satisfy the connector's shared scheduler/group
+alignment rules. The environment equivalent is `UCM_MODEL_CHECK_TOKENS_PER_CHUNK`.
+
+On vLLM 0.30 / current Ascend, scheduler configuration conversion and manager
+selection use the native APIs. The checker no longer installs the obsolete
+Ascend UniformType manager-factory patch. For v2 dump/load verification it
+evicts source prefix hashes through the native manager while keeping source
+blocks allocated, then poisons target IO ranges with `0xff` before loading.
+The expected dump pattern only contains bytes in `[0,250]`; loaded bytes must
+match that pattern in distinct scheduler-allocated destination blocks.
+
 `adapter.py` picks the launcher automatically: `vllm_ascend` installed →
 `ascend`; vLLM package version contains `+cpu` → `cpu`; plain vLLM → `cuda`.
 All knobs are also available as environment variables (`UCM_MODEL_CHECK_*`,

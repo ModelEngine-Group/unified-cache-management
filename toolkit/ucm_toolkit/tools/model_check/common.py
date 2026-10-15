@@ -85,10 +85,11 @@ def make_ucm_config(
     storage_backends: str,
     use_layerwise: bool,
     enable_event_sync: bool = True,
+    tokens_per_chunk: int | None = None,
 ) -> dict[str, Any]:
     """Build the fixed UCM configuration used by the compatibility check."""
 
-    return {
+    config = {
         "ucm_connectors": [
             {
                 "ucm_connector_name": "UcmPipelineStore",
@@ -112,6 +113,9 @@ def make_ucm_config(
         "load_tokens_threshold": 0,
         "enable_record_traces": False,
     }
+    if tokens_per_chunk is not None:
+        config["tokens_per_chunk"] = tokens_per_chunk
+    return config
 
 
 def make_config(
@@ -127,6 +131,7 @@ def make_config(
     use_layerwise: bool,
     device: str,
     connector_module_path: str = "ucm.integration.vllm.ucm_connector",
+    tokens_per_chunk: int | None = None,
 ) -> Any:
     """Create the requested vLLM parallel configuration for the synthetic request."""
 
@@ -143,6 +148,7 @@ def make_config(
                 store_pipeline,
                 storage_backends,
                 use_layerwise,
+                tokens_per_chunk=tokens_per_chunk,
             ),
         },
     )
@@ -1242,6 +1248,19 @@ def compare_v2_load_segments(
     return len(batch.sizes)
 
 
+def poison_v2_load_segments(fixture: Any, worker: Any, metadata: Any) -> int:
+    """Overwrite target ranges with bytes outside the dump pattern's [0,250]."""
+    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+
+    batch = _v2_batch(worker, metadata, "load")
+    access = TorchTensorByteAccess()
+    access.register_tensors(fixture.kv_caches)
+    for ptr, size in zip(batch.ptrs, batch.sizes, strict=True):
+        access.write(ptr, b"\xff" * int(size))
+    access.synchronize()
+    return len(batch.sizes)
+
+
 def _fawa_segments(
     metadata: Any, phase: str, connector: Any
 ) -> dict[Any, FAWASegment] | None:
@@ -1819,6 +1838,12 @@ def verify(
     sync_workers()
     time.sleep(10)
 
+    # Keep source blocks allocated, but remove their local prefix hashes so
+    # the target must use external lookup and receive distinct native blocks.
+    if v2_dump_batch is not None:
+        dispatch.scheduler.kv_cache_manager.evict_blocks(
+            {block for group in source_ids for block in group} - {NATIVE_NULL_BLOCK_ID}
+        )
     target = schedule_target(
         fixture,
         dispatch.scheduler,
@@ -1843,6 +1868,9 @@ def verify(
             "Scheduler-side UCM lookup did not hit: target "
             "kv_connector_metadata has no load_block_ids."
         )
+    if v2_dump_batch is not None:
+        poisoned = poison_v2_load_segments(fixture, worker, load_metadata)
+        log(f"poisoned target v2 ranges: segments={poisoned}")
     worker.bind_connector_metadata(load_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
     call_worker_layer_hooks(worker, fixture, save=False)
