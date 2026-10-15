@@ -121,7 +121,7 @@ vllm serve <model-path> \
 | 配置项 | 说明 |
 | --- | --- |
 | `kv_connector` | UCM connector 名称，使用 `UCMConnector`。 |
-| `kv_role` | KV 缓存传输角色，`kv_both` 表示支持缓存加载和保存。 |
+| `kv_role` | KV 缓存传输角色，`kv_both` 表示支持缓存 load 和 dump。 |
 | `kv_connector_module_path` | UCM connector 模块路径，使用 `ucm.integration.vllm.ucm_connector`。 |
 | `kv_connector_extra_config.UCM_CONFIG_FILE` | DramStore 配置文件路径。 |
 
@@ -168,11 +168,9 @@ drampool_resource_metrics_interval_sec: 15
 
 | 配置项 | 说明 |
 | --- | --- |
-| `drampool_resource_log_path` | DramPool 指标快照文件路径。 |
+| `drampool_resource_log_path` | DramPool 指标快照文件路径，相对路径基于进程工作目录解析。跨主机或容器部署时，需共享或挂载快照目录。 |
 | `drampool_resource_metrics_enable` | 是否启用快照读取，配置非空路径后默认启用。 |
 | `drampool_resource_metrics_interval_sec` | 快照读取周期，单位为秒，默认 `15`。 |
-
-快照由 scheduler 进程读取。相对路径基于进程工作目录解析；跨主机或容器部署时，需共享或挂载快照目录，确保该进程可读取文件。
 
 ### 访问指标
 
@@ -183,13 +181,43 @@ curl http://<vllm-ip>:<vllm-port>/metrics \
   | grep -E '^ucm:(dramstore_|drampool_)'
 ```
 
-`dramstore_` 为 DramStore 指标，`drampool_` 为导入的 DramPool 指标。指标更新依赖 vLLM 收集 connector 统计，无推理请求时可能不刷新。
+`dramstore_` 和 `drampool_` 分别为 DramStore 指标和导入的 DramPool 指标，均通过 vLLM 的 `/metrics` 接口导出，更新依赖 vLLM 收集 connector 统计，无推理请求时可能不刷新；DramPool 不提供独立的 HTTP `/metrics` 接口，`health.port` 仅用于健康检查。
 
-DramPool 不提供 HTTP `/metrics` 接口，`health.port` 仅用于健康检查。
+### 指标说明
+
+#### DramStore 指标
+
+| 指标 | 类型 | 含义与观测内容 |
+| --- | --- | --- |
+| `dramstore_lookup_duration_ms` | Histogram | 缓存查找耗时，单位为毫秒，观察查找延迟及波动。 |
+| `dramstore_dump_duration_ms` | Histogram | KV 缓存 dump 耗时，单位为毫秒，观察 dump 延迟。 |
+| `dramstore_load_duration_ms` | Histogram | KV 缓存 load 耗时，单位为毫秒，观察 load 延迟。 |
+| `dramstore_lookup_tasks_failed_total` | Counter | 缓存查找任务失败数，观察查找异常的发生频率。 |
+| `dramstore_dump_tasks_failed_total` | Counter | 缓存 dump 任务失败数，观察 dump 异常的发生频率。 |
+| `dramstore_load_tasks_failed_total` | Counter | 缓存 load 任务失败数，观察 load 异常的发生频率。 |
+| `dramstore_dump_task_timeouts_total` | Counter | 缓存 dump 任务超时数，观察 dump 超时的发生频率。 |
+| `dramstore_load_task_timeouts_total` | Counter | 缓存 load 任务超时数，观察 load 超时的发生频率。 |
+| `dramstore_task_queue_size` | Gauge | 等待处理的任务数，观察任务积压情况。 |
+| `dramstore_connect_failures_total` | Counter | DramPool 连接失败次数，观察服务连接异常。 |
+
+#### DramPool 指标
+
+| 指标 | 类型 | 含义与观测内容 |
+| --- | --- | --- |
+| `drampool_buffer_pool_usage_ratio` | Gauge | 缓存池使用比例，按缓存块大小区分，观察各规格缓存池的容量压力。 |
+| `drampool_metadata_entry_count` | Gauge | 缓存条目总数，观察缓存规模变化。 |
+| `drampool_dump_nospace_failures_total` | Counter | 因缓存空间不足而 dump 失败的条目数，观察缓存容量不足的情况。 |
+| `drampool_lookup_miss_entries_total` | Counter | 缓存查找未命中的条目数，观察缓存未命中情况。 |
+| `drampool_transfer_failures_total` | Counter | 缓存 dump 和 load 过程中的数据传输失败次数，观察传输异常。 |
+| `drampool_response_failures_total` | Counter | 向 DramStore 返回响应失败的次数，观察服务响应异常。 |
+| `drampool_queue_request_size` | Gauge | 等待处理的请求数，观察请求积压情况。 |
+| `drampool_lookup_batch_total_duration_ms` | Histogram | 服务端每批缓存查找请求的处理耗时，单位为毫秒，观察查找延迟。 |
+| `drampool_dump_batch_total_duration_ms` | Histogram | 服务端每批缓存 dump 请求的处理耗时，单位为毫秒，观察 dump 延迟。 |
+| `drampool_load_batch_total_duration_ms` | Histogram | 服务端每批缓存 load 请求的处理耗时，单位为毫秒，观察 load 延迟。 |
 
 ### Prometheus 和 Grafana 集成
 
-Prometheus 抓取 vLLM 的 `/metrics` 接口，无需为 DramPool 或 DramStore 配置独立抓取端点。部署步骤参见[接入指标监控](https://ucm.readthedocs.io/zh-cn/latest/user-guide/observability/metrics/)。
+Prometheus 通过 vLLM 的 `/metrics` 接口采集 DramStore 和 DramPool 指标。部署步骤参见[接入指标监控](https://ucm.readthedocs.io/zh-cn/latest/user-guide/observability/metrics/)。
 
 在 Grafana 中导入 [Dram 仪表板](https://github.com/ModelEngine-Group/unified-cache-management/blob/develop/examples/metrics/grafana_dram.json)，并选择对应的 Prometheus 数据源。
 
@@ -203,9 +231,7 @@ Prometheus 抓取 vLLM 的 `/metrics` 接口，无需为 DramPool 或 DramStore 
 
 ### 测试说明
 
-以下为 UCM 在前缀缓存场景下使用 DramPool 的多并发性能测试结果。输入长度为 4,000、8,000、16,000 和 32,000 tokens，最大并发数为 1、4、16 和 32，平均输出长度为 1,000 tokens。下表展示基线、hit - 50 和 hit - 90 场景下的 TTFT（首 token 延迟）及加速比。
-
-TTFT 加速比按 **（基线 TTFT / 对应场景 TTFT − 1）× 100%** 计算，结果保留一位小数。
+以下为 UCM 在前缀缓存场景下使用 DramPool 的性能测试结果。输入长度为 4,000、8,000、16,000 和 32,000 tokens，最大并发数为 1、4、16 和 32，平均输出长度为 1,000 tokens。下表展示基线、hit - 50 和 hit - 90 场景下的 TTFT（首 token 延迟）及加速比。TTFT 加速比按 **（基线 TTFT / 对应场景 TTFT − 1）× 100%** 计算，结果保留一位小数。
 
 | **输入长度** | **请求数** | **最大并发数** | **基线 TTFT** | **hit - 50 TTFT** | **TTFT 加速 (%)** | **hit - 90 TTFT** | **TTFT 加速 (%)** |
 | -----------: | ---------: | -------------: | ------------: | ----------------: | ----------------: | ----------------: | ----------------: |
@@ -225,5 +251,3 @@ TTFT 加速比按 **（基线 TTFT / 对应场景 TTFT − 1）× 100%** 计算�
 |           32 000 |           16 |              4 |           12574.2 |            8200.6 |           **+53.3%** |            2686.5 |          **+368.1%** |
 |           32 000 |           64 |             16 |           46070.9 |           37792.1 |           **+21.9%** |           22434.8 |          **+105.4%** |
 |           32 000 |          128 |             32 |          178751.1 |          149170.5 |           **+19.8%** |           96544.9 |           **+85.1%** |
-
-在这些测试中，`hit - 50` 的 TTFT 加速为 **3.3%–119.2%**，`hit - 90` 为 **5.4%–392.5%**。输入长度为 4,000、并发数为 32 时，`hit - 90` 的 TTFT 高于 `hit - 50`。
