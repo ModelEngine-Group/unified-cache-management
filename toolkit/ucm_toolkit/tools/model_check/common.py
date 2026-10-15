@@ -743,6 +743,9 @@ def make_cache(
         kv_cache_specs,
         kv_num_blocks,
     )
+    # EngineCore publishes the resolved name after the native config factory;
+    # the factory itself intentionally leaves this worker hand-off field unset.
+    kv_cache_config.kv_cache_layout = kv_vllm_config.cache_config.kv_cache_layout
     if int(kv_cache_config.num_blocks) != kv_num_blocks:
         raise AssertionError(
             f"vLLM ignored num_gpu_blocks_override: "

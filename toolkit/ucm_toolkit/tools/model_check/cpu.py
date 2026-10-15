@@ -33,7 +33,9 @@ import gc
 import os
 import time
 import traceback
+from contextlib import ExitStack
 from typing import Any
+from unittest.mock import patch
 
 import torch
 
@@ -437,10 +439,22 @@ def make_model(vllm_config: Any) -> tuple[Any, Any]:
         torch.set_default_dtype(vllm_config.model_config.dtype)
         vllm_config.compilation_config.static_forward_context.clear()
         with (
+            ExitStack() as construction_probes,
             current_vllm_config_context(vllm_config),
             no_real_device_move_from_meta_context(_factory_kwargs_redirect_to_meta),
             torch.device("meta"),
         ):
+            if vllm_config.model_config.hf_config.model_type == "qwen4_exp":
+                # The QSA owner selects its native backend directly. Only skip
+                # the CUDA kernel availability probe; keep its spec and cache
+                # construction intact. No forward runs in this CPU checker.
+                construction_probes.enter_context(
+                    patch(
+                        "vllm.models.qwen4_exp.nvidia.qsa."
+                        "is_flash_attn_varlen_func_available",
+                        return_value=True,
+                    )
+                )
             model = initialize_model(vllm_config, prefix="")
     except Exception as exc:
         raise UnsupportedEnvironment(
