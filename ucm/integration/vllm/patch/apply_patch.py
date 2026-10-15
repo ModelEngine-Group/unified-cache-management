@@ -155,6 +155,11 @@ def apply_all_patches() -> None:
         if version is None:
             raise ValueError("Could not detect vLLM version")
 
+        if os.environ.get("GLM51_LAYERWISE_SYNC_FIX") == "1":
+            from ucm.integration.vllm.patch.layerwise_sync_patch import install
+
+            install()
+
         supported_versions = get_supported_versions()
         if version not in supported_versions:
             logger.warning(

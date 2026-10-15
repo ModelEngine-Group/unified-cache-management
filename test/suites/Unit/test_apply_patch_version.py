@@ -108,3 +108,37 @@ def test_m3_patch_routing_uses_aligned_version_range(
 def test_vllm_0271_is_an_explicitly_supported_patch_version():
     module, _ = _load_apply_patch_module()
     assert "0.27.1" in module.get_supported_versions()
+
+
+@pytest.mark.parametrize("version", ["0.23.0", "0.28.0"])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("flag", [None, "0", "1", "true"])
+def test_layerwise_sync_patch_requires_explicit_opt_in(
+    monkeypatch, version, enabled, flag
+):
+    module, _ = _load_apply_patch_module()
+    if flag is None:
+        monkeypatch.delenv("GLM51_LAYERWISE_SYNC_FIX", raising=False)
+    else:
+        monkeypatch.setenv("GLM51_LAYERWISE_SYNC_FIX", flag)
+    sync_patch = MagicMock()
+    original_import = __import__
+
+    def capture_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "ucm.integration.vllm.patch.layerwise_sync_patch":
+            return sync_patch
+        if name.startswith("ucm.integration.vllm.patch."):
+            return MagicMock()
+        return original_import(name, globals, locals, fromlist, level)
+
+    with (
+        patch.object(module, "ENABLE_UCM_PATCH", enabled),
+        patch.object(module, "_read_vllm_version_raw", return_value=version),
+        patch.object(module, "_read_vllm_ascend_version_raw", return_value=None),
+        patch("builtins.__import__", side_effect=capture_import),
+    ):
+        module.apply_all_patches()
+    if enabled and flag == "1":
+        sync_patch.install.assert_called_once_with()
+    else:
+        sync_patch.install.assert_not_called()
