@@ -1,5 +1,8 @@
+import ast
 import hashlib
+import inspect
 import pickle
+import textwrap
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +62,49 @@ def _generate_extra_keys(
         ) from exc
 
 
+def _collect_layout_classes() -> list[type]:
+    """KVCacheLayout subclasses (recursive) plus the standalone HMA layout.
+    The explicit imports pin the class set so scheduler and worker compute
+    an identical digest.
+    """
+    import ucm.integration.vllm.hla_connector
+    import ucm.integration.vllm.hma_connector as hma_module
+    import ucm.integration.vllm.ucm_connector as ucm_module
+
+    classes: set[type] = set()
+
+    def walk(cls: type) -> None:
+        classes.add(cls)
+        for subclass in cls.__subclasses__():
+            walk(subclass)
+
+    walk(ucm_module.KVCacheLayout)
+    classes.add(hma_module.KVCacheGroupLayout)
+    return sorted(classes, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
+
+
+def _layout_source_digest() -> str:
+    """Digest of the normalized source of all layout classes; any
+    behavior-relevant layout change re-keys every block hash. Falls back
+    to the installed package version when sources are unavailable."""
+    try:
+        digest = hashlib.sha256()
+        for cls in _collect_layout_classes():
+            source = inspect.getsource(cls)
+            tree = ast.parse(textwrap.dedent(source))
+            digest.update(f"{cls.__module__}.{cls.__qualname__}:".encode("utf-8"))
+            digest.update(ast.dump(tree, include_attributes=False).encode("utf-8"))
+        return digest.hexdigest()[:16]
+    except OSError:
+        # Sourceless deployment: fall back to per-version isolation.
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("uc-manager")
+        except PackageNotFoundError:
+            return "unknown"
+
+
 class RequestHasher:
     """Generate stable, namespaced UCM request and block identifiers."""
 
@@ -74,10 +120,15 @@ class RequestHasher:
         sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
         model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
+        dcp_size = getattr(
+            vllm_config.parallel_config, "decode_context_parallel_size", 1
+        )
+        dcp_info = f":dcp={dcp_size}"
+        layout_info = f":layout={_layout_source_digest()}"
         meta = (
             f"{model_name}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}{dcp_info}{layout_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
         self.seed = self("UCM_HASH_SEED")

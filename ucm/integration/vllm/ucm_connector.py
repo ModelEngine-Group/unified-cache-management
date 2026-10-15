@@ -492,6 +492,30 @@ class KVCacheLayout:
         ]
         return ptr_rows, stride_rows, buffer_size_rows
 
+    def _dcp_replicated_scale(self, tensor: KVCacheTensorInfo) -> int:
+        """Return how many physical rows one vllm block spans in this tensor.
+
+        DCP-replicated caches (e.g., the SFA indexer) are allocated with
+        num_blocks × dcp_size rows, so one logical vllm block spans
+        dcp_size physical rows; both copy size and block stride must be
+        scaled accordingly. DCP-sharded caches (MLA latent, one row per
+        block per rank) and the dcp_size == 1 case scale by 1.
+        """
+        dcp_size = getattr(
+            self.vllm_config.parallel_config,
+            "decode_context_parallel_size",
+            1,
+        )
+        if (
+            dcp_size <= 1
+            or tensor.bytes_per_block == 0
+            or tensor.buffer_size % tensor.bytes_per_block
+        ):
+            return 1
+        if tensor.buffer_size // tensor.bytes_per_block == self.num_blocks * dcp_size:
+            return dcp_size
+        return 1
+
     def _build_layout(self, kvcaches):
         tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
         raw_ptr_rows, stride_rows, buffer_size_rows = self._unpack_tensor_rows(
@@ -502,14 +526,19 @@ class KVCacheLayout:
             # A direct transfer copies one whole KV-cache block. Keep only real
             # tensors and flatten all layers into that block; padding would add
             # fake tensors to the store metadata and copy path.
+            flat_tensors = [info for row in tensor_rows for info in row]
             self.base_ptrs = np.asarray(
-                [ptr for row in raw_ptr_rows for ptr in row], dtype=np.uint64
+                [info.ptr for info in flat_tensors], dtype=np.uint64
             )
             self.tensor_size_lists = np.asarray(
-                [stride for row in stride_rows for stride in row], dtype=np.uint64
+                [
+                    info.bytes_per_block * self._dcp_replicated_scale(info)
+                    for info in flat_tensors
+                ],
+                dtype=np.uint64,
             )
             self.buffer_sizes = np.asarray(
-                [size for row in buffer_size_rows for size in row], dtype=np.uint64
+                [info.buffer_size for info in flat_tensors], dtype=np.uint64
             )
             self.block_stride_lists = self.tensor_size_lists
             logger.info(
@@ -538,8 +567,21 @@ class KVCacheLayout:
                 "SharedIndexerKVCacheLayout; otherwise set `use_layerwise: false`."
             )
 
+        # DCP-replicated tensors (e.g., the SFA indexer) span dcp_size rows
+        # per vllm block: scale copy size and block stride so one block
+        # stores all of them, mirroring the handling in
+        # SharedIndexerKVCacheLayout._build_segment_rows.
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
+        self.tensor_size_lists = np.asarray(
+            [
+                [
+                    stride * self._dcp_replicated_scale(tensor)
+                    for stride, tensor in zip(stride_row, tensor_row)
+                ]
+                for stride_row, tensor_row in zip(stride_rows, tensor_rows)
+            ],
+            dtype=np.uint64,
+        )
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.block_stride_lists = self.tensor_size_lists
 
@@ -719,6 +761,25 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         scale_size: int = 0,
     ) -> list[list[KVCacheSegment]]:
         """Build fixed-width rows shared by CUDA and Ascend layouts."""
+        # Ascend SFA allocates the indexer/scale caches DCP-replicated with
+        # num_blocks × dcp_size rows, so each logical vllm_block_id spans
+        # dcp_size physical rows: copy_size and block_stride must be scaled
+        # so one vllm_block stores all dcp_size rows (the full 512-token
+        # indexer) in a single file. CUDA (vllm) instead shards the indexer
+        # cache like the MLA cache (num_blocks rows, one per block), which
+        # must NOT be scaled. Detect replication from the tensor shape so
+        # both platforms share this builder, mirroring
+        # KVCacheLayout._dcp_replicated_scale.
+        dcp_size = getattr(
+            self.vllm_config.parallel_config,
+            "decode_context_parallel_size",
+            1,
+        )
+        indexer_replicated = dcp_size > 1 and any(
+            layer.indexer is not None
+            and self._dcp_replicated_scale(layer.indexer) == dcp_size
+            for layer in layers
+        )
         segment_rows = []
         for layer in layers:
             segments = [
@@ -727,35 +788,97 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
 
             if layout_mode == "bf16":
                 if layer.indexer is not None:
-                    segments.append(self._whole_tensor_segment(layer.indexer))
+                    seg = self._whole_tensor_segment(layer.indexer)
+                    if indexer_replicated:
+                        seg = KVCacheSegment(
+                            ptr=seg.ptr,
+                            copy_size=seg.copy_size * dcp_size,
+                            block_stride=seg.block_stride * dcp_size,
+                            buffer_size=seg.buffer_size,
+                        )
+                    segments.append(seg)
                 else:
-                    segments.append(self._ghost_segment(indexer_size))
+                    ghost = self._ghost_segment(indexer_size)
+                    if indexer_replicated:
+                        ghost = KVCacheSegment(
+                            ptr=0,
+                            copy_size=ghost.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                    segments.append(ghost)
             elif layout_mode == "li_c8":
                 if layer.scale is not None:
+                    idx_seg = self._whole_tensor_segment(layer.indexer)
+                    scale_seg = self._whole_tensor_segment(layer.scale)
+                    if indexer_replicated:
+                        idx_seg = KVCacheSegment(
+                            ptr=idx_seg.ptr,
+                            copy_size=idx_seg.copy_size * dcp_size,
+                            block_stride=idx_seg.block_stride * dcp_size,
+                            buffer_size=idx_seg.buffer_size,
+                        )
+                        scale_seg = KVCacheSegment(
+                            ptr=scale_seg.ptr,
+                            copy_size=scale_seg.copy_size * dcp_size,
+                            block_stride=scale_seg.block_stride * dcp_size,
+                            buffer_size=scale_seg.buffer_size,
+                        )
                     segments.extend(
                         [
-                            self._whole_tensor_segment(layer.indexer),
-                            self._whole_tensor_segment(layer.scale),
+                            idx_seg,
+                            scale_seg,
                         ]
                     )
                 else:
-                    segments.extend(
-                        [
-                            self._ghost_segment(index_chunk_size),
-                            self._ghost_segment(scale_size),
-                        ]
-                    )
+                    g1 = self._ghost_segment(index_chunk_size)
+                    g2 = self._ghost_segment(scale_size)
+                    if indexer_replicated:
+                        g1 = KVCacheSegment(
+                            ptr=0,
+                            copy_size=g1.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                        g2 = KVCacheSegment(
+                            ptr=0,
+                            copy_size=g2.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                    segments.extend([g1, g2])
             elif layout_mode == "mixed" and layer.scale is not None:
+                idx_stride = layer.indexer.bytes_per_block
+                idx_copy = index_chunk_size
+                if indexer_replicated:
+                    idx_stride *= dcp_size
+                    idx_copy *= dcp_size
+                scale_seg = self._whole_tensor_segment(layer.scale)
+                if indexer_replicated:
+                    scale_seg = KVCacheSegment(
+                        ptr=scale_seg.ptr,
+                        copy_size=scale_seg.copy_size * dcp_size,
+                        block_stride=scale_seg.block_stride * dcp_size,
+                        buffer_size=scale_seg.buffer_size,
+                    )
+                ghost = self._ghost_segment(index_chunk_size)
+                if indexer_replicated:
+                    ghost = KVCacheSegment(
+                        ptr=0,
+                        copy_size=ghost.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
                 segments.extend(
                     [
                         self._real_segment(
                             ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=layer.indexer.buffer_size,
                         ),
-                        self._ghost_segment(index_chunk_size),
-                        self._whole_tensor_segment(layer.scale),
+                        ghost,
+                        scale_seg,
                     ]
                 )
             elif layout_mode == "mixed" and layer.indexer is not None:
@@ -765,31 +888,60 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                         f"segments: bf16_size={layer.indexer.bytes_per_block}, "
                         f"c8_size={index_chunk_size}."
                     )
+                idx_stride = layer.indexer.bytes_per_block
+                idx_copy = index_chunk_size
+                if indexer_replicated:
+                    idx_stride *= dcp_size
+                    idx_copy *= dcp_size
+                ghost = self._ghost_segment(scale_size)
+                if indexer_replicated:
+                    ghost = KVCacheSegment(
+                        ptr=0,
+                        copy_size=ghost.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
                 segments.extend(
                     [
                         self._real_segment(
                             ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=layer.indexer.buffer_size,
                         ),
                         self._real_segment(
-                            ptr=layer.indexer.ptr + index_chunk_size,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            ptr=layer.indexer.ptr + idx_copy,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=0,
                         ),
-                        self._ghost_segment(scale_size),
+                        ghost,
                     ]
                 )
             elif layout_mode == "mixed":
-                segments.extend(
-                    [
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(scale_size),
-                    ]
-                )
+                g1 = self._ghost_segment(index_chunk_size)
+                g2 = self._ghost_segment(index_chunk_size)
+                g3 = self._ghost_segment(scale_size)
+                if indexer_replicated:
+                    g1 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g1.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                    g2 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g2.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                    g3 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g3.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                segments.extend([g1, g2, g3])
             else:
                 raise ValueError(
                     f"Unsupported Shared Indexer layout mode: {layout_mode}."
