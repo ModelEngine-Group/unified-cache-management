@@ -3538,16 +3538,25 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
-        use_hybrid_linear_attention = (
-            UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
-        )
+        # FAWA must win before HLA probing.  New vLLM KVCacheTensor objects
+        # describe their layers with ``layers`` and do not have the legacy
+        # ``shared_by`` field; more importantly, DS V4.1 has transient groups
+        # which are not an HLA shared physical region.
+        is_fawa = UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config)
+        use_hybrid_linear_attention = False
+        if not is_fawa:
+            use_hybrid_linear_attention = (
+                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                    kv_cache_config
+                )
+            )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
 
-        if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+        if is_fawa:
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)

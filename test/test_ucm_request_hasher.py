@@ -97,6 +97,13 @@ def test_kv_layout_digest_changes_namespace_and_seed(monkeypatch):
     assert RequestHasher(original_meta).seed != RequestHasher(changed_meta).seed
 
 
+def test_common_kv_meta_does_not_inspect_model_specific_layout():
+    config = _config()
+    config.model_config.hf_config = SimpleNamespace(compress_ratios=(1, 2))
+    # Model-specific cache settings belong to the selected connector.
+    assert build_kv_hash_meta(config, 0) == _META + ":dcp=1:layout=test-layout"
+
+
 def _request(token_ids, **kwargs):
     defaults = {
         "mm_features": [],
