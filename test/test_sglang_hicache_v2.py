@@ -18,6 +18,8 @@ class FakeStore:
         self.objects = set()
         self.dump_calls = []
         self.load_calls = []
+        self.lookup_calls = []
+        self.lookup_on_prefix_calls = []
         self.closed = False
 
     def dump_data(self, keys, shard_indices, pointers):
@@ -35,9 +37,11 @@ class FakeStore:
         return None
 
     def lookup(self, keys):
+        self.lookup_calls.append(keys)
         return [key in self.objects for key in keys]
 
     def lookup_on_prefix(self, keys):
+        self.lookup_on_prefix_calls.append(keys)
         last = -1
         for index, key in enumerate(keys):
             if key not in self.objects:
@@ -251,6 +255,8 @@ def test_v2_exists_intersects_all_required_components(connector):
 
     assert result.kv_hit_pages == 1
     assert result.restorable_prefix_pages == [1]
+    assert stores[0].lookup_calls == []
+    assert len(stores[0].lookup_on_prefix_calls) == 1
 
 
 def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
@@ -317,6 +323,8 @@ def test_trailing_pool_restores_prefix_from_persisted_tail_window(connector):
     assert result.kv_hit_pages == 3
     assert result.extra_pool_hit_pages[pool_name] == 3
     assert result.restorable_prefix_pages == [3]
+    assert len(stores[0].lookup_calls) == 1
+    assert stores[0].lookup_on_prefix_calls == []
 
 
 def test_trailing_pool_miss_rejects_current_prefix(connector):

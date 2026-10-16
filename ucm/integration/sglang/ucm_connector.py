@@ -441,10 +441,7 @@ class SglangUcmConnector:
                     self._component_key(key, transfer.name, 0)
                     for key in keys[:kv_pages]
                 ]
-                page_exists = [bool(value) for value in store.lookup(encoded)]
-                boundary = (
-                    page_exists.index(False) if False in page_exists else kv_pages
-                )
+                boundary = store.lookup_on_prefix(encoded) + 1
                 pool_restorable = list(range(1, boundary + 1))
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
                 # Trailing pools are sparse: an object marks a candidate
