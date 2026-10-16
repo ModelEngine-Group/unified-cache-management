@@ -27,6 +27,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <sys/types.h>
+#include <vector>
 #include "ucmstore_v1.h"
 
 namespace UC::Compressor {
@@ -37,13 +39,15 @@ struct Config {
     int32_t deviceId{-1};
     size_t tensorSize{0};
     size_t shardSize{0};
+    size_t compressedShardSize{0};
     size_t blockSize{0};
     size_t layerSize{0};
     size_t timeoutMs{30000};
     int32_t compressRatio{32};
     int32_t dataType{100};
     size_t streamNumber{8};
-    size_t decompressThreadNum{6};
+    size_t decompressThreadNum{36};
+    std::vector<ssize_t> cpuAffinityCores{};
 };
 
 }  // namespace UC::Compressor

@@ -5,7 +5,7 @@ target_include_directories(compressor PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/compress_lib
 )
-target_link_libraries(compressor PUBLIC storeintf infra_logger)
+target_link_libraries(compressor PUBLIC storeintf infra_logger metrics)
 
 file(RELATIVE_PATH INSTALL_REL_PATH ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 install(TARGETS compressor LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
