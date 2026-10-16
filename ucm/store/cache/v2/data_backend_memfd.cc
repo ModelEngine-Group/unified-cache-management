@@ -314,14 +314,8 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
             "memfd 2MiB HugeTLB create failed, falling back to base pages: owner={} device={} "
             "name={} bytes={} status={}",
             rank, deviceId_, name, rankStride_, status);
+        /* Keep the legacy kernel page policy for ordinary memfd mappings. */
         status = create(PageBacking::Base);
-        if (status.Success() && ::madvise(mem->Addr(), rankStride_, MADV_HUGEPAGE) != 0) {
-            const auto error = errno;
-            UC_WARN(
-                "memfd fallback MADV_HUGEPAGE failed: owner={} device={} name={} bytes={} "
-                "errno={} ({})",
-                rank, deviceId_, name, rankStride_, error, std::strerror(error));
-        }
     }
     if (status.Failure()) {
         UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} status={}", rank,
