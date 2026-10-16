@@ -829,6 +829,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def get_block_size(self) -> int:
         return self.hash_block_size
 
+    @staticmethod
+    def ascend_compression_ratio(spec) -> int:
+        """Read the MLA ratio from the current or legacy Ascend spec API."""
+        ratio = getattr(spec, "tokens_per_state", None)
+        if ratio is None:
+            ratio = getattr(spec, "compress_ratio", 1)
+        return int(ratio)
+
     @classmethod
     def ascend_block_geometry(
         cls, spec, *, block_size_is_logical: bool | None = None
@@ -868,7 +876,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return next(iter(layers_by_geometry))
 
         size = int(spec.block_size)
-        ratio = int(getattr(spec, "compress_ratio", 1))
+        ratio = cls.ascend_compression_ratio(spec)
         if min(size, ratio) <= 0:
             raise ValueError("Ascend block size and compress ratio must be positive.")
         if block_size_is_logical:
@@ -935,7 +943,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             for spec in cls._specs_for_group(group):
                 if (
                     getattr(spec, "sliding_window", None) is None
-                    and getattr(spec, "compress_ratio", 1)
+                    and cls.ascend_compression_ratio(spec)
                     == cls.ASCEND_C4_COMPRESS_RATIO
                 ):
                     c4_block_sizes.add(
@@ -1544,7 +1552,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     group_caches[layer_name] = kv_caches[layer_name]
                 else:
                     group_caches[layer_name] = tuple(kv_caches[layer_name])
-            standardized_layout = not self.is_ascend_v41_layout and any(
+            # Ascend DSV4 keeps native [B, N, H, C] views (including separate
+            # indexer value/scale views), even with descriptor.layers present.
+            # GPU unified views use the standardized [B, H, N, C] path below.
+            standardized_layout = not self.is_ascend_layout and any(
                 layer_name in standardized_layers
                 for layer_name in group_spec.layer_names
             )
@@ -2746,7 +2757,7 @@ class UCMFAWALiteConnector(UCMLiteConnector):
             nested = getattr(spec, "kv_cache_specs", None)
             inner = next(iter(nested.values())) if nested else spec
             window = getattr(inner, "sliding_window", None)
-            cr = getattr(inner, "compress_ratio", 1) or 1
+            cr = UCMFAWAConnector.ascend_compression_ratio(inner) or 1
             cr = max(cr, 1)
             bs_g = spec.block_size
             block_sizes_for_gcd.append(bs_g)
