@@ -10,6 +10,7 @@ import types
 import unittest
 from collections import namedtuple
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -64,7 +65,12 @@ def _load_hma_methods(names):
         n
         for n in tree.body
         if getattr(n, "name", None)
-        in ("_v41_whole_page_sizes", "_ascend_v41_whole_page_sizes")
+        in (
+            "_v41_whole_page_sizes",
+            "_ascend_v41_whole_page_sizes",
+            "FAWALoadTask",
+            "FAWAPendingLoad",
+        )
     ]
     module = ast.Module(body=helpers + nodes, type_ignores=[])
     ast.fix_missing_locations(module)
@@ -77,6 +83,10 @@ def _load_hma_methods(names):
             self.tail_tokens = tail_tokens
 
     namespace = {
+        "__name__": __name__,
+        "dataclass": dataclass,
+        "field": field,
+        "Task": object,
         "math": math,
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
@@ -419,6 +429,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             with self.subTest(is_v41=is_v41, has_hit=has_hit, has_window=has_window):
                 events = []
                 request = types.SimpleNamespace(
+                    load_async=False,
                     load_keys=[b"key"] if has_hit else [],
                     load_hash_start=0,
                     load_hash_end=1,
@@ -428,7 +439,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
                 def submit(_request_id, kind, *_args):
                     events.append(kind)
-                    return kind
+                    return types.SimpleNamespace(request_id=_request_id, label=kind)
 
                 connector = types.SimpleNamespace(
                     is_v41_layout=is_v41,
@@ -442,7 +453,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     _extract_fa_ptr=lambda *_args: [],
                     _extract_wa_ptr=lambda *_args: [],
                     _submit_load_task=submit,
-                    _wait_all_load_task=lambda tasks: events.append(tuple(tasks)),
+                    _wait_all_load_task=lambda tasks: events.append(
+                        tuple(task.label for task in tasks)
+                    ),
                 )
                 methods["start_load_kv"](connector, None)
                 expected = ["sync"] if is_v41 and has_hit else []
@@ -1088,6 +1101,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
             request_meta = {}
             self_obj = types.SimpleNamespace(
+                use_request_async_load=False,
+                _pending_async_load_dispatches={},
+                _async_load_req_ids=set(),
                 hash_block_size=32,
                 is_v41_layout=is_v41,
                 persist_token_threshold=0,
@@ -1331,6 +1347,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         connector = types.SimpleNamespace(
             prefix_replay_tokens=128,
+            _pending_async_load_dispatches={},
+            _async_load_req_ids=set(),
             hash_block_size=64,
             transient_group_ids={1},
             window_group_ids=[],
