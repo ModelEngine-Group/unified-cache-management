@@ -74,6 +74,8 @@ _ASCEND_BACKEND_BY_SOC = {
     "ascend910_9391": "cann-a3",
     "ascend950dt_9582": "cann-a5",
 }
+# Policy validation must cover the same backend identities that probes emit.
+SUPPORTED_BACKENDS = frozenset(("cuda", *_ASCEND_BACKEND_BY_SOC.values()))
 _SGLANG_CANN_TAG_SOC = {
     "910b": "ascend910b1",
     "a3": "ascend910_9391",

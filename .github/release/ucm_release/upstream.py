@@ -114,6 +114,7 @@ def _parsed_sglang_tag(
         if created_at is not None:
             stamp = created_at.strftime("%Y%m%d%H%M%S")
             internal_version = Version(f"0.0.0.dev{stamp}")
+        variant = "a2" if main.group("soc") == "910b" else "a3"
         return {
             "tag": tag,
             "version": internal_version,
@@ -121,6 +122,8 @@ def _parsed_sglang_tag(
             "channel": "main",
             "suffix": f"-{main.group('cann')}-{main.group('soc')}",
             "tokens": [main.group("cann"), main.group("soc")],
+            "variant": variant,
+            "backend": f"cann-{variant}",
         }
 
     match = _FORMAL_TAG.fullmatch(tag)
@@ -144,6 +147,7 @@ def _parsed_sglang_tag(
     except InvalidVersion:
         return None
     channel = "rc" if version.is_prerelease else "stable"
+    variant = "a2" if "910b" in tokens else "a3" if "a3" in tokens else "default"
     return {
         "tag": tag,
         "version": version,
@@ -151,6 +155,8 @@ def _parsed_sglang_tag(
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
+        "variant": variant,
+        "backend": f"cann-{variant}" if is_cann else "cuda",
     }
 
 
@@ -178,12 +184,16 @@ def _parsed_runtime_tag(
             or sum(token.startswith("ubuntu") for token in tokens) > 1
         ):
             return None
+        variant = "default"
+        backend = "cuda"
     elif product_id == "vllm-ascend":
         if any(token not in {"310p", "a3", "a5", "openeuler"} for token in tokens):
             return None
         accelerator_tokens = set(tokens) & {"310p", "a3", "a5"}
         if len(accelerator_tokens) > 1 or tokens.count("openeuler") > 1:
             return None
+        variant = next(iter(accelerator_tokens), "a2")
+        backend = f"cann-{variant}"
     else:
         raise ValueError(f"unsupported runtime product {product_id!r}")
     try:
@@ -202,21 +212,9 @@ def _parsed_runtime_tag(
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
+        "variant": variant,
+        "backend": backend,
     }
-
-
-def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
-    tokens = set(parsed["tokens"])
-    if product_id == "vllm":
-        return "default"
-    if product_id == "vllm-ascend":
-        return next(
-            (token for token in ("310p", "a3", "a5") if token in tokens),
-            "a2",
-        )
-    if product_id == "sglang":
-        return "a3" if "a3" in tokens else "a2" if "910b" in tokens else "default"
-    raise ValueError(f"unsupported runtime product {product_id!r}")
 
 
 def _is_sglang_runtime_variant(product_id: str, parsed: Mapping[str, object]) -> bool:
@@ -255,15 +253,13 @@ def _select_sglang_main_tags(
         if (
             parsed is not None
             and parsed["channel"] == "main"
-            and _runtime_variant("sglang", parsed) not in excluded_variants
+            and parsed["variant"] not in excluded_variants
         ):
             parsed_main.append(parsed)
 
     additions: list[dict[str, str]] = []
     for variant in ("a2", "a3"):
-        candidates = [
-            item for item in parsed_main if _runtime_variant("sglang", item) == variant
-        ]
+        candidates = [item for item in parsed_main if item["variant"] == variant]
         if not candidates:
             continue
         newest = max(candidates, key=lambda item: (item["version"], item["tag"]))
@@ -363,7 +359,7 @@ def _select_runtime_tags(
                 raise ValueError(
                     f"{context}: explicit Runtime tag is outside its version range"
                 )
-            if _runtime_variant(product_id, parsed) in excluded_variants:
+            if parsed["variant"] in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
             values = [parsed]
         else:
@@ -374,9 +370,7 @@ def _select_runtime_tags(
             ]
             winners = _preferred_runtime_tags(matching)
             values = [
-                item
-                for item in winners
-                if _runtime_variant(product_id, item) not in excluded_variants
+                item for item in winners if item["variant"] not in excluded_variants
             ]
             if not values:
                 reason = (
@@ -474,7 +468,7 @@ def resolve_runtime_candidates(
                     )
                 )
                 is not None
-                and _runtime_variant(product_id, item) not in excluded
+                and item["variant"] not in excluded
                 and not _is_sglang_runtime_variant(product_id, item)
             ]
         else:
@@ -501,18 +495,20 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _parsed_runtime_tag(
-                product_id, tag, created_at=created_by_tag.get(tag)
+            parsed = _mapping(
+                _parsed_runtime_tag(
+                    product_id, tag, created_at=created_by_tag.get(tag)
+                ),
+                f"selected Runtime tag {tag}",
             )
-            tokens = set(parsed["tokens"]) if parsed is not None else set()
-            if product_id == "vllm-ascend" and "a5" in tokens:
-                backend = "cann-a5"
-                backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            backend = str(parsed["backend"])
+            backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            if backend_policy.get("status") == "blocked":
                 problems.append(
                     _blocked_problem(
                         backend=backend,
-                        capability="Ascend A5 runtime",
-                        reason=str(backend_policy.get("reason", "backend is blocked")),
+                        capability=f"{backend} runtime",
+                        reason=str(backend_policy["reason"]),
                         repository=repository,
                         tag=tag,
                     )
