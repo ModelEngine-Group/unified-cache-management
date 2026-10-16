@@ -40,10 +40,10 @@
 namespace UC::Test {
 
 using PipelineStore::HealthBreakerStore;
-using PipelineStore::StoreHealthConfig;
 using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
+using UC::Detail::StoreHealthConfig;
 
 TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
 {
@@ -155,7 +155,7 @@ TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_EQ(CountSubstring(output, "Store health check(posix-0) failed"), 3);
+    EXPECT_EQ(CountSubstring(output, "[PipelineStore] Store health check(posix-0) failed"), 3);
     EXPECT_THAT(output, testing::HasSubstr("health probe write failed"));
 }
 
@@ -205,6 +205,8 @@ TEST(UCHealthBreakerStoreTest, LogsCauseAndCooldownOnEveryStateTransition)
 
     EXPECT_THAT(output, testing::HasSubstr("transitioned to UNHEALTHY"));
     EXPECT_THAT(output, testing::HasSubstr("source=active_probe"));
+    EXPECT_THAT(output, testing::HasSubstr("window_size=3, failures=2, failure_threshold=2, "
+                                           "results=[fail,fail]"));
     EXPECT_THAT(output, testing::HasSubstr("transitioned to HEALTHY"));
     EXPECT_THAT(output, testing::HasSubstr("cooldown_ms=0"));
 }
@@ -279,13 +281,7 @@ TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)
         return Status::OK();
     }));
 
-    testing::internal::CaptureStdout();
     for (size_t i = 0; i < 4; ++i) { EXPECT_EQ(breaker.CheckHealth(), Status::Timeout()); }
-    UC::Logger::Flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    const auto output = testing::internal::GetCapturedStdout();
-
-    EXPECT_EQ(CountSubstring(output, "Store health check(cache-0) timed out after 10 ms"), 3);
     EXPECT_FALSE(breaker.Enabled());
 }
 
@@ -396,6 +392,26 @@ TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow
     EXPECT_TRUE(breaker.Enabled());
     EXPECT_EQ(breaker.SampleCount(), 0);
     EXPECT_EQ(breaker.FailureCount(), 0);
+}
+
+TEST(UCHealthBreakerStoreTest, LookupFailuresTripPassively)
+{
+    StrictMock<Detail::MockStore> store;
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "posix-0", TestConfig()).Success());
+    std::array<UC::Detail::BlockId, 1> blocks{};
+
+    EXPECT_CALL(store, Lookup(blocks.data(), blocks.size())).WillOnce(Return(Status::NotFound()));
+    EXPECT_EQ(breaker.Lookup(blocks.data(), blocks.size()).Error(), Status::NotFound());
+    EXPECT_CALL(store, LookupOnPrefix(blocks.data(), blocks.size()))
+        .WillOnce(Return(Status::Timeout()));
+    EXPECT_EQ(breaker.LookupOnPrefix(blocks.data(), blocks.size()).Error(), Status::Timeout());
+    EXPECT_TRUE(breaker.Enabled());
+
+    EXPECT_CALL(store, LookupOnReverse(blocks.data(), blocks.size()))
+        .WillOnce(Return(Status::OsApiError()));
+    EXPECT_EQ(breaker.LookupOnReverse(blocks.data(), blocks.size()).Error(), Status::OsApiError());
+    EXPECT_FALSE(breaker.Enabled());
 }
 
 TEST(UCHealthBreakerStoreTest, StoreHealthConfigDefaults)

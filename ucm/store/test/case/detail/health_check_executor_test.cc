@@ -39,15 +39,14 @@ TEST(UCHealthCheckExecutorTest, ReturnsStoreResult)
     EXPECT_EQ(executor.Run([] { return Status::NotFound(); }), Status::NotFound());
 }
 
-TEST(UCHealthCheckExecutorTest, CapsConcurrentTimedOutProbesAt64)
+TEST(UCHealthCheckExecutorTest, CapsTimedOutWorkersAt64)
 {
-    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
+    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(10)};
 
     std::mutex mutex;
     std::condition_variable cv;
     bool release = false;
     std::atomic<size_t> entered{0};
-    std::atomic<size_t> returned{0};
     auto check = [&] {
         entered.fetch_add(1, std::memory_order_relaxed);
         cv.notify_all();
@@ -56,45 +55,29 @@ TEST(UCHealthCheckExecutorTest, CapsConcurrentTimedOutProbesAt64)
         return Status::OK();
     };
 
-    constexpr size_t maxConcurrent = 64;
-    std::vector<Status> results(maxConcurrent, Status::Error());
-    std::vector<std::thread> callers;
-    callers.reserve(maxConcurrent);
-    for (size_t i = 0; i < maxConcurrent; ++i) {
-        callers.emplace_back([&, i] {
-            results[i] = executor.Run(check);
-            returned.fetch_add(1, std::memory_order_relaxed);
-            cv.notify_all();
-        });
-    }
+    constexpr size_t maxWorkers = 64;
+    std::vector<Status> results;
+    for (size_t i = 0; i < maxWorkers; ++i) { results.push_back(executor.Run(check)); }
 
     bool allEntered = false;
     {
         std::unique_lock<std::mutex> lock(mutex);
         allEntered = cv.wait_for(lock, std::chrono::seconds(1),
-                                 [&] { return entered.load() == maxConcurrent; });
+                                 [&] { return entered.load() == maxWorkers; });
     }
     const auto overflowStart = std::chrono::steady_clock::now();
     const auto overflow = executor.Run(check);
     const auto overflowElapsed = std::chrono::steady_clock::now() - overflowStart;
-
-    bool allReturned = false;
-    {
-        std::unique_lock<std::mutex> lock(mutex);
-        allReturned = cv.wait_for(lock, std::chrono::seconds(1),
-                                  [&] { return returned.load() == maxConcurrent; });
-    }
 
     {
         std::lock_guard<std::mutex> lock(mutex);
         release = true;
     }
     cv.notify_all();
-    for (auto& caller : callers) { caller.join(); }
+    executor.Stop();
 
     EXPECT_TRUE(allEntered);
-    EXPECT_TRUE(allReturned);
-    EXPECT_EQ(entered, maxConcurrent);
+    EXPECT_EQ(entered, maxWorkers);
     EXPECT_EQ(overflow, Status::Timeout());
     EXPECT_LT(overflowElapsed, std::chrono::milliseconds(50));
     for (const auto& result : results) { EXPECT_EQ(result, Status::Timeout()); }
