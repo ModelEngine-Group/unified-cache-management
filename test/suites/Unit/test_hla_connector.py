@@ -42,11 +42,12 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
 
 
 class FakeTensor:
-    def __init__(self, ptr, shape, strides, element_size=2):
+    def __init__(self, ptr, shape, strides, element_size=2, storage=None):
         self.ptr = ptr
         self.shape = shape
         self.strides = strides
         self.item_size = element_size
+        self.storage = storage
 
     def numel(self):
         return math.prod(self.shape)
@@ -54,8 +55,11 @@ class FakeTensor:
     def dim(self):
         return len(self.shape)
 
-    def stride(self, dim):
-        return self.strides[dim]
+    def stride(self, dim=None):
+        return self.strides if dim is None else self.strides[dim]
+
+    def untyped_storage(self):
+        return self.storage
 
     def element_size(self):
         return self.item_size
@@ -91,6 +95,16 @@ def hla():
             "_finalize_glm53_ascend_columns",
             "_finalize_layout_arrays",
             "_extract_group_addrs",
+            "_append_lb_page_layout",
+            "_collect_shared_tensor_info",
+            "_append_contiguous_page_layout",
+            "_append_ascend_component_major_layout",
+            "_append_ascend_attn_only_layout",
+            "_mamba_component_sizes",
+            "_attention_component_sizes",
+            "_dtype_size",
+            "extract_block_addrs",
+            "extract_block_addrs_for_row",
         },
         "UCMHybridLinearAttentionConnector": {
             "_scope_blocks",
@@ -156,7 +170,10 @@ def hla():
         "MLAAttentionSpec": MLAAttentionSpec,
         "MambaSpec": MambaSpec,
         "UniformTypeKVCacheSpecs": UniformTypeKVCacheSpecs,
-        "torch": SimpleNamespace(Tensor=FakeTensor),
+        "torch": SimpleNamespace(
+            Tensor=FakeTensor,
+            empty=lambda shape, dtype: SimpleNamespace(element_size=lambda: dtype),
+        ),
         "logger": MagicMock(),
         "ucmmetrics": MagicMock(),
         "current_platform": SimpleNamespace(
@@ -871,3 +888,282 @@ def test_glm_preload_waits_all_state_rows_before_returning(
     # for every row, while the unused speculative tail remains untouched.
     for values in memory.values():
         assert values == {22: b"checkpoint", 23: b"checkpoint", 99: b"scratch"}
+
+
+def _qwen_layout(hla, device, legacy, model="35", rows=16, blocks=3, memory=False):
+    # Sizes from the user's dumps; CUDA legacy is a synthetic page-major fixture.
+    tokens, page, conv, ssm, heads = {
+        ("35", True): (768, 794112, 7680, 393216, 1),
+        ("35", False): (512, 524288, 7680, 393216, 1),
+        ("38", True): (1536, 3176448, 30720, 1572864, 2),
+        ("38", False): (896, 1835008, 30720, 1572864, 2),
+    }[(model, legacy)]
+    if device == "cuda" and not legacy:
+        tokens, page, conv, ssm, heads = 896, 1835008, 30720, 1572864, 2
+    layer_stride = blocks * page
+    alignment, offset = 128, 256
+    backing_size = offset + rows * layer_stride + 64
+    storage_size = alignment + backing_size + 256
+    data = np.arange(storage_size, dtype=np.uint8) if memory else None
+    storage_base = data.ctypes.data if memory else 0x100000000
+    storage = SimpleNamespace(
+        data_ptr=lambda: storage_base, nbytes=lambda: storage_size
+    )
+    backing_base = storage_base + alignment
+    names = [
+        [f"layer.{4 * row + lane}" for row in range(rows)] for lane in (3, 0, 1, 2)
+    ]
+    attn = FullAttentionSpec(
+        block_size=tokens,
+        page_size_bytes=page,
+        num_kv_heads=heads,
+        head_size=256,
+        head_size_v=256,
+        dtype=2,
+    )
+    state = MambaSpec(
+        block_size=tokens,
+        page_size_bytes=page,
+        mamba_cache_mode="align",
+        shapes=((conv // 2,), (ssm // 4,)),
+        dtypes=(2, 4),
+    )
+    k_size = tokens * heads * 256 * 2
+    chunks = tokens // 128
+    k_chunk = k_size // chunks
+    caches = {}
+    descriptors = []
+    slot_bases = []
+    for row in range(rows):
+        base = backing_base + offset + row * layer_stride
+        slot_bases.append(base)
+        if legacy:
+            descriptors.append(
+                SimpleNamespace(
+                    shared_by=[lane[row] for lane in names],
+                    size=layer_stride,
+                    offset=0,
+                    block_stride=0,
+                )
+            )
+        if legacy and device == "npu":
+            k_ptr, v_ptr = base + blocks * conv, base + blocks * (conv + k_size)
+            kv_stride = k_chunk
+            ssm_ptr, conv_stride, ssm_stride = k_ptr, conv, ssm
+        else:
+            k_ptr, v_ptr = base, base + k_chunk
+            kv_stride = 2 * k_chunk
+            ssm_ptr, conv_stride, ssm_stride = base + conv, page, page
+        if device == "cuda":
+            # Logical BHNC over physical BNHC, with H > 1: not contiguous in
+            # logical dimension order, but each scheduler page is contiguous.
+            caches[names[0][row]] = FakeTensor(
+                base,
+                (blocks * chunks, heads, 128, 512),
+                (page // chunks // 2, 512, heads * 512, 1),
+                2,
+                storage,
+            )
+        else:
+            caches[names[0][row]] = tuple(
+                FakeTensor(
+                    ptr,
+                    (blocks * chunks, k_chunk // 2),
+                    (kv_stride // 2, 1),
+                    2,
+                    storage,
+                )
+                for ptr in (k_ptr, v_ptr)
+            )
+        for gid in range(1, 4):
+            if device == "cuda" and not legacy:
+                caches[names[gid][row]] = FakeTensor(
+                    base,
+                    (blocks, 1, 1, conv + ssm),
+                    (page, conv + ssm, conv + ssm, 1),
+                    1,
+                    storage,
+                )
+            else:
+                caches[names[gid][row]] = (
+                    FakeTensor(
+                        base, (blocks, conv // 2), (conv_stride // 2, 1), 2, storage
+                    ),
+                    FakeTensor(
+                        ssm_ptr, (blocks, ssm // 4), (ssm_stride // 4, 1), 4, storage
+                    ),
+                )
+    # CUDA lists linear groups first; Ascend lists attention first.
+    order = [1, 2, 3, 0] if device == "cuda" else [0, 1, 2, 3]
+    if not legacy:
+        descriptors = [
+            SimpleNamespace(
+                layers=names[gid],
+                size=backing_size,
+                offset=offset,
+                layer_stride=layer_stride,
+                block_stride=page,
+            )
+            for gid in order
+        ]
+    layout = hla.HybridLinearAttentionLayout()
+    layout.num_blocks = blocks
+    layout.layer_name_to_id = {name: int(name.split(".")[-1]) for name in caches}
+    layout.vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            hf_config=SimpleNamespace(architectures=["Qwen3_5ForConditionalGeneration"])
+        )
+    )
+    layout.kv_cache_config = SimpleNamespace(
+        kv_cache_layout=None if legacy else "LBNHC",
+        kv_cache_groups=[
+            group(attn if gid == 0 else state, *names[gid]) for gid in order
+        ],
+        kv_cache_tensors=descriptors,
+    )
+    hla.current_platform.device_type = device
+    hla.current_platform.is_cuda_alike = lambda: device == "cuda"
+    return SimpleNamespace(
+        layout=layout,
+        caches=caches,
+        names=names,
+        bases=slot_bases,
+        page=page,
+        conv=conv,
+        ssm=ssm,
+        k_size=k_size,
+        blocks=blocks,
+        layer_stride=layer_stride,
+        data=data,
+        storage_base=storage_base,
+    )
+
+
+@pytest.mark.parametrize("model", ["35", "38"])
+@pytest.mark.parametrize(
+    "device,legacy", [("npu", True), ("npu", False), ("cuda", False), ("cuda", True)]
+)
+def test_qwen_shared_slots_preserve_addresses_and_row_save_order(
+    hla, model, device, legacy
+):
+    case = _qwen_layout(hla, device, legacy, model)
+    layout = case.layout
+    layout._build_layout(case.caches)
+    assert len(layout.row_slices) == 16
+    assert not hasattr(layout, "group_layouts")
+    assert not getattr(layout, "preload_all_rows", False)
+    assert not getattr(layout, "save_after_forward", False)
+    sizes = (
+        [case.conv, case.ssm, case.k_size]
+        if legacy and device == "npu"
+        else [case.page]
+    )
+    assert layout.row_tensor_size_lists == [sizes] * 16
+    assert int(layout.tensor_size_lists.sum()) == 16 * case.page
+    assert int(layout.buffer_sizes.sum()) == 16 * case.layer_stride
+    for row, base in enumerate(case.bases):
+        for lane in case.names:
+            assert layout.layer_name_to_row[lane[row]] == row
+        for block in range(case.blocks):
+            expected = (
+                [
+                    base + block * case.conv,
+                    base + case.blocks * case.conv + block * case.ssm,
+                    base + case.blocks * (case.conv + case.ssm) + block * case.k_size,
+                ]
+                if legacy and device == "npu"
+                else [base + block * case.page]
+            )
+            # Group ownership changes the block table, not this physical page.
+            for group_id in range(4):
+                addresses = layout.extract_block_addrs_for_row(
+                    [block], row, [group_id]
+                )[0]
+                assert addresses.tolist() == expected
+                bulk = layout.extract_block_addrs([block], group_ids=[group_id])[0]
+                np.testing.assert_array_equal(addresses, bulk[layout.row_slices[row]])
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.kv_cache_layout = layout
+    connector._kv_cache_config = layout.kv_cache_config
+    connector.layer_name_to_row = layout.layer_name_to_row
+    connector.layer_name_to_id = layout.layer_name_to_id
+    connector.row_ids = list(range(16))
+    connector.commit_row_id = 15
+    assert connector._plan_row_saves() == {
+        case.names[0][row]: [row] for row in range(15)
+    }
+
+
+@pytest.mark.parametrize(
+    "device,legacy", [("npu", True), ("npu", False), ("cuda", False), ("cuda", True)]
+)
+def test_qwen_page_roundtrip_does_not_touch_other_blocks_or_alignment(
+    hla, device, legacy
+):
+    import ctypes
+
+    case = _qwen_layout(hla, device, legacy, rows=2, memory=True)
+    layout = case.layout
+    layout._build_layout(case.caches)
+    before = case.data.copy()
+    target = 1
+    addresses = layout.extract_block_addrs([target])[0]
+    sizes = layout.tensor_size_lists.tolist()
+    saved = [ctypes.string_at(int(addr), size) for addr, size in zip(addresses, sizes)]
+    selected = np.zeros(case.data.size, dtype=bool)
+    for base in case.bases:
+        start = base - case.storage_base
+        if legacy and device == "npu":
+            selected[start + target * case.conv : start + (target + 1) * case.conv] = (
+                True
+            )
+            start += case.blocks * case.conv
+            selected[start + target * case.ssm : start + (target + 1) * case.ssm] = True
+            start += case.blocks * case.ssm
+            selected[
+                start + target * case.k_size : start + (target + 1) * case.k_size
+            ] = True
+        else:
+            selected[start + target * case.page : start + (target + 1) * case.page] = (
+                True
+            )
+    # Poison everything, then load only one block of each physical slot.
+    case.data[:] = 231
+    expected = case.data.copy()
+    expected[selected] = before[selected]
+    for addr, data in zip(addresses, saved):
+        ctypes.memmove(int(addr), data, len(data))
+    np.testing.assert_array_equal(case.data, expected)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "descriptor_stride",
+        "descriptor_extent",
+        "view_stride",
+        "storage_extent",
+        "alias_origin",
+        "separate_component_storage",
+    ],
+)
+def test_qwen_lb_rejects_inconsistent_views_before_registering_buffers(hla, fault):
+    case = _qwen_layout(hla, "npu", False, rows=2)
+    layout = case.layout
+    raw = layout.kv_cache_config.kv_cache_tensors[0]
+    key, value = case.caches[case.names[0][0]]
+    if fault == "descriptor_stride":
+        raw.block_stride += 1
+    elif fault == "descriptor_extent":
+        raw.offset = raw.size
+    elif fault == "view_stride":
+        key.strides = (key.strides[0] + 1, *key.strides[1:])
+    elif fault == "storage_extent":
+        key.storage.nbytes = lambda: case.page
+    elif fault == "alias_origin":
+        key.ptr += 64
+        value.ptr += 64
+    else:
+        value.storage = SimpleNamespace(data_ptr=lambda: 123, nbytes=lambda: raw.size)
+    with pytest.raises(ValueError, match="hybrid LB|Hybrid LB"):
+        layout._build_layout(case.caches)

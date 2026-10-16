@@ -459,9 +459,9 @@ class HybridLinearAttentionLayout(KVCacheLayout):
     - CUDA stores one contiguous page per physical block. The same bytes are
       viewed as either attention [K, V] or mamba [conv, ssm, padding].
 
-    The store receives one unified tensor_size_list, so we expose the three
-    physical slices for Ascend, while CUDA is exposed as one contiguous page
-    with a full-page stride.
+    Legacy Ascend slots expose three physical slices. Standardized compact
+    LB descriptors expose one full page per slot on either device, independent
+    of the logical dimension order of the backend's tensor views.
     """
 
     def __init__(
@@ -971,6 +971,94 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists.append(sizes)
         block_stride_lists.append(sizes)
 
+    def _append_lb_page_layout(
+        self,
+        raw_tensor,
+        kvcaches,
+        layer_to_specs,
+        backings,
+        slots,
+        base_ptrs,
+        buffer_size_rows,
+        tensor_size_lists,
+        block_stride_lists,
+    ) -> None:
+        """Normalize compact LB descriptors into shared physical page rows.
+
+        Qwen's K/conv view starts at page zero on both CUDA and Ascend.
+        Derive the backing origin from that view, rather than storage.data_ptr(),
+        since the allocator may align a backing slice inside a larger storage.
+        """
+        names = _kv_cache_tensor_layers(raw_tensor)
+        offset = int(getattr(raw_tensor, "offset", 0))
+        layer_stride = int(raw_tensor.layer_stride)
+        page_size = int(raw_tensor.block_stride)
+        size = int(raw_tensor.size)
+        if (
+            not names
+            or offset < 0
+            or page_size <= 0
+            or layer_stride < self.num_blocks * page_size
+            or layer_stride % page_size
+            or offset + len(names) * layer_stride > size
+        ):
+            raise ValueError("Invalid hybrid LB page descriptor.")
+        allocation_blocks = layer_stride // page_size
+        for layer_index, name in enumerate(names):
+            if any(spec.page_size_bytes != page_size for spec in layer_to_specs[name]):
+                raise ValueError(f"Hybrid LB page size disagrees with spec: {name}.")
+            value = kvcaches[name]
+            tensors = (value,) if isinstance(value, torch.Tensor) else value
+            if not isinstance(tensors, (tuple, list)) or not tensors:
+                raise TypeError(f"Unsupported hybrid LB cache entry: {name}.")
+            if any(not isinstance(tensor, torch.Tensor) for tensor in tensors):
+                raise TypeError(f"Unsupported hybrid LB cache component: {name}.")
+            tensors = [tensor for tensor in tensors if tensor.numel()]
+            if not tensors:
+                raise ValueError(f"Empty hybrid LB cache entry: {name}.")
+            page_base = min(int(tensor.data_ptr()) for tensor in tensors)
+            storage = tensors[0].untyped_storage()
+            storage_base = int(storage.data_ptr())
+            storage_end = storage_base + int(storage.nbytes())
+            backing_base = page_base - offset - layer_index * layer_stride
+            if backing_base < storage_base or backing_base + size > storage_end:
+                raise ValueError(f"Hybrid LB backing exceeds tensor storage: {name}.")
+            backing = (backing_base, size)
+            if backings.setdefault(storage_base, backing) != backing:
+                raise ValueError(f"Inconsistent hybrid LB backing origin: {name}.")
+            for tensor in tensors:
+                strides = tensor.stride()
+                chunks, remainder = divmod(tensor.shape[0], allocation_blocks)
+                tensor_start = int(tensor.data_ptr())
+                tensor_end = tensor_start + tensor.element_size() * (
+                    1
+                    + sum(
+                        (dim - 1) * stride for dim, stride in zip(tensor.shape, strides)
+                    )
+                )
+                if (
+                    int(tensor.untyped_storage().data_ptr()) != storage_base
+                    or remainder
+                    or chunks < 1
+                    or any(stride < 0 for stride in strides)
+                    or chunks * strides[0] * tensor.element_size() != page_size
+                    or not page_base <= tensor_start < page_base + page_size
+                    or tensor_end > page_base + layer_stride
+                ):
+                    raise ValueError(
+                        f"Hybrid LB view disagrees with page strides: {name}."
+                    )
+            slot = (page_base, layer_stride, page_size)
+            row_id = slots.get(slot)
+            if row_id is None:
+                row_id = len(base_ptrs)
+                slots[slot] = row_id
+                base_ptrs.append([page_base])
+                buffer_size_rows.append([layer_stride])
+                tensor_size_lists.append([page_size])
+                block_stride_lists.append([page_size])
+            self.layer_name_to_row[name] = row_id
+
     def _build_layout(self, kvcaches):
         # GLM-5.3-Flash is currently supported only on Ascend. Do not let
         # CUDA fall back to the generic layout before it has been adapted.
@@ -993,10 +1081,28 @@ class HybridLinearAttentionLayout(KVCacheLayout):
 
         is_npu = current_platform.device_type == "npu"
         layer_to_specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
+        backings = {}
+        slots = {}
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
             layer_names = _kv_cache_tensor_layers(raw_tensor)
             if not layer_names:
+                continue
+
+            # Positive layer strides describe distinct layer regions; zero or
+            # absent strides retain the legacy shared-slot interpretation.
+            if int(getattr(raw_tensor, "layer_stride", 0)) > 0:
+                self._append_lb_page_layout(
+                    raw_tensor,
+                    kvcaches,
+                    layer_to_specs,
+                    backings,
+                    slots,
+                    base_ptrs,
+                    buffer_size_rows,
+                    tensor_size_lists,
+                    block_stride_lists,
+                )
                 continue
 
             shared_specs, shared_ptrs = self._collect_shared_tensor_info(
