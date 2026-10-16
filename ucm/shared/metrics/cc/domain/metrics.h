@@ -94,10 +94,6 @@ struct MetricBuffer {
         int idx_;
     };
 
-    // The writer stores activeWriteIdx_ then loads writeIdx_, and the collector switches
-    // writeIdx_ then loads activeWriteIdx_. Each side must see the other's store, so
-    // these four operations need seq_cst. With acquire/release, both sides can miss
-    // each other and touch the same buffer at the same time.
     int SwitchBuffer() { return writeIdx_.fetch_xor(1, std::memory_order_seq_cst); }
 
     int BeginWrite()

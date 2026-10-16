@@ -33,7 +33,6 @@
 
 using namespace UC::Metrics;
 
-// Run in a fresh process with --gtest_also_run_disabled_tests; a race can corrupt the heap.
 TEST(UCMetricsStress, DISABLED_TenWritersOneCollector)
 {
     constexpr int numWriters = 10;
@@ -81,7 +80,6 @@ TEST(UCMetricsStress, DISABLED_TenWritersOneCollector)
                                      uint64_t{0});
         totalCount += count;
         totalSum += histogram.sum;
-        // Every observation is exactly 1.0, so each snapshot must satisfy sum == count.
         bool valid = histogram.bucketCounts.size() == 4 && histogram.bucketCounts[1] == count &&
                      histogram.sum == static_cast<double>(count);
         if (!valid && !invalidSnapshot) {
@@ -92,7 +90,6 @@ TEST(UCMetricsStress, DISABLED_TenWritersOneCollector)
                       << " collections=" << collections << " count=" << count
                       << " sum=" << histogram.sum << " buckets=" << histogram.bucketCounts.size()
                       << std::endl;
-            // Keep stressing after the first mismatch to expose possible heap corruption as well.
         }
     };
 
