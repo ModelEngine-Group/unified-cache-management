@@ -114,6 +114,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
 {
     if (num == 0) { return static_cast<ssize_t>(-1); }
 
+    std::shared_ptr<const std::vector<Detail::BlockId>> ownedBlocks;
     std::shared_ptr<std::atomic<ssize_t>> firstFail;
     std::shared_ptr<std::atomic<int32_t>> status;
     std::shared_ptr<Latch> waiter;
@@ -121,6 +122,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     const auto ok = Status::OK().Underlying();
 
     try {
+        ownedBlocks = std::make_shared<std::vector<Detail::BlockId>>(blocks, blocks + num);
         firstFail = std::make_shared<std::atomic<ssize_t>>(static_cast<ssize_t>(num));
         status = std::make_shared<std::atomic<int32_t>>(ok);
         waiter = std::make_shared<Latch>();
@@ -133,7 +135,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     waiter->Set(nWorker);
 
     for (size_t begin = 0; begin < nWorker; begin++) {
-        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
+        prefixLookupSrv_.Push({ownedBlocks, begin, num, nWorker, firstFail, status, waiter});
     }
 
     waiter->Wait();
@@ -206,7 +208,8 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
         auto curFail = ctx.firstFail->load();
         if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
 
-        if (!Lookup(ctx.blocks + i)) {
+        const auto& block = (*ctx.blocks)[i];
+        if (!Lookup(&block)) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
                 if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),
@@ -216,7 +219,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
-        if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
+        if (hotnessTrackerEnable_) { hotnessTracker_.Touch(block); }
     }
     ctx.waiter->Done();
 }

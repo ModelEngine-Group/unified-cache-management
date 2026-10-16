@@ -46,7 +46,7 @@ class SpaceManager {
     };
 
     struct PrefixLookupContext {
-        const Detail::BlockId* blocks;
+        std::shared_ptr<const std::vector<Detail::BlockId>> blocks;
         size_t begin;
         size_t end;
         size_t nWorker;
