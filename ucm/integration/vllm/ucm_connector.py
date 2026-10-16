@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import glob
 import math
 import os
@@ -35,7 +35,12 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import RequestStatus
 
-from ucm.integration.vllm.device import create_device, get_current_device_id
+import ucm.integration.vllm.request_hasher as request_hasher_module
+from ucm.integration.vllm.device import (
+    create_device,
+    get_current_device_id,
+    get_ucm_worker_torch_device,
+)
 from ucm.integration.vllm.metrics import (
     UCM_HAS_PROM_METRICS,
     UCMConnectorStats,
@@ -75,6 +80,30 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+
+def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
+    """Build the KV namespace with DCP and layout compatibility isolation."""
+    speculative_config = getattr(vllm_config, "speculative_config", None)
+    spec_info = ""
+    if speculative_config is not None:
+        spec_method = getattr(speculative_config, "method", "") or ""
+        spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
+        spec_info = f":{spec_method}:{spec_tokens}"
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+    model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
+    dcp_size = getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1)
+    dcp_info = f":dcp={dcp_size}"
+    layout_info = f":layout={request_hasher_module._layout_source_digest()}"
+    return (
+        f"{model_name}:"
+        f"{vllm_config.parallel_config.tensor_parallel_size}:"
+        f"{vllm_config.model_config.dtype}:{rank_id}"
+        f"{spec_info}{sparse_c8_info}{dcp_info}{layout_info}"
+    )
 
 
 def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
@@ -240,12 +269,16 @@ def _use_ucm_connector_cpu_affinity() -> bool:
     )
 
 
-def _worker_generate_unique_id() -> str:
-    """Worker-side: broadcast a uuid and write to a per-instance file."""
+def _worker_generate_unique_id(prefix: str = "ucm") -> str:
+    """Worker-side: broadcast a uuid and write to a per-instance file.
+
+    The file slot is keyed by parent pid under ``prefix`` so parallel
+    connectors in one engine (KV and EC) never overwrite each other's id.
+    """
     world_group = get_world_group()
     if world_group.rank_in_group == 0:
         now = time.time()
-        for f in glob.glob("/dev/shm/ucm_uniqueid_*"):
+        for f in glob.glob(f"/dev/shm/{prefix}_uniqueid_*"):
             try:
                 if now - os.path.getmtime(f) > 600:
                     os.remove(f)
@@ -255,7 +288,7 @@ def _worker_generate_unique_id() -> str:
     else:
         local_uid = None
     uid = world_group.broadcast_object(local_uid, src=0)
-    path = f"/dev/shm/ucm_uniqueid_{os.getppid()}"
+    path = f"/dev/shm/{prefix}_uniqueid_{os.getppid()}"
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         f.write(uid)
@@ -263,10 +296,10 @@ def _worker_generate_unique_id() -> str:
     return uid
 
 
-def _scheduler_read_unique_id() -> str:
+def _scheduler_read_unique_id(prefix: str = "ucm") -> str:
     """Scheduler-side: read the uuid from the per-instance file."""
     for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_uniqueid_{pid}"
+        path = f"/dev/shm/{prefix}_uniqueid_{pid}"
         try:
             with open(path) as f:
                 uid = f.read().strip()
@@ -279,19 +312,24 @@ def _scheduler_read_unique_id() -> str:
     )
 
 
-def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
+def _worker_publish_block_size(
+    block_size: int,
+    dp_rank: int,
+    store_suffix: str = "",
+) -> None:
     if dp_rank != 0 or get_world_group().rank_in_group != 0:
         return
 
     now = time.time()
-    for stale in glob.glob("/dev/shm/ucm_blocksize_*"):
+    for stale in glob.glob(os.path.join(_SHM_DIR, "ucm_blocksize_*")):
         try:
             if now - os.path.getmtime(stale) > 600:
                 os.remove(stale)
         except OSError:
             pass
 
-    path = f"/dev/shm/ucm_blocksize_{os.getppid()}"
+    suffix_part = f"_{store_suffix}" if store_suffix else ""
+    path = os.path.join(_SHM_DIR, f"ucm_blocksize_{os.getppid()}{suffix_part}")
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         f.write(str(int(block_size)))
@@ -302,9 +340,13 @@ def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
     )
 
 
-def _scheduler_read_block_size() -> int | None:
-    for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_blocksize_{pid}"
+def _scheduler_read_block_size(store_suffix: str = "") -> int | None:
+    suffix_part = f"_{store_suffix}" if store_suffix else ""
+    paths = [
+        os.path.join(_SHM_DIR, f"ucm_blocksize_{pid}{suffix_part}")
+        for pid in (os.getpid(), os.getppid())
+    ]
+    for path in paths:
         try:
             with open(path) as f:
                 content = f.read().strip()
@@ -314,14 +356,12 @@ def _scheduler_read_block_size() -> int | None:
             block_size = int(content)
         except ValueError:
             logger.warning(
-                f"block_size file {path} holds a non-integer value "
-                f"{content!r}, fall back to manual estimate"
+                f"block_size file {path} holds a non-integer value {content!r}."
             )
             return None
         if block_size <= 0:
             logger.warning(
-                f"block_size file {path} holds a non-positive value "
-                f"{block_size}, fall back to manual estimate"
+                f"block_size file {path} holds a non-positive value {block_size}."
             )
             return None
         logger.info(
@@ -329,11 +369,7 @@ def _scheduler_read_block_size() -> int | None:
             f"(pid={os.getpid()}, ppid={os.getppid()})."
         )
         return block_size
-    logger.warning(
-        "block_size file not found "
-        f"(looked for /dev/shm/ucm_blocksize_{os.getpid()} and "
-        f"/dev/shm/ucm_blocksize_{os.getppid()}), fall back to manual estimate"
-    )
+    logger.warning(f"block_size file not found (looked for {' and '.join(paths)}).")
     return None
 
 
@@ -489,6 +525,30 @@ class KVCacheLayout:
         ]
         return ptr_rows, stride_rows, buffer_size_rows
 
+    def _dcp_replicated_scale(self, tensor: KVCacheTensorInfo) -> int:
+        """Return how many physical rows one vllm block spans in this tensor.
+
+        DCP-replicated caches (e.g., the SFA indexer) are allocated with
+        num_blocks × dcp_size rows, so one logical vllm block spans
+        dcp_size physical rows; both copy size and block stride must be
+        scaled accordingly. DCP-sharded caches (MLA latent, one row per
+        block per rank) and the dcp_size == 1 case scale by 1.
+        """
+        dcp_size = getattr(
+            self.vllm_config.parallel_config,
+            "decode_context_parallel_size",
+            1,
+        )
+        if (
+            dcp_size <= 1
+            or tensor.bytes_per_block == 0
+            or tensor.buffer_size % tensor.bytes_per_block
+        ):
+            return 1
+        if tensor.buffer_size // tensor.bytes_per_block == self.num_blocks * dcp_size:
+            return dcp_size
+        return 1
+
     def _build_layout(self, kvcaches):
         tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
         raw_ptr_rows, stride_rows, buffer_size_rows = self._unpack_tensor_rows(
@@ -499,14 +559,19 @@ class KVCacheLayout:
             # A direct transfer copies one whole KV-cache block. Keep only real
             # tensors and flatten all layers into that block; padding would add
             # fake tensors to the store metadata and copy path.
+            flat_tensors = [info for row in tensor_rows for info in row]
             self.base_ptrs = np.asarray(
-                [ptr for row in raw_ptr_rows for ptr in row], dtype=np.uint64
+                [info.ptr for info in flat_tensors], dtype=np.uint64
             )
             self.tensor_size_lists = np.asarray(
-                [stride for row in stride_rows for stride in row], dtype=np.uint64
+                [
+                    info.bytes_per_block * self._dcp_replicated_scale(info)
+                    for info in flat_tensors
+                ],
+                dtype=np.uint64,
             )
             self.buffer_sizes = np.asarray(
-                [size for row in buffer_size_rows for size in row], dtype=np.uint64
+                [info.buffer_size for info in flat_tensors], dtype=np.uint64
             )
             self.block_stride_lists = self.tensor_size_lists
             logger.info(
@@ -535,8 +600,21 @@ class KVCacheLayout:
                 "SharedIndexerKVCacheLayout; otherwise set `use_layerwise: false`."
             )
 
+        # DCP-replicated tensors (e.g., the SFA indexer) span dcp_size rows
+        # per vllm block: scale copy size and block stride so one block
+        # stores all of them, mirroring the handling in
+        # SharedIndexerKVCacheLayout._build_segment_rows.
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
+        self.tensor_size_lists = np.asarray(
+            [
+                [
+                    stride * self._dcp_replicated_scale(tensor)
+                    for stride, tensor in zip(stride_row, tensor_row)
+                ]
+                for stride_row, tensor_row in zip(stride_rows, tensor_rows)
+            ],
+            dtype=np.uint64,
+        )
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.block_stride_lists = self.tensor_size_lists
 
@@ -716,6 +794,25 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         scale_size: int = 0,
     ) -> list[list[KVCacheSegment]]:
         """Build fixed-width rows shared by CUDA and Ascend layouts."""
+        # Ascend SFA allocates the indexer/scale caches DCP-replicated with
+        # num_blocks × dcp_size rows, so each logical vllm_block_id spans
+        # dcp_size physical rows: copy_size and block_stride must be scaled
+        # so one vllm_block stores all dcp_size rows (the full 512-token
+        # indexer) in a single file. CUDA (vllm) instead shards the indexer
+        # cache like the MLA cache (num_blocks rows, one per block), which
+        # must NOT be scaled. Detect replication from the tensor shape so
+        # both platforms share this builder, mirroring
+        # KVCacheLayout._dcp_replicated_scale.
+        dcp_size = getattr(
+            self.vllm_config.parallel_config,
+            "decode_context_parallel_size",
+            1,
+        )
+        indexer_replicated = dcp_size > 1 and any(
+            layer.indexer is not None
+            and self._dcp_replicated_scale(layer.indexer) == dcp_size
+            for layer in layers
+        )
         segment_rows = []
         for layer in layers:
             segments = [
@@ -724,35 +821,97 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
 
             if layout_mode == "bf16":
                 if layer.indexer is not None:
-                    segments.append(self._whole_tensor_segment(layer.indexer))
+                    seg = self._whole_tensor_segment(layer.indexer)
+                    if indexer_replicated:
+                        seg = KVCacheSegment(
+                            ptr=seg.ptr,
+                            copy_size=seg.copy_size * dcp_size,
+                            block_stride=seg.block_stride * dcp_size,
+                            buffer_size=seg.buffer_size,
+                        )
+                    segments.append(seg)
                 else:
-                    segments.append(self._ghost_segment(indexer_size))
+                    ghost = self._ghost_segment(indexer_size)
+                    if indexer_replicated:
+                        ghost = KVCacheSegment(
+                            ptr=0,
+                            copy_size=ghost.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                    segments.append(ghost)
             elif layout_mode == "li_c8":
                 if layer.scale is not None:
+                    idx_seg = self._whole_tensor_segment(layer.indexer)
+                    scale_seg = self._whole_tensor_segment(layer.scale)
+                    if indexer_replicated:
+                        idx_seg = KVCacheSegment(
+                            ptr=idx_seg.ptr,
+                            copy_size=idx_seg.copy_size * dcp_size,
+                            block_stride=idx_seg.block_stride * dcp_size,
+                            buffer_size=idx_seg.buffer_size,
+                        )
+                        scale_seg = KVCacheSegment(
+                            ptr=scale_seg.ptr,
+                            copy_size=scale_seg.copy_size * dcp_size,
+                            block_stride=scale_seg.block_stride * dcp_size,
+                            buffer_size=scale_seg.buffer_size,
+                        )
                     segments.extend(
                         [
-                            self._whole_tensor_segment(layer.indexer),
-                            self._whole_tensor_segment(layer.scale),
+                            idx_seg,
+                            scale_seg,
                         ]
                     )
                 else:
-                    segments.extend(
-                        [
-                            self._ghost_segment(index_chunk_size),
-                            self._ghost_segment(scale_size),
-                        ]
-                    )
+                    g1 = self._ghost_segment(index_chunk_size)
+                    g2 = self._ghost_segment(scale_size)
+                    if indexer_replicated:
+                        g1 = KVCacheSegment(
+                            ptr=0,
+                            copy_size=g1.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                        g2 = KVCacheSegment(
+                            ptr=0,
+                            copy_size=g2.copy_size * dcp_size,
+                            block_stride=0,
+                            buffer_size=0,
+                        )
+                    segments.extend([g1, g2])
             elif layout_mode == "mixed" and layer.scale is not None:
+                idx_stride = layer.indexer.bytes_per_block
+                idx_copy = index_chunk_size
+                if indexer_replicated:
+                    idx_stride *= dcp_size
+                    idx_copy *= dcp_size
+                scale_seg = self._whole_tensor_segment(layer.scale)
+                if indexer_replicated:
+                    scale_seg = KVCacheSegment(
+                        ptr=scale_seg.ptr,
+                        copy_size=scale_seg.copy_size * dcp_size,
+                        block_stride=scale_seg.block_stride * dcp_size,
+                        buffer_size=scale_seg.buffer_size,
+                    )
+                ghost = self._ghost_segment(index_chunk_size)
+                if indexer_replicated:
+                    ghost = KVCacheSegment(
+                        ptr=0,
+                        copy_size=ghost.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
                 segments.extend(
                     [
                         self._real_segment(
                             ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=layer.indexer.buffer_size,
                         ),
-                        self._ghost_segment(index_chunk_size),
-                        self._whole_tensor_segment(layer.scale),
+                        ghost,
+                        scale_seg,
                     ]
                 )
             elif layout_mode == "mixed" and layer.indexer is not None:
@@ -762,31 +921,60 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                         f"segments: bf16_size={layer.indexer.bytes_per_block}, "
                         f"c8_size={index_chunk_size}."
                     )
+                idx_stride = layer.indexer.bytes_per_block
+                idx_copy = index_chunk_size
+                if indexer_replicated:
+                    idx_stride *= dcp_size
+                    idx_copy *= dcp_size
+                ghost = self._ghost_segment(scale_size)
+                if indexer_replicated:
+                    ghost = KVCacheSegment(
+                        ptr=0,
+                        copy_size=ghost.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
                 segments.extend(
                     [
                         self._real_segment(
                             ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=layer.indexer.buffer_size,
                         ),
                         self._real_segment(
-                            ptr=layer.indexer.ptr + index_chunk_size,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
+                            ptr=layer.indexer.ptr + idx_copy,
+                            copy_size=idx_copy,
+                            block_stride=idx_stride,
                             buffer_size=0,
                         ),
-                        self._ghost_segment(scale_size),
+                        ghost,
                     ]
                 )
             elif layout_mode == "mixed":
-                segments.extend(
-                    [
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(scale_size),
-                    ]
-                )
+                g1 = self._ghost_segment(index_chunk_size)
+                g2 = self._ghost_segment(index_chunk_size)
+                g3 = self._ghost_segment(scale_size)
+                if indexer_replicated:
+                    g1 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g1.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                    g2 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g2.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                    g3 = KVCacheSegment(
+                        ptr=0,
+                        copy_size=g3.copy_size * dcp_size,
+                        block_stride=0,
+                        buffer_size=0,
+                    )
+                segments.extend([g1, g2, g3])
             else:
                 raise ValueError(
                     f"Unsupported Shared Indexer layout mode: {layout_mode}."
@@ -1417,19 +1605,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self._kv_cache_config = kv_cache_config
 
-        if current_platform.is_cuda_alike():
-            logger.info("CUDA device is available.")
-            torch_dev = torch
-            dev_name = "cuda"
-        elif current_platform.device_type == "npu":
-            logger.info("NPU device is available.")
-            torch_dev = torch.npu
-            dev_name = "npu"
-        else:
-            raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
-
         if self.device_id >= 0:
-            self.device = torch_dev.device(f"{dev_name}:{self.device_id}")
+            self.device = get_ucm_worker_torch_device(self.device_id)
 
         self.store: UcmKVStoreBaseV1
         self.rope_store: Optional[UcmKVStoreBaseV1] = None
@@ -1466,7 +1643,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
+            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
@@ -1474,8 +1651,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(
-                vllm_config,
-                self.tp_rank % self.tp_size,
+                build_kv_hash_meta(vllm_config, self.tp_rank % self.tp_size)
             )
             self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
 
@@ -1555,7 +1731,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.is_mla:
             return []
         tp_size = vllm_config.parallel_config.tensor_parallel_size
-        return [RequestHasher(vllm_config, rank_id) for rank_id in range(1, tp_size)]
+        return [
+            RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
+            for rank_id in range(1, tp_size)
+        ]
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
         invalid_blocks = set(block_ids)
@@ -1686,8 +1865,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         """
         return self._role != KVConnectorRole.WORKER and self._dp_rank == 0
 
-    def _publish_block_size(self, block_size: int) -> None:
-        _worker_publish_block_size(block_size, self._dp_rank)
+    def _publish_block_size(self, block_size: int, store_suffix: str = "") -> None:
+        _worker_publish_block_size(block_size, self._dp_rank, store_suffix)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -2927,13 +3106,15 @@ class UCMCPConnector(UCMLayerWiseConnector):
             vllm_config.parallel_config.tensor_parallel_size //= self.dcp_world_size
 
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
+            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
             self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
+            self.request_hasher = RequestHasher(
+                build_kv_hash_meta(vllm_config, self.tp_rank)
+            )
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
         self._bind_request_block_hasher()
@@ -3076,7 +3257,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
 
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
         self._seed = self.request_hasher.seed
         self.request_block_hasher = self.request_hasher.make_request_block_hasher(
             self.hash_block_size, self._seed
@@ -3357,16 +3538,25 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
-        use_hybrid_linear_attention = (
-            UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
-        )
+        # FAWA must win before HLA probing.  New vLLM KVCacheTensor objects
+        # describe their layers with ``layers`` and do not have the legacy
+        # ``shared_by`` field; more importantly, DS V4.1 has transient groups
+        # which are not an HLA shared physical region.
+        is_fawa = UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config)
+        use_hybrid_linear_attention = False
+        if not is_fawa:
+            use_hybrid_linear_attention = (
+                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                    kv_cache_config
+                )
+            )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
 
-        if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+        if is_fawa:
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)

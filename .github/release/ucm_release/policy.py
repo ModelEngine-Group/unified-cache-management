@@ -17,6 +17,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import InvalidName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from . import chart
 from . import runtime as runtime_ops
 from . import serialization, version_config, wheel_audit
 
@@ -268,8 +269,22 @@ def _resolve_release_profile(
 def _validate_release_semantics(release: dict[str, Any]) -> None:
     products = release["products"]
     product_ids = [product["id"] for product in products]
-    if set(product_ids) != {"vllm", "vllm-ascend"} or len(product_ids) != 2:
-        raise ValueError("release policy requires exactly vllm and vllm-ascend")
+    if len(product_ids) != len(set(product_ids)):
+        raise ValueError(f"release.products contains duplicate IDs: {product_ids}")
+    supported_products = set(version_config.SUPPORTED_VERSION_KEYS)
+    missing = sorted(supported_products - set(product_ids))
+    unknown = sorted(set(product_ids) - supported_products)
+    if missing or unknown:
+        raise ValueError(
+            f"release.products must match supported products: missing={missing}, unknown={unknown}"
+        )
+    smoke_products = set(release["chart"]["smoke_values"])
+    missing = sorted(chart.CHART_PRODUCTS - smoke_products)
+    unknown = sorted(smoke_products - chart.CHART_PRODUCTS)
+    if missing or unknown:
+        raise ValueError(
+            f"release.chart.smoke_values must match Chart products: missing={missing}, unknown={unknown}"
+        )
     for release_type in RELEASE_TYPES:
         profile_publish = release["release_profiles"][release_type]["publish"]
         if (
@@ -290,7 +305,23 @@ def _validate_release_semantics(release: dict[str, Any]) -> None:
             )
 
 
-def _validate_platform_semantics(platforms: dict[str, Any]) -> None:
+def _validate_platform_semantics(
+    platforms: dict[str, Any], *, product_ids: set[str]
+) -> None:
+    unknown_products = sorted(
+        set(platforms["excluded_upstream_variants"]) - product_ids
+    )
+    if unknown_products:
+        raise ValueError(
+            f"platforms.excluded_upstream_variants refers to unknown products: {unknown_products}"
+        )
+    backend_ids = set(platforms["backends"])
+    missing = sorted(runtime_ops.SUPPORTED_BACKENDS - backend_ids)
+    unknown = sorted(backend_ids - runtime_ops.SUPPORTED_BACKENDS)
+    if missing or unknown:
+        raise ValueError(
+            f"platforms.backends must match supported backends: missing={missing}, unknown={unknown}"
+        )
     for backend, config in platforms["backends"].items():
         has_distribution = "distribution" in config
         has_template = "distribution_template" in config
@@ -385,7 +416,9 @@ def load(
         platforms, schema["$defs"]["platformPolicy"], root=schema, path="$.platforms"
     )
     _validate_release_semantics(release)
-    _validate_platform_semantics(platforms)
+    _validate_platform_semantics(
+        platforms, product_ids={product["id"] for product in release["products"]}
+    )
     return {
         "release": release,
         "platforms": platforms,

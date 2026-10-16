@@ -6,6 +6,7 @@ import json
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 
 
 def read(operation: str, reference: str) -> str:
@@ -96,4 +97,17 @@ def read_json(operation: str, reference: str) -> object:
     except json.JSONDecodeError as error:
         raise ValueError(
             f"crane {operation} returned malformed JSON for {reference}"
+        ) from error
+
+
+def created_at(repository: str, tag: str) -> datetime:
+    """Return the OCI image creation time for a published tag."""
+    payload = read_json("config", f"{repository}:{tag}")
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("created"), str):
+        raise ValueError(f"OCI config for {repository}:{tag} has no created timestamp")
+    try:
+        return datetime.fromisoformat(payload["created"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(
+            f"OCI config for {repository}:{tag} has invalid created timestamp"
         ) from error

@@ -164,6 +164,8 @@ jobs:
     outputs:
       plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
       wheel_matrix: ${{ steps.plan.outputs.wheel_matrix }}
+      fallback_runtime_matrix: ${{ steps.plan.outputs.fallback_runtime_matrix }}
+      has_suffix_fallback: ${{ steps.plan.outputs.has_suffix_fallback }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -195,12 +197,17 @@ jobs:
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog out/plan/builder-catalog.json --route pr \
             --output out/plan/release-plan.json >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release runtime fallback-matrix \
+            --plan out/plan/release-plan.json \
+            --output out/plan/fallback-runtime-matrix.json >/dev/null
           wheel_matrix="$(jq -ce '.wheel_matrix' out/plan/release-plan.json)"
           test "$(jq '.include | length' <<<"${wheel_matrix}")" -gt 0
           artifact="ucm-native-wheel-plan-run-${GITHUB_RUN_ID}"
           {
             echo "plan_artifact=${artifact}"
             echo "wheel_matrix=${wheel_matrix}"
+            echo "fallback_runtime_matrix=$(jq -c . out/plan/fallback-runtime-matrix.json)"
+            echo "has_suffix_fallback=$(jq -r '.include | length > 0' out/plan/fallback-runtime-matrix.json)"
           } >>"${GITHUB_OUTPUT}"
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -226,3 +233,58 @@ jobs:
       plan_artifact: ${{ needs.plan-wheels.outputs.plan_artifact }}
       source_ref: ${{ inputs.source_ref }}
       retention_days: ${{ inputs.retention_days }}
+
+  validate-fallback-runtimes:
+    name: Validate fallback Runtime · ${{ matrix.label }}
+    needs: [plan-wheels, build-wheels]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.plan-wheels.result == 'success' &&
+        needs.build-wheels.result == 'success' &&
+        needs.plan-wheels.outputs.has_suffix_fallback == 'true'
+      }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan-wheels.outputs.fallback_runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ucm-wheel-${{ matrix.wheel_id }}-run-${{ github.run_id }}
+          path: input/wheel
+      - id: runtime-validation
+        name: Install and load the local Wheel in the target Runtime
+        env:
+          RUNTIME_IMAGE: ${{ matrix.runtime_image }}
+          RUNTIME_PLATFORM: linux/${{ matrix.cpu_arch }}
+          BACKEND_DISTRIBUTION: ${{ matrix.distribution }}
+          PLATFORM_ARG: ${{ matrix.platform_arg }}
+        run: |
+          bash .github/release/install-validate-wheel-runtime.sh input/wheel
+      - name: Summarize CANN fallback validation
+        if: ${{ always() }}
+        env:
+          RUNTIME_IMAGE: ${{ matrix.runtime_image }}
+          RUNTIME_CANN_VERSION: ${{ matrix.runtime_cann_version }}
+          BUILDER_CANN_VERSION: ${{ matrix.builder_cann_version }}
+          VALIDATION_OUTCOME: ${{ steps.runtime-validation.outcome }}
+        run: |
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            echo '### CANN Builder suffix fallback'
+            echo
+            printf -- '- Runtime: `%s`\n' "${RUNTIME_IMAGE}"
+            printf -- '- Runtime CANN requirement: `%s`\n' "${RUNTIME_CANN_VERSION}"
+            printf -- '- Selected Builder CANN: `%s` (suffix fallback)\n' "${BUILDER_CANN_VERSION}"
+            printf -- '- Installation and native loading: `%s`\n' "${VALIDATION_OUTCOME}"
+          } >>"${GITHUB_STEP_SUMMARY}"

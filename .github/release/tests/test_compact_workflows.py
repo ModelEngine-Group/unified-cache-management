@@ -49,6 +49,22 @@ def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
     assert "needs.build-toolkit.result == 'success'" in bot["build-images"]["if"]
 
 
+def test_chart_filters_families_without_a_second_plan_artifact() -> None:
+    release = _load("release-ucm.yml")["jobs"]
+    plan = release["plan"]
+    assert "chart_plan_artifact" not in plan["outputs"]
+    assert release["package-chart"]["with"]["plan_artifact"] == (
+        "${{ needs.plan.outputs.plan_artifact }}"
+    )
+    chart = _load("_build-chart.yml")["jobs"]["package"]
+    package_step = next(step for step in chart["steps"] if step.get("id") == "package")
+    assert "plan=input/plan/release-plan.json" in package_step["run"]
+    assert (
+        'select(.product_id == "vllm" or .product_id == "vllm-ascend")'
+        in package_step["run"]
+    )
+
+
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
     assert workflow["on"]["schedule"] == [{"cron": "0 18 * * *"}]
@@ -348,19 +364,9 @@ def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
         if step.get("name")
         == "Install and validate the local Wheel in its matching Runtime"
     )
-    assert "docker run --rm" in run
-    assert '-e UCM_WHEEL="/tmp/${wheel_name}"' in run
-    assert '"${UCM_WHEEL}"' in run
-    assert "validate_wheel_runtime.py" in run
-    assert "python3 -m venv" in run
-    assert "DEFERRED_EXTERNAL_LIBRARIES" in run
-    assert "EXPECTED_RUNTIME_REQUIREMENTS" in run
-    assert '.dependencies | select(type == "array")' in run
-    assert ".deferred_external_libraries" in run
-    assert 'if [[ "${PLATFORM_ARG}" == ascend* ]]' not in run
-    assert "python -m pip check" not in run
-    assert 're.search(r\\"[0-9]+' in run
-    assert "re.search(r'[0-9]+" not in run
+    assert run.strip() == (
+        "bash .github/release/install-validate-wheel-runtime.sh input/wheel"
+    )
     assert "validate-wheel-runtimes" in jobs["publish-release-artifacts"]["needs"]
     assert set(jobs["publish-pypi"]["needs"]) == {
         "plan",
@@ -524,6 +530,7 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
         "resolve-upstreams",
         "plan-wheels",
         "build-wheels",
+        "validate-fallback-runtimes",
     }
     assert jobs["probe-runtimes"]["uses"] == ("./.github/workflows/_probe-runtime.yml")
     assert jobs["build-wheels"]["strategy"]["fail-fast"] is False
@@ -543,6 +550,36 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     assert "docker push" not in text
     assert "open-release" not in text
     assert "publish" not in text.lower()
+    validation = jobs["validate-fallback-runtimes"]
+    assert set(validation["needs"]) == {"plan-wheels", "build-wheels"}
+    assert "needs.plan-wheels.result == 'success'" in validation["if"]
+    assert "needs.build-wheels.result == 'success'" in validation["if"]
+    assert "needs.plan-wheels.outputs.has_suffix_fallback == 'true'" in validation["if"]
+    assert validation["strategy"] == {
+        "fail-fast": False,
+        "matrix": "${{ fromJSON(needs.plan-wheels.outputs.fallback_runtime_matrix) }}",
+    }
+    assert validation["runs-on"] == "${{ matrix.runner }}"
+    assert validation["timeout-minutes"] == 45
+    assert validation["permissions"] == {"contents": "read"}
+    download = next(
+        step
+        for step in validation["steps"]
+        if step.get("with", {}).get("path") == "input/wheel"
+    )
+    assert download["with"]["name"] == (
+        "ucm-wheel-${{ matrix.wheel_id }}-run-${{ github.run_id }}"
+    )
+    step = next(
+        step for step in validation["steps"] if step.get("id") == "runtime-validation"
+    )
+    assert step["run"].strip() == (
+        "bash .github/release/install-validate-wheel-runtime.sh input/wheel"
+    )
+    assert step["env"]["RUNTIME_IMAGE"] == "${{ matrix.runtime_image }}"
+    assert step["env"]["RUNTIME_PLATFORM"] == "linux/${{ matrix.cpu_arch }}"
+    assert not validation.get("continue-on-error")
+    assert not step.get("continue-on-error")
 
 
 def test_finalizer_downloads_pypi_receipt_only_when_publication_is_enabled() -> None:
@@ -570,6 +607,11 @@ def test_release_image_retries_each_enabled_profile_member_after_verification() 
         for step in steps
         if step.get("name") == "Verify Runtime glibc, Python, OS, and UCM import"
     )
+    reclaim = next(
+        step
+        for step in steps
+        if step.get("name") == "Reclaim BuildKit cache before runtime verification"
+    )
     publish = next(
         step
         for step in steps
@@ -578,9 +620,15 @@ def test_release_image_retries_each_enabled_profile_member_after_verification() 
 
     assert (
         step_names.index(build["name"])
+        < step_names.index(reclaim["name"])
         < step_names.index(verify["name"])
         < step_names.index(publish["name"])
     )
+    disk_cleanup = next(
+        step for step in steps if step.get("uses") == "jlumbroso/free-disk-space@v1.3.1"
+    )
+    assert disk_cleanup["with"]["large-packages"] is True
+    assert "docker buildx prune --all --force" in reclaim["run"]
     assert "publish_member()" in publish["run"]
     assert "publish_channel()" in publish["run"]
     assert "for attempt in 1 2 3" in publish["run"]

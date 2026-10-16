@@ -17,7 +17,7 @@ Builders and synchronizes checked mirrors. `plan` only combines these results
 into build tasks. `wheel` and `meta` prepare and record their own artifacts.
 
 `release` aggregates publication state and renders release notes. `manifest`
-owns the public Schema 9 contract shared with documentation and cleanup;
+owns the public Schema 10 contract shared with documentation and cleanup, while retaining Schema 9 compatibility;
 `cleanup` projects resources directly from it. The package import has no CLI
 side effects; `python -m ucm_release` dispatches through `__main__`.
 
@@ -89,12 +89,32 @@ Runtime Registry Tags
 
 Crane reads each immutable member manifest/config to obtain CUDA/CANN,
 SOC/backend, Python ABI, and CPU architecture without downloading
-image layers. Only a member missing Python, CUDA/CANN, or SOC metadata is pulled
-and probed on its native architecture. Runtime glibc does not gate planning:
+image layers. Only a member with missing or conflicting Python, CUDA/CANN, or
+SOC metadata is pulled and probed on its native architecture. Runtime glibc does not gate planning:
 the Wheel's actual GLIBC floor comes from `auditwheel`, then the final
 install-only Runtime image verifies its glibc floor, installs the Wheel, and
 runs `import ucm` before publication. Every runtime member resolves exactly one
 Wheel ID. Zero or ambiguous matches fail instead of guessing.
+
+Ascend Builder selection first filters SoC, Python ABI, native architecture and
+the configured manylinux policy. An exact complete CANN version wins. Only a
+bare Runtime version such as `9.2.0` may fall back to the highest parseable
+suffixed version with the same `X.Y.Z`, for example `9.2.0-beta.2`. Version
+ordering uses `packaging.Version`, not Registry order or creation time. A Runtime
+that explicitly reports a suffix requires that exact version. A selected
+Builder's verification or build failure never triggers an older-version retry.
+
+`accelerator_runtime` continues to describe the target Runtime requirement and
+therefore the Wheel's existing identity. The complete source Builder version is
+owned by `source_image`, with its native member pinned by `source_image_digest`;
+`checks.accelerator_runtime` is derived from that source for actual Toolkit
+verification. Ascend PRs select the current upstream source before reusing a
+checked GHCR mirror with the same source, digest and recipe revision.
+
+The Native Wheel Gate installs and loads each suffix-fallback Wheel in every
+matching Runtime member before passing. It reuses the release installation
+validator without publishing images. These checks cover glibc, dependencies and
+native loading; they do not exercise NPU operations or FFTS transfers.
 
 The explicit `-openeuler` Runtime Tag suffix is retained as an OS hint for
 Release mapping and final-image validation. OS hints never participate in the
@@ -198,7 +218,7 @@ addresses become usable only after their existing publication checks succeed.
 
 `release-state.json` remains the rich internal staging file in the
 `ucm-release-stage-run-<run>` Actions artifact. Only after all enabled channels
-succeed, a public `release-manifest.json` Schema 9 is uploaded and read back.
+succeed, a public `release-manifest.json` Schema 10 is uploaded and read back.
 The pure `ucm_release.manifest` module generates and validates this contract
 for publication, cleanup and documentation. It records Python package identity,
 extras and published index URLs, backend Wheels, Runtime image families, Chart

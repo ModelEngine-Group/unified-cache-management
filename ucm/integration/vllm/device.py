@@ -715,3 +715,24 @@ def get_current_device_id() -> int:
         return int(torch.npu.current_device())
 
     raise RuntimeError("Unsupported device platform for UCM connector.")
+
+
+def get_ucm_worker_torch_device(local_rank: int) -> torch.device:
+    """Return the accelerator device used for worker-side UCM tensors.
+
+    UCM's KV and encoder-cache connectors both need to allocate or address
+    tensors on the worker's local accelerator. Keep the platform-specific
+    CUDA/NPU selection in one place so the two connectors cannot drift.
+    """
+    if local_rank < 0:
+        raise ValueError(f"local_rank must be non-negative, got {local_rank}.")
+
+    if current_platform.is_cuda_alike():
+        logger.info("CUDA device is available.")
+        return torch.device(f"cuda:{local_rank}")
+
+    if current_platform.device_type == "npu":
+        logger.info("NPU device is available.")
+        return torch.device(f"npu:{local_rank}")
+
+    raise RuntimeError("Unsupported device platform for UCM connector.")
