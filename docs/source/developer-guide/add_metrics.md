@@ -37,6 +37,13 @@ gauge:
     documentation: "Most recent value"
     multiprocess_mode: "livemostrecent"
 
+  # A gauge split by a runtime dimension reports one Prometheus series per
+  # dimension value, exposed as a real label.
+  - name: "my_pool_usage_ratio"
+    documentation: "Used-slot ratio per block size, exported as my_pool_usage_ratio{slot_size=<size>}"
+    multiprocess_mode: "livemostrecent"
+    dynamic_labels: ["slot_size"]
+
 histogram:
   - name: "my_stage_duration_ms"
     documentation: "Stage duration in milliseconds"
@@ -51,6 +58,14 @@ Use these metric types as follows:
 
 Histogram buckets should be sorted in ascending order. You do not need to add
 `+Inf` in YAML; it is added during registration.
+
+`dynamic_labels` declares a dimension whose value is not known when the metric
+is registered. UCM's transport is name-keyed, so the emitter reports each
+dimension value under the wire name `<name>_<value>`
+(`my_pool_usage_ratio_4096`), and both export paths split the numeric suffix
+back into a real Prometheus label (`my_pool_usage_ratio{slot_size="4096"}`).
+At most one label is supported and the suffix must be all digits. Metrics that
+do not declare the field are unaffected.
 
 ## Step 2: Update the Metric
 

@@ -51,6 +51,7 @@ constexpr std::size_t kQueueCapacity = 16;
 constexpr std::size_t kManagerMaxThreads = 1;
 constexpr std::uint32_t kValueLength = 16;
 constexpr std::uint64_t kResponseAddress = 0x9000;
+constexpr std::uint64_t kEnqueueUs = 0;
 constexpr char kTargetManager[] = "127.0.0.1:29000";
 
 using UC::Test::Dram::Clock;
@@ -124,19 +125,19 @@ protected:
     Status ProcessDump(KvDumpRequest& request)
     {
         TaskWorker worker(*runtime_);
-        return worker.ProcessDump(request, kTargetManager);
+        return worker.ProcessDump(request, kTargetManager, kEnqueueUs);
     }
 
     Status ProcessLoad(KvLoadRequest& request)
     {
         TaskWorker worker(*runtime_);
-        return worker.ProcessLoad(request, kTargetManager);
+        return worker.ProcessLoad(request, kTargetManager, kEnqueueUs);
     }
 
     Status ProcessLookup(KvLookupRequest& request)
     {
         TaskWorker worker(*runtime_);
-        return worker.ProcessLookup(request, kTargetManager);
+        return worker.ProcessLookup(request, kTargetManager, kEnqueueUs);
     }
 
     CompletionRecord PopCompletion()

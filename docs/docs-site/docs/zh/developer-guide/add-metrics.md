@@ -28,6 +28,13 @@ gauge:
     documentation: "Most recent value"
     multiprocess_mode: "livemostrecent"
 
+  # 按运行时维度拆分的 Gauge，每个维度值上报为一条 Prometheus 序列，
+  # 以真实 label 暴露。
+  - name: "my_pool_usage_ratio"
+    documentation: "Used-slot ratio per block size, exported as my_pool_usage_ratio{slot_size=<size>}"
+    multiprocess_mode: "livemostrecent"
+    dynamic_labels: ["slot_size"]
+
 histogram:
   - name: "my_stage_duration_ms"
     documentation: "Stage duration in milliseconds"
@@ -35,6 +42,8 @@ histogram:
 ```
 
 Counter 更新正增量，Gauge 更新当前值，Histogram 更新一次观测。桶边界按升序配置，注册时按需补充 `+Inf`。为一个指标固定事件范围和单位；接口调用次数、传输分片和用户请求数不能互换。
+
+`dynamic_labels` 用于声明注册时未知的维度。UCM 的传输以指标名为键，因此上报方用 `<指标名>_<维度值>` 的形式分别上报（如 `my_pool_usage_ratio_4096`），两条导出路径再把数字后缀还原为真实的 Prometheus label（`my_pool_usage_ratio{slot_size="4096"}`）。目前最多支持一个 label，且后缀必须是纯数字。未声明该字段的指标不受影响。
 
 ## 在操作完成处更新
 
