@@ -17,7 +17,7 @@ python ucm/store/test/e2e/cache_bw.py \
 The pipeline is just `Cache`. Workers first dump one complete request into Cache,
 then repeatedly load its keys. MLA dump blocks are striped across workers by
 absolute block index; GQA workers dump/load private keys. Prefill bandwidth is
-printed separately and excluded from load statistics. An undersized Cache is
+printed separately with `source=python_api` and excluded from load statistics. An undersized Cache is
 rejected before launch; a miss cannot silently fall through to another backend.
 
 ## Posix hits
@@ -85,7 +85,9 @@ Use the MiniMax preset with TP8; use custom sizes for other TP configurations.
 
 Except for whole-block profiles, the default is complete layerwise transfer.
 Shard size is rounded up to 4 KiB for Posix, and block size includes every shard.
-The H2D byte count uses actual tensor payload bytes, excluding storage padding.
+The plan's H2D byte count uses actual tensor payload bytes, excluding storage
+padding. The primary measured bandwidth instead uses the C++ byte counter,
+which counts aligned shard bytes; see the statistics section below.
 
 Custom single-tensor IO sizes and explicit KV views are supported:
 
@@ -133,33 +135,62 @@ python ucm/store/test/e2e/cache_bw.py --help
 
 ## Statistics and measurement boundaries
 
-Every request prints the average, P90 and P99 task cost, the sum of task costs, and
-per-rank payload bandwidth. Final statistics show `ALL` pooled rank samples
-first and each rank separately below it. Request latency and task latency have
-separate distributions. Before the load loop, the script generates block IDs,
-packs ID/shard buffers, and collects tensor addresses into reusable 2D buffers.
-Cache hits reuse one prepared request; Posix hits prepare distinct keys for
-every request. The prepared request also keeps its tensors alive through Wait.
+**The primary load results now come directly from C++ metrics, not Python wall
+time. Existing command lines need no additional flag or HTTP metrics port.**
+Each load worker registers the service's default UCM metric definitions before
+creating its Store, and directly drains its own process-local metrics. No
+background metrics dispatcher/consumer is started. This enables the normal
+default instrumentation, which was not enabled by the old Python-only script.
+Do not run another metrics consumer in these benchmark workers: the C++
+`get_all_stats_and_clear()` API reads and clears interval deltas.
 
-Each task timer covers only the underlying `PipelineStore.Load(...)` and
-`PipelineStore.Wait(...)` calls. These are the same bindings used by the Python
-`load`/`load_data` wrappers, without repacking parameters on every layer. The
-C++ task descriptor construction, submission, queueing, transfer, and host
-wait/wakeup still count. This is not exactly the C++ `cache_load_duration_ms`
-metric boundary. Wait already completes Cache's copy-stream synchronization;
-the timer does not add a device-wide Torch synchronization afterwards.
+Prefill/init statistics are cleared before loading. Each request, including
+warmup, is then collected separately; only measured requests are saved. A read
+is accepted only after it contains exactly `layers` completed tasks (one for a
+non-layerwise layout) and the expected Cache byte count. If task-completion
+metrics arrive in separate drains, their deltas are accumulated before the next
+request. Missing or excess metrics cause an error, never a fallback to Python
+timing. Collection uses `--timeout-ms` as its timeout.
 
-Warmup, parameter preparation, tensor allocation/filling, verification,
-inter-rank barriers, and epoch pauses are excluded from transfer costs.
-Device synchronization before transfers (and after untimed source filling or
-destination clearing) is also outside the timers. `--verify` adds extra device
-work and should be omitted for bandwidth comparisons.
+The reported quantities are:
 
-`request_cost` sums the sequential, synchronous layer/task timings. It measures
-Store transfers, **not model TTFT**, and does not simulate computation between
-layers. C++ Posix-to-Cache/H2D pipelining within a task remains active. `ALL`
-bandwidth is pooled bytes divided by pooled transfer time, not aggregate physical
-disk bandwidth. Percentiles with few requests are only rough samples.
+- `task_avg` / `task_mean_ms`: `cache_load_duration_ms.sum / count`, using the
+  actual C++ timestamps (Latch creation through task completion, including copy
+  synchronization). Python calls, task-description construction before the
+  Latch, and caller wakeup/return after completion are not part of this duration.
+- `task_p90~` / `task_p99~`: histogram interpolation using the same default bucket
+  boundaries as the service metrics. `~` means estimated, not raw-sample
+  percentiles. C++ supplies disjoint counts; these are accumulated correctly.
+- `request_cost` and `request_*_ms`: sum of C++ task durations for each complete
+  request, and distributions over those request sums. They are **not model TTFT
+  or caller-visible request wall time**.
+- `bw` / `bandwidth_GB/s`: `cache_load_bytes_total / (duration_sum_ms / 1000) / 1e9`.
+  This uses the C++ counter's aligned shard bytes, not unpadded tensor payload.
+  GLM's 176 KiB shards need no padding, so the two byte counts match. For padded
+  profiles such as DSV4, this is a metric-defined effective bandwidth rather than
+  pure H2D payload bandwidth. It is not the arithmetic mean of the separate
+  `cache_load_bandwidth_gbps` observations, which averages per-task rates.
+- `api_request_cost` / `api_request_mean_ms`: separately retained Python
+  `Load + Wait` task timings, summed per request. These include binding calls,
+  C++ task-description construction and caller wait/return overhead; they do
+  **not** determine the primary Store bandwidth.
+
+Final statistics show `ALL` first and each rank below it. `ALL` merges duration
+sums, byte counters and histogram buckets **before** calculating mean, bandwidth
+and task percentiles; it does not average rank P90/P99 or bandwidth values. Its
+bandwidth is a pooled per-rank effective rate, not aggregate physical disk/H2D
+bandwidth across all devices.
+
+Before the load loop, block IDs, shard buffers and tensor addresses are prepared
+and reused; tensors stay alive through Wait. Preparation, verification, barriers,
+metric reads and the 15 ms request pauses are outside both reported task timing
+boundaries. Necessary device synchronization before transfers and after source
+filling/destination clearing is also outside these timers. Wait already completes
+Cache copy-stream synchronization, so no extra device-wide sync is added after
+it. `--verify` introduces additional untimed device work; omit it for bandwidth
+comparisons. No model computation between layers is simulated; C++ within-task
+Posix-to-Cache/H2D pipelining remains active. Few requests give weak request
+percentile estimates, and coarse histogram buckets limit task percentile accuracy.
 
 Local protocol checks require only Python's standard library:
 
