@@ -1,5 +1,6 @@
 """Hardware-free tests for workload shapes and the actual hit-source protocol."""
 
+import bisect
 import contextlib
 import ctypes
 import importlib.util
@@ -19,6 +20,35 @@ SPEC = importlib.util.spec_from_file_location("cache_bw_benchmark", SCRIPT)
 bw = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = bw
 SPEC.loader.exec_module(bw)
+BOUNDS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 5000.0, float("inf"))
+
+
+class FakeMetrics:
+    """Match the destructive, disjoint-bucket C++ snapshot API."""
+
+    def __init__(self, task_costs=()):
+        self.task_costs = iter(task_costs)
+        self.counts = [0] * len(BOUNDS)
+        self.total_ms = 0.0
+        self.byte_count = 0
+        self.reads = 0
+
+    def complete(self, byte_count):
+        cost = next(self.task_costs, 1.0)
+        self.counts[bisect.bisect_left(BOUNDS, cost)] += 1
+        self.total_ms += cost
+        self.byte_count += byte_count
+
+    def get_all_stats_and_clear(self):
+        self.reads += 1
+        result = (
+            {bw.LOAD_BYTES: self.byte_count},
+            {},
+            {bw.LOAD_DURATION: (self.counts[:], self.total_ms)},
+        )
+        self.counts[:] = [0] * len(BOUNDS)
+        self.total_ms = self.byte_count = 0
+        return result
 
 
 class FakeTensor:
@@ -52,13 +82,14 @@ class FakeComparison:
 class MemoryStore:
     """Read real aligned seed pointers; distinguish cache hits from disk reads."""
 
-    def __init__(self, workload, disk=None):
+    def __init__(self, workload, disk=None, metrics=None):
         self.workload = workload
         self.disk = disk
         self.cache = {}
         self.sources = []
         self.records = []
         self.store_ = self
+        self.metrics = metrics or FakeMetrics()
 
     def wait(self, _task):
         pass
@@ -105,9 +136,12 @@ class MemoryStore:
             for pointer, size in zip(row, self.workload.tensor_sizes):
                 ctypes.memmove(pointer, data[offset : offset + size], size)
                 offset += size
+        return len(ids)
 
     def Wait(self, task):
         self.wait(task)
+        if task is not None:
+            self.metrics.complete(task * self.workload.shard_size)
 
 
 def make_fake_rows(_torch, workload, _device, count):
@@ -129,6 +163,22 @@ def process_stall(*_args):
     time.sleep(10)
 
 
+def process_metrics_success(_phase, args, workload, _run_id, rank, barrier, results):
+    counts = [0] * len(results.bounds)
+    counts[0] = workload.shards
+    barrier.wait()
+    bw.save_result(
+        results,
+        rank * args.epochs,
+        bw.LoadMetrics(
+            float(rank + 1),
+            workload.shard_size * args.blocks * workload.shards,
+            tuple(counts),
+        ),
+        [0.001] * workload.shards,
+    )
+
+
 class WorkerContext:
     """Use real spawned processes while replacing only the accelerator workload."""
 
@@ -144,6 +194,14 @@ class WorkerContext:
 
 
 class CacheBandwidthTest(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(bw, "load_duration_buckets", return_value=BOUNDS)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def results(self, args, workload):
+        return bw.create_results(multiprocessing.get_context("spawn"), args, workload)
+
     def parse(self, mode="cache-hit", *extra):
         return bw.parse_args(["--mode", mode, *extra])
 
@@ -310,9 +368,10 @@ class CacheBandwidthTest(unittest.TestCase):
         args, workload = self.small("cache-hit")
         store = MemoryStore(workload)
         runtime, barrier = mock.Mock(), mock.Mock()
-        results = [0.0] * (args.epochs * workload.shards)
+        results = self.results(args, workload)
         with (
             mock.patch.object(bw, "open_store", return_value=store),
+            mock.patch.object(bw, "setup_load_metrics", return_value=store.metrics),
             mock.patch.object(bw, "setup_device", return_value=(None, runtime, "mock")),
             mock.patch.object(bw, "make_rows", side_effect=make_fake_rows),
             contextlib.redirect_stdout(io.StringIO()),
@@ -320,15 +379,17 @@ class CacheBandwidthTest(unittest.TestCase):
             bw.load_worker(args, workload, "run", 0, barrier, results)
         self.assertEqual(set(store.sources), {"cache"})
         self.assertEqual(len(set(store.records)), 1)
-        self.assertTrue(all(cost > 0 for cost in results))
+        self.assertTrue(all(cost > 0 for cost in results.api_costs))
+        self.assertEqual(list(results.duration_ms), [3.0, 3.0])
 
     def test_cache_parameters_are_prepared_once_and_pause_is_between_requests(self):
         args, workload = self.small("cache-hit")
         args.epoch_interval_ms = 15
         store = MemoryStore(workload)
-        results = [0.0] * (args.epochs * workload.shards)
+        results = self.results(args, workload)
         with (
             mock.patch.object(bw, "open_store", return_value=store),
+            mock.patch.object(bw, "setup_load_metrics", return_value=store.metrics),
             mock.patch.object(
                 bw, "setup_device", return_value=(None, mock.Mock(), "mock")
             ),
@@ -346,6 +407,125 @@ class CacheBandwidthTest(unittest.TestCase):
         self.assertEqual(ids.call_count, 2)
         self.assertEqual(sleep.call_args_list, [mock.call(0.015)] * 2)
         self.assertEqual(self.parse()[0].epoch_interval_ms, 15)
+
+    def test_metrics_not_python_time_and_warmup_excluded_even_when_zero(self):
+        for warmup in (0, 1):
+            with self.subTest(warmup=warmup):
+                args, workload = self.small("cache-hit")
+                args.warmup = warmup
+                # Distinct costs make any accidental warmup inclusion visible.
+                costs = (
+                    [100.0] * (warmup * workload.shards)
+                    + [1.0] * workload.shards
+                    + [3.0] * workload.shards
+                )
+                metrics = FakeMetrics(costs)
+                # Simulate pre-existing data; it must be discarded before loads.
+                metrics.complete(12345)
+                metrics.task_costs = iter(costs)
+                store = MemoryStore(workload, metrics=metrics)
+                results = self.results(args, workload)
+                clock = iter(index * 0.1 for index in range(100))
+                with (
+                    mock.patch.object(bw, "open_store", return_value=store),
+                    mock.patch.object(bw, "setup_load_metrics", return_value=metrics),
+                    mock.patch.object(
+                        bw, "setup_device", return_value=(None, mock.Mock(), "mock")
+                    ),
+                    mock.patch.object(bw, "make_rows", side_effect=make_fake_rows),
+                    mock.patch.object(
+                        bw.time, "perf_counter", side_effect=lambda: next(clock)
+                    ),
+                    contextlib.redirect_stdout(io.StringIO()) as output,
+                ):
+                    bw.load_worker(args, workload, "run", 0, mock.Mock(), results)
+                self.assertEqual(list(results.duration_ms), [3.0, 9.0])
+                self.assertEqual(
+                    list(results.byte_counts),
+                    [workload.shard_size * args.blocks * workload.shards] * 2,
+                )
+                self.assertTrue(
+                    all(abs(cost - 0.1) < 1e-9 for cost in results.api_costs)
+                )
+                self.assertEqual(metrics.reads, 1 + warmup + args.epochs)
+                self.assertIn("source=cache_load_duration_ms", output.getvalue())
+
+    def test_metrics_drain_merges_epilog_split_across_snapshots(self):
+        metrics = mock.Mock()
+        counts = [0] * len(BOUNDS)
+        counts[BOUNDS.index(1.0)] = 2
+        metrics.get_all_stats_and_clear.side_effect = [
+            ({bw.LOAD_BYTES: 4096}, {}, {bw.LOAD_DURATION: (counts, 2.0)}),
+            ({bw.LOAD_BYTES: 4096}, {}, {}),
+        ]
+        with mock.patch.object(bw.time, "sleep") as sleep:
+            sample = bw.collect_load_metrics(metrics, BOUNDS, 2, 8192, 1000)
+        self.assertEqual(sample, bw.LoadMetrics(2.0, 8192, tuple(counts)))
+        sleep.assert_called_once_with(0.001)
+
+    def test_metrics_missing_or_contaminated_never_fall_back_to_python(self):
+        metrics = mock.Mock()
+        metrics.get_all_stats_and_clear.return_value = ({}, {}, {})
+        with (
+            mock.patch.object(bw.time, "monotonic", side_effect=[0, 2]),
+            self.assertRaisesRegex(RuntimeError, "incomplete load metrics"),
+        ):
+            bw.collect_load_metrics(metrics, BOUNDS, 1, 4096, 1000)
+        counts = [0] * len(BOUNDS)
+        counts[0] = 2
+        metrics.get_all_stats_and_clear.return_value = (
+            {bw.LOAD_BYTES: 8192},
+            {},
+            {bw.LOAD_DURATION: (counts, 1.0)},
+        )
+        with self.assertRaisesRegex(RuntimeError, "unexpected load metrics"):
+            bw.collect_load_metrics(metrics, BOUNDS, 1, 4096, 1000)
+
+    def test_invalid_metric_histograms_and_counters_are_rejected(self):
+        for buckets, duration, byte_count in [
+            ([1], 1.0, 4096),
+            ([-1] + [0] * (len(BOUNDS) - 1), 1.0, 4096),
+            ([0.5] + [0] * (len(BOUNDS) - 1), 1.0, 4096),
+            ([1] + [0] * (len(BOUNDS) - 1), float("nan"), 4096),
+            ([1] + [0] * (len(BOUNDS) - 1), 0.0, 4096),
+            ([1] + [0] * (len(BOUNDS) - 1), 1.0, -1),
+        ]:
+            with self.subTest(
+                buckets=buckets, duration=duration, byte_count=byte_count
+            ):
+                metrics = mock.Mock()
+                metrics.get_all_stats_and_clear.return_value = (
+                    {bw.LOAD_BYTES: byte_count},
+                    {},
+                    {bw.LOAD_DURATION: (buckets, duration)},
+                )
+                with self.assertRaisesRegex(RuntimeError, "invalid C\\+\\+ load"):
+                    bw.collect_load_metrics(metrics, BOUNDS, 1, 4096, 1000)
+
+    def test_histogram_quantiles_merge_buckets_not_rank_percentiles(self):
+        bounds = (1.0, 2.0, 5.0, float("inf"))
+        counts = (0, 2, 2, 0)
+        self.assertAlmostEqual(bw.histogram_quantile(bounds, counts, 0.9), 4.4)
+        self.assertAlmostEqual(bw.histogram_quantile(bounds, counts, 0.99), 4.94)
+        self.assertEqual(bw.histogram_quantile(bounds, (0, 0, 0, 3), 0.99), 5.0)
+        rank_mean = (
+            bw.histogram_quantile(bounds, (0, 2, 0, 0), 0.9)
+            + bw.histogram_quantile(bounds, (0, 0, 2, 0), 0.9)
+        ) / 2
+        self.assertNotEqual(bw.histogram_quantile(bounds, counts, 0.9), rank_mean)
+
+    def test_padded_workloads_use_metric_bytes_and_total_duration_for_bandwidth(self):
+        # Two tasks, 512 blocks each, with 4097-byte payload padded to 8192 bytes.
+        sample = bw.LoadMetrics(8.0, 8192 * 512 * 2, (1, 1, 0, 0))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bw.print_sample(
+                "load", 0, 0, sample, (1.0, 10.0, 100.0, float("inf")), [0.010, 0.010]
+            )
+        self.assertIn("bw=1.049GB/s", output.getvalue())
+        self.assertIn("task_avg=4.000ms", output.getvalue())
+        self.assertIn("request_cost=8.000ms", output.getvalue())
+        self.assertIn("api_request_cost=20.000ms", output.getvalue())
 
     def test_prepared_buffers_keep_shape_addresses_and_tensor_lifetime(self):
         _, workload = self.parse("cache-hit", "--layout", "single-layer")
@@ -400,9 +580,10 @@ class CacheBandwidthTest(unittest.TestCase):
         expected = (args.warmup + args.epochs) * args.blocks * workload.shards
         self.assertEqual(len(disk), expected)
         loader = MemoryStore(workload, disk)
-        results = [0.0] * (args.epochs * workload.shards)
+        results = self.results(args, workload)
         with (
             mock.patch.object(bw, "open_store", return_value=loader),
+            mock.patch.object(bw, "setup_load_metrics", return_value=loader.metrics),
             mock.patch.object(
                 bw, "setup_device", return_value=(None, mock.Mock(), "mock")
             ),
@@ -413,7 +594,8 @@ class CacheBandwidthTest(unittest.TestCase):
         self.assertEqual(set(loader.sources), {"posix"})
         self.assertEqual(len(loader.sources), expected)
         self.assertEqual(len(set(loader.records)), args.warmup + args.epochs)
-        self.assertTrue(all(cost > 0 for cost in results))
+        self.assertTrue(all(cost > 0 for cost in results.api_costs))
+        self.assertEqual(list(results.duration_ms), [3.0, 3.0])
 
     def test_verification_detects_corrupt_payload(self):
         _, workload = self.small("cache-hit")
@@ -481,7 +663,19 @@ class CacheBandwidthTest(unittest.TestCase):
         def run_group(_context, phase, _args, _workload, _run_id, results):
             phases.append(phase)
             if phase == "load":
-                results[:] = [0.001] * len(results)
+                for index in range(args.epochs):
+                    counts = [0] * len(BOUNDS)
+                    counts[BOUNDS.index(1.0)] = workload.shards
+                    bw.save_result(
+                        results,
+                        index,
+                        bw.LoadMetrics(
+                            float(workload.shards),
+                            workload.shard_size * args.blocks * workload.shards,
+                            tuple(counts),
+                        ),
+                        [0.002] * workload.shards,
+                    )
 
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -499,12 +693,28 @@ class CacheBandwidthTest(unittest.TestCase):
             "cache-hit", "--workers", "2", "--epochs", "2", "--layout", "single-layer"
         )
         output = io.StringIO()
+        results = self.results(args, workload)
+        for index, duration in enumerate([1.0, 3.0, 5.0, 7.0]):
+            counts = [0] * len(BOUNDS)
+            counts[bisect.bisect_left(BOUNDS, duration)] = 1
+            bw.save_result(
+                results,
+                index,
+                bw.LoadMetrics(
+                    duration, workload.shard_size * args.blocks, tuple(counts)
+                ),
+                [duration / 1000 + 0.001],
+            )
         with contextlib.redirect_stdout(output):
-            bw.print_summary(args, workload, [0.001, 0.003, 0.005, 0.007])
+            bw.print_summary(args, workload, results)
         rows = output.getvalue().splitlines()
-        self.assertEqual(rows[3].split()[:3], ["ALL", "4", "4.000"])
-        self.assertEqual(rows[4].split()[:3], ["0", "2", "2.000"])
-        self.assertEqual(rows[5].split()[:3], ["1", "2", "6.000"])
+        self.assertEqual(rows[3].split()[:4], ["ALL", "4", "4", "4.000"])
+        self.assertEqual(rows[4].split()[:4], ["0", "2", "2", "2.000"])
+        self.assertEqual(rows[5].split()[:4], ["1", "2", "2", "6.000"])
+        self.assertEqual(rows[3].split()[-1], "5.000")
+        self.assertEqual(rows[3].split()[7], "8.000")
+        expected_bw = workload.shard_size * args.blocks * 4 / 16 / 1e6
+        self.assertEqual(rows[3].split()[9], f"{expected_bw:.3f}")
 
     def test_spawned_group_joins_before_returning(self):
         args, workload = self.small("cache-hit")
@@ -513,6 +723,16 @@ class CacheBandwidthTest(unittest.TestCase):
         results = context.context.Array("d", 2, lock=False)
         bw.run_group(context, "load", args, workload, "run", results)
         self.assertEqual(list(results), [1.0, 2.0])
+
+    def test_metric_results_are_shared_across_spawned_workers(self):
+        args, workload = self.small("cache-hit")
+        args.workers = 2
+        args.epochs = 1
+        context = WorkerContext(process_metrics_success)
+        results = self.results(args, workload)
+        bw.run_group(context, "load", args, workload, "run", results)
+        self.assertEqual(list(results.duration_ms), [1.0, 2.0])
+        self.assertTrue(all(cost > 0 for cost in results.api_costs))
 
     def test_failed_worker_terminates_and_joins_its_peers(self):
         args, workload = self.small("cache-hit")

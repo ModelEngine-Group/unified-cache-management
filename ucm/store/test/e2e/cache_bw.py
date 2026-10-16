@@ -4,7 +4,7 @@
 """Cache2 load bandwidth: Cache hits or pre-seeded, first-use Posix hits.
 
 See cache_bw.md for examples, workload shapes, and measurement boundaries.
-Torch and UCM are imported only inside workers; --help/--dry-run need neither.
+--help/--dry-run need neither Torch nor an installed UCM runtime.
 """
 
 import argparse
@@ -35,6 +35,9 @@ MODEL_PROFILES = {
     "dsv4": ([131072, 16384, 256] * 21 + [4096] * 20, 1, 8, "mla"),
     "custom": ([1048576], 1, 1, "gqa"),
 }
+
+LOAD_DURATION = "cache_load_duration_ms"
+LOAD_BYTES = "cache_load_bytes_total"
 
 
 def positive_int(text):
@@ -301,6 +304,120 @@ def open_store(config):
     return UcmPipelineStore(config)
 
 
+def load_duration_buckets():
+    from ucm.default_metrics_config import get_default_metrics_config
+
+    definition = next(
+        item
+        for item in get_default_metrics_config()["histogram"]
+        if item["name"] == LOAD_DURATION
+    )
+    bounds = tuple(float(value) for value in definition["buckets"])
+    return bounds if bounds and math.isinf(bounds[-1]) else bounds + (math.inf,)
+
+
+def setup_load_metrics(bounds):
+    from ucm.default_metrics_config import get_default_metrics_config
+    from ucm.metrics_config import setup_ucm_metrics
+    from ucm.shared.metrics import ucmmetrics
+
+    if load_duration_buckets() != bounds:
+        raise RuntimeError("parent/worker metrics bucket definitions differ")
+    # Use the service's default definitions, without a dispatcher/HTTP consumer.
+    setup_ucm_metrics(get_default_metrics_config())
+    return ucmmetrics
+
+
+@dataclass(frozen=True)
+class LoadMetrics:
+    duration_ms: float
+    byte_count: int
+    bucket_counts: tuple[int, ...]
+
+    @property
+    def count(self):
+        # C++ returns disjoint bucket counts, not Prometheus cumulative buckets.
+        return sum(self.bucket_counts)
+
+
+def collect_load_metrics(metrics, bounds, expected_tasks, expected_bytes, timeout_ms):
+    """Drain this request's C++ deltas, including a possibly unfinished epilog."""
+    counts = [0] * len(bounds)
+    total_ms = 0.0
+    byte_count = 0
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        counters, _, histograms = metrics.get_all_stats_and_clear()
+        if LOAD_DURATION in histograms:
+            buckets, duration_ms = histograms[LOAD_DURATION]
+            if len(buckets) != len(bounds) or any(
+                not math.isfinite(count) or count < 0 or int(count) != count
+                for count in buckets
+            ):
+                raise RuntimeError("invalid C++ load histogram buckets")
+            if not math.isfinite(duration_ms) or duration_ms < 0:
+                raise RuntimeError("invalid C++ load duration sum")
+            counts = [left + int(right) for left, right in zip(counts, buckets)]
+            total_ms += float(duration_ms)
+        byte_delta = float(counters.get(LOAD_BYTES, 0))
+        if (
+            not math.isfinite(byte_delta)
+            or byte_delta < 0
+            or not byte_delta.is_integer()
+        ):
+            raise RuntimeError("invalid C++ load byte counter")
+        byte_count += int(byte_delta)
+        count = sum(counts)
+        if count > expected_tasks or byte_count > expected_bytes:
+            raise RuntimeError(
+                f"unexpected load metrics: tasks={count}/{expected_tasks} "
+                f"bytes={byte_count}/{expected_bytes}; another workload may be active"
+            )
+        if count == expected_tasks and byte_count == expected_bytes:
+            if not math.isfinite(total_ms) or total_ms <= 0:
+                raise RuntimeError("invalid C++ load duration sum")
+            return LoadMetrics(total_ms, byte_count, tuple(counts))
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"incomplete load metrics: tasks={count}/{expected_tasks} "
+                f"bytes={byte_count}/{expected_bytes}; check metrics setup/shared library "
+                "and ensure no other consumer drains this process"
+            )
+        # Latch can become ready just before its metrics epilog finishes. Do not
+        # start the next request or silently fall back to Python wall time.
+        time.sleep(0.001)
+
+
+@dataclass
+class BenchmarkResults:
+    bounds: tuple[float, ...]
+    api_costs: object
+    duration_ms: object
+    byte_counts: object
+    bucket_counts: object
+
+
+def create_results(context, args, workload):
+    bounds = load_duration_buckets()
+    requests = args.workers * args.epochs
+    return BenchmarkResults(
+        bounds,
+        context.Array("d", requests * workload.shards, lock=False),
+        context.Array("d", requests, lock=False),
+        context.Array("Q", requests, lock=False),
+        context.Array("Q", requests * len(bounds), lock=False),
+    )
+
+
+def save_result(results, index, sample, api_costs):
+    start = index * len(api_costs)
+    results.api_costs[start : start + len(api_costs)] = api_costs
+    results.duration_ms[index] = sample.duration_ms
+    results.byte_counts[index] = sample.byte_count
+    start = index * len(results.bounds)
+    results.bucket_counts[start : start + len(results.bounds)] = sample.bucket_counts
+
+
 def setup_device(args, rank):
     import torch
 
@@ -414,6 +531,7 @@ def seed_worker(args, workload, run_id, rank, barrier):
 
 def load_worker(args, workload, run_id, rank, barrier, results):
     torch, runtime, device = setup_device(args, rank)
+    metrics = setup_load_metrics(results.bounds)
     store = open_store(store_config(args, workload, run_id, rank))
     barrier.wait()
     if args.mode == "cache-hit":
@@ -424,7 +542,7 @@ def load_worker(args, workload, run_id, rank, barrier, results):
             rows = make_rows(torch, workload, device, len(ids))
             prefill = prepare_transfer(rows, ids, workload)
             costs = transfer_request(store, runtime, prefill, dump=True)
-            print_sample(
+            print_api_sample(
                 "prefill",
                 rank,
                 0,
@@ -441,21 +559,31 @@ def load_worker(args, workload, run_id, rank, barrier, results):
     ]
     if args.mode == "cache-hit":
         requests *= records
+    # The C++ API returns and clears interval deltas, not cumulative snapshots.
+    # Discard prefill/init data; each warmup is collected but never saved below.
+    metrics.get_all_stats_and_clear()
     for record, request in enumerate(requests):
         barrier.wait()
         costs = transfer_request(store, runtime, request, verify=args.verify)
+        sample = collect_load_metrics(
+            metrics,
+            results.bounds,
+            workload.shards,
+            workload.shard_size * args.blocks * workload.shards,
+            args.timeout_ms,
+        )
         warmup = record < args.warmup
         epoch = record if warmup else record - args.warmup
         print_sample(
             "warmup" if warmup else "load",
             rank,
             epoch,
+            sample,
+            results.bounds,
             costs,
-            workload.payload_size * args.blocks * workload.shards,
         )
         if not warmup:
-            start = (rank * args.epochs + epoch) * workload.shards
-            results[start : start + workload.shards] = costs
+            save_result(results, rank * args.epochs + epoch, sample, costs)
         barrier.wait()
         if args.epoch_interval_ms and record + 1 < records:
             time.sleep(args.epoch_interval_ms / 1000)
@@ -525,10 +653,25 @@ def percentile(values, quantile):
     return values[lower] + (values[upper] - values[lower]) * (position - lower)
 
 
-def print_sample(phase, rank, epoch, costs, byte_count):
+def histogram_quantile(bounds, counts, quantile):
+    """Prometheus-style interpolation over the C++ non-cumulative counts."""
+    target = quantile * sum(counts)
+    previous_count = 0
+    lower = 0.0
+    for upper, count in zip(bounds, counts):
+        if count and previous_count + count >= target:
+            if math.isinf(upper):
+                return lower if math.isfinite(lower) else math.nan
+            return lower + (upper - lower) * (target - previous_count) / count
+        previous_count += count
+        lower = upper
+    return math.nan
+
+
+def print_api_sample(phase, rank, epoch, costs, byte_count):
     total = sum(costs)
     print(
-        f"phase={phase} rank={rank:02} epoch={epoch:03} tasks={len(costs)} "
+        f"phase={phase} rank={rank:02} epoch={epoch:03} source=python_api tasks={len(costs)} "
         f"task_avg={total / len(costs) * 1e3:.3f}ms "
         f"task_p90={percentile(costs, 0.9) * 1e3:.3f}ms task_p99={percentile(costs, 0.99) * 1e3:.3f}ms "
         f"request_cost={total * 1e3:.3f}ms bw={byte_count / total / 1e9:.3f}GB/s",
@@ -536,35 +679,74 @@ def print_sample(phase, rank, epoch, costs, byte_count):
     )
 
 
-def print_summary(args, workload, results):
-    print("\nLoad summary (warmup excluded; ALL pools equal-sized per-rank samples)")
+def print_sample(phase, rank, epoch, sample, bounds, api_costs):
     print(
-        "rank   samples request_mean_ms request_p90_ms request_p99_ms task_mean_ms task_p90_ms task_p99_ms bandwidth_GB/s"
+        f"phase={phase} rank={rank:02} epoch={epoch:03} source={LOAD_DURATION} tasks={sample.count} "
+        f"task_avg={sample.duration_ms / sample.count:.3f}ms "
+        f"task_p90~={histogram_quantile(bounds, sample.bucket_counts, 0.9):.3f}ms "
+        f"task_p99~={histogram_quantile(bounds, sample.bucket_counts, 0.99):.3f}ms "
+        f"request_cost={sample.duration_ms:.3f}ms "
+        f"bw={sample.byte_count / sample.duration_ms / 1e6:.3f}GB/s "
+        f"api_request_cost={sum(api_costs) * 1e3:.3f}ms",
+        flush=True,
     )
-    stride = args.epochs * workload.shards
-    per_rank = [
-        list(results[rank * stride : (rank + 1) * stride])
+
+
+def print_summary(args, workload, results):
+    print(
+        f"\nLoad summary (source={LOAD_DURATION}; warmup excluded; ALL merges rank histograms)"
+    )
+    print(
+        "rank   requests tasks request_mean_ms request_p90_ms request_p99_ms task_mean_ms task_p90_ms~ task_p99_ms~ bandwidth_GB/s api_request_mean_ms"
+    )
+    width = len(results.bounds)
+    if any(not math.isfinite(cost) or cost <= 0 for cost in results.api_costs):
+        raise RuntimeError("missing/invalid API samples; refusing incomplete results")
+    for index, duration in enumerate(results.duration_ms):
+        counts = results.bucket_counts[index * width : (index + 1) * width]
+        if (
+            not math.isfinite(duration)
+            or duration <= 0
+            or sum(counts) != workload.shards
+            or results.byte_counts[index]
+            != workload.shard_size * args.blocks * workload.shards
+        ):
+            raise RuntimeError(
+                "missing/invalid load metrics; refusing incomplete results"
+            )
+    groups = [("ALL", range(args.workers * args.epochs))] + [
+        (str(rank), range(rank * args.epochs, (rank + 1) * args.epochs))
         for rank in range(args.workers)
     ]
-    byte_count = workload.payload_size * args.blocks * workload.shards
-    for label, costs in [("ALL", list(results))] + [
-        (str(rank), costs) for rank, costs in enumerate(per_rank)
-    ]:
-        if any(cost <= 0 for cost in costs):
-            raise RuntimeError(
-                "missing load samples; refusing to print incomplete results"
-            )
-        requests = [
-            sum(costs[index : index + workload.shards])
-            for index in range(0, len(costs), workload.shards)
+    for label, indexes in groups:
+        requests = [results.duration_ms[index] for index in indexes]
+        total_ms = sum(requests)
+        counts = [
+            sum(results.bucket_counts[index * width + bucket] for index in indexes)
+            for bucket in range(width)
         ]
+        byte_count = sum(results.byte_counts[index] for index in indexes)
+        api_ms = sum(
+            sum(
+                results.api_costs[
+                    index * workload.shards : (index + 1) * workload.shards
+                ]
+            )
+            * 1e3
+            for index in indexes
+        )
         mean = sum(requests) / len(requests)
         print(
-            f"{label:<6} {len(requests):>7} {mean * 1e3:>15.3f} "
-            f"{percentile(requests, 0.9) * 1e3:>14.3f} {percentile(requests, 0.99) * 1e3:>14.3f} "
-            f"{sum(costs) / len(costs) * 1e3:>12.3f} {percentile(costs, 0.9) * 1e3:>11.3f} "
-            f"{percentile(costs, 0.99) * 1e3:>11.3f} {byte_count / mean / 1e9:>14.3f}"
+            f"{label:<6} {len(requests):>8} {sum(counts):>5} {mean:>15.3f} "
+            f"{percentile(requests, 0.9):>14.3f} {percentile(requests, 0.99):>14.3f} "
+            f"{total_ms / sum(counts):>12.3f} "
+            f"{histogram_quantile(results.bounds, counts, 0.9):>12.3f} "
+            f"{histogram_quantile(results.bounds, counts, 0.99):>12.3f} "
+            f"{byte_count / total_ms / 1e6:>14.3f} {api_ms / len(requests):>19.3f}"
         )
+    print(
+        "~ task percentiles are histogram estimates; bandwidth = metric bytes / metric duration."
+    )
 
 
 def describe(args, workload):
@@ -595,7 +777,8 @@ def describe(args, workload):
         "warmup_requests": args.warmup,
         "measured_requests": args.epochs,
         "epoch_interval_ms": args.epoch_interval_ms,
-        "timing": "prepared PipelineStore.Load + Wait; no device-wide sync",
+        "timing": f"C++ {LOAD_DURATION}; Python Load + Wait reported separately",
+        "bandwidth": f"{LOAD_BYTES} / {LOAD_DURATION} sum (not mean of per-task rates)",
         "pipeline": (
             "Cache"
             if args.mode == "cache-hit"
@@ -613,9 +796,7 @@ def main(argv=None):
         return
     context = multiprocessing.get_context("spawn")
     run_id = secrets.token_hex(12)
-    results = context.Array(
-        "d", args.workers * args.epochs * workload.shards, lock=False
-    )
+    results = create_results(context, args, workload)
     with ExitStack() as cleanup:
         if args.mode == "posix-hit":
             paths = []
