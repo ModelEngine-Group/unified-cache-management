@@ -36,7 +36,7 @@ namespace UC::PosixStore {
 
 class SpaceManager {
     struct LookupContext {
-        const Detail::BlockId* blocks;
+        std::shared_ptr<const std::vector<Detail::BlockId>> blocks;
         size_t begin;
         size_t end;
         size_t nWorker;

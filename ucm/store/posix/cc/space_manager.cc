@@ -78,6 +78,7 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
 {
     if (num == 0) { return std::vector<uint8_t>{}; }
 
+    std::shared_ptr<const std::vector<Detail::BlockId>> ownedBlocks;
     std::shared_ptr<std::vector<uint8_t>> results;
     std::shared_ptr<std::atomic<int32_t>> status;
     std::shared_ptr<Latch> waiter;
@@ -85,6 +86,7 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
     const auto ok = Status::OK().Underlying();
 
     try {
+        ownedBlocks = std::make_shared<std::vector<Detail::BlockId>>(blocks, blocks + num);
         results = std::make_shared<std::vector<uint8_t>>(num, false);
         status = std::make_shared<std::atomic<int32_t>>(ok);
         waiter = std::make_shared<Latch>();
@@ -97,7 +99,7 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
     waiter->Set(nWorker);
 
     for (size_t begin = 0; begin < nWorker; ++begin) {
-        lookupSrv_.Push({blocks, begin, num, nWorker, results, status, waiter});
+        lookupSrv_.Push({ownedBlocks, begin, num, nWorker, results, status, waiter});
     }
 
     waiter->Wait();
@@ -180,9 +182,10 @@ void SpaceManager::OnLookup(LookupContext& ctx)
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
         if (ctx.status->load() != Status::OK().Underlying()) { break; }
 
-        auto hit = Lookup(ctx.blocks + i);
+        const auto& block = (*ctx.blocks)[i];
+        auto hit = Lookup(&block);
         (*ctx.results)[i] = hit;
-        if (hit && hotnessTrackerEnable_) { hotnessTracker_.Touch(ctx.blocks[i]); }
+        if (hit && hotnessTrackerEnable_) { hotnessTracker_.Touch(block); }
     }
     ctx.waiter->Done();
 }
