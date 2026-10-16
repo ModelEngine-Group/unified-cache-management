@@ -533,9 +533,7 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert "Dockerfile.ucm-sglang-ascend.a2-v0.5.18" in sglang_e2e_text
     assert "--privileged" in sglang_e2e_text
     assert "--network=host" in sglang_e2e_text
-    assert "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro" in (
-        sglang_e2e_text
-    )
+    assert "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro" in (sglang_e2e_text)
     assert "/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro" in (
         sglang_e2e_text
     )
