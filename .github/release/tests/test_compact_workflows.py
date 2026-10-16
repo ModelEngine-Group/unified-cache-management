@@ -510,9 +510,17 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert jobs["test-e2e-pc-a2"]["if"] == (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
     )
+    assert jobs["test-e2e-pc-a2"]["concurrency"] == {
+        "group": "a2-e2e-${{ github.run_id }}",
+        "cancel-in-progress": False,
+    }
     sglang_e2e = jobs["test-e2e-sglang-a2"]
     assert sglang_e2e["timeout-minutes"] == 30
     assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
+    assert sglang_e2e["concurrency"] == {
+        "group": "a2-e2e-${{ github.run_id }}",
+        "cancel-in-progress": False,
+    }
     assert sglang_e2e["needs"] == "lint-and-unit-tests"
     assert sglang_e2e["if"] == (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
@@ -523,6 +531,17 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert 'no_proxy="repo.huaweicloud.com,${no_proxy:-}"' in sglang_build["run"]
     sglang_e2e_text = yaml.safe_dump(sglang_e2e)
     assert "Dockerfile.ucm-sglang-ascend.a2-v0.5.18" in sglang_e2e_text
+    assert "--privileged" in sglang_e2e_text
+    assert "--network=host" in sglang_e2e_text
+    assert "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro" in (
+        sglang_e2e_text
+    )
+    assert "/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro" in (
+        sglang_e2e_text
+    )
+    assert "RUNNER_NAME" in sglang_e2e_text
+    assert "Host NPU status" in sglang_e2e_text
+    assert "torch_npu.npu.is_available()" in sglang_e2e_text
     assert "sglang_online_inference" in sglang_e2e_text
     assert "test_sglang_online_accuracy_from_persisted_cache_a2" in (sglang_e2e_text)
 
