@@ -187,11 +187,13 @@ jobs:
   test-e2e-sglang-a2:
     timeout-minutes: 30
     runs-on: [self-hosted, npu, a2]
-    concurrency:
-      group: a2-e2e-${{ github.run_id }}
-      cancel-in-progress: false
-    needs: lint-and-unit-tests
-    if: github.repository == 'ModelEngine-Group/unified-cache-management'
+    needs: [lint-and-unit-tests, test-e2e-pc-a2]
+    if: >-
+      ${{
+        always() &&
+        needs.lint-and-unit-tests.result == 'success' &&
+        github.repository == 'ModelEngine-Group/unified-cache-management'
+      }}
     permissions:
       checks: write
       pull-requests: write
@@ -347,9 +349,6 @@ jobs:
   test-e2e-pc-a2:
     timeout-minutes: 20
     runs-on: [self-hosted, npu, a2]
-    concurrency:
-      group: a2-e2e-${{ github.run_id }}
-      cancel-in-progress: false
     needs: lint-and-unit-tests
     if: github.repository == 'ModelEngine-Group/unified-cache-management'
     permissions:

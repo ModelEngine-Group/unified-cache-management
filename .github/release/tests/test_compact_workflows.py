@@ -510,20 +510,14 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert jobs["test-e2e-pc-a2"]["if"] == (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
     )
-    assert jobs["test-e2e-pc-a2"]["concurrency"] == {
-        "group": "a2-e2e-${{ github.run_id }}",
-        "cancel-in-progress": False,
-    }
     sglang_e2e = jobs["test-e2e-sglang-a2"]
     assert sglang_e2e["timeout-minutes"] == 30
     assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
-    assert sglang_e2e["concurrency"] == {
-        "group": "a2-e2e-${{ github.run_id }}",
-        "cancel-in-progress": False,
-    }
-    assert sglang_e2e["needs"] == "lint-and-unit-tests"
-    assert sglang_e2e["if"] == (
-        "github.repository == 'ModelEngine-Group/unified-cache-management'"
+    assert set(sglang_e2e["needs"]) == {"lint-and-unit-tests", "test-e2e-pc-a2"}
+    assert "always()" in sglang_e2e["if"]
+    assert "needs.lint-and-unit-tests.result == 'success'" in sglang_e2e["if"]
+    assert "github.repository == 'ModelEngine-Group/unified-cache-management'" in (
+        sglang_e2e["if"]
     )
     sglang_build = next(
         step for step in sglang_e2e["steps"] if step.get("name") == "Build"
