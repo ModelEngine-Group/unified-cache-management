@@ -108,6 +108,9 @@ size, which matters for copy submission and aggregation benchmarks.
 - `--cache-copy auto` (default) preserves the C++ platform defaults.
 - `--cache-copy plain|aggregation|sdma` explicitly selects the Cache copy path.
 - `--cache-streams N` overrides stream count; omitted means the C++ default.
+- `--epoch-interval-ms 15` (default) pauses between complete requests, including
+  warmup requests, not between layers. It is outside timing; no pause follows
+  the final request. Set `0` for back-to-back requests.
 - `--cache-numa-nodes 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7` places each worker's
   Cache segment explicitly. Without it, Cache2 uses contiguous rank-sliced
   placement across available memory nodes. This may differ from NPU affinity.
@@ -133,8 +136,24 @@ python ucm/store/test/e2e/cache_bw.py --help
 Every request prints the average, P90 and P99 task cost, the sum of task costs, and
 per-rank payload bandwidth. Final statistics show `ALL` pooled rank samples
 first and each rank separately below it. Request latency and task latency have
-separate distributions. Warmup, tensor allocation/filling, verification,
+separate distributions. Before the load loop, the script generates block IDs,
+packs ID/shard buffers, and collects tensor addresses into reusable 2D buffers.
+Cache hits reuse one prepared request; Posix hits prepare distinct keys for
+every request. The prepared request also keeps its tensors alive through Wait.
+
+Each task timer covers only the underlying `PipelineStore.Load(...)` and
+`PipelineStore.Wait(...)` calls. These are the same bindings used by the Python
+`load`/`load_data` wrappers, without repacking parameters on every layer. The
+C++ task descriptor construction, submission, queueing, transfer, and host
+wait/wakeup still count. This is not exactly the C++ `cache_load_duration_ms`
+metric boundary. Wait already completes Cache's copy-stream synchronization;
+the timer does not add a device-wide Torch synchronization afterwards.
+
+Warmup, parameter preparation, tensor allocation/filling, verification,
 inter-rank barriers, and epoch pauses are excluded from transfer costs.
+Device synchronization before transfers (and after untimed source filling or
+destination clearing) is also outside the timers. `--verify` adds extra device
+work and should be omitted for bandwidth comparisons.
 
 `request_cost` sums the sequential, synchronous layer/task timings. It measures
 Store transfers, **not model TTFT**, and does not simulate computation between
