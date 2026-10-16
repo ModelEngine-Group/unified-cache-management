@@ -27,17 +27,17 @@ counter:
   - {name: "kv_transport_task_connection_errors_total", documentation: "Total KV transport connection errors"}
 
 histogram:
-  - {name: "kv_client_task_enqueue_duration_seconds", documentation: "KV client API-to-enqueue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_client_task_queue_duration_seconds", documentation: "KV client task queue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_client_task_process_duration_seconds", documentation: "KV client task processing duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_client_task_send_duration_seconds", documentation: "KV client duration until all Send calls return", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_client_task_e2e_duration_seconds", documentation: "KV client task end-to-end duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_pre_send_duration_seconds", documentation: "KV transport duration before Send", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_queue_duration_seconds", documentation: "KV transport task queue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_process_duration_seconds", documentation: "KV transport task processing duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_send_duration_seconds", documentation: "KV transport duration until Send returns", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_send_call_duration_seconds", documentation: "KV transport provider Send call duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_completion_duration_seconds", documentation: "KV transport completion duration after Send", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_node_task_send_duration_seconds", documentation: "KV transport send duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_node_task_completion_duration_seconds", documentation: "KV transport completion duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_task_e2e_duration_seconds", documentation: "KV transport task end-to-end duration from submit to completion", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
+  - {name: "kv_client_task_enqueue_duration_seconds", documentation: "KV client API-to-enqueue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_client_task_queue_duration_seconds", documentation: "KV client task queue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_client_task_process_duration_seconds", documentation: "KV client task processing duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_client_task_send_duration_seconds", documentation: "KV client duration until all Send calls return", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_client_task_e2e_duration_seconds", documentation: "KV client task end-to-end duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_pre_send_duration_seconds", documentation: "KV transport duration before Send", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_queue_duration_seconds", documentation: "KV transport task queue duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_process_duration_seconds", documentation: "KV transport task processing duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_send_duration_seconds", documentation: "KV transport duration until Send returns", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_send_call_duration_seconds", documentation: "KV transport provider Send call duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_completion_duration_seconds", documentation: "KV transport completion duration after Send", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_node_task_send_duration_seconds", documentation: "KV transport send duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_node_task_completion_duration_seconds", documentation: "KV transport completion duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
+  - {name: "kv_transport_task_e2e_duration_seconds", documentation: "KV transport task end-to-end duration from submit to completion", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]}
