@@ -31,6 +31,9 @@ class FakeTensor:
     def zero_(self):
         self.fill_(0)
 
+    def data_ptr(self):
+        return ctypes.addressof(ctypes.c_char.from_buffer(self.data))
+
     def __eq__(self, value):
         return FakeComparison(all(byte == value for byte in self.data))
 
@@ -55,6 +58,7 @@ class MemoryStore:
         self.cache = {}
         self.sources = []
         self.records = []
+        self.store_ = self
 
     def wait(self, _task):
         pass
@@ -66,13 +70,28 @@ class MemoryStore:
                 row[0], self.workload.shard_size
             )
 
-    def dump(self, ids, shards, rows):
-        for block_id, shard, row in zip(ids, shards, rows):
-            self.cache[block_id, shard] = b"".join(tensor.data for tensor in row)
+    def unpack(self, ids, shards, pointers):
+        # Check the real pybind buffer ABI, not just a list of fake tensors.
+        ids_view, indexes_view, address_view = map(memoryview, (ids, shards, pointers))
+        assert ids_view.ndim == indexes_view.ndim == 1
+        assert indexes_view.itemsize == address_view.itemsize == 8
+        assert address_view.shape == (len(shards), len(self.workload.tensor_sizes))
+        assert address_view.c_contiguous
+        assert ids_view.nbytes == 16 * len(shards)
+        return [ids[index : index + 16] for index in range(0, len(ids), 16)]
 
-    def load(self, ids, shards, rows):
+    def Dump(self, ids, shards, pointers):
+        ids = self.unpack(ids, shards, pointers)
+        for block_id, shard, row in zip(ids, shards, pointers):
+            self.cache[block_id, shard] = b"".join(
+                ctypes.string_at(pointer, size)
+                for pointer, size in zip(row, self.workload.tensor_sizes)
+            )
+
+    def Load(self, ids, shards, pointers):
+        ids = self.unpack(ids, shards, pointers)
         self.records.append(tuple(ids))
-        for block_id, shard, row in zip(ids, shards, rows):
+        for block_id, shard, row in zip(ids, shards, pointers):
             key = block_id, shard
             if key in self.cache:
                 self.sources.append("cache")
@@ -83,10 +102,12 @@ class MemoryStore:
                 self.sources.append("posix")
             data = self.cache[key]
             offset = 0
-            for tensor in row:
-                size = len(tensor.data)
-                tensor.data[:] = data[offset : offset + size]
+            for pointer, size in zip(row, self.workload.tensor_sizes):
+                ctypes.memmove(pointer, data[offset : offset + size], size)
                 offset += size
+
+    def Wait(self, task):
+        self.wait(task)
 
 
 def make_fake_rows(_torch, workload, _device, count):
@@ -301,6 +322,71 @@ class CacheBandwidthTest(unittest.TestCase):
         self.assertEqual(len(set(store.records)), 1)
         self.assertTrue(all(cost > 0 for cost in results))
 
+    def test_cache_parameters_are_prepared_once_and_pause_is_between_requests(self):
+        args, workload = self.small("cache-hit")
+        args.epoch_interval_ms = 15
+        store = MemoryStore(workload)
+        results = [0.0] * (args.epochs * workload.shards)
+        with (
+            mock.patch.object(bw, "open_store", return_value=store),
+            mock.patch.object(
+                bw, "setup_device", return_value=(None, mock.Mock(), "mock")
+            ),
+            mock.patch.object(bw, "make_rows", side_effect=make_fake_rows),
+            mock.patch.object(
+                bw, "prepare_transfer", wraps=bw.prepare_transfer
+            ) as prepare,
+            mock.patch.object(bw, "block_ids", wraps=bw.block_ids) as ids,
+            mock.patch.object(bw.time, "sleep") as sleep,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            bw.load_worker(args, workload, "run", 0, mock.Mock(), results)
+        # One prefill and one reusable load request, independent of epoch count.
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(ids.call_count, 2)
+        self.assertEqual(sleep.call_args_list, [mock.call(0.015)] * 2)
+        self.assertEqual(self.parse()[0].epoch_interval_ms, 15)
+
+    def test_prepared_buffers_keep_shape_addresses_and_tensor_lifetime(self):
+        _, workload = self.parse("cache-hit", "--layout", "single-layer")
+        rows = make_fake_rows(None, workload, "mock", 2)
+        ids = [b"a" * 16, b"b" * 16]
+        request = bw.prepare_transfer(rows, ids, workload)
+        self.assertIs(request.rows, rows)
+        packed, indexes, addresses = request.tasks[0]
+        self.assertEqual(packed, b"".join(ids))
+        self.assertEqual(list(indexes), [0, 0])
+        self.assertEqual(memoryview(addresses).shape, (2, 3))
+        for row, tensors in zip(addresses, rows):
+            self.assertEqual(list(row), [tensor.data_ptr() for tensor in tensors])
+
+    def test_load_timer_only_contains_submit_and_wait(self):
+        _, workload = self.small("cache-hit")
+        rows = make_fake_rows(None, workload, "mock", 1)
+        request = bw.prepare_transfer(rows, [b"a" * 16], workload)
+        store, runtime = mock.Mock(), mock.Mock()
+        events = []
+        runtime.synchronize.side_effect = lambda: events.append("sync")
+        store.store_.Load.side_effect = lambda *_: events.append("load")
+        store.store_.Wait.side_effect = lambda *_: events.append("wait")
+
+        def clock():
+            events.append("clock")
+            return len(events) * 0.001
+
+        with (
+            mock.patch.object(bw.time, "perf_counter", side_effect=clock),
+            mock.patch.object(
+                FakeTensor, "data_ptr", side_effect=AssertionError("late pointer")
+            ),
+        ):
+            costs = bw.transfer_request(store, runtime, request)
+        self.assertEqual(events, ["sync"] + ["clock", "load", "wait", "clock"] * 3)
+        self.assertEqual(len(costs), 3)
+        submitted = [call.args for call in store.store_.Load.call_args_list]
+        self.assertEqual([list(args[1]) for args in submitted], [[0], [1], [2]])
+        self.assertTrue(all(args[2] is submitted[0][2] for args in submitted))
+
     def test_every_posix_epoch_and_every_layer_is_cold(self):
         args, workload = self.small("posix-hit")
         disk = {}
@@ -332,12 +418,11 @@ class CacheBandwidthTest(unittest.TestCase):
     def test_verification_detects_corrupt_payload(self):
         _, workload = self.small("cache-hit")
         store = MemoryStore(workload)
-        store.cache[b"block", 0] = bytes(workload.payload_size)
+        store.cache[b"a" * 16, 0] = bytes(workload.payload_size)
         rows = make_fake_rows(None, workload, "mock", 1)
+        request = bw.prepare_transfer(rows, [b"a" * 16], workload)
         with self.assertRaisesRegex(RuntimeError, "data mismatch"):
-            bw.transfer_request(
-                store, mock.Mock(), rows, [b"block"], workload, verify=True
-            )
+            bw.transfer_request(store, mock.Mock(), request, verify=True)
 
     def test_dry_run_cli_does_not_need_accelerator_dependencies(self):
         result = subprocess.run(

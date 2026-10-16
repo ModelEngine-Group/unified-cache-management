@@ -96,7 +96,12 @@ def parse_args(argv=None):
     parser.add_argument("--worker-mode", choices=("mla", "gqa"))
     parser.add_argument("--epochs", type=positive_int, default=10)
     parser.add_argument("--warmup", type=int, default=2)
-    parser.add_argument("--epoch-interval-ms", type=float, default=15)
+    parser.add_argument(
+        "--epoch-interval-ms",
+        type=float,
+        default=15,
+        help="pause between complete requests, outside timing (default: 15 ms)",
+    )
     parser.add_argument("--cache-capacity-gb", type=positive_int, default=32)
     parser.add_argument(
         "--cache-copy", choices=("auto", "plain", "aggregation", "sdma"), default="auto"
@@ -321,22 +326,51 @@ def fill_rows(rows, ids, shard):
             tensor.fill_(sample_byte(block_id, shard))
 
 
-def transfer_request(store, runtime, rows, ids, workload, *, dump=False, verify=False):
+@dataclass(frozen=True)
+class PreparedTransfer:
+    # Keep tensors alive until every task using their raw addresses has completed.
+    rows: list
+    block_ids: tuple[bytes, ...]
+    tasks: tuple
+
+
+def prepare_transfer(rows, ids, workload):
+    """Build reusable buffers matching PipelineStore.Load/Dump's buffer ABI."""
+    ids = tuple(ids)
+    packed_ids = b"".join(ids)
+    address_row = ctypes.c_uint64 * len(workload.tensor_sizes)
+    addresses = (address_row * len(rows))(
+        *(address_row(*(tensor.data_ptr() for tensor in row)) for row in rows)
+    )
+    tasks = tuple(
+        (packed_ids, (ctypes.c_uint64 * len(ids))(*([shard] * len(ids))), addresses)
+        for shard in range(workload.shards)
+    )
+    return PreparedTransfer(rows, ids, tasks)
+
+
+def transfer_request(store, runtime, request, *, dump=False, verify=False):
     costs = []
-    operation = store.dump if dump else store.load
-    for shard in range(workload.shards):
+    # The Python load/load_data wrappers rebuild buffers on every call. Submit the
+    # same raw buffers directly; the C++ task construction/queue/wait stay timed.
+    operation = store.store_.Dump if dump else store.store_.Load
+    wait = store.store_.Wait
+    rows, ids = request.rows, request.block_ids
+    runtime.synchronize()
+    for shard, parameters in enumerate(request.tasks):
         if dump:
             fill_rows(rows, ids, shard)
         elif verify:
             for row in rows:
                 for tensor in row:
                     tensor.zero_()
-        indexes = [shard] * len(ids)
-        runtime.synchronize()
+        if dump or verify:
+            runtime.synchronize()
         start = time.perf_counter()
-        task = operation(ids, indexes, rows)
-        store.wait(task)
-        runtime.synchronize()
+        task = operation(*parameters)
+        wait(task)
+        # Cache task completion already synchronizes its copy streams. A second
+        # device-wide sync here would charge unrelated runtime work to the load.
         costs.append(time.perf_counter() - start)
         if verify and not dump:
             for row, block_id in zip(rows, ids):
@@ -388,7 +422,8 @@ def load_worker(args, workload, run_id, rank, barrier, results):
             all_ids = block_ids(args, run_id, 0, rank)
             ids = [all_ids[index] for index in indexes]
             rows = make_rows(torch, workload, device, len(ids))
-            costs = transfer_request(store, runtime, rows, ids, workload, dump=True)
+            prefill = prepare_transfer(rows, ids, workload)
+            costs = transfer_request(store, runtime, prefill, dump=True)
             print_sample(
                 "prefill",
                 rank,
@@ -396,15 +431,19 @@ def load_worker(args, workload, run_id, rank, barrier, results):
                 costs,
                 workload.payload_size * len(ids) * workload.shards,
             )
-            del rows
+            del prefill, rows
         barrier.wait()
     rows = make_rows(torch, workload, device, args.blocks)
-    for record in range(args.warmup + args.epochs):
-        ids = block_ids(args, run_id, record if args.mode == "posix-hit" else 0, rank)
+    records = args.warmup + args.epochs
+    requests = [
+        prepare_transfer(rows, block_ids(args, run_id, record, rank), workload)
+        for record in range(records if args.mode == "posix-hit" else 1)
+    ]
+    if args.mode == "cache-hit":
+        requests *= records
+    for record, request in enumerate(requests):
         barrier.wait()
-        costs = transfer_request(
-            store, runtime, rows, ids, workload, verify=args.verify
-        )
+        costs = transfer_request(store, runtime, request, verify=args.verify)
         warmup = record < args.warmup
         epoch = record if warmup else record - args.warmup
         print_sample(
@@ -418,7 +457,7 @@ def load_worker(args, workload, run_id, rank, barrier, results):
             start = (rank * args.epochs + epoch) * workload.shards
             results[start : start + workload.shards] = costs
         barrier.wait()
-        if args.epoch_interval_ms:
+        if args.epoch_interval_ms and record + 1 < records:
             time.sleep(args.epoch_interval_ms / 1000)
 
 
@@ -555,6 +594,8 @@ def describe(args, workload):
         "numa_nodes": args.cache_numa_nodes or "rank-slice; no CPU affinity",
         "warmup_requests": args.warmup,
         "measured_requests": args.epochs,
+        "epoch_interval_ms": args.epoch_interval_ms,
+        "timing": "prepared PipelineStore.Load + Wait; no device-wide sync",
         "pipeline": (
             "Cache"
             if args.mode == "cache-hit"
