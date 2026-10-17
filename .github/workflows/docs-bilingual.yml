@@ -3,6 +3,12 @@ name: UCM Documentation · Check bilingual files
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      # Only documentation pages can break the bilingual pairing contract.
+      - 'docs/**'
+      - 'docs-next/**'
+      - '**/*.md'
+      - '.github/workflows/docs-bilingual.yml'
 
 permissions:
   contents: read
