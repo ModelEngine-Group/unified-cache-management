@@ -123,6 +123,7 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     SpaceManager spaceMgr;
     Config config;
     config.dataDirShardBytes = 0;
+    config.lookupConcurrency = 2;
     config.storageBackends.push_back(Path());
     ASSERT_TRUE(spaceMgr.Setup(config).Success());
     std::vector<UC::Detail::BlockId> blocks(3);
@@ -164,4 +165,32 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
         std::vector<uint8_t> expected{true, true, false, true};
         ASSERT_TRUE(founds == expected);
     }
+}
+
+TEST_F(UCPosixSpaceManagerTest, LookupParallelPreservesOrder)
+{
+    using namespace UC::PosixStore;
+    SpaceManager spaceMgr;
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.lookupConcurrency = 3;
+    config.storageBackends.push_back(Path());
+    ASSERT_TRUE(spaceMgr.Setup(config).Success());
+
+    constexpr size_t numBlocks = 8;
+    std::vector<UC::Detail::BlockId> blocks(numBlocks);
+    std::for_each(blocks.begin(), blocks.end(), [](auto& block) {
+        block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    });
+
+    const std::vector<uint8_t> expected{true, false, true, false, false, true, false, true};
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        if (!expected[i]) { continue; }
+        auto archived = spaceMgr.GetLayout()->DataFilePath(blocks[i], false);
+        ASSERT_EQ(PosixFile{archived}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
+    }
+
+    auto founds = spaceMgr.Lookup(blocks.data(), blocks.size());
+    ASSERT_TRUE(founds.HasValue());
+    ASSERT_EQ(founds.Value(), expected);
 }

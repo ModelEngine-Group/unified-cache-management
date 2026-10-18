@@ -12,6 +12,7 @@ docs_dir: docs
 
 exclude_docs: |
   **/benchmark/**
+  **/developer-guide/cache-configuration/drampool.md
 
 hooks:
   - tools/shared_assets.py
