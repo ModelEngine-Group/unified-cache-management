@@ -9,6 +9,11 @@
 3. [请求生命周期](request-lifecycle.md)：Scheduler 与 Worker 如何交接元数据，加载和保存何时完成。
 4. [PD 集成原理](pd-integration.md)：跨请求复用与当前请求 P/D 交接如何配合。
 
+## 特性与设计文档
+
+- [特性](features/index.md)：面向使用的已支持特性指南——特性是什么、如何启用、如何验证效果。
+- [设计文档](design-docs/index.md)：特性背后的深度设计记录——数据结构、算法与失败语义。
+
 ## 按开发任务继续
 
 | 开发任务 | 指南 |

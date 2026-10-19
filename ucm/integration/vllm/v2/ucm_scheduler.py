@@ -22,6 +22,32 @@ if TYPE_CHECKING:
     from .ucm_lookup import UCMLookup
 
 
+def make_request_hasher(vllm_config, rank_id: int) -> RequestHasher:
+    """Build the request hasher with the v2 namespace metadata.
+
+    The metadata is the same as before RequestHasher took a prebuilt string,
+    so block hashes do not change. v2 adds its own layout and parallel
+    namespace on top of this seed.
+    """
+    speculative_config = getattr(vllm_config, "speculative_config", None)
+    spec_info = ""
+    if speculative_config is not None:
+        spec_method = getattr(speculative_config, "method", "") or ""
+        spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
+        spec_info = f":{spec_method}:{spec_tokens}"
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+    model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
+    meta = (
+        f"{model_name}:"
+        f"{vllm_config.parallel_config.tensor_parallel_size}:"
+        f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
+    )
+    return RequestHasher(meta)
+
+
 @dataclass(frozen=True)
 class UCMLookupResult:
     external_hit_tokens: int

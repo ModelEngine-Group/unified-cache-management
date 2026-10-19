@@ -154,6 +154,7 @@ private:
         config.Get("share_buffer_enable", param.shareBufferEnable);
         if (!param.shareBufferEnable) { param.bufferCapacity /= 8; }
         config.Get("io_direct", param.ioDirect);
+        config.Get("use_dpc", param.useDpc);
         size_t bufferCapacityGb = 0;
         config.GetNumber("cache_buffer_capacity_gb", bufferCapacityGb);
         if (bufferCapacityGb != 0) { param.bufferCapacity = bufferCapacityGb << 30; }
@@ -254,6 +255,7 @@ private:
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoDirect to {}.", ns, config.ioDirect);
+        UC_INFO("Set {}::UseDpc to {}.", ns, config.useDpc);
         UC_INFO("Set {}::CpuAffinityCores to {}.", ns, config.cpuAffinityCores);
         UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);

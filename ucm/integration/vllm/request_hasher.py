@@ -1,5 +1,8 @@
+import ast
 import hashlib
+import inspect
 import pickle
+import textwrap
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -59,26 +62,53 @@ def _generate_extra_keys(
         ) from exc
 
 
-class RequestHasher:
-    """Generate stable, namespaced UCM request and block identifiers."""
+def _collect_layout_classes() -> list[type]:
+    """KVCacheLayout subclasses (recursive) plus the standalone HMA layout.
+    The explicit imports pin the class set so scheduler and worker compute
+    an identical digest.
+    """
+    import ucm.integration.vllm.hla_connector
+    import ucm.integration.vllm.hma_connector as hma_module
+    import ucm.integration.vllm.ucm_connector as ucm_module
 
-    def __init__(self, vllm_config, rank_id):
-        speculative_config = getattr(vllm_config, "speculative_config", None)
-        spec_info = ""
-        if speculative_config is not None:
-            spec_method = getattr(speculative_config, "method", "") or ""
-            spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
-            spec_info = f":{spec_method}:{spec_tokens}"
-        additional_config = getattr(vllm_config, "additional_config", None) or {}
-        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
-        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
-        model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
-        meta = (
-            f"{model_name}:"
-            f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
-        )
+    classes: set[type] = set()
+
+    def walk(cls: type) -> None:
+        classes.add(cls)
+        for subclass in cls.__subclasses__():
+            walk(subclass)
+
+    walk(ucm_module.KVCacheLayout)
+    classes.add(hma_module.KVCacheGroupLayout)
+    return sorted(classes, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
+
+
+def _layout_source_digest() -> str:
+    """Digest of the normalized source of all layout classes; any
+    behavior-relevant layout change re-keys every block hash. Falls back
+    to the installed package version when sources are unavailable."""
+    try:
+        digest = hashlib.sha256()
+        for cls in _collect_layout_classes():
+            source = inspect.getsource(cls)
+            tree = ast.parse(textwrap.dedent(source))
+            digest.update(f"{cls.__module__}.{cls.__qualname__}:".encode("utf-8"))
+            digest.update(ast.dump(tree, include_attributes=False).encode("utf-8"))
+        return digest.hexdigest()[:16]
+    except OSError:
+        # Sourceless deployment: fall back to per-version isolation.
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("uc-manager")
+        except PackageNotFoundError:
+            return "unknown"
+
+
+class RequestHasher:
+    """Generate stable identifiers using caller-provided namespace metadata."""
+
+    def __init__(self, meta: str):
         self.meta_bytes = meta.encode("utf-8")
         self.seed = self("UCM_HASH_SEED")
 

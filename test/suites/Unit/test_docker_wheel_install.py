@@ -4,6 +4,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_UCM_WHEEL_DOCKERFILES = {
     "Dockerfile.ucm-mindie-ascend.a2-v2",
+    "Dockerfile.ucm-sglang-ascend.a2-v0.5.18",
     "Dockerfile.ucm-sglang-cuda-v0.5.5",
     "Dockerfile.ucm-vllm-ascend.a2-latest",
     "Dockerfile.ucm-vllm-ascend.a2-v0.18.0",
@@ -124,6 +125,12 @@ class DockerWheelInstallTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Apply patch for SGLang", sglang_dockerfile)
         self.assertIn("sglang-adapt.patch", sglang_dockerfile)
+
+        sglang_a2_dockerfile = (
+            REPO_ROOT / "docker" / "Dockerfile.ucm-sglang-ascend.a2-v0.5.18"
+        ).read_text(encoding="utf-8")
+        self.assertIn("scripts/build_ascend.sh", sglang_a2_dockerfile)
+        self.assertNotIn("sglang-adapt.patch", sglang_a2_dockerfile)
 
     def test_build_scripts_package_install_hook(self):
         build_scripts = sorted((REPO_ROOT / "scripts").glob("build_*.sh"))

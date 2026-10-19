@@ -22,7 +22,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     SupportsHMA,
 )
 
-from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.utils import Config
 
 from .factory import create_proxy
@@ -40,7 +39,7 @@ from .ucm_proxy import (
     UCMProxyTask,
     UCMProxyTransfer,
 )
-from .ucm_scheduler import UCMConnectorMetadata, UCMDispatcher
+from .ucm_scheduler import UCMConnectorMetadata, UCMDispatcher, make_request_hasher
 from .ucm_sharding import (
     ParallelRank,
     UCMRecordClass,
@@ -324,7 +323,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             # Layerwise copies payloads only; bulk Block First records may
             # additionally include slot padding.
             namespace += "-layerwise"
-        hasher = RequestHasher(vllm_config, 0)
+        hasher = make_request_hasher(vllm_config, 0)
         base_seed = hasher(("UCM_HASH_SEED", namespace))
         self._proxy = create_proxy(
             launch_config, record_token_span=self.spec.ucm_cache_block_size

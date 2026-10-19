@@ -16,10 +16,10 @@ from test_ucm_connector_v2 import (
     KVCacheSpecKind,
     KVConnectorRole,
     MemoryByteAccess,
-    RequestHasher,
     config,
     group,
     make_dispatcher,
+    make_request_hasher,
     parse_spec,
     request_ucm_ids,
     ucm_ids,
@@ -475,7 +475,7 @@ def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
             UCMSharding(spec, ParallelLayout()),
             recompute_tokens=0,
         ),
-        RequestHasher(vllm_config(), 0),
+        make_request_hasher(vllm_config(), 0),
         b"seed",
     )
     request = FakeRequest("request", 5120)

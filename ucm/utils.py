@@ -37,7 +37,8 @@ class Config:
         self.config: Dict[str, Any] = {}
         self._load_config()
 
-    def load_ucm_config_from_yaml(self, file_path: str) -> Dict[str, Any]:
+    @staticmethod
+    def load_ucm_config_from_yaml(file_path: str) -> Dict[str, Any]:
         if not file_path:
             logger.warning("No UCM config file path provided.")
             return {}
@@ -59,6 +60,20 @@ class Config:
         except yaml.YAMLError as e:
             logger.error(f"Failed to parse YAML config file {file_path}: {e}")
             return {}
+
+    @classmethod
+    def load_ec_config(cls, ec_transfer_config: Any) -> Dict[str, Any]:
+        """Read the EC connector section without adapting to KV configuration."""
+        config_file = ec_transfer_config.ec_connector_extra_config["UCM_CONFIG_FILE"]
+        config = cls.load_ucm_config_from_yaml(config_file)
+        if not config:
+            raise ValueError(
+                f"UCM EC configuration file is empty or invalid: {config_file}"
+            )
+        ec_config = config["ucm_ec_connector"]
+        if not isinstance(ec_config, dict):
+            raise ValueError("ucm_ec_connector must be a mapping.")
+        return ec_config
 
     def _load_config(self) -> None:
         has_extra_config = (

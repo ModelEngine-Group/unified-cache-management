@@ -348,10 +348,10 @@ from ucm.integration.vllm.v2.ucm_proxy import (  # noqa: E402
 )
 from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
     AttentionType,
-    RequestHasher,
     RequestState,
     UCMConnectorMetadata,
     UCMDispatcher,
+    make_request_hasher,
 )
 
 
@@ -567,7 +567,11 @@ def make_dispatcher(
         recompute_tokens=recompute_tokens,
     )
     return UCMDispatcher(
-        parsed, lookup, hasher or RequestHasher(vllm_config(), 0), b"seed", **kwargs
+        parsed,
+        lookup,
+        hasher or make_request_hasher(vllm_config(), 0),
+        b"seed",
+        **kwargs,
     )
 
 
@@ -1377,7 +1381,7 @@ class ConnectorSPIContractTest(unittest.TestCase):
 
 class HashAndLookupTest(unittest.TestCase):
     def setUp(self):
-        self.hasher = RequestHasher(vllm_config(), 1)
+        self.hasher = make_request_hasher(vllm_config(), 1)
 
     def test_hash_golden_vector(self):
         self.assertEqual(
@@ -1523,7 +1527,9 @@ class HashAndLookupTest(unittest.TestCase):
             ucm_cache_block_size=512,
         )
         proxy = RecordingTestStore()
-        coordinator = make_dispatcher(parsed, proxy, RequestHasher(vllm_config(), 0))
+        coordinator = make_dispatcher(
+            parsed, proxy, make_request_hasher(vllm_config(), 0)
+        )
 
         result = coordinator.lookup(FakeRequest("unaligned", 1024), 128)
 
@@ -3879,7 +3885,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
         proxy = RecordingTestStore()
         coordinator = make_dispatcher(
-            parsed, proxy, RequestHasher(vllm_config(), 0), recompute_tokens=0
+            parsed, proxy, make_request_hasher(vllm_config(), 0), recompute_tokens=0
         )
         request = FakeRequest("r", 256)
         dispatcher = coordinator
