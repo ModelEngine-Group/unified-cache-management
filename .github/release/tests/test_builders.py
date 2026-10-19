@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import importlib
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -22,17 +21,11 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
-def test_sglang_main_tag_uses_public_tag_version_and_main_channel() -> None:
-    parsed = upstream._parsed_runtime_tag(  # noqa: SLF001
-        "sglang",
-        "main-cann9.0.0-a3",
-        created_at=datetime(2026, 9, 23, tzinfo=timezone.utc),
+def test_sglang_main_tag_is_outside_formal_runtime_grammar() -> None:
+    assert (
+        upstream._parsed_runtime_tag("sglang", "main-cann9.0.0-a3")  # noqa: SLF001
+        is None
     )
-
-    assert parsed is not None
-    assert parsed["version_text"] == "main-cann9.0.0-a3"
-    assert parsed["channel"] == "main"
-    assert str(parsed["version"]).startswith("0.0.0.dev")
 
 
 def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
@@ -69,6 +62,19 @@ def _policy(
 
 def _fixture() -> dict[str, object]:
     return serialization.load_json(TAG_FIXTURE)
+
+
+def _sglang_policy(
+    selector: dict[str, str | None] | None = None,
+) -> dict[str, object]:
+    resolved = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override="0.7.60rc1",
+    )
+    product = next(item for item in resolved["products"] if item["id"] == "sglang")
+    product["runtime_selectors"] = [selector or _selector("0.5")]
+    resolved["products"] = [product]
+    return resolved
 
 
 def _selection(fixture: dict[str, object] | None = None) -> dict[str, object]:
@@ -169,6 +175,115 @@ def test_sglang_selector_keeps_cuda_runtime_and_cann_variants(
             "channel": "stable",
         },
     ]
+
+
+@pytest.mark.parametrize(
+    ("formal_tags", "expected"),
+    [
+        (
+            ["v0.5.19-cu129", "v0.5.19-cann9.0.0-a3", "v0.5.20rc1-cu130"],
+            {"v0.5.19-cu129": "stable", "v0.5.19-cann9.0.0-a3": "stable"},
+        ),
+        (
+            ["v0.5.19rc1-cu129", "v0.5.19rc2-cu130", "v0.5.19rc2-cann9.0.0-a3"],
+            {"v0.5.19rc2-cu130": "rc", "v0.5.19rc2-cann9.0.0-a3": "rc"},
+        ),
+    ],
+    ids=["stable-before-newer-rc", "rc-fallback"],
+)
+def test_sglang_candidates_select_formal_tags_without_appending_main(
+    formal_tags: list[str], expected: dict[str, str]
+) -> None:
+    candidates = upstream.resolve_runtime_candidates(
+        _sglang_policy(),
+        tag_loader=lambda _repository: [*formal_tags, "main-cann9.0.0-a3"],
+    )
+
+    assert {
+        item["runtime_tag"]: item["channel"] for item in candidates["runtimes"]
+    } == expected
+    assert all("created_at" not in item for item in candidates["runtimes"])
+
+
+def test_sglang_candidates_fail_when_registry_only_has_main_tags() -> None:
+    with pytest.raises(ValueError, match="no published Runtime tag matches"):
+        upstream.resolve_runtime_candidates(
+            _sglang_policy(),
+            tag_loader=lambda _repository: ["main-cann9.0.0-910b", "main-cann9.0.0-a3"],
+        )
+
+
+def test_sglang_explicit_main_tag_cannot_bypass_formal_selection() -> None:
+    tag = "main-cann9.0.0-a3"
+    with pytest.raises(ValueError, match="explicit Runtime tag does not match"):
+        upstream.resolve_runtime_candidates(
+            _sglang_policy(_selector("0.0.0", tag)),
+            tag_loader=lambda _repository: [tag],
+        )
+
+
+@pytest.mark.parametrize(
+    ("version", "channel", "metadata"),
+    [
+        ("main-cann9.0.0-a3", "main", {}),
+        (
+            "main-cann9.0.0-a3",
+            "main",
+            {"created_at": "2026-09-23T00:00:00+00:00"},
+        ),
+        ("0.0.0.dev20260923000000", "nightly", {}),
+    ],
+    ids=["main", "main-with-created-at", "legacy-synthetic-nightly"],
+)
+def test_sglang_candidates_reject_saved_main_documents(
+    version: str, channel: str, metadata: dict[str, str]
+) -> None:
+    candidates = upstream.resolve_runtime_candidates(
+        _sglang_policy(), tag_loader=lambda _repository: ["v0.5.19-cu129"]
+    )
+    tag = "main-cann9.0.0-a3"
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    candidates["runtimes"][0].update(
+        runtime_tag=tag,
+        runtime_ref=reference,
+        version=version,
+        channel=channel,
+        **metadata,
+    )
+    candidates["references"] = [reference]
+
+    with pytest.raises(
+        ValueError, match="fields must be exact|does not match product grammar"
+    ):
+        upstream.validate_runtime_candidates(candidates)
+
+
+@pytest.mark.parametrize("channel", ["main", "nightly", "pinned"])
+def test_sglang_selection_rejects_main_channels_but_preserves_pinned(
+    channel: str,
+) -> None:
+    selection = _selection()
+    runtime = next(
+        item for item in selection["runtimes"] if item["backend"] == "cann-a2"
+    )
+    tag = f"main-{runtime['accelerator_runtime']}-910b"
+    runtime.update(
+        product_id="sglang",
+        runtime_repository="docker.io/lmsysorg/sglang",
+        runtime_tag=tag,
+        version=tag if channel != "nightly" else "0.0.0.dev20260923000000",
+        channel=channel,
+    )
+    selection["runtimes"] = [runtime]
+
+    if channel == "pinned":
+        validated = upstream.validate_selection(selection)
+        assert validated["runtimes"][0]["channel"] == "pinned"
+    else:
+        with pytest.raises(
+            ValueError, match="unsupported.*channel|channel.*unsupported"
+        ):
+            upstream.validate_selection(selection)
 
 
 def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
