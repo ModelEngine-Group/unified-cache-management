@@ -64,11 +64,12 @@ The built Wheel metadata must match those declarations before publication.
 
 Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
 Patch range. Every range is resolved independently from parsed Registry tags:
-the selector first chooses the highest available channel in `stable`, `rc`,
-`nightly` order, then the highest complete version in that channel, and finally
-expands every legal variant of only that version and channel. A newer RC never
-displaces a stable version in the same range, and missing variants are never
-backfilled from another version or channel.
+vLLM and SGLang choose `stable` before `rc`; vLLM-Ascend also allows a
+`nightly` fallback. The selector then chooses the highest complete version in
+that channel and expands every legal variant of only that version and channel.
+A newer RC never displaces a stable version in the same range, and missing
+variants are never backfilled from another version or channel. SGLang
+`main-cann*` and `nightly-*` tags are not automatic release candidates.
 
 An explicit `version@tag` binding such as
 `0.25@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag. The
@@ -80,15 +81,20 @@ produce no publishable Runtime fail the release. All four Release Profiles
 consume the same selectors. After a winning version is chosen, 310P is filtered
 and A5 is reported as blocked; neither condition causes fallback.
 
-These range rules apply only to `UCM_SUPPORTED_VLLM_VERSIONS` and
-`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `UCM_VERSION` remains a canonical PEP 440
-`X.Y.Z` package version because it drives Wheel, Chart, and Release coordinates.
+These range rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
+`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`, and `UCM_SUPPORTED_SGLANG_VERSIONS`.
+Upstream candidate channels are independent of UCM's Stable, Prerelease, Draft,
+and Nightly Profiles: the Profile controls which artifacts are built and
+published, without widening the candidate set. `UCM_VERSION` remains a canonical
+PEP 440 `X.Y.Z` package version because it drives Wheel, Chart, and Release
+coordinates.
 
 For example:
 
 ```ini
 UCM_SUPPORTED_VLLM_VERSIONS=0.26,0.27,0.28
 UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.23,0.24,0.25,0.26
+UCM_SUPPORTED_SGLANG_VERSIONS=0.5.18,0.5.19,0.5.20
 ```
 
 ## Registry-only flow
@@ -164,6 +170,13 @@ The workflow accepts:
 | `draft/vX.Y.Z` | Draft | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
 | `draft/vX.Y.Z-N` | Draft | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
 | `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
+
+Automatic release image tags use `<upstream-tag>-ucm-<UCM-image-version>` for
+every product, with the existing repository-owner prefix on Forks. The UCM image
+version is the OCI-compatible package version selected by the Git Tag, such as
+`0.9.0rc2` or `0.9.0.dev1`. Multi-architecture members append `-amd64` or
+`-arm64`; their index and single-architecture images use the bare tag. SGLang
+does not add a creation-time suffix.
 
 The tagged source owns the package model, and public versions must be canonical
 and non-local. Before opening or reusing a Release, the reusable core requires
@@ -674,8 +687,10 @@ An ordinary PR selects one latest Stable vLLM-Ascend A2 Ubuntu runtime, falling
 back to RC and release-nightly. Its actual architecture members determine the
 Wheel and image tasks. Explicit `/ucm-build image <repository:tag>` accepts one
 runtime reference, inspects its OCI config, pulls only metadata-incomplete
-members for fallback probing, and publishes PR-scoped GHCR tags. `/ucm-build
-all` retains the complete formal matrix behavior.
+members for fallback probing, and publishes PR-scoped GHCR tags. Explicit image
+requests use the `pinned` channel independently of automatic release candidate
+selection, so a SGLang `main-cann*` image can still be requested this way.
+`/ucm-build all` retains the complete formal matrix behavior.
 
 ## Artifact names
 
@@ -691,6 +706,10 @@ Artifacts are scoped by run and overwritten by failed-job reruns:
 - `ucm-image-<image-id>-run-<run>` for PR Robot trust-boundary handoff only;
 - image member/index receipt artifacts;
 - `ucm-release-stage-run-<run>` containing internal `release-state.json`.
+
+Candidates or selection artifacts containing SGLang `main` images are no longer
+accepted. Regenerate discovery and selection with the updated code before
+planning; rerunning only the failed Plan job reuses the unsupported artifacts.
 
 When image publication is enabled, trusted Tag builds keep the verified OCI
 archive on the native build runner, copy it directly to GHCR, and upload only

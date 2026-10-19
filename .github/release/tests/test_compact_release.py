@@ -18,6 +18,7 @@ TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 builders = importlib.import_module("ucm_release.builders")
+cleanup_records = importlib.import_module("ucm_release.cleanup_records")
 wheel_ops = importlib.import_module("ucm_release.wheel")
 planner = importlib.import_module("ucm_release.plan")
 serialization = importlib.import_module("ucm_release.serialization")
@@ -57,9 +58,13 @@ def _inputs(
         formal,
         tag_fixture=serialization.load_json(TAG_FIXTURE),
     )
+    return formal, selection, _builder_catalog(formal, selection)
+
+
+def _builder_catalog(formal, selection):
     catalog = builders.catalog_from_builds(
         selection["wheel_builds"],
-        owner=repository.split("/", 1)[0],
+        owner=formal["repository"].split("/", 1)[0],
         formal_policy=formal,
     )
     observations = {
@@ -72,8 +77,7 @@ def _inputs(
         }
         for index, item in enumerate(catalog["builders"])
     }
-    catalog = builders.finalize_catalog(catalog, observations)
-    return formal, selection, catalog
+    return builders.finalize_catalog(catalog, observations)
 
 
 def _plan(
@@ -487,6 +491,130 @@ def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
     assert plan["release_kind"] == "draft"
     assert plan["is_prerelease"] is True
     assert plan["chart"]["version"] == "0.7.62-draft.4"
+
+
+@pytest.mark.parametrize(
+    ("release_type", "version", "git_tag", "repository", "prefix"),
+    (
+        ("prerelease", "0.9.0rc2", "v0.9.0rc2", policy.OFFICIAL_REPOSITORY, ""),
+        (
+            "draft",
+            "0.9.0.dev1",
+            "draft/v0.9.0-1",
+            "release-org/unified-cache-management",
+            "release-org-",
+        ),
+    ),
+    ids=("prerelease-official", "draft-fork"),
+)
+def test_sglang_versioned_images_have_release_owned_cleanup_coordinates(
+    release_type: str,
+    version: str,
+    git_tag: str,
+    repository: str,
+    prefix: str,
+) -> None:
+    formal = policy.resolve(
+        repository=repository,
+        version_override=version,
+        release_type=release_type,
+        dockerhub_namespace="docker.io/release-test",
+    )
+    product = next(item for item in formal["products"] if item["id"] == "sglang")
+    selectors = [
+        {"raw": value, "version": value, "tag": None} for value in ("0.5.19", "0.5.20")
+    ]
+    product["runtime_selectors"] = selectors
+    formal["products"] = [product]
+    formal["runtime_selectors"] = {"sglang": selectors}
+
+    fixture = serialization.load_json(TAG_FIXTURE)
+    source = "docker.io/lmsysorg/sglang"
+    tags = {"cuda": "v0.5.19-cu129", "cann-a3": "v0.5.20rc1-cann9.0.1-a3"}
+    probes = [
+        probe
+        for probe in fixture["runtime_probe"]["probes"]
+        if probe["backend"] in tags
+    ]
+    for probe in probes:
+        tag = tags[probe["backend"]]
+        probe.update(
+            product_id="sglang",
+            repository=source,
+            tag=tag,
+            runtime_ref=f"{source}:{tag}",
+            target_repository=product["target_repository"],
+            image_reference=f"{source}@{probe['image_reference'].split('@')[1]}",
+        )
+    fixture["runtime_probe"]["probes"] = probes
+    # Main tags have no probes because they must never become build candidates.
+    fixture["repositories"][source] = {
+        "pages": [
+            {"tags": [*tags.values(), "main-cann9.0.0-910b", "main-cann9.0.0-a3"]}
+        ]
+    }
+
+    selection = upstream.resolve_upstreams(formal, tag_fixture=fixture)
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=_builder_catalog(formal, selection),
+        route="release",
+        git_tag=git_tag,
+        release_kind="draft" if release_type == "draft" else "publish",
+    )
+    assert {item["runtime"]["channel"] for item in plan["families"]} == {
+        "stable",
+        "rc",
+    }
+    source_members = {
+        (probe["tag"], probe["cpu_arch"]): probe["image_reference"] for probe in probes
+    }
+    assert {
+        (image["runtime"]["tag"], image["cpu_arch"]): image["runtime"][
+            "image_reference"
+        ]
+        for image in plan["images"]
+    } == source_members
+
+    owner = repository.split("/", 1)[0].lower()
+    cuda_tag = f"{prefix}{tags['cuda']}-ucm-{version}"
+    cann_tag = f"{prefix}{tags['cann-a3']}-ucm-{version}"
+    families = {family["runtime"]["tag"]: family for family in plan["families"]}
+    assert set(families) == set(tags.values())
+    cuda_family = families[tags["cuda"]]
+    assert cuda_family["target_tag"] == cuda_tag
+    assert cuda_family["create_index"] is True
+    assert cuda_family["published_reference"] == f"ghcr.io/{owner}/sglang:{cuda_tag}"
+    assert {member["reference"] for member in cuda_family["members"]} == {
+        f"ghcr.io/{owner}/sglang:{cuda_tag}-{architecture}"
+        for architecture in ("amd64", "arm64")
+    }
+    cann_family = families[tags["cann-a3"]]
+    assert cann_family["target_tag"] == cann_tag
+    assert cann_family["create_index"] is False
+    assert cann_family["published_reference"] == f"ghcr.io/{owner}/sglang:{cann_tag}"
+
+    record = cleanup_records.record_from_plan(
+        cleanup_records.record_for_tag(repository, git_tag, "a" * 40, 12345, 1),
+        plan,
+    )
+    expected = set()
+    channels = {"ghcr": f"ghcr.io/{owner}/sglang"}
+    if release_type == "prerelease":
+        channels["dockerhub"] = "docker.io/release-test/sglang"
+    for channel, target in channels.items():
+        expected.add((f"{channel}-index", f"{target}:{cuda_tag}"))
+        expected.add((f"{channel}-member", f"{target}:{cann_tag}"))
+        expected.update(
+            (f"{channel}-member", f"{target}:{cuda_tag}-{architecture}")
+            for architecture in ("amd64", "arm64")
+        )
+    assert {
+        (item["kind"], item["reference"])
+        for item in record["resources"]
+        if item["kind"] != "chart-oci"
+    } == expected
 
 
 def test_fork_owner_prefix_changes_runtime_and_python_coordinates() -> None:
