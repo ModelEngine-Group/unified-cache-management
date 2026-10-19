@@ -65,7 +65,7 @@ public:
     Status GetTransferStatus(hixl::TransferReq request, TransferStatus& status);
 
     const Endpoint& LocalEndpoint() const;
-    int32_t DeviceId() const;
+    int32_t PhysicalDeviceId() const;
 
 private:
     using Task = std::function<Status(hixl::Hixl&)>;
@@ -78,10 +78,8 @@ private:
 
     Endpoint local_endpoint_;
     int32_t device_id_ = -1;
+    int32_t physical_device_id_ = -1;
     std::thread worker_;
-
-    // Serializes Initialize and Finalize, including worker creation and join.
-    std::mutex lifecycle_mutex_;
 
     // Protects tasks_, stopping_, and initialized_; cv_ coordinates state changes.
     std::mutex mutex_;

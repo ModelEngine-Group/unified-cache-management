@@ -37,13 +37,13 @@ Environment Variables:
                           (default: true, see logger_patch)
 
     UCM_LOG_RATE_LIMIT_ENABLE: Enable/disable rate limiting (default: true)
-    UCM_LOG_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 10000 = 10s)
+    UCM_LOG_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 60000 = 60s)
     UCM_LOG_RATE_LIMIT_MAX_LOGS: Max logs per window (default: 3, max: 3)
 
 Usage:
     logger = init_logger(__name__)
 
-    # Rate-limited logging (10s window, max 3 logs per location)
+    # Rate-limited logging (60s window, max 3 logs per location)
     logger.info_limit("Processing request %s", req_id)
 
     # One-time logging (cached by lru_cache)

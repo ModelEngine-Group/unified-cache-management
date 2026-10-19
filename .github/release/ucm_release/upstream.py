@@ -9,31 +9,25 @@ Git is not read.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import re
-import subprocess
-import time
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from . import core
+from . import builders, registry
 from . import runtime as runtime_contract
-from . import version_config
+from . import serialization, version_config
 
 SELECTION_KIND = "ucm-runtime-selection"
 SELECTION_SCHEMA_VERSION = 3
 CANDIDATES_KIND = "ucm-runtime-candidates"
 CANDIDATES_SCHEMA_VERSION = 1
-RELEASE_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_ARCHITECTURES = ("amd64", "arm64")
 RUNTIME_CHANNEL_PRIORITY = ("stable", "rc", "nightly")
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_MANYLINUX = re.compile(r"manylinux_(\d+)_(\d+)")
 _FORMAL_TAG = re.compile(
     r"^v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:rc[0-9]+)?)"
     r"(?P<suffix>(?:-[A-Za-z0-9_.]+)*)$"
@@ -42,13 +36,10 @@ _NIGHTLY_TAG = re.compile(
     r"^nightly-releases-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+rc(?:[0-9]+)?)"
     r"(?P<suffix>(?:-[A-Za-z0-9_.]+)*)$"
 )
-_CUDA_BUILDER_TAG = re.compile(r"^cuda(?P<runtime>[0-9]+\.[0-9]+)$")
-_ASCEND_BUILDER_TAG = re.compile(
-    r"^(?P<runtime>[0-9]+\.[0-9]+\.[0-9]+)-"
-    r"(?P<variant>310p|910b|a3|950)-"
-    r"(?P<manylinux>manylinux_[0-9]+_[0-9]+)-"
-    r"py(?P<python>[0-9]+\.[0-9]+)$"
+_SGLANG_MAIN_TAG = re.compile(
+    r"^main-(?P<cann>cann[0-9]+\.[0-9]+\.[0-9]+)-(?P<soc>910b|a3)$"
 )
+_SGLANG_CANN_SUFFIX = re.compile(r"^cann[0-9]+\.[0-9]+\.[0-9]+-(?:910b|a3)$")
 
 _WHEEL_BUILD_FIELDS = {
     "id",
@@ -110,85 +101,70 @@ def _string(mapping: Mapping[str, object], key: str, context: str) -> str:
     return value.strip()
 
 
-def _crane(operation: str, reference: str) -> str:
-    completed = None
-    last_error = ""
-    for attempt in range(1, 4):
-        try:
-            completed = subprocess.run(
-                ["crane", operation, reference],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            completed = None
-            last_error = "timed out after 60 seconds"
-        if completed is None:
-            if attempt < 3:
-                time.sleep(2**attempt)
-            continue
-        if completed.returncode == 0:
-            return completed.stdout
-        last_error = completed.stderr.strip() or str(completed.returncode)
-        if attempt < 3:
-            time.sleep(2**attempt)
-    raise ValueError(
-        f"crane {operation} failed for {reference}: {last_error or 'unknown error'}"
+def _parsed_sglang_tag(
+    tag: str, *, created_at: datetime | None = None
+) -> dict[str, object] | None:
+    """Parse SGLang's CUDA, CANN and main image tag families."""
+
+    main = _SGLANG_MAIN_TAG.fullmatch(tag)
+    if main is not None:
+        # Keep a sortable synthetic version internally when registry creation
+        # metadata is available, but publish the upstream tag as the version.
+        internal_version = Version("0.0.0")
+        if created_at is not None:
+            stamp = created_at.strftime("%Y%m%d%H%M%S")
+            internal_version = Version(f"0.0.0.dev{stamp}")
+        variant = "a2" if main.group("soc") == "910b" else "a3"
+        return {
+            "tag": tag,
+            "version": internal_version,
+            "version_text": tag,
+            "channel": "main",
+            "suffix": f"-{main.group('cann')}-{main.group('soc')}",
+            "tokens": [main.group("cann"), main.group("soc")],
+            "variant": variant,
+            "backend": f"cann-{variant}",
+        }
+
+    match = _FORMAL_TAG.fullmatch(tag)
+    if match is None:
+        return None
+    suffix = match.group("suffix")
+    tokens = [token for token in suffix.removeprefix("-").split("-") if token]
+    is_cuda = all(re.fullmatch(r"cu[0-9]+|runtime", token) for token in tokens)
+    is_cann = (
+        len(tokens) == 2 and _SGLANG_CANN_SUFFIX.fullmatch("-".join(tokens)) is not None
     )
-
-
-def _fixture_tags(
-    fixture: Mapping[str, object] | None, repository: str
-) -> list[str] | None:
-    if fixture is None:
+    if not is_cuda and not is_cann:
         return None
-    repositories = fixture.get("repositories")
-    if not isinstance(repositories, Mapping):
+    if is_cuda and (
+        sum(token.startswith("cu") for token in tokens) != 1
+        or tokens.count("runtime") > 1
+    ):
         return None
-    raw_repository = repositories.get(repository)
-    if not isinstance(raw_repository, Mapping):
+    try:
+        version = Version(match.group("version"))
+    except InvalidVersion:
         return None
-    pages = raw_repository.get("pages")
-    if not isinstance(pages, list):
-        raise ValueError(f"Registry fixture {repository}: pages must be a list")
-    tags: list[str] = []
-    for index, raw_page in enumerate(pages):
-        page = _mapping(raw_page, f"Registry fixture {repository}.pages[{index}]")
-        values = page.get("tags")
-        if not isinstance(values, list) or not all(
-            isinstance(tag, str) for tag in values
-        ):
-            raise ValueError(
-                f"Registry fixture {repository}.pages[{index}].tags is invalid"
-            )
-        tags.extend(values)
-    return sorted(set(tags))
+    channel = "rc" if version.is_prerelease else "stable"
+    variant = "a2" if "910b" in tokens else "a3" if "a3" in tokens else "default"
+    return {
+        "tag": tag,
+        "version": version,
+        "version_text": match.group("version"),
+        "channel": channel,
+        "suffix": suffix,
+        "tokens": tokens,
+        "variant": variant,
+        "backend": f"cann-{variant}" if is_cann else "cuda",
+    }
 
 
-def _repository_tags(
-    repository: str,
-    *,
-    tag_fixture: Mapping[str, object] | None,
-    tag_loader: Callable[[str], Sequence[str]] | None,
-) -> list[str]:
-    fixture = _fixture_tags(tag_fixture, repository)
-    if fixture is not None:
-        return fixture
-    values = (
-        tag_loader(repository)
-        if tag_loader is not None
-        else _crane("ls", repository).splitlines()
-    )
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-        raise ValueError(
-            f"Registry tag loader for {repository} returned an invalid value"
-        )
-    return sorted(set(str(tag) for tag in values if str(tag)))
-
-
-def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
+def _parsed_runtime_tag(
+    product_id: str, tag: str, *, created_at: datetime | None = None
+) -> dict[str, object] | None:
+    if product_id == "sglang":
+        return _parsed_sglang_tag(tag, created_at=created_at)
     nightly = _NIGHTLY_TAG.fullmatch(tag) if product_id == "vllm-ascend" else None
     formal = _FORMAL_TAG.fullmatch(tag)
     match = nightly or formal
@@ -208,12 +184,16 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
             or sum(token.startswith("ubuntu") for token in tokens) > 1
         ):
             return None
+        variant = "default"
+        backend = "cuda"
     elif product_id == "vllm-ascend":
         if any(token not in {"310p", "a3", "a5", "openeuler"} for token in tokens):
             return None
         accelerator_tokens = set(tokens) & {"310p", "a3", "a5"}
         if len(accelerator_tokens) > 1 or tokens.count("openeuler") > 1:
             return None
+        variant = next(iter(accelerator_tokens), "a2")
+        backend = f"cann-{variant}"
     else:
         raise ValueError(f"unsupported runtime product {product_id!r}")
     try:
@@ -232,19 +212,67 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
+        "variant": variant,
+        "backend": backend,
     }
 
 
-def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
-    tokens = set(parsed["tokens"])
-    if product_id == "vllm":
-        return "default"
-    if product_id == "vllm-ascend":
-        return next(
-            (token for token in ("310p", "a3", "a5") if token in tokens),
-            "a2",
+def _is_sglang_runtime_variant(product_id: str, parsed: Mapping[str, object]) -> bool:
+    """SGLang publishes CUDA ``-runtime`` tags, which are not UCM build inputs."""
+
+    return product_id == "sglang" and "runtime" in set(parsed.get("tokens", ()))
+
+
+def _without_sglang_runtime_tags(
+    product_id: str, selected: Sequence[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """Drop SGLang's image-only CUDA runtime tags from build candidates."""
+
+    if product_id != "sglang":
+        return [dict(item) for item in selected]
+    return [
+        dict(item)
+        for item in selected
+        if not str(item.get("runtime_tag", "")).endswith("-runtime")
+    ]
+
+
+def _select_sglang_main_tags(
+    tags: Sequence[str],
+    *,
+    excluded_variants: Sequence[str],
+    created_by_tag: Mapping[str, datetime],
+    selected: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    """Add the newest published CANN main image for each SGLang SOC."""
+
+    selected_tags = {str(item["runtime_tag"]) for item in selected}
+    parsed_main = []
+    for tag in tags:
+        parsed = _parsed_sglang_tag(tag, created_at=created_by_tag.get(tag))
+        if (
+            parsed is not None
+            and parsed["channel"] == "main"
+            and parsed["variant"] not in excluded_variants
+        ):
+            parsed_main.append(parsed)
+
+    additions: list[dict[str, str]] = []
+    for variant in ("a2", "a3"):
+        candidates = [item for item in parsed_main if item["variant"] == variant]
+        if not candidates:
+            continue
+        newest = max(candidates, key=lambda item: (item["version"], item["tag"]))
+        if str(newest["tag"]) in selected_tags:
+            continue
+        additions.append(
+            {
+                "runtime_tag": str(newest["tag"]),
+                "version": str(newest["version_text"]),
+                "channel": "main",
+            }
         )
-    raise ValueError(f"unsupported runtime product {product_id!r}")
+    return additions
 
 
 def _version_is_in_selector(version: Version, selector: Version) -> bool:
@@ -280,6 +308,7 @@ def _select_runtime_tags(
     tags: Sequence[str],
     *,
     excluded_variants: Sequence[str] = (),
+    created_by_tag: Mapping[str, datetime] | None = None,
 ) -> list[dict[str, str]]:
     """Resolve version.ini ranges to one published Runtime version per selector."""
 
@@ -291,7 +320,12 @@ def _select_runtime_tags(
     parsed_by_tag = {
         tag: parsed
         for tag in available_tags
-        if (parsed := _parsed_runtime_tag(product_id, tag)) is not None
+        if (
+            parsed := _parsed_runtime_tag(
+                product_id, tag, created_at=(created_by_tag or {}).get(tag)
+            )
+        )
+        is not None
     }
     selected: list[dict[str, str]] = []
     selected_tags: set[str] = set()
@@ -325,7 +359,7 @@ def _select_runtime_tags(
                 raise ValueError(
                     f"{context}: explicit Runtime tag is outside its version range"
                 )
-            if _runtime_variant(product_id, parsed) in excluded_variants:
+            if parsed["variant"] in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
             values = [parsed]
         else:
@@ -336,9 +370,7 @@ def _select_runtime_tags(
             ]
             winners = _preferred_runtime_tags(matching)
             values = [
-                item
-                for item in winners
-                if _runtime_variant(product_id, item) not in excluded_variants
+                item for item in winners if item["variant"] not in excluded_variants
             ]
             if not values:
                 reason = (
@@ -405,9 +437,23 @@ def resolve_runtime_candidates(
             isinstance(item, str) for item in excluded
         ):
             raise ValueError(f"{product_id}: excluded variants must be a list")
-        repository_tags = _repository_tags(
+        repository_tags = registry.repository_tags(
             repository, tag_fixture=tag_fixture, tag_loader=tag_loader
         )
+        created_by_tag: dict[str, datetime] = {}
+        if product_id == "sglang" and tag_fixture is None and tag_loader is None:
+            for tag in repository_tags:
+                if tag.startswith("main-cann"):
+                    try:
+                        created_by_tag[tag] = registry.created_at(repository, tag)
+                    except ValueError as error:
+                        # Some registries do not expose config metadata for a tag.
+                        # Do not replace the upstream creation time with the current
+                        # time: that would make selection depend on this run.
+                        print(
+                            f"warning: cannot read creation time for {repository}:{tag}: "
+                            f"{error}; selecting by tag"
+                        )
         if pr_default:
             selected = [
                 {
@@ -416,15 +462,32 @@ def resolve_runtime_candidates(
                     "channel": str(item["channel"]),
                 }
                 for tag in repository_tags
-                if (item := _parsed_runtime_tag(product_id, tag)) is not None
-                and _runtime_variant(product_id, item) not in excluded
+                if (
+                    item := _parsed_runtime_tag(
+                        product_id, tag, created_at=created_by_tag.get(tag)
+                    )
+                )
+                is not None
+                and item["variant"] not in excluded
+                and not _is_sglang_runtime_variant(product_id, item)
             ]
         else:
             selected = _select_runtime_tags(
                 product,
                 repository_tags,
                 excluded_variants=excluded,
+                created_by_tag=created_by_tag,
             )
+            selected = _without_sglang_runtime_tags(product_id, selected)
+            if product_id == "sglang":
+                selected.extend(
+                    _select_sglang_main_tags(
+                        repository_tags,
+                        excluded_variants=excluded,
+                        created_by_tag=created_by_tag,
+                        selected=selected,
+                    )
+                )
         if not selected:
             raise ValueError(
                 f"{product_id}: no Runtime Registry tags satisfy the selection windows"
@@ -432,31 +495,38 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _parsed_runtime_tag(product_id, tag)
-            tokens = set(parsed["tokens"]) if parsed is not None else set()
-            if product_id == "vllm-ascend" and "a5" in tokens:
-                backend = "cann-a5"
-                backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            parsed = _mapping(
+                _parsed_runtime_tag(
+                    product_id, tag, created_at=created_by_tag.get(tag)
+                ),
+                f"selected Runtime tag {tag}",
+            )
+            backend = str(parsed["backend"])
+            backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            if backend_policy.get("status") == "blocked":
                 problems.append(
                     _blocked_problem(
                         backend=backend,
-                        capability="Ascend A5 runtime",
-                        reason=str(backend_policy.get("reason", "backend is blocked")),
+                        capability=f"{backend} runtime",
+                        reason=str(backend_policy["reason"]),
                         repository=repository,
                         tag=tag,
                     )
                 )
                 continue
-            runtimes.append(
-                {
-                    "product_id": product_id,
-                    "runtime_repository": repository,
-                    "runtime_tag": tag,
-                    "runtime_ref": f"{repository}:{tag}",
-                    "version": item["version"],
-                    "channel": item["channel"],
-                }
-            )
+            candidate = {
+                "product_id": product_id,
+                "runtime_repository": repository,
+                "runtime_tag": tag,
+                "runtime_ref": f"{repository}:{tag}",
+                "version": item["version"],
+                "channel": item["channel"],
+            }
+            created_at = created_by_tag.get(tag)
+            if product_id == "sglang" and tag.startswith("main-cann"):
+                if created_at is not None:
+                    candidate["created_at"] = created_at.isoformat()
+            runtimes.append(candidate)
         if len(runtimes) == product_runtime_count:
             raise ValueError(
                 f"{product_id}: no publishable Runtime Registry tags satisfy policy"
@@ -521,6 +591,8 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
     seen: set[str] = set()
     for index, raw in enumerate(runtimes):
         item = _mapping(raw, f"runtime candidates[{index}]")
+        product_id = _string(item, "product_id", f"runtime candidates[{index}]")
+        runtime_tag = _string(item, "runtime_tag", f"runtime candidates[{index}]")
         fields = {
             "product_id",
             "runtime_repository",
@@ -529,7 +601,13 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
             "version",
             "channel",
         }
-        if set(item) != fields:
+        allowed_fields = {frozenset(fields)}
+        if (
+            product_id == "sglang"
+            and _SGLANG_MAIN_TAG.fullmatch(runtime_tag) is not None
+        ):
+            allowed_fields.add(frozenset((*fields, "created_at")))
+        if frozenset(item) not in allowed_fields:
             raise ValueError(f"runtime candidates[{index}] fields must be exact")
         reference = _string(item, "runtime_ref", f"runtime candidates[{index}]")
         expected_ref = (
@@ -543,417 +621,37 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        product_id = _string(item, "product_id", reference)
-        runtime_tag = _string(item, "runtime_tag", reference)
         parsed = _parsed_runtime_tag(product_id, runtime_tag)
+        # Accept candidate documents produced before SGLang main versions
+        # became tag-based. New documents use the main tag and channel above.
+        if (
+            product_id == "sglang"
+            and re.fullmatch(
+                r"main-cann[0-9]+\.[0-9]+\.[0-9]+-(?:910b|a3)", runtime_tag
+            )
+            and str(item.get("version", "")).startswith("0.0.0.dev")
+            and item.get("channel") == "nightly"
+        ):
+            parsed = {
+                "version_text": str(item["version"]),
+                "channel": "nightly",
+            }
         if parsed is None:
             raise ValueError(f"{reference}: Runtime tag does not match product grammar")
         if item.get("version") != parsed["version_text"]:
             raise ValueError(f"{reference}: Runtime version differs from its tag")
         if item.get("channel") != parsed["channel"]:
             raise ValueError(f"{reference}: Runtime channel differs from its tag")
+        if "created_at" in item:
+            try:
+                datetime.fromisoformat(_string(item, "created_at", reference))
+            except ValueError as error:
+                raise ValueError(f"{reference}: invalid creation timestamp") from error
         expected_refs.append(reference)
     if sorted(references) != sorted(expected_refs):
         raise ValueError("runtime candidate references do not match runtimes")
     _validate_problems(problems)
     return document
-
-
-def _manylinux_floor(value: str) -> tuple[int, int]:
-    match = _MANYLINUX.fullmatch(value)
-    if match is None:
-        raise ValueError(f"invalid manylinux policy {value!r}")
-    return int(match.group(1)), int(match.group(2))
-
-
-def _source_repositories(family: Mapping[str, object], context: str) -> dict[str, str]:
-    values = _mapping(
-        family.get("source_repositories"), f"{context}.source_repositories"
-    )
-    if set(values) != set(SUPPORTED_ARCHITECTURES):
-        raise ValueError(f"{context}: source_repositories must define amd64 and arm64")
-    return {
-        architecture: _string(values, architecture, context)
-        for architecture in SUPPORTED_ARCHITECTURES
-    }
-
-
-def _manifest_member_digest(
-    reference: str,
-    architecture: str,
-    *,
-    tag_fixture: Mapping[str, object] | None,
-    manifest_loader: Callable[[str], object] | None,
-    config_loader: Callable[[str], object] | None = None,
-    digest_loader: Callable[[str], str] | None = None,
-) -> str:
-    if tag_fixture is not None:
-        values = tag_fixture.get("source_image_members")
-        if isinstance(values, Mapping) and reference in values:
-            members = _mapping(values[reference], f"source image fixture {reference}")
-            digest = members.get(architecture)
-            if isinstance(digest, str) and _DIGEST.fullmatch(digest):
-                return digest
-            raise ValueError(
-                f"source image fixture {reference} has no valid "
-                f"{architecture} digest"
-            )
-    separator = reference.rfind(":")
-    if separator <= reference.rfind("/"):
-        raise ValueError(f"raw Builder reference must include a tag: {reference}")
-    repository = reference[:separator]
-    root_digest = (
-        digest_loader(reference)
-        if digest_loader is not None
-        else _crane("digest", reference).strip()
-    )
-    if not isinstance(root_digest, str) or _DIGEST.fullmatch(root_digest) is None:
-        raise ValueError(f"raw Builder {reference} has invalid digest")
-    pinned_reference = f"{repository}@{root_digest}"
-    raw_manifest = (
-        manifest_loader(pinned_reference)
-        if manifest_loader is not None
-        else _crane("manifest", pinned_reference)
-    )
-    if isinstance(raw_manifest, str):
-        try:
-            raw_manifest = json.loads(raw_manifest)
-        except json.JSONDecodeError as error:
-            raise ValueError(
-                f"raw Builder manifest {reference} is malformed"
-            ) from error
-    manifest = _mapping(raw_manifest, f"raw Builder manifest {reference}")
-    descriptors = manifest.get("manifests")
-    if not isinstance(descriptors, list):
-        media_type = manifest.get("mediaType")
-        if media_type not in {
-            "application/vnd.oci.image.manifest.v1+json",
-            "application/vnd.docker.distribution.manifest.v2+json",
-        }:
-            raise ValueError(
-                f"raw Builder {reference} has unsupported manifest {media_type!r}"
-            )
-        raw_config = (
-            config_loader(pinned_reference)
-            if config_loader is not None
-            else _crane("config", pinned_reference)
-        )
-        if isinstance(raw_config, str):
-            try:
-                raw_config = json.loads(raw_config)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"raw Builder config {reference} is malformed"
-                ) from error
-        config = _mapping(raw_config, f"raw Builder config {reference}")
-        if (
-            config.get("os", "linux") != "linux"
-            or config.get("architecture") != architecture
-        ):
-            raise ValueError(f"raw Builder {reference} is not linux/{architecture}")
-        return root_digest
-    matches: list[str] = []
-    for raw_descriptor in descriptors:
-        descriptor = _mapping(
-            raw_descriptor, f"raw Builder manifest {reference} member"
-        )
-        platform = descriptor.get("platform")
-        if not isinstance(platform, Mapping):
-            continue
-        if (
-            platform.get("os") == "linux"
-            and platform.get("architecture") == architecture
-        ):
-            digest = descriptor.get("digest")
-            if isinstance(digest, str) and _DIGEST.fullmatch(digest):
-                matches.append(digest)
-    if len(matches) != 1:
-        raise ValueError(
-            f"raw Builder {reference} must have exactly one "
-            f"linux/{architecture} member"
-        )
-    return matches[0]
-
-
-def _raw_builder_candidates(
-    release: Mapping[str, object],
-    required: set[tuple[str, str, str, str, str]],
-    *,
-    tag_fixture: Mapping[str, object] | None,
-    tag_loader: Callable[[str], Sequence[str]] | None,
-    manifest_loader: Callable[[str], object] | None,
-    config_loader: Callable[[str], object] | None = None,
-    digest_loader: Callable[[str], str] | None = None,
-) -> list[dict[str, str]]:
-    families = _mapping(release.get("builder_families"), "Builder families")
-    values: list[dict[str, str]] = []
-    tag_cache: dict[str, list[str]] = {}
-    digest_cache: dict[tuple[str, str], str] = {}
-
-    def tags(repository: str) -> list[str]:
-        if repository not in tag_cache:
-            tag_cache[repository] = _repository_tags(
-                repository, tag_fixture=tag_fixture, tag_loader=tag_loader
-            )
-        return tag_cache[repository]
-
-    def member(reference: str, architecture: str) -> str:
-        key = (reference, architecture)
-        if key not in digest_cache:
-            digest_cache[key] = _manifest_member_digest(
-                reference,
-                architecture,
-                tag_fixture=tag_fixture,
-                manifest_loader=manifest_loader,
-                config_loader=config_loader,
-                digest_loader=digest_loader,
-            )
-        return digest_cache[key]
-
-    cuda = _mapping(families.get("cuda"), "CUDA Builder family")
-    cuda_repositories = _source_repositories(cuda, "CUDA Builder family")
-    cuda_manylinux = _string(cuda, "manylinux", "CUDA Builder family")
-    _manylinux_floor(cuda_manylinux)
-    for architecture, repository in cuda_repositories.items():
-        for tag in tags(repository):
-            match = _CUDA_BUILDER_TAG.fullmatch(tag)
-            if match is None:
-                continue
-            runtime = f"cuda-{match.group('runtime')}"
-            if not any(
-                accelerator == "cuda"
-                and accelerator_runtime == runtime
-                and required_architecture == architecture
-                for (
-                    accelerator,
-                    accelerator_runtime,
-                    _variant_name,
-                    _python_abi,
-                    required_architecture,
-                ) in required
-            ):
-                continue
-            reference = f"{repository}:{tag}"
-            values.append(
-                {
-                    "accelerator": "cuda",
-                    "accelerator_runtime": runtime,
-                    "variant": "default",
-                    "python_abi": "*",
-                    "manylinux": cuda_manylinux,
-                    "cpu_arch": architecture,
-                    "source_image": reference,
-                    "source_image_digest": member(reference, architecture),
-                }
-            )
-
-    ascend = _mapping(families.get("ascend"), "Ascend Builder family")
-    ascend_repositories = _source_repositories(ascend, "Ascend Builder family")
-    ascend_manylinux = _string(ascend, "manylinux", "Ascend Builder family")
-    _manylinux_floor(ascend_manylinux)
-    seen_ascend: set[tuple[str, str]] = set()
-    variant_by_token = {"910b": "a2", "a3": "a3", "950": "a5"}
-    for architecture, repository in ascend_repositories.items():
-        for tag in tags(repository):
-            match = _ASCEND_BUILDER_TAG.fullmatch(tag)
-            if match is None or match.group("variant") == "310p":
-                continue
-            if match.group("manylinux") != ascend_manylinux:
-                continue
-            runtime = f"cann-{match.group('runtime')}"
-            variant = variant_by_token[match.group("variant")]
-            python_abi = "cp" + match.group("python").replace(".", "")
-            if (
-                "ascend",
-                runtime,
-                variant,
-                python_abi,
-                architecture,
-            ) not in required:
-                continue
-            reference = f"{repository}:{tag}"
-            key = (reference, architecture)
-            if key in seen_ascend:
-                continue
-            seen_ascend.add(key)
-            values.append(
-                {
-                    "accelerator": "ascend",
-                    "accelerator_runtime": runtime,
-                    "variant": variant,
-                    "python_abi": python_abi,
-                    "manylinux": match.group("manylinux"),
-                    "cpu_arch": architecture,
-                    "source_image": reference,
-                    "source_image_digest": member(reference, architecture),
-                }
-            )
-    return values
-
-
-def _variant(probe: Mapping[str, object]) -> tuple[str, str, str]:
-    backend = _string(probe, "backend", "runtime probe")
-    accelerator_runtime = _string(probe, "accelerator_runtime", "runtime probe")
-    if backend == "cuda":
-        version = accelerator_runtime.removeprefix("cuda-")
-        return "cuda", "default", f"cu{version.replace('.', '')}"
-    if backend.startswith("cann-"):
-        variant = backend.removeprefix("cann-")
-        version = accelerator_runtime.removeprefix("cann-")
-        return "ascend", variant, f"cann{version.replace('.', '')}-{variant}"
-    raise ValueError(f"unsupported runtime backend {backend!r}")
-
-
-def _required_files(family: Mapping[str, object], variant: str) -> list[str]:
-    common = family.get("required_files", [])
-    variants = family.get("variant_required_files", {})
-    if not isinstance(common, list) or not all(
-        isinstance(item, str) and item for item in common
-    ):
-        raise ValueError("Builder family required_files is invalid")
-    if not isinstance(variants, Mapping):
-        raise ValueError("Builder family variant_required_files is invalid")
-    specific = variants.get(variant, [])
-    if not isinstance(specific, list) or not all(
-        isinstance(item, str) and item for item in specific
-    ):
-        raise ValueError(f"Builder variant {variant} required_files is invalid")
-    return sorted(set(common + specific))
-
-
-def _mirror_revision(
-    build: Mapping[str, object], commands: Sequence[str], required_files: Sequence[str]
-) -> str:
-    dockerfile = RELEASE_ROOT / "docker" / "Dockerfile.builder-mirror"
-    payload = {
-        "source_image_digest": build["source_image_digest"],
-        "backend": build["backend"],
-        "accelerator_runtime": build["accelerator_runtime"],
-        "variant": build["variant"],
-        "python_abi": build["python_abi"],
-        "manylinux": build["manylinux"],
-        "cpu_arch": build["cpu_arch"],
-        "required_commands": sorted(set(commands)),
-        "required_files": sorted(set(required_files)),
-        "mirror_dockerfile_sha256": hashlib.sha256(dockerfile.read_bytes()).hexdigest(),
-    }
-    return hashlib.sha256(core.canonical_bytes(payload)).hexdigest()[:12]
-
-
-def _build_for_probe(
-    probe: Mapping[str, object],
-    candidates: Sequence[Mapping[str, str]],
-    release: Mapping[str, object],
-) -> dict[str, object]:
-    accelerator, variant, build_group = _variant(probe)
-    architecture = _string(probe, "cpu_arch", "runtime probe")
-    runtime_value = _string(probe, "accelerator_runtime", "runtime probe")
-    python_abi = _string(probe, "python_abi", "runtime probe")
-    matches = [
-        dict(candidate)
-        for candidate in candidates
-        if candidate["accelerator"] == accelerator
-        and candidate["accelerator_runtime"] == runtime_value
-        and candidate["variant"] == variant
-        and candidate["cpu_arch"] == architecture
-        and candidate["python_abi"] in {"*", python_abi}
-    ]
-    if matches:
-        lowest_floor = min(_manylinux_floor(item["manylinux"]) for item in matches)
-        matches = [
-            item
-            for item in matches
-            if _manylinux_floor(item["manylinux"]) == lowest_floor
-        ]
-    if len(matches) != 1:
-        detail = [
-            f"{item['source_image']}@{item['source_image_digest']} "
-            f"({item['manylinux']})"
-            for item in matches
-        ]
-        raise ValueError(
-            f"{probe.get('runtime_ref')} linux/{architecture}: expected one "
-            f"compatible raw Builder for {runtime_value}/{variant}/{python_abi}, "
-            f"found {len(matches)}: {detail}"
-        )
-    raw = matches[0]
-    families = _mapping(release.get("builder_families"), "Builder families")
-    family = _mapping(families.get(accelerator), f"Builder family {accelerator}")
-    commands = family.get("required_commands")
-    if not isinstance(commands, list) or not all(
-        isinstance(item, str) and item for item in commands
-    ):
-        raise ValueError(f"Builder family {accelerator}: required_commands is invalid")
-    required_files = _required_files(family, variant)
-    build: dict[str, object] = {
-        "id": f"{build_group}-{python_abi}-{architecture}",
-        "product_id": _string(probe, "product_id", "runtime probe"),
-        "build_group": build_group,
-        "backend": _string(probe, "backend", "runtime probe"),
-        "accelerator": accelerator,
-        "accelerator_runtime": runtime_value,
-        "variant": variant,
-        "soc_version": _string(probe, "soc_version", "runtime probe"),
-        "runtime_variant": build_group,
-        "python_version": _string(probe, "python_version", "runtime probe"),
-        "python_abi": python_abi,
-        "manylinux": raw["manylinux"],
-        "cpu_arch": architecture,
-        "source_image": raw["source_image"],
-        "source_image_digest": raw["source_image_digest"],
-        "build_mode": "mirror",
-        "recipe_revision": "",
-        "sync_mode": "mirror",
-    }
-    build["recipe_revision"] = _mirror_revision(build, commands, required_files)
-    return build
-
-
-def resolve_probe_builds(
-    release: Mapping[str, object],
-    probes: Sequence[Mapping[str, object]],
-    *,
-    tag_fixture: Mapping[str, object] | None = None,
-    tag_loader: Callable[[str], Sequence[str]] | None = None,
-    manifest_loader: Callable[[str], object] | None = None,
-    config_loader: Callable[[str], object] | None = None,
-    digest_loader: Callable[[str], str] | None = None,
-) -> list[dict[str, object]]:
-    """Resolve raw mirror Builders for already-probed Runtime members."""
-
-    required = {
-        (
-            _variant(probe)[0],
-            _string(probe, "accelerator_runtime", "runtime probe"),
-            _variant(probe)[1],
-            _string(probe, "python_abi", "runtime probe"),
-            _string(probe, "cpu_arch", "runtime probe"),
-        )
-        for probe in probes
-    }
-    raw_candidates = _raw_builder_candidates(
-        release,
-        required,
-        tag_fixture=tag_fixture,
-        tag_loader=tag_loader,
-        manifest_loader=manifest_loader,
-        config_loader=config_loader,
-        digest_loader=digest_loader,
-    )
-    builds: dict[str, dict[str, object]] = {}
-    backends = _mapping(release.get("backends"), "platform backends")
-    for raw_probe in probes:
-        probe = _mapping(raw_probe, "runtime probe")
-        backend = _string(probe, "backend", "runtime probe")
-        backend_policy = _mapping(backends.get(backend), f"backend {backend}")
-        if backend_policy.get("status") == "blocked":
-            continue
-        build = _build_for_probe(probe, raw_candidates, release)
-        existing = builds.get(str(build["id"]))
-        if existing is not None and existing != build:
-            raise ValueError(f"{build['id']}: raw Builder capability identity drift")
-        builds[str(build["id"])] = build
-    return sorted(builds.values(), key=lambda item: str(item["id"]))
 
 
 def _runtime_probe_document(value: object) -> list[dict[str, Any]]:
@@ -974,24 +672,17 @@ def _runtime_probe_document(value: object) -> list[dict[str, Any]]:
 
 def resolve_upstreams(
     release: Mapping[str, object],
-    _legacy_builder_config: Mapping[str, object] | None = None,
     *,
     candidates: Mapping[str, object] | None = None,
     runtime_probe: Mapping[str, object] | None = None,
     tag_fixture: Mapping[str, object] | None = None,
-    pinned_upstreams: list[str] | None = None,
     tag_loader: Callable[[str], Sequence[str]] | None = None,
     manifest_loader: Callable[[str], object] | None = None,
     config_loader: Callable[[str], object] | None = None,
     digest_loader: Callable[[str], str] | None = None,
-    **legacy: object,
 ) -> dict[str, object]:
     """Resolve probed Registry runtimes into the formal Wheel union."""
 
-    if pinned_upstreams:
-        raise ValueError("opaque pinned runtime tags require runtime inspection")
-    # Legacy callers may still pass former source-resolution options. They are
-    # intentionally ignored: no value from them can influence Registry output.
     selected = validate_runtime_candidates(
         candidates
         if candidates is not None
@@ -1020,7 +711,7 @@ def resolve_upstreams(
             f"runtime probes differ from candidates: missing={missing}, extra={extra}"
         )
 
-    wheel_builds = resolve_probe_builds(
+    wheel_builds = builders.resolve_probe_builds(
         release,
         probes,
         tag_fixture=tag_fixture,
@@ -1049,7 +740,6 @@ def resolve_upstreams(
         str(item["id"]): _mapping(item, "release product")
         for item in release["products"]  # type: ignore[index]
     }
-    image_suffix = f"-ucm-{core._oci_tag_version(str(release['ucm_version']))}"
     runtimes: list[dict[str, object]] = []
     for reference, group in sorted(grouped.items()):
         candidate = candidate_by_ref[reference]
@@ -1073,7 +763,7 @@ def resolve_upstreams(
                 raise ValueError(f"{reference}: Runtime members disagree on {field}")
         product_id = _string(first, "product_id", reference)
         product = products[product_id]
-        _, variant, runtime_variant = _variant(first)
+        _, variant, runtime_variant = runtime_contract.wheel_variant(first)
         architectures = sorted(_string(item, "cpu_arch", reference) for item in group)
         if len(set(architectures)) != len(architectures):
             raise ValueError(f"{reference}: duplicate probed architecture")
@@ -1100,6 +790,23 @@ def resolve_upstreams(
         runtime_id = re.sub(r"[^a-z0-9._-]+", "-", f"{product_id}-{tag}".lower()).strip(
             ".-"
         )
+        image_suffix = (
+            f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
+        )
+        if product_id == "sglang" and tag.startswith("main-cann"):
+            # Preserve the upstream main tag shape and add a collision-resistant
+            # UCM timestamp, instead of projecting it to dev.0.0.0.
+            created_at = candidate.get("created_at")
+            if created_at:
+                try:
+                    stamp = datetime.fromisoformat(str(created_at)).strftime(
+                        "%Y%m%d%H%M%S"
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"{reference}: invalid SGLang main creation timestamp"
+                    ) from error
+                image_suffix += f"-{stamp}"
         target_tag = runtime_contract.project_runtime_image_tag(
             tag + image_suffix,
             tag_prefix=str(release.get("runtime_image_tag_prefix", "")),
@@ -1157,7 +864,7 @@ def _validate_problems(value: object) -> None:
             raise ValueError(f"problems[{index}].runtime fields must be exact")
         _string(runtime, "repository", f"problems[{index}].runtime")
         _string(runtime, "tag", f"problems[{index}].runtime")
-        identity = core.canonical_bytes(problem)
+        identity = serialization.canonical_bytes(problem)
         if identity in seen:
             raise ValueError(f"duplicate problem at index {index}")
         seen.add(identity)
@@ -1198,7 +905,7 @@ def validate_selection(value: object) -> dict[str, object]:
             raise ValueError(f"{build_id}: unsupported cpu_arch")
         if build.get("build_mode") != "mirror":
             raise ValueError(f"{build_id}: build_mode must be mirror")
-        if build.get("sync_mode") not in {"mirror", "registry-only"}:
+        if build.get("sync_mode") != "mirror":
             raise ValueError(f"{build_id}: sync_mode is invalid")
         if re.fullmatch(r"cp[0-9]+", str(build.get("python_abi"))) is None:
             raise ValueError(f"{build_id}: malformed python_abi")
@@ -1238,6 +945,7 @@ def validate_selection(value: object) -> dict[str, object]:
             "stable",
             "rc",
             "nightly",
+            "main",
             "pinned",
         }:
             raise ValueError(f"{runtime_id}: unsupported runtime channel")

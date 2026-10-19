@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,18 +13,8 @@ ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = ROOT / ".github" / "release"
 sys.path.insert(0, str(RELEASE_ROOT))
 release = importlib.import_module("ucm_release.release")
-
-
-def test_release_script_direct_entrypoint_remains_executable() -> None:
-    completed = subprocess.run(
-        [sys.executable, str(RELEASE_ROOT / "ucm_release" / "release.py"), "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "{artifacts,finalize,notes,manifest,members}" in completed.stdout
+public_manifest = importlib.import_module("ucm_release.manifest")
+cleanup_records = importlib.import_module("ucm_release.cleanup_records")
 
 
 def _plan() -> dict[str, object]:
@@ -39,6 +29,8 @@ def _plan() -> dict[str, object]:
                 "enabled": False,
                 "disposition": "disabled",
                 "index": "https://upload.pypi.org/legacy/",
+                "target": "pypi",
+                "simple_index": "https://pypi.org/simple/",
             },
             "ghcr": {
                 "requested": True,
@@ -219,9 +211,8 @@ def _asset_urls(manifest: dict[str, object]) -> dict[str, str]:
     filenames = {
         str(item["filename"]) for item in manifest["wheels"]  # type: ignore[index]
     }
-    filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
-    if "meta_package" in manifest:
-        filenames.add(str(manifest["meta_package"]["filename"]))  # type: ignore[index]
+    if manifest.get("chart") is not None:
+        filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
     return {
         filename: f"https://github.com/example/ucm/releases/download/v1/{filename}"
         for filename in filenames
@@ -299,26 +290,6 @@ def _write_meta_artifact(tmp_path: Path, plan: dict[str, object]) -> Path:
     return meta_root
 
 
-def test_artifact_state_includes_exact_meta_wheel(tmp_path: Path) -> None:
-    wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    plan = _plan()
-    plan["meta_package"] = {
-        "distribution": "uc-manager",
-        "version": "0.7.62rc1",
-        "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
-    }
-    meta_root = _write_meta_artifact(tmp_path, plan)
-
-    manifest, checksums = release.build_artifacts_manifest(
-        plan, wheels, chart, meta_root, actions_run_id=123
-    )
-
-    assert manifest["meta_package"]["filename"] == (
-        "uc_manager-0.7.62rc1-py3-none-any.whl"
-    )
-    assert any(filename.endswith("py3-none-any.whl") for _, filename in checksums)
-
-
 @pytest.mark.parametrize(
     ("prefix", "target", "repository_url"),
     [
@@ -386,7 +357,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
         ],
     }
     with pytest.raises(ValueError, match="no complete receipt"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -431,7 +402,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
     }
     (tmp_path / "pypi-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
-    result = release.finalize_manifest(
+    result = release.finalize_release_state(
         manifest,
         tmp_path,
         build_outcome="skipped",
@@ -447,7 +418,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
     receipt["projects"][0]["files"][0]["sha256"] = "sha256:" + "c" * 64
     (tmp_path / "pypi-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(ValueError, match="do not match release artifacts"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -467,7 +438,7 @@ def test_disabled_pypi_requires_both_jobs_to_be_skipped(tmp_path: Path) -> None:
     }
 
     with pytest.raises(ValueError, match="jobs must be skipped"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -481,7 +452,7 @@ def test_disabled_pypi_requires_both_jobs_to_be_skipped(tmp_path: Path) -> None:
 def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     wheels, chart, _, filename = _write_artifact_inputs(tmp_path)
 
-    manifest, checksums = release.build_artifacts_manifest(
+    manifest, checksums = release.build_release_state(
         _plan(), wheels, chart, actions_run_id=123
     )
     assert manifest["kind"] == "ucm-release-state"
@@ -537,7 +508,7 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    final = release.finalize_manifest(
+    final = release.finalize_release_state(
         manifest,
         receipts,
         build_outcome="success",
@@ -562,6 +533,7 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         json.dumps(
             {
                 "tag_name": "v0.7.62rc1",
+                "body": "## 更新说明\n\n保留人工维护的变更记录。\n",
                 "assets": [
                     {"name": name, "browser_download_url": url}
                     for name, url in asset_urls.items()
@@ -584,9 +556,19 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         ]
     )
     command.func(command)
-    assert (notes_output / "release-notes.md").read_text(encoding="utf-8") == (
-        final_notes
+    body = (notes_output / "release-notes.md").read_text(encoding="utf-8")
+    assert body == (
+        "## 更新说明\n\n保留人工维护的变更记录。\n\n"
+        "<!-- ucm-release:begin -->\n"
+        f"{final_notes.rstrip()}\n"
+        "<!-- ucm-release:end -->\n"
     )
+    release_document = json.loads(release_path.read_text(encoding="utf-8"))
+    # The workflow's shell command substitution removes trailing newlines.
+    release_document["body"] = body.rstrip("\n")
+    release_path.write_text(json.dumps(release_document), encoding="utf-8")
+    command.func(command)
+    assert (notes_output / "release-notes.md").read_text(encoding="utf-8") == body
 
 
 def test_disabled_image_publication_completes_with_wheels_and_chart(
@@ -600,9 +582,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert isinstance(ghcr, dict)
     ghcr["enabled"] = False
 
-    manifest, _ = release.build_artifacts_manifest(
-        plan, wheels, chart, actions_run_id=123
-    )
+    manifest, _ = release.build_release_state(plan, wheels, chart, actions_run_id=123)
 
     assert manifest["release"]["status"] == "artifacts-ready"
     assert manifest["images"][0]["expected_targets"] == {}
@@ -611,7 +591,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert manifest["families"][0]["status"] == "not-requested"
 
     with pytest.raises(ValueError, match="must all be skipped"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path / "missing-receipts",
             build_outcome="success",
@@ -619,7 +599,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
             index_outcome="skipped",
         )
 
-    final = release.finalize_manifest(
+    final = release.finalize_release_state(
         manifest,
         tmp_path / "missing-receipts",
         build_outcome="skipped",
@@ -639,13 +619,139 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert "Images:" not in notes
     assert "pkgs/container" not in notes
 
+    skipped_chart = release.finalize_release_state(
+        manifest,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert skipped_chart["release"]["status"] == "publication-failed"
 
-def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
+
+@pytest.mark.parametrize(
+    "release_type,draft_placeholder",
+    [("prerelease", False), ("nightly", False), ("nightly", True)],
+)
+def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     tmp_path: Path,
+    release_type: str,
+    draft_placeholder: bool,
+) -> None:
+    wheels, _, _, filename = _write_artifact_inputs(tmp_path)
+    plan = _plan()
+    plan["release_type"] = release_type
+    plan["images"][0]["runtime"].update(
+        product_id="vllm", variant="default", soc_version="na"
+    )
+    if release_type == "nightly":
+        plan["git_tag"] = "nightly/v0.7.62-20260917-1"
+    for channel in ("ghcr", "chart_oci"):
+        plan["publish"][channel].update(
+            requested=False, enabled=False, disposition="disabled"
+        )
+
+    plan["meta_package"] = {
+        "distribution": "uc-manager",
+        "version": plan["version"],
+        "extras": {"cu129": f"uc-manager-cuda-cu129=={plan['version']}"},
+    }
+    meta_root = _write_meta_artifact(tmp_path, plan)
+    state, checksums = release.build_release_state(
+        plan, wheels, tmp_path / "missing-chart", meta_root, actions_run_id=123
+    )
+    assert state["chart"] is None
+    assert {name for _, name in checksums} == {
+        filename,
+        state["meta_package"]["filename"],
+    }
+    final = release.finalize_release_state(
+        state,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert final["release"]["status"] == "complete"
+    asset_urls = _asset_urls(final)
+    release_document = {
+        "tag_name": plan["git_tag"],
+        "html_url": f"https://github.com/example/ucm/releases/tag/{plan['git_tag']}",
+        "assets": [
+            {"name": name, "browser_download_url": url}
+            for name, url in asset_urls.items()
+        ],
+    }
+    if draft_placeholder:
+        release_document["draft"] = True
+        release_document["html_url"] = (
+            "https://github.com/example/ucm/releases/tag/untagged-123"
+        )
+        for asset in release_document["assets"]:
+            asset["browser_download_url"] = asset["browser_download_url"].replace(
+                "/download/v1/", "/download/untagged-123/"
+            )
+        asset_urls = {
+            name: f"https://github.com/example/ucm/releases/download/{plan['git_tag']}/{name}"
+            for name in asset_urls
+        }
+    assert public_manifest.asset_urls(final, release_document) == asset_urls
+    notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
+    assert asset_urls[filename] in notes
+    public = public_manifest.build_manifest(final, release_document)
+    assert (
+        public["release"]["url"]
+        == f"https://github.com/example/ucm/releases/tag/{plan['git_tag']}"
+    )
+    assert public["wheels"][0]["url"] == asset_urls[filename]
+    assert public["schema_version"] == 10
+    assert public["chart"] is None
+    assert public["images"] == []
+    from ucm_release import cleanup_records
+
+    assert cleanup_records.registry_resources(public) == []
+    assert public["github_release_assets"] == sorted(
+        [filename, "release-manifest.json"]
+    )
+
+
+def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    state, _ = release.build_artifacts_manifest(
-        _plan(), wheels, chart, actions_run_id=987654
+    plan = _plan()
+    plan["meta_package"] = {
+        "distribution": "uc-manager",
+        "version": "0.7.62rc1",
+        "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
+    }
+    plan["images"][0]["runtime"].update(  # type: ignore[index]
+        {
+            "product_id": "vllm",
+            "version": "0.23.0",
+            "channel": "stable",
+            "variant": "default",
+            "soc_version": "na",
+            "os_id": "ubuntu",
+            "os_version": "22.04",
+        }
+    )
+    plan["families"][0]["runtime"].update(  # type: ignore[index]
+        {
+            "version": "0.23.0",
+            "channel": "stable",
+            "variant": "default",
+            "soc_version": "na",
+            "os_id": "ubuntu",
+            "os_version": "22.04",
+        }
+    )
+    meta_root = _write_meta_artifact(tmp_path, plan)
+    state, _ = release.build_release_state(
+        plan, wheels, chart, meta_root, actions_run_id=987654
     )
     receipts = tmp_path / "receipts"
     receipts.mkdir()
@@ -667,45 +773,88 @@ def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
         ),
         encoding="utf-8",
     )
-    state = release.finalize_manifest(
+    state = release.finalize_release_state(
         state,
         receipts,
         build_outcome="success",
         member_outcome="success",
         index_outcome="skipped",
     )
-    document = {
+    asset_urls = _asset_urls(state)
+    document: dict[str, object] = {
         "tag_name": "v0.7.62rc1",
+        "html_url": "https://github.com/example/ucm/releases/tag/v0.7.62rc1",
         "assets": [
-            {"name": "ucm.whl"},
-            {"name": "unified-cache-chart-0.7.62-rc.1.tgz"},
-            {"name": "ucm_config_example.yaml"},
+            {"name": name, "browser_download_url": url}
+            for name, url in asset_urls.items()
         ],
     }
+    document["assets"].append(  # type: ignore[union-attr]
+        {
+            "name": "ucm_config_example.yaml",
+            "browser_download_url": (
+                "https://github.com/example/ucm/releases/download/"
+                "v0.7.62rc1/ucm_config_example.yaml"
+            ),
+        }
+    )
 
-    manifest = release.build_public_manifest(state, document)
+    manifest = public_manifest.build_manifest(state, document)
 
-    assert manifest == {
-        "kind": "ucm-release-manifest",
-        "schema_version": 6,
-        "tag": "v0.7.62rc1",
-        "release_type": "prerelease",
-        "actions_run_id": 987654,
-        "chart_oci": ("ghcr.io/example/charts/unified-cache-chart:0.7.62-rc.1"),
-        "runtime_images": {
-            "ghcr": {
-                "members": ["ghcr.io/example/vllm:v0.23.0-ucm-amd64"],
-                "indexes": [],
-            },
-            "dockerhub": {"members": [], "indexes": []},
-        },
-        "github_release_assets": [
-            "release-manifest.json",
-            "ucm.whl",
-            "ucm_config_example.yaml",
-            "unified-cache-chart-0.7.62-rc.1.tgz",
-        ],
+    assert manifest["schema_version"] == 10
+    assert manifest["release"]["tag"] == state["release"]["git_tag"]
+    assert manifest["release"]["actions_run_id"] == 987654
+    assert manifest["python"]["extras"] == {"cu129": "uc-manager-cuda-cu129"}
+    assert manifest["python"]["pypi"] is None
+    wheel = manifest["wheels"][0]
+    assert wheel["url"] == asset_urls[wheel["filename"]]
+    assert wheel["sha256"] == hashlib.sha256(b"wheel").hexdigest()
+    assert manifest["images"][0]["publications"]["ghcr"]["pull"] == (
+        "ghcr.io/example/vllm:v0.23.0-ucm-amd64"
+    )
+    assert set(manifest["github_release_assets"]) == {
+        "release-manifest.json",
+        *(asset["name"] for asset in document["assets"]),
     }
+
+    pypi_state = json.loads(json.dumps(state))
+    pypi_state["publish"]["pypi"]["enabled"] = True
+    pypi_state["pypi"] = {
+        "kind": "ucm-pypi-receipt",
+        "schema_version": 2,
+        "target": "pypi",
+        "repository_url": "https://upload.pypi.org/legacy/",
+        "status": "complete",
+        "version": pypi_state["release"]["version"],
+        "projects": public_manifest.expected_pypi_projects(pypi_state),
+        "extras": pypi_state["meta_package"]["extras"],
+    }
+    pypi_manifest = public_manifest.build_manifest(pypi_state, document)
+    assert pypi_manifest["python"]["pypi"] == {
+        "index_url": "https://pypi.org/simple",
+        "project_url": "https://pypi.org/project/uc-manager/0.7.62rc1/",
+    }
+    assert "pypi-receipt.json" not in pypi_manifest["github_release_assets"]
+    assert not any(
+        "py3-none-any" in name for name in pypi_manifest["github_release_assets"]
+    )
+    from ucm_release import cleanup_records
+
+    assert public_manifest.validate_manifest(pypi_manifest) == pypi_manifest
+    assert cleanup_records.registry_resources(pypi_manifest)
+    sys.path.insert(0, str(ROOT / "docs/docs-site/tools"))
+    import release_manifest as docs_manifest
+
+    published = json.loads(json.dumps(document))
+    published["prerelease"] = True
+    published["assets"].append(
+        {
+            "name": "release-manifest.json",
+            "browser_download_url": "https://github.com/example/ucm/releases/download/v0.7.62rc1/release-manifest.json",
+        }
+    )
+    monkeypatch.setattr(docs_manifest, "fetch_json", lambda _url: pypi_manifest)
+    assert docs_manifest._release_manifest("example/ucm", published) == pypi_manifest
 
     state_path = tmp_path / "public-state.json"
     release_path = tmp_path / "public-release.json"
@@ -728,280 +877,55 @@ def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
     assert json.loads((output / "release-manifest.json").read_text()) == manifest
 
 
+def test_wheel_capabilities_include_every_linked_image_runtime() -> None:
+    from ucm_release.manifest import _wheel_capabilities
+
+    images = [
+        {
+            "wheel_id": "shared-wheel",
+            "runtime": {
+                "product_id": "sglang",
+                "accelerator_runtime": runtime,
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        }
+        for runtime in ("cann-9.0", "cann-9.1")
+    ]
+
+    assert _wheel_capabilities("shared-wheel", images) == [
+        {
+            "product": "sglang",
+            "accelerator": {
+                "runtime": "cann-9.0",
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        },
+        {
+            "product": "sglang",
+            "accelerator": {
+                "runtime": "cann-9.1",
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        },
+    ]
+
+
 def test_public_manifest_rejects_incomplete_release() -> None:
     with pytest.raises(ValueError, match="complete publication"):
-        release.build_public_manifest(
+        public_manifest.build_manifest(
             {
+                "kind": "ucm-release-state",
+                "schema_version": 3,
                 "release": {
                     "git_tag": "nightly/v0.8.1-20260826-1",
                     "status": "images-failed",
-                }
+                },
             },
             {"tag_name": "nightly/v0.8.1-20260826-1"},
         )
-
-
-def test_member_barrier_accepts_all_profile_enabled_targets(tmp_path: Path) -> None:
-    plan = _plan()
-    plan["publish"]["dockerhub"]["enabled"] = True
-    receipt_dir = tmp_path / "receipts"
-    receipt_dir.mkdir()
-    (receipt_dir / "member.json").write_text(
-        json.dumps(
-            {
-                "kind": "ucm-image-member-receipt",
-                "schema_version": 1,
-                "id": "vllm-v023-amd64",
-                "status": "published",
-                "targets": [
-                    {
-                        "channel": "ghcr",
-                        "reference": "ghcr.io/example/vllm:v0.23.0-ucm-amd64",
-                        "digest": "sha256:" + "1" * 64,
-                    },
-                    {
-                        "channel": "dockerhub",
-                        "reference": "docker.io/example/vllm:v0.23.0-ucm-amd64",
-                        "digest": "sha256:" + "2" * 64,
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    receipts = release.validate_member_receipts(plan, receipt_dir)
-
-    assert set(receipts) == {"vllm-v023-amd64"}
-
-
-def test_release_commands_write_internal_state_without_public_metadata_assets(
-    tmp_path: Path,
-) -> None:
-    wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    plan_path = tmp_path / "release-plan.json"
-    plan_path.write_text(json.dumps(_plan()), encoding="utf-8")
-    artifacts_output = tmp_path / "artifacts-output"
-    artifacts_output.mkdir()
-    artifacts = release.build_parser().parse_args(
-        [
-            "artifacts",
-            "--plan",
-            str(plan_path),
-            "--wheels",
-            str(wheels),
-            "--chart",
-            str(chart),
-            "--run-id",
-            "123",
-            "--output",
-            str(artifacts_output),
-        ]
-    )
-
-    artifacts.func(artifacts)
-
-    assert {path.name for path in artifacts_output.iterdir()} == {"release-state.json"}
-    state_path = artifacts_output / "release-state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["chart"]["name"] == "unified-cache-chart"
-    assert state["chart"]["sha256"] == hashlib.sha256(b"chart").hexdigest()
-    assert state["wheels"][0]["sha256"] == hashlib.sha256(b"wheel").hexdigest()
-
-    final_output = tmp_path / "final-output"
-    final_output.mkdir()
-    finalize = release.build_parser().parse_args(
-        [
-            "finalize",
-            "--manifest",
-            str(state_path),
-            "--receipts",
-            str(tmp_path / "missing-receipts"),
-            "--build-outcome",
-            "failure",
-            "--member-outcome",
-            "skipped",
-            "--index-outcome",
-            "skipped",
-            "--pypi-outcome",
-            "skipped",
-            "--pypi-install-outcome",
-            "skipped",
-            "--chart-oci-outcome",
-            "success",
-            "--output",
-            str(final_output),
-        ]
-    )
-
-    finalize.func(finalize)
-
-    assert {path.name for path in final_output.iterdir()} == {"release-state.json"}
-
-
-def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None:
-    manifest = {
-        "release": {"git_tag": "v1.0.0rc1", "status": "complete"},
-        "chart": {"filename": "unified-cache-chart-1.0.0-rc.1.tgz"},
-        "wheels": [
-            {
-                "id": "cuda-amd64",
-                "filename": "uc_manager_cuda-amd64.whl",
-                "backend": "cuda",
-                "runtime_variant": "cu130",
-                "python_abi": "cp312",
-                "cpu_arch": "amd64",
-            },
-            {
-                "id": "cuda-arm64",
-                "filename": "uc_manager_cuda-arm64.whl",
-                "backend": "cuda",
-                "runtime_variant": "cu130",
-                "python_abi": "cp312",
-                "cpu_arch": "arm64",
-            },
-            {
-                "id": "cann-amd64",
-                "filename": "uc_manager_cann910_a2-amd64.whl",
-                "backend": "cann-a2",
-                "runtime_variant": "cann910-a2",
-                "python_abi": "cp312",
-                "cpu_arch": "amd64",
-            },
-            {
-                "id": "cann-arm64",
-                "filename": "uc_manager_cann910_a2-arm64.whl",
-                "backend": "cann-a2",
-                "runtime_variant": "cann910-a2",
-                "python_abi": "cp312",
-                "cpu_arch": "arm64",
-            },
-        ],
-        "images": [
-            {
-                "family_id": "openai-v1",
-                "wheel_id": "cuda-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "openai-v1",
-                "wheel_id": "cuda-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "openai-v2",
-                "wheel_id": "cuda-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "openai-v2",
-                "wheel_id": "cuda-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "ascend-v1",
-                "wheel_id": "cann-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "ascend-v2",
-                "wheel_id": "cann-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "ascend-v2",
-                "wheel_id": "cann-arm64",
-                "cpu_arch": "arm64",
-            },
-        ],
-        "families": [
-            {
-                "id": "openai-v1",
-                "runtime": {
-                    "repository": "docker.io/vllm/vllm-openai",
-                    "tag": "v1.0.0",
-                    "accelerator_runtime": "cuda-13.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-openai:v1.0.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "openai-v2",
-                "runtime": {
-                    "repository": "docker.io/vllm/vllm-openai",
-                    "tag": "v1.1.0",
-                    "accelerator_runtime": "cuda-13.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-openai:v1.1.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "ascend-v1",
-                "runtime": {
-                    "repository": "quay.io/ascend/vllm-ascend",
-                    "tag": "v1.0.0",
-                    "accelerator_runtime": "cann-9.1.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-ascend:v1.0.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "ascend-v2",
-                "runtime": {
-                    "repository": "quay.io/ascend/vllm-ascend",
-                    "tag": "v1.1.0",
-                    "accelerator_runtime": "cann-9.1.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-ascend:v1.1.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-        ],
-    }
-    asset_urls = _asset_urls(manifest)
-
-    notes = release.render_notes(
-        manifest, repository="example/ucm", asset_urls=asset_urls
-    )
-
-    assert notes.count("## vLLM OpenAI") == 1
-    assert notes.count("## vLLM-Ascend") == 1
-    assert notes.count("| Runtime capability |") == 2
-    assert notes.count("| Wheel |") == 2
-    assert "Wheel 内容" not in notes
-    assert "Wheel downloads" not in notes
-    assert notes.count("uc_manager_cuda-amd64.whl") == 1
-    assert notes.count("[aarch64](") == 2
-    assert notes.count("[x86_64](") == 2
-    assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
-    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-openai" in notes
-    assert "Upstream Runtime tags<br>quay.io/ascend/vllm-ascend：" in notes
-    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-ascend" in notes
-    assert "`v1.0.0`<br>`v1.1.0`" in notes
-    assert "`v1.0.0-ucm`<br>`v1.1.0-ucm`" in notes
-    cuda_row = next(line for line in notes.splitlines() if line.startswith("| CUDA"))
-    assert cuda_row.index("[aarch64](") < cuda_row.index("[x86_64](")
-    assert "CANN 9.1.0 / A2" in notes
-    assert "`v1.0.0` (aarch64 only)" in notes
-    assert "pkgs/container/vllm-openai" in notes
-    assert "pkgs/container/vllm-ascend" in notes
-    assert "2 image families / 4 architecture members" in notes
-    assert "2 image families / 3 architecture members" in notes
-    assert " tags / " not in notes
-    draft_notes = release.render_notes(
-        manifest,
-        repository="example/ucm",
-        asset_urls=asset_urls,
-        link_assets=False,
-    )
-    assert "releases/download" not in draft_notes
-    assert "[aarch64](" not in draft_notes
-    assert "[x86_64](" not in draft_notes
-    assert draft_notes.count("`aarch64`") == 2
-    assert draft_notes.count("`x86_64`") == 2
 
 
 @pytest.mark.parametrize("receipt_status", [None, "uploading"])
@@ -1113,11 +1037,10 @@ def test_release_notes_show_testpypi_installation_in_the_wheel_column() -> None:
     assert f"https://test.pypi.org/project/{meta_project}/{version}/" in notes
     assert (
         f"pip install --index-url {simple_index} "
+        "--extra-index-url https://pypi.org/simple/ "
         f'"{meta_project}[{extra}]=={version}"'
     ) in notes
     assert "python -m" not in notes
-    assert "--extra-index-url" not in notes
-    assert "https://pypi.org/simple/" not in notes
     assert "uc_manager_cuda-amd64.whl" not in notes
     assert "<details>" not in notes
     assert "mktemp" not in notes
@@ -1227,76 +1150,6 @@ def test_release_notes_use_dockerhub_target_tag_without_a_ghcr_target() -> None:
     assert "https://hub.docker.com/r/example/vllm-openai" in notes
 
 
-def test_github_asset_urls_require_backend_and_chart_but_not_meta() -> None:
-    manifest = {
-        "release": {"git_tag": "draft/v1.0.0-1"},
-        "chart": {"filename": "unified-cache-chart.tgz"},
-        "wheels": [{"filename": "ucm.whl"}],
-        "meta_package": {"filename": "uc_manager-1.0.0-py3-none-any.whl"},
-    }
-    base = "https://github.com/example/ucm/releases/download/untagged-1234567890abcdef"
-    release_document = {
-        "tag_name": "draft/v1.0.0-1",
-        "assets": [
-            {"name": name, "browser_download_url": f"{base}/{name}"}
-            for name in (
-                "ucm.whl",
-                "uc_manager-1.0.0-py3-none-any.whl",
-                "unified-cache-chart.tgz",
-            )
-        ],
-    }
-
-    urls = release._github_asset_urls(manifest, release_document)
-
-    assert urls["ucm.whl"] == f"{base}/ucm.whl"
-    assert urls["unified-cache-chart.tgz"] == (f"{base}/unified-cache-chart.tgz")
-    assert "draft%2F" not in urls["ucm.whl"]
-
-    release_document["assets"] = [
-        asset
-        for asset in release_document["assets"]
-        if asset["name"] != "uc_manager-1.0.0-py3-none-any.whl"
-    ]
-    assert "uc_manager-1.0.0-py3-none-any.whl" not in release._github_asset_urls(
-        manifest, release_document
-    )
-
-    release_document["assets"] = [
-        asset for asset in release_document["assets"] if asset["name"] != "ucm.whl"
-    ]
-    with pytest.raises(ValueError, match="missing required assets"):
-        release._github_asset_urls(manifest, release_document)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (("kind", "wrong-wheel-result"), ("schema_version", 1)),
-)
-def test_artifact_manifest_rejects_wrong_wheel_result_contract(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result[field] = value
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="ucm-wheel-result schema 5"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
-def test_artifact_manifest_rejects_removed_runtime_deferred_policy(
-    tmp_path: Path,
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result["runtime_deferred_libraries"] = ["libstale.so"]
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="removed field runtime_deferred_libraries"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
 def test_artifact_manifest_recomputes_deferred_libraries_from_report(
     tmp_path: Path,
 ) -> None:
@@ -1306,36 +1159,7 @@ def test_artifact_manifest_recomputes_deferred_libraries_from_report(
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
     with pytest.raises(ValueError, match="deferred libraries do not match auditwheel"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
-@pytest.mark.parametrize(
-    "field",
-    (
-        "platform_tags",
-        "auditwheel_platform_tag",
-        "abi_compatible_platform_tag",
-        "glibc_versions",
-        "glibc_floor",
-        "external_library_roots",
-        "external_libraries",
-        "deferred_external_libraries",
-        "auditwheel_report",
-        "repair",
-        "sha256",
-        "dependencies",
-    ),
-)
-def test_artifact_manifest_requires_wheel_audit_fields(
-    tmp_path: Path, field: str
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    del result[field]
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="missing audit fields"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
+        release.build_release_state(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> None:
@@ -1347,7 +1171,7 @@ def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> 
     )
 
     with pytest.raises(ValueError, match="report digest does not match"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
+        release.build_release_state(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> None:
@@ -1356,7 +1180,7 @@ def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> 
     del plan["wheels"][0]["builder"]["digest"]
 
     with pytest.raises(ValueError, match="immutable Builder digest"):
-        release.build_artifacts_manifest(plan, wheels, chart, actions_run_id=123)
+        release.build_release_state(plan, wheels, chart, actions_run_id=123)
 
 
 def test_missing_receipt_keeps_artifacts_available_and_marks_images_failed() -> None:
@@ -1379,7 +1203,7 @@ def test_missing_receipt_keeps_artifacts_available_and_marks_images_failed() -> 
             }
         ],
     }
-    result = release.finalize_manifest(
+    result = release.finalize_release_state(
         manifest,
         Path("/does/not/exist"),
         build_outcome="failure",
@@ -1402,7 +1226,7 @@ def test_published_receipt_must_match_its_schema_and_planned_target(
     tmp_path: Path, field: str, value: object, message: str
 ) -> None:
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    manifest, _ = release.build_artifacts_manifest(
+    manifest, _ = release.build_release_state(
         _plan(), wheels, chart, actions_run_id=123
     )
     receipt = {
@@ -1427,10 +1251,685 @@ def test_published_receipt_must_match_its_schema_and_planned_target(
     (receipts / "member.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             receipts,
             build_outcome="success",
             member_outcome="success",
             index_outcome="skipped",
         )
+
+
+def test_schema9_accepts_optional_toolkit_and_rejects_wrong_version():
+    manifest = json.loads(
+        (Path(__file__).parent / "fixtures/release-manifest.json").read_text()
+    )
+    public_manifest.validate_manifest(manifest)
+    version = manifest["release"]["version"]
+    distribution = (
+        manifest["python"]["distribution"].removesuffix("uc-manager") + "ucm-toolkit"
+    )
+    filename = f"{distribution.replace('-', '_')}-{version}-py3-none-any.whl"
+    manifest["toolkit"] = {
+        "distribution": distribution,
+        "version": version,
+        "filename": filename,
+        "sha256": "e" * 64,
+        "url": manifest["release"]["url"].replace(
+            "/releases/tag/", "/releases/download/"
+        )
+        + "/"
+        + filename,
+    }
+    manifest["python"]["extras"]["toolkit"] = distribution
+    manifest["github_release_assets"].append(filename)
+    public_manifest.validate_manifest(manifest)
+    manifest["toolkit"]["version"] = "0.0.1"
+    with pytest.raises(public_manifest.ManifestError, match="toolkit"):
+        public_manifest.validate_manifest(manifest)
+
+
+class TestCleanupRecords:
+    """Generic release records, retention, and destructive inventory contracts."""
+
+    REPOSITORY = "release-org/unified-cache-management"
+    TAG = "nightly/v0.9.0-20261009-1"
+    VERSION = "0.9.0.dev20261009001"
+    IMAGE = f"ghcr.io/release-org/vllm-openai:v1-ucm-{VERSION}"
+    CHART = "ghcr.io/release-org/charts/unified-cache-chart:0.9.0-nightly.20261009.1"
+
+    @pytest.fixture(autouse=True, params=["nightly", "draft"])
+    def publication_type(self, request):
+        if request.param == "nightly":
+            self.TAG = "nightly/v0.9.0-20261009-1"
+            self.VERSION = "0.9.0.dev20261009001"
+            chart_version = "0.9.0-nightly.20261009.1"
+        else:
+            self.TAG = "draft/v0.9.0-1"
+            self.VERSION = "0.9.0.dev1"
+            chart_version = "0.9.0-draft.1"
+        self.IMAGE = f"ghcr.io/release-org/vllm-openai:v1-ucm-{self.VERSION}"
+        self.CHART = "ghcr.io/release-org/charts/unified-cache-chart:" + chart_version
+
+    def _record(self, tag=None, *, run_id=1, attempt=1, release_id=None):
+        tag = self.TAG if tag is None else tag
+        return cleanup_records.record_for_tag(
+            self.REPOSITORY, tag, "a" * 40, run_id, attempt, release_id
+        )
+
+    def _plan(self, *, multi_arch=True, ghcr=True, dockerhub=False, chart=True):
+        members = (
+            [
+                {
+                    "image_id": "x-amd64",
+                    "cpu_arch": "amd64",
+                    "reference": self.IMAGE + "-amd64",
+                },
+                {
+                    "image_id": "x-arm64",
+                    "cpu_arch": "arm64",
+                    "reference": self.IMAGE + "-arm64",
+                },
+            ]
+            if multi_arch
+            else [{"image_id": "x-amd64", "cpu_arch": "amd64", "reference": self.IMAGE}]
+        )
+        return {
+            "kind": "ucm-release-plan",
+            "repository": self.REPOSITORY,
+            "route": "release",
+            "release_type": cleanup_records._classification(self.TAG)["release_type"],
+            "git_tag": self.TAG,
+            "version": self.VERSION,
+            "image_version": self.VERSION,
+            "publish": {
+                "ghcr": {"enabled": ghcr},
+                "dockerhub": {
+                    "enabled": dockerhub,
+                    "namespace": "docker.io/other-owner",
+                },
+                "chart_oci": {
+                    "enabled": chart,
+                    "namespace": "ghcr.io/release-org/charts",
+                },
+            },
+            "chart": {
+                "name": "unified-cache-chart",
+                "version": self.CHART.rsplit(":", 1)[1],
+            },
+            "families": [
+                {
+                    "create_index": multi_arch,
+                    "published_reference": self.IMAGE,
+                    "members": members,
+                }
+            ],
+            "wheels": [
+                {
+                    "builder": {
+                        "repository": "ghcr.io/release-org/builders",
+                        "tag": "shared",
+                    }
+                }
+            ],
+            "images": [
+                {"runtime": {"image_reference": "ghcr.io/release-org/base:latest"}}
+            ],
+        }
+
+    def _legacy_manifest(self):
+        return {
+            "kind": "ucm-release-manifest",
+            "schema_version": 6,
+            "tag": self.TAG,
+            "release_type": cleanup_records._classification(self.TAG)["release_type"],
+            "actions_run_id": 123,
+            "chart_oci": self.CHART,
+            "github_release_assets": ["release-manifest.json", "wheel.whl"],
+            "runtime_images": {
+                "ghcr": {
+                    "indexes": [self.IMAGE],
+                    "members": [self.IMAGE + "-amd64", self.IMAGE + "-arm64"],
+                },
+                "dockerhub": {"indexes": [], "members": []},
+            },
+        }
+
+    def _public_manifest(self, schema_version=9):
+        document = json.loads(
+            (RELEASE_ROOT / "tests/fixtures/release-manifest.json").read_text()
+        )
+        text = (
+            json.dumps(document)
+            .replace("0.9.3", self.VERSION)
+            .replace("example", "release-org")
+        )
+        document = json.loads(text)
+        document["release"].update(
+            tag=self.TAG,
+            type=cleanup_records._classification(self.TAG)["release_type"],
+            url=f"https://github.com/{self.REPOSITORY}/releases/tag/{self.TAG}",
+        )
+        publication = document["images"][0]["publications"]["ghcr"]
+        publication["pull"] = self.IMAGE
+        publication["members"][0]["reference"] = self.IMAGE + "-amd64"
+        publication["members"][1]["reference"] = self.IMAGE + "-arm64"
+        document["chart"]["oci"] = self.CHART
+        if schema_version == 10:
+            document["schema_version"] = schema_version
+            for wheel in document["wheels"]:
+                wheel["capabilities"] = [
+                    {
+                        "product": wheel.pop("product"),
+                        "accelerator": wheel.pop("accelerator"),
+                    }
+                ]
+        return document
+
+    def test_plan_inventory_contains_enabled_targets_and_excludes_shared_inputs(self):
+        record = cleanup_records.record_from_plan(
+            self._record(), self._plan(dockerhub=True)
+        )
+        assert [(item["kind"], item["reference"]) for item in record["resources"]] == [
+            ("chart-oci", self.CHART),
+            ("ghcr-index", self.IMAGE),
+            ("ghcr-member", self.IMAGE + "-amd64"),
+            ("ghcr-member", self.IMAGE + "-arm64"),
+            (
+                "dockerhub-index",
+                self.IMAGE.replace("ghcr.io/release-org", "docker.io/other-owner"),
+            ),
+            (
+                "dockerhub-member",
+                (self.IMAGE + "-amd64").replace(
+                    "ghcr.io/release-org", "docker.io/other-owner"
+                ),
+            ),
+            (
+                "dockerhub-member",
+                (self.IMAGE + "-arm64").replace(
+                    "ghcr.io/release-org", "docker.io/other-owner"
+                ),
+            ),
+        ]
+
+    def test_single_architecture_pull_is_only_one_member(self):
+        record = cleanup_records.record_from_plan(
+            self._record(), self._plan(multi_arch=False, chart=False)
+        )
+        assert record["resources"] == [{"kind": "ghcr-member", "reference": self.IMAGE}]
+
+    def test_disabled_publication_has_a_legitimate_empty_inventory(self):
+        record = cleanup_records.record_from_plan(
+            self._record(), self._plan(ghcr=False, chart=False)
+        )
+        assert record["resources"] == []
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("repository", "other/repo"),
+            ("git_tag", "nightly/v0.9.0-20261008-1"),
+            ("version", "0.9.0"),
+            ("image_version", "0.9.0"),
+            ("route", "pr"),
+        ],
+    )
+    def test_plan_identity_cannot_be_grafted_onto_a_different_binding(
+        self, field, value
+    ):
+        plan = self._plan()
+        plan[field] = value
+        with pytest.raises(
+            cleanup_records.CleanupRecordError, match="identity differs"
+        ):
+            cleanup_records.record_from_plan(self._record(), plan)
+
+    @pytest.mark.parametrize(
+        "kind,reference",
+        [
+            ("ghcr-index", IMAGE.replace("release-org", "other-owner")),
+            ("ghcr-index", "ghcr.io/release-org/vllm-openai:v1"),
+            ("ghcr-member", IMAGE.replace("20261009001", "20261008001")),
+            ("ghcr-member", IMAGE.replace("ghcr.io", "docker.io")),
+            ("chart-oci", CHART.replace("20261009", "20261008")),
+            ("chart-oci", CHART.replace("release-org", "other-owner")),
+            ("pypi", "uc-manager==" + VERSION),
+            ("ghcr-member", " " + IMAGE),
+            ("ghcr-member", IMAGE + "@sha256:" + "b" * 64),
+        ],
+    )
+    def test_inventory_rejects_cross_version_or_shared_resource_deletion(
+        self, kind, reference
+    ):
+        snapshot = cleanup_records.new_record(self.REPOSITORY, self.TAG, "a" * 40, 1, 1)
+        snapshot["resources"] = [{"kind": kind, "reference": reference}]
+        with pytest.raises(cleanup_records.CleanupRecordError):
+            cleanup_records.decode_snapshot(
+                snapshot, self.REPOSITORY, "release-cleanup-1-1-planned.json"
+            )
+
+    def test_legacy_projection_does_not_widen_public_manifest_contract(self):
+        legacy = self._legacy_manifest()
+        record = cleanup_records.record_from_manifest(
+            legacy, self.REPOSITORY, release_id=456
+        )
+        assert record["source_sha"] is None
+        assert record["release_ids"] == [456]
+        assert record["runs"] == [{"id": 123, "attempt": 1}]
+        assert len(record["resources"]) == 4
+        with pytest.raises(
+            public_manifest.ManifestError, match="schema_version must be 9"
+        ):
+            public_manifest.validate_manifest(legacy)
+
+    @pytest.mark.parametrize("schema_version", [9, 10])
+    def test_current_public_manifest_projects_the_same_internal_inventory(
+        self, schema_version
+    ):
+        record = cleanup_records.record_from_manifest(
+            self._public_manifest(schema_version), self.REPOSITORY, 456
+        )
+        assert (
+            record["resources"]
+            == cleanup_records.record_from_manifest(
+                self._legacy_manifest(), self.REPOSITORY
+            )["resources"]
+        )
+
+    def test_schema10_sglang_manifest_preserves_exact_release_coordinates(self):
+        manifest = json.loads(
+            json.dumps(self._public_manifest(10))
+            .replace("vllm-openai", "sglang")
+            .replace("vllm", "sglang")
+        )
+        record = cleanup_records.record_from_manifest(manifest, self.REPOSITORY, 456)
+        assert record["release_ids"] == [456]
+        assert record["versions"] == [self.VERSION]
+        assert any("/sglang:" in item["reference"] for item in record["resources"])
+        assert record["resources"] == [
+            {"kind": resource.kind, "reference": resource.reference}
+            for resource in cleanup_records.registry_resources(manifest)
+        ]
+        if self.TAG.startswith("nightly/"):
+            manifest["release"]["tag"] = "nightly/v0.9.0-20261008-1"
+            with pytest.raises(
+                cleanup_records.CleanupRecordError, match="version differs"
+            ):
+                cleanup_records.record_from_manifest(manifest, self.REPOSITORY)
+
+    @pytest.mark.parametrize(
+        "mutation", ["schema", "fields", "kind", "run", "ownership"]
+    )
+    def test_legacy_projection_is_strict(self, mutation):
+        manifest = self._legacy_manifest()
+        if mutation == "schema":
+            manifest["schema_version"] = 7
+        elif mutation == "fields":
+            manifest["untrusted"] = True
+        elif mutation == "kind":
+            manifest["kind"] = "other"
+        elif mutation == "run":
+            manifest["actions_run_id"] = True
+        else:
+            manifest["runtime_images"]["ghcr"]["indexes"] = [
+                self.IMAGE.replace("release-org", "someone")
+            ]
+        with pytest.raises(cleanup_records.CleanupRecordError):
+            cleanup_records.record_from_manifest(manifest, self.REPOSITORY)
+
+    def test_duplicate_releases_and_attempts_union_one_version_without_mutating_inputs(
+        self,
+    ):
+        first = self._record(release_id=10)
+        second = cleanup_records.record_from_plan(
+            self._record(attempt=2, release_id=11), self._plan()
+        )
+        original = copy.deepcopy([first, second])
+        merged = cleanup_records.merge_records([first, second, second], self.REPOSITORY)
+        assert len(merged) == 1
+        assert merged[0]["release_ids"] == [10, 11]
+        assert merged[0]["runs"] == [{"id": 1, "attempt": 1}, {"id": 1, "attempt": 2}]
+        assert len(merged[0]["resources"]) == 4
+        assert [first, second] == original
+
+    def test_recovered_identity_gains_known_source_but_rejects_conflicting_sources(
+        self,
+    ):
+        legacy = self._record()
+        legacy.update(source_sha=None, runs=[], attempt_sources=[])
+        merged = cleanup_records.merge_records(
+            [legacy, self._record()], self.REPOSITORY
+        )
+        assert merged[0]["source_sha"] == "a" * 40
+        conflicting = self._record()
+        conflicting["source_sha"] = "b" * 40
+        with pytest.raises(
+            cleanup_records.CleanupRecordError, match="conflicting source SHAs"
+        ):
+            cleanup_records.merge_records(
+                [self._record(), conflicting], self.REPOSITORY
+            )
+
+    def test_retention_counts_all_versions_once_without_reserving_an_imaginary_current_slot(
+        self,
+    ):
+        items = [
+            self._record(f"nightly/v0.9.0-2026100{day}-1", run_id=day)
+            for day in range(1, 5)
+        ]
+        items[0].update(
+            source_sha=None, runs=[], attempt_sources=[]
+        )  # Recovered manifestless failed Draft.
+        items += [
+            self._record("nightly/v0.9.0-20261004-1", run_id=4, attempt=2, release_id=9)
+        ]
+        selected = cleanup_records.select_retention(items, 3)
+        assert [item["tag"] for item in selected.kept] == [
+            "nightly/v0.9.0-20261004-1",
+            "nightly/v0.9.0-20261003-1",
+            "nightly/v0.9.0-20261002-1",
+        ]
+        assert [item["tag"] for item in selected.candidates] == [
+            "nightly/v0.9.0-20261001-1"
+        ]
+
+    def test_sort_uses_tag_date_then_numeric_sequence_then_numeric_base(self):
+        tags = [
+            "nightly/v0.9.0-20261009-2",
+            "nightly/v0.8.0-20261009-10",
+            "nightly/v0.10.0-20261009-10",
+            "nightly/v0.1.0-20261010-1",
+        ]
+        selected = cleanup_records.select_retention(
+            [self._record(tag) for tag in tags], 2
+        )
+        assert [item["tag"] for item in selected.kept] == [tags[3], tags[2]]
+        assert [item["tag"] for item in selected.candidates] == [tags[1], tags[0]]
+
+    def test_active_excess_versions_count_toward_quota_and_are_reported_as_deferred(
+        self,
+    ):
+        tags = [f"nightly/v0.9.0-2026100{day}-1" for day in range(1, 5)]
+        selected = cleanup_records.select_retention(
+            [self._record(tag) for tag in tags], 2, {tags[1]}
+        )
+        assert [item["tag"] for item in selected.kept] == [tags[3], tags[2]]
+        assert [item["tag"] for item in selected.deferred] == [tags[1]]
+        assert [item["tag"] for item in selected.candidates] == [tags[0]]
+
+    def test_unlimited_retention_disables_deletion_even_for_old_active_versions(self):
+        older = (
+            "nightly/v0.9.0-20261008-1"
+            if self.TAG.startswith("nightly/")
+            else "draft/v0.9.0"
+        )
+        items = [self._record(), self._record(older)]
+        selected = cleanup_records.select_retention(items, -1, {self.TAG})
+        assert len(selected.kept) == 2
+        assert selected.candidates == selected.deferred == ()
+
+    @pytest.mark.parametrize("count", [0, -2, True, "7"])
+    def test_invalid_quota_is_rejected(self, count):
+        with pytest.raises(cleanup_records.CleanupRecordError, match="max_count"):
+            cleanup_records.select_retention([], count)
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "v0.9",
+            "draft/v0.9.0-0",
+            "nightly/v0.9.0-20260230-1",
+            "nightly/v0.9.0-20261009-01",
+        ],
+    )
+    def test_noncanonical_or_invalid_dates_never_enter_inventory(self, tag):
+        with pytest.raises(cleanup_records.CleanupRecordError):
+            self._record(tag)
+
+    def test_resource_kind_conflict_and_implicit_schema_extensions_are_rejected(self):
+        record = self._record()
+        record["resources"] = [
+            {"kind": "ghcr-index", "reference": self.IMAGE},
+            {"kind": "ghcr-member", "reference": self.IMAGE},
+        ]
+        with pytest.raises(
+            cleanup_records.CleanupRecordError, match="conflicting resource kinds"
+        ):
+            cleanup_records.validate_record(record, self.REPOSITORY)
+        record = self._record()
+        record["complete"] = True
+        with pytest.raises(cleanup_records.CleanupRecordError, match="fields differ"):
+            cleanup_records.validate_record(record, self.REPOSITORY)
+
+    def test_snapshot_roundtrip_preserves_filename_context_and_keeps_wire_schema(self):
+        snapshot = cleanup_records.new_record(
+            self.REPOSITORY, self.TAG, "a" * 40, 19, 2, plan=self._plan()
+        )
+        assert set(snapshot) == {
+            "kind",
+            "schema_version",
+            "repository",
+            "tag",
+            "release_type",
+            "run_id",
+            "source_sha",
+            "version",
+            "resources",
+        }
+        name = cleanup_records.record_basename(snapshot, 2, planned=True)
+        decoded = cleanup_records.decode_record(
+            snapshot, self.REPOSITORY, asset_name=name, release_id=23
+        )
+        assert decoded["release_ids"] == [23]
+        assert decoded["runs"] == [{"id": 19, "attempt": 2}]
+        assert decoded["attempt_sources"] == [
+            {"id": 19, "attempt": 2, "source_sha": "a" * 40}
+        ]
+        assert (
+            decoded["resources"]
+            == cleanup_records.record_from_plan(self._record(), self._plan())[
+                "resources"
+            ]
+        )
+
+    def test_planned_empty_snapshot_keeps_its_distinct_filename_stage(self):
+        snapshot = cleanup_records.new_record(
+            self.REPOSITORY,
+            self.TAG,
+            "a" * 40,
+            19,
+            2,
+            plan=self._plan(ghcr=False, chart=False),
+        )
+        assert snapshot["resources"] == []
+        assert cleanup_records.record_basename(snapshot, 2, planned=True).endswith(
+            "-planned.json"
+        )
+        decoded = cleanup_records.decode_snapshot(
+            snapshot,
+            self.REPOSITORY,
+            cleanup_records.record_basename(snapshot, 2, planned=True),
+        )
+        assert decoded["runs"] == [{"id": 19, "attempt": 2}]
+
+    def test_moved_draft_tag_keeps_each_attempt_source_and_nightly_rejects_conflict(
+        self,
+    ):
+        first = self._record(run_id=1)
+        second = cleanup_records.record_for_tag(
+            self.REPOSITORY, self.TAG, "b" * 40, 2, 3
+        )
+        if self.TAG.startswith("nightly/"):
+            with pytest.raises(
+                cleanup_records.CleanupRecordError, match="conflicting source SHAs"
+            ):
+                cleanup_records.merge_records([first, second], self.REPOSITORY)
+        else:
+            third = cleanup_records.record_for_tag(
+                self.REPOSITORY, self.TAG, "c" * 40, 3, 1
+            )
+            merged = cleanup_records.merge_records(
+                [first, second, third], self.REPOSITORY
+            )[0]
+            assert merged["source_sha"] is None
+            assert merged["attempt_sources"] == [
+                {"id": 1, "attempt": 1, "source_sha": "a" * 40},
+                {"id": 2, "attempt": 3, "source_sha": "b" * 40},
+                {"id": 3, "attempt": 1, "source_sha": "c" * 40},
+            ]
+
+    def test_snapshot_decoder_rejects_wire_extensions_and_wrong_filename_bindings(self):
+        snapshot = cleanup_records.new_record(
+            self.REPOSITORY, self.TAG, "a" * 40, 19, 2
+        )
+        with pytest.raises(cleanup_records.CleanupRecordError, match="provenance"):
+            cleanup_records.decode_snapshot(
+                snapshot, self.REPOSITORY, "release-cleanup-20-2-opened.json"
+            )
+        snapshot["attempt_sources"] = []
+        with pytest.raises(cleanup_records.CleanupRecordError, match="fields differ"):
+            cleanup_records.decode_snapshot(
+                snapshot, self.REPOSITORY, "release-cleanup-19-2-opened.json"
+            )
+
+    def test_generic_snapshot_preserves_local_version_and_configured_image_repository(
+        self,
+    ):
+        tag = "draft/v0.8.0-1"
+        version = "0.8.0.dev1+gabcdef"
+        reference = "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev1.gabcdef"
+        plan = {
+            "kind": "ucm-release-plan",
+            "route": "release",
+            "repository": self.REPOSITORY,
+            "git_tag": tag,
+            "release_type": "draft",
+            "version": version,
+            "publish": {
+                "ghcr": {"enabled": True},
+                "dockerhub": {"enabled": False},
+                "chart_oci": {"enabled": False},
+            },
+            "families": [
+                {
+                    "create_index": False,
+                    "published_reference": reference,
+                    "members": [{"reference": reference}],
+                }
+            ],
+        }
+        snapshot = cleanup_records.new_record(
+            self.REPOSITORY, tag, "a" * 40, 1, 1, plan=plan
+        )
+        decoded = cleanup_records.decode_snapshot(
+            snapshot, self.REPOSITORY, "release-cleanup-1-1-planned.json"
+        )
+        assert decoded["versions"] == [version]
+        assert decoded["resources"] == [{"kind": "ghcr-member", "reference": reference}]
+
+    def test_legacy_nightly_wire_keeps_its_original_resource_and_field_contract(self):
+        tag = "nightly/v0.9.0-20261009-1"
+        wire = cleanup_records.record_for_tag(self.REPOSITORY, tag, "a" * 40, 1, 1)
+        wire = {
+            key: value
+            for key, value in wire.items()
+            if key not in {"attempt_sources", "versions"}
+        }
+        decoded = cleanup_records.decode_record(wire, self.REPOSITORY)
+        assert decoded["runs"] == [{"id": 1, "attempt": 1}]
+        wire["resources"] = [
+            {
+                "kind": "ghcr-member",
+                "reference": "ghcr.io/release-org/vllm:v1-ucm-0.9.0.dev20261009001",
+            }
+        ]
+        with pytest.raises(
+            cleanup_records.CleanupRecordError, match="publication target"
+        ):
+            cleanup_records.decode_record(wire, self.REPOSITORY)
+        wire["resources"] = [
+            {
+                "kind": "ghcr-index",
+                "reference": "ghcr.io/release-org/vllm-openai:v1-ucm-0.9.0.dev20261009001-amd64",
+            }
+        ]
+        with pytest.raises(cleanup_records.CleanupRecordError, match="Nightly version"):
+            cleanup_records.decode_record(wire, self.REPOSITORY)
+        wire["resources"] = []
+        wire["attempt_sources"] = []
+        with pytest.raises(cleanup_records.CleanupRecordError, match="fields differ"):
+            cleanup_records.decode_record(wire, self.REPOSITORY)
+
+    def test_generic_retention_protects_current_without_replacing_old_deletion_boundary(
+        self,
+    ):
+        tags = [f"draft/v0.8.0-{number}" for number in range(1, 5)]
+        items = [
+            cleanup_records.record_for_tag(
+                self.REPOSITORY, tag, "a" * 40, index, 1, index
+            )
+            for index, tag in enumerate(tags, 1)
+        ]
+        selected = cleanup_records.select_retention(
+            items, 3, release_type="draft", current_tag=tags[0]
+        )
+        assert selected.candidates == ()
+        selected = cleanup_records.select_retention(
+            items[:3], 3, release_type="draft", current_tag=tags[3]
+        )
+        assert [record["tag"] for record in selected.candidates] == [tags[0]]
+
+    def test_schema9_ordinary_manifest_keeps_its_authoritative_exact_coordinates(self):
+        manifest = json.loads(
+            (RELEASE_ROOT / "tests/fixtures/release-manifest.json").read_text()
+        )
+        manifest = json.loads(json.dumps(manifest).replace("example", "release-org"))
+        manifest["release"].update(
+            tag="draft/v0.8.0-1",
+            type="draft",
+            url=f"https://github.com/{self.REPOSITORY}/releases/tag/untagged-old-display",
+        )
+        decoded = cleanup_records.record_from_manifest(
+            manifest, self.REPOSITORY, release_id=17
+        )
+        assert decoded["tag"] == "draft/v0.8.0-1"
+        assert decoded["versions"] == ["0.9.3"]
+        expected = cleanup_records.registry_resources(manifest)
+        assert {(item["kind"], item["reference"]) for item in decoded["resources"]} == {
+            (item.kind, item.reference) for item in expected
+        }
+        manifest["release"]["url"] = "https://github.com/other/repo/releases/tag/v0.9.3"
+        with pytest.raises(
+            cleanup_records.CleanupRecordError, match="another repository"
+        ):
+            cleanup_records.record_from_manifest(manifest, self.REPOSITORY)
+
+    def test_schema6_reader_preserves_each_historical_asset_name_contract(self):
+        manifest = self._legacy_manifest()
+        manifest["github_release_assets"].append("nested/wheel.whl")
+        if self.TAG.startswith("nightly/"):
+            with pytest.raises(
+                cleanup_records.CleanupRecordError, match="Release assets"
+            ):
+                cleanup_records.record_from_manifest(manifest, self.REPOSITORY)
+        else:
+            assert (
+                cleanup_records.record_from_manifest(manifest, self.REPOSITORY)["tag"]
+                == self.TAG
+            )
+        manifest["github_release_assets"] = [
+            "release-manifest.json",
+            "wheel.whl",
+            "wheel.whl",
+        ]
+        if self.TAG.startswith("nightly/"):
+            assert (
+                cleanup_records.record_from_manifest(manifest, self.REPOSITORY)["tag"]
+                == self.TAG
+            )
+        else:
+            with pytest.raises(
+                cleanup_records.CleanupRecordError, match="Release assets"
+            ):
+                cleanup_records.record_from_manifest(manifest, self.REPOSITORY)

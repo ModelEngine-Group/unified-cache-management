@@ -34,6 +34,16 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+BUILD_UCM_ASU = os.getenv("BUILD_UCM_ASU", "0") not in ("", "0", "false", "False")
+BUILD_KV_CLIENT_PROVIDER_AIV = os.getenv("BUILD_KV_CLIENT_PROVIDER_AIV", "0") not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
+BUILD_KV_CLIENT_PROVIDER_AICPU = os.getenv(
+    "BUILD_KV_CLIENT_PROVIDER_AICPU", "0"
+) not in ("", "0", "false", "False")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 ENABLE_GDR = os.getenv("ENABLE_GDR", "0") not in ("", "0", "false", "False")
 ASCEND_ROOT = os.getenv("ASCEND_ROOT")
@@ -85,7 +95,7 @@ def print_platform_warning():
 {RED}{'=' * 80}
 {BOLD}⚠️  WARNING: PLATFORM environment variable is not set! ⚠️{RESET}
 {RED}{'=' * 80}{RESET}
-{YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, musa, maca{RESET}
+{YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, ascend-a5, musa, maca{RESET}
 Example:
   {BOLD}export PLATFORM=cuda{RESET}    # For CUDA platform
 {YELLOW}In CI scenarios only, you don't need to specify PLATFORM. If it's not a CI scenario, please uninstall and then reinstall with PLATFORM specified.{RESET}
@@ -188,6 +198,13 @@ class CMakeBuild(build_ext):
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
 
+        if BUILD_UCM_ASU:
+            cmake_args += ["-DBUILD_UCM_ASU=ON"]
+        if BUILD_KV_CLIENT_PROVIDER_AIV:
+            cmake_args += ["-DBUILD_KV_CLIENT_PROVIDER_AIV=ON"]
+        if BUILD_KV_CLIENT_PROVIDER_AICPU:
+            cmake_args += ["-DBUILD_KV_CLIENT_PROVIDER_AICPU=ON"]
+
         if ENABLE_GDR:
             cmake_args += ["-DUCM_ENABLE_GDR_STREAM=ON"]
 
@@ -216,6 +233,8 @@ class CMakeBuild(build_ext):
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend"]
             case "ascend-a3":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend-a3"]
+            case "ascend-a5":
+                cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend-a5"]
             case "musa":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=musa"]
             case "maca":
@@ -287,7 +306,6 @@ setup(
     ],
     package_dir={"": "."},
     python_requires=">=3.10",
-    install_requires=["wrapt==1.17.2"],
     ext_modules=[CMakeExtension(name="ucm", source_dir=ROOT_DIR)],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,

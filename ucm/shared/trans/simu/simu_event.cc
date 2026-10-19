@@ -27,4 +27,6 @@ namespace UC::Trans {
 
 Status Event::Synchronize() const { return Status::OK(); }
 
+Expected<bool> Event::Query() const { return true; }
+
 }  // namespace UC::Trans

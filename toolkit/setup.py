@@ -1,19 +1,14 @@
-"""Legacy setuptools entry point for editable installs."""
+"""Build the CLI and its source resources without compiling native tools."""
 
-from setuptools import find_packages, setup
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _build_support import BuildPy, SourceDistribution, source_version
+from setuptools import setup
 
 setup(
-    name="ucm-toolkit",
-    version="0.1.0",
-    description="Unified CLI for UCM toolkit utilities.",
-    python_requires=">=3.9",
-    packages=find_packages(include=["ucm_toolkit", "ucm_toolkit.*"]),
-    package_data={
-        "ucm_toolkit.tools.metrics_view": ["configs/*.json"],
-    },
-    entry_points={
-        "console_scripts": [
-            "ucm-toolkit=ucm_toolkit.cli:main",
-        ],
-    },
+    version=source_version(),
+    cmdclass={"build_py": BuildPy, "sdist": SourceDistribution},
 )

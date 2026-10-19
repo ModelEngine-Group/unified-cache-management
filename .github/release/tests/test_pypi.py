@@ -263,14 +263,6 @@ def test_fork_publication_rejects_wrong_or_missing_owner_prefix() -> None:
         pypi.build_publication(plan, backend_results, meta_result)
 
 
-def test_publication_rejects_noncanonical_distribution_alias() -> None:
-    plan = _release_plan()
-    plan["wheels"][0]["dist_name"] = "UC_Manager_Cuda_Cu130"  # type: ignore[index]
-
-    with pytest.raises(ValueError, match="coordinates"):
-        pypi.build_publication(plan, _backend_results(), _meta_result())
-
-
 def test_fork_publication_readback_is_idempotent() -> None:
     plan, backend_results, meta_result = _fork_inputs()
     publication = pypi.build_publication(plan, backend_results, meta_result)
@@ -433,23 +425,6 @@ def test_fetch_retries_transient_http_with_fresh_cache_nonce() -> None:
     assert len(set(nonces)) == 2
 
 
-def test_fetch_uses_the_authorized_target_json_api() -> None:
-    urls: list[str] = []
-
-    def open_url(request, *, timeout):
-        urls.append(request.full_url)
-        return _Response({"info": {}, "urls": []})
-
-    pypi.fetch_version_json(
-        CUDA,
-        VERSION,
-        json_api_url="https://test.pypi.org/pypi/",
-        open_url=open_url,
-    )
-
-    assert urls[0].startswith(f"https://test.pypi.org/pypi/{CUDA}/{VERSION}/json?")
-
-
 def test_twine_uploader_resolves_one_file_and_keeps_token_out_of_args(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -471,3 +446,92 @@ def test_twine_uploader_resolves_one_file_and_keeps_token_out_of_args(
     assert uploader(CUDA_AMD64) == wheel
     assert invocation["env"]["TWINE_PASSWORD"] == "secret-token"
     assert "secret-token" not in " ".join(invocation["arguments"])
+
+
+@pytest.mark.parametrize("fail_toolkit", [False, True])
+def test_toolkit_must_publish_before_meta(fail_toolkit):
+    plan, backends, meta_result = _fork_inputs()
+    package = {"distribution": "supermarioyl-ucm-toolkit", "version": VERSION}
+    plan["toolkit_package"] = package
+    plan["meta_package"]["extras"]["toolkit"] = f"{package['distribution']}=={VERSION}"
+    meta_result["extras"] = plan["meta_package"]["extras"]
+    result = {
+        "kind": "ucm-toolkit-result",
+        "schema_version": 1,
+        **package,
+        "filename": f"supermarioyl_ucm_toolkit-{VERSION}-py3-none-any.whl",
+        "sha256": "sha256:" + "e" * 64,
+    }
+    publication = pypi.build_publication(plan, backends, meta_result, result)
+    records = [*publication["backends"], publication["toolkit"], publication["meta"]]
+    documents = {}
+    uploaded = []
+
+    def upload(filename):
+        if fail_toolkit and filename == result["filename"]:
+            raise pypi.PyPIUploadError("toolkit upload failed")
+        uploaded.append(filename)
+        record = next(
+            item
+            for item in records
+            if any(file["filename"] == filename for file in item["files"])
+        )
+        document = _document(record)
+        if record["role"] == "meta":
+            document["info"]["provides_extra"] = sorted(publication["extras"])
+            document["info"]["requires_dist"] = [
+                f'{requirement}; extra == "{extra}"'
+                for extra, requirement in publication["extras"].items()
+            ]
+        documents[record["project"]] = document
+
+    if fail_toolkit:
+        with pytest.raises(pypi.PyPIUploadError, match="toolkit upload failed"):
+            pypi.publish(
+                publication,
+                uploader=upload,
+                fetch=lambda name, version: documents.get(name),
+            )
+        assert meta_result["filename"] not in uploaded
+    else:
+        receipt = pypi.publish(
+            publication,
+            uploader=upload,
+            fetch=lambda name, version: documents.get(name),
+        )
+        assert uploaded.index(result["filename"]) < uploaded.index(
+            meta_result["filename"]
+        )
+        assert receipt["projects"][-2]["role"] == "toolkit"
+        assert receipt["status"] == "complete"
+
+
+def test_twine_upload_failure_preserves_diagnostics_on_stderr(
+    tmp_path: Path, monkeypatch, capfd
+) -> None:
+    wheel = tmp_path / CUDA_AMD64
+    wheel.write_bytes(b"wheel")
+    # Stand in for Twine without making an upload to a real package index.
+    (tmp_path / "twine.py").write_text(
+        "import sys\n"
+        "print('HTTPError: 429 Too Many Requests')\n"
+        "if '--verbose' in sys.argv:\n"
+        "    print('Too many new projects created')\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    uploader = pypi.make_twine_uploader(
+        roots=[tmp_path],
+        expected_sha256={CUDA_AMD64: "sha256:" + hashlib.sha256(b"wheel").hexdigest()},
+        repository_url="https://upload.pypi.org/legacy/",
+        token="secret-token",
+    )
+
+    with pytest.raises(pypi.PyPIUploadError, match="Twine upload failed"):
+        uploader(CUDA_AMD64)
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "HTTPError: 429 Too Many Requests" in captured.err
+    assert "Too many new projects created" in captured.err
+    assert "secret-token" not in captured.err

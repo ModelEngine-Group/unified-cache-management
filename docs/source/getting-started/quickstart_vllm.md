@@ -6,7 +6,9 @@ This document describes how to install unified-cache-management with vllm on cud
 
 ## Step 1: UCM Installation
 
-We offer 3 options to install UCM.
+We offer 2 options to install UCM.
+
+If you want to build UCM from source code (e.g. for development or customization), see [Building and Installing UCM from Source](../developer-guide/build_from_source.md).
 
 ### Option 1: Setup from docker
 
@@ -58,119 +60,13 @@ docker build --build-arg INSTALL_MODE=package \
 ```
 
 
-### Option 2: Build from source
+### Option 2: Install by pip
 1. Prepare vLLM Environment
 
-    For the sake of environment isolation and simplicity, we recommend preparing the vLLM environment by pulling the official, pre-built vLLM Docker image.
-
+    It is recommended to use a pre-built vLLM docker image. Follow the guide in [Option 1: Setup from docker](#option-1-setup-from-docker) or pull the official image directly:
     ```bash
     docker pull vllm/vllm-openai:<vllm_version>
     ```
-    Use the following command to run your own container:
-    ```bash
-    # Use `--ipc=host` to make sure the shared memory is large enough.
-    docker run \
-        --gpus all \
-        --network=host \
-        --ipc=host \
-        -v <path_to_your_models>:/home/model \
-        -v <path_to_your_storage>:/home/storage \
-        --entrypoint /bin/bash \
-        --name <name_of_your_container> \
-        -it vllm/vllm-openai:<vllm_version>
-    ```
-    Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
-
-2. Build From Source Code
-
-    Follow commands below to install unified-cache-management:
-
-    **Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
-
-    ```bash
-    # Replace <branch_or_tag_name> with the branch or tag name needed
-    git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-    cd unified-cache-management
-    export PLATFORM=cuda
-    pip install -v -e . --no-build-isolation
-    ```
-
-3. Apply vLLM Integration Patches
-
-    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
-
-    >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
-
-    #### Option A: Monkey Patch (Recommended)
-
-    This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
-    It automatically detects the vLLM version and applies patches only when needed — you can safely keep it enabled regardless of your vLLM version.
-    Available for vLLM ≥ 0.11.0 (not supported on 0.9.2, which requires Manual Git Patch).
-
-    1. Enable Monkey Patch:
-    ```bash
-    export ENABLE_UCM_PATCH=1
-    ```
-
-    2. Enable Sparse Attention (Optional, vLLM 0.11.0 only):
-    ```bash
-    export ENABLE_SPARSE=1
-    ```
-
-    **Note:**
-    - ReRoPE support is currently only available via the Git Patch method.
-
-    #### Option B: Manual Git Patch (Legacy/Alternative, only available for vLLM 0.9.2 and 0.11.0)
-
-    If you prefer modifying the source code directly, follow these steps:
-    
-    ##### 1. Navigate to the vLLM source directory:
-    ```bash
-    cd <path_to_vllm>
-    ```
-    ##### 2. Apply the patch that corresponds to your vLLM version and requirements:
-    
-    ###### vLLM 0.9.2
-    - Full UCM integration (recommended):
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
-    ```
-
-    - Sparse attention only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
-    ```
-
-    - ReRoPE support only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
-    ```
-
-    ###### vLLM 0.11.0
-
-    - Full UCM integration (recommended):
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt.patch
-    ```
-
-    - Sparse attention only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
-    ```
-
-    - ReRoPE support only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-rerope.patch
-    ```
-
-    Choose the patch according to your development needs.
-    If you are working on **sparse attention** or **ReRoPE** independently, applying only the corresponding patch is sufficient.
-
-
-### Option 3: Install by pip
-1. Prepare vLLM Environment
-
-    It is recommended to use a pre-build vllm docker image, please follow the guide in Option 2.
 
 2. install by pip
 
@@ -180,6 +76,19 @@ docker build --build-arg INSTALL_MODE=package \
     pip install uc-manager
     ```
 > **Note:** If installing via `pip install`, you need to manually add the `config.yaml` file, similar to `unified-cache-management/examples/ucm_config_example.yaml`, because PyPI packages do not include YAML files.
+
+### Enable UCM Integration
+
+UCM integrates with vLLM automatically at runtime — no manual patching of the vLLM source code is required.
+
+Simply enable the patch hook by setting the following environment variable before launching vLLM:
+```bash
+export ENABLE_UCM_PATCH=1
+```
+
+UCM detects your vLLM version and applies the required patches on the fly.
+
+>**Note:** To enable Sparse Attention (vLLM 0.11.0), also set `export ENABLE_SPARSE=1`.
 
 ## Step 2: Configuration
 
@@ -200,7 +109,7 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 
 ### Feature 2:  Sparsity
 
-The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`.
+The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and build the package again (see [Building and Installing UCM from Source](../developer-guide/build_from_source.md)). And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`.
 
 ## Step 3: Launching Inference
 

@@ -131,7 +131,7 @@ class LocalBufferStrategy : public BufferStrategy {
         void Unlock() { pthread_spin_unlock(&lock); }
     };
 
-    bool ioDirect_{false};
+    bool useDriverMemoryApi_{false};
     bool mapHostToDevice_{false};
     BufferHeader header_;
     LocalMutex bucketLocks_[nHashTableBucket];
@@ -144,9 +144,9 @@ class LocalBufferStrategy : public BufferStrategy {
 
 public:
     LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber,
-                        bool ioDirect, bool mapHostToDevice)
+                        bool useDriverMemoryApi, bool mapHostToDevice)
         : BufferStrategy(deviceId, nodeSize, totalSize, reservedNumber),
-          ioDirect_(ioDirect),
+          useDriverMemoryApi_(useDriverMemoryApi),
           mapHostToDevice_(mapHostToDevice)
     {
     }
@@ -184,8 +184,8 @@ public:
             UC_ERROR("Failed to make buffer on device({}).", deviceId);
             return Status::Error();
         }
-        data_ = ioDirect_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode)
-                          : buffer->MakeHostBuffer(nodeSize * nNode);
+        data_ = !useDriverMemoryApi_ ? buffer->MakeHostBuffer4DirectIo(nodeSize * nNode)
+                                     : buffer->MakeHostBuffer(nodeSize * nNode);
         if (!data_) [[unlikely]] {
             UC_ERROR("Failed to make pinned({}) for device({}).", nodeSize * nNode, deviceId);
             return Status::OutOfMemory();
@@ -193,7 +193,7 @@ public:
         if (mapHostToDevice_) {
             void* deviceData = nullptr;
             auto s = Status::OK();
-            if (ioDirect_) {
+            if (!useDriverMemoryApi_) {
                 s = Trans::Buffer::GetHostDevicePointer(data_.get(), &deviceData);
             } else {
                 s = Trans::Buffer::RegisterHostBuffer(data_.get(), nodeSize * nNode, &deviceData);
@@ -333,7 +333,8 @@ protected:
         fs::path shmDir = "/dev/shm";
         if (!fs::exists(shmDir)) { return; }
         const auto now = fs::file_time_type::clock::now();
-        const auto keepThreshold = std::chrono::minutes(10);
+        const auto keepThreshold = std::chrono::minutes(30);
+        auto myUid = me.substr(prefix.size(), me.find('_', prefix.size()) - prefix.size());
         for (const auto& entry : fs::directory_iterator(shmDir)) {
             const auto& path = entry.path();
             const auto& name = path.filename().string();
@@ -341,6 +342,8 @@ protected:
                 name == me) {
                 continue;
             }
+            auto uid = name.substr(prefix.size(), name.find('_', prefix.size()) - prefix.size());
+            if (uid == myUid) { continue; }
             try {
                 const auto lwt = fs::last_write_time(path);
                 if (now - lwt <= keepThreshold) { continue; }
@@ -516,7 +519,6 @@ public:
     Status Setup() override
     {
         shmName_ = ShmPrefix() + uuid_;
-        CleanUpShmFileExceptMe(shmName_);
         PosixShm shmFile{shmName_};
         auto s = shmFile.ShmOpen(PosixShm::OpenFlag::READ_WRITE);
         if (s.Failure()) {
@@ -554,9 +556,10 @@ Status TransBuffer::Setup(const Config& config)
     bypassHitOnLoad_ = config.cacheLoadBackendOnly;
     try {
         if (!config.shareBufferEnable) {
+            auto useDriverMemoryApi = config.useDpc || !config.ioDirect;
             strategy_ = std::make_shared<LocalBufferStrategy>(
                 config.deviceId, config.shardSize, config.bufferCapacity,
-                config.loadExclusiveBufferNumber, config.ioDirect, config.cacheSdmaDirect);
+                config.loadExclusiveBufferNumber, useDriverMemoryApi, config.cacheSdmaDirect);
         } else if (config.deviceId >= 0) {
             strategy_ = std::make_shared<SharedBufferStrategy>(
                 config.uniqueId, config.deviceId, config.shardSize, config.bufferCapacity,

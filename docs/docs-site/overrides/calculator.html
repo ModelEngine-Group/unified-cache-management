@@ -1,0 +1,10 @@
+{% extends "main.html" %}
+
+{% block content %}
+  {{ super() }}
+  <div style="margin: 20px 0;">
+    <iframe src="{{ 'assets/kv_cache_calculator.html' | url }}"
+            style="width: 100%; height: 1200px; border: none;"
+            title="{{ page.title }}"></iframe>
+  </div>
+{% endblock %}

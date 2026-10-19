@@ -1,0 +1,264 @@
+.ucm-install {
+  --ucm-install-accent: #00796b;
+  --ucm-install-accent-soft: color-mix(in srgb, var(--ucm-install-accent) 10%, transparent);
+  --ucm-install-border: var(--md-default-fg-color--lightest);
+  margin-block: 1.25rem 2rem;
+}
+
+[data-md-color-scheme="slate"] .ucm-install {
+  --ucm-install-accent: #72d8ca;
+}
+
+.ucm-install__status {
+  margin: 0 0 1.2rem;
+  padding: 0.8rem 1rem;
+  border-inline-start: 0.2rem solid var(--md-default-fg-color--lighter);
+  background: var(--md-code-bg-color);
+  color: var(--md-default-fg-color--light);
+}
+
+.ucm-install__status--ready {
+  border-inline-start-color: var(--ucm-install-accent);
+}
+
+.ucm-install__status--unavailable {
+  border-inline-start-color: var(--md-typeset-color);
+  font-weight: 600;
+}
+
+.ucm-install__section {
+  margin-block: 2rem;
+}
+
+.ucm-install__section > h2 {
+  margin-bottom: 0.8rem;
+}
+
+.ucm-selector {
+  overflow: hidden;
+  border: 0.05rem solid var(--ucm-install-border);
+  border-radius: 0;
+  background: var(--md-default-bg-color);
+}
+
+.ucm-selector__row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  min-height: 2.55rem;
+  border-bottom: 0.1rem solid var(--md-default-bg-color);
+}
+
+.ucm-selector__row:last-child {
+  border-bottom: 0;
+}
+
+.ucm-selector__row[hidden] {
+  display: none;
+}
+
+.ucm-selector__label {
+  display: flex;
+  align-items: center;
+  padding: 0.55rem 0.4rem;
+  border-inline-end: 0.05rem solid var(--ucm-install-border);
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color--light);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ucm-selector__options {
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.ucm-selector__option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 0;
+  min-width: max-content;
+  padding: 0 0.65rem;
+  border: 0.1rem solid var(--md-default-bg-color);
+  border-radius: 0;
+  background: var(--md-code-bg-color);
+  color: var(--md-default-fg-color);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.ucm-selector__option-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.ucm-selector__option-text--stacked {
+  flex-direction: column;
+  gap: 0.08rem;
+}
+
+.ucm-selector__option-primary,
+.ucm-selector__option-secondary {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ucm-selector__option-secondary {
+  font-size: 0.82em;
+  font-weight: 600;
+}
+
+[data-selector-row="runtime"] .ucm-selector__option {
+  padding-inline: 0.15rem;
+  font-size: clamp(0.58rem, 0.9vw, 0.68rem);
+}
+
+.ucm-selector__input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  opacity: 0;
+  clip-path: inset(50%);
+}
+
+.ucm-selector__option:not(.ucm-selector__option--disabled):hover {
+  color: var(--ucm-install-accent);
+}
+
+.ucm-selector__option:focus-within {
+  outline: 0.1rem solid var(--ucm-install-accent);
+  outline-offset: -0.2rem;
+  z-index: 1;
+}
+
+.ucm-selector__option--selected {
+  background: var(--ucm-install-accent) !important;
+  color: var(--md-primary-bg-color) !important;
+}
+
+.ucm-selector__option--disabled {
+  color: var(--md-default-fg-color--lighter);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.ucm-install__command {
+  position: relative;
+  margin-block: 0.65rem;
+}
+
+.ucm-install__pre {
+  min-height: 2.8rem;
+  margin: 0 !important;
+  padding: 0.75rem 5rem 0.75rem 0.85rem !important;
+  overflow-x: auto;
+  border-radius: 0.2rem;
+  background: #08201f !important;
+  color: #e5f5f2 !important;
+}
+
+.ucm-install__pre code {
+  display: block;
+  padding: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  white-space: pre;
+}
+
+.ucm-install__copy {
+  position: absolute;
+  inset-block-start: 0.45rem;
+  inset-inline-end: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.45rem;
+  border: 0.05rem solid #47716b;
+  border-radius: 0.18rem;
+  background: #12332f;
+  color: #e5f5f2;
+  font: inherit;
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.ucm-install__copy:hover,
+.ucm-install__copy:focus-visible {
+  border-color: #8be7d8;
+  background: #1b4842;
+}
+
+.ucm-install__copy-icon {
+  font-size: 0.78rem;
+}
+
+.ucm-install__empty {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+}
+
+@media (max-width: 48rem) {
+  .ucm-selector__row {
+    grid-template-columns: 5rem minmax(0, 1fr);
+  }
+
+  .ucm-selector__option {
+    padding-inline: 0.4rem;
+  }
+
+  .ucm-selector__label {
+    padding: 0.5rem;
+    font-size: 0.66rem;
+  }
+
+  [data-selector-row="runtime"] .ucm-selector__option {
+    flex: 0 0 auto;
+    min-width: max-content;
+    padding-inline: 0.65rem;
+    font-size: 0.68rem;
+  }
+
+}
+
+/* Keep inactive guides and incomplete commands out of layout and the copy flow. */
+[data-quickstart-guide][hidden],
+[data-requires][hidden],
+[data-artifact-missing][hidden],
+[data-environment-summary][hidden] {
+  display: none;
+}
+
+[data-command-template] pre > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-command-template] .ucm-install__pre {
+  background: var(--md-code-bg-color) !important;
+  color: var(--md-code-fg-color) !important;
+}
+
+[data-command-template] .ucm-install__copy {
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  border-color: var(--md-default-fg-color--lightest);
+}

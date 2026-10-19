@@ -1,0 +1,5 @@
+include _build_support.py
+recursive-include src/dev-sandbox *
+include src/nic_monitor/nic_monitor_pro.sh
+recursive-exclude * __pycache__ *.pyc *.o *.so *.a
+prune src/dev-sandbox/build

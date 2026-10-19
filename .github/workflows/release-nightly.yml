@@ -2,12 +2,13 @@ name: UCM Nightly Release · Shanghai 02:00
 
 on:
   schedule:
-    # GitHub cron 使用 UTC；18:00 UTC 是上海次日 02:00。
+    # GitHub cron 使用 UTC；18:00 对应上海次日 02:00。
     - cron: "0 18 * * *"
   workflow_dispatch:
 
 concurrency:
   group: ucm-nightly-${{ github.repository_id }}
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -19,7 +20,8 @@ jobs:
     if: >-
       ${{
         github.ref == 'refs/heads/develop' &&
-        github.repository == 'ModelEngine-Group/unified-cache-management'
+        (github.event_name == 'workflow_dispatch' ||
+         github.repository == 'ModelEngine-Group/unified-cache-management')
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -49,7 +51,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - id: prepare
         name: Reuse an incomplete same-SHA Tag or create the next sequence
         run: |
@@ -67,13 +69,8 @@ jobs:
           while IFS= read -r candidate; do
             [ -n "${candidate}" ] || continue
             [ "$(git rev-list -n 1 "${candidate}")" = "${source_sha}" ] || continue
-            releases="$(gh api --paginate --slurp \
-              "/repos/${GH_REPO}/releases?per_page=100" \
-              | jq -ce --arg tag "${candidate}" \
-                '[.[][] | select(
-                  (.tag_name == $tag) or
-                  (.name == $tag and .draft == true and
-                   ((.tag_name // "") | startswith("untagged-"))))]')"
+            releases="$(bash .github/release/find-github-release.sh \
+              "${GH_REPO}" "${candidate}")"
             test "$(jq 'length' <<<"${releases}")" -le 1
             if [ "$(jq 'length' <<<"${releases}")" -eq 0 ] || \
                ! jq -e '.[0] | .draft == false and .prerelease == true and
@@ -84,8 +81,18 @@ jobs:
             fi
           done < <(git tag --list "${prefix}*" --sort=-version:refname)
 
+          create_tag=false
           if [ -z "${selected_tag}" ]; then
             selected_tag="${next_tag}"
+            create_tag=true
+          fi
+          python .github/release/ucm_release/cleanup.py record \
+            --repository "${GH_REPO}" --tag "${selected_tag}" \
+            --source-sha "${source_sha}" --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output-dir out/cleanup
+
+          if [ "${create_tag}" = true ]; then
             if ! gh api --method POST "/repos/${GH_REPO}/git/refs" \
               -f "ref=refs/tags/${selected_tag}" -f "sha=${source_sha}" >/dev/null; then
               git fetch --force origin "refs/tags/${selected_tag}:refs/tags/${selected_tag}"
@@ -105,6 +112,13 @@ jobs:
             echo "image_version=$(jq -r '.image_version' <<<"${classification}")"
             echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
           } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/cleanup/*.json') != '' }}
+        with:
+          name: ucm-release-cleanup-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/cleanup/*.json
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Run common Release core
@@ -123,5 +137,12 @@ jobs:
       release_kind: ${{ needs.prepare-nightly.outputs.release_kind }}
       is_prerelease: ${{ needs.prepare-nightly.outputs.is_prerelease == 'true' }}
       source_sha: ${{ needs.prepare-nightly.outputs.source_sha }}
-      publication_scope: official
-    secrets: inherit
+      publication_scope: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'official' || 'fork' }}
+    # Same scope-gated contract as release-tag.yml: production PyPI only for
+    # the official repository and TestPyPI only for Forks.
+    secrets:
+      PYPI_API_TOKEN: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && secrets.PYPI_API_TOKEN || '' }}
+      TEST_PYPI_API_TOKEN: ${{ github.repository != 'ModelEngine-Group/unified-cache-management' && secrets.TEST_PYPI_API_TOKEN || '' }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      RTD_API_TOKEN: ${{ secrets.RTD_API_TOKEN }}

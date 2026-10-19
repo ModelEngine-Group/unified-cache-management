@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import shutil
 from pathlib import Path
 
-from ... import registry
+from ... import __version__
 from ...errors import (
     BinaryNotFoundError,
     BuildDirNotFoundError,
@@ -14,6 +17,7 @@ from ...errors import (
     ToolkitError,
 )
 from ...registry import ToolAdapter
+from ...resources import resource_path
 from ...runner import check_command, command_exists, run_command
 
 # Friendly-mode copy-case matrix: (model_type, iodirect, sdma) -> Ascend case
@@ -50,13 +54,46 @@ class DevSandboxTool(ToolAdapter):
     aliases = ("dev_sandbox",)
     description = "Build the CMake-based dev-sandbox test project."
     buildable = True
-    source_dir = "toolkit/src/dev-sandbox"
-    build_dir = "toolkit/src/dev-sandbox/build"
+    source_dir = "dev-sandbox"
     subcommands = {
         "copy": "module/copy/copy",
         "trans": "module/trans/trans",
         "aio": "module/aio/aio",
     }
+
+    def _state_file(self) -> Path:
+        # Each installed environment and toolkit version owns its build state.
+        installation = hashlib.sha256(
+            str(Path(__file__).resolve()).encode()
+        ).hexdigest()[:16]
+        cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        return cache / "ucm-toolkit" / installation / __version__ / "dev-sandbox.json"
+
+    def _build_path(self) -> Path:
+        state = self._state_file()
+        if state.exists():
+            try:
+                value = json.loads(state.read_text())["build_dir"]
+                if not isinstance(value, str) or not Path(value).is_absolute():
+                    raise ValueError("build_dir must be absolute")
+                return Path(value)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ToolkitError(
+                    f"invalid dev-sandbox build state: {state}"
+                ) from error
+        return state.parent / "dev-sandbox-build"
+
+    @staticmethod
+    def _check_build_directory(build_dir: Path, source_dir: Path) -> None:
+        if build_dir == source_dir or build_dir in source_dir.parents:
+            raise ToolkitError("dev-sandbox requires a separate build directory")
+        if build_dir.exists() and any(build_dir.iterdir()):
+            cache = build_dir / "CMakeCache.txt"
+            expected = f"CMAKE_HOME_DIRECTORY:INTERNAL={source_dir}"
+            if not cache.is_file() or expected not in cache.read_text().splitlines():
+                raise ToolkitError(
+                    f"directory is not a build of this dev-sandbox: {build_dir}"
+                )
 
     def add_build_args(self, parser: argparse.ArgumentParser) -> None:
         """Register dev-sandbox build arguments."""
@@ -79,9 +116,13 @@ class DevSandboxTool(ToolAdapter):
         if not command_exists("cmake"):
             raise CommandNotFoundError("cmake")
 
-        source_dir = registry.resolve_repo_path(self.source_dir or "")
-        build_dir_value = args.build_dir or self.build_dir
-        build_dir = registry.resolve_repo_path(build_dir_value or "")
+        source_dir = resource_path(self.source_dir or "")
+        build_dir = (
+            Path(args.build_dir).expanduser().resolve()
+            if args.build_dir
+            else self._build_path()
+        )
+        self._check_build_directory(build_dir, source_dir)
         cmake_args = [
             "cmake",
             "-S",
@@ -98,8 +139,13 @@ class DevSandboxTool(ToolAdapter):
             build_cmd.extend(["-j", str(args.jobs)])
         check_command(build_cmd)
 
-        if args.build_dir:
-            registry.update_tool_field(self.name, "build_dir", args.build_dir)
+        state = self._state_file()
+        state.parent.mkdir(parents=True, exist_ok=True)
+        temporary = state.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"build_dir": str(build_dir)}), encoding="utf-8"
+        )
+        temporary.replace(state)
         return 0
 
     def run(self, tool_args: list[str]) -> int:
@@ -154,8 +200,8 @@ class DevSandboxTool(ToolAdapter):
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect dev-sandbox source/build availability."""
-        source_dir = registry.resolve_repo_path(self.source_dir or "")
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        source_dir = resource_path(self.source_dir or "")
+        build_dir = self._build_path()
         ok = True
         print(f"{self.name}:")
         print(
@@ -174,7 +220,7 @@ class DevSandboxTool(ToolAdapter):
 
     def clean(self, args: argparse.Namespace | None = None) -> int:
         """Clean dev-sandbox build artifacts."""
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        build_dir = self._build_path()
         dry_run = bool(getattr(args, "dry_run", False))
         if dry_run:
             print(f"would remove: {build_dir}")
@@ -182,6 +228,7 @@ class DevSandboxTool(ToolAdapter):
         if not build_dir.exists():
             print(f"{self.name}: build directory does not exist: {build_dir}")
             return 0
+        self._check_build_directory(build_dir, resource_path(self.source_dir))
         shutil.rmtree(build_dir)
         print(f"removed: {build_dir}")
         return 0
@@ -196,7 +243,7 @@ class DevSandboxTool(ToolAdapter):
                 f"available subcommands: {choices}"
             ) from exc
 
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        build_dir = self._build_path()
         if not build_dir.exists():
             raise BuildDirNotFoundError(str(build_dir))
         binary = build_dir / relpath

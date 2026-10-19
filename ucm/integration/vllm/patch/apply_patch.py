@@ -51,6 +51,7 @@ def _strip_build(v: Optional[str]) -> Optional[str]:
 
 
 def _norm_version(v: Optional[str]) -> Optional[str]:
+    v = _strip_build(v)
     if not v:
         return None
     # common suffixes: 0.11.0.post1 / 0.11.0rc1
@@ -136,7 +137,9 @@ def get_supported_versions() -> list[str]:
         "0.25.1",
         "0.26.0",
         "0.27.0",
+        "0.27.1",
         "0.28.0",
+        "0.30.0",
     ]
 
 
@@ -216,6 +219,12 @@ def apply_all_patches() -> None:
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 
+        if (int(major), int(minor)) >= (0, 24):
+            logger.info(
+                "UCM patching vllm for EngineCore startup-failure worker shutdown..."
+            )
+            import ucm.integration.vllm.patch.engine_core_startup_shutdown_patch
+
         # vllm_ascend patches
         # Disable CpuAlloc.bind_memory BEFORE any cpu_binding_patch so that
         # bind_memory is a no-op before bind_threads replacement is installed.
@@ -293,8 +302,16 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
+            case "0.30.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
+                )
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
+
+        if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (0, 26):
+            import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch
 
         # Fix: vllm-ascend >= 0.21.0 defers do_mamba_copy_block to after
         # start_load_kv, overwriting UCM-loaded data. @when_imported is
@@ -305,6 +322,7 @@ def apply_all_patches() -> None:
         # so wait_for_layer_load/save_kv_layer are never called. @when_imported
         # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
         import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
+        import ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch
 
         logger.info("UCM patch initialization completed!")
 

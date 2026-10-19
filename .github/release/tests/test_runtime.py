@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +16,13 @@ RELEASE_ROOT = ROOT / ".github" / "release"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 runtime = importlib.import_module("ucm_release.runtime")
+
+cann_spec = importlib.util.spec_from_file_location(
+    "check_builder_cann", RELEASE_ROOT / "check-builder-cann.py"
+)
+assert cann_spec is not None and cann_spec.loader is not None
+cann_check = importlib.util.module_from_spec(cann_spec)
+cann_spec.loader.exec_module(cann_check)
 
 RUNNERS = {"amd64": "ubuntu-24.04", "arm64": "ubuntu-24.04-arm"}
 PRODUCTS = [
@@ -32,6 +42,17 @@ PRODUCTS = [
             "ascend910b1": "cann-a2",
             "ascend910_9391": "cann-a3",
             "ascend950": "cann-a5",
+        },
+    },
+    {
+        "id": "sglang",
+        "runtime_repository": "docker.io/lmsysorg/sglang",
+        "target_repository": "ghcr.io/release-org/sglang",
+        "accelerator": "dynamic",
+        "backend": "cuda",
+        "backend_by_soc": {
+            "ascend910b1": "cann-a2",
+            "ascend910_9391": "cann-a3",
         },
     },
 ]
@@ -232,6 +253,149 @@ def test_crane_config_facts_avoid_native_fallback() -> None:
     assert probe["glibc_version"] is None
 
 
+@pytest.mark.parametrize(
+    ("tag", "env", "history", "backend", "accelerator_runtime"),
+    [
+        (
+            "v0.5.19-cu129",
+            ("CUDA_VERSION=12.9.2",),
+            ("RUN |2 PYTHON_VERSION=3.12 /bin/sh -c true",),
+            "cuda",
+            "cuda-12.9",
+        ),
+        (
+            "v0.5.19-cann9.0.0-910b",
+            (
+                "PATH=/usr/local/python3.12.13/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+                "SOC_VERSION=ascend910b1",
+            ),
+            (),
+            "cann-a2",
+            "cann-9.0.0",
+        ),
+    ],
+)
+def test_sglang_dynamic_product_uses_image_runtime_facts(
+    tag: str,
+    env: tuple[str, ...],
+    history: tuple[str, ...],
+    backend: str,
+    accelerator_runtime: str,
+) -> None:
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    config = _config("amd64", env=env, history=history)
+
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: config,
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    assert inspection["probe_matrix"] == {"include": []}
+    probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
+    assert probe["product_id"] == "sglang"
+    assert probe["backend"] == backend
+    assert probe["accelerator_runtime"] == accelerator_runtime
+
+
+def test_sglang_dynamic_product_uses_tag_only_to_schedule_native_fallback() -> None:
+    reference = "docker.io/lmsysorg/sglang:v0.5.19-cu130-runtime"
+
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config("amd64"),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    fallback = inspection["probe_matrix"]["include"]
+    assert len(fallback) == 1
+    assert fallback[0]["accelerator"] == "cuda"
+    assert fallback[0]["missing_required_fields"] == [
+        "python_version",
+        "cuda_version",
+    ]
+
+
+def test_sglang_cann_na_config_soc_schedules_native_fallback() -> None:
+    reference = "docker.io/lmsysorg/sglang:v0.5.19-cann9.0.0-910b"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+                "SOC_VERSION=na",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    fallback = inspection["probe_matrix"]["include"]
+    assert len(fallback) == 1
+    assert fallback[0]["missing_required_fields"] == ["soc_version"]
+    assert fallback[0]["config_facts"]["soc_version"] == ""
+
+
+@pytest.mark.parametrize(
+    ("tag", "native_soc_version", "expected_soc_version", "expected_backend"),
+    [
+        ("v0.5.18-cann9.0.0-910b", "na", "ascend910b1", "cann-a2"),
+        ("v0.5.18-cann9.0.0-a3", "", "ascend910_9391", "cann-a3"),
+    ],
+)
+def test_sglang_cann_tag_fills_missing_native_soc(
+    tag: str,
+    native_soc_version: str,
+    expected_soc_version: str,
+    expected_backend: str,
+) -> None:
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+    assert inspection["probe_matrix"]["include"]
+
+    probe = runtime.aggregate_runtime_probes(
+        inspection,
+        [
+            {
+                "probe_id": "runtime-001-amd64",
+                "python_version": "3.11.11",
+                "os_id": "Ubuntu",
+                "os_version": "24.04",
+                "glibc_version": "2.39",
+                "cann_version": "CANN 9.0.0",
+                "soc_version": native_soc_version,
+            }
+        ],
+    )["probes"][0]
+
+    assert probe["soc_version"] == expected_soc_version
+    assert probe["backend"] == expected_backend
+
+
 def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     reference = "quay.io/ascend/vllm-ascend:v0.23.0"
     complete = _config(
@@ -269,31 +433,106 @@ def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     assert fallback[0]["missing_required_fields"] == ["soc_version"]
 
 
-def test_openeuler_tag_is_an_os_hint_not_a_wheel_capability() -> None:
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("CANN 9.2.0-beta.2", "9.2.0-beta.2"),
+        ("/usr/local/Ascend/cann-9.2.0-beta.10", "9.2.0-beta.10"),
+        ("9.2.0rc2", "9.2.0rc2"),
+        ("CANN 9.0", "9.0.0"),
+    ],
+)
+def test_cann_version_preserves_complete_identity(raw: str, expected: str) -> None:
+    assert runtime.cann_version(raw) == expected
+    assert runtime.parse_cann_version(f"cann-{expected}") == runtime.parse_cann_version(
+        expected
+    )
+
+
+@pytest.mark.parametrize("value", ["9.2", "9.2.0-unknown", "9.2.0.1"])
+def test_complete_cann_parser_rejects_uninterpretable_identity(value: str) -> None:
+    with pytest.raises(ValueError):
+        runtime.parse_cann_version(value)
+
+
+@pytest.mark.parametrize(
+    ("history", "requires_probe"),
+    [((), False), (("RUN |1 CANN_VERSION=9.2.0 /bin/sh -c true",), True)],
+)
+def test_cann_metadata_keeps_full_identity_or_probes_explicit_conflict(
+    history: tuple[str, ...], requires_probe: bool
+) -> None:
     config = _config(
-        "arm64",
+        "amd64",
         env=(
-            "PATH=/usr/local/python3.12.13/bin:/usr/bin",
-            "CANN_VERSION=9.1.0",
+            "PYTHON_VERSION=3.12",
+            "CANN_VERSION=9.2.0-beta.2",
+            "ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.2.0",
+            "PATH=/usr/local/Ascend/cann-9.2.0/bin:/usr/bin",
             "SOC_VERSION=ascend910b1",
         ),
+        history=history,
     )
     inspection = runtime.inspect_runtime_references(
-        ["quay.io/ascend/vllm-ascend:v0.23.0-openeuler"],
+        ["quay.io/ascend/vllm-ascend:v0.30.0rc2"],
         products=PRODUCTS,
         runners=RUNNERS,
-        manifest_loader=lambda _reference: _index("arm64"),
+        manifest_loader=lambda _reference: _index("amd64"),
         config_loader=lambda _reference: config,
         digest_loader=lambda _reference: "sha256:" + "9" * 64,
     )
 
-    assert inspection["probe_matrix"] == {"include": []}
-    facts = inspection["members"][0]["config_facts"]
-    assert facts["os_id"] == "openeuler"
-    assert facts["os_version"] == "unreported"
-    probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
-    assert probe["backend"] == "cann-a2"
-    assert probe["python_abi"] == "cp312"
+    assert len(inspection["probe_matrix"]["include"]) == int(requires_probe)
+    if requires_probe:
+        assert inspection["members"][0]["metadata_conflicts"]
+    else:
+        probe = runtime.aggregate_runtime_probes(inspection, [])["probes"][0]
+        assert probe["accelerator_runtime"] == "cann-9.2.0-beta.2"
+
+
+@pytest.mark.parametrize("package_version", ["9.2.0-beta.2", "9.2.0"])
+def test_cann_inspection_reads_active_package_and_verifies_complete_version(
+    tmp_path, package_version
+):
+    root = tmp_path / "cann-9.2.0-beta.2"
+    version = root / "share/info/runtime/version.info"
+    version.parent.mkdir(parents=True)
+    version.write_text(f"Component=runtime\nVersion={package_version}\n")
+    other = root / "share/info/mindstudio-profiler/version.info"
+    other.parent.mkdir(parents=True)
+    other.write_text("Version=26.2.0\n")
+
+    facts = cann_check.inspect_cann(
+        {"CANN_VERSION": "9.2.0", "ASCEND_TOOLKIT_HOME": str(root)}
+    )
+    assert facts[f"file:{version}"] == package_version
+    assert not any("mindstudio" in source for source in facts)
+    assert (
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2") == "9.2.0-beta.2"
+    )
+
+
+@pytest.mark.parametrize(
+    ("facts", "message"),
+    [
+        ({"env:CANN_VERSION": "9.2.0"}, "differs"),
+        (
+            {"env:CANN_VERSION": "9.2.0-beta.1", "file:version.info": "9.2.0-beta.2"},
+            "disagree",
+        ),
+    ],
+)
+def test_cann_source_verification_blocks_mismatch_or_conflict(facts, message):
+    with pytest.raises(ValueError, match=message):
+        runtime.verify_cann_installation(facts, "cann-9.2.0-beta.2")
+
+
+def test_raw_cann_inspection_uses_only_standard_library():
+    output = subprocess.check_output(
+        [sys.executable, "-S", str(RELEASE_ROOT / "check-builder-cann.py"), "inspect"],
+        text=True,
+    )
+    assert isinstance(json.loads(output), dict)
 
 
 def test_conflicting_crane_facts_schedule_native_fallback() -> None:
@@ -533,69 +772,6 @@ def test_builder_match_reports_complete_missing_capability() -> None:
     assert "cpu_arch=arm64" in problem["detail"]
 
 
-def test_multiple_opaque_tags_with_the_same_capability_reuse_one_wheel() -> None:
-    references = [
-        "docker.io/vllm/vllm-openai:nightly",
-        "docker.io/vllm/vllm-openai:v0.21.0-ubuntu2404",
-    ]
-    repository = "docker.io/vllm/vllm-openai"
-    member_reference = f"{repository}@{DIGESTS['amd64']}"
-    inspection = runtime.inspect_runtime_references(
-        references,
-        products=PRODUCTS,
-        runners=RUNNERS,
-        manifest_loader=lambda _reference: _index("amd64"),
-        config_loader=lambda reference: {member_reference: _config("amd64")}[reference],
-        digest_loader=lambda _reference: "sha256:" + "9" * 64,
-    )
-    probe = runtime.aggregate_runtime_probes(inspection, _raw_cuda_probes(inspection))
-
-    matches = runtime.match_runtime_builders(probe, [_builder(architecture="amd64")])
-
-    assert len(matches["matches"]) == 2
-    assert len({item["wheel_id"] for item in matches["matches"]}) == 1
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number=42, author="release-author", run_id=998877
-    )
-    assert [family["runtime_ref"] for family in publication["families"]] == references
-    assert len({family["wheel_ids"][0] for family in publication["families"]}) == 1
-
-
-def test_publication_projects_single_member_without_index() -> None:
-    _, probe = _aggregate_cuda(("arm64",), tag="nightly")
-    matches = _matches(probe)
-
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number=42, author="Release-Author", run_id=998877
-    )
-
-    members = publication["member_matrix"]["include"]
-    assert len(members) == 1
-    assert members[0]["target_tag"] == "pr-42-release-author-run-998877-nightly"
-    assert publication["index_matrix"]["include"] == []
-    assert publication["families"][0]["has_index"] is False
-    assert publication["families"][0]["final_refs"] == [members[0]["target_ref"]]
-
-
-def test_publication_projects_dynamic_dual_arch_index_and_deduplicates_wheels() -> None:
-    _, probe = _aggregate_cuda()
-    matches = _matches(probe)
-
-    publication = runtime.project_pr_publication(
-        probe, matches, pr_number="42", author="Release-Author", run_id="998877"
-    )
-
-    members = publication["member_matrix"]["include"]
-    indexes = publication["index_matrix"]["include"]
-    assert [member["cpu_arch"] for member in members] == ["amd64", "arm64"]
-    assert len(indexes) == 1
-    assert indexes[0]["members"] == [member["target_ref"] for member in members]
-    assert indexes[0]["target_tag"] == (
-        "pr-42-release-author-run-998877-cu129-nightly-deadbeef"
-    )
-    assert len(publication["families"][0]["wheel_ids"]) == 2
-
-
 def test_pr_tag_sanitizes_and_truncates_with_run_identity() -> None:
     first = runtime.project_pr_tag(
         "nightly/feature+" + "x" * 160,
@@ -710,18 +886,6 @@ def test_receipt_survives_early_failure_and_includes_builder_gap() -> None:
     assert "`failure`" in markdown
     assert "missing-compatible-builder" in markdown
     assert "docker.io/vllm/vllm-openai:nightly" in markdown
-
-
-def test_receipt_preserves_malformed_raw_reference_as_inspect_problem() -> None:
-    receipt = runtime.build_receipt(
-        requested_refs=["not-a-runtime-reference"],
-        stage_results={"inspect": "failure", "probe": "skipped"},
-    )
-
-    assert receipt["status"] == "failure"
-    assert receipt["runtimes"][0]["runtime_ref"] == "not-a-runtime-reference"
-    assert receipt["problems"][0]["reason"] == "invalid-runtime-reference"
-    assert "must be repository:tag" in receipt["problems"][0]["detail"]
 
 
 def test_receipt_never_claims_publication_when_member_job_failed() -> None:

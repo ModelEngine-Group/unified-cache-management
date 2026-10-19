@@ -14,7 +14,8 @@ on:
         default: ""
 
 concurrency:
-  group: ucm-release-cleanup-${{ github.repository_id }}-${{ inputs.tag }}
+  group: ${{ startsWith(inputs.tag, 'nightly/') && format('ucm-nightly-{0}', github.repository_id) || format('ucm-release-cleanup-{0}-{1}', github.repository_id, inputs.tag) }}
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -40,16 +41,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          ref: develop
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Install Crane
+      - name: Record the cleanup implementation
         run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+          mkdir -p out/cleanup
+          git rev-parse HEAD >out/cleanup/implementation-sha.txt
+          sha256sum .github/release/ucm_release/cleanup{,_records,_inventory,_remote}.py \
+            >out/cleanup/implementation-files.sha256
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: -r .github/release/requirements.txt
+      - name: Install Crane
+        uses: ./.github/actions/setup-crane
       - name: Validate Docker Hub credentials when configured
         if: ${{ env.DOCKERHUB_USERNAME != '' || env.DOCKERHUB_TOKEN != '' }}
         run: |
@@ -68,8 +75,17 @@ jobs:
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
-          args=(tag --repository "${GH_REPO}" --tag "${CLEANUP_TAG}")
+          args=(tag --repository "${GH_REPO}" --tag "${CLEANUP_TAG}"
+                --report out/cleanup/report.json)
           if [ -n "${FAIL_RESOURCE}" ]; then
             args+=(--fail-resource "${FAIL_RESOURCE}")
           fi
-          python .github/release/ucm_release/cleanup.py "${args[@]}"
+          python .github/release/ucm_release/cleanup.py "${args[@]}" \
+            2>&1 | tee out/cleanup/cleanup.log
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() }}
+        with:
+          name: ucm-tag-cleanup-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/cleanup/
+          if-no-files-found: warn
+          retention-days: 90

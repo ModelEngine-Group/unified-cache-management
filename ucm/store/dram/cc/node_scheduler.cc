@@ -31,7 +31,9 @@
 #include <thread>
 #include <utility>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "node_actor.h"
+#include "time/now_time.h"
 #include "trans/device.h"
 
 namespace UC::Dram {
@@ -53,6 +55,7 @@ struct NodeScheduler::Runner {
     std::mutex mutex;
     std::condition_variable wake;
     std::thread thread;
+    double nextMetricsAt{0.0};
 };
 
 NodeScheduler::NodeScheduler(NodeSchedulerConfig config, NodeDependencies dependencies)
@@ -87,7 +90,8 @@ Status NodeScheduler::Start()
         std::size_t index = 0;
         for (const auto& endpoint : config.nodes) {
             auto* runner = runners_[index % runnerCount].get();
-            NodeActor::Config actorConfig{endpoint, config.limits, config.reconnectInterval};
+            NodeActor::Config actorConfig{endpoint, config.limits, config.reconnectInterval,
+                                          config.pollInterval};
             auto actor = std::make_unique<NodeActor>(std::move(actorConfig), dependencies_);
             runner->actors.emplace(endpoint.nodeId, std::move(actor));
             nodes_.emplace(endpoint.nodeId, runner);
@@ -136,6 +140,30 @@ void NodeScheduler::Publish(NodeId nodeId, NodeEvent event)
     runner.wake.notify_one();
 }
 
+TimePoint NodeScheduler::RecordQueueMetrics(Runner& runner, TimePoint nextWakeup)
+{
+    if (&runner != runners_.front().get()) { return nextWakeup; }
+    const auto now = NowTime::Now();
+    if (now >= runner.nextMetricsAt) {
+        runner.nextMetricsAt = now + 1.0;
+
+        std::size_t requests = 0, events = 0;
+        for (const auto& runner : runners_) {
+            std::lock_guard lock(runner->mutex);
+            requests += runner->commands.size();
+            events += runner->events.size();
+        }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_scheduler_request_queue_size"),
+                                 requests);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_scheduler_event_queue_size"), events);
+    }
+
+    const auto metricsDelay = std::chrono::duration<double>(runner.nextMetricsAt - NowTime::Now());
+    const auto metricsWakeup =
+        Clock::now() + std::chrono::duration_cast<Clock::duration>(metricsDelay);
+    return std::min(nextWakeup, metricsWakeup);
+}
+
 void NodeScheduler::RunActors(Runner& runner) noexcept
 {
     try {
@@ -153,18 +181,23 @@ void NodeScheduler::RunActors(Runner& runner) noexcept
 
         auto nextWakeup = TimePoint::min();
         for (;;) {
+            const auto wakeup = RecordQueueMetrics(runner, nextWakeup);
             {
                 std::unique_lock lock(runner.mutex);
                 const auto ready = [this, &runner] {
                     return !acceptingMessages_.load(std::memory_order_acquire) ||
                            !runner.events.empty() || !runner.commands.empty();
                 };
-                if (nextWakeup == TimePoint::max()) {
+                if (wakeup == TimePoint::max()) {
                     runner.wake.wait(lock, ready);
                 } else {
-                    runner.wake.wait_until(lock, nextWakeup, ready);
+                    runner.wake.wait_until(lock, wakeup, ready);
                 }
                 if (!acceptingMessages_.load(std::memory_order_acquire)) { break; }
+
+                if (runner.events.empty() && runner.commands.empty() && Clock::now() < nextWakeup) {
+                    continue;
+                }
 
                 runner.eventBatch.swap(runner.events);
                 runner.commandBatch.swap(runner.commands);

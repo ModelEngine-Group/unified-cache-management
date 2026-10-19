@@ -167,15 +167,9 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - id: inspect
         env:
           GH_TOKEN: ${{ github.token }}
@@ -255,15 +249,9 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.inspect-formal-runtimes.outputs.candidates_artifact }}
@@ -317,15 +305,9 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - id: inspect
         env:
           IMAGE_REF: ${{ needs.permission-check.outputs.image-ref }}
@@ -409,15 +391,9 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.inspect-runtimes.outputs.inspection_artifact }}
@@ -501,7 +477,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.resolve-formal.outputs.selection_artifact }}
@@ -516,12 +492,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          PYTHONPATH=.github/release python -m ucm_release compact plan \
+          PYTHONPATH=.github/release python -m ucm_release plan create \
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog input/builders/builder-catalog.json --route pr \
             --output out/release-plan.json >/dev/null
           if [ "${SUBCOMMAND}" = all ]; then
-            PYTHONPATH=.github/release python -m ucm_release compact retag-pr \
+            PYTHONPATH=.github/release python -m ucm_release plan retag-pr \
               --plan out/release-plan.json \
               --pr-number "${{ needs.permission-check.outputs.pr-number }}" \
               --author "${{ needs.permission-check.outputs.pr-author }}" \
@@ -602,7 +578,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.resolve-pr-runtimes.outputs.selection_artifact }}
@@ -615,7 +591,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          PYTHONPATH=.github/release python -m ucm_release compact plan \
+          PYTHONPATH=.github/release python -m ucm_release plan create \
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog input/builders/builder-catalog.json --route pr \
             --output out/release-plan.json >/dev/null
@@ -695,13 +671,25 @@ jobs:
       runner: ${{ matrix.runner }}
       plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
 
+  build-toolkit:
+    name: Wheel · Toolkit
+    needs: select-plan
+    if: ${{ always() && needs.select-plan.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-toolkit.yml
+    with:
+      source_ref: ${{ needs.select-plan.outputs.source_ref }}
+      plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
+
   build-images:
     name: Image · ${{ matrix.label }}
-    needs: [permission-check, select-plan, build-wheels]
+    needs: [permission-check, select-plan, build-wheels, build-toolkit]
     if: >-
       ${{
         always() && needs.select-plan.result == 'success' &&
-        needs.build-wheels.result == 'success'
+        needs.build-wheels.result == 'success' &&
+        needs.build-toolkit.result == 'success'
       }}
     strategy:
       fail-fast: false
@@ -734,9 +722,10 @@ jobs:
   publish-pr-image-members:
     name: Publish PR member · ${{ matrix.label }}
     needs: [permission-check, select-plan, build-images]
+    # !cancelled(): a cancelled run must stop before writing to GHCR.
     if: >-
       ${{
-        always() && needs.select-plan.result == 'success' &&
+        !cancelled() && needs.select-plan.result == 'success' &&
         needs.build-images.result == 'success'
       }}
     strategy:
@@ -760,6 +749,7 @@ jobs:
       - name: Publish architecture member
         env:
           IMAGE_ID: ${{ matrix.id }}
+          PR_NUMBER: ${{ needs.permission-check.outputs.pr-number }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -778,6 +768,12 @@ jobs:
             "ghcr.io/${owner}/"*:*) ;;
             *) echo "PR image target is outside current owner namespace" >&2; exit 2 ;;
           esac
+          # Only this PR run's tags (runtime.project_pr_tag) may be written.
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "PR number is invalid" >&2; exit 2; }
+          pr_tag="^([a-z0-9][a-z0-9._-]*-)?pr-${PR_NUMBER}-[a-z0-9._-]+-run-${GITHUB_RUN_ID}-[A-Za-z0-9._-]+$"
+          [[ "${target_ref##*:}" =~ ${pr_tag} ]] || {
+            echo "PR image target tag is not scoped to this PR run" >&2; exit 2; }
           skopeo copy "oci-archive:input/image/image.oci.tar" \
             "docker://${target_ref}"
 
@@ -859,7 +855,7 @@ jobs:
       - if: needs.permission-check.outputs.subcommand == 'image'
         run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - if: needs.inspect-runtimes.result == 'success' || needs.inspect-runtimes.result == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v4.3.0

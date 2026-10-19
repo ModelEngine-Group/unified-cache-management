@@ -1,8 +1,36 @@
 from __future__ import annotations
 
+import runpy
+import subprocess
 from pathlib import Path
 
+import pytest
+import setuptools
+
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize(
+    "platform", ["cuda", "ascend", "ascend-a3", "ascend-a5", "musa", "maca"]
+)
+def test_wheel_setup_passes_native_platform_to_cmake(
+    platform, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PLATFORM", platform)
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    configuration = runpy.run_path(str(ROOT / "setup.py"))
+    build = configuration["CMakeBuild"](setuptools.Distribution())
+    build.build_temp = str(tmp_path / "temp")
+    build.build_lib = str(tmp_path / "lib")
+    commands = []
+    monkeypatch.setattr(
+        subprocess, "check_call", lambda args, **kwargs: commands.append(args)
+    )
+
+    build.build_cmake(configuration["CMakeExtension"]("ucm", str(ROOT)))
+
+    assert f"-DRUNTIME_ENVIRONMENT={platform}" in commands[0]
+    assert "-DRUNTIME_ENVIRONMENT=simu" not in commands[0]
 
 
 def test_wheel_builder_repairs_to_the_planned_manylinux_tag() -> None:
@@ -10,9 +38,9 @@ def test_wheel_builder_repairs_to_the_planned_manylinux_tag() -> None:
         ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
     ).read_text(encoding="utf-8")
 
-    assert "auditwheel==6.7.0" in (
-        ROOT / ".github" / "release" / "requirements" / "wheel-build.txt"
-    ).read_text(encoding="utf-8")
+    assert "auditwheel==6.7.0" in (ROOT / "requirements-build.txt").read_text(
+        encoding="utf-8"
+    )
     assert "--outdir /tmp/ucm-raw-wheel" in dockerfile
     assert "mapfile -t auditwheel_excludes" in dockerfile
     assert 'repair_args+=(--exclude "${library}")' in dockerfile
@@ -62,7 +90,7 @@ def test_wheel_workflow_materializes_external_roots_for_the_builder() -> None:
     assert "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag'" in workflow
     assert "auditwheel==6.4.2" not in workflow
     assert "python -m auditwheel -v show" not in workflow
-    assert "compact record-wheel-result" in workflow
+    assert "wheel record-result" in workflow
     assert "test -s out/wheel/auditwheel-repair.txt" in workflow
     assert "test -s out/wheel/auditwheel-show.txt" in workflow
 

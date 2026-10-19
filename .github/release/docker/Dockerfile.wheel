@@ -8,6 +8,7 @@ ARG UCM_PLATFORM
 ARG UCM_PYTHON_VERSION
 ARG UCM_PYTHON_ABI
 ARG UCM_TARGET_PLATFORM_TAG
+ARG UCM_SOURCE_CANN_VERSION
 ARG SOURCE_DATE_EPOCH
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
@@ -37,6 +38,10 @@ RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python
 
 RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
       -r .ucm-compact/build-requirements.txt
+RUN if [[ "${PLATFORM}" == ascend* ]]; then \
+      ucm-python .github/release/check-builder-cann.py verify \
+        --expected "${UCM_SOURCE_CANN_VERSION}"; \
+    fi
 # AlmaLinux 9 falsely marks baseline crt1/Scrt1 objects as x86-64-v2.
 # Link against corrected copies and keep auditwheel's ISA check enabled.
 RUN python_scripts="$(ucm-python -c \

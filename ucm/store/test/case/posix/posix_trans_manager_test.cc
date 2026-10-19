@@ -108,3 +108,35 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     ASSERT_EQ(s, UC::Status::OK());
     for (size_t i = 0; i < nShards; i++) { ASSERT_EQ(data1[i].Compare(data2[i]), 0); }
 }
+
+TEST_F(UCPosixTransManagerTest, PsyncLoadSubmitAfterCloseFailsCleanly)
+{
+    using namespace UC::PosixStore;
+    Config config;
+    config.tensorSize = 32768;
+    config.shardSize = config.tensorSize;
+    config.blockSize = config.shardSize;
+    config.storageBackends.push_back(Path());
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+
+    IoEnginePsync engine;
+    ASSERT_EQ(engine.Setup(config, &layout), UC::Status::OK());
+    UC::Detail::TaskDesc dumpDesc;
+    dumpDesc.brief = "Dump";
+    dumpDesc.push_back(UC::Detail::Shard{block, 0, {data.Buffer()}});
+    auto dumpHandle = engine.Submit({TransTask::Type::DUMP, dumpDesc});
+    ASSERT_TRUE(dumpHandle.HasValue());
+    ASSERT_EQ(engine.Wait(dumpHandle.Value()), UC::Status::OK());
+
+    engine.Close();
+    UC::Detail::TaskDesc loadDesc;
+    loadDesc.brief = "Load";
+    loadDesc.push_back(UC::Detail::Shard{block, 0, {data.Buffer()}});
+    auto loadHandle = engine.Submit({TransTask::Type::LOAD, loadDesc});
+    ASSERT_TRUE(loadHandle.HasValue());
+    EXPECT_TRUE(engine.Wait(loadHandle.Value()).Failure());
+}
