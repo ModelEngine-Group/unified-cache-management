@@ -5,13 +5,23 @@ on:
     paths:
       - docs/docs-site/**
       - .github/release/**
+      - .github/actionlint.yaml
+      - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
       - requirements-build.txt
       - .github/workflows/release*.yml
+      - .github/workflows/nightly-cleanup.yml
+      - .github/workflows/cleanup-ucm-release.yml
       - .github/workflows/_build*.yml
       - .github/workflows/sync-builders.yml
       - .github/workflows/ucm-build-bot.yml
+      - .github/workflows/pull-request.yml
+      - .github/workflows/push-check.yml
+      - .github/workflows/lint-and-test.yml
+      - .github/workflows/_probe-runtime.yml
+      - .github/workflows/_native-wheel-gate.yml
+      - .github/actions/**
       - scripts/materialize_version.py
       - .readthedocs.yaml
       - .github/workflows/docs-check.yml
@@ -19,13 +29,23 @@ on:
     paths:
       - docs/docs-site/**
       - .github/release/**
+      - .github/actionlint.yaml
+      - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
       - requirements-build.txt
       - .github/workflows/release*.yml
+      - .github/workflows/nightly-cleanup.yml
+      - .github/workflows/cleanup-ucm-release.yml
       - .github/workflows/_build*.yml
       - .github/workflows/sync-builders.yml
       - .github/workflows/ucm-build-bot.yml
+      - .github/workflows/pull-request.yml
+      - .github/workflows/push-check.yml
+      - .github/workflows/lint-and-test.yml
+      - .github/workflows/_probe-runtime.yml
+      - .github/workflows/_native-wheel-gate.yml
+      - .github/actions/**
       - scripts/materialize_version.py
       - .readthedocs.yaml
       - .github/workflows/docs-check.yml

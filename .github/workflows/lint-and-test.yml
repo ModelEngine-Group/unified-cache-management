@@ -15,7 +15,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: cpp-linter/cpp-linter-action@main
+      - uses: cpp-linter/cpp-linter-action@v2.23.1
         id: linter
         continue-on-error: true
         env:

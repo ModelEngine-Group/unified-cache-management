@@ -68,6 +68,19 @@ def _cuda_probe(*, dual_arch: bool = False) -> dict[str, object]:
     }
 
 
+def _ascend_probe() -> dict[str, object]:
+    probe = next(
+        item
+        for item in _inputs()[1]["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    return {
+        "kind": "ucm-runtime-probe",
+        "schema_version": 2,
+        "probes": [probe],
+    }
+
+
 def _inventory(catalog: dict[str, object], ids: set[str]) -> dict[str, object]:
     return {
         "kind": "ucm-builder-registry",
@@ -193,6 +206,34 @@ def test_ascend_cache_requires_current_source_and_runtime(
     assert result["selection"]["wheel_builds"] == [raw]
     match = result["builder_matches"]["matches"][0]
     assert ("builder_record" in match) == (stale_field is None)
+
+
+def test_ascend_stale_checked_builder_does_not_mask_newer_suffix_source() -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    inventory["builders"][0][
+        "source_image"
+    ] = "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+
+    result = pr.resolve_pr_request(
+        formal,
+        _ascend_probe(),
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=108,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert "builder_record" not in result["builder_matches"]["matches"][0]
 
 
 def test_missing_registry_builder_resolves_one_raw_mirror_for_sync() -> None:

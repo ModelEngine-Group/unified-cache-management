@@ -169,13 +169,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - id: inspect
         env:
           GH_TOKEN: ${{ github.token }}
@@ -257,13 +251,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.inspect-formal-runtimes.outputs.candidates_artifact }}
@@ -319,13 +307,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - id: inspect
         env:
           IMAGE_REF: ${{ needs.permission-check.outputs.image-ref }}
@@ -411,13 +393,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.inspect-runtimes.outputs.inspection_artifact }}
@@ -746,9 +722,10 @@ jobs:
   publish-pr-image-members:
     name: Publish PR member · ${{ matrix.label }}
     needs: [permission-check, select-plan, build-images]
+    # !cancelled(): a cancelled run must stop before writing to GHCR.
     if: >-
       ${{
-        always() && needs.select-plan.result == 'success' &&
+        !cancelled() && needs.select-plan.result == 'success' &&
         needs.build-images.result == 'success'
       }}
     strategy:
@@ -772,6 +749,7 @@ jobs:
       - name: Publish architecture member
         env:
           IMAGE_ID: ${{ matrix.id }}
+          PR_NUMBER: ${{ needs.permission-check.outputs.pr-number }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -790,6 +768,12 @@ jobs:
             "ghcr.io/${owner}/"*:*) ;;
             *) echo "PR image target is outside current owner namespace" >&2; exit 2 ;;
           esac
+          # Only this PR run's tags (runtime.project_pr_tag) may be written.
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "PR number is invalid" >&2; exit 2; }
+          pr_tag="^([a-z0-9][a-z0-9._-]*-)?pr-${PR_NUMBER}-[a-z0-9._-]+-run-${GITHUB_RUN_ID}-[A-Za-z0-9._-]+$"
+          [[ "${target_ref##*:}" =~ ${pr_tag} ]] || {
+            echo "PR image target tag is not scoped to this PR run" >&2; exit 2; }
           skopeo copy "oci-archive:input/image/image.oci.tar" \
             "docker://${target_ref}"
 

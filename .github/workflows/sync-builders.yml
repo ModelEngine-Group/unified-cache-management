@@ -17,7 +17,10 @@ permissions:
   packages: write
 
 concurrency:
+  # The PR bot and release core share this group; keep every pending caller
+  # instead of letting a newer request cancel a release's queued sync.
   group: ucm-builder-sync-${{ github.repository_id }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -139,6 +142,7 @@ jobs:
           CPU_ARCH: ${{ matrix.cpu_arch }}
           CHECKS: ${{ toJSON(matrix.checks) }}
           BUILDER_JSON: ${{ toJSON(matrix) }}
+          BUILDER_ID: ${{ matrix.id }}
         run: |
           set -euo pipefail
           target="${TARGET_REPOSITORY}:${TARGET_TAG}"
@@ -276,10 +280,10 @@ jobs:
             printf -- '- Runtime check: `%s` (%s)\n' \
               "${validation_image}" "${validation_origin}"
           } >>"${GITHUB_STEP_SUMMARY}"
-          jq -n --arg id "${{ matrix.id }}" --arg digest "${target_digest}" \
+          jq -n --arg id "${BUILDER_ID}" --arg digest "${target_digest}" \
             --slurpfile image out/verified-target-config.json \
             '{id:$id,target_digest:$digest,config:$image[0]}' \
-            >"out/verification/${{ matrix.id }}.json"
+            >"out/verification/${BUILDER_ID}.json"
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: ucm-builder-verification-${{ matrix.id }}-run-${{ github.run_id }}

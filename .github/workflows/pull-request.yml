@@ -40,10 +40,14 @@ jobs:
             echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           fi
 
+      # PR branch names are author-controlled: keep them in quoted env values.
       - id: uptodate-check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_BRANCH_NAME: ${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}
         run: |
 
-          if git merge-base --is-ancestor "origin/${{ github.base_ref }}" "${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}"; then
+          if git merge-base --is-ancestor "origin/${BASE_REF}" "${HEAD_BRANCH_NAME}"; then
             echo "PR branch is up-to-date with target branch, continue workflow."
           else
             echo "::error::PR branch is OUT-OF-DATE with target branch, stop workflow, please update your branch and try again."
@@ -52,18 +56,21 @@ jobs:
 
       - id: build-impact
         name: Detect native Wheel build inputs
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_BRANCH_NAME: ${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}
         run: |
           set -euo pipefail
           required=false
           while IFS= read -r path; do
             case "${path}" in
-              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/requirements*.txt|requirements-build.txt|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
+              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/requirements*.txt|.github/release/check-builder-cann.py|.github/release/install-validate-wheel-runtime.sh|requirements-build.txt|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/actions/setup-crane/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
                 required=true
                 break
                 ;;
             esac
           done < <(git diff --name-only \
-            "origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}")
+            "origin/${BASE_REF}...${HEAD_BRANCH_NAME}")
           echo "required=${required}" >>"${GITHUB_OUTPUT}"
 
   lint-and-unit-tests:

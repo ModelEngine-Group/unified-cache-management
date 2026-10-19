@@ -434,6 +434,28 @@ def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("CANN 9.2.0-beta.2", "9.2.0-beta.2"),
+        ("/usr/local/Ascend/cann-9.2.0-beta.10", "9.2.0-beta.10"),
+        ("9.2.0rc2", "9.2.0rc2"),
+        ("CANN 9.0", "9.0.0"),
+    ],
+)
+def test_cann_version_preserves_complete_identity(raw: str, expected: str) -> None:
+    assert runtime.cann_version(raw) == expected
+    assert runtime.parse_cann_version(f"cann-{expected}") == runtime.parse_cann_version(
+        expected
+    )
+
+
+@pytest.mark.parametrize("value", ["9.2", "9.2.0-unknown", "9.2.0.1"])
+def test_complete_cann_parser_rejects_uninterpretable_identity(value: str) -> None:
+    with pytest.raises(ValueError):
+        runtime.parse_cann_version(value)
+
+
+@pytest.mark.parametrize(
     ("history", "requires_probe"),
     [((), False), (("RUN |1 CANN_VERSION=9.2.0 /bin/sh -c true",), True)],
 )
@@ -446,6 +468,7 @@ def test_cann_metadata_keeps_full_identity_or_probes_explicit_conflict(
             "PYTHON_VERSION=3.12",
             "CANN_VERSION=9.2.0-beta.2",
             "ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.2.0",
+            "PATH=/usr/local/Ascend/cann-9.2.0/bin:/usr/bin",
             "SOC_VERSION=ascend910b1",
         ),
         history=history,
@@ -459,7 +482,7 @@ def test_cann_metadata_keeps_full_identity_or_probes_explicit_conflict(
         digest_loader=lambda _reference: "sha256:" + "9" * 64,
     )
 
-    assert bool(inspection["probe_matrix"]["include"]) == requires_probe
+    assert len(inspection["probe_matrix"]["include"]) == int(requires_probe)
     if requires_probe:
         assert inspection["members"][0]["metadata_conflicts"]
     else:
