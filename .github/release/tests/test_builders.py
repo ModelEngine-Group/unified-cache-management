@@ -533,7 +533,10 @@ def test_sync_is_append_only_and_registry_records_reopen_exactly() -> None:
     )
 
 
-def test_final_catalog_binds_checked_labels_and_target_digests() -> None:
+@pytest.mark.parametrize("product_label", [None, "shared"])
+def test_final_catalog_binds_checked_labels_and_target_digests(
+    product_label: str | None,
+) -> None:
     catalog = _catalog()
     observations = {
         item["id"]: {
@@ -545,22 +548,49 @@ def test_final_catalog_binds_checked_labels_and_target_digests() -> None:
         }
         for index, item in enumerate(catalog["builders"])
     }
+    if product_label is not None:
+        for observation in observations.values():
+            observation["config"]["config"]["Labels"][
+                "io.ucm.builder.product_id"
+            ] = product_label
 
     finalized = builders.finalize_catalog(catalog, observations)
 
     assert finalized["schema_version"] == 4
-    assert all(
-        item["target_digest"].startswith("sha256:") for item in finalized["builders"]
-    )
+    assert {item["product_id"] for item in finalized["builders"]} == {
+        "vllm",
+        "vllm-ascend",
+    }
+    assert finalized["builders"] == [
+        {**item, "target_digest": observations[item["id"]]["target_digest"]}
+        for item in sorted(catalog["builders"], key=lambda item: item["id"])
+    ]
     with pytest.raises(ValueError, match="unfinalized Catalog"):
         builders.compute_sync_plan(finalized, {})
 
 
-def test_final_catalog_rejects_stale_builder_labels() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("product_id", "unrelated-product"),
+        ("product_id", None),
+        ("source_image_digest", "sha256:" + "f" * 64),
+        ("accelerator_runtime", "cann-99.0.0"),
+    ],
+)
+def test_final_catalog_rejects_invalid_labels_on_shared_builder(
+    field: str,
+    value: str | None,
+) -> None:
     catalog = _catalog()
     item = catalog["builders"][0]
     labels = builders.builder_labels(item)
-    labels["io.ucm.builder.source_image_digest"] = "sha256:" + "f" * 64
+    labels["io.ucm.builder.product_id"] = "shared"
+    label = f"io.ucm.builder.{field}"
+    if value is None:
+        del labels[label]
+    else:
+        labels[label] = value
     observations = {
         current["id"]: {
             "target_digest": f"sha256:{index + 1:064x}",
@@ -578,7 +608,8 @@ def test_final_catalog_rejects_stale_builder_labels() -> None:
         for index, current in enumerate(catalog["builders"])
     }
 
-    with pytest.raises(ValueError, match="label source_image_digest differs"):
+    reason = "is missing" if value is None else "differs"
+    with pytest.raises(ValueError, match=f"label {field} {reason}"):
         builders.finalize_catalog(catalog, observations)
 
 

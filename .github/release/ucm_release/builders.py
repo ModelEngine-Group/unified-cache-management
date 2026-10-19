@@ -306,6 +306,14 @@ def finalize_catalog(catalog: object, observations: object) -> dict[str, object]
                 f"Builder observation {builder_id} is not checked schema 2"
             )
         for field in _BUILDER_METADATA_FIELDS:
+            # Shared mirrors serve either legacy product; retain the release's
+            # product identity while checking every native capability below.
+            if (
+                field == "product_id"
+                and record.get(field) == "shared"
+                and expected.get(field) in {"vllm", "vllm-ascend"}
+            ):
+                continue
             if record.get(field) != expected.get(field):
                 raise ValueError(
                     f"Builder observation {builder_id} label {field} differs"
