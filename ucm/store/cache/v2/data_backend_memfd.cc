@@ -30,7 +30,6 @@
 #include <linux/magic.h>
 #include <linux/memfd.h>
 #include <poll.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <unistd.h>
@@ -121,7 +120,7 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
     if (pageSize <= 0) { return Status::Error("sysconf(_SC_PAGESIZE) failed"); }
     systemPageSize_ = static_cast<size_t>(pageSize);
     tryHugeTlb1G_ = options.rankBytes >= kHugeTlb1GBytes;
-    const size_t allocationAlignment = tryHugeTlb1G_ ? kHugeTlb1GBytes : kHugeTlb2MBytes;
+    const size_t allocationAlignment = systemPageSize_;
     if (options.rankBytes > std::numeric_limits<size_t>::max() - (allocationAlignment - 1)) {
         return Status::InvalidParam("memfd rank bytes overflow while aligning: bytes={} page={}",
                                     options.rankBytes, allocationAlignment);
@@ -134,7 +133,7 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
     localPlacement_ = options.localPlacement;
     deadline_ = options.deadline;
     UC_INFO(
-        "memfd setup: device={} ranks={} rank_bytes={} rank_stride={} host_device={} "
+        "memfd setup: device={} ranks={} rank_bytes={} base_stride={} host_device={} "
         "page_policy=hugetlb-auto first_attempt={} alignment_bytes={} register_host={}",
         deviceId_, options.rankCount, options.rankBytes, rankStride_, requireHostDeviceAddress_,
         tryHugeTlb1G_ ? "hugetlb-1g" : "hugetlb-2m", allocationAlignment, kRegisterHostMemory);
@@ -152,7 +151,7 @@ Status MemfdDataBackend::BindLocal(size_t rank)
     status = StartFdServer();
     if (status.Failure()) { return status; }
     UC_INFO("memfd local segment: owner={} device={} name={} bytes={} host_device={}", rank,
-            deviceId_, SegmentName(rank), rankStride_, requireHostDeviceAddress_);
+            deviceId_, SegmentName(rank), segments_[rank].mem->Size(), requireHostDeviceAddress_);
     return Status::OK();
 }
 
@@ -208,7 +207,7 @@ Status MemfdDataBackend::ImportPeer(size_t rank, uint64_t handle)
     }
     struct stat info{};
     const bool statFailed = ::fstat(fd, &info) != 0;
-    if (statFailed || static_cast<size_t>(info.st_size) < rankStride_) {
+    if (statFailed || info.st_size < 0 || static_cast<size_t>(info.st_size) < rankStride_) {
         ::close(fd);
         return Status::InvalidParam("peer fd of rank({}) is shorter than rank bytes({})", rank,
                                     rankStride_);
@@ -218,8 +217,9 @@ Status MemfdDataBackend::ImportPeer(size_t rank, uint64_t handle)
         ::close(fd);
         return actualPageBacking.Error();
     }
+    /* Peers can fall back independently; map the owner's actual fd length. */
     auto mem = std::make_unique<MemFd>();
-    status = mem->Adopt(fd, rankStride_);
+    status = mem->Adopt(fd, static_cast<size_t>(info.st_size));
     if (status.Failure()) { return status; }
     auto& segment = segments_[rank];
     segment.mem = std::move(mem);
@@ -230,7 +230,7 @@ Status MemfdDataBackend::ImportPeer(size_t rank, uint64_t handle)
     status = RegisterSegment(segment);
     if (status.Failure()) { return status; }
     UC_INFO("memfd peer segment: owner={} device={} rank={} bytes={} page_backing={}", ownerRank_,
-            deviceId_, rank, rankStride_, PageBackingName(segment.pageBacking));
+            deviceId_, rank, segment.mem->Size(), PageBackingName(segment.pageBacking));
     return Status::OK();
 }
 
@@ -281,13 +281,20 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
     auto mem = std::make_unique<MemFd>();
     PageBacking actualPageBacking = PageBacking::Base;
     auto create = [&](PageBacking backing) {
+        const auto pageSize = PageSizeOf(backing, systemPageSize_);
+        if (rankStride_ > std::numeric_limits<size_t>::max() - (pageSize - 1)) {
+            return Status::InvalidParam(
+                "memfd rank bytes overflow while aligning: bytes={} page={}", rankStride_,
+                pageSize);
+        }
+        const auto bytes = (rankStride_ + pageSize - 1) / pageSize * pageSize;
         uint32_t additionalFlags = 0;
         if (backing == PageBacking::HugeTlb1G) {
             additionalFlags = MFD_HUGETLB | MFD_HUGE_1GB;
         } else if (backing == PageBacking::HugeTlb2M) {
             additionalFlags = MFD_HUGETLB | MFD_HUGE_2MB;
         }
-        auto status = mem->Create(name, rankStride_, additionalFlags);
+        auto status = mem->Create(name, bytes, additionalFlags);
         if (status.Failure()) { return status; }
         auto detected = PageBackingOf(mem->Fd());
         if (!detected) { return detected.Error(); }
@@ -315,13 +322,7 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
             "name={} bytes={} status={}",
             rank, deviceId_, name, rankStride_, status);
         status = create(PageBacking::Base);
-        if (status.Success() && ::madvise(mem->Addr(), rankStride_, MADV_HUGEPAGE) != 0) {
-            const auto error = errno;
-            UC_WARN(
-                "memfd fallback MADV_HUGEPAGE failed: owner={} device={} name={} bytes={} "
-                "errno={} ({})",
-                rank, deviceId_, name, rankStride_, error, std::strerror(error));
-        }
+        // Preserve the old ordinary-memfd policy: no application THP advice.
     }
     if (status.Failure()) {
         UC_ERROR("memfd create failed: owner={} device={} name={} bytes={} status={}", rank,
@@ -335,15 +336,17 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
     segment.touchPageSize = PageSizeOf(actualPageBacking, systemPageSize_);
     segment.owner = true;
     UC_INFO(
-        "memfd page backing ready: owner={} device={} actual={} page_bytes={} pages={} bytes={}",
+        "memfd page backing ready: owner={} device={} actual={} page_bytes={} pages={} bytes={} "
+        "thp_advice=none",
         rank, deviceId_, PageBackingName(actualPageBacking), segment.touchPageSize,
-        rankStride_ / segment.touchPageSize, rankStride_);
+        segment.mem->Size() / segment.touchPageSize, segment.mem->Size());
     return Status::OK();
 }
 
 Status MemfdDataBackend::PlaceAndRegister(size_t rank)
 {
     auto& segment = segments_[rank];
+    const auto bytes = segment.mem->Size();
     /* Placement has to be settled before the pages are touched, and touching has
      * to happen before registration (which pins them). The bind itself is
      * skipped only while no plan has been resolved yet. */
@@ -353,7 +356,7 @@ Status MemfdDataBackend::PlaceAndRegister(size_t rank)
             "rank={}",
             deviceId_, rank);
     } else {
-        auto bindStatus = Numa::BindBeforeTouch(segment.mem->Addr(), rankStride_, localPlacement_);
+        auto bindStatus = Numa::BindBeforeTouch(segment.mem->Addr(), bytes, localPlacement_);
         if (bindStatus.Failure()) {
             UC_ERROR("memfd NUMA bind failed: device={} rank={} node={} status={}", deviceId_, rank,
                      localPlacement_.node, bindStatus);
@@ -362,7 +365,7 @@ Status MemfdDataBackend::PlaceAndRegister(size_t rank)
     }
     if (segment.touchPageSize != 0) {
         auto* base = static_cast<std::byte*>(segment.mem->Addr());
-        for (size_t offset = 0; offset < rankStride_; offset += segment.touchPageSize) {
+        for (size_t offset = 0; offset < bytes; offset += segment.touchPageSize) {
             base[offset] = std::byte{0};
         }
     }
@@ -407,10 +410,10 @@ Status MemfdDataBackend::RegisterSegment(Segment& segment)
      * demand and stays nullptr otherwise. */
     void* deviceAddr = nullptr;
     void** aliasOut = requireHostDeviceAddress_ ? &deviceAddr : nullptr;
-    status = Trans::Buffer::RegisterHostBuffer(segment.mem->Addr(), rankStride_, aliasOut);
+    status = Trans::Buffer::RegisterHostBuffer(segment.mem->Addr(), segment.mem->Size(), aliasOut);
     if (status.Failure()) {
-        UC_ERROR("memfd host register failed: device={} bytes={} status={}", deviceId_, rankStride_,
-                 status);
+        UC_ERROR("memfd host register failed: device={} bytes={} status={}", deviceId_,
+                 segment.mem->Size(), status);
         return status;
     }
     segment.deviceAddr = deviceAddr;

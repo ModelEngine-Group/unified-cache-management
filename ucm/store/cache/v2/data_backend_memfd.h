@@ -62,7 +62,7 @@ class MemfdDataBackend : public DataBackend {
 
     std::string domainId_{};
     std::vector<Segment> segments_{};
-    size_t rankStride_{0};
+    size_t rankStride_{0}; /* base-page minimum; each MemFd stores its actual mapped size */
     size_t ownerRank_{0};
     int32_t deviceId_{-1};
     bool requireHostDeviceAddress_{false};
