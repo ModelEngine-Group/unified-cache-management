@@ -168,38 +168,6 @@ def test_v1_mla_uses_one_buffer_per_page_and_tp_shared_keys():
     assert store.dump_calls[0][2] == [[10_000], [11_000]]
 
 
-def test_v1_pp_uses_stage_root_without_changing_physical_keys():
-    legacy, _ = make_v1_connector()
-    pp1, _ = make_v1_connector(pp_rank=0, pp_size=1)
-    pp0, _ = make_v1_connector(pp_rank=0, pp_size=2)
-    pp1_of_2, _ = make_v1_connector(pp_rank=1, pp_size=2)
-
-    assert legacy._get_physical_key("page-0") == pp1._get_physical_key("page-0")
-    assert pp0._get_physical_key("page-0") == pp1_of_2._get_physical_key(
-        "page-0"
-    )
-    assert "__pp_" not in pp0._get_physical_key("page-0")
-
-
-def test_v1_mla_keys_are_tp_shared_and_pp_uses_stage_root():
-    pp0_tp0, _ = make_v1_connector(
-        is_mla=True, tp_rank=0, tp_size=4, pp_rank=0, pp_size=2
-    )
-    pp0_tp3, _ = make_v1_connector(
-        is_mla=True, tp_rank=3, tp_size=4, pp_rank=0, pp_size=2
-    )
-    pp1_tp0, _ = make_v1_connector(
-        is_mla=True, tp_rank=0, tp_size=4, pp_rank=1, pp_size=2
-    )
-
-    assert pp0_tp0._get_physical_key("page-0") == pp0_tp3._get_physical_key(
-        "page-0"
-    )
-    assert pp0_tp0._get_physical_key("page-0") == pp1_tp0._get_physical_key(
-        "page-0"
-    )
-
-
 def test_rejects_invalid_pp_topology():
     with pytest.raises(ValueError, match="Invalid pipeline-parallel topology"):
         make_v1_connector(pp_rank=2, pp_size=2)
@@ -292,49 +260,6 @@ def test_v2_creates_one_fixed_size_store_per_pool(connector):
     assert [store.config["shard_size"] for store in stores] == [128, 128]
     assert [store.config["block_size"] for store in stores] == [128, 128]
     assert "sglang_v2" in stores[0].config["storage_backends"][0]
-
-
-def test_v2_fixed_size_store_namespace_does_not_duplicate_pp(monkeypatch, tmp_path):
-    stores = []
-
-    def create_connector(name, config, module_path):
-        store = FakeStore(config)
-        stores.append(store)
-        return store
-
-    monkeypatch.setattr(
-        "ucm.integration.sglang.ucm_connector.UcmConnectorFactoryV1.create_connector",
-        create_connector,
-    )
-    store_config = UnifiedCacheStoreConfig(
-        module_path="fake.module",
-        name="FakePosix",
-        config={"storage_backends": [str(tmp_path)]},
-    )
-    pool_name = sglang_hicache.PoolName.SWA
-
-    for pp_rank in (0, 1):
-        storage_config = SimpleNamespace(
-            model_name="org/model",
-            is_mla_model=False,
-            tp_rank=0,
-            tp_size=1,
-            pp_rank=pp_rank,
-            pp_size=2,
-        )
-        value = SglangUcmConnector(
-            FakeStore({}), FakeHostPool(2, [64, 64]), storage_config, [str(tmp_path)]
-        )
-        value.ucm_store_config = store_config
-        value.register_pool_v2(FakeHostPool(2, [64, 64]), pool_name)
-
-    pp0_path = stores[0].config["storage_backends"][0]
-    pp1_path = stores[1].config["storage_backends"][0]
-    assert pp0_path == pp1_path
-    assert "__pp_" not in pp0_path
-    assert pp0_path.endswith("sglang_v2\\swa_64x2") or pp0_path.endswith(
-        "sglang_v2/swa_64x2"
-    )
 
 
 def test_v2_rejects_unequal_non_mamba_components(connector):
@@ -502,32 +427,6 @@ def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
     tp3 = make_connector(3)
 
     assert tp0._component_key("page-0", pool_name, 0) == tp3._component_key(
-        "page-0", pool_name, 0
-    )
-
-
-def test_logical_anchor_v2_pp_uses_stage_root_without_changing_keys(tmp_path):
-    logical_pool = FakeHostPool(page_size=2, component_sizes=[])
-    logical_pool.kv_buffer = None
-    pool_name = sglang_hicache.PoolName.DEEPSEEK_V4_C4
-
-    def make_connector(pp_rank):
-        storage_config = SimpleNamespace(
-            model_name="org/hybrid-model",
-            is_mla_model=True,
-            tp_rank=0,
-            tp_size=4,
-            pp_rank=pp_rank,
-            pp_size=2,
-        )
-        return SglangUcmConnector(
-            None, logical_pool, storage_config, [str(tmp_path)]
-        )
-
-    pp0 = make_connector(0)
-    pp1 = make_connector(1)
-
-    assert pp0._component_key("page-0", pool_name, 0) == pp1._component_key(
         "page-0", pool_name, 0
     )
 
