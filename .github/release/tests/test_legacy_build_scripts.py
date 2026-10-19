@@ -162,7 +162,7 @@ def test_tar_package_keeps_checked_in_version_file(
         f"UCM_VERSION={SOURCE_VERSION}\n"
     )
     arguments = tar_record.read_text(encoding="utf-8").splitlines()
-    assert arguments[:2] == [
-        "-czvf",
-        (f"AI-Storage-Kit_{SOURCE_VERSION}_{package_platform}_" "x86_64_DEBUG.tar.gz"),
-    ]
+    expected_filename = (
+        f"AI-Storage-Kit_{SOURCE_VERSION}_{package_platform}_x86_64_DEBUG.tar.gz"
+    )
+    assert expected_filename in arguments

@@ -700,6 +700,12 @@ publisher artifact boundary.
 
 ## Verification
 
+The release suite checks planning, artifact validation, publication, and recovery.
+Runtime engine patch routing belongs in `test/suites/Unit`, outside this suite.
+Prefer observable behavior over copied dependency pins, internal function names,
+or shell command spelling. Workflow checks should protect publication ordering,
+resource ownership, and failure handling.
+
 ```bash
 python -m pytest -q .github/release/tests
 ruff check .github/release scripts/materialize_version.py ucm/__init__.py
