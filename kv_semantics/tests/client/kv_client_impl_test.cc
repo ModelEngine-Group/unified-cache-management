@@ -611,6 +611,40 @@ TEST(KvClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
     EXPECT_EQ(state->initProviders[20], state->initProviders[30]);
 }
 
+TEST(KvClientImplTest, Config_JfcModeReachesMemoryAndTransportProviders)
+{
+    constexpr const char* path = "kv_client_jfc_mode_test.conf";
+    {
+        std::ofstream file(path);
+        file << "transport.asu_ids=10,20\ntransport.aicpu_jfc_mode=STARS_POLL\n";
+    }
+    KvClientConfig parsed;
+    const auto loadStatus = LoadKvClientConfig(path, parsed);
+    std::remove(path);
+    ASSERT_TRUE(loadStatus.ok());
+    ASSERT_EQ(parsed.transportConfigs.size(), 2U);
+
+    for (auto sharing : {SharedProviderMode::INDEPENDENT, SharedProviderMode::SHARED}) {
+        auto config = parsed;
+        config.sharedProviderMode = sharing;
+        auto state = std::make_shared<TestState>();
+        auto factory = MakeProviderFactory(state);
+        std::vector<std::string> providerModes;
+        auto recordingFactory = [&](const TransportConfig& transport,
+                                    std::shared_ptr<TransProvider>& provider) {
+            providerModes.push_back(transport.attrs.at("aicpu_jfc_mode"));
+            return factory(transport, provider);
+        };
+        auto client = CreateKvClient(MakeFactory(state), recordingFactory);
+        ASSERT_TRUE(client->Init(config).ok());
+        EXPECT_EQ(providerModes.size(), sharing == SharedProviderMode::INDEPENDENT ? 3U : 1U);
+        for (const auto& mode : providerModes) { EXPECT_EQ(mode, "STARS_POLL"); }
+        EXPECT_EQ(state->initConfigs.at(10).attrs.at("aicpu_jfc_mode"), "STARS_POLL");
+        EXPECT_EQ(state->initConfigs.at(20).attrs.at("aicpu_jfc_mode"), "STARS_POLL");
+        EXPECT_TRUE(client->Shutdown().ok());
+    }
+}
+
 TEST(KvClientImplTest, Provider_InvalidSharedModeIsRejected)
 {
     auto state = std::make_shared<TestState>();

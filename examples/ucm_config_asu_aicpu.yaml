@@ -16,6 +16,7 @@ ucm_connectors:
       # Sole protocol selector: ubc_ctp or ubg. UBG requires EID addresses;
       # the paired staged server must also support the selected data path.
       asu_aicpu_hcomm_protocol: "ubc_ctp"
+      asu_aicpu_jfc_mode: "USER_CTL"
       # List indices are ACL logical device IDs, not physical IDs or ASU IDs.
       # CTP accepts IP/EID; UBG requires EID. No automatic discovery is performed.
       asu_aicpu_local_addrs:

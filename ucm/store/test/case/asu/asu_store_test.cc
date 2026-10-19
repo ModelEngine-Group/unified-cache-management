@@ -681,6 +681,43 @@ TEST(UCAsuStoreTest, SchedulerTransportsUseDeviceZero)
     }
 }
 
+TEST(UCAsuStoreTest, PropagatesAicpuJfcModeFromStoreConfig)
+{
+    for (const auto& mode : {std::string{}, std::string{"USER_CTL"}, std::string{"stars_poll"}}) {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", std::string{"aicpu"});
+        config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+        config.Set("asu_aicpu_hcomm_protocol", std::string{"ubg"});
+        config.Set("asu_aicpu_local_addrs", std::vector<std::string>{"127.0.0.2"});
+        if (!mode.empty()) { config.Set("asu_aicpu_jfc_mode", mode); }
+
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        const auto transport = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transport.attrs.at("aicpu_jfc_mode"),
+                  mode == "stars_poll" ? "STARS_POLL" : "USER_CTL");
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAicpuJfcModeBeforeClientInit)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"aicpu"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_aicpu_local_addrs", std::vector<std::string>{"127.0.0.2"});
+    config.Set("asu_aicpu_hcomm_protocol", std::string{"ubg"});
+    config.Set("asu_aicpu_jfc_mode", std::string{"invalid"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+    EXPECT_TRUE(state->initConfigs.empty());
+}
+
 TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
 {
     UC::AsuStore::Config config;

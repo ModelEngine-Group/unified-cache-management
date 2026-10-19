@@ -38,6 +38,7 @@ struct Config {
     std::string tensorLayout;
     kv::TransProviderType transProviderType{kv::TransProviderType::AICPU};
     std::string aicpuHcommProtocol;
+    std::string aicpuJfcMode{"USER_CTL"};
     std::vector<std::string> aicpuLocalAddrs;
     std::optional<std::uint64_t> aicpuSendTimeoutMs;
     std::string fakeBackendPath;

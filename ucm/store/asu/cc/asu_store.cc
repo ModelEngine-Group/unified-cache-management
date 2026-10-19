@@ -183,6 +183,9 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
 
     if (config.transProviderType == kv::TransProviderType::AICPU) {
         transportConfig.attrs["aicpu_hcomm_protocol"] = config.aicpuHcommProtocol;
+        if (!config.aicpuJfcMode.empty()) {
+            transportConfig.attrs["aicpu_jfc_mode"] = config.aicpuJfcMode;
+        }
         const std::string addressPrefix =
             config.aicpuHcommProtocol == "ubg" ? "aicpu_local_eid." : "aicpu_local_ip.";
         // Keep every logical device entry: the provider may use the caller's ACL device.
@@ -472,6 +475,12 @@ private:
         }
         if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
             inConfig.Get("asu_aicpu_hcomm_protocol", config.aicpuHcommProtocol);
+            if (inConfig.Contains("asu_aicpu_jfc_mode")) {
+                inConfig.Get("asu_aicpu_jfc_mode", config.aicpuJfcMode);
+                std::transform(config.aicpuJfcMode.begin(), config.aicpuJfcMode.end(),
+                               config.aicpuJfcMode.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+            }
             std::transform(config.aicpuHcommProtocol.begin(), config.aicpuHcommProtocol.end(),
                            config.aicpuHcommProtocol.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -600,6 +609,9 @@ private:
         }
         if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
             const auto& protocol = config.aicpuHcommProtocol;
+            if (config.aicpuJfcMode != "USER_CTL" && config.aicpuJfcMode != "STARS_POLL") {
+                return Status::InvalidParam("asu_aicpu_jfc_mode must be USER_CTL or STARS_POLL");
+            }
             if (protocol != "ubg" && protocol != "ubc_ctp" && protocol != "ub" &&
                 protocol != "ub_ctp") {
                 return Status::InvalidParam(
