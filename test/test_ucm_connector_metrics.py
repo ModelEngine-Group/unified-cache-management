@@ -5,10 +5,12 @@ import math
 import re
 import sys
 import threading
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -143,8 +145,14 @@ class KVConnectorBase_V1:
         self._role = role
         self._kv_cache_config = kv_cache_config
 
+    def bind_connector_metadata(self, metadata):
+        self._connector_metadata = metadata
+
     def clear_connector_metadata(self):
-        pass
+        self._connector_metadata = None
+
+    def _get_connector_metadata(self):
+        return self._connector_metadata
 
     def get_kv_connector_stats(self):
         return None
@@ -358,8 +366,14 @@ def _install_stubs():
         KVConnectorOutput=type("KVConnectorOutput", (), {}),
     )
     _install_module(
+        "vllm.v1.request",
+        RequestStatus=SimpleNamespace(PREEMPTED="preempted"),
+    )
+    _install_module(
         "ucm.integration.vllm.device",
         create_device=lambda *args, **kwargs: None,
+        get_current_device_id=lambda: 0,
+        get_ucm_worker_torch_device=lambda: "cpu",
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
     _install_module(
@@ -2430,6 +2444,145 @@ def test_layerwise_wait_for_save_records_completion_start():
 
     assert "wait_for_save_start_ms = time.perf_counter() * 1000" in source
     assert "pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms" in source
+
+
+@pytest.fixture(params=[0, 30], ids=["pp-first", "pp-later"])
+def layerwise_connector(request):
+    _reset_fakes()
+    connector = object.__new__(UCMLayerWiseConnector)
+    connector.first_layer_id = request.param
+    connector.layer_ids = [request.param, request.param + 1]
+    connector.layer_name_to_id = {
+        f"layer.{layer_id}": layer_id for layer_id in connector.layer_ids
+    }
+    connector.load_tasks = defaultdict(dict)
+    connector.request_data = []
+    connector._failure_req_ids = set()
+    connector._dumped_layer_ids = set()
+    connector._layerwise_load_start_by_layer = {}
+    connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_load_bytes = 0
+    connector._layerwise_save_bytes = 0
+    connector.need_load = False
+    connector.tp_rank = 0
+    connector.tp_size = 8
+    connector.is_mla = True
+    connector.store = object()
+    connector.kv_cache_layout = SimpleNamespace(
+        shard_size=64, extract_block_addrs=lambda *args, **kwargs: [[101], [102]]
+    )
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=Mock(side_effect=lambda *args: object()), wait_load=Mock()
+    )
+    connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
+    connector._record_load_error = Mock()
+    connector._pending_dump_tasks = []
+    connector._poll_pending_dump_tasks = Mock()
+    connector._async_dump_req_ids = set()
+    return connector
+
+
+@pytest.mark.parametrize("fail_load", [False, True])
+def test_layerwise_decode_hooks_do_not_reuse_previous_batch_loads(
+    layerwise_connector, fail_load
+):
+    connector = layerwise_connector
+    connector.bind_connector_metadata(
+        SimpleNamespace(
+            request_meta={
+                "prefix": RequestDispatchMeta(
+                    load_block_ids=([b"a"], [1]), dump_block_ids=([], [])
+                )
+            }
+        )
+    )
+    if fail_load:
+        connector._rank_consistency.wait_load.side_effect = RuntimeError("load failed")
+    connector.start_load_kv(None)
+    for layer_name in connector.layer_name_to_id:
+        connector.wait_for_layer_load(layer_name)
+    connector.wait_for_save()
+    connector.clear_connector_metadata()
+    submit_count = connector._rank_consistency.submit_load.call_count
+    wait_count = connector._rank_consistency.wait_load.call_count
+
+    # has_sync_kv_loads=False: bind -> forward hooks -> start_load_kv.
+    connector.bind_connector_metadata(
+        SimpleNamespace(
+            request_meta={
+                "decode": RequestDispatchMeta(
+                    load_block_ids=([], []), dump_block_ids=([], [])
+                )
+            }
+        )
+    )
+    for layer_name in connector.layer_name_to_id:
+        connector.wait_for_layer_load(layer_name)
+    connector.start_load_kv(None)
+
+    assert connector._rank_consistency.submit_load.call_count == submit_count
+    assert connector._rank_consistency.wait_load.call_count == wait_count
+    assert not connector.load_tasks
+    assert not connector.need_load
+
+
+def test_layerwise_repeated_hook_does_not_replace_next_layer_task(layerwise_connector):
+    connector = layerwise_connector
+    connector.bind_connector_metadata(
+        SimpleNamespace(
+            request_meta={
+                "prefix": RequestDispatchMeta(
+                    load_block_ids=([b"a"], [1]), dump_block_ids=([], [])
+                )
+            }
+        )
+    )
+    connector.start_load_kv(None)
+    first, second = connector.layer_name_to_id
+    connector.wait_for_layer_load(first)
+    connector.wait_for_layer_load(first)
+    connector.wait_for_layer_load(second)
+    assert connector._rank_consistency.submit_load.call_count == 2
+    assert connector._rank_consistency.wait_load.call_count == 2
+    assert not connector.load_tasks
+
+
+def test_layerwise_deferred_start_preserves_saves_and_resets_each_batch(
+    layerwise_connector,
+):
+    connector = layerwise_connector
+
+    def submit_dump(*args):
+        connector._layerwise_save_bytes += 64
+        return True
+
+    connector._submit_layerwise_dump_task = Mock(side_effect=submit_dump)
+    for request_id in ("first", "second"):
+        connector.bind_connector_metadata(
+            SimpleNamespace(
+                request_meta={
+                    request_id: RequestDispatchMeta(
+                        load_block_ids=([], []), dump_block_ids=([b"a"], [1])
+                    )
+                }
+            )
+        )
+        # Saves happen during forward, before the deferred load start.
+        for layer_name in connector.layer_name_to_id:
+            connector.save_kv_layer(layer_name, None, None)
+            connector.save_kv_layer(layer_name, None, None)
+        connector.start_load_kv(None)
+        # A deferred draft forward may revisit layers after start_load_kv.
+        for layer_name in connector.layer_name_to_id:
+            connector.save_kv_layer(layer_name, None, None)
+        connector.wait_for_save()
+        connector.clear_connector_metadata()
+
+    assert connector._submit_layerwise_dump_task.call_count == 4
+    assert fake_ucmmetrics.updated == [
+        {"save_bytes_total": 128},
+        {"save_bytes_total": 128},
+    ]
 
 
 def test_layerwise_records_per_layer_load_duration_and_batch_sum():

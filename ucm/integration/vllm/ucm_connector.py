@@ -2887,10 +2887,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         if submitted:
             self._layerwise_load_start_by_layer[layer_id] = load_start
 
-    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        super().bind_connector_metadata(connector_metadata)
+        # vLLM may defer start_load_kv until after forward on steps without
+        # synchronous loads. Reset batch state before any attention hooks run.
         self._dumped_layer_ids.clear()
-        first_layer_load_start = time.perf_counter()
-        metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
@@ -2899,7 +2900,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_layer_load_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
+        self.dump_total_ptrs = None
 
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        first_layer_load_start = time.perf_counter()
+        metadata = self._get_connector_metadata()
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
@@ -2938,6 +2943,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
         layer_tasks = self.load_tasks.pop(current_layer_id, {})
+        if not layer_tasks:
+            # A repeated hook must not resubmit and replace next-layer tasks.
+            return
         for request_id, task in layer_tasks.items():
             try:
                 self._rank_consistency.wait_load(task)
