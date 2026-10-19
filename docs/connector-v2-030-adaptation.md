@@ -1,8 +1,51 @@
 # Connector v2：0.30.0 第一批适配
 
-日期：2026-10-06。工作分支 `dev_connector`，基线 `c6324b8a5d1a6ae3dc8447b390a664869bc84698`；以下实现为未提交改动。源码参考 vLLM `ced6857afa0ea7b2e3f0846a62e1394e90f15607`、Ascend main `f6992d8c4657d02ae75b7d4b92bf450f9f3dbeba`。
+初始日期：2026-10-06。工作分支 `dev_connector`，初始基线 `c6324b8a5d1a6ae3dc8447b390a664869bc84698`；下文保留逐次实现记录。初始源码参考 vLLM `ced6857afa0ea7b2e3f0846a62e1394e90f15607`、Ascend main `f6992d8c4657d02ae75b7d4b92bf450f9f3dbeba`。
 
-用户要求当前先改代码，暂不测试。本批没有运行组件测试、模型构造、CUDA/NPU IO 或 forward。仅做 Python AST 语法检查、diff 空白检查与源码核对；不能作为模型支持或通过验收的证明。
+本段及下文逐项记录保留当时的验证状态；最新运行结果以[2026-10-15—16 Layout 验证](connector-v2-layout-validation-20261016.md)为准。当前已完成固定快照的组件测试和重点模型无权重 Layout/文件 IO 验证，未执行真实 forward 或权重推理。
+
+## 2026-10-16 运行验证更新
+
+最终工具/代码快照为已推送的 `1c806f56`。74项 v2 组件测试、8项工具测试通过；GLM5.3、DSV4.1 使用真实 Ascend KV 分配与 IO，Qwen-Flash-Next 使用用户确认的 CPU 模拟 CUDA 布局。bulk/layerwise 分别验证，完整命令、结果和限制见上述报告。后续运行修正均在夹具和 model-check 工具，生产 Layout 保持 `fd43490d` 的实现。
+
+Qwen 的单轮合成请求在默认稀疏 State 保留策略下未交出快照，不能算恢复通过；正式 Layout/IO 用例显式使用原生 checkpoint 保留间隔1664。CPU 模拟结果不代表真实 CUDA 或完整服务支持，QSA backend 的 `supports_kv_connector=False` 仍存在。三个材料目录缺少配套权重，按用户要求跳过真实推理；State layerwise 加载/计算流水仍待实现。
+
+## 2026-10-15 Layout 后续逐项 review（当前）
+
+- GroupLayout 的 layers 改为 layer_specs，绑定/聚合/State 等待入口同步，不改原生 TensorDescriptor.layers。
+- 删除 HBM _checked_blocks 及其逐批扫描，信任 scheduler/原生 allocator 的 block ID 契约；保留动态 token 范围、物理布局能力、完整 stored-entry 对齐和实际 IO 地址范围检查。
+- token→byte 物理换算移回 KVCacheGroupLayout.tokens_to_bytes；Store 只选范围、编译 sizes/offsets 模板。tokens_per_block 由调用方传入，HBM 不保存 chunk/window 元数据。
+- tokens_to_bytes 简化为 tokens*payload_bytes//tokens_per_block，先乘后整除，不经过 stored states。部分访问能力和完整 entry 对齐移到 Store 初始化的固定范围编译，states_per_block 仅用于初始化校验；删除无其他用途的 state_strides。对应夹具改为验证初始化拒绝不对齐配置，删除手工注入非法 State 起点的运行时负例，未执行。
+- State 的 tokens_per_chunk 已要求整除原生 token span，因此合并其 partial_tokens=0 特判，与 FA 共用余数分支；State 每 chunk 仍只保存一份快照。
+- 删除 dynamic_token_offsets 派生字段；scheduler 在 plan.token_starts 提供与 keys 一一对应的 uint64 逻辑 chunk 起点，TransferBuilder 原样传递。Store 对非 SWA 直接取模得到块内偏移，按 key 广播到各 block；不生成起点序列、不判断 chunk/block 余数。SWA 保留固定 tail 模板。
+- 删除无生产调用的 resolve_matrices.token_offsets 参数及覆盖分支，仅使用 token_starts；SWA 保留固定 tail，非 SWA 直接取模，保留物理对齐。scheduler 起点均为 k×U，初始化要求 U 与 block span T 互相整除，因此删除逐批 remaining/dynamic_offsets 的 payload 范围重验，以及手工传入不合法起点的对应负例。静态 starts/counts 范围由 build 的构造保证，删除 _compile_ranges 及块内范围/正长度重验，只在 partial_tokens 非零时检查切片能力和完整 entry 对齐。
+- 删除 plan 冗余的 token_start/token_end 字段；日志读取首个 token_starts，model-check 按逐 key 起点比较 rank 一致性。scheduler 内部生成计划的区间变量保留。
+- supports_partial_tokens 仍由真实 view 初始化、group 对所有 components 取 all，在 Store 初始化编译固定范围时检查；层筛选不放宽整组能力。State 由公共 spec 和初始化固定范围保证整快照。
+- 仅 AST/编译、格式、引用/diff 静态检查，未执行组件/模型测试，存储字节格式与 r7 不变。
+
+## 2026-10-15 开发期防御分支清理（用户追加要求）
+
+- 删除旧 ucm_cache_block_size 配置名检查及其专属测试；只读取当前 tokens_per_chunk。
+- Adapter lookup 不再逐 key 校验长度/类型或转换 bytes；内部 hasher/plan 已提供 bytes keys。文件 Proxy 只消费二维 `[K,S]`，删除 flat 兼容、逐批矩阵 shape 重验和重复 key bytes 转换。迁移剩余分片夹具的 flat 调用。
+- Builder 不重复归一化 block ID dtype，由 HBM 求址入口完成。Store 私有范围编译只接收初始化创建的数组，删除未使用的标量/省略 counts/广播兼容。
+- 配置路径解析直接使用已约定的字典结构；保留 UCM 单后端约束与空路径拒绝。删除 worker 注册回调的角色重验、并行参数的通用正数重验和 NPU 已有 tensor 下的插件可用性探测。允许空 tensor 注册用于无本地数据的分片，实际 IO 仍检查注册地址范围。
+- 保留 DCP 为 TP 子组的 UCM 支持限制；上游可允许 PCP-spanning DCP，不意味着当前 UCM 分片映射支持它。保留初始化布局/恢复粒度、动态越界、短读、外部 proxy 命中结果、Protocol 可选能力、任务等待/排空和失败上报检查。
+- 本批仅静态语法、引用、格式/diff 检查，未执行组件或模型测试；记录格式与 namespace 不变。
+
+## 2026-10-15 chunk/HBM/Store 职责调整与审查修复（当前）
+
+基线 UCM `3c23ec11`，vLLM `ced6857a`，本地 Ascend `5f828ad6`；后者与审查 PDF 的 `8fde6d4e` 不同。本批为未提交代码，仅语法/引用/diff 静态检查，未运行组件测试、模型构造、设备 IO 或远端验证。下列约定覆盖后文历史同名 API/字段描述。
+
+- 配置与内部字段统一为 `tokens_per_chunk`；开发期不保留旧配置名兼容或迁移校验。group 元数据为 `UCMKVCacheGroupSpec.tokens_per_block`，逐层仍是 UCMLayerSpec。
+- `UCMKVCacheSpec.blocks_per_chunk` 是按原生 group ID 索引的公共 tuple，由最终 groups/chunk 参数统一派生；非参与项/零 tail 为0、State 为1。CP 不再重写 group.tail_blocks，通过 spec 构造重算；scheduler 与 worker 共用。
+- HBM GroupLayout 只保留实际几何、层选择与 block IDs→segment bases，不接收 GroupSpec/chunk 字段。删除 BlockAccess/compile_access；State 的生命周期判定从公共 spec 查询。
+- StoreLayout 直接持有公共 spec 与 GroupLayout，编译固定 token 范围、byte offsets/sizes、store_bytes，并在运行时添加偏移、组织 chunk 矩阵。scheduler 提供 plan.token_starts，TransferBuilder 原样传递，Store 通过取模计算块内偏移。
+- Ascend 独立 K/V、去 padding views 不再强制匹配原始 descriptor 整页 stride；CUDA/CPU 原生校验保留。实际寻址仍使用注册 shape/stride，不猜测页比例。
+- 对持久 spec 显式允许 FA/MLA/Sink、SWA 与 State；chunked local、cross、encoder-only 等未实现恢复语义的类型在解析阶段拒绝。原生不参与项仍先跳过。
+- Ascend State byte-page 先把稠密物理 payload 展成一维 view，再转 uint8，避免 dense permutation 的末维 stride 限制；保留 storage_offset、block stride，不复制 KV。
+- Longcat 从原生模型配置绑定 num_attn_module=2，使逻辑层号与原生 bind 一致。审查报告中“_save_complete 已删除”的解释不成立，生产属性保留；修复手工构造 connector 的测试夹具初始化。
+- 旧测试桩补齐 envs、TransferResults、UniformType、HiddenState、parallel_state 等；以当前四维 native ABI、完整 worker config 与精确 State hand-off 重整旧夹具，保留 hash/proxy 检查，加入独立元素地址 oracle、范围/padding/CP/State dtype view 和真实文件往返断言。没有运行，不宣称通过或沿用旧测试数量。
+- 原有非空 r7 记录的 payload 顺序、sizes/offsets/padding 和 bulk/layerwise 隔离保持；零 tail 不再创建无路由使用的占位模板。不推进生产 proxy 或 State layerwise 流水。HTML/SVG 仍在既定 qyh 文档分支维护，本批只同步开发目录 Markdown。
 
 ## 本批实现
 
@@ -34,15 +77,15 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 - State 禁用含 padding 的 whole-group Block First 快路径；FA 的整块快路径保留。
 - PLE/GDN/KDA 使用本 rank 的 State view。PLE 的 `tp_replicated` 不触发再次除 TP；仍逐 rank 存储，未做 replicated 数据去重。单层 State group 不补层数。
 
-### GLM tail 与 Qwen ring
+### 原生存取 group 选择（2026-10-12 更新）
 
-明确标记 transient，保留原生 group ID 和 block table 的位置，但排除其 record layout、layerwise 保存入口和持久化路由：
+UCM 直接使用 `KVCacheConfig.prefix_cacheable_group_ids`，组合 `group.enable_kv_transfer` 和 `spec.prefix_cacheable`。非参与项保留 group ID 与 block table 位置，但 `is_persistent=False`、kinds 为空、tail_blocks=0，不生成 HBM/Store layout，不进入 FA/WA/State 路由，也不参与 UCM 或 CP 页约束。
 
-- GLM 按模型类型和原生 Kpool tail spec 识别 tail，要求完整池恢复边界。
-- Qwen 按模型类型和 `CircularBufferSpec` 识别 raw ring，要求完整压缩组的恢复边界；原生模型/spec 构造负责 ratio、capacity、window 的有效性。
-- 原生模型成对创建 raw/compressed 或 tail/k cache；UCM 不再拼接名称、重复检查配对 owner。`transient_alignments` 只记录各 scratch group 的恢复对齐 token 数，检查最终 UCM unit，而不仅检查 scheduler block。
+- 删除 `_transient_alignment`、transient_alignments 以及 Qwen/GLM 模型名与 indexer ratio 参数；不另加 scratch pool 恢复边界，重建和恢复语义由引擎负责。
+- 参与存取的 group 仍遵守引擎 scheduler 粒度、State 整快照、物理部分 token 能力和既有 SWA tail 规则。旧 DSV4 compressor tail 计算保持现状。
+- namespace 摘要加入 store group IDs，隔离存取集合变化；有效 payload、padding 与 r7 字节格式不变。
 
-这些规则针对原生实现中只保留未完成压缩组原始数据的 scratch/ring。没有根据 `prefix_cacheable=False` 通用排除，也没有将 DSV4.1 ring 套用到 Qwen 规则。DSV4.1 CircularBufferSpec 当前仍拒绝。
+原生声明不参与前缀缓存的 DSV4.1 ring 同样跳过；不据此宣称模型其他布局或生命周期已验收。本批仅 AST/diff 静态检查，未运行测试。
 
 ### 生命周期与存储身份
 
@@ -55,16 +98,16 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 
 ## 尚未完成与下一步
 
-1. 将既有轻量单测的 SPI/spec doubles 更新为 0.30，替换依赖旧 State 位置推断和 0.26 Ascend 语义的用例。本批没有修改或运行这些测试；此前 111 项基线结果不能代表本批。
+1. 本批74项组件和8项工具测试已通过；后续新改动需按其自身SHA验证，不沿用此前111项历史基线。
 2. 补精确 CoW/offload 源块、State 加载目标、缺少任一 State group、WA/State 不同命中边界、无 forward 和 deferred draft finalization 的契约验证。
 3. 核对 terminal/finished 请求的 State handoff、源块复用、抢占/取消和 checkpoint 数值；缺少有效边界时当前只会漏存，不能用位置推断补造快照。
-4. GLM5.3 原生构造与 IO 尚未验证；Qwen-Next 的 QSA backend 仍声明 `supports_kv_connector=False`，Ascend 的 QSA/PLE 原生模型构造也未打通。本批 parser 能表达角色，不等于引擎已允许运行。
-5. DSV4.1 的同源 ring 恢复语义、A5 FULL/indexer K/scale alias owner、量化组件与 SWA 有效窗口还需独立适配。禁止重叠范围重复保存/恢复。
-6. State + V2 model runner 暂未实现。现有 PP/CP 等能力也没有新验收，不将 TP 或历史结果外推到这些路径。
+4. GLM5.3 Ascend 构造/字节IO已验证；Qwen-Next CPU 模拟已验证指定配置下的 Layout/IO，QSA backend 仍声明 `supports_kv_connector=False`，不能据此宣称完整引擎推理支持。Ascend QSA 原生构造仍缺少 FlashAttention。
+5. DSV4.1 Ascend 原生参与组、SWA窗口与文件往返已验证；真实 forward、ring/量化数值语义及其他硬件变体仍未验收。禁止重叠范围重复保存/恢复。
+6. State + V2 model runner 暂未实现。补充GQA TP2/PP2通过，不外推到重点模型的所有并行拓扑；DCP模型case尚未通过。
 7. 生产变长 store/proxy、IO stream/event 契约与发布完整性仍需开发；file commit 不能证明 fsync durability 或跨 rank 原子发布。
 8. State layerwise 加载与计算流水尚未实现，用户已确认先记录为待实现项，当前继续 review 其余代码；具体范围见下节。
 
-远端仍按用户最后说明视为下电，不尝试连接。恢复后先验证固定 SHA 的无权重原生构造、再做真实 IO/数值/生命周期与权重推理，bulk 和 layerwise 分别记录结果。
+远端已按用户最新说明恢复并用于固定SHA验证。后续重点为真实计算、State多轮生命周期和生产proxy；有相应权重时再做推理验收，bulk和layerwise继续分别记录。
 
 ## State layerwise 待实现（2026-10-06）
 
@@ -136,9 +179,9 @@ WA 与 State 同时参与恢复时，lookup 会反复缩小边界，直到所有
 
 用户逐项 review 后，先拆分成员展开、transient 策略、平台物理行数、sliding tail 与 unit 选择；随后进一步拆开两端职责，最新入口见下节。没有执行测试。
 
-- `num_hidden_layers` 和 `indexer_tokens_per_state` 改为必传模型材料；无专用 indexer 的模型传 None。删除层数 None/非正、indexer ratio 等原生模型已验证字段的重复检查。
+- `num_hidden_layers` 必传；2026-10-12 已删除专属 indexer_tokens_per_state 参数，存取集合由原生标志给出。删除层数 None/非正等原生模型已验证字段的重复检查。
 - PP 空本地 group 是真实原生情况。`_member_specs` 统一读取 group 的声明成员，不再在 State 分支反复用 `("", spec)` 补齐；实际 layer/view 仍仅来自 PP 本地 layer_names。
-- `native_id` 统一命名为 `group_id`，保留原生 config/table 位置。Qwen 临时环使用 `is_transient` 和空 persistence kinds，不再把已识别的环标为 UNKNOWN。未知持久 spec 仍拒绝。
+- `native_id` 统一命名为 `group_id`，保留原生 config/table 位置。2026-10-12 用 is_persistent 取代 is_transient：原生禁用存取的 group 不分类，kinds 为空；未知持久 spec 仍拒绝。
 - 原生 CircularBufferSpec 同时被 Qwen QSA 与 DSV4.1 compressor 使用；当前 v2 仅接入 Qwen 的完整池恢复策略。DSV4.1 C2 环在无 speculative、完整 128-token 恢复边界时也有可省略的源码依据，旧 v1 专用实现已采用，但 v2 尚未接入对应策略。
 - 删除 tail/ring 的重复 capacity/window/scheduler 容量检查，以及原生模型已保证的配对 owner 检查。保留最终 UCM unit 的完整压缩组对齐，这是 UCM 自身必须满足的恢复条件。
 - 物理存储大小显式处理 AscendSlidingWindowMLASpec 的行数和 AscendSFAIndexerCacheSpec 的 DCP 复制倍数，删除通用字段猜测；当前实现移至 `layout._storage_block_size`。该倍数描述额外物理行，不是压缩比或 TP 分片。
@@ -258,3 +301,4 @@ python -m pytest test/suites/Unit/test_ucm_proxy_v2.py --noconftest \
 异步路由失败后排空、Factory 配置、TP 全分片可见性和 PP 空分片提交。
 已有 `test_ucm_connector_v2.py` 的大批 fixture 仍使用旧 vLLM API；当前 0.30
 源码与这些 fixture 的不匹配需另行迁移，不能把该历史测试集视为全绿基线。
+- 2026-10-19 合并到 feat-v2-model-cache-policy：采用上面的 Layout 分层（HBM 只算地址和 token→byte，Store 编模板），命名沿用本分支。对应关系：`tokens_per_chunk` → `ucm_cache_block_size`，`UCMKVCacheGroupSpec` → `UCMKVCacheGroupInfo`，`blocks_per_chunk[gid]` → `group.tail_blocks`，GroupLayout `layer_specs` → `layers`，`block_ids` → `vllm_block_ids`。plan 保留 `token_start`/`token_end`，由 transfer builder 按行算出每个 UCM block 的 `token_starts`。要存的 group 取 `prefix_cacheable_group_ids`，其余为 transient。

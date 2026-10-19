@@ -61,6 +61,7 @@ class ModelCheckToolkitTest(unittest.TestCase):
         values = {
             "UCM_MODEL_CHECK_MODEL": "org/model",
             "UCM_MODEL_CHECK_TOKENS": "2048",
+            "UCM_MODEL_CHECK_UCM_CACHE_BLOCK_SIZE": "256",
             "UCM_MODEL_CHECK_BLOCK_SIZE": "32",
             "UCM_MODEL_CHECK_USE_LAYERWISE": "false",
             "UCM_MODEL_CHECK_ADDITIONAL_CONFIG": '{"feature": true}',
@@ -78,6 +79,7 @@ class ModelCheckToolkitTest(unittest.TestCase):
 
         self.assertEqual(config.model, "org/model")
         self.assertEqual(config.tokens, 2048)
+        self.assertEqual(config.ucm_cache_block_size, 256)
         self.assertEqual(config.block_size, 32)
         self.assertFalse(config.use_layerwise)
         self.assertEqual(config.additional_config, {"feature": True})
@@ -109,6 +111,8 @@ class ModelCheckToolkitTest(unittest.TestCase):
                     "/models/example",
                     "--tokens",
                     "8192",
+                    "--ucm-cache-block-size",
+                    "256",
                     "--block-size",
                     "128",
                     "--no-layerwise",
@@ -141,6 +145,7 @@ class ModelCheckToolkitTest(unittest.TestCase):
                 "VLLM_DIST_IDENT": ANY,
                 "UCM_MODEL_CHECK_MODEL": "/models/example",
                 "UCM_MODEL_CHECK_TOKENS": "8192",
+                "UCM_MODEL_CHECK_UCM_CACHE_BLOCK_SIZE": "256",
                 "UCM_MODEL_CHECK_BLOCK_SIZE": "128",
                 "UCM_MODEL_CHECK_USE_LAYERWISE": "false",
                 "UCM_MODEL_CHECK_ADDITIONAL_CONFIG": ('{"enable_sparse_sfa_c8": true}'),

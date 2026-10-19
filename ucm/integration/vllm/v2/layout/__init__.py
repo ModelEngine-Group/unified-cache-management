@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from .group import BlockAccess, BlockFirstView, KVCacheGroupLayout, TensorDescriptor
+from .group import BlockFirstView, KVCacheGroupLayout, TensorDescriptor
 from .kv_cache import (
     UCMKVCacheGroupInfo,
     UCMKVCacheLayout,
@@ -123,7 +123,10 @@ def build_group_layouts(
                 UCMLayerSpec(
                     layer_name=layer_name,
                     layer_index=_layer_index(
-                        layer_name, spec.device_type, num_hidden_layers
+                        layer_name,
+                        spec.device_type,
+                        num_hidden_layers,
+                        spec.num_attn_module,
                     ),
                     kv_cache_spec=native_spec,
                     storage_block_size=storage_block_size,
@@ -136,17 +139,17 @@ def build_group_layouts(
                 )
             )
         group_layouts[group.group_id] = KVCacheGroupLayout(
-            group,
+            group.group_id,
             kv_caches,
             layers=layers,
-            device_type=spec.device_type,
             block_first_layout=block_first_layout,
+            state_snapshot=group.is_state_snapshot,
+            device_type=spec.device_type,
         )
     return group_layouts
 
 
 __all__ = [
-    "BlockAccess",
     "BlockFirstView",
     "ComponentView",
     "GroupStoreLayout",

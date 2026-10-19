@@ -139,7 +139,15 @@ def _as_byte_page(tensor: "torch.Tensor") -> "torch.Tensor":
     shape = tuple(tensor.shape)
     strides = tuple(tensor.stride())
     row_payload = row_payload_bytes(shape, strides, element_size)
-    byte_view = tensor.view(torch.uint8)
+    # Flatten the first dense physical payload before changing dtype. A dense
+    # permutation need not have stride(-1)==1, which dtype view() requires.
+    payload_view = torch.as_strided(
+        tensor,
+        size=(row_payload // element_size,),
+        stride=(1,),
+        storage_offset=tensor.storage_offset(),
+    )
+    byte_view = payload_view.view(torch.uint8)
     return torch.as_strided(
         byte_view,
         size=(shape[0], 1, 1, row_payload),

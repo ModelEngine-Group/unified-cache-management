@@ -144,6 +144,9 @@ def extract_layer_index(layer_name, num_attn_module=1):
             int_vals.append(int(subname))
         except ValueError:
             continue
+    # Like vLLM: several attention modules per layer number their modules.
+    if num_attn_module > 1 and "attn" in layer_name and len(int_vals) == 2:
+        return int_vals[0] * num_attn_module + int_vals[1]
     return int_vals[-1] if int_vals else 0
 
 
@@ -165,12 +168,17 @@ class KVCacheSpecKind(str, enum.Enum):
     MLA_ATTENTION = "mla_attention"
     SLIDING_WINDOW = "sliding_window"
     SLIDING_WINDOW_MLA = "sliding_window_mla"
+    SINK_FULL_ATTENTION = "sink_full_attention"
+    CHUNKED_LOCAL_ATTENTION = "chunked_local_attention"
+    ENCODER_ONLY_ATTENTION = "encoder_only_attention"
+    CROSS_ATTENTION = "cross_attention"
     MAMBA = "mamba"
     UNKNOWN = "unknown"
 
 
 class _KVCacheSpec:
     dcp_sharded = False
+    prefix_cacheable = True
 
 
 class _AttentionSpec(_KVCacheSpec):
@@ -199,6 +207,8 @@ class _MambaSpec(_KVCacheSpec):
 
 
 def get_kv_cache_spec_kind(spec):
+    if getattr(spec, "spec_kind", None) is not None:
+        return spec.spec_kind
     if isinstance(spec, _SlidingWindowMLASpec):
         return KVCacheSpecKind.SLIDING_WINDOW_MLA
     if isinstance(spec, _MLAAttentionSpec):
@@ -225,7 +235,7 @@ for name, value in (
 ):
     setattr(vllm_kv_cache_interface, name, value)
 vllm_kv_cache_interface.CircularBufferSpec = type(
-    "CircularBufferSpec", (_KVCacheSpec,), {}
+    "CircularBufferSpec", (_KVCacheSpec,), {"prefix_cacheable": False}
 )
 
 
@@ -236,6 +246,7 @@ class KpoolTailSpec(_SlidingWindowSpec):
     block_size: int
     sliding_window: int
     tokens_per_state: int = 1
+    prefix_cacheable = False
 
 
 vllm_kv_cache_interface.KpoolTailSpec = KpoolTailSpec
@@ -248,6 +259,10 @@ class UniformTypeKVCacheSpecs:
     @property
     def block_size(self):
         return next(iter(self.kv_cache_specs.values())).block_size
+
+    @property
+    def prefix_cacheable(self):
+        return all(spec.prefix_cacheable for spec in self.kv_cache_specs.values())
 
 
 vllm_kv_cache_interface.UniformTypeKVCacheSpecs = UniformTypeKVCacheSpecs
@@ -348,6 +363,16 @@ class FullAttentionSpec(_FullAttentionSpec):
 
 
 @dataclass
+class UnsupportedSpec(_KVCacheSpec):
+    """A spec of any kind, for checking which kinds the parser accepts."""
+
+    block_size: int
+    spec_kind: KVCacheSpecKind = KVCacheSpecKind.UNKNOWN
+    prefix_cacheable: bool = True
+    tokens_per_state: int = 1
+
+
+@dataclass
 class MLAAttentionSpec(_MLAAttentionSpec):
     block_size: int
     tokens_per_state: int = 1
@@ -391,20 +416,33 @@ vllm_ascend_kv_cache_interface = types.ModuleType("vllm_ascend.core.kv_cache_int
 vllm_ascend_kv_cache_interface.AscendSlidingWindowMLASpec = AscendSlidingWindowMLASpec
 vllm_ascend_kv_cache_interface.AscendSFAIndexerCacheSpec = AscendSFAIndexerCacheSpec
 vllm_ascend_kv_cache_interface.AscendIndexerKPoolTailSpec = type(
-    "AscendIndexerKPoolTailSpec", (_KVCacheSpec,), {}
+    "AscendIndexerKPoolTailSpec", (_KVCacheSpec,), {"prefix_cacheable": False}
 )
 sys.modules.setdefault(
     vllm_ascend_kv_cache_interface.__name__, vllm_ascend_kv_cache_interface
 )
 
 
-def group(names, specs):
+def group(names, specs, *, enable_kv_transfer=True):
     if not isinstance(specs, dict):
         spec = specs
     else:
         spec = UniformTypeKVCacheSpecs(specs)
     return SimpleNamespace(
-        layer_names=list(names), kv_cache_spec=spec, is_eagle_group=False
+        layer_names=list(names),
+        kv_cache_spec=spec,
+        is_eagle_group=False,
+        enable_kv_transfer=enable_kv_transfer,
+    )
+
+
+def prefix_cacheable_group_ids(groups):
+    """vLLM's KVCacheConfig.prefix_cacheable_group_ids for these groups."""
+    return tuple(
+        group_id
+        for group_id, group in enumerate(groups)
+        if getattr(group, "enable_kv_transfer", True)
+        and group.kv_cache_spec.prefix_cacheable
     )
 
 
@@ -414,6 +452,7 @@ def config(*groups, num_blocks=8, tensors=(), kv_cache_layout="LBHNC"):
         num_blocks=num_blocks,
         kv_cache_tensors=tensors,
         kv_cache_layout=kv_cache_layout,
+        prefix_cacheable_group_ids=prefix_cacheable_group_ids(groups),
     )
 
 
@@ -436,7 +475,10 @@ DENSE_TEXT_CONFIG = TextConfig()
 def vllm_config():
     return SimpleNamespace(
         model_config=SimpleNamespace(
-            model="org/model", dtype="torch.bfloat16", hf_text_config=TextConfig()
+            model="org/model",
+            dtype="torch.bfloat16",
+            hf_config=TextConfig(),
+            hf_text_config=TextConfig(),
         ),
         cache_config=SimpleNamespace(
             block_size=4,
@@ -464,6 +506,28 @@ def vllm_config():
         additional_config={},
         instance_id="engine",
         use_v2_model_runner=False,
+    )
+
+
+def make_layout(
+    raw_config,
+    caches,
+    *,
+    scheduler_block_size=8,
+    device_type="cpu",
+    num_attn_module=1,
+    **kwargs,
+):
+    """Parse a config and register its caches."""
+    parsed = parse_spec(
+        raw_config,
+        scheduler_block_size=scheduler_block_size,
+        device_type=device_type,
+        num_attn_module=num_attn_module,
+        **kwargs,
+    )
+    return UCMKVCacheLayout(
+        parsed, caches, kv_cache_config=raw_config, num_hidden_layers=64
     )
 
 
@@ -629,20 +693,83 @@ def _submit_segments(adapter, operation, keys, offsets, ptrs, sizes):
         )
 
 
+def compile_access(
+    group_layout, *, token_offsets=0, token_counts=None, token_block_size=None
+):
+    """Fixed token ranges of every segment, for address assertions.
+
+    Uses the layout's own token-to-byte conversion and resolve_ptrs.
+    GroupStoreLayout.build applies the same whole-block and state-alignment
+    rules in production. The block span defaults to the first layer's
+    native block size.
+    """
+    token_block_size = token_block_size or int(
+        group_layout.layers[0].kv_cache_spec.block_size
+    )
+    token_starts = np.atleast_1d(np.asarray(token_offsets, dtype=np.int64))
+    token_lengths = (
+        token_block_size - token_starts
+        if token_counts is None
+        else np.atleast_1d(np.asarray(token_counts, dtype=np.int64))
+    )
+    token_starts, token_lengths = np.broadcast_arrays(token_starts, token_lengths)
+    if (
+        (token_starts < 0)
+        | (token_lengths <= 0)
+        | (token_starts + token_lengths > token_block_size)
+    ).any():
+        raise ValueError("Token range must lie inside one physical block")
+    is_partial = ((token_starts != 0) | (token_lengths != token_block_size)).any()
+    if is_partial and not group_layout.supports_partial_tokens:
+        raise ValueError(
+            f"KV cache group {group_layout.group_id} requires whole-block access"
+        )
+    for tokens in (token_starts, token_lengths):
+        if (
+            np.multiply.outer(tokens.astype(np.uint64), group_layout.states_per_block)
+            % np.uint64(token_block_size)
+        ).any():
+            raise ValueError("Token ranges must align with stored states")
+    return SimpleNamespace(
+        layout=group_layout,
+        token_block_size=token_block_size,
+        block_byte_offsets=group_layout.tokens_to_bytes(
+            token_starts.astype(np.uint64), token_block_size
+        ),
+        segment_bytes=group_layout.tokens_to_bytes(
+            token_lengths.astype(np.uint64), token_block_size
+        ),
+    )
+
+
 def _resolved_access(access, blocks, *, token_offsets=None, segment_mask=None):
-    """Pair native pointers with template sizes for existing array assertions."""
-    ptrs = access.resolve_ptrs(
-        blocks, token_offsets=token_offsets, segment_mask=segment_mask
-    )
+    """[block, segment] pointers and sizes of a compiled access."""
+    group_layout = access.layout
     columns = slice(None) if segment_mask is None else segment_mask
-    sizes = np.tile(
-        access.segment_bytes[:, columns], (len(blocks) // len(access.segment_bytes), 1)
+    blocks = np.asarray(blocks, dtype=np.uint64)
+    blocks_per_window = len(access.segment_bytes)
+    num_windows = len(blocks) // blocks_per_window
+    fixed_offsets = access.block_byte_offsets[:, columns]
+    ptrs = (
+        group_layout.resolve_ptrs(blocks, segment_mask=segment_mask).reshape(
+            num_windows, blocks_per_window, fixed_offsets.shape[1]
+        )
+        + fixed_offsets
     )
+    if token_offsets is not None:
+        ptrs = ptrs + group_layout.tokens_to_bytes(
+            np.asarray(token_offsets, dtype=np.uint64),
+            access.token_block_size,
+            segment_mask,
+        ).reshape(num_windows, blocks_per_window, fixed_offsets.shape[1])
+    ptrs = ptrs.reshape(len(blocks), fixed_offsets.shape[1])
+    sizes = np.tile(access.segment_bytes[:, columns], (num_windows, 1))
     return ptrs, sizes
 
 
 def _flat_record_access(record, blocks, key_count, **kwargs):
-    offsets, ptrs, sizes = record.resolve_matrices(blocks, key_count, **kwargs)
+    token_starts = np.zeros(key_count, dtype=np.uint64)
+    offsets, ptrs, sizes = record.resolve_matrices(blocks, token_starts, **kwargs)
     return offsets.reshape(-1), ptrs.reshape(-1), sizes.reshape(-1), ptrs.shape[1]
 
 
@@ -860,6 +987,59 @@ class KVCacheSpecTest(unittest.TestCase):
                 ucm_cache_block_size=512,
             )
         self.assertIn("bounded replay", "".join(logs.output))
+
+    def test_groups_vllm_does_not_store_are_transient(self):
+        # A group with transfer off or a non-prefix-cacheable spec is not
+        # listed in prefix_cacheable_group_ids, so UCM does not store it.
+        for enabled, cacheable in ((False, True), (True, False)):
+            with self.subTest(enabled=enabled, cacheable=cacheable):
+                parsed = parse_spec(
+                    config(
+                        group(["model.layers.0.attn"], FullAttentionSpec(8)),
+                        group(
+                            ["model.layers.1.scratch"],
+                            UnsupportedSpec(7, prefix_cacheable=cacheable),
+                            enable_kv_transfer=enabled,
+                        ),
+                    ),
+                    scheduler_block_size=8,
+                )
+                scratch = parsed.groups[1]
+                self.assertTrue(scratch.is_transient)
+                self.assertEqual(scratch.kinds, frozenset())
+                self.assertEqual(scratch.tail_blocks, 0)
+
+    def test_unsupported_restore_semantics_are_rejected(self):
+        for kind in (
+            KVCacheSpecKind.UNKNOWN,
+            KVCacheSpecKind.CHUNKED_LOCAL_ATTENTION,
+            KVCacheSpecKind.ENCODER_ONLY_ATTENTION,
+            KVCacheSpecKind.CROSS_ATTENTION,
+        ):
+            with (
+                self.subTest(kind=kind),
+                self.assertRaisesRegex(TypeError, "Unsupported"),
+            ):
+                parse_spec(
+                    config(
+                        group(
+                            ["model.layers.0.attn"], UnsupportedSpec(8, spec_kind=kind)
+                        )
+                    ),
+                    scheduler_block_size=8,
+                )
+
+    def test_sink_attention_is_a_supported_kind(self):
+        parsed = parse_spec(
+            config(
+                group(
+                    ["model.layers.0.attn"],
+                    UnsupportedSpec(8, spec_kind=KVCacheSpecKind.SINK_FULL_ATTENTION),
+                )
+            ),
+            scheduler_block_size=8,
+        )
+        self.assertEqual(tuple(g.group_id for g in parsed.fa_groups), (0,))
 
     def test_parse_rejects_misaligned_sliding_groups(self):
         # A sliding tail keeps a static window shape: the boundary must
@@ -1089,6 +1269,18 @@ class DumpMetadataTest(unittest.TestCase):
 
 
 class MtpLayerIndexTest(unittest.TestCase):
+    def test_longcat_layer_ids_match_native_attention_module_numbering(self):
+        names = ("model.layers.2.attn.0", "model.layers.2.attn.1")
+        layout = make_layout(
+            config(group(names, FullAttentionSpec(8))),
+            {
+                name: FakeTensor(1000 + i * 1000, (8, 1, 8, 1), (8, 8, 1, 1))
+                for i, name in enumerate(names)
+            },
+            num_attn_module=2,
+        )
+        self.assertEqual(layout.layer_id_by_name, {names[0]: 4, names[1]: 5})
+
     def test_native_numbering(self):
         from ucm.integration.vllm.v2.layout.kv_cache import _layer_index
 
@@ -1140,7 +1332,7 @@ class MtpLayerIndexTest(unittest.TestCase):
         self.assertFalse(layout.group_layouts[1].segment_mask(layer_ids=[0]).any())
         group1 = layout.group_layouts[1]
         whole = _resolved_access(
-            group1.compile_access(),
+            compile_access(group1),
             [1],
             segment_mask=group1.segment_mask(layer_ids=[4]),
         )
@@ -1477,6 +1669,67 @@ class HashAndLookupTest(unittest.TestCase):
         result = coordinator.lookup(request, 0)
 
         self.assertEqual(result.external_hit_tokens, 1024)
+
+
+class StateBytePageTest(unittest.TestCase):
+    def test_dense_permutation_keeps_storage_offset_stride_and_aliasing(self):
+        import torch
+
+        from ucm.integration.vllm.v2.layout.view import _as_byte_page
+
+        backing = torch.arange(300, dtype=torch.float32).to(torch.bfloat16)
+        original = torch.as_strided(
+            backing, (4, 2, 3), (64, 3, 1), storage_offset=5
+        ).transpose(1, 2)
+        byte_page = _as_byte_page(original)
+        self.assertEqual(tuple(byte_page.shape), (4, 1, 1, 12))
+        self.assertEqual(byte_page.stride(0), 128)
+        self.assertEqual(byte_page.data_ptr(), original.data_ptr())
+        for block in range(4):
+            expected = backing[5 + 64 * block : 11 + 64 * block].view(torch.uint8)
+            self.assertTrue(torch.equal(byte_page[block, 0, 0], expected))
+        byte_page[0, 0, 0].zero_()
+        self.assertEqual(backing[5:11].tolist(), [0] * 6)
+
+    def test_npu_state_binding_uses_typed_component_payloads(self):
+        import torch
+
+        names = ("model.layers.0.attn", "model.layers.1.state")
+        backing = torch.zeros(300, dtype=torch.float32)
+        component = torch.as_strided(
+            backing, (4, 2, 3), (64, 3, 1), storage_offset=5
+        ).transpose(1, 2)
+        raw = config(
+            group([names[0]], FullAttentionSpec(8)),
+            group([names[1]], MambaSpec(8)),
+            num_blocks=4,
+            tensors=(
+                SimpleNamespace(
+                    layers=(names[1],), offset=0, layer_stride=1024, block_stride=128
+                ),
+            ),
+        )
+        layout = make_layout(
+            raw,
+            {
+                names[0]: FakeTensor(1000, (4, 8, 1, 1), (8, 1, 1, 1)),
+                names[1]: (component,),
+            },
+            device_type="npu",
+        )
+        _, ptrs, sizes = layout.store_layouts[1].resolve_matrices(
+            np.array([2], dtype=np.uint64), np.array([0], dtype=np.uint64)
+        )
+        self.assertEqual(ptrs.tolist(), [[component.data_ptr() + 512]])
+        self.assertEqual(sizes.tolist(), [[24]])
+
+    def test_non_dense_state_payload_is_rejected(self):
+        import torch
+
+        from ucm.integration.vllm.v2.layout.view import _as_byte_page
+
+        with self.assertRaisesRegex(ValueError, "dense"):
+            _as_byte_page(torch.zeros((4, 8, 6))[:, :, ::2])
 
 
 class ParallelShardTest(unittest.TestCase):
@@ -1933,8 +2186,12 @@ class ParallelShardTest(unittest.TestCase):
             kv_cache_config=raw_config,
             num_hidden_layers=4,
         )
-        access = layout.group_layouts[0].compile_access(
-            token_offsets=np.array([0]), token_counts=np.array([8])
+        # DCP doubles the 4-token native block to 8 tokens.
+        access = compile_access(
+            layout.group_layouts[0],
+            token_offsets=np.array([0]),
+            token_counts=np.array([8]),
+            token_block_size=8,
         )
         ptrs, sizes = _resolved_access(access, np.array([2], dtype=np.uint64))
         self.assertEqual(ptrs.reshape(-1).tolist(), [1032])
@@ -3061,7 +3318,10 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(parsed.groups[0].token_block_size, 256)
         # One stored state per 4 tokens: the block spans 64 states.
         self.assertEqual(
-            (int(component.states_per_block[0]), int(component.state_strides[0])),
+            (
+                int(component.states_per_block[0]),
+                int(component.payload_bytes[0] // component.states_per_block[0]),
+            ),
             (64, 8),
         )
 
@@ -3789,13 +4049,13 @@ class RaggedLayoutTest(unittest.TestCase):
 
         # Whole spans and compiled access templates expose the same bytes:
         # the span covers the group, while the grid has one column per segment.
-        span_ptrs, span_sizes = group_layout.block_first_segments((2,))
+        span_ptrs = group_layout.resolve_block_first_ptrs((2,))
         self.assertEqual(
-            (span_ptrs.tolist(), span_sizes.tolist()),
-            ([0x1000 + 2 * block_stride], [2 * page]),
+            (span_ptrs.tolist(), group_layout.block_first.block_size_bytes),
+            ([0x1000 + 2 * block_stride], 2 * page),
         )
         grid_ptrs, grid_sizes = _resolved_access(
-            group_layout.compile_access(token_counts=256), [2]
+            compile_access(group_layout, token_counts=256), [2]
         )
         self.assertEqual(grid_ptrs[:, 1].tolist(), [0x1000 + page + 2 * block_stride])
         self.assertEqual(grid_sizes[:, 1].tolist(), [page])
@@ -3804,7 +4064,7 @@ class RaggedLayoutTest(unittest.TestCase):
         # the layer's own view and stay payload-exact (128 tokens at the
         # 4:1 compression = 32 states x 64B = 2048B).
         window_ptrs, window_sizes = _resolved_access(
-            group_layout.compile_access(token_counts=128),
+            compile_access(group_layout, token_counts=128),
             [2],
         )
         self.assertEqual(window_ptrs[:, 0].tolist(), [0x1000 + 2 * block_stride])
@@ -3887,9 +4147,10 @@ class RaggedLayoutTest(unittest.TestCase):
             layout.store_layouts[group_layout.group_id].whole_block_bytes, slot
         )
 
+        # Each segment keeps its offset inside the span for layerwise IO.
         self.assertEqual(
             layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
-            [0],
+            [0, 8192, 4096, 10240],
         )
         from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
 
@@ -4069,7 +4330,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         # The compiled access grid answers the same spans without
         # records: rows are blocks, columns views.
-        grid_ptrs, grid_sizes = _resolved_access(group_layout.compile_access(), [2, 5])
+        grid_ptrs, grid_sizes = _resolved_access(compile_access(group_layout), [2, 5])
         self.assertEqual(
             grid_ptrs.tolist(),
             [
@@ -4309,7 +4570,7 @@ class RaggedLayoutTest(unittest.TestCase):
             )
             self.assertEqual(exact.offsets.tolist(), [offsets[0]])
             window = _resolved_access(
-                layout.group_layouts[0].compile_access(token_counts=4),
+                compile_access(layout.group_layouts[0], token_counts=4),
                 [3],
                 segment_mask=layout.group_layouts[0].segment_mask(layer_ids=[2]),
             )
@@ -4720,6 +4981,7 @@ class RawConfigDumpTest(unittest.TestCase):
             ),
             prefix_cache_retention_interval=0,
             kv_cache_layout="LBHNC",
+            prefix_cacheable_group_ids=(0,),
         )
         os.environ["UCM_V2_DUMP_CONFIG"] = str(tmp / path_template)
         try:
@@ -4773,7 +5035,7 @@ class BlockAccessTest(unittest.TestCase):
         ).group_layouts[0]
 
     def test_fixed_partial_window_repeats_across_physical_blocks(self):
-        access = self.layout.compile_access(token_offsets=[4, 0], token_counts=[4, 8])
+        access = compile_access(self.layout, token_offsets=[4, 0], token_counts=[4, 8])
         ptrs, sizes = _resolved_access(access, [1, 2, 0, 3])
         np.testing.assert_array_equal(
             ptrs, [[1024, 2036], [1032, 2048], [1008, 2012], [1048, 2072]]
@@ -4783,13 +5045,13 @@ class BlockAccessTest(unittest.TestCase):
     def test_partial_ranges_and_layer_selection(self):
         mask = self.layout.segment_mask(layer_ids=[1])
         for start, block, expected_ptr in ((0, 2, 2048), (4, 2, 2060), (2, 0, 2006)):
-            access = self.layout.compile_access(token_offsets=start, token_counts=4)
+            access = compile_access(self.layout, token_offsets=start, token_counts=4)
             ptrs, sizes = _resolved_access(access, [block], segment_mask=mask)
             np.testing.assert_array_equal(ptrs, [[expected_ptr]])
             np.testing.assert_array_equal(sizes, [[12]])
 
     def test_dynamic_subblocks_and_layer_selection(self):
-        access = self.layout.compile_access(token_counts=4)
+        access = compile_access(self.layout, token_counts=4)
         mask = self.layout.segment_mask(layer_ids=[1])
         ptrs, sizes = _resolved_access(
             access, [2, 2], token_offsets=np.array([0, 4]), segment_mask=mask
@@ -4803,7 +5065,7 @@ class BlockAccessTest(unittest.TestCase):
         np.testing.assert_array_equal(ptrs, [[2006]])
 
     def test_resolved_arrays_do_not_alias_templates_or_other_calls(self):
-        access = self.layout.compile_access(token_offsets=[4, 0], token_counts=[4, 8])
+        access = compile_access(self.layout, token_offsets=[4, 0], token_counts=[4, 8])
         first = _resolved_access(access, [1, 2, 0, 3])
         second = _resolved_access(access, [1, 2, 0, 3])
         expected = tuple(array.copy() for array in second)
@@ -4815,7 +5077,7 @@ class BlockAccessTest(unittest.TestCase):
             np.testing.assert_array_equal(actual, wanted)
 
     def test_ranges_with_empty_blocks_or_selection(self):
-        access = self.layout.compile_access(token_counts=4)
+        access = compile_access(self.layout, token_counts=4)
         ptrs, sizes = _resolved_access(access, [])
         self.assertEqual(ptrs.shape, (0, 2))
         self.assertEqual(sizes.shape, (0, 2))
@@ -4826,7 +5088,7 @@ class BlockAccessTest(unittest.TestCase):
         self.assertEqual(sizes.shape, (1, 0))
 
     def test_dynamic_ranges_with_empty_blocks_or_selection(self):
-        access = self.layout.compile_access(token_counts=4)
+        access = compile_access(self.layout, token_counts=4)
         ptrs, sizes = _resolved_access(
             access, [], token_offsets=np.array([], dtype=np.int64)
         )
@@ -4843,18 +5105,52 @@ class BlockAccessTest(unittest.TestCase):
 
     def test_invalid_ranges_and_incomplete_windows_are_rejected(self):
         with self.assertRaises(ValueError):
-            self.layout.compile_access(token_offsets=6, token_counts=4)
-        access = self.layout.compile_access(token_counts=4)
-        with self.assertRaises(ValueError):
-            _resolved_access(access, [0], token_offsets=np.array([6]))
-        with self.assertRaises(ValueError):
-            _resolved_access(access, [4])
-        window = self.layout.compile_access(token_counts=[4, 8])
+            compile_access(self.layout, token_offsets=6, token_counts=4)
+        window = compile_access(self.layout, token_counts=[4, 8])
         with self.assertRaises(ValueError):
             _resolved_access(window, [0])
 
 
 class LayerViewSegmentsTest(unittest.TestCase):
+    def test_npu_split_components_use_view_strides_not_whole_page_descriptor(self):
+        name = "model.layers.0.attn"
+        raw = config(
+            group([name], FullAttentionSpec(8)),
+            tensors=(
+                SimpleNamespace(
+                    layers=(name,), offset=0, layer_stride=512, block_stride=64
+                ),
+            ),
+        )
+        layout = make_layout(
+            raw,
+            {
+                name: (
+                    FakeTensor(1000, (8, 8, 1, 2), (16, 2, 2, 1)),
+                    FakeTensor(2000, (8, 8, 1, 1), (8, 1, 1, 1)),
+                )
+            },
+            device_type="npu",
+        )
+        self.assertEqual(
+            layout.group_layouts[0].resolve_ptrs([3]).tolist(), [[1048, 2024]]
+        )
+        self.assertIsNone(layout.group_layouts[0].block_first)
+        self.assertEqual(layout.store_layouts[0].store_bytes, 24)
+
+    def test_cpu_native_descriptor_stride_is_still_validated(self):
+        name = "model.layers.0.attn"
+        raw = config(
+            group([name], FullAttentionSpec(8)),
+            tensors=(
+                SimpleNamespace(
+                    layers=(name,), offset=0, layer_stride=512, block_stride=64
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            make_layout(raw, {name: FakeTensor(1000, (8, 1, 8, 2), (16, 16, 2, 1))})
+
     def test_separate_backings_do_not_merge_from_declarations_alone(self):
         names = ["model.layers.0.attn", "model.layers.1.attn"]
         raw_config = config(
@@ -4937,10 +5233,10 @@ class LayerViewSegmentsTest(unittest.TestCase):
             if expected is None:
                 # The same strides read as multi-head HNC on CPU.
                 with self.assertRaisesRegex(ValueError, "whole-block access"):
-                    gl.compile_access(token_offsets=1, token_counts=2)
+                    compile_access(gl, token_offsets=1, token_counts=2)
                 continue
             ptrs, sizes = _resolved_access(
-                gl.compile_access(token_offsets=1, token_counts=2), [1]
+                compile_access(gl, token_offsets=1, token_counts=2), [1]
             )
             self.assertEqual(ptrs.tolist(), expected)
             self.assertEqual(int(sizes.sum()), 8)
@@ -4962,7 +5258,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
             num_hidden_layers=4,
         )
         with self.assertRaisesRegex(ValueError, "whole-block access"):
-            layout.group_layouts[0].compile_access(token_offsets=0, token_counts=4)
+            compile_access(layout.group_layouts[0], token_offsets=0, token_counts=4)
 
     def _layout(self, order, *, unit=None, declared=False):
         # Physical backing axes, independently turned into logical BHNC views.
@@ -5022,10 +5318,10 @@ class LayerViewSegmentsTest(unittest.TestCase):
                 group_layout = layout.group_layouts[0]
                 if not partial:
                     with self.assertRaisesRegex(ValueError, "whole-block access"):
-                        group_layout.compile_access(token_counts=4)
+                        compile_access(group_layout, token_counts=4)
                 for start in starts:
-                    access = group_layout.compile_access(
-                        token_offsets=start, token_counts=count
+                    access = compile_access(
+                        group_layout, token_offsets=start, token_counts=count
                     )
                     ptrs, sizes = _resolved_access(
                         access,
@@ -5128,16 +5424,17 @@ class LayerViewSegmentsTest(unittest.TestCase):
         layout, _ = self._layout("BLHNC", unit=8, declared=True)
         group_layout = layout.group_layouts[0]
         self.assertIsNotNone(group_layout.block_first)
-        access = group_layout.compile_access()
+        access = compile_access(group_layout)
         ptrs, sizes = _resolved_access(
             access, [1], segment_mask=group_layout.segment_mask(layer_ids=[1])
         )
         # One compact [H, N, C] page per layer.
         self.assertEqual(ptrs.tolist(), [[1096]])
         self.assertEqual(sizes.tolist(), [[32]])
+        # Each segment keeps its offset inside the span for layerwise IO.
         self.assertEqual(
             layout.store_layouts[group_layout.group_id].group_block_offsets.tolist(),
-            [0],
+            [0, 32],
         )
         # BHLNC interleaves other layers between heads: must not copy a
         # presumed contiguous layer page via the declaration fast path.
@@ -5179,7 +5476,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
                     num_hidden_layers=4,
                 ).group_layouts[0]
                 ptrs, sizes = _resolved_access(
-                    gl.compile_access(token_offsets=512, token_counts=512), [2]
+                    compile_access(gl, token_offsets=512, token_counts=512), [2]
                 )
                 self.assertEqual(ptrs.tolist(), [expected_ptrs])
                 self.assertEqual(int(sizes.sum()), 512 * 1152)
@@ -5252,7 +5549,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
             kv_cache_config=raw_config,
             num_hidden_layers=4,
         )
-        access = layout.group_layouts[0].compile_access(token_counts=512)
+        access = compile_access(layout.group_layouts[0], token_counts=512)
         ptrs, sizes = _resolved_access(
             access, [2] * 32, token_offsets=np.arange(32) * 512
         )

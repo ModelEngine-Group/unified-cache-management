@@ -23,6 +23,7 @@ from .config import (
     STORAGE_BACKENDS_ENV,
     STORE_PIPELINE_ENV,
     TOKENS_ENV,
+    UCM_CACHE_BLOCK_SIZE_ENV,
     USE_LAYERWISE_ENV,
 )
 
@@ -76,6 +77,9 @@ class ModelCheckTool(ToolAdapter):
         for dimension in ("tp", "pp", "pcp", "dcp"):
             parser.add_argument(f"--{dimension}", type=int, default=1)
         parser.add_argument("--tokens", type=int, help="synthetic request length")
+        parser.add_argument(
+            "--ucm-cache-block-size", type=int, help="connector-v2 tokens per UCM block"
+        )
         parser.add_argument(
             "--block-size", type=int, help="vLLM KV-cache block size in tokens"
         )
@@ -138,6 +142,7 @@ class ModelCheckTool(ToolAdapter):
         string_options = (
             ("model", MODEL_ENV),
             ("tokens", TOKENS_ENV),
+            ("ucm_cache_block_size", UCM_CACHE_BLOCK_SIZE_ENV),
             ("block_size", BLOCK_SIZE_ENV),
             ("store_pipeline", STORE_PIPELINE_ENV),
             ("storage_backends", STORAGE_BACKENDS_ENV),

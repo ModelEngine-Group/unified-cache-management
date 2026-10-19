@@ -28,18 +28,19 @@ The checker ships one launcher per serving stack in this directory
 |---|---|---|---|
 | `ascend.py` | vLLM + vLLM-Ascend | `npu` | **Ascend-specific** layout (vLLM-Ascend patches: non-packed tuples, int8 SFA C8 pages, mamba-aligned blocks, …) |
 | `cuda.py` | official vLLM (CUDA build) | `cuda` | **Official vLLM layout** |
-| `cpu.py` | official vLLM (CPU build) | `cpu` | **Official vLLM layout — identical to `cuda.py`** |
+| `cpu.py` | official vLLM (CPU build) | `cpu` | **CUDA layout simulation through the native GPUModelRunner allocator** |
 
 **Layout-identity notes**
 
-- `cpu.py` and `cuda.py` run the *same* official vLLM code: the CPU build and
-  the CUDA build are the same v0.26.0 sources compiled with different targets,
-  and the KV-cache planning pipeline (`get_kv_cache_spec` → grouping →
-  `_get_kv_cache_config_packed`) is platform-independent arithmetic. The two
-  launchers differ only in the runtime platform: `cpu.py` needs no GPU (and no
-  CUDA driver), `cuda.py` requires an NVIDIA GPU; both report the same layout.
-  The only expected deltas are backend-name-driven fields (e.g. sparse-MLA
-  `kv_cache_dtype` normalization) that follow the actually-selected GPU backend.
+- `cpu.py` uses the installed official vLLM GPUModelRunner's spec, grouping,
+  config and allocation code with real CPU tensors. It substitutes unexecuted
+  attention/MoE computation dependencies and CUDA stream/event interfaces.
+  Backend constraints must be checked against the target vLLM source; a CPU
+  PASS does not prove CUDA hardware, kernel execution or full serving support.
+  For Qwen4Exp it also skips only the construction-time QSA FlashAttention
+  availability probe, keeping the native owner/spec/cache construction.
+- The standalone checker publishes the resolved layout name into the worker
+  KVCacheConfig, matching EngineCore's hand-off after native config creation.
 - The **Ascend layout is a different design**: page sizes/dtypes/shared-tensor
   structure differ (e.g. GLM-5.2: Ascend int8 packed 656 B/token vs official
   bf16 1,152 B/token; DSV4: Ascend bf16 non-packed tuples vs official
@@ -94,6 +95,26 @@ ucm-toolkit run model-check \
     --model /path/to/model --tokens 1024 --block-size 128 \
     --storage-backends /path/to/ucm_storage
 ```
+
+For connector v2, `--ucm-cache-block-size` sets the token span of each UCM key,
+independently of the native `--block-size`. Omit it to use the connector's
+default. Explicit values must satisfy the connector's shared scheduler/group
+alignment rules. The environment equivalent is `UCM_MODEL_CHECK_UCM_CACHE_BLOCK_SIZE`.
+
+On vLLM 0.30 / current Ascend, scheduler configuration conversion and manager
+selection use the native APIs. The checker no longer installs the obsolete
+Ascend UniformType manager-factory patch. The no-weight configuration uses the
+native `dummy` load format, and the Ascend runner path registers custom kernels
+through `enable_custom_op()` after selecting the device, as native Worker does.
+For Ascend Engram construction, its native node-locality check executes with
+real CPU control tensors and real Gloo collectives; model parameters remain
+on meta. Cache specs, grouping, cache allocation, and scheduler block IDs are
+obtained from the native runtime without replacing their values.
+For v2 dump/load verification it
+evicts source prefix hashes through the native manager while keeping source
+blocks allocated, then poisons target IO ranges with `0xff` before loading.
+The expected dump pattern only contains bytes in `[0,250]`; loaded bytes must
+match that pattern in distinct scheduler-allocated destination blocks.
 
 `adapter.py` picks the launcher automatically: `vllm_ascend` installed →
 `ascend`; vLLM package version contains `+cpu` → `cpu`; plain vLLM → `cuda`.

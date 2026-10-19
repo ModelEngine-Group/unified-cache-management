@@ -321,6 +321,11 @@ class UCMTransferBuilder:
                 f"tokens=[{plan.token_start},{plan.token_end}) rows={len(selected_rows)} "
                 f"groups={[group.group_id for group in record_class.groups]}"
             )
+        # First token of each selected UCM block. An FA slice uses it to find
+        # its place inside a vLLM block.
+        token_starts = (plan.token_start // ucm_block_size + selected_rows).astype(
+            np.uint64
+        ) * np.uint64(ucm_block_size)
         group_record_offset = 0
         for group, position in zip(record_class.groups, record_class.group_positions):
             if group.group_id not in self.layout.group_layouts:
@@ -341,20 +346,8 @@ class UCMTransferBuilder:
                 if layer_names is None
                 else group_layout.segment_mask(layer_names=layer_names)
             )
-            token_offsets = None
-            if store_layout.dynamic_token_offsets:
-                # Slice start of each row inside its vLLM block.
-                first_block = plan.token_start // ucm_block_size
-                token_offsets = (
-                    (first_block + selected_rows).astype(np.uint64)
-                    * ucm_block_size
-                    % group_layout.token_block_size
-                )
             offsets, ptrs, sizes = store_layout.resolve_matrices(
-                vllm_block_ids,
-                len(selected_rows),
-                token_offsets=token_offsets,
-                segment_mask=segment_mask,
+                vllm_block_ids, token_starts, segment_mask=segment_mask
             )
             if group_record_offset:
                 offsets = np.broadcast_to(

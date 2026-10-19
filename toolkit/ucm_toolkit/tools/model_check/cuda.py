@@ -50,7 +50,7 @@ import traceback
 from typing import Any
 
 import torch
-from .config import load_config
+
 from .common import (
     CacheFixture,
     UnsupportedEnvironment,
@@ -65,6 +65,7 @@ from .common import (
     schedule,
     verify,
 )
+from .config import load_config
 
 # =========================== User configuration ===========================
 config = load_config()
@@ -125,6 +126,7 @@ def make_config() -> Any:
         use_layerwise,
         "cuda",
         connector_module_path,
+        ucm_cache_block_size=config.ucm_cache_block_size,
     )
 
 

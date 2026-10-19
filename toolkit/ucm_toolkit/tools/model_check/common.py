@@ -85,10 +85,11 @@ def make_ucm_config(
     storage_backends: str,
     use_layerwise: bool,
     enable_event_sync: bool = True,
+    ucm_cache_block_size: int | None = None,
 ) -> dict[str, Any]:
     """Build the fixed UCM configuration used by the compatibility check."""
 
-    return {
+    config = {
         "ucm_connectors": [
             {
                 "ucm_connector_name": "UcmPipelineStore",
@@ -112,6 +113,9 @@ def make_ucm_config(
         "load_tokens_threshold": 0,
         "enable_record_traces": False,
     }
+    if ucm_cache_block_size is not None:
+        config["ucm_cache_block_size"] = ucm_cache_block_size
+    return config
 
 
 def make_config(
@@ -127,6 +131,7 @@ def make_config(
     use_layerwise: bool,
     device: str,
     connector_module_path: str = "ucm.integration.vllm.ucm_connector",
+    ucm_cache_block_size: int | None = None,
 ) -> Any:
     """Create the requested vLLM parallel configuration for the synthetic request."""
 
@@ -143,6 +148,7 @@ def make_config(
                 store_pipeline,
                 storage_backends,
                 use_layerwise,
+                ucm_cache_block_size=ucm_cache_block_size,
             ),
         },
     )
@@ -153,6 +159,7 @@ def make_config(
             "model": model,
             "tokenizer": None,
             "skip_tokenizer_init": True,
+            "load_format": "dummy",
             "trust_remote_code": trust_remote_code,
             "dtype": dtype,
             "kv_cache_dtype": kv_cache_dtype,
@@ -267,11 +274,17 @@ def _redirect_to_meta_device(
 @contextmanager
 def no_real_device_move_from_meta_context(
     factory_kwargs_redirect: Callable[[dict[str, Any]], dict[str, Any]],
+    cpu_control_plane_functions: tuple[tuple[Any, str], ...] = (),
 ) -> Any:
     """Keep model-construction device moves and factories on meta tensors."""
 
     original_module_to = torch.nn.Module.to
     original_tensor_to = torch.Tensor.to
+    in_cpu_control_plane = False
+    original_cpu_functions = [
+        (owner, name, getattr(owner, name))
+        for owner, name in cpu_control_plane_functions
+    ]
     factory_names = (
         "arange",
         "empty",
@@ -328,17 +341,36 @@ def no_real_device_move_from_meta_context(
         def checker_meta_safe_factory(*args: Any, **kwargs: Any) -> torch.Tensor:
             """Call the factory after applying the platform redirect callback."""
 
-            return factory(*args, **factory_kwargs_redirect(kwargs))
+            if not in_cpu_control_plane:
+                kwargs = factory_kwargs_redirect(kwargs)
+            return factory(*args, **kwargs)
 
         return checker_meta_safe_factory
+
+    def native_cpu_control_plane(function: Any) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            nonlocal in_cpu_control_plane
+            previous = in_cpu_control_plane
+            in_cpu_control_plane = True
+            try:
+                with torch.device("cpu"):
+                    return function(*args, **kwargs)
+            finally:
+                in_cpu_control_plane = previous
+
+        return call
 
     torch.nn.Module.to = checker_meta_safe_to  # type: ignore[assignment]
     torch.Tensor.to = checker_meta_safe_tensor_to  # type: ignore[assignment]
     for name, factory in original_factories.items():
         setattr(torch, name, make_meta_safe_factory(factory))
+    for owner, name, function in original_cpu_functions:
+        setattr(owner, name, native_cpu_control_plane(function))
     try:
         yield
     finally:
+        for owner, name, function in original_cpu_functions:
+            setattr(owner, name, function)
         for name, factory in original_factories.items():
             setattr(torch, name, factory)
         torch.Tensor.to = original_tensor_to  # type: ignore[assignment]
@@ -715,6 +747,9 @@ def make_cache(
         kv_cache_specs,
         kv_num_blocks,
     )
+    # EngineCore publishes the resolved name after the native config factory;
+    # the factory itself intentionally leaves this worker hand-off field unset.
+    kv_cache_config.kv_cache_layout = kv_vllm_config.cache_config.kv_cache_layout
     if int(kv_cache_config.num_blocks) != kv_num_blocks:
         raise AssertionError(
             f"vLLM ignored num_gpu_blocks_override: "
@@ -814,12 +849,10 @@ def log_cache_layout(fixture: CacheFixture) -> None:
             signature = (
                 type(layer_spec).__name__,
                 int(getattr(layer_spec, "block_size", 0)),
-                int(
-                    getattr(
-                        layer_spec,
-                        "storage_block_size",
-                        getattr(layer_spec, "block_size", 0),
-                    )
+                getattr(
+                    layer_spec,
+                    "storage_block_size",
+                    getattr(layer_spec, "block_size", 0),
                 ),
                 tuple(getattr(layer_spec, "shapes", ()) or ()),
                 raw_signature,
@@ -1243,6 +1276,19 @@ def compare_v2_load_segments(
                 "connector v2 byte mismatch: "
                 f"segment={index}, key={key.hex()}, offset={offset}, size={size}"
             )
+    return len(batch.sizes)
+
+
+def poison_v2_load_segments(fixture: Any, worker: Any, metadata: Any) -> int:
+    """Overwrite target ranges with bytes outside the dump pattern's [0,250]."""
+    from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
+
+    batch = _v2_batch(worker, metadata, "load")
+    access = TorchTensorByteAccess()
+    access.register_tensors(fixture.kv_caches)
+    for ptr, size in zip(batch.ptrs, batch.sizes, strict=True):
+        access.write(ptr, b"\xff" * int(size))
+    access.synchronize()
     return len(batch.sizes)
 
 
@@ -1823,6 +1869,12 @@ def verify(
     sync_workers()
     time.sleep(10)
 
+    # Keep source blocks allocated, but remove their local prefix hashes so
+    # the target must use external lookup and receive distinct native blocks.
+    if v2_dump_batch is not None:
+        dispatch.scheduler.kv_cache_manager.evict_blocks(
+            {block for group in source_ids for block in group} - {NATIVE_NULL_BLOCK_ID}
+        )
     target = schedule_target(
         fixture,
         dispatch.scheduler,
@@ -1847,6 +1899,9 @@ def verify(
             "Scheduler-side UCM lookup did not hit: target "
             "kv_connector_metadata has no load_block_ids."
         )
+    if v2_dump_batch is not None:
+        poisoned = poison_v2_load_segments(fixture, worker, load_metadata)
+        log(f"poisoned target v2 ranges: segments={poisoned}")
     worker.bind_connector_metadata(load_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
     call_worker_layer_hooks(worker, fixture, save=False)

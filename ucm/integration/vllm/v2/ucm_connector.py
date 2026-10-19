@@ -271,6 +271,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             hf_text_config=text_config,
             ucm_cache_block_size=ucm_cache_block_size,
             device_type=self.context.device_type,
+            # Longcat has two attention modules per decoder layer.
+            num_attn_module=(
+                2
+                if vllm_config.model_config.hf_config.model_type == "longcat_flash"
+                else 1
+            ),
         )
         self.parallel_layout.apply_context_parallel(self.spec)
         # Raises at startup if the topology does not fit in UCM block ids.
@@ -291,6 +297,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             "mamba_dtype": vllm_config.cache_config.mamba_cache_dtype,
             "mamba_ssm_dtype": vllm_config.cache_config.mamba_ssm_cache_dtype,
             "kv_cache_layout": kv_cache_config.kv_cache_layout,
+            # vLLM decides which groups are stored; a change makes new records.
+            "stored_group_ids": [
+                group.group_id for group in self.spec.groups if not group.is_transient
+            ],
             "ascend_gqa_head_first": (
                 envs.VLLM_KV_CACHE_LAYOUT in ("LBHNC", "HND")
                 if self.context.device_type == "npu"
@@ -477,9 +487,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             # before forward, including attention caches sharing a layer index.
             state_layer_ids = {
                 layer.layer_index
-                for group_layout in self.layout.group_layouts.values()
-                if group_layout.is_state_snapshot
-                for layer in group_layout.layers
+                for group in self.spec.state_groups
+                if group.group_id in self.layout.group_layouts
+                for layer in self.layout.group_layouts[group.group_id].layers
             }
             for layer_id in state_layer_ids:
                 self._wait_layer_load(layer_id)

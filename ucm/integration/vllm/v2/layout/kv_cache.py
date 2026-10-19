@@ -14,8 +14,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.kv_cache_interface import (
-    CircularBufferSpec,
-    KpoolTailSpec,
     KVCacheSpecKind,
     UniformTypeKVCacheSpecs,
     get_kv_cache_spec_kind,
@@ -37,6 +35,16 @@ if TYPE_CHECKING:
 
 _SLIDING_KINDS = frozenset(
     (KVCacheSpecKind.SLIDING_WINDOW, KVCacheSpecKind.SLIDING_WINDOW_MLA)
+)
+_SUPPORTED_KINDS = frozenset(
+    (
+        KVCacheSpecKind.FULL_ATTENTION,
+        KVCacheSpecKind.MLA_ATTENTION,
+        KVCacheSpecKind.SINK_FULL_ATTENTION,
+        KVCacheSpecKind.SLIDING_WINDOW,
+        KVCacheSpecKind.SLIDING_WINDOW_MLA,
+        KVCacheSpecKind.MAMBA,
+    )
 )
 _MLA_KINDS = frozenset(
     (KVCacheSpecKind.MLA_ATTENTION, KVCacheSpecKind.SLIDING_WINDOW_MLA)
@@ -72,6 +80,7 @@ class UCMKVCacheGroupInfo:
     tail_blocks: int = 0
     is_eagle_group: bool = False
     # transient kv cache is not stored
+    # (vLLM does not list it in prefix_cacheable_group_ids)
     is_transient: bool = False
     # Number of different shards of this group's data across TP ranks.
     # None means every TP rank holds different data. MLA and replicated
@@ -112,6 +121,8 @@ class UCMKVCacheSpec:
     scheduler_block_size: int
     ucm_cache_block_size: int
     device_type: str
+    # Attention modules per decoder layer, for layer ids (Longcat has 2).
+    num_attn_module: int = 1
 
     @property
     def state_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
@@ -170,9 +181,11 @@ def _concrete_specs(
         return tuple((layer_name, group_spec) for layer_name in group.layer_names)
 
 
-def _layer_index(layer_name: str, device_type: str, num_hidden_layers: int) -> int:
+def _layer_index(
+    layer_name: str, device_type: str, num_hidden_layers: int, num_attn_module: int = 1
+) -> int:
     """Ascend MTP uses local IDs; upstream uses global IDs."""
-    layer_index = extract_layer_index(layer_name)
+    layer_index = extract_layer_index(layer_name, num_attn_module)
     if device_type.lower() == "npu" and "mtp" in layer_name.split("."):
         if layer_index < num_hidden_layers:
             layer_index += num_hidden_layers
@@ -221,7 +234,7 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     unknown_spec_types = tuple(
         type(spec).__qualname__
         for spec, kind in zip(specs, spec_kinds)
-        if kind == KVCacheSpecKind.UNKNOWN
+        if kind not in _SUPPORTED_KINDS
     )
     if unknown_spec_types:
         raise TypeError(
@@ -234,30 +247,11 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     return kinds
 
 
-def _transient_pool_tokens(
-    specs: Sequence["KVCacheSpec"], hf_text_config: Any, device_type: str
-) -> int | None:
-    """Pool size in tokens of a transient group, or None if not transient."""
-    model_type = hf_text_config.model_type
-    if all(isinstance(spec, CircularBufferSpec) for spec in specs):
-        if model_type not in ("qwen4_exp", "qwen4_exp_text"):
-            raise NotImplementedError(
-                f"No UCM restore policy for CircularBufferSpec in {model_type}"
-            )
-        return hf_text_config.indexer_compress_ratio
-    if model_type in ("glm5_next", "glm5_next_text"):
-        tail_types = (KpoolTailSpec,)
-        if device_type == "npu":
-            from vllm_ascend.core.kv_cache_interface import AscendIndexerKPoolTailSpec
-
-            tail_types = (KpoolTailSpec, AscendIndexerKPoolTailSpec)
-        if all(isinstance(spec, tail_types) for spec in specs):
-            return hf_text_config.index_kpool
-    return None
-
-
 def _sliding_tail_tokens(
-    group: "KVCacheGroupSpec", hf_text_config: Any, device_type: str
+    group: "KVCacheGroupSpec",
+    hf_text_config: Any,
+    device_type: str,
+    num_attn_module: int,
 ) -> int:
     """Resolve logical history retention; only legacy compressors subtract a pool."""
     # A sliding spec without layer names cannot identify compressor tails.
@@ -271,7 +265,10 @@ def _sliding_tail_tokens(
             # DSV4: a restore boundary closes every compression group, so only
             # the overlap of the next group (window - ratio) is read again.
             layer_index = _layer_index(
-                layer_name, device_type, hf_text_config.num_hidden_layers
+                layer_name,
+                device_type,
+                hf_text_config.num_hidden_layers,
+                num_attn_module,
             )
             tail_tokens -= max(1, int(hf_text_config.compress_ratios[layer_index]))
         if tail_tokens < 0:
@@ -286,7 +283,6 @@ def _select_cache_block_size(
     groups: Sequence[UCMKVCacheGroupInfo],
     scheduler_block_size: int,
     requested_block_size: int | None,
-    transient_pool_tokens: Mapping[int, int],
     tokens_per_state: Mapping[int, int],
 ) -> int:
     # By default a UCM block is one vLLM scheduler block.
@@ -305,14 +301,7 @@ def _select_cache_block_size(
 
     for group in groups:
         is_full_attention = group.is_attention and not group.is_sliding_window
-        if group.is_transient:
-            pool_tokens = transient_pool_tokens[group.group_id]
-            if ucm_block_size % pool_tokens:
-                raise ValueError(
-                    f"Transient group {group.group_id} requires complete pools "
-                    f"of {pool_tokens} tokens"
-                )
-        elif is_full_attention and ucm_block_size < group.token_block_size:
+        if is_full_attention and ucm_block_size < group.token_block_size:
             # Each UCM block stores one slice of a vLLM block. Slices must
             # tile the block and hold whole compressed KV rows.
             if (
@@ -325,9 +314,9 @@ def _select_cache_block_size(
                     f"multiple of its tokens_per_state="
                     f"{tokens_per_state[group.group_id]}"
                 )
-        elif group.is_sliding_window and not group.tail_tokens:
-            # A sliding group with no tail stores nothing, so it puts no
-            # limit on the UCM block size.
+        elif group.is_transient or (group.is_sliding_window and not group.tail_tokens):
+            # A transient group or a sliding group with no tail stores nothing,
+            # so it puts no limit on the UCM block size.
             continue
         else:
             # FA, State and sliding groups with a tail: a UCM block holds
@@ -347,12 +336,14 @@ def parse_kv_cache_config(
     hf_text_config: Any,
     ucm_cache_block_size: int | None = None,
     device_type: str = "npu",
+    num_attn_module: int = 1,
 ) -> UCMKVCacheSpec:
     """Compile group persistence and restore policy on scheduler and worker.
 
     No physical row counts, placement descriptors or layer layouts are parsed.
-    hf_text_config supplies model ratios the native specs do not carry: DSV4
-    compressor tails and GLM/Qwen scratch pool sizes. Native group positions
+    hf_text_config supplies the DSV4 compressor ratios the native specs do not
+    carry. vLLM's prefix_cacheable_group_ids selects the groups UCM stores;
+    rebuilding scratch caches belongs to the engine. Native group positions
     remain block-table IDs, including transient and empty PP groups.
     """
     device_type = device_type.lower()
@@ -360,10 +351,9 @@ def parse_kv_cache_config(
     if not native_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
     group_infos: list[UCMKVCacheGroupInfo] = []
-    # Transient groups (CircularBufferSpec, KpoolTailSpec, AscendIndexerKPoolTailSpec)
-    # are not stored, but ucm block size must divide their pool size.
-    # save the pool size to select the UCM cache block size.
-    transient_pool_tokens: dict[int, int] = {}
+    # Groups vLLM does not list as prefix-cacheable (scratch rings, replayed
+    # windows) are not stored.
+    stored_group_ids = set(kv_cache_config.prefix_cacheable_group_ids)
     # Tokens one KV row covers in compressed attention (vLLM's
     # tokens_per_state, 1 when not compressed). Not about Mamba state.
     # A slice of a vLLM block must hold whole rows.
@@ -380,10 +370,7 @@ def parse_kv_cache_config(
         uses_prefix_replay = uses_prefix_replay or any(
             getattr(spec, "prefix_replay_tokens", 0) > 0 for spec in member_specs
         )
-        pool_tokens = _transient_pool_tokens(member_specs, hf_text_config, device_type)
-        is_transient = pool_tokens is not None
-        if is_transient:
-            transient_pool_tokens[group_id] = pool_tokens
+        is_transient = group_id not in stored_group_ids
         # Transient groups are not stored, so they get no kind.
         if is_transient:
             spec_kinds = frozenset()
@@ -398,7 +385,7 @@ def parse_kv_cache_config(
             tail_tokens = 0
         elif is_sliding_window:
             tail_tokens = _sliding_tail_tokens(
-                native_group, hf_text_config, device_type
+                native_group, hf_text_config, device_type, num_attn_module
             )
         else:
             tail_tokens = None
@@ -419,7 +406,6 @@ def parse_kv_cache_config(
         group_infos,
         scheduler_block_size,
         ucm_cache_block_size,
-        transient_pool_tokens,
         tokens_per_state,
     )
     if uses_prefix_replay and selected_block_size < scheduler_block_size:
@@ -433,7 +419,11 @@ def parse_kv_cache_config(
     for group_info in group_infos:
         group_info.tail_blocks = _group_tail_blocks(group_info, selected_block_size)
     spec = UCMKVCacheSpec(
-        tuple(group_infos), scheduler_block_size, selected_block_size, device_type
+        tuple(group_infos),
+        scheduler_block_size,
+        selected_block_size,
+        device_type,
+        num_attn_module,
     )
     if LAYOUT_DEBUG:
         for group_info in spec.groups:
