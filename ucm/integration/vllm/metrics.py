@@ -199,6 +199,12 @@ if UCM_HAS_PROM_METRICS:
                 vllm_config, metric_types, labelnames, per_engine_labelvalues
             )
             config = _metrics_config_from_vllm_config(vllm_config)
+            self.idle_collection_interval = float(config.get("log_interval", 5))
+            if (
+                not math.isfinite(self.idle_collection_interval)
+                or self.idle_collection_interval <= 0
+            ):
+                raise ValueError("UCM metrics log_interval must be finite and > 0")
             definitions = get_vllm_connector_metric_definitions(config)
             self._definitions = {
                 definition.name: definition for definition in definitions
