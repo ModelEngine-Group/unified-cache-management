@@ -117,9 +117,19 @@ class UnifiedCacheStoreConfig:
 
         cfg = dict(ucm_cfg)
         cfg["store_pipeline"] = "Posix"
-        cfg["storage_backends"] = [
+        storage_backends = [
             path for path in cfg["storage_backends"].split(":") if path
         ]
+        pp_rank = int(getattr(storage_config, "pp_rank", 0))
+        pp_size = int(getattr(storage_config, "pp_size", 1))
+        if pp_size > 1:
+            scoped_backends = []
+            for path in storage_backends:
+                stage_path = Path(path) / "sglang_pp" / f"pp_{pp_rank}_{pp_size}"
+                stage_path.mkdir(parents=True, exist_ok=True)
+                scoped_backends.append(str(stage_path))
+            storage_backends = scoped_backends
+        cfg["storage_backends"] = storage_backends
         cfg["device_id"] = get_world_group().local_rank
         cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
@@ -148,6 +158,16 @@ class SglangUcmConnector:
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
+        # PP stages own disjoint layer ranges for the same logical prefix. The
+        # storage root is stage-scoped in load_from_config(), so object keys and
+        # v2 pool namespaces do not need to duplicate the PP identity.
+        self.pp_rank = int(getattr(storage_config, "pp_rank", 0))
+        self.pp_size = int(getattr(storage_config, "pp_size", 1))
+        if self.pp_size <= 0 or not 0 <= self.pp_rank < self.pp_size:
+            raise ValueError(
+                "Invalid pipeline-parallel topology: "
+                f"pp_rank={self.pp_rank}, pp_size={self.pp_size}"
+            )
 
         self.config_suffix = self._build_config_suffix()
         self.ucm_store_config: Optional[UnifiedCacheStoreConfig] = None
