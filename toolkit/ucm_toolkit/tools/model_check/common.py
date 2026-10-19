@@ -613,7 +613,7 @@ def assert_shared_dispatch(metadata):
             request_id,
             phase,
             plan.attention_type,
-            plan.ucm_block_ids,
+            plan.common_ucm_block_ids,
             plan.token_start,
             plan.token_end,
             tuple(
@@ -1135,7 +1135,7 @@ def metadata_key_count(metadata: Any, phase: str) -> int:
     v2_requests = getattr(metadata, "requests", None)
     if v2_requests is not None:
         return sum(
-            len(plan.ucm_block_ids)
+            len(plan.common_ucm_block_ids)
             for request_meta in v2_requests.values()
             for plan in getattr(request_meta, f"{phase}_plans")
         )

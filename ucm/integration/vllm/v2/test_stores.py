@@ -31,16 +31,16 @@ class UCMByteAccess(Protocol):
     def write(self, ptr: int, payload: bytes) -> None: ...
 
 
-def _tensor_views(value: KVCacheValue) -> tuple[torch.Tensor, ...]:
+def _tensor_views(kv_cache: KVCacheValue) -> tuple[torch.Tensor, ...]:
     torch_module = importlib.import_module("torch")
-    if isinstance(value, torch_module.Tensor):
-        return (value,)
-    if isinstance(value, (tuple, list)):
-        result: list[torch.Tensor] = []
-        for item in value:
-            result.extend(_tensor_views(item))
-        return tuple(result)
-    raise TypeError(f"Unsupported KV cache value: {type(value).__name__}")
+    if isinstance(kv_cache, torch_module.Tensor):
+        return (kv_cache,)
+    if isinstance(kv_cache, (tuple, list)):
+        tensor_views: list[torch.Tensor] = []
+        for element in kv_cache:
+            tensor_views.extend(_tensor_views(element))
+        return tuple(tensor_views)
+    raise TypeError(f"Unsupported KV cache value: {type(kv_cache).__name__}")
 
 
 class TorchTensorByteAccess:
@@ -54,19 +54,25 @@ class TorchTensorByteAccess:
         torch_module = importlib.import_module("torch")
         buffers: list[tuple[int, int, torch.Tensor]] = []
         devices: set[torch.device] = set()
-        seen: set[tuple[int, int]] = set()
-        for value in kv_caches.values():
-            for tensor in _tensor_views(value):
+        seen_storages: set[tuple[int, int]] = set()
+        for kv_cache in kv_caches.values():
+            for tensor in _tensor_views(kv_cache):
                 storage = tensor.untyped_storage()
-                base = int(storage.data_ptr())
-                size = int(storage.nbytes())
-                if not base or size <= 0 or (base, size) in seen:
+                storage_start = int(storage.data_ptr())
+                storage_bytes = int(storage.nbytes())
+                if (
+                    not storage_start
+                    or storage_bytes <= 0
+                    or (storage_start, storage_bytes) in seen_storages
+                ):
                     continue
-                seen.add((base, size))
+                seen_storages.add((storage_start, storage_bytes))
                 byte_view = torch_module.empty(
                     0, dtype=torch_module.uint8, device=tensor.device
-                ).set_(storage, 0, (size,), (1,))
-                buffers.append((base, base + size, byte_view))
+                ).set_(storage, 0, (storage_bytes,), (1,))
+                buffers.append(
+                    (storage_start, storage_start + storage_bytes, byte_view)
+                )
                 devices.add(tensor.device)
         if not buffers:
             raise ValueError("No non-empty KV cache tensor storage was registered")
@@ -88,10 +94,10 @@ class TorchTensorByteAccess:
         # Callers hand us numpy scalars (the batch arrays are uint64);
         # torch slicing wants plain ints.
         ptr, size = int(ptr), int(size)
-        for base, end, tensor in self._buffers:
-            if base <= ptr and ptr + size <= end:
-                offset = ptr - base
-                return tensor[offset : offset + size]
+        for buffer_start, buffer_end, byte_view in self._buffers:
+            if buffer_start <= ptr and ptr + size <= buffer_end:
+                byte_offset = ptr - buffer_start
+                return byte_view[byte_offset : byte_offset + size]
         raise ValueError(
             f"Pointer range [{ptr}, {ptr + size}) is outside registered KV caches"
         )
@@ -172,6 +178,26 @@ class FileTestStore:
     def lookup(self, ucm_block_ids: Sequence[bytes]) -> tuple[bool, ...]:
         return tuple(
             self._path(ucm_block_id).is_file() for ucm_block_id in ucm_block_ids
+        )
+
+    def lookup_on_prefix(self, ucm_block_ids: Sequence[bytes]) -> int:
+        return next(
+            (
+                row - 1
+                for row, ucm_block_id in enumerate(ucm_block_ids)
+                if not self._path(ucm_block_id).is_file()
+            ),
+            len(ucm_block_ids) - 1,
+        )
+
+    def lookup_on_reverse(self, ucm_block_ids: Sequence[bytes]) -> int:
+        return next(
+            (
+                row
+                for row in range(len(ucm_block_ids) - 1, -1, -1)
+                if self._path(ucm_block_ids[row]).is_file()
+            ),
+            -1,
         )
 
     def dump(
@@ -341,12 +367,42 @@ class MemoryTestStore:
 
     def lookup(self, ucm_block_ids: Sequence[bytes]) -> tuple[bool, ...]:
         hits = [ucm_block_id in self.records for ucm_block_id in ucm_block_ids]
-        missing = [i for i, hit in enumerate(hits) if not hit]
-        if self.backend is not None and missing:
-            lower_hits = self.backend.lookup(tuple(ucm_block_ids[i] for i in missing))
-            for i, hit in zip(missing, lower_hits, strict=True):
-                hits[i] = hit
+        missing_rows = [row for row, is_hit in enumerate(hits) if not is_hit]
+        if self.backend is not None and missing_rows:
+            backend_hits = self.backend.lookup(
+                tuple(ucm_block_ids[row] for row in missing_rows)
+            )
+            for row, is_hit in zip(missing_rows, backend_hits, strict=True):
+                hits[row] = is_hit
         return tuple(hits)
+
+    def _has_record(self, ucm_block_id: bytes) -> bool:
+        if ucm_block_id in self.records:
+            return True
+        else:
+            return self.backend is not None and bool(
+                self.backend.lookup((ucm_block_id,))[0]
+            )
+
+    def lookup_on_prefix(self, ucm_block_ids: Sequence[bytes]) -> int:
+        return next(
+            (
+                row - 1
+                for row, ucm_block_id in enumerate(ucm_block_ids)
+                if not self._has_record(ucm_block_id)
+            ),
+            len(ucm_block_ids) - 1,
+        )
+
+    def lookup_on_reverse(self, ucm_block_ids: Sequence[bytes]) -> int:
+        return next(
+            (
+                row
+                for row in range(len(ucm_block_ids) - 1, -1, -1)
+                if self._has_record(ucm_block_ids[row])
+            ),
+            -1,
+        )
 
     def read_record(self, ucm_block_id: bytes) -> tuple[bytes, str]:
         if ucm_block_id in self.records:

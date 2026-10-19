@@ -73,11 +73,13 @@ class LayerView:
 
     @property
     def segments(self) -> tuple[MemorySegment, ...]:
-        return tuple(s for component in self.components for s in component.segments)
+        return tuple(
+            segment for component in self.components for segment in component.segments
+        )
 
 
 def build_layer_view(
-    value: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
+    kv_cache: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
     layer: "UCMLayerSpec",
     *,
     state_snapshot: bool,
@@ -90,7 +92,7 @@ def build_layer_view(
     CUDA State is already a BHNC byte page; Ascend State
     components are exposed as BHNC byte pages with their original strides.
     """
-    tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
+    tensors = tuple(kv_cache) if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
     if (
         not state_snapshot
         and device_type == "npu"
@@ -136,12 +138,12 @@ def _as_byte_page(tensor: "torch.Tensor") -> "torch.Tensor":
     element_size = int(tensor.element_size())
     shape = tuple(tensor.shape)
     strides = tuple(tensor.stride())
-    payload = row_payload_bytes(shape, strides, element_size)
+    row_payload = row_payload_bytes(shape, strides, element_size)
     byte_view = tensor.view(torch.uint8)
     return torch.as_strided(
         byte_view,
-        size=(shape[0], 1, 1, payload),
-        stride=(strides[0] * element_size, payload, payload, 1),
+        size=(shape[0], 1, 1, row_payload),
+        stride=(strides[0] * element_size, row_payload, row_payload, 1),
         storage_offset=byte_view.storage_offset(),
     )
 
@@ -162,13 +164,13 @@ def _build_bhnc_view(
     """
     if shape[0] % layer.num_blocks:
         raise ValueError("BHNC view does not tile logical blocks")
-    rows = shape[0] // layer.num_blocks
+    rows_per_block = shape[0] // layer.num_blocks
     heads, states, channels = shape[1:]
-    if rows * states != layer.storage_block_size:
+    if rows_per_block * states != layer.storage_block_size:
         raise ValueError("BHNC state axis disagrees with storage_block_size")
     if strides[3] != 1:
         raise ValueError("BHNC components require dense channels")
-    element = int(tensor.element_size())
+    element_size = int(tensor.element_size())
     base_ptr = int(tensor.data_ptr())
     token_contiguous = strides[2] == heads * channels and (
         heads == 1 or strides[1] == channels
@@ -179,9 +181,9 @@ def _build_bhnc_view(
         raise ValueError("Unsupported BHNC state/head strides")
     # Physical NHC or compact HNC occupies one span for a complete block.
     if token_contiguous or strides[1] == states * channels:
-        row_payload = states * heads * channels * element
-        row_stride = strides[0] * element
-        if rows > 1 and row_stride != row_payload:
+        row_payload = states * heads * channels * element_size
+        row_stride = strides[0] * element_size
+        if rows_per_block > 1 and row_stride != row_payload:
             raise ValueError("Multi-row BHNC blocks require contiguous kernel rows")
         return ComponentView(
             shape=shape,
@@ -189,36 +191,37 @@ def _build_bhnc_view(
             segments=(
                 MemorySegment(
                     base_ptr=base_ptr,
-                    block_stride_bytes=rows * row_stride,
-                    states_per_block=rows * states,
-                    bytes_per_state=heads * channels * element,
-                    payload_bytes=rows * row_payload,
+                    block_stride_bytes=rows_per_block * row_stride,
+                    states_per_block=rows_per_block * states,
+                    bytes_per_state=heads * channels * element_size,
+                    payload_bytes=rows_per_block * row_payload,
                 ),
             ),
             supports_partial_tokens=token_contiguous,
         )
     fragments = (
         MemorySegment(
-            base_ptr=base_ptr + (row * strides[0] + head * strides[1]) * element,
-            block_stride_bytes=rows * strides[0] * element,
+            base_ptr=base_ptr + (row * strides[0] + head * strides[1]) * element_size,
+            block_stride_bytes=rows_per_block * strides[0] * element_size,
             states_per_block=states,
-            bytes_per_state=channels * element,
-            payload_bytes=states * channels * element,
+            bytes_per_state=channels * element_size,
+            payload_bytes=states * channels * element_size,
         )
-        for row in range(rows)
+        for row in range(rows_per_block)
         for head in range(heads)
     )
     segments: list[MemorySegment] = []
-    for fragment in sorted(fragments, key=lambda item: item.base_ptr):
+    for fragment in sorted(fragments, key=lambda segment: segment.base_ptr):
         if segments and (
             segments[-1].base_ptr + segments[-1].payload_bytes == fragment.base_ptr
         ):
-            previous = segments[-1]
+            previous_segment = segments[-1]
             # All fragments have the same block stride and bytes/state.
             segments[-1] = replace(
-                previous,
-                states_per_block=previous.states_per_block + fragment.states_per_block,
-                payload_bytes=previous.payload_bytes + fragment.payload_bytes,
+                previous_segment,
+                states_per_block=previous_segment.states_per_block
+                + fragment.states_per_block,
+                payload_bytes=previous_segment.payload_bytes + fragment.payload_bytes,
             )
         else:
             segments.append(fragment)
@@ -236,15 +239,17 @@ def row_payload_bytes(
 
     # Singleton axes carry no address displacement, so their strides do
     # not constrain density (e.g. an H=1 view over a shared allocation).
-    pairs = sorted(
-        (stride, size) for stride, size in zip(strides[1:], shape[1:]) if size != 1
+    stride_size_pairs = sorted(
+        (axis_stride, axis_size)
+        for axis_stride, axis_size in zip(strides[1:], shape[1:])
+        if axis_size != 1
     )
     expected_stride = 1
-    for stride, size in pairs:
-        if stride != expected_stride:
+    for axis_stride, axis_size in stride_size_pairs:
+        if axis_stride != expected_stride:
             raise ValueError(
                 "KV tensor trailing dimensions must be dense (C-order or a "
                 f"dense permutation); shape={shape}, strides={strides}"
             )
-        expected_stride *= size
+        expected_stride *= axis_size
     return expected_stride * element_size

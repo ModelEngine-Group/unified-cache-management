@@ -31,6 +31,7 @@ class GroupStoreLayout:
     group_block_offsets: np.ndarray
     whole_block_bytes: int
     merge_whole_blocks: bool
+    # FA UCM blocks smaller than a vLLM block: each row reads its own slice.
     dynamic_token_offsets: bool
 
     @classmethod
@@ -42,22 +43,31 @@ class GroupStoreLayout:
         *,
         use_layerwise: bool,
     ) -> GroupStoreLayout:
-        block_tokens = layout.token_block_size
+        token_block_size = layout.token_block_size
         if group.is_sliding_window:
-            partial_tokens = (group.tail_tokens or 0) % block_tokens
+            partial_tokens = (group.tail_tokens or 0) % token_block_size
         elif group.is_state_snapshot:
             partial_tokens = 0
         else:
-            partial_tokens = ucm_block_size % block_tokens
+            # An FA UCM block smaller than a vLLM block stores one slice of it.
+            partial_tokens = ucm_block_size % token_block_size
+        is_fa_slice = bool(partial_tokens) and not group.is_sliding_window
+        if is_fa_slice and not layout.supports_partial_tokens:
+            raise ValueError(
+                f"FA group {group.group_id} cannot store {partial_tokens}-token "
+                f"slices of its {token_block_size}-token blocks: its KV layout is "
+                "not token-contiguous (for example multi-head HNC). Use a "
+                f"ucm_cache_block_size that is a multiple of {token_block_size}."
+            )
 
         # Zero-tail groups join no route, but still have a valid layout.
-        rows = max(group.tail_blocks, 1)
-        token_offsets = np.zeros(rows, dtype=np.uint64)
-        token_counts = np.full(rows, block_tokens, dtype=np.uint64)
+        num_tail_blocks = max(group.tail_blocks, 1)
+        token_offsets = np.zeros(num_tail_blocks, dtype=np.uint64)
+        token_counts = np.full(num_tail_blocks, token_block_size, dtype=np.uint64)
         if partial_tokens:
             token_counts[0] = partial_tokens
             if group.is_sliding_window:
-                token_offsets[0] = block_tokens - partial_tokens
+                token_offsets[0] = token_block_size - partial_tokens
         access = layout.compile_access(
             token_offsets=token_offsets, token_counts=token_counts
         )
@@ -75,32 +85,34 @@ class GroupStoreLayout:
 
         if merge_whole_blocks:
             ucm_block_offsets = (
-                np.arange(rows, dtype=np.uint64)[:, None] * whole_block_bytes
+                np.arange(num_tail_blocks, dtype=np.uint64)[:, None] * whole_block_bytes
             )
-            cursor = rows * whole_block_bytes
+            store_bytes = num_tail_blocks * whole_block_bytes
         else:
-            sizes = access.segment_bytes
-            ucm_block_offsets = np.cumsum(sizes).reshape(sizes.shape) - sizes
-            cursor = int(sizes.sum())
+            segment_sizes = access.segment_bytes
+            ucm_block_offsets = (
+                np.cumsum(segment_sizes).reshape(segment_sizes.shape) - segment_sizes
+            )
+            store_bytes = int(segment_sizes.sum())
         if LAYOUT_DEBUG:
             layout_debug(
                 f"group-layout group={group.group_id} "
                 f"layers={len(set(layout.layer_names))} segments={len(layout.layer_names)} "
                 f"state={int(group.is_state_snapshot)} "
                 f"block-first={int(layout.block_first is not None)} "
-                f"block_size_bytes={whole_block_bytes} token_block={block_tokens} "
+                f"block_size_bytes={whole_block_bytes} token_block={token_block_size} "
                 f"tail_blocks={group.tail_blocks} span={partial_tokens} "
-                f"store_bytes={cursor}"
+                f"store_bytes={store_bytes}"
             )
         return cls(
             vllm_blocks_per_ucm_block=group.tail_blocks,
             access=access,
             ucm_block_offsets=ucm_block_offsets,
-            store_bytes=cursor,
+            store_bytes=store_bytes,
             group_block_offsets=group_block_offsets,
             whole_block_bytes=whole_block_bytes,
             merge_whole_blocks=merge_whole_blocks,
-            dynamic_token_offsets=bool(partial_tokens) and not group.is_sliding_window,
+            dynamic_token_offsets=is_fa_slice,
         )
 
     def resolve_matrices(
@@ -118,32 +130,36 @@ class GroupStoreLayout:
         """
         layout = self.access.layout
         if self.merge_whole_blocks and segment_mask is None:
-            ptrs, _ = layout.block_first_segments(vllm_block_ids)
-            offsets = self.ucm_block_offsets.reshape(-1).copy()
-            sizes = np.full(
+            segment_ptrs, _ = layout.block_first_segments(vllm_block_ids)
+            store_offsets = self.ucm_block_offsets.reshape(-1).copy()
+            segment_sizes = np.full(
                 self.vllm_blocks_per_ucm_block, self.whole_block_bytes, dtype=np.uint64
             )
         else:
-            ptrs = self.access.resolve_ptrs(
+            segment_ptrs = self.access.resolve_ptrs(
                 vllm_block_ids, token_offsets=token_offsets, segment_mask=segment_mask
             )
-            columns: slice | np.ndarray = (
+            segment_columns: slice | np.ndarray = (
                 slice(None) if segment_mask is None else segment_mask
             )
             if self.merge_whole_blocks:
                 # Layerwise IO keeps each segment at its original page position.
-                segment_offsets = layout.base_ptrs[columns] - np.uint64(
+                segment_offsets = layout.base_ptrs[segment_columns] - np.uint64(
                     layout.block_first.base_ptr
                 )
-                offsets = (self.ucm_block_offsets + segment_offsets[None, :]).reshape(
-                    -1
-                )
+                store_offsets = (
+                    self.ucm_block_offsets + segment_offsets[None, :]
+                ).reshape(-1)
             else:
-                offsets = self.ucm_block_offsets[:, columns].reshape(-1).copy()
-            sizes = self.access.segment_bytes[:, columns].reshape(-1).copy()
-        shape = (num_ucm_blocks, len(sizes))
+                store_offsets = (
+                    self.ucm_block_offsets[:, segment_columns].reshape(-1).copy()
+                )
+            segment_sizes = (
+                self.access.segment_bytes[:, segment_columns].reshape(-1).copy()
+            )
+        matrix_shape = (num_ucm_blocks, len(segment_sizes))
         return (
-            np.broadcast_to(offsets, shape),
-            ptrs.reshape(shape),
-            np.broadcast_to(sizes, shape),
+            np.broadcast_to(store_offsets, matrix_shape),
+            segment_ptrs.reshape(matrix_shape),
+            np.broadcast_to(segment_sizes, matrix_shape),
         )

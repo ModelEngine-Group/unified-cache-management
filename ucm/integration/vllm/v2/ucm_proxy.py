@@ -106,13 +106,13 @@ def normalize_ucm_block_ids(ucm_block_ids: Sequence[bytes]) -> tuple[bytes, ...]
     ):
         return ucm_block_ids
     ucm_block_ids = tuple(bytes(ucm_block_id) for ucm_block_id in ucm_block_ids)
-    invalid = [
-        index
-        for index, ucm_block_id in enumerate(ucm_block_ids)
-        if len(ucm_block_id) != 16
+    invalid_rows = [
+        row for row, ucm_block_id in enumerate(ucm_block_ids) if len(ucm_block_id) != 16
     ]
-    if invalid:
-        raise ValueError(f"UCM block IDs must be 16 bytes; invalid indexes={invalid}")
+    if invalid_rows:
+        raise ValueError(
+            f"UCM block IDs must be 16 bytes; invalid indexes={invalid_rows}"
+        )
     return ucm_block_ids
 
 
@@ -127,37 +127,37 @@ class UCMProxyAdapter:
     ) -> tuple[bool, ...]:
         ucm_block_ids = normalize_ucm_block_ids(ucm_block_ids)
         try:
-            result = tuple(
-                bool(value)
-                for value in self._proxy.lookup(ucm_block_ids, block_indices)
+            hits = tuple(
+                bool(is_hit)
+                for is_hit in self._proxy.lookup(ucm_block_ids, block_indices)
             )
         except Exception as exc:
             raise UCMProxyError("Proxy lookup failed") from exc
-        if len(result) != len(ucm_block_ids):
+        if len(hits) != len(ucm_block_ids):
             raise UCMProxyError(
-                f"Proxy lookup returned {len(result)} results for {len(ucm_block_ids)} ucm_block_ids"
+                f"Proxy lookup returned {len(hits)} results for {len(ucm_block_ids)} ucm_block_ids"
             )
-        return result
+        return hits
 
     def _scan(
         self, operation: str, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> int:
         ucm_block_ids = normalize_ucm_block_ids(ucm_block_ids)
         try:
-            method = (
+            scan_method = (
                 self._proxy.lookup_on_prefix
                 if operation == "prefix"
                 else self._proxy.lookup_on_reverse
             )
-            result = int(method(ucm_block_ids, block_indices))
+            hit_row = int(scan_method(ucm_block_ids, block_indices))
         except Exception as exc:
             raise UCMProxyError(f"Proxy lookup_on_{operation} failed") from exc
-        if not -1 <= result < len(ucm_block_ids):
+        if not -1 <= hit_row < len(ucm_block_ids):
             raise UCMProxyError(
-                f"Proxy lookup_on_{operation} returned {result} "
+                f"Proxy lookup_on_{operation} returned {hit_row} "
                 f"for {len(ucm_block_ids)} ucm_block_ids"
             )
-        return result
+        return hit_row
 
     def lookup_on_prefix(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
@@ -288,16 +288,14 @@ class PipelineProxy:
     def lookup_on_prefix(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> int:
-        hits = self.lookup(ucm_block_ids, block_indices)
-        return next(
-            (i - 1 for i, hit in enumerate(hits) if not hit), len(ucm_block_ids) - 1
-        )
+        validate_block_indices(ucm_block_ids, block_indices)
+        return int(self.store.lookup_on_prefix(ucm_block_ids))
 
     def lookup_on_reverse(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> int:
-        hits = self.lookup(ucm_block_ids, block_indices)
-        return next((i for i in range(len(hits) - 1, -1, -1) if hits[i]), -1)
+        validate_block_indices(ucm_block_ids, block_indices)
+        return int(self.store.lookup_on_reverse(ucm_block_ids))
 
     def load(
         self,
@@ -383,36 +381,43 @@ class ParallelProxy:
             )
         if token_ends[-1] is not None:
             raise ValueError("The final route must have token_end=null")
-        boundaries = tuple(token_ends[:-1])
-        previous = 0
-        for boundary in boundaries:
+        route_token_ends = tuple(token_ends[:-1])
+        previous_token_end = 0
+        for token_end in route_token_ends:
             if (
-                not isinstance(boundary, int)
-                or boundary <= previous
-                or boundary % record_token_span
+                not isinstance(token_end, int)
+                or token_end <= previous_token_end
+                or token_end % record_token_span
             ):
                 raise ValueError(
                     "Route ends must increase and align with record_token_span"
                 )
-            previous = boundary
+            previous_token_end = token_end
         if len({id(store) for store in stores}) != len(stores):
             raise ValueError("Parallel routes require distinct Store instances")
         if any(store.backend is not None for store in stores):
             raise ValueError("Parallel Stores must have backend=None")
         self.stores = tuple(stores)
         self.block_ends = np.array(
-            [end // record_token_span for end in boundaries], dtype=np.uint64
+            [token_end // record_token_span for token_end in route_token_ends],
+            dtype=np.uint64,
         )
 
-    def _groups(
+    def _store_indices(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
-    ) -> Iterator[tuple[UCMStore, np.ndarray]]:
+    ) -> np.ndarray:
+        """Index of the Store each row is routed to."""
         validate_block_indices(ucm_block_ids, block_indices)
-        targets = np.searchsorted(
+        return np.searchsorted(
             self.block_ends, block_indices.astype(np.uint64, copy=False), side="right"
         )
-        for index, store in enumerate(self.stores):
-            rows = np.flatnonzero(targets == index)
+
+    def _rows_by_store(
+        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+    ) -> Iterator[tuple[UCMStore, np.ndarray]]:
+        store_indices = self._store_indices(ucm_block_ids, block_indices)
+        for store_index, store in enumerate(self.stores):
+            rows = np.flatnonzero(store_indices == store_index)
             if len(rows):
                 yield store, rows
 
@@ -420,25 +425,62 @@ class ParallelProxy:
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> tuple[bool, ...]:
         hits = [False] * len(ucm_block_ids)
-        for store, rows in self._groups(ucm_block_ids, block_indices):
-            selected = tuple(ucm_block_ids[row] for row in rows)
-            for row, hit in zip(rows, store.lookup(selected), strict=True):
-                hits[row] = bool(hit)
+        for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
+            store_ucm_block_ids = tuple(ucm_block_ids[row] for row in rows)
+            for row, is_hit in zip(
+                rows, store.lookup(store_ucm_block_ids), strict=True
+            ):
+                hits[row] = bool(is_hit)
         return tuple(hits)
+
+    def _scan_runs(
+        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+    ) -> tuple[tuple[UCMStore, int, tuple[bytes, ...]], ...]:
+        """(Store, first row, ids) of each run of consecutive rows routed to
+        the same Store, in row order.
+
+        Scans keep the order of the ids, so a Store can have several runs
+        when blocks are not increasing.
+        """
+        store_indices = self._store_indices(ucm_block_ids, block_indices)
+        run_bounds = [
+            0,
+            *(np.flatnonzero(np.diff(store_indices)) + 1).tolist(),
+            len(ucm_block_ids),
+        ]
+        return tuple(
+            (
+                self.stores[int(store_indices[run_start])],
+                run_start,
+                tuple(ucm_block_ids[run_start:run_end]),
+            )
+            for run_start, run_end in zip(run_bounds[:-1], run_bounds[1:])
+            if run_end > run_start
+        )
 
     def lookup_on_prefix(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> int:
-        hits = self.lookup(ucm_block_ids, block_indices)
-        return next(
-            (i - 1 for i, hit in enumerate(hits) if not hit), len(ucm_block_ids) - 1
-        )
+        """Scan the runs in order and stop at the first miss."""
+        last_hit_row = -1
+        for store, first_row, run_ids in self._scan_runs(ucm_block_ids, block_indices):
+            run_last_hit = int(store.lookup_on_prefix(run_ids))
+            last_hit_row = first_row + run_last_hit
+            if run_last_hit < len(run_ids) - 1:
+                break
+        return last_hit_row
 
     def lookup_on_reverse(
         self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
     ) -> int:
-        hits = self.lookup(ucm_block_ids, block_indices)
-        return next((i for i in range(len(hits) - 1, -1, -1) if hits[i]), -1)
+        """Scan the runs from the last one and stop at the first hit."""
+        for store, first_row, run_ids in reversed(
+            self._scan_runs(ucm_block_ids, block_indices)
+        ):
+            run_latest_hit = int(store.lookup_on_reverse(run_ids))
+            if run_latest_hit >= 0:
+                return first_row + run_latest_hit
+        return -1
 
     def _submit(
         self,
@@ -447,34 +489,34 @@ class ParallelProxy:
         block_indices: np.ndarray,
         *descriptors: np.ndarray | Sequence[str],
     ) -> StoreTasks | None:
-        parts = []
+        store_tasks = []
         try:
-            for store, rows in self._groups(ucm_block_ids, block_indices):
-                selected = tuple(ucm_block_ids[row] for row in rows)
-                arguments = (selected,) + tuple(
+            for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
+                store_ucm_block_ids = tuple(ucm_block_ids[row] for row in rows)
+                arguments = (store_ucm_block_ids,) + tuple(
                     (
-                        value[rows]
-                        if isinstance(value, np.ndarray)
-                        else tuple(value[row] for row in rows)
+                        descriptor[rows]
+                        if isinstance(descriptor, np.ndarray)
+                        else tuple(descriptor[row] for row in rows)
                     )
-                    for value in descriptors
+                    for descriptor in descriptors
                 )
-                method = {
+                store_method = {
                     "load": store.load,
                     "dump": store.dump,
                     "commit": store.commit,
                 }[operation]
-                task = method(*arguments)
+                task = store_method(*arguments)
                 if task is not None:
-                    parts.append((store, task, arguments))
+                    store_tasks.append((store, task, arguments))
         except Exception:
             # Earlier routes may already own source pointers; drain all of them.
             try:
-                self.wait(StoreTasks(tuple(parts)))
+                self.wait(StoreTasks(tuple(store_tasks)))
             except Exception:
                 pass
             raise
-        return StoreTasks(tuple(parts)) if parts else None
+        return StoreTasks(tuple(store_tasks)) if store_tasks else None
 
     def load(
         self,
@@ -514,7 +556,7 @@ class ParallelProxy:
 
     def abort(self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray) -> None:
         error = None
-        for store, rows in self._groups(ucm_block_ids, block_indices):
+        for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
             try:
                 store.abort(tuple(ucm_block_ids[row] for row in rows))
             except Exception as exc:

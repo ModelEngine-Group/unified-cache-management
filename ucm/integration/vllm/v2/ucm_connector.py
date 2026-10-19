@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,15 +32,19 @@ from .layout import (
     parse_kv_cache_config,
 )
 from .parallel import ParallelLayout
-from .ucm_kv_cache import UCMTransferBuilder, dump_metadata
+from .ucm_block_id import UCM_BLOCK_ID_VERSION, writer_rows
+from .ucm_kv_cache import UCMTransferBuilder
+from .ucm_lookup import UCMLookup
 from .ucm_proxy import (
     UCMProxyError,
     UCMProxyTask,
     UCMProxyTransfer,
 )
-from .ucm_scheduler import (
-    UCMConnectorMetadata,
-    UCMDispatcher,
+from .ucm_scheduler import UCMConnectorMetadata, UCMDispatcher
+from .ucm_sharding import (
+    ParallelRank,
+    UCMRecordClass,
+    UCMSharding,
     groups_by_attention_type,
 )
 
@@ -110,6 +115,18 @@ def _worker_rank() -> int:
     return get_world_group().rank
 
 
+def _worker_parallel_ranks(layout: ParallelLayout) -> tuple[int, int, int]:
+    """This worker's (tp_rank, pp_rank, pcp_rank), read from vLLM's groups."""
+    from vllm.distributed.parallel_state import (
+        get_pcp_group,
+        get_pp_group,
+        get_tp_group,
+    )
+
+    pcp_rank = get_pcp_group().rank_in_group if layout.pcp > 1 else 0
+    return get_tp_group().rank_in_group, get_pp_group().rank_in_group, pcp_rank
+
+
 def _jsonable(value: Any) -> Any:
     """Best-effort JSON rendering for raw KVCacheConfig payloads."""
 
@@ -122,25 +139,34 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, _enum.Enum):
         return str(value)
     if _is_dataclass(value):
-        return {f.name: _jsonable(getattr(value, f.name)) for f in _fields(value)}
+        return {
+            dataclass_field.name: _jsonable(getattr(value, dataclass_field.name))
+            for dataclass_field in _fields(value)
+        }
     if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
+        return {
+            str(dict_key): _jsonable(dict_value)
+            for dict_key, dict_value in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
+        return [_jsonable(element) for element in value]
     if type(value).__module__.split(".")[0] == "torch":
         return str(value)
     # Plain objects (e.g. slot wrappers): expose their attributes so
     # SimpleNamespace-style entries serialize like their dataclass twins.
-    slots = getattr(value, "__slots__", None)
-    if slots:
+    slot_names = getattr(value, "__slots__", None)
+    if slot_names:
         return {
-            name: _jsonable(getattr(value, name))
-            for name in slots
-            if hasattr(value, name)
+            slot_name: _jsonable(getattr(value, slot_name))
+            for slot_name in slot_names
+            if hasattr(value, slot_name)
         }
-    value_vars = getattr(value, "__dict__", None)
-    if isinstance(value_vars, dict) and value_vars:
-        return {str(key): _jsonable(item) for key, item in value_vars.items()}
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict) and attributes:
+        return {
+            str(attribute_name): _jsonable(attribute_value)
+            for attribute_name, attribute_value in attributes.items()
+        }
     return repr(value)
 
 
@@ -153,41 +179,51 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
 
     import json
 
-    raw_path = os.environ.get("UCM_V2_DUMP_CONFIG", "")
-    if not raw_path:
+    path_template = os.environ.get("UCM_V2_DUMP_CONFIG", "")
+    if not path_template:
         return
-    path = Path(raw_path % rank if "%d" in raw_path or "%s" in raw_path else raw_path)
+    path = Path(
+        path_template % rank
+        if "%d" in path_template or "%s" in path_template
+        else path_template
+    )
 
-    groups = []
+    group_payloads = []
     for group in kv_cache_config.kv_cache_groups:
-        groups.append(
+        group_payloads.append(
             {
                 "layer_names": group.layer_names,
                 "is_eagle_group": group.is_eagle_group,
                 "kv_cache_spec": _jsonable(group.kv_cache_spec),
             }
         )
-    tensors = [_jsonable(tensor) for tensor in kv_cache_config.kv_cache_tensors]
+    tensor_payloads = [_jsonable(tensor) for tensor in kv_cache_config.kv_cache_tensors]
     payload = {
         "num_blocks": kv_cache_config.num_blocks,
-        "kv_cache_tensors": tensors,
-        "kv_cache_groups": groups,
+        "kv_cache_tensors": tensor_payloads,
+        "kv_cache_groups": group_payloads,
         "prefix_cache_retention_interval": kv_cache_config.prefix_cache_retention_interval,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2, ensure_ascii=False)
+    with path.open("w", encoding="utf-8") as config_file:
+        json.dump(payload, config_file, indent=2, ensure_ascii=False)
     print(
         f"[ucm-v2] raw KVCacheConfig dumped to {path} "
         f"(num_blocks={payload['num_blocks']}, "
-        f"tensors={len(tensors)}, "
-        f"groups={len(groups)})",
+        f"tensors={len(tensor_payloads)}, "
+        f"groups={len(group_payloads)})",
         flush=True,
     )
 
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     """One v2 lifecycle facade for grouped caches."""
+
+    # This worker's rank.
+    _parallel_rank: ParallelRank = (0, 0, 0)
+    # (replica index, replica count) of this rank for each record class.
+    # A missing record class means one replica.
+    _replica_index_and_count_by_class: Mapping[UCMRecordClass, tuple[int, int]] = {}
 
     @classmethod
     def requires_piecewise_for_cudagraph(cls, extra_config: dict[str, Any]) -> bool:
@@ -220,13 +256,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_cache_block_size = launch_config.get("ucm_cache_block_size")
         if ucm_cache_block_size is not None:
             ucm_cache_block_size = int(ucm_cache_block_size)
-        rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank()
-        _dump_raw_kv_cache_config(kv_cache_config, rank)
+        worker_rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank()
+        _dump_raw_kv_cache_config(kv_cache_config, worker_rank)
         self.parallel_layout = ParallelLayout.from_config(vllm_config)
-        hasher = RequestHasher(vllm_config, 0)
-        base_seed = hasher("UCM_HASH_SEED")
 
-        self.context = UCMRuntimeContext.from_vllm_config(vllm_config, role, rank=rank)
+        self.context = UCMRuntimeContext.from_vllm_config(
+            vllm_config, role, rank=worker_rank
+        )
         text_config = vllm_config.model_config.hf_text_config
         self._num_hidden_layers = text_config.num_hidden_layers
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
@@ -236,11 +272,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             ucm_cache_block_size=ucm_cache_block_size,
             device_type=self.context.device_type,
         )
-        self.spec = self.parallel_layout.apply_context_parallel(
-            self.spec, ucm_cache_block_size
-        )
-        dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
-        schema = {
+        self.parallel_layout.apply_context_parallel(self.spec)
+        # Raises at startup if the topology does not fit in UCM block ids.
+        self._sharding = UCMSharding(self.spec, self.parallel_layout)
+        if role == KVConnectorRole.WORKER:
+            self._parallel_rank = _worker_parallel_ranks(self.parallel_layout)
+            self._replica_index_and_count_by_class = {
+                record_class: self._sharding.replica_index_and_count(
+                    record_class, self._parallel_rank
+                )
+                for attention_type, _ in groups_by_attention_type(self.spec)
+                for record_class in self._sharding.record_classes(attention_type)
+            }
+        model_dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
+        namespace_schema = {
             "model": vllm_config.model_config.hf_text_config.to_dict(),
             "kv_dtype": vllm_config.cache_config.cache_dtype,
             "mamba_dtype": vllm_config.cache_config.mamba_cache_dtype,
@@ -252,27 +297,27 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 else None
             ),
         }
-        digest = hashlib.sha256(
-            json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+        schema_digest = hashlib.sha256(
+            json.dumps(namespace_schema, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
-        # r8 UCM block ids fold vLLM block-hash extra keys (multimodal, LoRA,
-        # cache salt, prompt embeds) into the hash; r7 hashed token IDs only.
+        # The Store only sees UCM block ids, so everything that changes the
+        # stored data (model, layout, block sizes, topology, layerwise) and
+        # the id version goes into the hash seed.
         namespace = (
-            f"{self.context.device_type}-{dtype}"
-            f"-{digest}-b{self.spec.scheduler_block_size}"
-            f"-c{self.spec.ucm_cache_block_size}-r8"
+            f"{self.context.device_type}-{model_dtype}"
+            f"-{schema_digest}-b{self.spec.scheduler_block_size}"
+            f"-c{self.spec.ucm_cache_block_size}"
+            f"-{self.parallel_layout.namespace}-r{UCM_BLOCK_ID_VERSION}"
         )
         self.use_layerwise = bool(launch_config.get("use_layerwise", False))
         if self.use_layerwise:
             # Layerwise copies payloads only; bulk Block First records may
-            # additionally include slot padding. Keep file caches separate.
+            # additionally include slot padding.
             namespace += "-layerwise"
+        hasher = RequestHasher(vllm_config, 0)
+        base_seed = hasher(("UCM_HASH_SEED", namespace))
         self._proxy = create_proxy(
-            launch_config,
-            namespace=namespace,
-            record_token_span=self.spec.ucm_cache_block_size,
-            parallel_layout=self.parallel_layout,
-            rank=rank,
+            launch_config, record_token_span=self.spec.ucm_cache_block_size
         )
         self._layer_load_tasks: dict[int, list[tuple[str, UCMProxyTask]]] = {}
         self._dump_tasks: list[UCMProxyTask] = []
@@ -287,15 +332,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.dispatcher = (
             UCMDispatcher(
                 self.spec,
-                self._proxy,
-                # Scheduler always creates logical rank-0 UCM block ids. Worker-side
-                # rank scoping is a separate physical-data policy.
-                RequestHasher(vllm_config, 0),
+                UCMLookup(self.spec, self._proxy, self._sharding),
+                # Plans carry common UCM block ids. Each worker builds the
+                # local UCM block ids of its own shards when building transfers.
+                hasher,
                 base_seed,
                 load_threshold_tokens=int(
                     launch_config.get("load_tokens_threshold", 0)
                 ),
-                # CUDA V1 and both V2 runners copy Mamba state into the running
+                # CUDA V1 and CUDA/Ascend V2 runners copy Mamba state into the running
                 # block before connector loads, so loads must fill it too. Only
                 # Ascend's V1 runner copies after loads, from the boundary block.
                 need_load_to_running_state=(
@@ -307,33 +352,33 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
     def shutdown(self) -> None:
-        error = None
-        for tasks in self._layer_load_tasks.values():
-            for _, task in tasks:
+        first_error = None
+        for layer_tasks in self._layer_load_tasks.values():
+            for _, task in layer_tasks:
                 try:
                     self._proxy.wait(task)
                 except Exception as exc:
-                    error = error or exc
+                    first_error = first_error or exc
         for task in self._dump_tasks:
             try:
                 self._proxy.wait(task)
             except Exception as exc:
-                error = error or exc
+                first_error = first_error or exc
         self._layer_load_tasks.clear()
         self._dump_tasks.clear()
         try:
             self._proxy.close()
         except Exception as exc:
-            error = error or exc
-        if error is not None:
-            raise error
+            first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
     ) -> tuple[int | None, bool]:
         assert self.dispatcher is not None
-        result = self.dispatcher.lookup(request, num_computed_tokens)
-        return result.external_hit_tokens, False
+        lookup_result = self.dispatcher.lookup(request, num_computed_tokens)
+        return lookup_result.external_hit_tokens, False
 
     def build_connector_meta(
         self, scheduler_output: "SchedulerOutput"
@@ -360,7 +405,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             num_hidden_layers=self._num_hidden_layers,
             use_layerwise=self.use_layerwise,
         )
-        self.transfer_builder = UCMTransferBuilder(self.layout)
+        self.transfer_builder = UCMTransferBuilder(
+            self.layout, self._sharding, self._parallel_rank
+        )
         self._proxy.register_tensors(kv_caches)
 
     def _mark_load_failed(self, request_id: str, request: Any) -> None:
@@ -384,6 +431,22 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._save_error = None
         self._save_complete = False
         super().bind_connector_metadata(connector_metadata)
+
+    def _owned_rows(
+        self, record_class: UCMRecordClass, common_ucm_block_ids: Sequence[bytes]
+    ) -> np.ndarray:
+        """Rows of a plan that this rank writes for one record class.
+
+        Replicas hold the same data, so they split the writes by common UCM
+        block id and each block is stored once. Every replica still loads all blocks.
+        """
+        replica_index, replica_count = self._replica_index_and_count_by_class.get(
+            record_class, (0, 1)
+        )
+        if replica_count == 1:
+            return np.arange(len(common_ucm_block_ids), dtype=np.int64)
+        else:
+            return writer_rows(common_ucm_block_ids, replica_index, replica_count)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         if not self.has_connector_metadata():
@@ -442,9 +505,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         metadata = self._get_connector_metadata()
         return UCMConnectorMetadata(
             requests={
-                key: value
-                for key, value in metadata.requests.items()
-                if key not in self._failed_load_reqs
+                request_id: request
+                for request_id, request in metadata.requests.items()
+                if request_id not in self._failed_load_reqs
             }
         )
 
@@ -456,7 +519,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             raise self._save_error
         try:
             for batch in self.transfer_builder.build_dump_transfers(
-                metadata, layer_name=layer_name
+                metadata, layer_name=layer_name, row_selector=self._owned_rows
             ):
                 self._dump_tasks.append(self._proxy.enqueue("dump", batch))
         except UCMProxyError as exc:
@@ -483,33 +546,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def _dump_empty_shards(
         self, metadata: UCMConnectorMetadata
     ) -> list[UCMProxyTransfer]:
-        assert self.layout is not None
-        empty_attention_types = {
-            attention_type
-            for attention_type, groups in groups_by_attention_type(self.layout.spec)
-            if not any(g.group_id in self.layout.group_layouts for g in groups)
-        }
-        empty_transfers = []
-        for request in metadata.requests.values():
-            for plan in request.dump_plans:
-                if plan.attention_type in empty_attention_types:
-                    empty = np.empty((len(plan.ucm_block_ids), 0), dtype=np.uint64)
-                    block_metadata = dump_metadata(plan, self.spec.ucm_cache_block_size)
-                    first = plan.token_start // self.spec.ucm_cache_block_size
-                    transfer = UCMProxyTransfer(
-                        plan.ucm_block_ids,
-                        np.arange(
-                            first, first + len(plan.ucm_block_ids), dtype=np.int64
-                        ),
-                        empty,
-                        empty,
-                        empty,
-                        block_metadata,
-                        np.zeros(len(plan.ucm_block_ids), dtype=np.uint64),
-                    )
-                    self._proxy.submit("dump", transfer)
-                    empty_transfers.append(transfer)
-        return empty_transfers
+        assert self.transfer_builder is not None
+        empty_markers = list(
+            self.transfer_builder.build_empty_markers(metadata, self._owned_rows)
+        )
+        for transfer in empty_markers:
+            self._proxy.submit("dump", transfer)
+        return empty_markers
 
     def wait_for_save(self) -> None:
         if not self.has_connector_metadata() or self._save_complete:
@@ -518,26 +561,26 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         metadata = self._dump_metadata()
 
         def abort_pending(*, failed_only: bool = False) -> None:
-            for request_id, request in self._get_connector_metadata().requests.items():
-                if failed_only and request_id not in self._failed_load_reqs:
-                    continue
-                for plan in request.dump_plans:
-                    first = plan.token_start // self.spec.ucm_cache_block_size
-                    self._proxy.abort(
-                        plan.ucm_block_ids,
-                        np.arange(
-                            first, first + len(plan.ucm_block_ids), dtype=np.int64
-                        ),
-                    )
+            abort_requests = {
+                request_id: request
+                for request_id, request in self._get_connector_metadata().requests.items()
+                if request_id in self._failed_load_reqs or not failed_only
+            }
+            for ucm_block_ids, block_indices in self.transfer_builder.dump_targets(
+                UCMConnectorMetadata(requests=abort_requests), self._owned_rows
+            ):
+                self._proxy.abort(ucm_block_ids, block_indices)
 
         try:
             if not self.use_layerwise:
-                batches = self.transfer_builder.build_dump_transfers(metadata)
-                for batch in batches:
+                dump_batches = self.transfer_builder.build_dump_transfers(
+                    metadata, row_selector=self._owned_rows
+                )
+                for batch in dump_batches:
                     self._proxy.submit("dump", batch)
-                empty_transfers = self._dump_empty_shards(metadata)
-                for batch in (*batches, *empty_transfers):
-                    self._proxy.commit(batch.ucm_block_ids, batch.block_indices)
+                empty_markers = self._dump_empty_shards(metadata)
+                for transfer in (*dump_batches, *empty_markers):
+                    self._proxy.commit(transfer.ucm_block_ids, transfer.block_indices)
             else:
                 # Drain loads whose hooks were skipped before deciding which saves are valid.
                 for layer_id in tuple(self._layer_load_tasks):
@@ -558,15 +601,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 if self._save_error is not None:
                     raise self._save_error
                 self._dump_empty_shards(metadata)
-                for request in metadata.requests.values():
-                    for plan in request.dump_plans:
-                        first = plan.token_start // self.spec.ucm_cache_block_size
-                        self._proxy.commit(
-                            plan.ucm_block_ids,
-                            np.arange(
-                                first, first + len(plan.ucm_block_ids), dtype=np.int64
-                            ),
-                        )
+                for ucm_block_ids, block_indices in self.transfer_builder.dump_targets(
+                    metadata, self._owned_rows
+                ):
+                    self._proxy.commit(ucm_block_ids, block_indices)
             if self._failed_load_reqs:
                 abort_pending(failed_only=True)
         except UCMProxyError:
@@ -577,9 +615,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if not self._worker_metadata.load_failed_reqs:
             return None
-        result = self._worker_metadata
+        worker_metadata = self._worker_metadata
         self._worker_metadata = UCMWorkerMetadata()
-        return result
+        return worker_metadata
 
     def get_transfer_results(
         self, finished_req_ids: set[str]
@@ -596,16 +634,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return super().get_transfer_results(finished_req_ids)
 
     def get_block_ids_with_load_errors(self) -> set[int]:
-        result = self._invalid_vllm_block_ids
+        invalid_vllm_block_ids = self._invalid_vllm_block_ids
         self._invalid_vllm_block_ids = set()
-        return result
+        return invalid_vllm_block_ids
 
     def update_connector_output(self, connector_output: "KVConnectorOutput") -> None:
         assert self.dispatcher is not None
-        metadata = connector_output.kv_connector_worker_meta
-        if metadata is None:
+        worker_metadata = connector_output.kv_connector_worker_meta
+        if worker_metadata is None:
             return
-        for request_id in metadata.load_failed_reqs:
+        for request_id in worker_metadata.load_failed_reqs:
             self.dispatcher.requests.pop(request_id, None)
 
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata) -> None:

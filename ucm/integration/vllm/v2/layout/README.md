@@ -27,7 +27,7 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
     proxy_adapter.submit("load", transfer)
 ```
 
-本次只调整职责与导入位置，token/State/transient 策略、segment 寻址、padding、bulk/layerwise 外存模板及 namespace r7 不变。当前开发 proxy 同步执行，State layerwise 流水仍待实现。测试/工具已迁移当前接口引用，旧 spec/view/lifecycle 夹具仍待核对；未运行测试。
+本次只调整职责与导入位置，token/State/transient 策略、segment 寻址、padding、bulk/layerwise 外存模板不变。当前开发 proxy 同步执行，State layerwise 流水仍待实现。测试/工具已迁移当前接口引用，旧 spec/view/lifecycle 夹具仍待核对；未运行测试。
 
 建议按 `kv_cache.py -> __init__.py -> view.py -> group.py -> store_layout.py` 阅读；理解 plan 与传输时再读外部 `../ucm_kv_cache.py`。
 
@@ -47,11 +47,11 @@ for transfer in transfer_builder.build_load_transfers(metadata, layer_id=7):
 
 `supports_partial_tokens` 是 group 级布尔策略：初始化时对全部 ComponentView 的布局能力取 `all`。只要任意 view 不支持部分 token，整个 group 只允许完整 block，按层选择也不能绕过此限制。MemorySegment 只保留寻址参数，不保存逐 segment 的策略标志；固定范围和动态 offset 共用 group 策略。
 
-`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + vllm_block_id * block_stride + fixed_offset + dynamic_offset`；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
+`compile_access` 将块内 token 起点/长度转换为 `[window block, segment]` 的字节 offset/size 模板，`BlockAccess` 保存整个 group 的模板，层选择只在运行时通过 segment_mask 进行。运行时 `resolve_ptrs` 计算 `base_ptr + vllm_block_id * block_stride + fixed_offset + dynamic_offset`（dynamic_offset 只用于 FA 子块）；通过 reshape 将 ptrs 看成 `[重复窗口, 窗口内 block, segment]`，广播添加固定模板，不复制 ptrs。`resolve_ptrs` 只返回指针，供 record 层复用固定 size 模板；删除仅旧扁平入口使用的 `resolve/_resolve` 包装。固定范围和动态范围均须落在实际 block 内；State 每组件只有一个存储单元，其整块要求由范围与整除约束自然保证，不再重复写 State 特判。内部模板按非空一维数组契约传入，不在每次编译重复检查形状。
 
 `BlockFirstView` 留在 group 中，它只描述源内存中带 padding 的连续 span。当前只在 CUDA/CPU 的 BLHNC/BLNHC 下根据原生 descriptor 创建，要求 `0 < layer_stride < block_stride` 且本组 descriptors 的 block stride 一致；信任 0.30 原生 allocator 的连续放置契约，不再逐层检查地址或 offset 链。NPU 直接使用 per-layer segments；GLM 专用 slot descriptor 不符合 stride 条件。store 层仅在 use_layerwise=False、完整块且 BlockFirstView 存在时使用独立的整组 IO 路径；layerwise 继续按通用紧凑模板存取物理 segments。
 
-State group 同样参与该路径：符合条件时，bulk 复制整个 group span，保留各层 page padding，不复制 span 之外的全局 block 空闲容量。use_layerwise=True 时始终使用 payload 前缀和模板，State 整快照与加载等待规则继续由原有策略处理。记录格式使用 r7 namespace，隔离旧版带 page 间隙的 layerwise 文件。
+State group 同样参与该路径：符合条件时，bulk 复制整个 group span，保留各层 page padding，不复制 span 之外的全局 block 空闲容量。use_layerwise=True 时始终使用 payload 前缀和模板，State 整快照与加载等待规则继续由原有策略处理。layerwise 记录不含 page padding，其 namespace 带 `-layerwise` 后缀，与 bulk 记录的 id 不同。
 
 ## 两种 offset
 
@@ -78,7 +78,7 @@ State group 同样参与该路径：符合条件时，bulk 复制整个 group sp
 
 ## FA 16384 / 512 完整例子
 
-假设一个 FA group 有两层，都是 Ascend BNHC 的连续 view：
+connector 配置 `ucm_cache_block_size=512`，FA block 为 16384 tokens。假设一个 FA group 有两层，都是 Ascend BNHC 的连续 view：
 
 ```text
 shape = [3 blocks, 16384 tokens, 2 heads, 2 channels]
@@ -143,7 +143,7 @@ ucm_block_id B: offset 0    <- layer 0 的下一段 2048 字节
                 offset 2048 <- layer 1 的下一段 2048 字节
 ```
 
-外部 `UCMTransferBuilder._iter_plan_segments` 加 group 起点并关联 ucm_block_ids，最终扁平化为：
+外部 `UCMTransferBuilder._iter_class_segments` 加 group 起点并关联 ucm_block_ids，最终扁平化为：
 
 ```text
 ucm_block_ids: [A,       A,       B,       B      ]
@@ -154,7 +154,7 @@ sizes:         [2048,    2048,    2048,    2048   ]
 
 若只请求 layer_id=1，先选 segment 列再展开地址，得到 `ptrs=[2131072,2133120]`、`offsets=[2048,2048]`。目标 offset 不变成零，因为同一个 UCM block 中 layer 0 的位置仍被保留。
 
-对应夹具为 `LayerViewSegmentsTest.test_documented_fa_subblocks_preserve_layer_offsets`；当前未运行，不能据此声称新接口已验证。实际 connector 通过外部 transfer_builder 的 `build_load_transfers/build_dump_transfers` 下发对应二维矩阵，不需要自己展开 head 或解释 strides。
+对应夹具为 `LayerViewSegmentsTest.test_documented_fa_subblocks_preserve_layer_offsets`。实际 connector 通过外部 transfer_builder 的 `build_load_transfers/build_dump_transfers` 下发对应二维矩阵，不需要自己展开 head 或解释 strides。
 
 ## 当前边界
 
@@ -170,6 +170,6 @@ sizes:         [2048,    2048,    2048,    2048   ]
 
 ## 并行分片
 
-布局只描述当前 rank 注册的逻辑 views。PP 的空 group 保留全局 group/plan 位置，但不生成本地物理 segments。CP 整页换算在 `ParallelLayout` 完成；Ascend replicated indexer 根据原生 spec 展开连续 kernel rows。rank 隔离与全分片 commit 可见性在存储包装层完成，不进入 LayerView 的寻址算法。
+布局只描述当前 rank 注册的逻辑 views。PP 的空 group 保留全局 group/plan 位置，但不生成本地物理 segments。CP 整页换算在 `ParallelLayout` 完成；Ascend replicated indexer 根据原生 spec 展开连续 kernel rows。哪些 rank 存同一份数据、各自写哪些 block 由 `ucm_sharding.py` 与 connector 决定，分片可见性由 `UCMLookup` 判断，不进入 LayerView 的寻址算法。
 
 TP/PP/DCP 的验证范围、PCP 引擎限制及复现入口见 [并行验证记录](../../../../../docs/connector-v2-parallel-validation-20260926.md)。

@@ -30,6 +30,14 @@ class UCMStore(Protocol):
     backend: UCMStore | None
 
     def lookup(self, ucm_block_ids: Sequence[bytes]) -> Sequence[bool]: ...
+
+    # Index of the last hit before the first miss, -1 if the first id misses.
+    # Stops at the first miss.
+    def lookup_on_prefix(self, ucm_block_ids: Sequence[bytes]) -> int: ...
+
+    # Scans from the end and returns the index of the first hit, -1 if none.
+    # Stops at that hit.
+    def lookup_on_reverse(self, ucm_block_ids: Sequence[bytes]) -> int: ...
     def load(
         self,
         ucm_block_ids: Sequence[bytes],

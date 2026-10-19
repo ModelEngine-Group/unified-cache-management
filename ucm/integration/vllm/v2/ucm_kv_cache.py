@@ -2,43 +2,72 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .layout import UCMKVCacheGroupInfo, UCMKVCacheLayout
+from .layout import UCMKVCacheLayout
 from .layout.view import LAYOUT_DEBUG, layout_debug
+from .parallel import ParallelLayout
+from .ucm_block_id import make_local_ucm_block_ids
 from .ucm_proxy import UCMProxyTransfer
-from .ucm_scheduler import AttentionType, groups_by_attention_type
+from .ucm_sharding import (
+    ParallelRank,
+    UCMRecordClass,
+    UCMSharding,
+    groups_by_attention_type,
+)
 
 if TYPE_CHECKING:
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
+# Returns the rows (UCM blocks) of a plan this rank writes for a record class.
+RowSelector = Callable[[UCMRecordClass, Sequence[bytes]], np.ndarray]
+
 
 def dump_metadata(
-    plan: "UCMGroupDispatchPlan", ucm_cache_block_size: int
+    plan: "UCMGroupDispatchPlan",
+    ucm_cache_block_size: int,
+    selected_rows: Sequence[int] | None = None,
 ) -> tuple[str, ...]:
     """Per-UCM-block JSON for Store dump: attention type and 0-based block index.
 
-    A plan's ucm_block_ids are consecutive UCM blocks starting at its
-    token_start.
+    A plan's blocks are consecutive UCM blocks starting at its token_start;
+    selected_rows picks some of them (all by default).
     """
     first_block = plan.token_start // ucm_cache_block_size
     prefix = f'{{"type":"{plan.attention_type.value}","block_index":'
-    return tuple(
-        f"{prefix}{first_block + row}}}" for row in range(len(plan.ucm_block_ids))
-    )
+    if selected_rows is None:
+        selected_rows = range(len(plan.common_ucm_block_ids))
+    return tuple(f"{prefix}{first_block + int(row)}}}" for row in selected_rows)
 
 
 class UCMTransferBuilder:
-    """Interpret plans and map their UCM block ids to HBM/storage byte ranges."""
+    """Build this rank's transfers from plans.
 
-    def __init__(self, layout: UCMKVCacheLayout) -> None:
+    Each record class is a separate record and uses this rank's shard in the
+    UCM block id.
+    """
+
+    def __init__(
+        self,
+        layout: UCMKVCacheLayout,
+        sharding: UCMSharding | None = None,
+        rank: ParallelRank = (0, 0, 0),
+    ) -> None:
         self.layout = layout
-        self._groups_by_attention_type: Mapping[
-            AttentionType, tuple[UCMKVCacheGroupInfo, ...]
-        ] = dict(groups_by_attention_type(layout.spec))
+        if sharding is None:
+            sharding = UCMSharding(layout.spec, ParallelLayout())
+        self._record_classes = {
+            attention_type: sharding.record_classes(attention_type)
+            for attention_type, _ in groups_by_attention_type(layout.spec)
+        }
+        self._shard_keys = {
+            record_class: sharding.shard_key(record_class, rank)
+            for record_classes in self._record_classes.values()
+            for record_class in record_classes
+        }
 
     def _selected_layer_names(
         self, layer_name: str | None, layer_id: int | None
@@ -57,8 +86,13 @@ class UCMTransferBuilder:
         layer_id: int | None = None,
     ) -> tuple[UCMProxyTransfer, ...]:
         return self._build_transfers(
-            (p for r in metadata.requests.values() for p in r.load_plans),
+            (
+                plan
+                for request in metadata.requests.values()
+                for plan in request.load_plans
+            ),
             self._selected_layer_names(layer_name, layer_id),
+            row_selector=None,
             with_metadata=False,
         )
 
@@ -68,140 +102,259 @@ class UCMTransferBuilder:
         layer_name: str | None = None,
         *,
         layer_id: int | None = None,
+        row_selector: RowSelector | None = None,
     ) -> tuple[UCMProxyTransfer, ...]:
         return self._build_transfers(
-            (p for r in metadata.requests.values() for p in r.dump_plans),
+            (
+                plan
+                for request in metadata.requests.values()
+                for plan in request.dump_plans
+            ),
             self._selected_layer_names(layer_name, layer_id),
+            row_selector=row_selector,
             with_metadata=True,
         )
+
+    def build_empty_markers(
+        self,
+        metadata: "UCMConnectorMetadata",
+        row_selector: RowSelector | None = None,
+    ) -> tuple[UCMProxyTransfer, ...]:
+        """Empty records for record classes with no group on this rank.
+
+        A pipeline stage may have no layers of a record class. It still
+        stores an empty record so lookup finds every shard.
+        """
+        markers = []
+        for plan, record_class, selected_rows in self._dump_rows(
+            metadata, row_selector
+        ):
+            if any(
+                group.group_id in self.layout.group_layouts
+                for group in record_class.groups
+            ):
+                continue
+            else:
+                local_ucm_block_ids, block_indices = self._local_ucm_block_ids(
+                    plan, record_class, selected_rows
+                )
+                empty_matrix = np.empty((len(selected_rows), 0), dtype=np.uint64)
+                markers.append(
+                    UCMProxyTransfer(
+                        local_ucm_block_ids,
+                        block_indices,
+                        empty_matrix,
+                        empty_matrix,
+                        empty_matrix,
+                        dump_metadata(
+                            plan, self.layout.spec.ucm_cache_block_size, selected_rows
+                        ),
+                        np.zeros(len(selected_rows), dtype=np.uint64),
+                    )
+                )
+        return tuple(markers)
+
+    def dump_targets(
+        self,
+        metadata: "UCMConnectorMetadata",
+        row_selector: RowSelector | None = None,
+    ) -> tuple[tuple[tuple[bytes, ...], np.ndarray], ...]:
+        """(UCM block ids, block indices) this rank dumps, for commit or abort."""
+        return tuple(
+            self._local_ucm_block_ids(plan, record_class, selected_rows)
+            for plan, record_class, selected_rows in self._dump_rows(
+                metadata, row_selector
+            )
+        )
+
+    def _dump_rows(
+        self, metadata: "UCMConnectorMetadata", row_selector: RowSelector | None
+    ) -> Iterator[tuple["UCMGroupDispatchPlan", UCMRecordClass, np.ndarray]]:
+        for request in metadata.requests.values():
+            for plan in request.dump_plans:
+                for record_class in self._record_classes[plan.attention_type]:
+                    selected_rows = self._selected_rows(
+                        plan, record_class, row_selector
+                    )
+                    if len(selected_rows):
+                        yield plan, record_class, selected_rows
+
+    def _selected_rows(
+        self,
+        plan: "UCMGroupDispatchPlan",
+        record_class: UCMRecordClass,
+        row_selector: RowSelector | None,
+    ) -> np.ndarray:
+        if row_selector is None:
+            return np.arange(len(plan.common_ucm_block_ids), dtype=np.int64)
+        else:
+            return np.asarray(
+                row_selector(record_class, plan.common_ucm_block_ids), dtype=np.int64
+            )
+
+    def _local_ucm_block_ids(
+        self,
+        plan: "UCMGroupDispatchPlan",
+        record_class: UCMRecordClass,
+        selected_rows: np.ndarray,
+    ) -> tuple[tuple[bytes, ...], np.ndarray]:
+        """Local UCM block ids and block indices of the selected rows on this rank."""
+        local_ucm_block_ids = make_local_ucm_block_ids(
+            [plan.common_ucm_block_ids[row] for row in selected_rows],
+            plan.attention_type,
+            record_class.class_index,
+            self._shard_keys[record_class],
+        )
+        first_block = plan.token_start // self.layout.spec.ucm_cache_block_size
+        return local_ucm_block_ids, first_block + selected_rows
 
     def _build_transfers(
         self,
         plans: Iterable["UCMGroupDispatchPlan"],
         layer_names: frozenset[str] | None,
         *,
+        row_selector: RowSelector | None,
         with_metadata: bool,
     ) -> tuple[UCMProxyTransfer, ...]:
         transfers = []
         for plan in plans:
-            groups = [
-                g for g in self._iter_plan_segments(plan, layer_names) if g[2].shape[1]
-            ]
-            if not groups:
-                continue
-            ptrs = (
-                groups[0][2]
-                if len(groups) == 1
-                else np.concatenate([g[2] for g in groups], axis=1)
-            )
-            if len(groups) == 1:
-                offsets, sizes = groups[0][1], groups[0][3]
-            else:
-                offsets = np.broadcast_to(
-                    np.concatenate([g[1][0] for g in groups]), ptrs.shape
+            for record_class in self._record_classes[plan.attention_type]:
+                selected_rows = self._selected_rows(plan, record_class, row_selector)
+                if len(selected_rows) == 0:
+                    continue
+                group_segments = [
+                    segments
+                    for segments in self._iter_class_segments(
+                        plan, record_class, selected_rows, layer_names
+                    )
+                    if segments[1].shape[1]
+                ]
+                if not group_segments:
+                    continue
+                transfers.append(
+                    self._transfer(
+                        plan, record_class, selected_rows, group_segments, with_metadata
+                    )
                 )
-                sizes = np.broadcast_to(
-                    np.concatenate([g[3][0] for g in groups]), ptrs.shape
-                )
-            # A plan's ucm_block_ids come from one request, so they are unique.
-            # Keep requests separate: shared-prefix ids may have distinct targets.
-            key_metadata = (
-                dump_metadata(plan, self.layout.spec.ucm_cache_block_size)
-                if with_metadata
-                else ()
-            )
-            transfers.append(
-                UCMProxyTransfer(
-                    plan.ucm_block_ids,
-                    np.arange(
-                        plan.token_start // self.layout.spec.ucm_cache_block_size,
-                        plan.token_start // self.layout.spec.ucm_cache_block_size
-                        + len(plan.ucm_block_ids),
-                        dtype=np.int64,
-                    ),
-                    ptrs,
-                    sizes,
-                    offsets,
-                    key_metadata,
-                    (
-                        np.full(
-                            len(plan.ucm_block_ids),
-                            sum(
-                                self.layout.store_layouts[g.group_id].store_bytes
-                                for g in self._groups_by_attention_type[
-                                    plan.attention_type
-                                ]
-                                if g.group_id in self.layout.store_layouts
-                            ),
-                            dtype=np.uint64,
-                        )
-                        if with_metadata
-                        else None
-                    ),
-                )
-            )
         return tuple(transfers)
 
-    def _iter_plan_segments(
+    def _transfer(
         self,
         plan: "UCMGroupDispatchPlan",
-        layer_names: frozenset[str] | None,
-    ) -> Iterator[tuple[Sequence[bytes], np.ndarray, np.ndarray, np.ndarray]]:
-        """One plan's records as per-group arrays, straight off templates.
+        record_class: UCMRecordClass,
+        selected_rows: np.ndarray,
+        group_segments: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        with_metadata: bool,
+    ) -> UCMProxyTransfer:
+        """One transfer from each group's (offsets, ptrs, sizes) of a record."""
+        if len(group_segments) == 1:
+            ((offsets, ptrs, sizes),) = group_segments
+        else:
+            ptrs = np.concatenate(
+                [group_ptrs for _, group_ptrs, _ in group_segments], axis=1
+            )
+            # Offsets and sizes repeat on every row, so join the first rows.
+            offsets = np.broadcast_to(
+                np.concatenate(
+                    [group_offsets[0] for group_offsets, _, _ in group_segments]
+                ),
+                ptrs.shape,
+            )
+            sizes = np.broadcast_to(
+                np.concatenate(
+                    [group_sizes[0] for _, _, group_sizes in group_segments]
+                ),
+                ptrs.shape,
+            )
+        # Ids in one plan are unique because they come from one request.
+        # Requests stay in separate transfers: two requests may share a prefix
+        # but load it into different blocks.
+        local_ucm_block_ids, block_indices = self._local_ucm_block_ids(
+            plan, record_class, selected_rows
+        )
+        if with_metadata:
+            block_metadata = dump_metadata(
+                plan, self.layout.spec.ucm_cache_block_size, selected_rows
+            )
+            record_nbytes = np.full(
+                len(selected_rows),
+                sum(
+                    self.layout.store_layouts[group.group_id].store_bytes
+                    for group in record_class.groups
+                    if group.group_id in self.layout.store_layouts
+                ),
+                dtype=np.uint64,
+            )
+        else:
+            block_metadata = ()
+            record_nbytes = None
+        return UCMProxyTransfer(
+            local_ucm_block_ids,
+            block_indices,
+            ptrs,
+            sizes,
+            offsets,
+            block_metadata,
+            record_nbytes,
+        )
 
-        The scheduler sends UCM block ids and window vLLM block ids; each
-        group's static template (compiled at layout init -- the offsets/sizes
-        grids of one UCM block's window, block-major: block 0's views, block
-        1's views, ...) places them inside the UCM block's record, and group
-        g's contribution starts at group_record_offset.  All UCM blocks of
-        a plan resolve in one vectorized pass per group; only the vLLM block
-        ids (and full-attention sub-span heads) vary per call.  Block
-        First groups with whole unfiltered windows take the
-        one-span-per-block fast path, paddings riding inside.
+    def _iter_class_segments(
+        self,
+        plan: "UCMGroupDispatchPlan",
+        record_class: UCMRecordClass,
+        selected_rows: np.ndarray,
+        layer_names: frozenset[str] | None,
+    ) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """(offsets, ptrs, sizes) of each group in one record class.
+
+        Each group has a template built at layout init. It is applied to the
+        selected rows' vLLM block ids, and the group's data starts at
+        group_record_offset in the record. Block First groups copy a whole
+        block (padding included) in one piece.
         """
 
-        if not plan.ucm_block_ids:
-            return
-        groups = self._groups_by_attention_type[plan.attention_type]
+        ucm_block_size = self.layout.spec.ucm_cache_block_size
         if LAYOUT_DEBUG:
             layout_debug(
                 f"plan attention_type={plan.attention_type.value} "
-                f"tokens=[{plan.token_start},{plan.token_end}) "
-                f"ucm_block_ids={len(plan.ucm_block_ids)} "
-                f"groups={[group.group_id for group in groups]}"
+                f"record_class={record_class.class_index} "
+                f"tokens=[{plan.token_start},{plan.token_end}) rows={len(selected_rows)} "
+                f"groups={[group.group_id for group in record_class.groups]}"
             )
-        ucm_block_count = len(plan.ucm_block_ids)
         group_record_offset = 0
-        for group, vllm_block_ids in zip(
-            groups, plan.vllm_block_ids_by_group, strict=True
-        ):
+        for group, position in zip(record_class.groups, record_class.group_positions):
             if group.group_id not in self.layout.group_layouts:
                 continue
             group_layout = self.layout.group_layouts[group.group_id]
             # Normalize at the pickle boundary: int64 ids mixed into the
             # uint64 stride arithmetic below would silently promote.
-            vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+            plan_vllm_block_ids = np.asarray(
+                plan.vllm_block_ids_by_group[position], dtype=np.uint64
+            )
+            # Each row (UCM block) owns an equal slice of the window block ids.
+            vllm_block_ids = plan_vllm_block_ids.reshape(
+                len(plan.common_ucm_block_ids), -1
+            )[selected_rows].reshape(-1)
             store_layout = self.layout.store_layouts[group.group_id]
-            mask = (
+            segment_mask = (
                 None
                 if layer_names is None
                 else group_layout.segment_mask(layer_names=layer_names)
             )
             token_offsets = None
             if store_layout.dynamic_token_offsets:
-                first_block = plan.token_start // self.layout.spec.ucm_cache_block_size
+                # Slice start of each row inside its vLLM block.
+                first_block = plan.token_start // ucm_block_size
                 token_offsets = (
-                    np.arange(
-                        first_block, first_block + ucm_block_count, dtype=np.uint64
-                    )
-                    * self.layout.spec.ucm_cache_block_size
+                    (first_block + selected_rows).astype(np.uint64)
+                    * ucm_block_size
                     % group_layout.token_block_size
                 )
             offsets, ptrs, sizes = store_layout.resolve_matrices(
                 vllm_block_ids,
-                ucm_block_count,
+                len(selected_rows),
                 token_offsets=token_offsets,
-                segment_mask=mask,
+                segment_mask=segment_mask,
             )
             if group_record_offset:
                 offsets = np.broadcast_to(
@@ -209,10 +362,10 @@ class UCMTransferBuilder:
                 )
             if LAYOUT_DEBUG:
                 layout_debug(
-                    f"record group={group.group_id} ucm_block_ids={ucm_block_count} "
+                    f"record group={group.group_id} rows={len(selected_rows)} "
                     f"vllm_block_ids={len(vllm_block_ids)} "
                     f"segments_per_ucm_block={ptrs.shape[1]} "
                     f"record_size={group_record_offset + store_layout.store_bytes}"
                 )
-            yield plan.ucm_block_ids, offsets, ptrs, sizes
+            yield offsets, ptrs, sizes
             group_record_offset += store_layout.store_bytes

@@ -19,6 +19,10 @@ from test_ucm_connector_v2 import (
     RequestHasher,
     config,
     group,
+    make_dispatcher,
+    parse_spec,
+    request_ucm_ids,
+    ucm_ids,
     vllm_config,
 )
 
@@ -27,12 +31,13 @@ from ucm.integration.vllm.v2.layout import (
     UCMKVCacheGroupInfo,
     UCMKVCacheLayout,
     UCMKVCacheSpec,
-    parse_kv_cache_config,
 )
-from ucm.integration.vllm.v2.parallel import AllShardLookup, ParallelLayout
+from ucm.integration.vllm.v2.parallel import ParallelLayout
 from ucm.integration.vllm.v2.test_stores import FileTestStore, MemoryTestStore
+from ucm.integration.vllm.v2.ucm_block_id import ShardKey, make_local_ucm_block_ids
 from ucm.integration.vllm.v2.ucm_connector import UCMConnector
 from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
+from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
 from ucm.integration.vllm.v2.ucm_proxy import (
     ParallelProxy,
     PipelineProxy,
@@ -47,6 +52,7 @@ from ucm.integration.vllm.v2.ucm_scheduler import (
     UCMDispatcher,
     UCMGroupDispatchPlan,
 )
+from ucm.integration.vllm.v2.ucm_sharding import UCMSharding
 
 
 def transfer(
@@ -315,12 +321,12 @@ def test_parallel_rejects_store_with_backend():
 
 
 @pytest.mark.parametrize("mode", ["pipeline", "parallel"])
-def test_factory_shared_visibility_and_rank_local_data(tmp_path, mode):
+def test_factory_one_proxy_per_process_ranks_differ_only_by_id(tmp_path, mode):
     settings = {
         "v2_stores": {
             "cache": {"type": "test_memory", "capacity_bytes": 8},
-            "left": {"type": "test_file", "path": str(tmp_path)},
-            "right": {"type": "test_file", "path": str(tmp_path)},
+            "left": {"type": "test_file", "path": str(tmp_path / "left")},
+            "right": {"type": "test_file", "path": str(tmp_path / "right")},
         },
         "v2_proxy": (
             {"type": "pipeline", "stores": ["cache", "left"]}
@@ -334,46 +340,37 @@ def test_factory_shared_visibility_and_rank_local_data(tmp_path, mode):
             }
         ),
     }
-    topology = ParallelLayout(tp=2)
-    scheduler = create_proxy(
-        settings,
-        namespace="test",
-        record_token_span=512,
-        parallel_layout=topology,
-        rank=None,
-    )
-    writers = [
-        create_proxy(
-            settings,
-            namespace="test",
-            record_token_span=512,
-            parallel_layout=topology,
-            rank=i,
-        )
-        for i in range(2)
+    # Separate processes in production: each builds the same single Proxy.
+    scheduler = create_proxy(settings, record_token_span=512)
+    writers = [create_proxy(settings, record_token_span=512) for _ in range(2)]
+    common_ids = (b"a" * 12, b"b" * 12)
+    # Two TP ranks with distinct heads: one shard each, same Stores.
+    ids = [
+        make_local_ucm_block_ids(common_ids, AttentionType.FA, 0, ShardKey(head_key=tp))
+        for tp in range(2)
     ]
-    keys = (b"a" * 16, b"b" * 16)
+    every_rank = (*ids[0], *ids[1])
     for i, writer in enumerate(writers):
-        local = writer._proxy.local
-        stores = (local.store,) if mode == "pipeline" else local.stores
+        proxy = writer._proxy
+        stores = (proxy.store,) if mode == "pipeline" else proxy.stores
         memory = ByteMemory()
         for store in stores:
             store.byte_access = MemoryByteAccess(memory)
         memory.write(100, bytes([65 + i]) * 8)
-        batch = transfer(keys, [7, 8], [[100], [100]])
+        batch = transfer(ids[i], [7, 8], [[100], [100]])
         if mode == "pipeline":
             # Cache capacity holds one record; commit each before reserving the next.
             for row in range(2):
-                one = transfer((keys[row],), [7 + row], [[100]])
+                one = transfer((ids[i][row],), [7 + row], [[100]])
                 writer.submit("dump", one)
                 writer.commit(one.ucm_block_ids, one.block_indices)
         else:
             writer.submit("dump", batch)
-            writer.commit(keys, batch.block_indices)
-        assert scheduler.lookup(keys, batch.block_indices) == (
-            (False, False) if i == 0 else (True, True)
+            writer.commit(ids[i], batch.block_indices)
+        assert scheduler.lookup(every_rank, np.tile(batch.block_indices, 2)) == (
+            (True, True, False, False) if i == 0 else (True,) * 4
         )
-        writer.submit("load", transfer(keys, [7, 8], [[200], [300]]))
+        writer.submit("load", transfer(ids[i], [7, 8], [[200], [300]]))
         assert memory.read(200, 8) == bytes([65 + i]) * 8
         assert memory.read(300, 8) == bytes([65 + i]) * 8
     for writer in writers:
@@ -381,15 +378,9 @@ def test_factory_shared_visibility_and_rank_local_data(tmp_path, mode):
     scheduler.close()
 
 
-def test_factory_default_keeps_existing_cache_path(tmp_path):
-    adapter = create_proxy(
-        {"v2_storage_path": str(tmp_path)},
-        namespace="schema",
-        record_token_span=512,
-        parallel_layout=ParallelLayout(),
-        rank=None,
-    )
-    assert adapter._proxy.store.root == tmp_path / ".ucm-v2" / "schema"
+def test_factory_default_store_uses_its_configured_path(tmp_path):
+    adapter = create_proxy({"v2_storage_path": str(tmp_path)}, record_token_span=512)
+    assert adapter._proxy.store.root == tmp_path
     adapter.close()
 
 
@@ -410,30 +401,51 @@ def test_factory_default_keeps_existing_cache_path(tmp_path):
                 "routes": [{"token_end": None, "store": "cache"}],
             },
         },
+        {
+            "v2_stores": {
+                "left": {"type": "test_file", "path": "same"},
+                "right": {"type": "test_file", "path": "same"},
+            },
+            "v2_proxy": {
+                "type": "parallel",
+                "routes": [
+                    {"token_end": 4096, "store": "left"},
+                    {"token_end": None, "store": "right"},
+                ],
+            },
+        },
     ],
 )
 def test_factory_rejects_invalid_or_process_local_configuration(settings):
     with pytest.raises(ValueError):
-        create_proxy(
-            settings,
-            namespace="test",
-            record_token_span=512,
-            parallel_layout=ParallelLayout(),
-            rank=None,
-        )
+        create_proxy(settings, record_token_span=512)
 
 
 def test_all_shard_lookup_accepts_hits_at_different_store_levels(tmp_path):
     access = MemoryByteAccess(ByteMemory())
-    disks = [FileTestStore(tmp_path / str(i), access) for i in range(2)]
-    caches = [MemoryTestStore(access, backend=disk) for disk in disks]
-    key = b"a" * 16
-    caches[0].records[key] = (b"abcdefgh", "{}")
-    disks[1].write_record(key, b"ijklmnop", "{}")
-    shards = [PipelineProxy(cache) for cache in caches]
-    scheduler = AllShardLookup(shards[0], shards)
-    assert scheduler.lookup((key,), np.array([7])) == (True,)
-    scheduler.close()
+    disk = FileTestStore(tmp_path, access)
+    cache = MemoryTestStore(access, backend=disk)
+    group_info = UCMKVCacheGroupInfo(
+        0, 512, frozenset((KVCacheSpecKind.FULL_ATTENTION,)), tail_blocks=1
+    )
+    spec = UCMKVCacheSpec((group_info,), 512, 512, "cpu")
+    lookup = UCMLookup(
+        spec,
+        UCMProxyAdapter(PipelineProxy(cache)),
+        UCMSharding(spec, ParallelLayout(tp=2)),
+    )
+    common_ids = (b"a" * 12,)
+    (shard0,) = make_local_ucm_block_ids(
+        common_ids, AttentionType.FA, 0, ShardKey(head_key=0)
+    )
+    (shard1,) = make_local_ucm_block_ids(
+        common_ids, AttentionType.FA, 0, ShardKey(head_key=1)
+    )
+    cache.records[shard0] = (b"abcdefgh", "{}")
+    assert lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1) == 0
+    disk.write_record(shard1, b"ijklmnop", "{}")
+    assert lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1) == 1
+    cache.close()
 
 
 def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
@@ -457,15 +469,17 @@ def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
     proxy = ParallelProxy(stores, [4096, None], 512)
     dispatcher = UCMDispatcher(
         spec,
-        UCMProxyAdapter(proxy),
+        UCMLookup(
+            spec,
+            UCMProxyAdapter(proxy),
+            UCMSharding(spec, ParallelLayout()),
+            recompute_tokens=0,
+        ),
         RequestHasher(vllm_config(), 0),
         b"seed",
-        recompute_tokens=0,
     )
     request = FakeRequest("request", 5120)
-    ucm_block_ids_by_attention_type = dispatcher._ucm_block_ids_by_attention_type(
-        request
-    )
+    ucm_block_ids_by_attention_type = request_ucm_ids(dispatcher, request)
     for ucm_block_ids in ucm_block_ids_by_attention_type:
         for index, ucm_block_id in enumerate(ucm_block_ids):
             stores[0 if index < 8 else 1].write_record(ucm_block_id, b"", "{}")
@@ -496,7 +510,7 @@ def make_layout():
     native_group.is_eagle_group = False
     native = config(native_group)
     native.kv_cache_layout = "NHD"
-    spec = parse_kv_cache_config(
+    spec = parse_spec(
         native,
         scheduler_block_size=4,
         hf_text_config=SimpleNamespace(model_type="llama"),
@@ -525,7 +539,7 @@ def make_layout():
 def test_transfer_builder_keeps_absolute_positions_and_complete_record_size():
     layout, _, _ = make_layout()
     builder = UCMTransferBuilder(layout)
-    keys = (b"a" * 16, b"b" * 16)
+    keys = (b"a" * 12, b"b" * 12)
     plan = UCMGroupDispatchPlan(AttentionType.FA, keys, 12, 20, (np.array([1, 2]),))
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,), load_plans=(plan,))}
@@ -564,15 +578,16 @@ def test_connector_save_commits_to_original_route_and_shutdown_drains(layerwise)
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 16,), 12, 16, (np.array([1]),)
+        AttentionType.FA, (b"a" * 12,), 12, 16, (np.array([1]),)
     )
     worker._connector_metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
     )
     worker.wait_for_save()
-    assert stores[0].store.lookup(plan.ucm_block_ids) == (False,)
-    assert stores[1].store.lookup(plan.ucm_block_ids) == (True,)
-    assert stores[1].store.records[plan.ucm_block_ids[0]][0] == b"abcdefghijklmnop"
+    ucm_block_ids = ucm_ids(plan.common_ucm_block_ids)
+    assert stores[0].store.lookup(ucm_block_ids) == (False,)
+    assert stores[1].store.lookup(ucm_block_ids) == (True,)
+    assert stores[1].store.records[ucm_block_ids[0]][0] == b"abcdefghijklmnop"
     worker.shutdown()
 
 
@@ -585,19 +600,22 @@ def test_empty_pp_marker_carries_position_and_commits_only_its_route():
     worker = UCMConnector.__new__(UCMConnector)
     worker.spec = spec
     worker.layout = SimpleNamespace(spec=spec, group_layouts={})
+    worker.transfer_builder = UCMTransferBuilder(worker.layout)
     worker._proxy = UCMProxyAdapter(ParallelProxy(stores, [4096, None], 512))
     plan = UCMGroupDispatchPlan(
-        AttentionType.STATE, (b"s" * 16,), 4096, 4608, (np.array([], dtype=np.uint64),)
+        AttentionType.STATE, (b"s" * 12,), 4096, 4608, (np.array([], dtype=np.uint64),)
     )
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
     )
     (batch,) = worker._dump_empty_shards(metadata)
     np.testing.assert_array_equal(batch.block_indices, [8])
-    assert stores[1].lookup(plan.ucm_block_ids) == (False,)
+    ucm_block_ids = ucm_ids(plan.common_ucm_block_ids, AttentionType.STATE)
+    assert batch.ucm_block_ids == ucm_block_ids
+    assert stores[1].lookup(ucm_block_ids) == (False,)
     worker._proxy.commit(batch.ucm_block_ids, batch.block_indices)
-    assert stores[1].records[plan.ucm_block_ids[0]][0] == b""
-    assert stores[0].lookup(plan.ucm_block_ids) == (False,)
+    assert stores[1].records[ucm_block_ids[0]][0] == b""
+    assert stores[0].lookup(ucm_block_ids) == (False,)
 
 
 def test_reused_committed_record_is_pinned_until_its_commit():
@@ -636,7 +654,7 @@ def test_connector_failed_dump_drains_and_aborts_pending(layerwise):
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 16, b"b" * 16), 8, 16, (np.array([1, 2]),)
+        AttentionType.FA, (b"a" * 12, b"b" * 12), 8, 16, (np.array([1, 2]),)
     )
     worker._connector_metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
@@ -713,16 +731,24 @@ def test_connector_creation_is_delegated_to_factory(role):
     with (
         patch("ucm.integration.vllm.v2.ucm_connector._worker_rank", return_value=1),
         patch(
+            "ucm.integration.vllm.v2.ucm_connector._worker_parallel_ranks",
+            return_value=(1, 0, 0),
+        ),
+        patch(
             "ucm.integration.vllm.v2.ucm_connector.create_proxy", return_value=adapter
         ) as factory,
     ):
         connector = UCMConnector(cfg, role, native)
     assert connector._proxy is adapter
-    assert factory.call_args.kwargs["rank"] == (
-        1 if role == KVConnectorRole.WORKER else None
-    )
-    assert factory.call_args.kwargs["record_token_span"] == 4
-    assert factory.call_args.kwargs["parallel_layout"] == ParallelLayout(tp=2)
+    assert factory.call_args.kwargs == {"record_token_span": 4}
+    assert connector.parallel_layout == ParallelLayout(tp=2)
+    if role == KVConnectorRole.WORKER:
+        assert connector._parallel_rank == (1, 0, 0)
+        # Two TP ranks with distinct heads: no replicas to share writes.
+        assert set(connector._replica_index_and_count_by_class.values()) == {(0, 1)}
+    else:
+        assert connector._parallel_rank == (0, 0, 0)
+        assert connector.dispatcher._lookup._record_shards
     connector.shutdown()
 
 
@@ -742,7 +768,7 @@ def test_late_load_failure_discards_already_enqueued_layer_dumps():
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 16,), 12, 16, (np.array([1]),)
+        AttentionType.FA, (b"a" * 12,), 12, 16, (np.array([1]),)
     )
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
@@ -753,5 +779,5 @@ def test_late_load_failure_discards_already_enqueued_layer_dumps():
     worker.wait_for_save()
     assert store.waited == 1
     assert not store.store._pending
-    assert store.store.lookup(plan.ucm_block_ids) == (False,)
+    assert store.store.lookup(ucm_ids(plan.common_ucm_block_ids)) == (False,)
     worker.shutdown()

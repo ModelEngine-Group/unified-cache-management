@@ -8,7 +8,8 @@ connector metadata or proxy transfers are interpreted here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from math import lcm
 from typing import TYPE_CHECKING, Any, Literal
 
 from vllm.model_executor.models.utils import extract_layer_index
@@ -20,8 +21,12 @@ from vllm.v1.kv_cache_interface import (
     get_kv_cache_spec_kind,
 )
 
+from ucm.logger import init_logger
+
 from .store_layout import GroupStoreLayout
 from .view import LAYOUT_DEBUG, layout_debug
+
+logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     import torch
@@ -32,6 +37,9 @@ if TYPE_CHECKING:
 
 _SLIDING_KINDS = frozenset(
     (KVCacheSpecKind.SLIDING_WINDOW, KVCacheSpecKind.SLIDING_WINDOW_MLA)
+)
+_MLA_KINDS = frozenset(
+    (KVCacheSpecKind.MLA_ATTENTION, KVCacheSpecKind.SLIDING_WINDOW_MLA)
 )
 
 
@@ -51,7 +59,7 @@ class UCMLayerSpec:
     attention_view_order: Literal["BHNC", "BNHC"] = "BHNC"
 
 
-@dataclass(frozen=True)
+@dataclass
 class UCMKVCacheGroupInfo:
     """Shared persistence policy; token_block_size is tokens per block ID."""
 
@@ -63,8 +71,15 @@ class UCMKVCacheGroupInfo:
     # nothing); the parser stamps it once the cache block size is known.
     tail_blocks: int = 0
     is_eagle_group: bool = False
-    # Scratch remains in HBM; UCM reconstructs it at complete-pool boundaries.
+    # transient kv cache is not stored
     is_transient: bool = False
+    # Number of different shards of this group's data across TP ranks.
+    # None means every TP rank holds different data. MLA and replicated
+    # Mamba state have 1.
+    tp_shards: int | None = None
+    # Same as vLLM's dcp_sharded: tokens are spread over DCP ranks, so one
+    # block covers dcp * token_block_size tokens.
+    dcp_sharded: bool = True
 
     @property
     def is_attention(self) -> bool:
@@ -79,7 +94,7 @@ class UCMKVCacheGroupInfo:
         return KVCacheSpecKind.MAMBA in self.kinds
 
 
-@dataclass(frozen=True)
+@dataclass
 class UCMKVCacheSpec:
     """UCM policy sizes, all in tokens.
 
@@ -121,41 +136,47 @@ def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
     HMA's ``tail_blocks`` with the one generalization v2 needs: a tail
     that does not divide the block still keeps its partial head block
     (ceil, not HMA's floor).  A state snapshot is one indivisible
-    checkpoint page; a full-attention UCM block spans every vLLM block it covers
-    (several blocks when the UCM block is larger than a native block,
-    the containing block otherwise).
+    checkpoint page; a full-attention UCM block spans every vLLM block it
+    covers, or one slice of a vLLM block when it is smaller.
     """
 
-    token_block = group.token_block_size
+    token_block_size = group.token_block_size
     if group.is_transient:
         return 0
     if group.is_state_snapshot:
         return 1
     if group.is_sliding_window:
-        tail = group.tail_tokens or 0
-        return (tail + token_block - 1) // token_block if tail > 0 else 0
-    return (ucm_block_size + token_block - 1) // token_block
+        tail_tokens = group.tail_tokens or 0
+        return (
+            (tail_tokens + token_block_size - 1) // token_block_size
+            if tail_tokens > 0
+            else 0
+        )
+    return (ucm_block_size + token_block_size - 1) // token_block_size
 
 
 def _concrete_specs(
     group: "KVCacheGroupSpec",
 ) -> tuple[tuple[str, "KVCacheSpec"], ...]:
-    """Expand a native group into ordered (layer_name, per-layer spec) pairs."""
+    """Expand a native group into ordered (layer_name, per-layer spec) pairs.
+
+    vLLM keeps only this worker's layers in a UniformType map, but an empty
+    PP group keeps the map of all stages.
+    """
     group_spec = group.kv_cache_spec
     if isinstance(group_spec, UniformTypeKVCacheSpecs):
-        return tuple(
-            (name, group_spec.kv_cache_specs[name]) for name in group.layer_names
-        )
-    return tuple((name, group_spec) for name in group.layer_names)
+        return tuple(group_spec.kv_cache_specs.items())
+    else:
+        return tuple((layer_name, group_spec) for layer_name in group.layer_names)
 
 
-def _layer_index(name: str, device_type: str, num_hidden_layers: int) -> int:
+def _layer_index(layer_name: str, device_type: str, num_hidden_layers: int) -> int:
     """Ascend MTP uses local IDs; upstream uses global IDs."""
-    index = extract_layer_index(name)
-    if device_type.lower() == "npu" and "mtp" in name.split("."):
-        if index < num_hidden_layers:
-            index += num_hidden_layers
-    return index
+    layer_index = extract_layer_index(layer_name)
+    if device_type.lower() == "npu" and "mtp" in layer_name.split("."):
+        if layer_index < num_hidden_layers:
+            layer_index += num_hidden_layers
+    return layer_index
 
 
 def _member_specs(group_spec: "KVCacheSpec") -> tuple["KVCacheSpec", ...]:
@@ -165,15 +186,47 @@ def _member_specs(group_spec: "KVCacheSpec") -> tuple["KVCacheSpec", ...]:
     return (group_spec,)
 
 
+def _group_sharding(specs: Sequence["KVCacheSpec"]) -> tuple[int | None, bool]:
+    """Read (tp_shards, dcp_sharded) from the native specs.
+
+    If any spec in a group is dcp_sharded, the group is sharded for correctness,
+    Sideeffect is the specs which are not dcp_sharded are replicated
+    """
+    tp_shards = {_spec_tp_shards(spec) for spec in specs}
+    return (
+        None if None in tp_shards else max(tp_shards),
+        any(spec.dcp_sharded for spec in specs),
+    )
+
+
+def _spec_tp_shards(spec: "KVCacheSpec") -> int | None:
+    """Number of different shards across TP, or None if every rank differs."""
+    # for mamba spec, check tp_replicated, True means the mamba state is shared between tp
+    if getattr(spec, "tp_replicated", False):
+        # Mamba state that every TP rank holds in full.
+        return 1
+    elif get_kv_cache_spec_kind(spec) in _MLA_KINDS:
+        # Ascend MLA specs do not set max_tp_shards.
+        assert spec.max_tp_shards in (None, 1), (
+            f"MLA cache split across TP is not supported: "
+            f"max_tp_shards={spec.max_tp_shards}"
+        )
+        return 1
+    else:
+        return getattr(spec, "max_tp_shards", None)
+
+
 def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
-    unknown = tuple(
+    unknown_spec_types = tuple(
         type(spec).__qualname__
         for spec, kind in zip(specs, spec_kinds)
         if kind == KVCacheSpecKind.UNKNOWN
     )
-    if unknown:
-        raise TypeError(f"Unsupported KV cache spec types: {sorted(set(unknown))}")
+    if unknown_spec_types:
+        raise TypeError(
+            f"Unsupported KV cache spec types: {sorted(set(unknown_spec_types))}"
+        )
 
     kinds = frozenset(spec_kinds)
     if KVCacheSpecKind.MAMBA in kinds and len(kinds) != 1:
@@ -181,10 +234,10 @@ def _classify(specs: Sequence["KVCacheSpec"]) -> frozenset[KVCacheSpecKind]:
     return kinds
 
 
-def _transient_alignment(
+def _transient_pool_tokens(
     specs: Sequence["KVCacheSpec"], hf_text_config: Any, device_type: str
 ) -> int | None:
-    """Return the restore alignment for omitted scratch; native models own pairing."""
+    """Pool size in tokens of a transient group, or None if not transient."""
     model_type = hf_text_config.model_type
     if all(isinstance(spec, CircularBufferSpec) for spec in specs):
         if model_type not in ("qwen4_exp", "qwen4_exp_text"):
@@ -207,80 +260,82 @@ def _sliding_tail_tokens(
     group: "KVCacheGroupSpec", hf_text_config: Any, device_type: str
 ) -> int:
     """Resolve logical history retention; only legacy compressors subtract a pool."""
-    # Empty PP groups keep the global UniformType map. A representative
-    # sliding spec without owner names cannot identify compressor tails.
-    pairs = _concrete_specs(group)
-    if not pairs and isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs):
-        pairs = tuple(group.kv_cache_spec.kv_cache_specs.items())
-    if not pairs:
+    # A sliding spec without layer names cannot identify compressor tails.
+    layer_specs = _concrete_specs(group)
+    if not layer_specs:
         raise NotImplementedError("Empty PP sliding group has no owner tail semantics")
-    tails = set()
-    for name, spec in pairs:
-        tail = spec.sliding_window
-        if name.endswith(".compressor.state_cache"):
+    tail_sizes = set()
+    for layer_name, spec in layer_specs:
+        tail_tokens = spec.sliding_window
+        if layer_name.endswith(".compressor.state_cache"):
             # DSV4: a restore boundary closes every compression group, so only
             # the overlap of the next group (window - ratio) is read again.
             layer_index = _layer_index(
-                name, device_type, hf_text_config.num_hidden_layers
+                layer_name, device_type, hf_text_config.num_hidden_layers
             )
-            tail -= max(1, int(hf_text_config.compress_ratios[layer_index]))
-        if tail < 0:
-            raise ValueError(f"Negative sliding tail for {name}: {tail}")
-        tails.add(tail)
-    if len(tails) != 1:
-        raise ValueError(f"Group has inconsistent tail sizes {sorted(tails)}")
-    return tails.pop()
+            tail_tokens -= max(1, int(hf_text_config.compress_ratios[layer_index]))
+        if tail_tokens < 0:
+            raise ValueError(f"Negative sliding tail for {layer_name}: {tail_tokens}")
+        tail_sizes.add(tail_tokens)
+    if len(tail_sizes) != 1:
+        raise ValueError(f"Group has inconsistent tail sizes {sorted(tail_sizes)}")
+    return tail_sizes.pop()
 
 
 def _select_cache_block_size(
     groups: Sequence[UCMKVCacheGroupInfo],
     scheduler_block_size: int,
-    requested: int | None,
-    transient_alignments: Mapping[int, int],
+    requested_block_size: int | None,
+    transient_pool_tokens: Mapping[int, int],
+    tokens_per_state: Mapping[int, int],
 ) -> int:
-    state_groups = tuple(group for group in groups if group.is_state_snapshot)
-    fa_groups = tuple(
-        group for group in groups if group.is_attention and not group.is_sliding_window
-    )
-    if state_groups and not fa_groups:
-        raise ValueError("State snapshots require a full-attention prefix")
-    if requested is not None:
-        if requested <= 0 or requested % scheduler_block_size:
-            raise ValueError(
-                "ucm_cache_block_size must be a positive multiple of scheduler_block_size"
-            )
-        ucm_block_size = requested
-    elif state_groups:
-        # Complete shared restore boundaries, even if FA/State spans differ.
+    # By default a UCM block is one vLLM scheduler block.
+    if requested_block_size is None:
         ucm_block_size = scheduler_block_size
-    else:
-        ucm_block_size = min(
-            (group.token_block_size for group in fa_groups),
-            default=scheduler_block_size,
+    elif requested_block_size > 0:
+        ucm_block_size = requested_block_size
+        logger.info(
+            "Use ucm_cache_block_size=%d from the connector config instead of "
+            "scheduler_block_size=%d.",
+            requested_block_size,
+            scheduler_block_size,
         )
+    else:
+        raise ValueError("ucm_cache_block_size must be positive")
 
     for group in groups:
+        is_full_attention = group.is_attention and not group.is_sliding_window
         if group.is_transient:
-            alignment = transient_alignments[group.group_id]
-            if ucm_block_size % alignment:
+            pool_tokens = transient_pool_tokens[group.group_id]
+            if ucm_block_size % pool_tokens:
                 raise ValueError(
                     f"Transient group {group.group_id} requires complete pools "
-                    f"of {alignment} tokens"
+                    f"of {pool_tokens} tokens"
                 )
-        elif group.is_state_snapshot or (group.is_sliding_window and group.tail_tokens):
+        elif is_full_attention and ucm_block_size < group.token_block_size:
+            # Each UCM block stores one slice of a vLLM block. Slices must
+            # tile the block and hold whole compressed KV rows.
+            if (
+                group.token_block_size % ucm_block_size
+                or ucm_block_size % tokens_per_state[group.group_id]
+            ):
+                raise ValueError(
+                    f"FA group {group.group_id}: UCM block size {ucm_block_size} "
+                    f"must divide its block span {group.token_block_size} and be a "
+                    f"multiple of its tokens_per_state="
+                    f"{tokens_per_state[group.group_id]}"
+                )
+        elif group.is_sliding_window and not group.tail_tokens:
+            # A sliding group with no tail stores nothing, so it puts no
+            # limit on the UCM block size.
+            continue
+        else:
+            # FA, State and sliding groups with a tail: a UCM block holds
+            # whole vLLM blocks of this group.
             if ucm_block_size % group.token_block_size:
                 raise ValueError(
                     f"Group {group.group_id} block span {group.token_block_size} "
                     f"must divide UCM block size {ucm_block_size}"
-                )
-        elif not group.is_sliding_window:
-            if (
-                ucm_block_size % group.token_block_size
-                and group.token_block_size % ucm_block_size
-            ):
-                raise ValueError(
-                    f"FA group {group.group_id} block span {group.token_block_size} "
-                    f"and UCM block size {ucm_block_size} must divide each other"
                 )
     return ucm_block_size
 
@@ -297,74 +352,103 @@ def parse_kv_cache_config(
 
     No physical row counts, placement descriptors or layer layouts are parsed.
     hf_text_config supplies model ratios the native specs do not carry: DSV4
-    compressor tails and GLM/Qwen scratch alignments. Native group positions
+    compressor tails and GLM/Qwen scratch pool sizes. Native group positions
     remain block-table IDs, including transient and empty PP groups.
     """
     device_type = device_type.lower()
-    raw_groups = kv_cache_config.kv_cache_groups
-    if not raw_groups:
+    native_groups = kv_cache_config.kv_cache_groups
+    if not native_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
-    groups = []
-    # group_id -> compression-group token span; UCM restores at complete pools.
-    transient_alignments = {}
-    for group_id, group in enumerate(raw_groups):
-        specs = _member_specs(group.kv_cache_spec)
-        alignment = _transient_alignment(specs, hf_text_config, device_type)
-        if alignment is not None:
-            transient_alignments[group_id] = alignment
-        # A recognized scratch ring has no FA/WA/State persistence kind.
-        kinds = (
-            frozenset()
-            if alignment is not None and isinstance(specs[0], CircularBufferSpec)
-            else _classify(specs)
-        )
-        if KVCacheSpecKind.MAMBA in kinds and any(
-            spec.mamba_cache_mode != "align" for spec in specs
-        ):
-            raise ValueError("connector v2 requires mamba_cache_mode='align'")
-        transient = alignment is not None
-        sliding = not kinds.isdisjoint(_SLIDING_KINDS)
-        if transient:
-            tail_tokens = 0
-        elif sliding:
-            tail_tokens = _sliding_tail_tokens(group, hf_text_config, device_type)
-        else:
-            tail_tokens = None
-        groups.append(
-            UCMKVCacheGroupInfo(
-                group_id=group_id,
-                token_block_size=group.kv_cache_spec.block_size,
-                kinds=kinds,
-                tail_tokens=tail_tokens,
-                is_eagle_group=group.is_eagle_group,
-                is_transient=transient,
+    group_infos: list[UCMKVCacheGroupInfo] = []
+    # Transient groups (CircularBufferSpec, KpoolTailSpec, AscendIndexerKPoolTailSpec)
+    # are not stored, but ucm block size must divide their pool size.
+    # save the pool size to select the UCM cache block size.
+    transient_pool_tokens: dict[int, int] = {}
+    # Tokens one KV row covers in compressed attention (vLLM's
+    # tokens_per_state, 1 when not compressed). Not about Mamba state.
+    # A slice of a vLLM block must hold whole rows.
+    tokens_per_state: dict[int, int] = {}
+    uses_prefix_replay = False
+    for group_id, native_group in enumerate(native_groups):
+        member_specs = _member_specs(native_group.kv_cache_spec)
+        tokens_per_state[group_id] = lcm(
+            *(
+                max(int(getattr(spec, "tokens_per_state", 1)), 1)
+                for spec in member_specs
             )
         )
-    ucm_block_size = _select_cache_block_size(
-        groups, scheduler_block_size, ucm_cache_block_size, transient_alignments
-    )
-    result = UCMKVCacheSpec(
-        tuple(
-            replace(group, tail_blocks=_group_tail_blocks(group, ucm_block_size))
-            for group in groups
-        ),
+        uses_prefix_replay = uses_prefix_replay or any(
+            getattr(spec, "prefix_replay_tokens", 0) > 0 for spec in member_specs
+        )
+        pool_tokens = _transient_pool_tokens(member_specs, hf_text_config, device_type)
+        is_transient = pool_tokens is not None
+        if is_transient:
+            transient_pool_tokens[group_id] = pool_tokens
+        # Transient groups are not stored, so they get no kind.
+        if is_transient:
+            spec_kinds = frozenset()
+        else:
+            spec_kinds = _classify(member_specs)
+        if KVCacheSpecKind.MAMBA in spec_kinds and any(
+            spec.mamba_cache_mode != "align" for spec in member_specs
+        ):
+            raise ValueError("connector v2 requires mamba_cache_mode='align'")
+        is_sliding_window = not spec_kinds.isdisjoint(_SLIDING_KINDS)
+        if is_transient:
+            tail_tokens = 0
+        elif is_sliding_window:
+            tail_tokens = _sliding_tail_tokens(
+                native_group, hf_text_config, device_type
+            )
+        else:
+            tail_tokens = None
+        tp_shards, dcp_sharded = _group_sharding(member_specs)
+        group_infos.append(
+            UCMKVCacheGroupInfo(
+                group_id=group_id,
+                token_block_size=native_group.kv_cache_spec.block_size,
+                kinds=spec_kinds,
+                tail_tokens=tail_tokens,
+                is_eagle_group=native_group.is_eagle_group,
+                is_transient=is_transient,
+                tp_shards=tp_shards,
+                dcp_sharded=dcp_sharded,
+            )
+        )
+    selected_block_size = _select_cache_block_size(
+        group_infos,
         scheduler_block_size,
-        ucm_block_size,
-        device_type,
+        ucm_cache_block_size,
+        transient_pool_tokens,
+        tokens_per_state,
+    )
+    if uses_prefix_replay and selected_block_size < scheduler_block_size:
+        logger.warning(
+            "ucm_cache_block_size=%d is smaller than scheduler_block_size=%d, but "
+            "vLLM SWA bounded replay rounds external hits down to "
+            "scheduler_block_size, so the smaller UCM blocks give no finer hits.",
+            selected_block_size,
+            scheduler_block_size,
+        )
+    for group_info in group_infos:
+        group_info.tail_blocks = _group_tail_blocks(group_info, selected_block_size)
+    spec = UCMKVCacheSpec(
+        tuple(group_infos), scheduler_block_size, selected_block_size, device_type
     )
     if LAYOUT_DEBUG:
-        for group in result.groups:
+        for group_info in spec.groups:
             layout_debug(
-                f"policy group={group.group_id} "
-                f"kinds={sorted(kind.value for kind in group.kinds)} "
-                f"transient={group.is_transient} token_block={group.token_block_size} "
-                f"tail={group.tail_tokens} tail_blocks={group.tail_blocks}"
+                f"policy group={group_info.group_id} "
+                f"kinds={sorted(kind.value for kind in group_info.kinds)} "
+                f"transient={group_info.is_transient} "
+                f"token_block={group_info.token_block_size} "
+                f"tail={group_info.tail_tokens} tail_blocks={group_info.tail_blocks}"
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
-            f"ucm_cache_block={ucm_block_size} device={device_type}"
+            f"ucm_cache_block={selected_block_size} device={device_type}"
         )
-    return result
+    return spec
 
 
 class UCMKVCacheLayout:
@@ -401,12 +485,13 @@ class UCMKVCacheLayout:
         # of the same model layer have distinct registered names/groups.
         self.layer_id_by_name = {
             layer.layer_name: layer.layer_index
-            for layout in self.group_layouts.values()
-            for layer in layout.layers
+            for group_layout in self.group_layouts.values()
+            for layer in group_layout.layers
         }
-        names_by_id: dict[int, list[str]] = {}
-        for name, layer_id in self.layer_id_by_name.items():
-            names_by_id.setdefault(layer_id, []).append(name)
+        layer_name_lists: dict[int, list[str]] = {}
+        for layer_name, layer_id in self.layer_id_by_name.items():
+            layer_name_lists.setdefault(layer_id, []).append(layer_name)
         self.layer_names_by_id = {
-            layer_id: frozenset(names) for layer_id, names in names_by_id.items()
+            layer_id: frozenset(layer_names)
+            for layer_id, layer_names in layer_name_lists.items()
         }

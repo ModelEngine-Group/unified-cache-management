@@ -26,13 +26,13 @@ v2 将不同模型的 Full Attention、Sliding Window 和 Mamba 状态统一成�
 ```mermaid
 flowchart TD
     Config["vLLM KVCacheConfig + model config"] --> Spec["parse_kv_cache_config / UCMKVCacheSpec"]
-    Spec --> Scheduler["UCMDispatcher：lookup、请求状态、窗口选块"]
+    Spec --> Scheduler["UCMDispatcher：请求状态、窗口选块（查找交给 UCMLookup）"]
     Request["请求 token IDs + SchedulerOutput block tables"] --> Scheduler
-    Scheduler --> Meta["UCMConnectorMetadata：ucm_block_ids、token 范围、block IDs"]
+    Scheduler --> Meta["UCMConnectorMetadata：common_ucm_block_id、token 范围、block IDs"]
     Views["worker 注册的 tensor views"] --> Physical["LayerView / KVCacheGroupLayout / BlockAccess"]
     Spec --> Physical
     Physical --> Record["GroupStoreLayout：UCM block 内位置与窗口模板"]
-    Meta --> Builder["UCMTransferBuilder：按 plan 组合各 group"]
+    Meta --> Builder["UCMTransferBuilder：按 plan 与记录类别组合 group，生成本 rank 的 id"]
     Record --> Builder
     Builder --> Transfer["UCMProxyTransfer：ucm_block_ids K，三个 K×S 矩阵"]
     Transfer --> Adapter["Adapter.submit：原样转发与完成等待"]
@@ -42,7 +42,10 @@ flowchart TD
 | 文件/对象 | 负责 | 不负责 |
 |---|---|---|
 | `ucm_connector.py / UCMConnector` | 对接 vLLM hooks，初始化组件，转发 metadata、错误与完成信息 | 手工解释 head strides 或拼接存储位置 |
-| `ucm_scheduler.py / UCMDispatcher` | hash、lookup、维护 block tables、生成计划 | worker 指针、tensor strides |
+| `ucm_scheduler.py / UCMDispatcher` | hash、请求状态、维护 block tables、生成计划（plan 携带 common_ucm_block_id） | Store 访问、local_ucm_block_id、worker 指针 |
+| `ucm_lookup.py / UCMLookup` | 按记录类别与分片查询 Store，求恢复终点 | 请求状态、plan |
+| `ucm_sharding.py / UCMSharding` | 记录类别、各 rank 的分片键与副本 | id 编码、IO |
+| `ucm_block_id.py` | ucm_block_id 编码、写入分工（按 hash） | 拓扑、调度 |
 | `layout/kv_cache.py / UCMKVCacheSpec` | group 分类、token 粒度、tail、持久化与恢复规则 | 请求、plan、proxy |
 | `layout/kv_cache.py / UCMKVCacheLayout` | 汇总元数据、HBM group layouts、store layouts 和层索引 | 解析 plan、生成 Transfer |
 | `layout/__init__.py` | 绑定 worker native spec/descriptor，统一布局入口 | 请求调度 |
@@ -89,13 +92,9 @@ flowchart TD
 6. 建立当前文件 Proxy 和 Adapter；仅 scheduler 建立 `UCMDispatcher`。
 7. worker 在 `register_kv_caches` 收到实际 views 后，才建立物理 layout 与 record templates，并向 Proxy 注册 storage。
 
-当前文件路径为：
+Store 只接收 ucm_block_id，connector 不向 Store 传任何路径或 namespace；每个进程只建一套 Proxy。会改变记录字节的配置（device、model dtype、schema digest、scheduler/U 块大小、并行拓扑、layerwise、id 版本 `UCM_BLOCK_ID_VERSION`）拼成 namespace 折进哈希种子：`base_seed = hasher(("UCM_HASH_SEED", namespace))`；rank 编在 ucm_block_id 的 tag 里（见 5.1）。
 
-```text
-storage_root/.ucm-v2/{device}-{model_dtype}-b{scheduler_block_size}-c{U}-r2/
-```
-
-`storage_root` 优先来自 `v2_storage_path`；否则要求一个 `ucm_connectors` 配置项，读取其 `storage_backends` 的第一个路径。`-r2` 标识既有 block-major 记录格式，改变格式时必须重新评估兼容性。当前 dtype 字段来自 model dtype，不应将其解释为已完整隔离所有 KV cache dtype。
+测试用 `test_file` Store 的目录只来自它自己的 `path` 配置；默认配置时取 `v2_storage_path`，否则取唯一 `ucm_connectors` 配置项 `storage_backends` 的第一个路径。多个 `test_file` Store 不能配置相同 `path`。
 
 ### 4.2 语义 spec
 
@@ -105,12 +104,20 @@ storage_root/.ucm-v2/{device}-{model_dtype}-b{scheduler_block_size}-c{U}-r2/
 - 官方 0.29 的 `KVCacheTensor.layers/offset/layer_stride/block_stride` 转成 `TensorDescriptor`；旧 Ascend 入口没有相同声明时以实际 views 为依据。
 - Ascend attention 的 `compress_ratio` 与官方 0.29 的 `tokens_per_state` 归一为 token/state 关系。不能仅看 shape 推导业务上的 token 跨度。
 - 根据名字提取模型层编号；Ascend MTP 局部编号按模型层数调整。
-- Mamba 当前要求 `mamba_cache_mode='align'`，并要求相关 group block 粒度与 scheduler 粒度一致；不支持 State-only 模型路径。
+- Mamba 当前要求 `mamba_cache_mode='align'`。只有 State 的模型没有 FA 前缀，可以从任意完整块恢复。
 - 普通 `swa_cache` 的 tail 使用整个 window；压缩状态的 tail 使用 window 减对应层的 attention 压缩比。tail 为零的 group 不进入 WA 存储路由。
 
-U 的默认选择为所有 FA group 的最小 T；没有 FA 时回退到 scheduler 粒度。显式覆盖仅支持单 group，要求为 scheduler 粒度的正整数倍。
+U 默认等于 vLLM 的 scheduler 粒度，即各 group 块大小的最小公倍数（DCP 下已乘 dcp）。配置了 `ucm_cache_block_size` 时使用配置值，并打一条 INFO 日志。DeepSeek V4 这类块很大的模型，可以调小 vLLM 的 block size 控制命中粒度（例如 Ascend 上 block size 32 时为 4K tokens）；也可以把 `ucm_cache_block_size` 配得比 FA 块小，一个 vLLM block 拆成多个 UCM block 存储（FA 子块，见 8.2）。
 
-窗口静态化约束：FA 中 U、T 必须一方整除另一方；WA 中非零 tail group 的 T 必须整除 U。否则一个 ucm_block_id 的窗口形状可能随边界变化，当前固定矩形模板不支持。
+整除约束（解析配置时检查）：
+- FA group：T 整除 U（一个 UCM block 含整数个 vLLM block），或 U 整除 T 且 U 是该 group 每个 state 覆盖 token 数（`tokens_per_state`）的整数倍（FA 子块）。
+- State 与 tail 非零的 WA group：T 必须整除 U。
+- transient group：pool 必须整除 U。
+
+FA 子块的其他限制：
+- 物理布局必须 token 连续。多头 HNC 按 head 排列，注册 KV cache 时报错。
+- 不支持 DCP，`apply_context_parallel` 会拒绝。DeepSeek V4 本身也不支持 DCP。
+- DeepSeek V4.1 开启 SWA 有限回放时，vLLM 会把外部命中向下取整到 scheduler 粒度，子块不会带来更细的命中，启动时打 warning。
 
 scheduler 的 `groups_by_attention_type(spec)` 按 AttentionType（FA → WA → State）分组，只保留非空类别。WA 只包含 tail>0 的 group。plan.vllm_block_ids_by_group 的位置必须与该分组的 group 顺序一致。
 
@@ -123,26 +130,26 @@ scheduler 的 `groups_by_attention_type(spec)` 按 AttentionType（FA → WA →
 ```text
 parent_0       = hasher("UCM_HASH_SEED")
 parent_i       = hasher((parent_(i-1), 当前 U 个 token 的 tuple))
-ucm_block_id_i = parent_i[:14] + 2 字节 tag
+ucm_block_id_i = parent_i[:12] + 4 字节 tag(attention type, 记录类别, 分片键)
 ```
 
-不足 U 个 token 的尾部不产生 ucm_block_id。FA/WA/State 共享同一组 parent hash，只改变 tag。
+不足 U 个 token 的尾部不产生 block hash。scheduler 把每个 block hash 截成前 12 字节，叫 common_ucm_block_id，所有 rank 相同；plan 只携带 common_ucm_block_id。local_ucm_block_id 是 common_ucm_block_id 直接拼上 4 字节 tag，只在访问 Store 处生成：`UCMLookup` 为每个记录类别、每个分片生成，worker 的 `UCMTransferBuilder` 为本 rank 的分片生成。Store 只看到 local_ucm_block_id。
 
-tag 大端布局：`type(2) | group(4) | tp_rank(4) | pp_rank(4) | reserved(2)`；当前 group bits 为零，所有同类 group 合在一个记录里。当前 Connector 用逻辑 rank-0 namespace 创建 ucm_block_ids，不能据此推断 worker 分片隔离已完成。
+id 编码只在 `ucm_block_id.py` 内部，其他模块只调用 `make_common_ucm_block_ids(block_hashes)` 和 `make_local_ucm_block_ids(common_ucm_block_ids, attention_type, record_class, shard_key)`，看不到 tag 与位布局。`make_local_ucm_block_ids` 要求输入正好 12 字节，传入 local id 会报错。tag 当前为 `type(2) | record_class(4) | pp(5) | head(6) | token(7) | reserved(8)`；启动时由 `validate_shard_key_encoding` 检查拓扑能否编码，超出直接报错。id 格式版本 `UCM_BLOCK_ID_VERSION` 是 namespace 的一部分并哈希进 block hash，不同版本的 id 不会冲突；改 id 或记录格式时递增。
 
 单请求 ucm_block_ids 唯一是当前输入契约，不另做运行时碰撞检测。跨请求共享前缀可拥有相同 ucm_block_ids，仍使用各自 block tables。
 
 ### 5.2 Lookup
 
-`lookup` 建立/更新 `RequestState`，保存 HBM 命中、external 命中、已处理边界、各 ucm_block_id type 的 ucm_block_ids、各 group block tables 和 `load_pending`。
+`lookup` 建立/更新 `RequestState`，保存 HBM 命中、external 命中、已处理边界、common_ucm_block_ids、各 group block tables 和 `load_pending`。查找本身由 `UCMLookup` 完成：某 attention type 的一个 block 命中，要求该类型每个记录类别的每个分片都已提交；FA 的连续前缀按分片拆开算：对每个 (记录类别, 分片) 调用 `lookup_on_prefix`（Store 查到第一个不命中就返回），取最短的前缀，后面的分片只扫到当前最短前缀为止。WA/State 对每个 (记录类别, 分片) 调用 `lookup_on_reverse`（Store 从后往前查到第一个命中就返回），取最早的那个最近命中；后面的分片只扫到这个位置以下。Store 协议提供 `lookup_on_prefix` / `lookup_on_reverse`，`PipelineProxy` 直接转给 Store，`ParallelProxy` 按 id 原始顺序切成连续的同 Store 段，正序逐段查前缀、倒序逐段查最近命中。
 
 - 查找上界：`floor((num_tokens - recompute_tokens)/U)`，默认保留一个 token 重算余量。
-- FA 调 `lookup_on_prefix`，返回最后一个连续命中 ucm_block_id 的相对下标，`-1` 表示无命中。
-- WA/State 在 FA 可恢复范围内调用 `lookup_on_reverse`，返回最右命中下标。
-- 当前算法将恢复终点收敛为 FA 终点与各边界 ucm_block_id type 命中位置的最小值；任一边界 ucm_block_id type 无命中则不恢复。
+- FA 调 `lookup_on_prefix`：Store 返回最后一个连续命中 ucm_block_id 的相对下标，`-1` 表示无命中；`UCMLookup` 内部把它换算成命中范围的结束块号（不含），后面的计算只用块号。
+- WA/State 在 FA 可恢复范围内找所有边界类型、所有分片都命中的最右块。
+- 恢复终点从 FA 终点开始：取所有边界类型、所有分片最近命中中最早的那个，收缩终点后再查一轮，直到每个分片最近命中的都是同一块；任一分片无命中则不恢复。
 - external 命中量不超过 `load_tokens_threshold` 时抑制本次 load。
 
-边界说明：当 WA 与 State 同时存在且各 ucm_block_id type 记录缺失位置不一致时，“各自最新命中的最小值”不自动证明该位置被所有 ucm_block_id type 共同命中；当前算法没有回查这个交点。这里记录实现及适用假设，不把它写成任意缺失分布下都成立的保证。
+边界说明：各分片缺失的位置不一致时，“各自最近命中的最小值”本身不保证是共同命中，所以算法会在收缩后的范围内再查一轮，只有所有分片最近命中的都是同一块才结束，结束时这一块被所有分片共同命中。
 
 ### 5.3 Block table 与 metadata
 
@@ -151,7 +158,7 @@ tag 大端布局：`type(2) | group(4) | tp_rank(4) | pp_rank(4) | reserved(2)`�
 ```python
 UCMGroupDispatchPlan(
     attention_type=AttentionType.FA | AttentionType.WA | AttentionType.STATE,
-    ucm_block_ids=tuple[bytes, ...],
+    common_ucm_block_ids=tuple[bytes, ...],
     token_start=int,
     token_end=int,
     vllm_block_ids_by_group=tuple[np.ndarray, ...],
@@ -289,16 +296,16 @@ WA/State 使用各自路由的 groups 和窗口，不混进 FA ucm_block_id 中�
 | 关系 | R | 块内起点 | 长度 |
 |---|---:|---|---|
 | U=T | 1 | 0 | 完整块 |
-| U>T，U 整除关系成立 | U/T | 各块为 0 | 多个完整块 |
-| U<T，T 是 U 的倍数 | 1 | `(key_index*U) % T` | 固定 U tokens |
+| U>T，T 整除 U | U/T | 各块为 0 | 多个完整块 |
+| U<T，U 整除 T（FA 子块） | 1 | `(key_index*U) % T` | 固定 U tokens |
 
 WA 的第一块可能是部分块：count=`tail%T`，start=`T-count`；其余块完整。余数为零时所有块完整。State 一页不可拆。
 
-固定 sizes 在初始化时计算；FA 子块只是运行时改变 starts。一般查询仍可通过重新 compile starts/counts 表达不同范围，但当前 plan 热路径不传逐 ucm_block_id ends。
+长度在初始化时编译成固定模板；FA 子块只在运行时按 UCM block 序号改变块内起点。
 
 ### 8.2 数字例子：16384-token block 切成 512-token UCM blocks
 
-假设一个 group 有两层，每层每 token 4 bytes，两个 layer 的 block-0 基址分别为 1,000,000 和 2,000,000，每块步长为 65,536 bytes。两个不同 ucm_block_ids 引用物理 block 2 的相邻片段：
+配置 `ucm_cache_block_size=512`，vLLM 的 FA block 为 16384 tokens。假设一个 group 有两层，每层每 token 4 bytes，两个 layer 的 block-0 基址分别为 1,000,000 和 2,000,000，每块步长为 65,536 bytes。两个不同 ucm_block_ids 引用物理 block 2 的相邻片段：
 
 ```text
 ucm_block_ids       = [A, B]
@@ -346,7 +353,7 @@ load：从 ucm_block_id[k] 的该位置读相同字节数，写入 ptrs[k,s]
 
 ### 9.2 构造流程
 
-`build_load_transfers` / `build_dump_transfers` → `_build_transfers` → `_iter_plan_segments`（位于外部 UCMTransferBuilder）：
+`build_load_transfers` / `build_dump_transfers` → `_build_transfers` → `_iter_class_segments`（位于外部 UCMTransferBuilder）：
 
 1. 遍历请求的各 plans，根据 attention_type 找参与的 groups。
 2. 对每个 group 归一化 vLLM block id dtype，检查窗口长度等于 K×R。
@@ -408,9 +415,19 @@ layerwise 在 start_load 提交本步所有层加载，不是只预取下一层�
 
 layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文件缓存使用独立的 `-layerwise` namespace，暂不与 bulk 文件互用。model-check 沿用原来的实际引擎、tensor 分配和 Scheduler 路径；layerwise 下改为按 layer_name 的 payload 填充/比对，bulk 仍比较完整 span。该检查仍共用 UCM 的寻址逻辑，不是完全独立的地址 oracle。
 
-### 10.1 同拓扑并行分片
+### 10.1 同拓扑并行分片与副本
 
-`ParallelLayout` 负责 TP/PP/PCP/DCP 参数与 CP 逻辑页换算；world size 为 TP×PP×PCP，DCP 为 TP 子组。`AllShardLookup` 对各 rank 的已提交文件取共同命中。搬运仍使用原来的 ucm_block_ids/[K,S] 协议，文件路径携带拓扑和 rank；PP 空分片使用零列矩阵提交完成标记。只支持相同拓扑恢复，不支持 reshard。CP 暂限 FA 整页，PCP 无当前引擎运行时证据。详见 [并行设计与验证](connector-v2-parallel-validation-20260926.md)。
+`ParallelLayout` 负责 TP/PP/PCP/DCP 参数与 CP 逻辑页换算；world size 为 TP×PP×PCP。vLLM 给出的 `spec.block_size` 是每个 rank 的物理块大小；块覆盖的 token 数由 `resolve_dcp_kv_block_size` 换算，只有 `dcp_sharded` 的 cache 乘 DCP。UCM 的 `apply_context_parallel` 与之一致，只放大 `dcp_sharded` group 的块大小。PCP 只切分 prefill 计算，不切 KV。DCP 合法取值与 vLLM 一致：PCP=1 时为 TP 子组，PCP>1 时为 1、PCP 或 TP×PCP。
+
+所有 rank 共用一套 Proxy/Store，`UCMSharding` 决定记录如何划分：
+
+- 每个 group 的切分方式来自 spec：`max_tp_shards`（TP 上的不同副本数，MLA 为 1）与 `dcp_sharded`（是否按 DCP 切 token）；Ascend MLA 规格缺 `max_tp_shards` 时按 1；Ascend 的 replicated SFA indexer 和 MLA 在同一个 group，随 group 按 DCP 切分，所以每个 DCP 分片都会存一份完整的 indexer（已知冗余，暂不处理）；Mamba/KDA state 的 `dcp_sharded` 为 False，不切 DCP；`tp_replicated=True` 的 state 每个 TP rank 都存整份，按 1 个分片处理，否则按 TP 切。spec 未声明时按每个 TP rank 都不同处理，不会丢数据。
+- 记录类别：同一 attention type 内切分方式相同的 group 合成一条记录，不同的分开（例如开 DCP 时 MLA 主 cache 与 DCP 复制的 indexer）。同一 KV cache group 内成员切分不同（GLM-5.3 的 MLA 主 cache 与 indexer 同组）时取最细切分，较粗成员在每个分片里各存一份，是已知的剩余冗余。
+- 分片键 `(head, token, pp)`：head = `tp_rank × tp_shards / TP`，token = 按 vLLM 规则算出的 dcp_rank（不切 DCP 时为 0）。分片键相同的 rank 互为副本，例如 MLA 在 TP 上、只开 PCP 时的各 PCP rank。
+- 写入：副本按 common_ucm_block_id 分工（`writer_rows`），每个 block 只由一个副本写一次；connector 用 `_owned_rows` 选出本 rank 负责的行，transfer builder 只为这些行生成矩阵，commit/abort 也只针对这些行。读取：所有副本按同一个分片 id 读同一条记录。
+- PP 某 stage 没有某记录类别的 group 时，由负责写入的副本提交零字节标记，使 lookup 只需"每个分片都已提交"。
+
+只支持相同拓扑恢复，不支持 reshard。CP 暂限 FA 整页，PCP 无当前引擎运行时证据。详见 [并行设计与验证](connector-v2-parallel-validation-20260926.md)。
 
 ## 11. 性能模型与当前优化
 
@@ -463,11 +480,11 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 | layerwise 地址构造与 worker 回调 | 已接入；本地 103 项测试及 CPU/NPU 各四组 TP1 model-check 通过，见 [2026-09-26 验证记录](connector-v2-layerwise-validation-20260926.md) |
 | 自定义多 group U | 当前拒绝 |
 | 非阻塞任务生命周期 | 支持 enqueue/按层 wait/步末 drain；当前文件 Proxy 同步，异步后端用测试替身验证 |
-| Worker rank 的物理存储隔离 | 同拓扑 namespace/rank 分片，全分片 commit 后命中；TP2/PP2/TP2×PP2 双栈通过，见并行验证记录 |
+| Worker rank 的物理存储隔离 | 拓扑折进哈希种子、rank 编进 tag，全 rank commit 后命中；改为单 Proxy 后尚未重跑 TP2/PP2 双栈 |
 | CP | FA 完整分布式页；DCP2 双栈通过，PCP 被当前引擎拒绝，尚未运行时验收 |
 | KV cache dtype namespace 隔离 | 当前使用 model dtype，不能覆盖所有 KV dtype 差异 |
 | 不齐 chunked prefill 的 WA dump | 需验证边界之后旧窗口块是否已被 HMA 淘汰/复用 |
-| 多边界 ucm_block_id type 不一致缺失 | 当前 lookup 的最小终点策略需验证共同命中假设 |
+| 多边界 ucm_block_id type 不一致缺失 | lookup 会反复收缩直到所有分片共同命中，有单元测试覆盖，尚未在真实 Store 上验证 |
 
 ### 12.3 调试入口
 
