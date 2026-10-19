@@ -68,6 +68,19 @@ def _cuda_probe(*, dual_arch: bool = False) -> dict[str, object]:
     }
 
 
+def _ascend_probe() -> dict[str, object]:
+    probe = next(
+        item
+        for item in _inputs()[1]["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    return {
+        "kind": "ucm-runtime-probe",
+        "schema_version": 2,
+        "probes": [probe],
+    }
+
+
 def _inventory(catalog: dict[str, object], ids: set[str]) -> dict[str, object]:
     return {
         "kind": "ucm-builder-registry",
@@ -195,6 +208,34 @@ def test_ascend_cache_requires_current_source_and_runtime(
     assert ("builder_record" in match) == (stale_field is None)
 
 
+def test_ascend_stale_checked_builder_does_not_mask_newer_suffix_source() -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    inventory["builders"][0][
+        "source_image"
+    ] = "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+
+    result = pr.resolve_pr_request(
+        formal,
+        _ascend_probe(),
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=108,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert "builder_record" not in result["builder_matches"]["matches"][0]
+
+
 def test_missing_registry_builder_resolves_one_raw_mirror_for_sync() -> None:
     formal, _fixture, selection, _catalog = _inputs()
     raw = next(
@@ -264,32 +305,18 @@ def test_single_arch_publication_and_compact_plan_share_the_bare_tag() -> None:
     )
 
 
-def test_blocked_a5_stops_before_raw_builder_resolution() -> None:
-    formal, _fixture, _selection, _catalog = _inputs()
-    probe = _cuda_probe()
-    item = probe["probes"][0]
-    item.update(
-        {
-            "product_id": "vllm-ascend",
-            "runtime_ref": "quay.io/ascend/vllm-ascend:v0.26.0rc-a5",
-            "repository": "quay.io/ascend/vllm-ascend",
-            "tag": "v0.26.0rc-a5",
-            "target_repository": "ghcr.io/release-org/vllm-ascend",
-            "backend": "cann-a5",
-            "accelerator_runtime": "cann-9.1.0",
-            "soc_version": "ascend950dt_9582",
-        }
+def test_blocked_backend_stops_before_raw_builder_resolution(runtime_probe) -> None:
+    formal = _fixture_policy()
+    formal["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
     )
-    called = False
 
     def raw_resolver(_probes):
-        nonlocal called
-        called = True
-        return []
+        pytest.fail("Blocked backends must not resolve Builders")
 
     result = pr.resolve_pr_request(
         formal,
-        probe,
+        {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": [runtime_probe]},
         {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
         pr_number=30,
         author="SuperMarioYL",
@@ -299,7 +326,7 @@ def test_blocked_a5_stops_before_raw_builder_resolution() -> None:
 
     assert result["ok"] is False
     assert result["problems"][0]["reason"] == "blocked-backend"
-    assert called is False
+    assert result["problems"][0]["detail"] == "Disabled by platform policy"
 
 
 def test_image_command_rejects_multiple_runtime_requests() -> None:

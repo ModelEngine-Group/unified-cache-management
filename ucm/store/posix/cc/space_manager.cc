@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <algorithm>
 #include <atomic>
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -60,23 +61,60 @@ Status SpaceManager::Setup(const Config& config)
     if (!prefixSuccess) [[unlikely]] {
         return Status::Error("failed to run prefix lookup service thread pool");
     }
+    auto lookupSuccess =
+        lookupSrv_.SetWorkerFn([this](LookupContext& ctx, auto&) { OnLookup(ctx); })
+            .SetWorkerTimeoutFn([this](LookupContext& ctx, auto) { OnLookupTimeout(ctx); },
+                                config.timeoutMs)
+            .SetNWorker(config.lookupConcurrency)
+            .SetCpuAffinity(config.cpuAffinityCores)
+            .Run();
+    if (!lookupSuccess) [[unlikely]] {
+        return Status::Error("failed to run lookup service thread pool");
+    }
     return Status::OK();
 }
 
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {
-    std::vector<uint8_t> results(num, false);
-    for (size_t i = 0; i < num; ++i) {
-        results[i] = Lookup(blocks + i);
-        if (results[i] && hotnessTrackerEnable_) { hotnessTracker_.Touch(blocks[i]); }
+    if (num == 0) { return std::vector<uint8_t>{}; }
+
+    std::shared_ptr<const std::vector<Detail::BlockId>> ownedBlocks;
+    std::shared_ptr<std::vector<uint8_t>> results;
+    std::shared_ptr<std::atomic<int32_t>> status;
+    std::shared_ptr<Latch> waiter;
+
+    const auto ok = Status::OK().Underlying();
+
+    try {
+        ownedBlocks = std::make_shared<std::vector<Detail::BlockId>>(blocks, blocks + num);
+        results = std::make_shared<std::vector<uint8_t>>(num, false);
+        status = std::make_shared<std::atomic<int32_t>>(ok);
+        waiter = std::make_shared<Latch>();
+    } catch (const std::exception& e) {
+        UC_ERROR("Failed({}) to allocate lookup context.", e.what());
+        return Status::OutOfMemory();
     }
-    return results;
+
+    const size_t nWorker = std::min(num, lookupSrv_.NWorker());
+    waiter->Set(nWorker);
+
+    for (size_t begin = 0; begin < nWorker; ++begin) {
+        lookupSrv_.Push({ownedBlocks, begin, num, nWorker, results, status, waiter});
+    }
+
+    waiter->Wait();
+
+    auto s = status->load();
+    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
+
+    return std::move(*results);
 }
 
 Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
 {
     if (num == 0) { return static_cast<ssize_t>(-1); }
 
+    std::shared_ptr<const std::vector<Detail::BlockId>> ownedBlocks;
     std::shared_ptr<std::atomic<ssize_t>> firstFail;
     std::shared_ptr<std::atomic<int32_t>> status;
     std::shared_ptr<Latch> waiter;
@@ -84,6 +122,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     const auto ok = Status::OK().Underlying();
 
     try {
+        ownedBlocks = std::make_shared<std::vector<Detail::BlockId>>(blocks, blocks + num);
         firstFail = std::make_shared<std::atomic<ssize_t>>(static_cast<ssize_t>(num));
         status = std::make_shared<std::atomic<int32_t>>(ok);
         waiter = std::make_shared<Latch>();
@@ -96,7 +135,7 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     waiter->Set(nWorker);
 
     for (size_t begin = 0; begin < nWorker; begin++) {
-        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
+        prefixLookupSrv_.Push({ownedBlocks, begin, num, nWorker, firstFail, status, waiter});
     }
 
     waiter->Wait();
@@ -140,6 +179,27 @@ void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
     for (size_t i = 0; i < num; i++) { hotnessTracker_.Touch(blocks[i]); }
 }
 
+void SpaceManager::OnLookup(LookupContext& ctx)
+{
+    for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
+        if (ctx.status->load() != Status::OK().Underlying()) { break; }
+
+        const auto& block = (*ctx.blocks)[i];
+        auto hit = Lookup(&block);
+        (*ctx.results)[i] = hit;
+        if (hit && hotnessTrackerEnable_) { hotnessTracker_.Touch(block); }
+    }
+    ctx.waiter->Done();
+}
+
+void SpaceManager::OnLookupTimeout(LookupContext& ctx)
+{
+    auto ok = Status::OK().Underlying();
+    auto timeout = Status::Timeout().Underlying();
+    ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
+    ctx.waiter->Done();
+}
+
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
@@ -148,7 +208,8 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
         auto curFail = ctx.firstFail->load();
         if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
 
-        if (!Lookup(ctx.blocks + i)) {
+        const auto& block = (*ctx.blocks)[i];
+        if (!Lookup(&block)) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
                 if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),
@@ -158,7 +219,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
             }
             break;
         }
-        if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
+        if (hotnessTrackerEnable_) { hotnessTracker_.Touch(block); }
     }
     ctx.waiter->Done();
 }

@@ -1,0 +1,12 @@
+name: Setup crane
+description: Install crane v0.20.3 for Linux amd64 and add it to PATH.
+runs:
+  using: composite
+  steps:
+    - name: Install crane
+      shell: bash
+      run: |
+        set -euo pipefail
+        install_dir="${RUNNER_TEMP}/crane"
+        bash "${GITHUB_ACTION_PATH}/install-crane.sh" "${install_dir}"
+        printf '%s\n' "${install_dir}" >>"${GITHUB_PATH}"

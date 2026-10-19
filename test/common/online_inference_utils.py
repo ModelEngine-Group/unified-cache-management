@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -299,6 +300,166 @@ class VLLMServerManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
+        self.stop()
+
+
+class SGLangServerManager:
+    """Manage an OpenAI-compatible SGLang server configured with UCM HiCache."""
+
+    def __init__(
+        self,
+        model_path: str,
+        storage_path: str,
+        port: int = 30000,
+        host: str = "127.0.0.1",
+        tensor_parallel_size: int = 1,
+        page_size: int = 128,
+        startup_timeout: float = 600.0,
+        additional_args: Optional[List[str]] = None,
+    ):
+        self.model_path = model_path
+        self.storage_path = storage_path
+        self.port = port
+        self.host = host
+        self.tensor_parallel_size = tensor_parallel_size
+        self.page_size = page_size
+        self.startup_timeout = startup_timeout
+        self.additional_args = additional_args or []
+        self._process: Optional[subprocess.Popen] = None
+        self._url = f"http://{host}:{port}"
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    def _build_hicache_config(self) -> Dict[str, Any]:
+        return {
+            "backend_name": "unifiedcache",
+            "module_path": "ucm.integration.sglang.unifiedcache_store",
+            "class_name": "UnifiedCacheStore",
+            "interface_v1": 1,
+            "kv_connector_extra_config": {
+                "ucm_connector_name": "UcmPipelineStore",
+                "ucm_connector_config": {
+                    "storage_backends": self.storage_path,
+                },
+            },
+        }
+
+    def _build_command(self) -> List[str]:
+        cmd = [
+            sys.executable,
+            "-m",
+            "sglang.launch_server",
+            "--model-path",
+            self.model_path,
+            "--host",
+            self.host,
+            "--port",
+            str(self.port),
+            "--tensor-parallel-size",
+            str(self.tensor_parallel_size),
+            "--page-size",
+            str(self.page_size),
+            "--trust-remote-code",
+            "--enable-hierarchical-cache",
+            "--hicache-mem-layout",
+            "page_first",
+            "--hicache-write-policy",
+            "write_through",
+            "--hicache-storage-backend",
+            "dynamic",
+            "--hicache-storage-prefetch-policy",
+            "wait_complete",
+            "--hicache-storage-backend-extra-config",
+            json.dumps(self._build_hicache_config()),
+        ]
+        cmd.extend(self.additional_args)
+        return cmd
+
+    def start(self) -> None:
+        if self._process is not None:
+            raise RuntimeError("Server is already running")
+
+        cmd = self._build_command()
+        logger.info(
+            "Starting SGLang server: %s",
+            " ".join(shlex.quote(arg) for arg in cmd),
+        )
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=sys.stdout,
+            stderr=sys.stdout,
+            text=True,
+            bufsize=1,
+            start_new_session=os.name != "nt",
+        )
+
+    def wait_for_ready(self, timeout: Optional[float] = None) -> None:
+        timeout = self.startup_timeout if timeout is None else timeout
+        if self._process is None:
+            raise RuntimeError("Server process not started")
+
+        start_time = time.time()
+        health_url = f"{self._url}/health"
+        while time.time() - start_time < timeout:
+            if self._process.poll() is not None:
+                raise RuntimeError(
+                    "SGLang server process exited unexpectedly with code "
+                    f"{self._process.returncode}"
+                )
+            try:
+                response = requests.get(health_url, timeout=5)
+                if response.status_code == 200:
+                    logger.info(
+                        "SGLang server is ready after %.1fs",
+                        time.time() - start_time,
+                    )
+                    return
+            except requests.exceptions.RequestException:
+                pass
+            time.sleep(1)
+
+        raise TimeoutError(f"SGLang server did not become ready within {timeout}s")
+
+    def stop(self) -> None:
+        if self._process is None:
+            return
+
+        logger.info("Stopping SGLang server (PID %s)", self._process.pid)
+        try:
+            if os.name == "nt":
+                self._process.terminate()
+            else:
+                try:
+                    os.killpg(self._process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                self._process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                logger.warning("SGLang server did not stop gracefully, forcing it")
+                if os.name == "nt":
+                    self._process.kill()
+                else:
+                    try:
+                        os.killpg(self._process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                self._process.wait(timeout=10)
+        finally:
+            self._process = None
+
+    def __enter__(self) -> "SGLangServerManager":
+        self.start()
+        try:
+            self.wait_for_ready()
+        except BaseException:
+            self.stop()
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.stop()
 
 

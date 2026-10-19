@@ -4,6 +4,10 @@ on:
   push:
     branches: [ "**" ] # ** matches all branches, while * matches only top-level branches without '/'
 
+# Push checks only read the repository; do not inherit the default token scope.
+permissions:
+  contents: read
+
 jobs:
   lint-and-unit-tests:
     uses: ./.github/workflows/lint-and-test.yml
