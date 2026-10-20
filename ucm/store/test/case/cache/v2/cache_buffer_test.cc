@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include <new>
 #include <optional>
+#include <set>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -36,13 +37,14 @@ struct BufferTestAccess {
         buffer.rankCount_ = rankCount;
         buffer.slotsPerRank_ = slotsPerRank;
         buffer.slotSize_ = 4096;
+        buffer.shardsPerBlock_ = 1;
         buffer.bucketCount_ = bucketCount;
         buffer.reservedSlots_ = 0;
     }
 
     static size_t ReferenceCount(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
     {
-        auto iBucket = buffer.HashKey(blockId);
+        auto iBucket = buffer.HashKey(blockId, offset);
         auto& layout = buffer.ctrl_.Layout();
         auto iNode = buffer.Lookup(layout, iBucket, blockId, offset);
         return iNode == kInvalid
@@ -66,6 +68,7 @@ struct BufferTestAccess {
         buffer.rankCount_ = rankCount;
         buffer.slotsPerRank_ = slotsPerRank;
         buffer.slotSize_ = 4096;
+        buffer.shardsPerBlock_ = 1;
         buffer.bucketCount_ = bucketCount;
         buffer.reservedSlots_ = 0;
     }
@@ -82,14 +85,16 @@ struct BufferTestAccess {
 
     static CtrlLayout& Layout(Buffer& buffer) { return buffer.ctrl_.Layout(); }
 
-    static size_t BucketOf(Buffer& buffer, const Detail::BlockId& blockId)
+    static size_t BucketOf(Buffer& buffer, const Detail::BlockId& blockId, size_t offset = 0)
     {
-        return buffer.HashKey(blockId);
+        return buffer.HashKey(blockId, offset);
     }
+
+    static void SetShardsPerBlock(Buffer& buffer, size_t count) { buffer.shardsPerBlock_ = count; }
 
     static size_t FindSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
     {
-        auto iBucket = buffer.HashKey(blockId);
+        auto iBucket = buffer.HashKey(blockId, offset);
         return buffer.Lookup(buffer.ctrl_.Layout(), iBucket, blockId, offset);
     }
 };
@@ -129,6 +134,103 @@ protected:
 
     void TearDown() override { ::operator delete(memory_, std::align_val_t{64}); }
 };
+
+TEST_F(Cache2BufferTest, LayerOffsetsUseDevelopHashMixAndSeparateBuckets)
+{
+    constexpr size_t kLayers{78};
+    const auto block = MakeBlockId(78);
+    const auto h1 = Detail::BlockIdHasher{}(block);
+    constexpr auto goldenSection = 0x9e3779b97f4a7c15ULL;
+    std::set<size_t> buckets;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        const auto h2 = std::hash<size_t>{}(layer);
+        const auto expected = (h1 ^ (h2 + goldenSection + (h1 << 6) + (h1 >> 2))) % kBuckets;
+        const auto bucket = BufferTestAccess::BucketOf(buffer_, block, layer);
+        EXPECT_EQ(bucket, expected) << "layer " << layer;
+        buckets.insert(bucket);
+    }
+    EXPECT_EQ(buckets.size(), kLayers);
+}
+
+TEST_F(Cache2BufferTest, LayerwisePreallocAndHitsRetainDistinctSlots)
+{
+    constexpr size_t kLayers{78};
+    const auto block = MakeBlockId(79);
+    std::vector<size_t> slots;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        buffer_.Prealloc(block, layer);
+        ASSERT_TRUE(buffer_.Exist(block, layer));
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, layer), 0);
+        auto handle = buffer_.Get(block, layer);
+        EXPECT_TRUE(handle.Owner());
+        handle.MarkReady();
+        slots.push_back(handle.SlotIndex());
+        EXPECT_EQ(BufferTestAccess::Layout(buffer_).SlotMetaArr()[handle.SlotIndex()].hash.load(),
+                  BufferTestAccess::BucketOf(buffer_, block, layer));
+    }
+    const std::set<size_t> distinctSlots(slots.begin(), slots.end());
+    EXPECT_EQ(distinctSlots.size(), kLayers);
+    EXPECT_FALSE(buffer_.Exist(block, kLayers));
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        buffer_.Prealloc(block, layer);
+        auto handle = buffer_.Get(block, layer);
+        EXPECT_FALSE(handle.Owner());
+        EXPECT_EQ(handle.GetState(), CtrlLayout::SlotMeta::State::Ready);
+        EXPECT_EQ(handle.SlotIndex(), slots[layer]);
+    }
+}
+
+TEST_F(Cache2BufferTest, TouchMarksAllLayerBucketsWithoutTouchingAnotherBlock)
+{
+    constexpr size_t kLayers{78};
+    BufferTestAccess::SetShardsPerBlock(buffer_, kLayers);
+    const auto block = MakeBlockId(80);
+    const auto otherBlock = MakeBlockId(81);
+    std::vector<size_t> slots;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        auto handle = buffer_.Get(block, layer);
+        handle.MarkReady();
+        slots.push_back(handle.SlotIndex());
+    }
+    size_t otherSlot;
+    {
+        auto handle = buffer_.Get(otherBlock, 0);
+        handle.MarkReady();
+        otherSlot = handle.SlotIndex();
+    }
+    auto* meta = BufferTestAccess::Layout(buffer_).SlotMetaArr();
+    for (const auto slot : slots) { meta[slot].accessed.store(0); }
+    meta[otherSlot].accessed.store(0);
+
+    buffer_.Touch(&block, 1);
+    for (const auto slot : slots) {
+        EXPECT_EQ(meta[slot].accessed.load(), 1);
+        EXPECT_EQ(meta[slot].reference.load(), 0);
+        EXPECT_EQ(meta[slot].state.load(), CtrlLayout::SlotMeta::State::Ready);
+    }
+    EXPECT_EQ(meta[otherSlot].accessed.load(), 0);
+}
+
+TEST_F(Cache2BufferTest, TouchHandlesMissingLayersAndEmptyInputs)
+{
+    BufferTestAccess::SetShardsPerBlock(buffer_, 78);
+    const auto block = MakeBlockId(82);
+    const auto missing = MakeBlockId(83);
+    size_t slot;
+    {
+        auto handle = buffer_.Get(block, 37);
+        handle.MarkReady();
+        slot = handle.SlotIndex();
+    }
+    auto& meta = BufferTestAccess::Layout(buffer_).SlotMetaArr()[slot];
+    meta.accessed.store(0);
+    buffer_.Touch(nullptr, 1);
+    buffer_.Touch(&block, 0);
+    buffer_.Touch(&missing, 1);
+    EXPECT_EQ(meta.accessed.load(), 0);
+    buffer_.Touch(&block, 1);
+    EXPECT_EQ(meta.accessed.load(), 1);
+}
 
 TEST_F(Cache2BufferTest, PreallocLeavesOwnerElectionForDemandGet)
 {

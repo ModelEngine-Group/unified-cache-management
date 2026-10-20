@@ -27,6 +27,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <thread>
 #include <utility>
@@ -51,6 +52,7 @@ class Buffer {
     size_t rankCount_{0};
     size_t slotsPerRank_{0};
     size_t slotSize_{0};
+    size_t shardsPerBlock_{0};
     size_t bucketCount_{0};
     size_t reservedSlots_{0};
 
@@ -142,6 +144,7 @@ public:
         rankCount_ = layout.RankCount();
         slotsPerRank_ = layout.SlotsPerRank();
         slotSize_ = layout.SlotSize();
+        shardsPerBlock_ = cfg.blockSize / slotSize_;
         bucketCount_ = layout.BucketCount();
         reservedSlots_ = cfg.loadExclusiveBufferNumber / rankCount_;
 
@@ -213,7 +216,7 @@ public:
     bool Exist(const Detail::BlockId& blockId, size_t offset)
     {
         if (bucketCount_ == 0) { return false; }
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
@@ -237,16 +240,13 @@ public:
         if (blocks == nullptr || bucketCount_ == 0) { return; }
         auto& layout = ctrl_.Layout();
         for (size_t i = 0; i < num; ++i) {
-            auto iBucket = HashKey(blocks[i]);
-            auto iNode = layout.Buckets()[iBucket].load(std::memory_order_acquire);
-            size_t walked = 0;
-            while (iNode != kInvalid && iNode < layout.SlotCount() &&
-                   walked++ < layout.SlotCount()) {
-                auto* meta = &layout.SlotMetaArr()[iNode];
-                if (MatchBlock(*meta, iBucket, blocks[i])) {
-                    meta->accessed.store(1, std::memory_order_relaxed);
+            // Shards of one block now live in separate hash buckets.
+            for (size_t offset = 0; offset < shardsPerBlock_; ++offset) {
+                auto iBucket = HashKey(blocks[i], offset);
+                auto iNode = LookupOptimistic(layout, iBucket, blocks[i], offset);
+                if (iNode != kInvalid) {
+                    layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed);
                 }
-                iNode = meta->next.load(std::memory_order_acquire);
             }
         }
     }
@@ -263,10 +263,15 @@ private:
         std::memcpy(words, blockId.data(), sizeof(blockId));
     }
 
-    size_t HashKey(const Detail::BlockId& blockId) const
+    size_t HashKey(const Detail::BlockId& blockId, size_t offset) const
     {
-        static Detail::BlockIdHasher hasher;
-        return hasher(blockId) & (bucketCount_ - 1);
+        static Detail::BlockIdHasher blockIdHasher;
+        static std::hash<size_t> shardHasher;
+        // Keep the cc core's block/shard mix, with Cache2's power-of-two buckets.
+        constexpr auto goldenSection = 0x9e3779b97f4a7c15ULL;
+        size_t h1 = blockIdHasher(blockId);
+        size_t h2 = shardHasher(offset);
+        return (h1 ^ (h2 + goldenSection + (h1 << 6) + (h1 >> 2))) & (bucketCount_ - 1);
     }
 
     static void StoreKey(SlotMeta& meta, const Detail::BlockId& blockId, size_t offset)
@@ -299,7 +304,7 @@ private:
     size_t TryAcquireSlot(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
                           size_t attempts, bool& owner, size_t preferredRank = kInvalid)
     {
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         const bool mayOwn = preferredRank == kInvalid || myRank_ == preferredRank;
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
@@ -330,7 +335,7 @@ private:
     bool TryPrealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
                      size_t attempts)
     {
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto* targetLock = layout.LockOf(iBucket);
         if (!targetLock->TryLock()) { return false; }
