@@ -305,6 +305,49 @@ def test_single_arch_publication_and_compact_plan_share_the_bare_tag() -> None:
     )
 
 
+def test_explicit_sglang_main_image_uses_pinned_channel() -> None:
+    formal, _fixture, selection, _catalog = _inputs()
+    raw = next(
+        item for item in selection["wheel_builds"] if item["backend"] == "cann-a2"
+    )
+    probe_document = _ascend_probe()
+    probe = probe_document["probes"][0]
+    repository = "docker.io/lmsysorg/sglang"
+    tag = "main-cann9.0.1-910b"
+    probe.update(
+        product_id="sglang",
+        repository=repository,
+        tag=tag,
+        runtime_ref=f"{repository}:{tag}",
+        target_repository="ghcr.io/release-org/sglang",
+        image_reference=f"{repository}@{probe['image_reference'].split('@', 1)[1]}",
+    )
+    result = pr.resolve_pr_request(
+        formal,
+        probe_document,
+        {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=109,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    runtime = result["selection"]["runtimes"][0]
+    assert runtime["channel"] == "pinned"
+    assert runtime["runtime_tag"] == tag
+    assert runtime["member_references"][probe["cpu_arch"]] == probe["image_reference"]
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=result["selection"],
+        builder_catalog=_finalized_catalog(result["builder_catalog"]),
+        route="pr",
+    )
+    assert plan["families"][0]["published_reference"].startswith(
+        "ghcr.io/release-org/sglang:release-org-pr-30-supermarioyl-run-109-"
+    )
+
+
 def test_blocked_backend_stops_before_raw_builder_resolution(runtime_probe) -> None:
     formal = _fixture_policy()
     formal["backends"][runtime_probe["backend"]].update(
