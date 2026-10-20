@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .layout import UCMKVCacheGroupInfo, UCMKVCacheSpec
+from .layout import UCMKVCacheGroupSpec, UCMKVCacheSpec
 from .parallel import ParallelLayout
-from .ucm_block_id import AttentionType, ShardKey, validate_shard_key_encoding
+from .ucm_chunk_id import AttentionType, ShardKey, validate_shard_key_encoding
 
 # (tp_rank, pp_rank, pcp_rank) of one worker.
 ParallelRank = tuple[int, int, int]
@@ -21,7 +21,7 @@ ParallelRank = tuple[int, int, int]
 
 def groups_by_attention_type(
     spec: UCMKVCacheSpec,
-) -> tuple[tuple[AttentionType, tuple[UCMKVCacheGroupInfo, ...]], ...]:
+) -> tuple[tuple[AttentionType, tuple[UCMKVCacheGroupSpec, ...]], ...]:
     """Attention types in dispatch order, each with the groups it stores.
 
     FA holds the full-attention groups; WA the sliding groups that
@@ -31,7 +31,7 @@ def groups_by_attention_type(
     """
 
     attention_type_groups: list[
-        tuple[AttentionType, tuple[UCMKVCacheGroupInfo, ...]]
+        tuple[AttentionType, tuple[UCMKVCacheGroupSpec, ...]]
     ] = []
     if spec.fa_groups:
         attention_type_groups.append((AttentionType.FA, spec.fa_groups))
@@ -54,7 +54,7 @@ class UCMRecordClass:
 
     attention_type: AttentionType
     class_index: int  # index within the attention type
-    groups: tuple[UCMKVCacheGroupInfo, ...]
+    groups: tuple[UCMKVCacheGroupSpec, ...]
     # Position of each group in its attention type's group list (plan order).
     group_positions: tuple[int, ...]
     # Number of different head shards across TP. 1 means every TP rank holds
@@ -112,7 +112,7 @@ class UCMSharding:
                         parallel_rank
                     )
 
-    def _group_shard_type(self, group: UCMKVCacheGroupInfo) -> tuple[int, bool]:
+    def _group_shard_type(self, group: UCMKVCacheGroupSpec) -> tuple[int, bool]:
         """How a group is sharded in this topology: (number of head shards,
         whether tokens are sharded by DCP).
 
@@ -168,7 +168,7 @@ class UCMSharding:
         )
 
     def all_shard_keys(self, record_class: UCMRecordClass) -> tuple[ShardKey, ...]:
-        """All shards of a record class. A block hits only if all are stored."""
+        """All shards of a record class. A chunk hits only if all are stored."""
         return tuple(self._replica_ranks_by_shard[record_class])
 
     def replica_index_and_count(

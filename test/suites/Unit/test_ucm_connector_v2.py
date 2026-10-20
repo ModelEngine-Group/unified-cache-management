@@ -332,9 +332,9 @@ from ucm.integration.vllm.v2.test_stores import (
     MemoryTestStore,
     record_segments,
 )
-from ucm.integration.vllm.v2.ucm_block_id import (  # noqa: E402
-    make_common_ucm_block_ids,
-    make_local_ucm_block_ids,
+from ucm.integration.vllm.v2.ucm_chunk_id import (  # noqa: E402
+    make_common_ucm_chunk_ids,
+    make_local_ucm_chunk_ids,
 )
 from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
     UCMConnector,
@@ -509,6 +509,14 @@ def vllm_config():
     )
 
 
+def plan_token_starts(token_start, token_end, num_blocks):
+    """First token of each of a plan's UCM chunks in [token_start, token_end)."""
+    tokens_per_chunk = (token_end - token_start) // num_blocks
+    return np.arange(num_blocks, dtype=np.uint64) * np.uint64(
+        tokens_per_chunk
+    ) + np.uint64(token_start)
+
+
 def make_layout(
     raw_config,
     caches,
@@ -539,11 +547,11 @@ def parse_spec(kv_cache_config, *, hf_text_config=DENSE_TEXT_CONFIG, **kwargs):
 
 
 def logical_id(byte, attention_type=AttentionType.FA):
-    """Single-rank local UCM block id of a block whose common id is ``byte``
+    """Single-rank local UCM chunk id of a block whose common id is ``byte``
     repeated."""
-    from ucm.integration.vllm.v2.ucm_block_id import make_local_ucm_block_ids
+    from ucm.integration.vllm.v2.ucm_chunk_id import make_local_ucm_chunk_ids
 
-    return make_local_ucm_block_ids((bytes([byte]) * 12,), attention_type)[0]
+    return make_local_ucm_chunk_ids((bytes([byte]) * 12,), attention_type)[0]
 
 
 class FakeRequest:
@@ -575,17 +583,17 @@ def make_dispatcher(
     )
 
 
-def ucm_ids(common_ucm_block_ids, attention_type=AttentionType.FA):
-    """Single-rank local UCM block ids (record class 0, shard 0)."""
-    return make_local_ucm_block_ids(common_ucm_block_ids, attention_type)
+def ucm_ids(common_ucm_chunk_ids, attention_type=AttentionType.FA):
+    """Single-rank local UCM chunk ids (record class 0, shard 0)."""
+    return make_local_ucm_chunk_ids(common_ucm_chunk_ids, attention_type)
 
 
 def request_ucm_ids(dispatcher, request):
-    """Single-rank local UCM block ids of a request per attention type, plan
+    """Single-rank local UCM chunk ids of a request per attention type, plan
     order."""
-    common_ucm_block_ids = make_common_ucm_block_ids(dispatcher._block_hasher(request))
+    common_ucm_chunk_ids = make_common_ucm_chunk_ids(dispatcher._chunk_hasher(request))
     return tuple(
-        ucm_ids(common_ucm_block_ids, attention_type)
+        ucm_ids(common_ucm_chunk_ids, attention_type)
         for attention_type, _ in dispatcher._groups_by_attention_type
     )
 
@@ -594,7 +602,7 @@ def seed_request_state(
     dispatcher,
     request,
     external_hit_tokens=0,
-    common_ucm_block_ids=(),
+    common_ucm_chunk_ids=(),
     hbm_hit_tokens=0,
 ):
     """Record a synthetic lookup result the way UCMDispatcher.lookup would."""
@@ -603,7 +611,7 @@ def seed_request_state(
         external_hit_tokens=external_hit_tokens,
         num_token_ids=len(request.all_token_ids),
         token_processed=hbm_hit_tokens + external_hit_tokens,
-        common_ucm_block_ids=tuple(common_ucm_block_ids),
+        common_ucm_chunk_ids=tuple(common_ucm_chunk_ids),
         vllm_block_tables=tuple([] for _ in dispatcher.spec.groups),
         load_pending=external_hit_tokens > 0,
     )
@@ -653,7 +661,7 @@ def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
     block_ids = tuple(
         key
         for t in transfers
-        for key in t.ucm_block_ids
+        for key in t.ucm_chunk_ids
         for _ in range(t.ptrs.shape[1])
     )
     fields = {
@@ -663,7 +671,7 @@ def _flat_layout_records(layout, operation, metadata, *args, **kwargs):
             else np.empty(0, dtype=np.uint64)
         )
         for field, attr in (
-            ("offsets", "ucm_block_offsets"),
+            ("offsets", "ucm_chunk_offsets"),
             ("ptrs", "ptrs"),
             ("sizes", "sizes"),
         )
@@ -677,7 +685,7 @@ def make_transfer(keys, ptrs, sizes, offsets, metadata=()):
     indices = np.arange(len(keys), dtype=np.int64)
     lengths = np.max(offsets + sizes, axis=1, initial=0)
     metadata = metadata or tuple(
-        json.dumps({"type": "FA", "block_index": int(i)}) for i in indices
+        json.dumps({"type": "FA", "chunk_index": int(i)}) for i in indices
     )
     return UCMProxyTransfer(keys, indices, ptrs, sizes, offsets, metadata, lengths)
 
@@ -698,7 +706,7 @@ def _submit_segments(adapter, operation, keys, offsets, ptrs, sizes):
 
 
 def compile_access(
-    group_layout, *, token_offsets=0, token_counts=None, token_block_size=None
+    group_layout, *, token_offsets=0, token_counts=None, tokens_per_block=None
 ):
     """Fixed token ranges of every segment, for address assertions.
 
@@ -707,12 +715,12 @@ def compile_access(
     rules in production. The block span defaults to the first layer's
     native block size.
     """
-    token_block_size = token_block_size or int(
-        group_layout.layers[0].kv_cache_spec.block_size
+    tokens_per_block = tokens_per_block or int(
+        group_layout.layer_specs[0].kv_cache_spec.block_size
     )
     token_starts = np.atleast_1d(np.asarray(token_offsets, dtype=np.int64))
     token_lengths = (
-        token_block_size - token_starts
+        tokens_per_block - token_starts
         if token_counts is None
         else np.atleast_1d(np.asarray(token_counts, dtype=np.int64))
     )
@@ -720,10 +728,10 @@ def compile_access(
     if (
         (token_starts < 0)
         | (token_lengths <= 0)
-        | (token_starts + token_lengths > token_block_size)
+        | (token_starts + token_lengths > tokens_per_block)
     ).any():
         raise ValueError("Token range must lie inside one physical block")
-    is_partial = ((token_starts != 0) | (token_lengths != token_block_size)).any()
+    is_partial = ((token_starts != 0) | (token_lengths != tokens_per_block)).any()
     if is_partial and not group_layout.supports_partial_tokens:
         raise ValueError(
             f"KV cache group {group_layout.group_id} requires whole-block access"
@@ -731,17 +739,17 @@ def compile_access(
     for tokens in (token_starts, token_lengths):
         if (
             np.multiply.outer(tokens.astype(np.uint64), group_layout.states_per_block)
-            % np.uint64(token_block_size)
+            % np.uint64(tokens_per_block)
         ).any():
             raise ValueError("Token ranges must align with stored states")
     return SimpleNamespace(
         layout=group_layout,
-        token_block_size=token_block_size,
+        tokens_per_block=tokens_per_block,
         block_byte_offsets=group_layout.tokens_to_bytes(
-            token_starts.astype(np.uint64), token_block_size
+            token_starts.astype(np.uint64), tokens_per_block
         ),
         segment_bytes=group_layout.tokens_to_bytes(
-            token_lengths.astype(np.uint64), token_block_size
+            token_lengths.astype(np.uint64), tokens_per_block
         ),
     )
 
@@ -763,7 +771,7 @@ def _resolved_access(access, blocks, *, token_offsets=None, segment_mask=None):
     if token_offsets is not None:
         ptrs = ptrs + group_layout.tokens_to_bytes(
             np.asarray(token_offsets, dtype=np.uint64),
-            access.token_block_size,
+            access.tokens_per_block,
             segment_mask,
         ).reshape(num_windows, blocks_per_window, fixed_offsets.shape[1])
     ptrs = ptrs.reshape(len(blocks), fixed_offsets.shape[1])
@@ -906,11 +914,11 @@ class KVCacheSpecTest(unittest.TestCase):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
 
-        self.assertEqual(parsed.ucm_cache_block_size, 512)
-        self.assertEqual(parsed.groups[0].tail_blocks, 4)
+        self.assertEqual(parsed.tokens_per_chunk, 512)
+        self.assertEqual(parsed.groups[0].blocks_per_chunk, 4)
 
     def test_hybrid_classifies_attention_and_state(self):
         parsed = parse_spec(
@@ -940,7 +948,7 @@ class KVCacheSpecTest(unittest.TestCase):
             )
 
     def test_hybrid_rejects_misaligned_mamba_block(self):
-        with self.assertRaisesRegex(ValueError, "must divide UCM block size"):
+        with self.assertRaisesRegex(ValueError, "must divide tokens_per_chunk"):
             parse_spec(
                 config(
                     group(["model.layers.0.attn"], FullAttentionSpec(128)),
@@ -950,7 +958,7 @@ class KVCacheSpecTest(unittest.TestCase):
             )
 
     def test_parse_rejects_fa_slices_that_do_not_tile_the_block(self):
-        # A UCM block smaller than an FA block must divide it.
+        # A UCM chunk smaller than an FA block must divide it.
         with self.assertRaisesRegex(ValueError, "must divide its block span"):
             parse_spec(
                 config(
@@ -958,7 +966,7 @@ class KVCacheSpecTest(unittest.TestCase):
                     group(["model.layers.1.attn"], FullAttentionSpec(768)),
                 ),
                 scheduler_block_size=1536,
-                ucm_cache_block_size=384,
+                tokens_per_chunk=384,
             )
 
     def test_parse_rejects_fa_slices_that_split_a_compressed_row(self):
@@ -973,7 +981,7 @@ class KVCacheSpecTest(unittest.TestCase):
                     )
                 ),
                 scheduler_block_size=16384,
-                ucm_cache_block_size=64,
+                tokens_per_chunk=64,
             )
 
     def test_parse_warns_that_bounded_replay_drops_finer_hits(self):
@@ -988,11 +996,11 @@ class KVCacheSpecTest(unittest.TestCase):
                     group(["model.layers.1.swa_cache"], window),
                 ),
                 scheduler_block_size=1024,
-                ucm_cache_block_size=512,
+                tokens_per_chunk=512,
             )
         self.assertIn("bounded replay", "".join(logs.output))
 
-    def test_groups_vllm_does_not_store_are_transient(self):
+    def test_groups_vllm_does_not_store_are_not_persistent(self):
         # A group with transfer off or a non-prefix-cacheable spec is not
         # listed in prefix_cacheable_group_ids, so UCM does not store it.
         for enabled, cacheable in ((False, True), (True, False)):
@@ -1009,9 +1017,9 @@ class KVCacheSpecTest(unittest.TestCase):
                     scheduler_block_size=8,
                 )
                 scratch = parsed.groups[1]
-                self.assertTrue(scratch.is_transient)
+                self.assertFalse(scratch.is_persistent)
                 self.assertEqual(scratch.kinds, frozenset())
-                self.assertEqual(scratch.tail_blocks, 0)
+                self.assertEqual(scratch.blocks_per_chunk, 0)
 
     def test_unsupported_restore_semantics_are_rejected(self):
         for kind in (
@@ -1130,21 +1138,24 @@ class StateLoadTargetTest(unittest.TestCase):
 
     def _state_load_blocks(self, need_load_to_running_state):
         from ucm.integration.vllm.v2.layout import (
-            UCMKVCacheGroupInfo,
+            UCMKVCacheGroupSpec,
             UCMKVCacheSpec,
         )
 
         spec = UCMKVCacheSpec(
             groups=(
-                UCMKVCacheGroupInfo(
-                    0, 128, frozenset({KVCacheSpecKind.FULL_ATTENTION}), tail_blocks=1
+                UCMKVCacheGroupSpec(
+                    0,
+                    128,
+                    frozenset({KVCacheSpecKind.FULL_ATTENTION}),
+                    blocks_per_chunk=1,
                 ),
-                UCMKVCacheGroupInfo(
-                    1, 128, frozenset({KVCacheSpecKind.MAMBA}), tail_blocks=1
+                UCMKVCacheGroupSpec(
+                    1, 128, frozenset({KVCacheSpecKind.MAMBA}), blocks_per_chunk=1
                 ),
             ),
             scheduler_block_size=128,
-            ucm_cache_block_size=128,
+            tokens_per_chunk=128,
             device_type="npu",
         )
         dispatcher = make_dispatcher(
@@ -1157,7 +1168,7 @@ class StateLoadTargetTest(unittest.TestCase):
             dispatcher,
             request,
             external_hit_tokens=256,
-            common_ucm_block_ids=fa_keys,
+            common_ucm_chunk_ids=fa_keys,
         )
         # Restore boundary 256 lives in block 11; this step's running block
         # for tokens [256, 384) is block 12.
@@ -1168,7 +1179,7 @@ class StateLoadTargetTest(unittest.TestCase):
             p for p in meta.load_plans if p.attention_type is AttentionType.STATE
         ]
         for plan in state_plans:
-            self.assertEqual(plan.common_ucm_block_ids, (fa_keys[1],))
+            self.assertEqual(plan.common_ucm_chunk_ids, (fa_keys[1],))
         return [plan.vllm_block_ids_by_group[0].tolist() for plan in state_plans]
 
     def test_copy_after_load_restores_only_the_boundary_block(self):
@@ -1185,18 +1196,21 @@ class RequestAwareKeyTest(unittest.TestCase):
 
     def _fa_keys(self, request):
         from ucm.integration.vllm.v2.layout import (
-            UCMKVCacheGroupInfo,
+            UCMKVCacheGroupSpec,
             UCMKVCacheSpec,
         )
 
         spec = UCMKVCacheSpec(
             groups=(
-                UCMKVCacheGroupInfo(
-                    0, 128, frozenset({KVCacheSpecKind.FULL_ATTENTION}), tail_blocks=1
+                UCMKVCacheGroupSpec(
+                    0,
+                    128,
+                    frozenset({KVCacheSpecKind.FULL_ATTENTION}),
+                    blocks_per_chunk=1,
                 ),
             ),
             scheduler_block_size=128,
-            ucm_cache_block_size=128,
+            tokens_per_chunk=128,
             device_type="cuda",
         )
         (keys,) = request_ucm_ids(make_dispatcher(spec), request)
@@ -1226,31 +1240,40 @@ class RequestAwareKeyTest(unittest.TestCase):
 
 
 class DumpMetadataTest(unittest.TestCase):
-    """Each dumped UCM block carries JSON with its attention type and block index."""
+    """Each dumped UCM chunk carries JSON with its attention type and block index."""
 
-    def test_block_index_counts_ucm_blocks_from_the_request_start(self):
+    def test_chunk_index_counts_ucm_chunks_from_the_request_start(self):
         from ucm.integration.vllm.v2.ucm_kv_cache import dump_metadata
         from ucm.integration.vllm.v2.ucm_scheduler import UCMGroupDispatchPlan
 
         keys = tuple(bytes([index]) * 16 for index in range(3))
-        fa = UCMGroupDispatchPlan(AttentionType.FA, keys, 256, 640, ())
-        wa = UCMGroupDispatchPlan(AttentionType.WA, keys[:1], 512, 640, ())
-        state = UCMGroupDispatchPlan(AttentionType.STATE, keys[:1], 896, 1024, ())
+        fa = UCMGroupDispatchPlan(
+            AttentionType.FA, keys, plan_token_starts(256, 640, len(keys)), ()
+        )
+        wa = UCMGroupDispatchPlan(
+            AttentionType.WA, keys[:1], plan_token_starts(512, 640, len(keys[:1])), ()
+        )
+        state = UCMGroupDispatchPlan(
+            AttentionType.STATE,
+            keys[:1],
+            plan_token_starts(896, 1024, len(keys[:1])),
+            (),
+        )
 
         self.assertEqual(
             [json.loads(item) for item in dump_metadata(fa, 128)],
             [
-                {"type": "FA", "block_index": 2},
-                {"type": "FA", "block_index": 3},
-                {"type": "FA", "block_index": 4},
+                {"type": "FA", "chunk_index": 2},
+                {"type": "FA", "chunk_index": 3},
+                {"type": "FA", "chunk_index": 4},
             ],
         )
         self.assertEqual(
-            json.loads(dump_metadata(wa, 128)[0]), {"type": "WA", "block_index": 4}
+            json.loads(dump_metadata(wa, 128)[0]), {"type": "WA", "chunk_index": 4}
         )
         self.assertEqual(
             json.loads(dump_metadata(state, 128)[0]),
-            {"type": "State", "block_index": 7},
+            {"type": "State", "chunk_index": 7},
         )
 
     def test_adapter_passes_metadata_to_dump_only(self):
@@ -1261,8 +1284,8 @@ class DumpMetadataTest(unittest.TestCase):
         keys = (b"a" * 16, b"b" * 16)
         grid = np.zeros((2, 1), dtype=np.uint64)
         metadata = (
-            '{"type":"FA","block_index":0}',
-            '{"type":"FA","block_index":1}',
+            '{"type":"FA","chunk_index":0}',
+            '{"type":"FA","chunk_index":1}',
         )
 
         adapter.submit("dump", make_transfer(keys, grid, grid, grid, metadata))
@@ -1317,7 +1340,7 @@ class MtpLayerIndexTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as path:
             cfg.kv_transfer_config.kv_connector_extra_config["v2_storage_path"] = path
             parsed = UCMConnector(cfg, KVConnectorRole.SCHEDULER, raw).spec
-        self.assertEqual(parsed.groups[1].token_block_size, 512)
+        self.assertEqual(parsed.groups[1].tokens_per_block, 512)
         self.assertEqual(parsed.groups[3].tail_tokens, 0)
         names = [name for g in raw.kv_cache_groups for name in g.layer_names]
         layout = UCMKVCacheLayout(
@@ -1389,20 +1412,20 @@ class HashAndLookupTest(unittest.TestCase):
             "e60666fdcd359c82d9a369fc06bb3270",
         )
 
-    def test_ucm_block_id_layout_is_stable(self):
+    def test_ucm_chunk_id_layout_is_stable(self):
         # Golden encoding: common id (block hash[:12]) + type(2)
         # record_class(4) pp(5) head(6) token(7) reserved(8), big-endian.
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
 
         def suffix(attention_type, record_class=0, shard=ShardKey()):
-            (ucm_block_id,) = make_local_ucm_block_ids(
-                make_common_ucm_block_ids((b"h" * 16,)),
+            (ucm_chunk_id,) = make_local_ucm_chunk_ids(
+                make_common_ucm_chunk_ids((b"h" * 16,)),
                 attention_type,
                 record_class,
                 shard,
             )
-            self.assertEqual(ucm_block_id[:12], b"h" * 12)
-            return ucm_block_id[12:].hex()
+            self.assertEqual(ucm_chunk_id[:12], b"h" * 12)
+            return ucm_chunk_id[12:].hex()
 
         self.assertEqual(suffix(AttentionType.FA), "00000000")
         self.assertEqual(suffix(AttentionType.WA), "40000000")
@@ -1419,17 +1442,17 @@ class HashAndLookupTest(unittest.TestCase):
         )
 
     def test_local_ids_share_the_common_id_across_classes_and_shards(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
 
-        common_ids = make_common_ucm_block_ids((b"a" * 16, b"b" * 16))
+        common_ids = make_common_ucm_chunk_ids((b"a" * 16, b"b" * 16))
         self.assertEqual(common_ids, (b"a" * 12, b"b" * 12))
-        logical = make_local_ucm_block_ids(common_ids, AttentionType.WA)
+        logical = make_local_ucm_chunk_ids(common_ids, AttentionType.WA)
         variants = (
-            make_local_ucm_block_ids(
+            make_local_ucm_chunk_ids(
                 common_ids, AttentionType.WA, 0, ShardKey(head_key=1)
             ),
-            make_local_ucm_block_ids(common_ids, AttentionType.WA, 1),
-            make_local_ucm_block_ids(common_ids, AttentionType.FA),
+            make_local_ucm_chunk_ids(common_ids, AttentionType.WA, 1),
+            make_local_ucm_chunk_ids(common_ids, AttentionType.FA),
         )
         for local_ids in (logical, *variants):
             self.assertEqual(tuple(local_id[:12] for local_id in local_ids), common_ids)
@@ -1437,10 +1460,10 @@ class HashAndLookupTest(unittest.TestCase):
             self.assertNotEqual(local_ids, logical)
         # Local ids are not common ids: they cannot be tagged again.
         with self.assertRaisesRegex(ValueError, "12 bytes"):
-            make_local_ucm_block_ids(logical, AttentionType.WA)
+            make_local_ucm_chunk_ids(logical, AttentionType.WA)
 
     def test_unencodable_topology_fails_at_startup(self):
-        from ucm.integration.vllm.v2.ucm_block_id import (
+        from ucm.integration.vllm.v2.ucm_chunk_id import (
             ShardKey,
             validate_shard_key_encoding,
         )
@@ -1455,12 +1478,12 @@ class HashAndLookupTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_shard_key_encoding(record_class, shard)
 
-    def test_writer_rows_split_blocks_once_and_evenly(self):
+    def test_writer_rows_split_chunks_once_and_evenly(self):
         import hashlib
 
-        from ucm.integration.vllm.v2.ucm_block_id import writer_rows
+        from ucm.integration.vllm.v2.ucm_chunk_id import writer_rows
 
-        common_ids = make_common_ucm_block_ids(
+        common_ids = make_common_ucm_chunk_ids(
             hashlib.md5(str(i).encode()).digest() for i in range(1000)
         )
         rows = [writer_rows(common_ids, index, 4) for index in range(4)]
@@ -1488,11 +1511,11 @@ class HashAndLookupTest(unittest.TestCase):
         self.assertEqual(state_keys[0][12:].hex(), "80000000")
         self.assertNotEqual(fa_keys[0], state_keys[0])
 
-    def test_custom_cache_block_hashes_at_the_cache_block(self):
+    def test_custom_chunk_hashes_at_the_chunk(self):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         proxy = RecordingTestStore()
         coordinator = make_dispatcher(parsed, proxy, self.hasher, recompute_tokens=0)
@@ -1502,7 +1525,7 @@ class HashAndLookupTest(unittest.TestCase):
 
         result = coordinator.lookup(request, 0)
 
-        self.assertEqual(ucm_ids(result.common_ucm_block_ids), keys)
+        self.assertEqual(ucm_ids(result.common_ucm_chunk_ids), keys)
         self.assertEqual(result.external_hit_tokens, 1024)
 
     def test_direct_prefix_stops_at_first_miss(self):
@@ -1524,7 +1547,7 @@ class HashAndLookupTest(unittest.TestCase):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         proxy = RecordingTestStore()
         coordinator = make_dispatcher(
@@ -1622,7 +1645,7 @@ class HashAndLookupTest(unittest.TestCase):
         result = coordinator.lookup(FakeRequest("r", 1024), 0)
 
         self.assertEqual(result.external_hit_tokens, 0)
-        self.assertEqual(len(result.common_ucm_block_ids), 8)
+        self.assertEqual(len(result.common_ucm_chunk_ids), 8)
 
     def test_dsv4_requires_fa_prefix_and_latest_wa_boundary(self):
         parsed = parse_spec(
@@ -1740,23 +1763,23 @@ class StateBytePageTest(unittest.TestCase):
 
 class ParallelShardTest(unittest.TestCase):
     @staticmethod
-    def _spec(*groups, ucm_block_size=4):
-        from ucm.integration.vllm.v2.layout import UCMKVCacheGroupInfo, UCMKVCacheSpec
+    def _spec(*groups, tokens_per_chunk=4):
+        from ucm.integration.vllm.v2.layout import UCMKVCacheGroupSpec, UCMKVCacheSpec
 
         return UCMKVCacheSpec(
             tuple(
-                UCMKVCacheGroupInfo(
+                UCMKVCacheGroupSpec(
                     group_id,
                     4,
                     frozenset((kind,)),
-                    tail_blocks=1,
+                    blocks_per_chunk=1,
                     tp_shards=tp_shards,
                     dcp_sharded=dcp_sharded,
                 )
                 for group_id, (kind, tp_shards, dcp_sharded) in enumerate(groups)
             ),
             4,
-            ucm_block_size,
+            tokens_per_chunk,
             "cpu",
         )
 
@@ -1780,7 +1803,7 @@ class ParallelShardTest(unittest.TestCase):
         return sharding, ranks
 
     def test_replicas_follow_tp_dcp_pcp_and_state_splits(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
 
         cases = (
             # MLA: one KV copy on every TP rank.
@@ -1847,12 +1870,12 @@ class ParallelShardTest(unittest.TestCase):
         from ucm.integration.vllm.v2.parallel import ParallelLayout
 
         spec = self._spec(
-            self.MLA, (KVCacheSpecKind.FULL_ATTENTION, None, False), ucm_block_size=8
+            self.MLA, (KVCacheSpecKind.FULL_ATTENTION, None, False), tokens_per_chunk=8
         )
         ParallelLayout(tp=2, dcp=2).apply_context_parallel(spec)
-        self.assertEqual([g.token_block_size for g in spec.groups], [8, 4])
-        self.assertEqual(spec.ucm_cache_block_size, 8)
-        self.assertEqual([g.tail_blocks for g in spec.groups], [1, 2])
+        self.assertEqual([g.tokens_per_block for g in spec.groups], [8, 4])
+        self.assertEqual(spec.tokens_per_chunk, 8)
+        self.assertEqual([g.blocks_per_chunk for g in spec.groups], [1, 2])
 
     def test_parser_reads_dcp_flags_from_specs(self):
         draft = FullAttentionSpec(4)
@@ -1880,7 +1903,7 @@ class ParallelShardTest(unittest.TestCase):
             [(None, True), (None, False), (1, False)],
         )
 
-    def test_transient_groups_have_no_kind(self):
+    def test_non_persistent_groups_have_no_kind(self):
         # KpoolTailSpec is a SlidingWindowSpec, but the pool is not stored,
         # so it is not a WA group and GLM can run with DCP.
         from ucm.integration.vllm.v2.parallel import ParallelLayout
@@ -1894,12 +1917,12 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=8,
         )
         kpool_group = parsed.groups[1]
-        self.assertTrue(kpool_group.is_transient)
+        self.assertFalse(kpool_group.is_persistent)
         self.assertEqual(kpool_group.kinds, frozenset())
         self.assertEqual(parsed.wa_groups, ())
         ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
-        self.assertEqual(parsed.ucm_cache_block_size, 8)
-        self.assertEqual(kpool_group.tail_blocks, 0)
+        self.assertEqual(parsed.tokens_per_chunk, 8)
+        self.assertEqual(kpool_group.blocks_per_chunk, 0)
 
     def test_empty_pp_sliding_group_reads_tail_from_all_stages(self):
         # vLLM keeps the map of all stages in an empty PP group.
@@ -1918,14 +1941,14 @@ class ParallelShardTest(unittest.TestCase):
             self._layout(self._spec(self.GQA), tp=128)
 
     def test_lookup_requires_every_shard_and_replicas_read_one_record(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
         from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
 
         spec = self._spec(self.GQA)
         sharding, _ = self._layout(spec, tp=2)
         common_ids = (b"p" * 12,)
         ids = [
-            make_local_ucm_block_ids(
+            make_local_ucm_chunk_ids(
                 common_ids, AttentionType.FA, 0, ShardKey(head_key=tp)
             )
             for tp in range(2)
@@ -1942,17 +1965,17 @@ class ParallelShardTest(unittest.TestCase):
             store.commit(ids[0])
             # Only shard 0 is committed: the block does not hit yet.
             self.assertEqual(
-                lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1), 0
+                lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1), 0
             )
             self.assertEqual(
-                lookup._common_boundary_hit_end_block(
+                lookup._common_boundary_hit_end_chunk(
                     [AttentionType.FA], common_ids, 0, 1
                 ),
                 0,
             )
             store.commit(ids[1])
             self.assertEqual(
-                lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1), 1
+                lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1), 1
             )
             for tp in range(2):
                 store.load(ids[tp], (0,), (300 + 100 * tp,), (8,))
@@ -1960,14 +1983,14 @@ class ParallelShardTest(unittest.TestCase):
             self.assertEqual(memory.read(400, 8), b"rank-one")
 
     def test_prefix_hit_is_the_shortest_prefix_of_all_shards(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
         from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
 
         spec = self._spec(self.GQA)
         sharding, _ = self._layout(spec, tp=2)
         common_ids = tuple(bytes([index]) * 12 for index in range(4))
         shard0, shard1 = (
-            make_local_ucm_block_ids(
+            make_local_ucm_chunk_ids(
                 common_ids, AttentionType.FA, 0, ShardKey(head_key=head_key)
             )
             for head_key in range(2)
@@ -1978,7 +2001,7 @@ class ParallelShardTest(unittest.TestCase):
         # not extend the prefix.
         store.present.update(shard0[:3] + shard1[:2] + shard1[3:])
         self.assertEqual(
-            lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 4), 2
+            lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 4), 2
         )
         # Shard 1 only scans up to shard 0's prefix.
         self.assertEqual([len(keys) for keys in store.lookup_calls], [4, 3])
@@ -1988,19 +2011,19 @@ class ParallelShardTest(unittest.TestCase):
         store.present.update(shard1)
         store.lookup_calls.clear()
         self.assertEqual(
-            lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 4), 0
+            lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 4), 0
         )
         self.assertEqual(len(store.lookup_calls), 1)
 
-    def test_boundary_hit_is_the_latest_block_every_shard_has(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+    def test_boundary_hit_is_the_latest_chunk_every_shard_has(self):
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
         from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
 
         spec = self._spec(self.STATE)
         sharding, _ = self._layout(spec, tp=2)
         common_ids = tuple(bytes([index]) * 12 for index in range(4))
         shard0, shard1 = (
-            make_local_ucm_block_ids(
+            make_local_ucm_chunk_ids(
                 common_ids, AttentionType.STATE, 0, ShardKey(head_key=head_key)
             )
             for head_key in range(2)
@@ -2017,14 +2040,14 @@ class ParallelShardTest(unittest.TestCase):
         self.assertEqual([len(keys) for keys in store.lookup_calls], [4, 4, 3, 2, 2, 2])
 
     def test_empty_pp_shard_marker_is_not_visible_before_commit(self):
-        from ucm.integration.vllm.v2.ucm_block_id import ShardKey
+        from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey
         from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
 
         spec = self._spec(self.MLA)
         sharding, _ = self._layout(spec, pp=2)
         common_ids = (b"s" * 12,)
         ids = [
-            make_local_ucm_block_ids(
+            make_local_ucm_chunk_ids(
                 common_ids, AttentionType.FA, 0, ShardKey(pp_key=pp)
             )
             for pp in range(2)
@@ -2037,15 +2060,15 @@ class ParallelShardTest(unittest.TestCase):
             store.dump(ids[1], np.array([[0]]), np.array([[10]]), np.array([[4]]))
             store.commit(ids[1])
             self.assertEqual(
-                lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1), 0
+                lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1), 0
             )
             store.commit(ids[0])
             self.assertEqual(
-                lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1), 1
+                lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1), 1
             )
             self.assertEqual(store._path(ids[0][0]).stat().st_size, 0)
 
-    def test_replicas_share_ids_and_write_each_block_once(self):
+    def test_replicas_share_ids_and_write_each_chunk_once(self):
         import hashlib
 
         from ucm.integration.vllm.v2.parallel import ParallelLayout
@@ -2064,11 +2087,14 @@ class ParallelShardTest(unittest.TestCase):
             num_hidden_layers=4,
         )
         sharding = UCMSharding(parsed, ParallelLayout(tp=2))
-        common_ids = make_common_ucm_block_ids(
+        common_ids = make_common_ucm_chunk_ids(
             hashlib.md5(bytes([i])).digest() for i in range(8)
         )
         plan = UCMGroupDispatchPlan(
-            AttentionType.FA, common_ids, 0, 32, (np.arange(8, dtype=np.uint64),)
+            AttentionType.FA,
+            common_ids,
+            plan_token_starts(0, 32, len(common_ids)),
+            (np.arange(8, dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", (plan,), (plan,))}
@@ -2085,8 +2111,8 @@ class ParallelShardTest(unittest.TestCase):
             (dump,) = builder.build_dump_transfers(
                 metadata, row_selector=worker._owned_rows
             )
-            loads.append(load.ucm_block_ids)
-            dumps.append(dict(zip(dump.ucm_block_ids, dump.block_indices.tolist())))
+            loads.append(load.ucm_chunk_ids)
+            dumps.append(dict(zip(dump.ucm_chunk_ids, dump.chunk_indices.tolist())))
         # Replicas read the same full record set...
         self.assertEqual(loads[0], loads[1])
         self.assertEqual(len(loads[0]), 8)
@@ -2094,8 +2120,8 @@ class ParallelShardTest(unittest.TestCase):
         self.assertFalse(dumps[0].keys() & dumps[1].keys())
         self.assertEqual(dumps[0].keys() | dumps[1].keys(), set(loads[0]))
         for written in dumps:
-            for ucm_block_id, block_index in written.items():
-                self.assertEqual(loads[0][block_index], ucm_block_id)
+            for ucm_chunk_id, chunk_index in written.items():
+                self.assertEqual(loads[0][chunk_index], ucm_chunk_id)
 
     def test_topologies_do_not_share_a_namespace(self):
         from ucm.integration.vllm.v2.parallel import ParallelLayout
@@ -2128,10 +2154,10 @@ class ParallelShardTest(unittest.TestCase):
         # vLLM's scheduler block already counts DCP.
         scaled = spec(8)
         parallel.apply_context_parallel(scaled)
-        self.assertEqual(scaled.groups[0].token_block_size, 8)
-        self.assertEqual(scaled.ucm_cache_block_size, 8)
-        self.assertEqual(scaled.groups[0].tail_blocks, 1)
-        # A UCM block that cannot hold a whole DCP block is rejected and
+        self.assertEqual(scaled.groups[0].tokens_per_block, 8)
+        self.assertEqual(scaled.tokens_per_chunk, 8)
+        self.assertEqual(scaled.groups[0].blocks_per_chunk, 1)
+        # A UCM chunk that cannot hold a whole DCP block is rejected and
         # the spec is left untouched.
         rejected = spec()
         with self.assertRaisesRegex(ValueError, "whole distributed"):
@@ -2144,7 +2170,7 @@ class ParallelShardTest(unittest.TestCase):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
             scheduler_block_size=16,
-            ucm_cache_block_size=4,
+            tokens_per_chunk=4,
         )
         with self.assertRaisesRegex(ValueError, "whole distributed"):
             ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
@@ -2197,7 +2223,7 @@ class ParallelShardTest(unittest.TestCase):
             layout.group_layouts[0],
             token_offsets=np.array([0]),
             token_counts=np.array([8]),
-            token_block_size=8,
+            tokens_per_block=8,
         )
         ptrs, sizes = _resolved_access(access, np.array([2], dtype=np.uint64))
         self.assertEqual(ptrs.reshape(-1).tolist(), [1032])
@@ -2227,8 +2253,7 @@ class ParallelShardTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (b"p" * 12,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (np.array([1], dtype=np.uint64), np.array([2], dtype=np.uint64)),
         )
         meta = UCMConnectorMetadata(
@@ -2236,7 +2261,7 @@ class ParallelShardTest(unittest.TestCase):
         )
         (transfer,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
         self.assertEqual(transfer.ptrs.tolist(), [[1016]])
-        self.assertEqual(transfer.ucm_block_offsets.tolist(), [[0]])
+        self.assertEqual(transfer.ucm_chunk_offsets.tolist(), [[0]])
 
     def test_pp_empty_sliding_group_uses_retained_global_layer_specs(self):
         parsed = parse_spec(
@@ -2250,7 +2275,7 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=4,
         )
         self.assertEqual(parsed.wa_groups[0].tail_tokens, 8)
-        self.assertEqual(parsed.wa_groups[0].tail_blocks, 2)
+        self.assertEqual(parsed.wa_groups[0].blocks_per_chunk, 2)
 
     def test_pp_empty_state_spec_can_be_parsed(self):
         parsed = parse_spec(
@@ -2261,7 +2286,7 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=4,
         )
         self.assertEqual(len(parsed.state_groups), 1)
-        self.assertEqual(parsed.state_groups[0].tail_blocks, 1)
+        self.assertEqual(parsed.state_groups[0].blocks_per_chunk, 1)
 
 
 class LayerwiseLifecycleTest(unittest.TestCase):
@@ -2338,8 +2363,7 @@ class LayerwiseLifecycleTest(unittest.TestCase):
             UCMGroupDispatchPlan(
                 attention_type,
                 (bytes([i + 1]) * 12,),
-                token_start,
-                token_start + 4,
+                plan_token_starts(token_start, token_start + 4, 1),
                 (np.array([2 if load else 1], dtype=np.uint64),),
             )
             for i, attention_type in enumerate(attention_types)
@@ -2653,8 +2677,8 @@ class ProxyAdapterTest(unittest.TestCase):
         connector.has_connector_metadata = lambda: True
         connector._get_connector_metadata = lambda: UCMConnectorMetadata()
         batches = (
-            SimpleNamespace(ucm_block_ids=(b"a" * 16,), block_indices=np.array([0])),
-            SimpleNamespace(ucm_block_ids=(b"b" * 16,), block_indices=np.array([1])),
+            SimpleNamespace(ucm_chunk_ids=(b"a" * 16,), chunk_indices=np.array([0])),
+            SimpleNamespace(ucm_chunk_ids=(b"b" * 16,), chunk_indices=np.array([1])),
         )
         connector.layout = SimpleNamespace(spec=connector.spec, group_layouts={})
         connector.transfer_builder = SimpleNamespace(
@@ -2669,8 +2693,8 @@ class ProxyAdapterTest(unittest.TestCase):
             [
                 mock.call.submit("dump", batches[0]),
                 mock.call.submit("dump", batches[1]),
-                mock.call.commit(batches[0].ucm_block_ids, batches[0].block_indices),
-                mock.call.commit(batches[1].ucm_block_ids, batches[1].block_indices),
+                mock.call.commit(batches[0].ucm_chunk_ids, batches[0].chunk_indices),
+                mock.call.commit(batches[1].ucm_chunk_ids, batches[1].chunk_indices),
             ],
         )
         connector._proxy.reset_mock()
@@ -2731,7 +2755,7 @@ class ProxyAdapterTest(unittest.TestCase):
 
     def test_scan_rejects_out_of_range_results(self):
         class BadScanProxy(PipelineProxy):
-            def lookup_on_prefix(self, keys, block_indices):
+            def lookup_on_prefix(self, keys, chunk_indices):
                 return len(keys)
 
         with self.assertRaisesRegex(UCMProxyError, "lookup_on_prefix"):
@@ -2810,8 +2834,7 @@ class ProxyAdapterTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (b"x" * 12,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (
                 np.array(
                     [
@@ -2865,8 +2888,7 @@ class ProxyAdapterTest(unittest.TestCase):
             plan = UCMGroupDispatchPlan(
                 AttentionType.FA,
                 (key,),
-                0,
-                4,
+                plan_token_starts(0, 4, 1),
                 (
                     np.array(
                         [
@@ -2924,7 +2946,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def add_state(self, request_id="r"):
         request = FakeRequest(request_id, 512)
         keys = tuple(bytes([index]) * 16 for index in range(4))
-        return seed_request_state(self.dispatcher, request, common_ucm_block_ids=keys)
+        return seed_request_state(self.dispatcher, request, common_ucm_chunk_ids=keys)
 
     def test_block_state_tables_replace_previous_tables_each_step(self):
         state = self.add_state()
@@ -2954,12 +2976,12 @@ class DispatcherLifecycleTest(unittest.TestCase):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         dispatcher = make_dispatcher(parsed)
         request = FakeRequest("chunked", 1024)
         keys = (b"a" * 16, b"b" * 16)
-        state = seed_request_state(dispatcher, request, common_ucm_block_ids=keys)
+        state = seed_request_state(dispatcher, request, common_ucm_chunk_ids=keys)
         state.vllm_block_tables = ([1, 2, 3, 4, 5, 6, 7, 8],)
 
         first = _scheduler_metadata(dispatcher, {"chunked": 128})
@@ -2970,11 +2992,10 @@ class DispatcherLifecycleTest(unittest.TestCase):
         second_plan = second.requests["chunked"].dump_plans[0]
         self.assertEqual(
             (
-                second_plan.common_ucm_block_ids,
-                second_plan.token_start,
-                second_plan.token_end,
+                second_plan.common_ucm_chunk_ids,
+                second_plan.token_starts.tolist(),
             ),
-            ((keys[0],), 0, 512),
+            ((keys[0],), [0]),
         )
         self.assertEqual(
             second_plan.vllm_block_ids_by_group[0].tolist(),
@@ -2983,11 +3004,10 @@ class DispatcherLifecycleTest(unittest.TestCase):
         third_plan = third.requests["chunked"].dump_plans[0]
         self.assertEqual(
             (
-                third_plan.common_ucm_block_ids,
-                third_plan.token_start,
-                third_plan.token_end,
+                third_plan.common_ucm_chunk_ids,
+                third_plan.token_starts.tolist(),
             ),
-            ((keys[1],), 512, 1024),
+            ((keys[1],), [512]),
         )
         self.assertEqual(third_plan.vllm_block_ids_by_group[0].tolist(), [5, 6, 7, 8])
 
@@ -3002,8 +3022,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         second = _scheduler_metadata(self.dispatcher, {"r": 128})
 
         self.assertEqual(len(first.requests["r"].load_plans), 1)
-        self.assertEqual(first.requests["r"].load_plans[0].token_start, 0)
-        self.assertEqual(first.requests["r"].load_plans[0].token_end, 128)
+        self.assertEqual(first.requests["r"].load_plans[0].token_starts.tolist(), [0])
         self.assertEqual(second.requests["r"].load_plans, ())
 
     def test_state_dumps_follow_engine_boundary_offloads(self):
@@ -3025,7 +3044,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
             dispatcher,
             request,
             hbm_hit_tokens=128,
-            common_ucm_block_ids=fa_keys,
+            common_ucm_chunk_ids=fa_keys,
         )
         state.vllm_block_tables = (list(range(16)), list(range(16)))
 
@@ -3041,13 +3060,13 @@ class DispatcherLifecycleTest(unittest.TestCase):
 
         # [128, 1000): 896 is the newest boundary; 128 is the matched prefix.
         (plan,) = state_plans(872, [(1, 0, 128), (1, 6, 896)])
-        self.assertEqual(plan.common_ucm_block_ids, (fa_keys[6],))
-        self.assertEqual((plan.token_start, plan.token_end), (768, 896))
+        self.assertEqual(plan.common_ucm_chunk_ids, (fa_keys[6],))
+        self.assertEqual(plan.token_starts.tolist(), [768])
         self.assertEqual(plan.vllm_block_ids_by_group[0].tolist(), [6])
 
         # [1000, 1100) straddles 1024; a mid-block offer is not a boundary.
         (plan,) = state_plans(100, [(1, 7, 1024), (1, 9, 1000)])
-        self.assertEqual(plan.common_ucm_block_ids, (fa_keys[7],))
+        self.assertEqual(plan.common_ucm_chunk_ids, (fa_keys[7],))
         self.assertEqual(plan.vllm_block_ids_by_group[0].tolist(), [7])
 
         # [1100, 1124) completes no new boundary.
@@ -3101,7 +3120,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         )
 
         self.assertEqual(len(fa_plan.vllm_block_ids_by_group), 1)
-        self.assertEqual(wa_plan.common_ucm_block_ids, (fa_keys[1],))
+        self.assertEqual(wa_plan.common_ucm_chunk_ids, (fa_keys[1],))
         # Windows carry only block ids; the static shapes live in the spec
         # (swa: one whole 128-token block; C4 compressor: the [4, 8)
         # half-block sub-span) and the worker derives them from templates.
@@ -3129,7 +3148,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         request = FakeRequest("r", 1024)
         fa_keys = tuple(bytes([index]) * 16 for index in range(8))
         wa_keys = tuple(bytes([index + 32]) * 16 for index in range(8))
-        seed_request_state(dispatcher, request, common_ucm_block_ids=fa_keys)
+        seed_request_state(dispatcher, request, common_ucm_chunk_ids=fa_keys)
         dispatcher.requests["r"].vllm_block_tables = (
             list(range(8)),
             list(range(8)),
@@ -3159,7 +3178,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
             for plan in later.requests["r"].dump_plans
             if plan.attention_type is AttentionType.WA
         )
-        self.assertEqual(wa_plan.common_ucm_block_ids, (fa_keys[4],))
+        self.assertEqual(wa_plan.common_ucm_chunk_ids, (fa_keys[4],))
         self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [1, 2, 3, 4])
 
     def test_wa_window_not_dividing_block_keeps_partial_head(self):
@@ -3182,7 +3201,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         request = FakeRequest("r", 512)
         fa_keys = tuple(bytes([index]) * 12 for index in range(4))
         wa_keys = tuple(bytes([index + 32]) * 12 for index in range(4))
-        seed_request_state(dispatcher, request, common_ucm_block_ids=fa_keys)
+        seed_request_state(dispatcher, request, common_ucm_chunk_ids=fa_keys)
         dispatcher.requests["r"].vllm_block_tables = (
             list(range(4)),
             list(range(8)),
@@ -3195,7 +3214,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
             if plan.attention_type is AttentionType.WA
         )
         # Window [288, 384): the head half of block 4 plus all of block 5.
-        self.assertEqual(wa_plan.common_ucm_block_ids, (fa_keys[2],))
+        self.assertEqual(wa_plan.common_ucm_chunk_ids, (fa_keys[2],))
         self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [4, 5])
 
         layout = UCMKVCacheLayout(
@@ -3240,13 +3259,13 @@ class DispatcherLifecycleTest(unittest.TestCase):
                 ),
             ),
             scheduler_block_size=16384,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         dispatcher = make_dispatcher(parsed)
         request = FakeRequest("r", 2048)
         c4_keys = tuple(bytes([index]) * 16 for index in range(4))
         c128_keys = tuple(bytes([index + 16]) * 16 for index in range(4))
-        seed_request_state(dispatcher, request, common_ucm_block_ids=c4_keys)
+        seed_request_state(dispatcher, request, common_ucm_chunk_ids=c4_keys)
         dispatcher.requests["r"].vllm_block_tables = ([1, 2, 3, 4], [5, 6])
 
         metadata = _scheduler_metadata(dispatcher, {"r": 2048})
@@ -3277,14 +3296,14 @@ class DispatcherLifecycleTest(unittest.TestCase):
         state = seed_request_state(
             dispatcher,
             FakeRequest("r", 8192 * 128),
-            common_ucm_block_ids=keys,
+            common_ucm_chunk_ids=keys,
         )
         state.vllm_block_tables = (list(range(8192)),)
 
         metadata = _scheduler_metadata(dispatcher, {"r": 8192 * 128})
         plan = metadata.requests["r"].dump_plans[0]
 
-        self.assertEqual(len(plan.common_ucm_block_ids), 8192)
+        self.assertEqual(len(plan.common_ucm_chunk_ids), 8192)
         self.assertEqual(plan.vllm_block_ids_by_group[0].tolist(), list(range(8192)))
 
         import pickle
@@ -3321,7 +3340,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         component = layout.group_layouts[0]
-        self.assertEqual(parsed.groups[0].token_block_size, 256)
+        self.assertEqual(parsed.groups[0].tokens_per_block, 256)
         # One stored state per 4 tokens: the block spans 64 states.
         self.assertEqual(
             (
@@ -3392,8 +3411,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.STATE,
             (key,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (
                 np.array(
                     [
@@ -3541,8 +3559,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.WA,
             (key,),
-            0,
-            192,
+            plan_token_starts(0, 192, 1),
             (np.array([2, 3], dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
@@ -3590,8 +3607,7 @@ class RaggedLayoutTest(unittest.TestCase):
             plan = UCMGroupDispatchPlan(
                 AttentionType.WA,
                 (key,),
-                0,
-                192,
+                plan_token_starts(0, 192, 1),
                 (np.array(block_ids, dtype=np.uint64),),
             )
             metadata = UCMConnectorMetadata(
@@ -3668,8 +3684,7 @@ class RaggedLayoutTest(unittest.TestCase):
         dump_plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key_a, key_b),
-            0,
-            16,
+            plan_token_starts(0, 16, 2),
             (np.array([3, 4], dtype=np.uint64),),
         )
         dump_meta = UCMConnectorMetadata(
@@ -3684,8 +3699,7 @@ class RaggedLayoutTest(unittest.TestCase):
         load_plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key_a, key_b),
-            0,
-            16,
+            plan_token_starts(0, 16, 2),
             (np.array([6, 2], dtype=np.uint64),),
         )
         load_meta = UCMConnectorMetadata(
@@ -3704,8 +3718,8 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
-        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
-        adapter.commit(ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64))
+        ucm_chunk_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        adapter.commit(ucm_chunk_ids, np.arange(len(ucm_chunk_ids), dtype=np.int64))
         _submit_segments(
             adapter,
             "load",
@@ -3754,8 +3768,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            768,
+            plan_token_starts(0, 768, 1),
             (
                 np.array(
                     [
@@ -3831,8 +3844,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.STATE,
             (key,),
-            1536,
-            2304,
+            plan_token_starts(1536, 2304, 1),
             (
                 np.array(
                     [
@@ -3871,7 +3883,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=128,
-            ucm_cache_block_size=256,
+            tokens_per_chunk=256,
         )
         caches = {
             "model.layers.0.attn": (
@@ -3900,7 +3912,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
         # Records are block-major: block 0's views, then block 1's -- each
         # block's layer pages land at the per-block anchor (K/V of layer 0
-        # then layer 1), so one ucm block is the byte-concatenation of its
+        # then layer 1), so one ucm chunk is the byte-concatenation of its
         # two vllm blocks.
         self.assertEqual(batch.offsets.tolist(), [0, 512, 768, 1152, 1664, 1920])
         self.assertEqual(batch.sizes.tolist(), [512, 256, 384, 512, 256, 384])
@@ -3994,8 +4006,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            256,
+            plan_token_starts(0, 256, 1),
             (
                 np.array(
                     [
@@ -4163,7 +4174,7 @@ class RaggedLayoutTest(unittest.TestCase):
         layerwise_store = GroupStoreLayout.build(
             parsed.groups[group_layout.group_id],
             group_layout,
-            parsed.ucm_cache_block_size,
+            parsed.tokens_per_chunk,
             use_layerwise=True,
         )
         self.assertFalse(layerwise_store.merge_whole_blocks)
@@ -4198,8 +4209,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            256,
+            plan_token_starts(0, 256, 1),
             (
                 np.array(
                     [
@@ -4265,7 +4275,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=4,
-            ucm_cache_block_size=8,
+            tokens_per_chunk=8,
         )
         layout = UCMKVCacheLayout(
             parsed,
@@ -4311,8 +4321,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            8,
+            plan_token_starts(0, 8, 1),
             (np.array([2, 5], dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
@@ -4367,7 +4376,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=128,
-            ucm_cache_block_size=256,
+            tokens_per_chunk=256,
         )
         caches = {
             "model.layers.0.attn": (
@@ -4388,8 +4397,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            256,
+            plan_token_starts(0, 256, 1),
             (np.array([2, 5], dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
@@ -4449,8 +4457,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            128,
+            plan_token_starts(0, 128, 1),
             (
                 np.array(
                     [
@@ -4536,8 +4543,7 @@ class RaggedLayoutTest(unittest.TestCase):
             plan = UCMGroupDispatchPlan(
                 AttentionType.FA,
                 (b"record______",),
-                0,
-                4,
+                plan_token_starts(0, 4, 1),
                 (
                     np.array([block0], dtype=np.uint64),
                     np.array([block1], dtype=np.uint64),
@@ -4639,7 +4645,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=16384,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
         )
         caches = {
             "model.layers.2.attn": FakeTensor(
@@ -4675,8 +4681,7 @@ class RaggedLayoutTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            512,
-            1024,
+            plan_token_starts(512, 1024, 1),
             # One window per FA group in route order: group 0 is 1:1
             # (one whole block); group 1 is N:1 -- the key is one
             # 512-token sub-span inside a 16384-token page.
@@ -4753,8 +4758,7 @@ class RaggedLayoutTest(unittest.TestCase):
         dump_plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (
                 np.array(
                     [
@@ -4767,8 +4771,7 @@ class RaggedLayoutTest(unittest.TestCase):
         load_plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (
                 np.array(
                     [
@@ -4801,8 +4804,8 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
-        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
-        adapter.commit(ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64))
+        ucm_chunk_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        adapter.commit(ucm_chunk_ids, np.arange(len(ucm_chunk_ids), dtype=np.int64))
         self.assertEqual(
             adapter.lookup(ucm_ids((key,)), np.arange(1, dtype=np.int64)), (True,)
         )
@@ -4848,15 +4851,14 @@ class RaggedLayoutTest(unittest.TestCase):
             dump_batch.ptrs,
             dump_batch.sizes,
         )
-        ucm_block_ids = tuple(dict.fromkeys(dump_batch.block_ids))
+        ucm_chunk_ids = tuple(dict.fromkeys(dump_batch.block_ids))
         deferred_adapter.commit(
-            ucm_block_ids, np.arange(len(ucm_block_ids), dtype=np.int64)
+            ucm_chunk_ids, np.arange(len(ucm_chunk_ids), dtype=np.int64)
         )
         deferred_load_plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (key,),
-            0,
-            4,
+            plan_token_starts(0, 4, 1),
             (
                 np.array(
                     [
@@ -5294,7 +5296,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=8,
-            ucm_cache_block_size=unit,
+            tokens_per_chunk=unit,
             device_type="cpu",
         )
         layout = UCMKVCacheLayout(
@@ -5364,13 +5366,12 @@ class LayerViewSegmentsTest(unittest.TestCase):
 
         for order in ("LBHNC", "LHBNC", "BHLNC"):
             with self.subTest(order=order):
-                # Multi-head HNC: one UCM block per whole vLLM block.
+                # Multi-head HNC: one UCM chunk per whole vLLM block.
                 layout, strides = self._layout(order, unit=8)
                 plan = UCMGroupDispatchPlan(
                     AttentionType.FA,
                     (b"a" * 12, b"b" * 12),
-                    0,
-                    16,
+                    plan_token_starts(0, 16, 2),
                     (np.array([1, 2], dtype=np.uint64),),
                 )
                 meta = UCMConnectorMetadata(
@@ -5406,7 +5407,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
                     proxy = FileTestStore(tmp, MemoryByteAccess(memory))
                     proxy.dump(dump.block_ids, dump.offsets, dump.ptrs, dump.sizes)
                     proxy.commit(dump.block_ids)
-                    for k, block in zip(ucm_ids(plan.common_ucm_block_ids), (1, 2)):
+                    for k, block in zip(ucm_ids(plan.common_ucm_chunk_ids), (1, 2)):
                         expected = bytes(
                             (
                                 1000
@@ -5498,7 +5499,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=16384,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
             device_type="npu",
         )
         layout = UCMKVCacheLayout(
@@ -5513,8 +5514,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (b"a" * 12, b"b" * 12),
-            0,
-            1024,
+            plan_token_starts(0, 1024, 2),
             (np.array([2, 2], dtype=np.uint64),),
         )
         metadata = UCMConnectorMetadata(
@@ -5546,7 +5546,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=16384,
-            ucm_cache_block_size=512,
+            tokens_per_chunk=512,
             device_type="npu",
         )
         layout = UCMKVCacheLayout(
@@ -5572,14 +5572,17 @@ class LayerViewSegmentsTest(unittest.TestCase):
 
 
 class MatrixTransferTest(unittest.TestCase):
-    def _metadata(self, ucm_block_ids=(b"a" * 12, b"b" * 12)):
+    def _metadata(self, ucm_chunk_ids=(b"a" * 12, b"b" * 12)):
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
             UCMGroupDispatchPlan,
         )
 
         plan = UCMGroupDispatchPlan(
-            AttentionType.FA, ucm_block_ids, 0, 16, (np.array([1, 2], dtype=np.uint64),)
+            AttentionType.FA,
+            ucm_chunk_ids,
+            plan_token_starts(0, 16, len(ucm_chunk_ids)),
+            (np.array([1, 2], dtype=np.uint64),),
         )
         return UCMConnectorMetadata(
             requests={
@@ -5591,15 +5594,15 @@ class MatrixTransferTest(unittest.TestCase):
         layout, _ = LayerViewSegmentsTest()._layout("LBNHC")
         meta = self._metadata()
         (batch,) = UCMTransferBuilder(layout).build_dump_transfers(meta)
-        self.assertEqual(batch.ucm_block_ids, ucm_ids((b"a" * 12, b"b" * 12)))
+        self.assertEqual(batch.ucm_chunk_ids, ucm_ids((b"a" * 12, b"b" * 12)))
         self.assertEqual(batch.ptrs.shape, (2, 2))
-        self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 32]] * 2)
+        self.assertEqual(batch.ucm_chunk_offsets.tolist(), [[0, 32]] * 2)
         self.assertEqual(batch.sizes.tolist(), [[32] * 2] * 2)
         self.assertEqual(batch.sizes.strides[0], 0)
         self.assertFalse(batch.sizes.flags.writeable)
         (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
         np.testing.assert_array_equal(selected.ptrs, batch.ptrs[:, 1:])
-        self.assertEqual(selected.ucm_block_offsets.tolist(), [[32]] * 2)
+        self.assertEqual(selected.ucm_chunk_offsets.tolist(), [[32]] * 2)
         legacy = _flat_layout_records(layout, "dump", meta)
         memory = ByteMemory()
         for address in range(1000, 1192):
@@ -5609,10 +5612,10 @@ class MatrixTransferTest(unittest.TestCase):
             adapter = UCMProxyAdapter(PipelineProxy(proxy))
             adapter.submit("dump", batch)
             adapter.commit(
-                batch.ucm_block_ids, np.arange(len(batch.ucm_block_ids), dtype=np.int64)
+                batch.ucm_chunk_ids, np.arange(len(batch.ucm_chunk_ids), dtype=np.int64)
             )
             expected = []
-            for key in batch.ucm_block_ids:
+            for key in batch.ucm_chunk_ids:
                 pieces = [
                     (int(o), memory.read(int(p), int(n)))
                     for k, o, p, n in zip(
@@ -5661,12 +5664,11 @@ class MatrixTransferTest(unittest.TestCase):
             kv_cache_config=raw_config,
             num_hidden_layers=4,
         )
-        # One 16-token UCM block: two blocks of group 0, one of group 1.
+        # One 16-token UCM chunk: two blocks of group 0, one of group 1.
         plan = UCMGroupDispatchPlan(
             AttentionType.FA,
             (b"a" * 12,),
-            0,
-            16,
+            plan_token_starts(0, 16, 1),
             (np.array([0, 1]), np.array([2])),
         )
         meta = UCMConnectorMetadata(
@@ -5674,10 +5676,10 @@ class MatrixTransferTest(unittest.TestCase):
         )
         (batch,) = UCMTransferBuilder(layout).build_load_transfers(meta)
         self.assertEqual(batch.ptrs.tolist(), [[1000, 1008, 2032]])
-        self.assertEqual(batch.ucm_block_offsets.tolist(), [[0, 8, 16]])
+        self.assertEqual(batch.ucm_chunk_offsets.tolist(), [[0, 8, 16]])
         self.assertEqual(batch.sizes.tolist(), [[8, 8, 16]])
         (selected,) = UCMTransferBuilder(layout).build_load_transfers(meta, layer_id=1)
-        self.assertEqual(selected.ucm_block_offsets.tolist(), [[16]])
+        self.assertEqual(selected.ucm_chunk_offsets.tolist(), [[16]])
 
     def test_shared_keys_across_requests_keep_separate_destinations(self):
         from dataclasses import replace
@@ -5701,8 +5703,8 @@ class MatrixTransferTest(unittest.TestCase):
                 batches = build(metadata, layer_id=layer_id)
                 self.assertEqual(len(batches), 2)
                 self.assertEqual(
-                    [b.ucm_block_ids for b in batches],
-                    [ucm_ids(plan.common_ucm_block_ids)] * 2,
+                    [b.ucm_chunk_ids for b in batches],
+                    [ucm_ids(plan.common_ucm_chunk_ids)] * 2,
                 )
                 self.assertFalse(np.array_equal(batches[0].ptrs, batches[1].ptrs))
 

@@ -1,9 +1,9 @@
-"""UCM block id encoding.
+"""UCM chunk id encoding.
 
-A UCM block id is the key of one Store record. Only this module knows how
-an id is laid out. The scheduler cuts block hashes into common UCM block ids
-with make_common_ucm_block_ids; each rank appends its tag with
-make_local_ucm_block_ids to get the local UCM block ids it stores.
+A UCM chunk id is the key of one Store record. Only this module knows how
+an id is laid out. The scheduler cuts chunk hashes into common UCM chunk ids
+with make_common_ucm_chunk_ids; each rank appends its tag with
+make_local_ucm_chunk_ids to get the local UCM chunk ids it stores.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import numpy as np
 
 # Hashed into every id, so ids of different versions never collide.
 # Bump it when the id or record format changes.
-UCM_BLOCK_ID_VERSION = 1
+UCM_CHUNK_ID_VERSION = 1
 
 
 class AttentionType(enum.Enum):
@@ -40,7 +40,7 @@ class ShardKey(NamedTuple):
     pp_key: int = 0
 
 
-# A local UCM block id is a 12-byte common UCM block id + a 4-byte big-endian
+# A local UCM chunk id is a 12-byte common UCM chunk id + a 4-byte big-endian
 # tag. The common id is the same on every rank; the tag says which record
 # and shard this rank stores. Tag bits from high to low: type 2, record
 # class 4, pp 5, head 6, token 7, reserved 8. Each field below is
@@ -72,7 +72,7 @@ def validate_shard_key_encoding(record_class: int, shard_key: ShardKey) -> None:
         if 0 <= field_value < 1 << bits:
             continue
         else:
-            raise ValueError(f"UCM block ids encode at most {1 << bits} {field_name}s")
+            raise ValueError(f"UCM chunk ids encode at most {1 << bits} {field_name}s")
 
 
 @lru_cache(maxsize=None)
@@ -88,49 +88,48 @@ def _tag(
     ).to_bytes(_TAG_BYTES, "big")
 
 
-def make_common_ucm_block_ids(block_hashes: Iterable[bytes]) -> tuple[bytes, ...]:
-    """Common UCM block ids: the first bytes of each block hash.
+def make_common_ucm_chunk_ids(chunk_hashes: Iterable[bytes]) -> tuple[bytes, ...]:
+    """Common UCM chunk ids: the first bytes of each chunk hash.
 
     They are the same on every rank. Each rank appends its own tag to get
-    its local UCM block ids.
+    its local UCM chunk ids.
     """
-    return tuple(block_hash[:_COMMON_BYTES] for block_hash in block_hashes)
+    return tuple(chunk_hash[:_COMMON_BYTES] for chunk_hash in chunk_hashes)
 
 
-def make_local_ucm_block_ids(
-    common_ucm_block_ids: Sequence[bytes],
+def make_local_ucm_chunk_ids(
+    common_ucm_chunk_ids: Sequence[bytes],
     attention_type: AttentionType,
     record_class: int = 0,
     shard_key: ShardKey = ShardKey(),
 ) -> tuple[bytes, ...]:
-    """Local UCM block ids of these blocks for one record class and shard."""
-    if all(len(common_id) == _COMMON_BYTES for common_id in common_ucm_block_ids):
+    """Local UCM chunk ids of these chunks for one record class and shard."""
+    if all(len(common_id) == _COMMON_BYTES for common_id in common_ucm_chunk_ids):
         tag = _tag(attention_type, record_class, ShardKey(*shard_key))
         return tuple(
-            common_ucm_block_id + tag for common_ucm_block_id in common_ucm_block_ids
+            common_ucm_chunk_id + tag for common_ucm_chunk_id in common_ucm_chunk_ids
         )
     else:
         raise ValueError(
-            f"Common UCM block ids must be {_COMMON_BYTES} bytes; "
-            "build them with make_common_ucm_block_ids"
+            f"Common UCM chunk ids must be {_COMMON_BYTES} bytes; "
+            "build them with make_common_ucm_chunk_ids"
         )
 
 
 def writer_rows(
-    common_ucm_block_ids: Sequence[bytes], replica_index: int, replica_count: int
+    common_ucm_chunk_ids: Sequence[bytes], replica_index: int, replica_count: int
 ) -> np.ndarray:
     """Rows this replica writes.
 
-    Blocks are assigned to replicas by common UCM block id. Every replica
-    computes the
-    same assignment, so each block is written exactly once.
+    Chunks are assigned to replicas by common UCM chunk id. Every replica
+    computes the same assignment, so each chunk is written exactly once.
     """
     writer_indices = np.fromiter(
         (
-            int.from_bytes(common_ucm_block_id[:8], "little") % replica_count
-            for common_ucm_block_id in common_ucm_block_ids
+            int.from_bytes(common_ucm_chunk_id[:8], "little") % replica_count
+            for common_ucm_chunk_id in common_ucm_chunk_ids
         ),
         dtype=np.int64,
-        count=len(common_ucm_block_ids),
+        count=len(common_ucm_chunk_ids),
     )
     return np.flatnonzero(writer_indices == replica_index)

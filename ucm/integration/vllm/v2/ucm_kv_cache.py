@@ -10,7 +10,7 @@ import numpy as np
 from .layout import UCMKVCacheLayout
 from .layout.view import LAYOUT_DEBUG, layout_debug
 from .parallel import ParallelLayout
-from .ucm_block_id import make_local_ucm_block_ids
+from .ucm_chunk_id import make_local_ucm_chunk_ids
 from .ucm_proxy import UCMProxyTransfer
 from .ucm_sharding import (
     ParallelRank,
@@ -22,32 +22,34 @@ from .ucm_sharding import (
 if TYPE_CHECKING:
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
-# Returns the rows (UCM blocks) of a plan this rank writes for a record class.
+# Returns the rows (UCM chunks) of a plan this rank writes for a record class.
 RowSelector = Callable[[UCMRecordClass, Sequence[bytes]], np.ndarray]
 
 
 def dump_metadata(
     plan: "UCMGroupDispatchPlan",
-    ucm_cache_block_size: int,
+    tokens_per_chunk: int,
     selected_rows: Sequence[int] | None = None,
 ) -> tuple[str, ...]:
-    """Per-UCM-block JSON for Store dump: attention type and 0-based block index.
+    """Per-UCM-chunk JSON for Store dump: attention type and 0-based chunk index.
 
-    A plan's blocks are consecutive UCM blocks starting at its token_start;
-    selected_rows picks some of them (all by default).
+    The chunk index is the UCM chunk's first token divided by tokens_per_chunk;
+    selected_rows picks some of the plan's UCM chunks (all by default).
     """
-    first_block = plan.token_start // ucm_cache_block_size
-    prefix = f'{{"type":"{plan.attention_type.value}","block_index":'
+    prefix = f'{{"type":"{plan.attention_type.value}","chunk_index":'
     if selected_rows is None:
-        selected_rows = range(len(plan.common_ucm_block_ids))
-    return tuple(f"{prefix}{first_block + int(row)}}}" for row in selected_rows)
+        selected_rows = range(len(plan.common_ucm_chunk_ids))
+    return tuple(
+        f"{prefix}{int(plan.token_starts[row]) // tokens_per_chunk}}}"
+        for row in selected_rows
+    )
 
 
 class UCMTransferBuilder:
     """Build this rank's transfers from plans.
 
     Each record class is a separate record and uses this rank's shard in the
-    UCM block id.
+    UCM chunk id.
     """
 
     def __init__(
@@ -135,19 +137,19 @@ class UCMTransferBuilder:
             ):
                 continue
             else:
-                local_ucm_block_ids, block_indices = self._local_ucm_block_ids(
+                local_ucm_chunk_ids, chunk_indices = self._local_ucm_chunk_ids(
                     plan, record_class, selected_rows
                 )
                 empty_matrix = np.empty((len(selected_rows), 0), dtype=np.uint64)
                 markers.append(
                     UCMProxyTransfer(
-                        local_ucm_block_ids,
-                        block_indices,
+                        local_ucm_chunk_ids,
+                        chunk_indices,
                         empty_matrix,
                         empty_matrix,
                         empty_matrix,
                         dump_metadata(
-                            plan, self.layout.spec.ucm_cache_block_size, selected_rows
+                            plan, self.layout.spec.tokens_per_chunk, selected_rows
                         ),
                         np.zeros(len(selected_rows), dtype=np.uint64),
                     )
@@ -159,9 +161,9 @@ class UCMTransferBuilder:
         metadata: "UCMConnectorMetadata",
         row_selector: RowSelector | None = None,
     ) -> tuple[tuple[tuple[bytes, ...], np.ndarray], ...]:
-        """(UCM block ids, block indices) this rank dumps, for commit or abort."""
+        """(UCM chunk ids, chunk indices) this rank dumps, for commit or abort."""
         return tuple(
-            self._local_ucm_block_ids(plan, record_class, selected_rows)
+            self._local_ucm_chunk_ids(plan, record_class, selected_rows)
             for plan, record_class, selected_rows in self._dump_rows(
                 metadata, row_selector
             )
@@ -186,27 +188,30 @@ class UCMTransferBuilder:
         row_selector: RowSelector | None,
     ) -> np.ndarray:
         if row_selector is None:
-            return np.arange(len(plan.common_ucm_block_ids), dtype=np.int64)
+            return np.arange(len(plan.common_ucm_chunk_ids), dtype=np.int64)
         else:
             return np.asarray(
-                row_selector(record_class, plan.common_ucm_block_ids), dtype=np.int64
+                row_selector(record_class, plan.common_ucm_chunk_ids), dtype=np.int64
             )
 
-    def _local_ucm_block_ids(
+    def _local_ucm_chunk_ids(
         self,
         plan: "UCMGroupDispatchPlan",
         record_class: UCMRecordClass,
         selected_rows: np.ndarray,
     ) -> tuple[tuple[bytes, ...], np.ndarray]:
-        """Local UCM block ids and block indices of the selected rows on this rank."""
-        local_ucm_block_ids = make_local_ucm_block_ids(
-            [plan.common_ucm_block_ids[row] for row in selected_rows],
+        """Local UCM chunk ids and chunk indices of the selected rows on this rank."""
+        local_ucm_chunk_ids = make_local_ucm_chunk_ids(
+            [plan.common_ucm_chunk_ids[row] for row in selected_rows],
             plan.attention_type,
             record_class.class_index,
             self._shard_keys[record_class],
         )
-        first_block = plan.token_start // self.layout.spec.ucm_cache_block_size
-        return local_ucm_block_ids, first_block + selected_rows
+        chunk_indices = (
+            plan.token_starts[selected_rows].astype(np.int64)
+            // self.layout.spec.tokens_per_chunk
+        )
+        return local_ucm_chunk_ids, chunk_indices
 
     def _build_transfers(
         self,
@@ -269,12 +274,12 @@ class UCMTransferBuilder:
         # Ids in one plan are unique because they come from one request.
         # Requests stay in separate transfers: two requests may share a prefix
         # but load it into different blocks.
-        local_ucm_block_ids, block_indices = self._local_ucm_block_ids(
+        local_ucm_chunk_ids, chunk_indices = self._local_ucm_chunk_ids(
             plan, record_class, selected_rows
         )
         if with_metadata:
             block_metadata = dump_metadata(
-                plan, self.layout.spec.ucm_cache_block_size, selected_rows
+                plan, self.layout.spec.tokens_per_chunk, selected_rows
             )
             record_nbytes = np.full(
                 len(selected_rows),
@@ -289,8 +294,8 @@ class UCMTransferBuilder:
             block_metadata = ()
             record_nbytes = None
         return UCMProxyTransfer(
-            local_ucm_block_ids,
-            block_indices,
+            local_ucm_chunk_ids,
+            chunk_indices,
             ptrs,
             sizes,
             offsets,
@@ -313,19 +318,16 @@ class UCMTransferBuilder:
         block (padding included) in one piece.
         """
 
-        ucm_block_size = self.layout.spec.ucm_cache_block_size
         if LAYOUT_DEBUG:
             layout_debug(
                 f"plan attention_type={plan.attention_type.value} "
                 f"record_class={record_class.class_index} "
-                f"tokens=[{plan.token_start},{plan.token_end}) rows={len(selected_rows)} "
+                f"first_token={int(plan.token_starts[0])} rows={len(selected_rows)} "
                 f"groups={[group.group_id for group in record_class.groups]}"
             )
-        # First token of each selected UCM block. An FA slice uses it to find
+        # First token of each selected UCM chunk. An FA slice uses it to find
         # its place inside a vLLM block.
-        token_starts = (plan.token_start // ucm_block_size + selected_rows).astype(
-            np.uint64
-        ) * np.uint64(ucm_block_size)
+        token_starts = plan.token_starts[selected_rows]
         group_record_offset = 0
         for group, position in zip(record_class.groups, record_class.group_positions):
             if group.group_id not in self.layout.group_layouts:
@@ -336,9 +338,9 @@ class UCMTransferBuilder:
             plan_vllm_block_ids = np.asarray(
                 plan.vllm_block_ids_by_group[position], dtype=np.uint64
             )
-            # Each row (UCM block) owns an equal slice of the window block ids.
+            # Each row (UCM chunk) owns an equal slice of the window block ids.
             vllm_block_ids = plan_vllm_block_ids.reshape(
-                len(plan.common_ucm_block_ids), -1
+                len(plan.common_ucm_chunk_ids), -1
             )[selected_rows].reshape(-1)
             store_layout = self.layout.store_layouts[group.group_id]
             segment_mask = (
@@ -357,7 +359,7 @@ class UCMTransferBuilder:
                 layout_debug(
                     f"record group={group.group_id} rows={len(selected_rows)} "
                     f"vllm_block_ids={len(vllm_block_ids)} "
-                    f"segments_per_ucm_block={ptrs.shape[1]} "
+                    f"segments_per_ucm_chunk={ptrs.shape[1]} "
                     f"record_size={group_record_offset + store_layout.store_bytes}"
                 )
             yield offsets, ptrs, sizes

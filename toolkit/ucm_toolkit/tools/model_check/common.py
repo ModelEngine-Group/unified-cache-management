@@ -114,7 +114,8 @@ def make_ucm_config(
         "enable_record_traces": False,
     }
     if ucm_cache_block_size is not None:
-        config["ucm_cache_block_size"] = ucm_cache_block_size
+        # connector v2 reads the UCM chunk size from tokens_per_chunk.
+        config["tokens_per_chunk"] = ucm_cache_block_size
     return config
 
 
@@ -645,9 +646,8 @@ def assert_shared_dispatch(metadata):
             request_id,
             phase,
             plan.attention_type,
-            plan.common_ucm_block_ids,
-            plan.token_start,
-            plan.token_end,
+            plan.common_ucm_chunk_ids,
+            tuple(int(token) for token in plan.token_starts),
             tuple(
                 tuple(int(x) for x in vllm_block_ids)
                 for vllm_block_ids in plan.vllm_block_ids_by_group
@@ -1168,7 +1168,7 @@ def metadata_key_count(metadata: Any, phase: str) -> int:
     v2_requests = getattr(metadata, "requests", None)
     if v2_requests is not None:
         return sum(
-            len(plan.common_ucm_block_ids)
+            len(plan.common_ucm_chunk_ids)
             for request_meta in v2_requests.values()
             for plan in getattr(request_meta, f"{phase}_plans")
         )
@@ -1205,12 +1205,12 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     block_ids = tuple(
         ucm_block_id
         for transfer in transfers
-        for ucm_block_id in transfer.ucm_block_ids
+        for ucm_block_id in transfer.ucm_chunk_ids
         for _ in range(transfer.ptrs.shape[1])
     )
     return SimpleNamespace(
         block_ids=block_ids,
-        offsets=tuple(v for t in transfers for v in t.ucm_block_offsets.reshape(-1)),
+        offsets=tuple(v for t in transfers for v in t.ucm_chunk_offsets.reshape(-1)),
         ptrs=tuple(v for t in transfers for v in t.ptrs.reshape(-1)),
         sizes=tuple(v for t in transfers for v in t.sizes.reshape(-1)),
     )
@@ -1808,7 +1808,7 @@ def schedule(
         prompt_token_ids,
         fixture.kv_cache_config,
         hash_block_size,
-        getattr(connector_spec, "ucm_cache_block_size", None),
+        getattr(connector_spec, "tokens_per_chunk", None),
     )
     source = schedule_source(
         fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups

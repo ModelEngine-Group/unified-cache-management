@@ -56,19 +56,18 @@ if (
 from ucm_toolkit.tools.model_check import ascend
 
 
-def _metadata(layout, attention_type, groups, ucm_block_id, block_base, attribute):
+def _metadata(layout, attention_type, groups, ucm_chunk_id, block_base, attribute):
     vllm_block_ids_by_group = []
     cursor = block_base
     for group in groups:
         vllm_block_ids_by_group.append(
-            np.arange(cursor, cursor + group.tail_blocks, dtype=np.uint64)
+            np.arange(cursor, cursor + group.blocks_per_chunk, dtype=np.uint64)
         )
-        cursor += group.tail_blocks
+        cursor += group.blocks_per_chunk
     plan = UCMGroupDispatchPlan(
         attention_type,
-        (ucm_block_id,),
-        0,
-        layout.spec.ucm_cache_block_size,
+        (ucm_chunk_id,),
+        np.zeros(1, dtype=np.uint64),
         tuple(vllm_block_ids_by_group),
     )
     return UCMConnectorMetadata(
@@ -83,15 +82,15 @@ def _exercise_attention_type(
 ):
     # Groups share a native block pool: use distinct IDs across groups and
     # disjoint source/target windows, rather than overwriting shared slots.
-    window_blocks = sum(group.tail_blocks for group in groups)
+    window_blocks = sum(group.blocks_per_chunk for group in groups)
     for group in groups:
         if group.group_id in layout.group_layouts:
             if 2 * window_blocks > layout.group_layouts[group.group_id].num_blocks:
                 raise ValueError("NPU probe needs disjoint source/target windows")
-    ucm_block_id = sequence.to_bytes(16, "little")
-    dump_meta = _metadata(layout, attention_type, groups, ucm_block_id, 0, "dump_plans")
+    ucm_chunk_id = sequence.to_bytes(16, "little")
+    dump_meta = _metadata(layout, attention_type, groups, ucm_chunk_id, 0, "dump_plans")
     load_meta = _metadata(
-        layout, attention_type, groups, ucm_block_id, window_blocks, "load_plans"
+        layout, attention_type, groups, ucm_chunk_id, window_blocks, "load_plans"
     )
     (dump_transfer,) = UCMTransferBuilder(layout).build_dump_transfers(dump_meta)
     (load_transfer,) = UCMTransferBuilder(layout).build_load_transfers(load_meta)
@@ -111,7 +110,7 @@ def _exercise_attention_type(
         expected.append(payload)
     torch.npu.synchronize()
     proxy.submit("dump", dump_transfer)
-    proxy.commit(dump_transfer.ucm_block_ids, dump_transfer.block_indices)
+    proxy.commit(dump_transfer.ucm_chunk_ids, dump_transfer.chunk_indices)
 
     for ptr, size in zip(target_ptrs, sizes, strict=True):
         byte_access.write(int(ptr), bytes(int(size)))

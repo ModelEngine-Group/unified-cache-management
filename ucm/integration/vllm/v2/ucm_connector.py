@@ -31,7 +31,7 @@ from .layout import (
     parse_kv_cache_config,
 )
 from .parallel import ParallelLayout
-from .ucm_block_id import UCM_BLOCK_ID_VERSION, writer_rows
+from .ucm_chunk_id import UCM_CHUNK_ID_VERSION, writer_rows
 from .ucm_kv_cache import UCMTransferBuilder
 from .ucm_lookup import UCMLookup
 from .ucm_proxy import (
@@ -252,9 +252,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         scheduler_block_size, _ = resolve_kv_cache_block_sizes(
             kv_cache_config, vllm_config
         )
-        ucm_cache_block_size = launch_config.get("ucm_cache_block_size")
-        if ucm_cache_block_size is not None:
-            ucm_cache_block_size = int(ucm_cache_block_size)
+        tokens_per_chunk = launch_config.get("tokens_per_chunk")
+        if tokens_per_chunk is not None:
+            tokens_per_chunk = int(tokens_per_chunk)
         worker_rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank()
         _dump_raw_kv_cache_config(kv_cache_config, worker_rank)
         self.parallel_layout = ParallelLayout.from_config(vllm_config)
@@ -268,7 +268,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             kv_cache_config,
             scheduler_block_size=scheduler_block_size,
             hf_text_config=text_config,
-            ucm_cache_block_size=ucm_cache_block_size,
+            tokens_per_chunk=tokens_per_chunk,
             device_type=self.context.device_type,
             # Longcat has two attention modules per decoder layer.
             num_attn_module=(
@@ -278,7 +278,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             ),
         )
         self.parallel_layout.apply_context_parallel(self.spec)
-        # Raises at startup if the topology does not fit in UCM block ids.
+        # Raises at startup if the topology does not fit in UCM chunk ids.
         self._sharding = UCMSharding(self.spec, self.parallel_layout)
         if role == KVConnectorRole.WORKER:
             self._parallel_rank = _worker_parallel_ranks(self.parallel_layout)
@@ -298,7 +298,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             "kv_cache_layout": kv_cache_config.kv_cache_layout,
             # vLLM decides which groups are stored; a change makes new records.
             "stored_group_ids": [
-                group.group_id for group in self.spec.groups if not group.is_transient
+                group.group_id for group in self.spec.groups if group.is_persistent
             ],
             "ascend_gqa_head_first": (
                 envs.VLLM_KV_CACHE_LAYOUT in ("LBHNC", "HND")
@@ -309,14 +309,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         schema_digest = hashlib.sha256(
             json.dumps(namespace_schema, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
-        # The Store only sees UCM block ids, so everything that changes the
+        # The Store only sees UCM chunk ids, so everything that changes the
         # stored data (model, layout, block sizes, topology, layerwise) and
         # the id version goes into the hash seed.
         namespace = (
             f"{self.context.device_type}-{model_dtype}"
             f"-{schema_digest}-b{self.spec.scheduler_block_size}"
-            f"-c{self.spec.ucm_cache_block_size}"
-            f"-{self.parallel_layout.namespace}-r{UCM_BLOCK_ID_VERSION}"
+            f"-c{self.spec.tokens_per_chunk}"
+            f"-{self.parallel_layout.namespace}-r{UCM_CHUNK_ID_VERSION}"
         )
         self.use_layerwise = bool(launch_config.get("use_layerwise", False))
         if self.use_layerwise:
@@ -326,7 +326,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         hasher = make_request_hasher(vllm_config, 0)
         base_seed = hasher(("UCM_HASH_SEED", namespace))
         self._proxy = create_proxy(
-            launch_config, record_token_span=self.spec.ucm_cache_block_size
+            launch_config, record_token_span=self.spec.tokens_per_chunk
         )
         self._layer_load_tasks: dict[int, list[tuple[str, UCMProxyTask]]] = {}
         self._dump_tasks: list[UCMProxyTask] = []
@@ -342,8 +342,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             UCMDispatcher(
                 self.spec,
                 UCMLookup(self.spec, self._proxy, self._sharding),
-                # Plans carry common UCM block ids. Each worker builds the
-                # local UCM block ids of its own shards when building transfers.
+                # Plans carry common UCM chunk ids. Each worker builds the
+                # local UCM chunk ids of its own shards when building transfers.
                 hasher,
                 base_seed,
                 load_threshold_tokens=int(
@@ -442,7 +442,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         super().bind_connector_metadata(connector_metadata)
 
     def _owned_rows(
-        self, record_class: UCMRecordClass, common_ucm_block_ids: Sequence[bytes]
+        self, record_class: UCMRecordClass, common_ucm_chunk_ids: Sequence[bytes]
     ) -> np.ndarray:
         """Rows of a plan that this rank writes for one record class.
 
@@ -453,9 +453,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             record_class, (0, 1)
         )
         if replica_count == 1:
-            return np.arange(len(common_ucm_block_ids), dtype=np.int64)
+            return np.arange(len(common_ucm_chunk_ids), dtype=np.int64)
         else:
-            return writer_rows(common_ucm_block_ids, replica_index, replica_count)
+            return writer_rows(common_ucm_chunk_ids, replica_index, replica_count)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         if not self.has_connector_metadata():
@@ -488,7 +488,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 layer.layer_index
                 for group in self.spec.state_groups
                 if group.group_id in self.layout.group_layouts
-                for layer in self.layout.group_layouts[group.group_id].layers
+                for layer in self.layout.group_layouts[group.group_id].layer_specs
             }
             for layer_id in state_layer_ids:
                 self._wait_layer_load(layer_id)
@@ -575,10 +575,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 for request_id, request in self._get_connector_metadata().requests.items()
                 if request_id in self._failed_load_reqs or not failed_only
             }
-            for ucm_block_ids, block_indices in self.transfer_builder.dump_targets(
+            for ucm_chunk_ids, chunk_indices in self.transfer_builder.dump_targets(
                 UCMConnectorMetadata(requests=abort_requests), self._owned_rows
             ):
-                self._proxy.abort(ucm_block_ids, block_indices)
+                self._proxy.abort(ucm_chunk_ids, chunk_indices)
 
         try:
             if not self.use_layerwise:
@@ -589,7 +589,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     self._proxy.submit("dump", batch)
                 empty_markers = self._dump_empty_shards(metadata)
                 for transfer in (*dump_batches, *empty_markers):
-                    self._proxy.commit(transfer.ucm_block_ids, transfer.block_indices)
+                    self._proxy.commit(transfer.ucm_chunk_ids, transfer.chunk_indices)
             else:
                 # Drain loads whose hooks were skipped before deciding which saves are valid.
                 for layer_id in tuple(self._layer_load_tasks):
@@ -610,10 +610,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 if self._save_error is not None:
                     raise self._save_error
                 self._dump_empty_shards(metadata)
-                for ucm_block_ids, block_indices in self.transfer_builder.dump_targets(
+                for ucm_chunk_ids, chunk_indices in self.transfer_builder.dump_targets(
                     metadata, self._owned_rows
                 ):
-                    self._proxy.commit(ucm_block_ids, block_indices)
+                    self._proxy.commit(ucm_chunk_ids, chunk_indices)
             if self._failed_load_reqs:
                 abort_pending(failed_only=True)
         except UCMProxyError:

@@ -64,16 +64,16 @@ class KVCacheGroupLayout:
         group_id: int,
         kv_caches: "Mapping[str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]]",
         *,
-        layers: "Sequence[UCMLayerSpec]",
+        layer_specs: "Sequence[UCMLayerSpec]",
         block_first_layout: bool,
         state_snapshot: bool,
         device_type: str = "npu",
     ) -> None:
         self.group_id = group_id
-        self.layers = tuple(
-            sorted(layers, key=lambda item: (item.layer_index, item.layer_name))
+        self.layer_specs = tuple(
+            sorted(layer_specs, key=lambda item: (item.layer_index, item.layer_name))
         )
-        self.num_blocks = self.layers[0].num_blocks
+        self.num_blocks = self.layer_specs[0].num_blocks
 
         # Walk the group's layers once, in layer order.  One model layer
         # contributes several layer names (attn, indexer.k_cache, swa_cache,
@@ -88,7 +88,7 @@ class KVCacheGroupLayout:
         states_per_block: list[int] = []
         payload_bytes: list[int] = []
         self.layer_views: dict[str, LayerView] = {}
-        for layer in self.layers:
+        for layer in self.layer_specs:
             layer_view = view.build_layer_view(
                 kv_caches[layer.layer_name],
                 layer,
@@ -142,7 +142,7 @@ class KVCacheGroupLayout:
         this path; its registered components use per-layer segments.
         """
         descriptors: dict[int, TensorDescriptor] = {}
-        for layer in self.layers:
+        for layer in self.layer_specs:
             descriptor = layer.descriptor
             if descriptor is None:
                 return None
@@ -218,7 +218,7 @@ class KVCacheGroupLayout:
     def tokens_to_bytes(
         self,
         tokens: np.ndarray,
-        token_block_size: int,
+        tokens_per_block: int,
         segment_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Convert token spans/displacements to [range, segment] byte counts.
@@ -230,4 +230,4 @@ class KVCacheGroupLayout:
         segment_columns = slice(None) if segment_mask is None else segment_mask
         return np.multiply.outer(
             tokens, self.payload_bytes[segment_columns]
-        ) // np.uint64(token_block_size)
+        ) // np.uint64(tokens_per_block)

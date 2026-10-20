@@ -16,33 +16,33 @@ class UCMProxyError(RuntimeError):
 
 
 class UCMProxy(Protocol):
-    """block_indices[K] are absolute UCM record indices within each request.
+    """chunk_indices[K] are absolute UCM record indices within each request.
 
     load/dump arrays are read-only [K,S] descriptors retained until wait.
     Dump record_nbytes[K] describes complete records, including unsent layers.
     """
 
     def lookup(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> Sequence[bool]: ...
     def lookup_on_prefix(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int: ...
     def lookup_on_reverse(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int: ...
     def load(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> object | None: ...
     def dump(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
@@ -50,10 +50,10 @@ class UCMProxy(Protocol):
         record_nbytes: np.ndarray,
     ) -> object | None: ...
     def commit(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> object | None: ...
     def abort(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> None: ...
     def wait(self, task: object) -> None: ...
     def flush(self) -> None: ...
@@ -72,18 +72,18 @@ class UCMProxyTensorRegistration(Protocol):
 
 @dataclass(frozen=True)
 class UCMProxyTransfer:
-    """Unique ucm_block_ids [K] and byte descriptors [K,S]; arrays may be read-only.
+    """Unique ucm_chunk_ids [K] and byte descriptors [K,S]; arrays may be read-only.
 
-    Offsets address the complete UCM block. Backends retain arrays through
+    Offsets address the complete UCM chunk. Backends retain arrays through
     completion and never mutate them or require contiguous input.
     """
 
-    ucm_block_ids: tuple[bytes, ...]
-    block_indices: np.ndarray
+    ucm_chunk_ids: tuple[bytes, ...]
+    chunk_indices: np.ndarray
     ptrs: np.ndarray
     sizes: np.ndarray
-    ucm_block_offsets: np.ndarray
-    # Per-ucm_block_id JSON for dump (see UCMProxy.dump); load transfers leave it empty.
+    ucm_chunk_offsets: np.ndarray
+    # Per-ucm_chunk_id JSON for dump (see UCMProxy.dump); load transfers leave it empty.
     metadata: tuple[str, ...] = ()
     record_nbytes: np.ndarray | None = None
 
@@ -97,23 +97,23 @@ class UCMProxyTask:
     handle: object | None
 
 
-def normalize_ucm_block_ids(ucm_block_ids: Sequence[bytes]) -> tuple[bytes, ...]:
+def normalize_ucm_chunk_ids(ucm_chunk_ids: Sequence[bytes]) -> tuple[bytes, ...]:
     # Native transfers already carry bytes: validate in one pass and
     # preserve identity for subsequent layer callbacks.
-    if type(ucm_block_ids) is tuple and all(
-        type(ucm_block_id) is bytes and len(ucm_block_id) == 16
-        for ucm_block_id in ucm_block_ids
+    if type(ucm_chunk_ids) is tuple and all(
+        type(ucm_chunk_id) is bytes and len(ucm_chunk_id) == 16
+        for ucm_chunk_id in ucm_chunk_ids
     ):
-        return ucm_block_ids
-    ucm_block_ids = tuple(bytes(ucm_block_id) for ucm_block_id in ucm_block_ids)
+        return ucm_chunk_ids
+    ucm_chunk_ids = tuple(bytes(ucm_chunk_id) for ucm_chunk_id in ucm_chunk_ids)
     invalid_rows = [
-        row for row, ucm_block_id in enumerate(ucm_block_ids) if len(ucm_block_id) != 16
+        row for row, ucm_chunk_id in enumerate(ucm_chunk_ids) if len(ucm_chunk_id) != 16
     ]
     if invalid_rows:
         raise ValueError(
-            f"UCM block IDs must be 16 bytes; invalid indexes={invalid_rows}"
+            f"UCM chunk IDs must be 16 bytes; invalid indexes={invalid_rows}"
         )
-    return ucm_block_ids
+    return ucm_chunk_ids
 
 
 class UCMProxyAdapter:
@@ -123,51 +123,51 @@ class UCMProxyAdapter:
         self._proxy = proxy
 
     def lookup(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> tuple[bool, ...]:
-        ucm_block_ids = normalize_ucm_block_ids(ucm_block_ids)
+        ucm_chunk_ids = normalize_ucm_chunk_ids(ucm_chunk_ids)
         try:
             hits = tuple(
                 bool(is_hit)
-                for is_hit in self._proxy.lookup(ucm_block_ids, block_indices)
+                for is_hit in self._proxy.lookup(ucm_chunk_ids, chunk_indices)
             )
         except Exception as exc:
             raise UCMProxyError("Proxy lookup failed") from exc
-        if len(hits) != len(ucm_block_ids):
+        if len(hits) != len(ucm_chunk_ids):
             raise UCMProxyError(
-                f"Proxy lookup returned {len(hits)} results for {len(ucm_block_ids)} ucm_block_ids"
+                f"Proxy lookup returned {len(hits)} results for {len(ucm_chunk_ids)} ucm_chunk_ids"
             )
         return hits
 
     def _scan(
-        self, operation: str, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, operation: str, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
-        ucm_block_ids = normalize_ucm_block_ids(ucm_block_ids)
+        ucm_chunk_ids = normalize_ucm_chunk_ids(ucm_chunk_ids)
         try:
             scan_method = (
                 self._proxy.lookup_on_prefix
                 if operation == "prefix"
                 else self._proxy.lookup_on_reverse
             )
-            hit_row = int(scan_method(ucm_block_ids, block_indices))
+            hit_row = int(scan_method(ucm_chunk_ids, chunk_indices))
         except Exception as exc:
             raise UCMProxyError(f"Proxy lookup_on_{operation} failed") from exc
-        if not -1 <= hit_row < len(ucm_block_ids):
+        if not -1 <= hit_row < len(ucm_chunk_ids):
             raise UCMProxyError(
                 f"Proxy lookup_on_{operation} returned {hit_row} "
-                f"for {len(ucm_block_ids)} ucm_block_ids"
+                f"for {len(ucm_chunk_ids)} ucm_chunk_ids"
             )
         return hit_row
 
     def lookup_on_prefix(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
-        return self._scan("prefix", ucm_block_ids, block_indices)
+        return self._scan("prefix", ucm_chunk_ids, chunk_indices)
 
     def lookup_on_reverse(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
-        return self._scan("reverse", ucm_block_ids, block_indices)
+        return self._scan("reverse", ucm_chunk_ids, chunk_indices)
 
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
         if isinstance(self._proxy, UCMProxyTensorRegistration):
@@ -183,12 +183,12 @@ class UCMProxyAdapter:
             )
         self._proxy.wait(task)
 
-    def commit(self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray) -> None:
-        """Publish ucm_block_ids after their writes complete, without rescanning descriptors."""
-        if not ucm_block_ids:
+    def commit(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
+        """Publish ucm_chunk_ids after their writes complete, without rescanning descriptors."""
+        if not ucm_chunk_ids:
             return
         try:
-            self._wait("commit", self._proxy.commit(ucm_block_ids, block_indices))
+            self._wait("commit", self._proxy.commit(ucm_chunk_ids, chunk_indices))
         except Exception as exc:
             if isinstance(exc, UCMProxyError):
                 raise
@@ -199,43 +199,43 @@ class UCMProxyAdapter:
         if operation not in ("load", "dump"):
             raise ValueError(f"Unknown transfer operation: {operation}")
         try:
-            validate_block_indices(transfer.ucm_block_ids, transfer.block_indices)
+            validate_chunk_indices(transfer.ucm_chunk_ids, transfer.chunk_indices)
             shape = transfer.ptrs.shape
             if (
                 len(shape) != 2
-                or shape[0] != len(transfer.ucm_block_ids)
+                or shape[0] != len(transfer.ucm_chunk_ids)
                 or transfer.sizes.shape != shape
-                or transfer.ucm_block_offsets.shape != shape
+                or transfer.ucm_chunk_offsets.shape != shape
             ):
                 raise ValueError("Transfer arrays must have matching [K,S] shapes")
             if operation == "dump":
                 lengths = transfer.record_nbytes
                 if (
                     lengths is None
-                    or lengths.shape != (len(transfer.ucm_block_ids),)
+                    or lengths.shape != (len(transfer.ucm_chunk_ids),)
                     or lengths.dtype.kind not in "iu"
                     or np.any(lengths < 0)
-                    or len(transfer.metadata) != len(transfer.ucm_block_ids)
+                    or len(transfer.metadata) != len(transfer.ucm_chunk_ids)
                 ):
                     raise ValueError(
                         "Dump requires complete record_nbytes[K] and metadata[K]"
                     )
             handle = None
-            if transfer.ucm_block_ids and operation == "dump":
+            if transfer.ucm_chunk_ids and operation == "dump":
                 handle = self._proxy.dump(
-                    transfer.ucm_block_ids,
-                    transfer.block_indices,
-                    transfer.ucm_block_offsets,
+                    transfer.ucm_chunk_ids,
+                    transfer.chunk_indices,
+                    transfer.ucm_chunk_offsets,
                     transfer.ptrs,
                     transfer.sizes,
                     transfer.metadata,
                     transfer.record_nbytes,
                 )
-            elif transfer.ucm_block_ids:
+            elif transfer.ucm_chunk_ids:
                 handle = self._proxy.load(
-                    transfer.ucm_block_ids,
-                    transfer.block_indices,
-                    transfer.ucm_block_offsets,
+                    transfer.ucm_chunk_ids,
+                    transfer.chunk_indices,
+                    transfer.ucm_chunk_offsets,
                     transfer.ptrs,
                     transfer.sizes,
                 )
@@ -257,9 +257,9 @@ class UCMProxyAdapter:
         """Submit and wait for a bulk transfer."""
         self.wait(self.enqueue(operation, transfer))
 
-    def abort(self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray) -> None:
+    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
         try:
-            self._proxy.abort(ucm_block_ids, block_indices)
+            self._proxy.abort(ucm_chunk_ids, chunk_indices)
         except Exception as exc:
             raise UCMProxyError("Proxy abort failed") from exc
 
@@ -277,61 +277,61 @@ class PipelineProxy:
         self.store = store
 
     def lookup(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> tuple[bool, ...]:
-        validate_block_indices(ucm_block_ids, block_indices)
-        hits = tuple(self.store.lookup(ucm_block_ids))
-        if len(hits) != len(ucm_block_ids):
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        hits = tuple(self.store.lookup(ucm_chunk_ids))
+        if len(hits) != len(ucm_chunk_ids):
             raise ValueError("Store lookup must return one result per key")
         return hits
 
     def lookup_on_prefix(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
-        validate_block_indices(ucm_block_ids, block_indices)
-        return int(self.store.lookup_on_prefix(ucm_block_ids))
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        return int(self.store.lookup_on_prefix(ucm_chunk_ids))
 
     def lookup_on_reverse(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
-        validate_block_indices(ucm_block_ids, block_indices)
-        return int(self.store.lookup_on_reverse(ucm_block_ids))
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        return int(self.store.lookup_on_reverse(ucm_chunk_ids))
 
     def load(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> object | None:
-        validate_block_indices(ucm_block_ids, block_indices)
-        return self.store.load(ucm_block_ids, offsets, ptrs, sizes)
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        return self.store.load(ucm_chunk_ids, offsets, ptrs, sizes)
 
     def dump(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
         metadata: Sequence[str],
         record_nbytes: np.ndarray,
     ) -> object | None:
-        validate_block_indices(ucm_block_ids, block_indices)
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
         return self.store.dump(
-            ucm_block_ids, offsets, ptrs, sizes, metadata, record_nbytes
+            ucm_chunk_ids, offsets, ptrs, sizes, metadata, record_nbytes
         )
 
     def commit(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> object | None:
-        validate_block_indices(ucm_block_ids, block_indices)
-        return self.store.commit(ucm_block_ids)
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        return self.store.commit(ucm_chunk_ids)
 
-    def abort(self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray) -> None:
-        validate_block_indices(ucm_block_ids, block_indices)
-        self.store.abort(ucm_block_ids)
+    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
+        self.store.abort(ucm_chunk_ids)
 
     def wait(self, task: object) -> None:
         if not isinstance(self.store, UCMProxyWaiter):
@@ -349,15 +349,15 @@ class PipelineProxy:
         self.store.close()
 
 
-def validate_block_indices(
-    ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+def validate_chunk_indices(
+    ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
 ) -> None:
     if (
-        block_indices.shape != (len(ucm_block_ids),)
-        or block_indices.dtype.kind not in "iu"
-        or np.any(block_indices < 0)
+        chunk_indices.shape != (len(ucm_chunk_ids),)
+        or chunk_indices.dtype.kind not in "iu"
+        or np.any(chunk_indices < 0)
     ):
-        raise ValueError("block_indices must be a nonnegative integer array [K]")
+        raise ValueError("chunk_indices must be a nonnegative integer array [K]")
 
 
 @dataclass(frozen=True)
@@ -398,72 +398,72 @@ class ParallelProxy:
         if any(store.backend is not None for store in stores):
             raise ValueError("Parallel Stores must have backend=None")
         self.stores = tuple(stores)
-        self.block_ends = np.array(
+        self.chunk_ends = np.array(
             [token_end // record_token_span for token_end in route_token_ends],
             dtype=np.uint64,
         )
 
     def _store_indices(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> np.ndarray:
         """Index of the Store each row is routed to."""
-        validate_block_indices(ucm_block_ids, block_indices)
+        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
         return np.searchsorted(
-            self.block_ends, block_indices.astype(np.uint64, copy=False), side="right"
+            self.chunk_ends, chunk_indices.astype(np.uint64, copy=False), side="right"
         )
 
     def _rows_by_store(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> Iterator[tuple[UCMStore, np.ndarray]]:
-        store_indices = self._store_indices(ucm_block_ids, block_indices)
+        store_indices = self._store_indices(ucm_chunk_ids, chunk_indices)
         for store_index, store in enumerate(self.stores):
             rows = np.flatnonzero(store_indices == store_index)
             if len(rows):
                 yield store, rows
 
     def lookup(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> tuple[bool, ...]:
-        hits = [False] * len(ucm_block_ids)
-        for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
-            store_ucm_block_ids = tuple(ucm_block_ids[row] for row in rows)
+        hits = [False] * len(ucm_chunk_ids)
+        for store, rows in self._rows_by_store(ucm_chunk_ids, chunk_indices):
+            store_ucm_chunk_ids = tuple(ucm_chunk_ids[row] for row in rows)
             for row, is_hit in zip(
-                rows, store.lookup(store_ucm_block_ids), strict=True
+                rows, store.lookup(store_ucm_chunk_ids), strict=True
             ):
                 hits[row] = bool(is_hit)
         return tuple(hits)
 
     def _scan_runs(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> tuple[tuple[UCMStore, int, tuple[bytes, ...]], ...]:
         """(Store, first row, ids) of each run of consecutive rows routed to
         the same Store, in row order.
 
         Scans keep the order of the ids, so a Store can have several runs
-        when blocks are not increasing.
+        when chunk indices are not increasing.
         """
-        store_indices = self._store_indices(ucm_block_ids, block_indices)
+        store_indices = self._store_indices(ucm_chunk_ids, chunk_indices)
         run_bounds = [
             0,
             *(np.flatnonzero(np.diff(store_indices)) + 1).tolist(),
-            len(ucm_block_ids),
+            len(ucm_chunk_ids),
         ]
         return tuple(
             (
                 self.stores[int(store_indices[run_start])],
                 run_start,
-                tuple(ucm_block_ids[run_start:run_end]),
+                tuple(ucm_chunk_ids[run_start:run_end]),
             )
             for run_start, run_end in zip(run_bounds[:-1], run_bounds[1:])
             if run_end > run_start
         )
 
     def lookup_on_prefix(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
         """Scan the runs in order and stop at the first miss."""
         last_hit_row = -1
-        for store, first_row, run_ids in self._scan_runs(ucm_block_ids, block_indices):
+        for store, first_row, run_ids in self._scan_runs(ucm_chunk_ids, chunk_indices):
             run_last_hit = int(store.lookup_on_prefix(run_ids))
             last_hit_row = first_row + run_last_hit
             if run_last_hit < len(run_ids) - 1:
@@ -471,11 +471,11 @@ class ParallelProxy:
         return last_hit_row
 
     def lookup_on_reverse(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> int:
         """Scan the runs from the last one and stop at the first hit."""
         for store, first_row, run_ids in reversed(
-            self._scan_runs(ucm_block_ids, block_indices)
+            self._scan_runs(ucm_chunk_ids, chunk_indices)
         ):
             run_latest_hit = int(store.lookup_on_reverse(run_ids))
             if run_latest_hit >= 0:
@@ -485,15 +485,15 @@ class ParallelProxy:
     def _submit(
         self,
         operation: Literal["load", "dump", "commit"],
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         *descriptors: np.ndarray | Sequence[str],
     ) -> StoreTasks | None:
         store_tasks = []
         try:
-            for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
-                store_ucm_block_ids = tuple(ucm_block_ids[row] for row in rows)
-                arguments = (store_ucm_block_ids,) + tuple(
+            for store, rows in self._rows_by_store(ucm_chunk_ids, chunk_indices):
+                store_ucm_chunk_ids = tuple(ucm_chunk_ids[row] for row in rows)
+                arguments = (store_ucm_chunk_ids,) + tuple(
                     (
                         descriptor[rows]
                         if isinstance(descriptor, np.ndarray)
@@ -520,18 +520,18 @@ class ParallelProxy:
 
     def load(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> object | None:
-        return self._submit("load", ucm_block_ids, block_indices, offsets, ptrs, sizes)
+        return self._submit("load", ucm_chunk_ids, chunk_indices, offsets, ptrs, sizes)
 
     def dump(
         self,
-        ucm_block_ids: Sequence[bytes],
-        block_indices: np.ndarray,
+        ucm_chunk_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
@@ -540,8 +540,8 @@ class ParallelProxy:
     ) -> object | None:
         return self._submit(
             "dump",
-            ucm_block_ids,
-            block_indices,
+            ucm_chunk_ids,
+            chunk_indices,
             offsets,
             ptrs,
             sizes,
@@ -550,15 +550,15 @@ class ParallelProxy:
         )
 
     def commit(
-        self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray
+        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
     ) -> object | None:
-        return self._submit("commit", ucm_block_ids, block_indices)
+        return self._submit("commit", ucm_chunk_ids, chunk_indices)
 
-    def abort(self, ucm_block_ids: Sequence[bytes], block_indices: np.ndarray) -> None:
+    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
         error = None
-        for store, rows in self._rows_by_store(ucm_block_ids, block_indices):
+        for store, rows in self._rows_by_store(ucm_chunk_ids, chunk_indices):
             try:
-                store.abort(tuple(ucm_block_ids[row] for row in rows))
+                store.abort(tuple(ucm_chunk_ids[row] for row in rows))
             except Exception as exc:
                 error = error or exc
         if error is not None:

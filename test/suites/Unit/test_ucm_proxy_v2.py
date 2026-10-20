@@ -21,6 +21,7 @@ from test_ucm_connector_v2 import (
     make_dispatcher,
     make_request_hasher,
     parse_spec,
+    plan_token_starts,
     request_ucm_ids,
     ucm_ids,
     vllm_config,
@@ -28,13 +29,13 @@ from test_ucm_connector_v2 import (
 
 from ucm.integration.vllm.v2.factory import create_proxy, create_store
 from ucm.integration.vllm.v2.layout import (
-    UCMKVCacheGroupInfo,
+    UCMKVCacheGroupSpec,
     UCMKVCacheLayout,
     UCMKVCacheSpec,
 )
 from ucm.integration.vllm.v2.parallel import ParallelLayout
 from ucm.integration.vllm.v2.test_stores import FileTestStore, MemoryTestStore
-from ucm.integration.vllm.v2.ucm_block_id import ShardKey, make_local_ucm_block_ids
+from ucm.integration.vllm.v2.ucm_chunk_id import ShardKey, make_local_ucm_chunk_ids
 from ucm.integration.vllm.v2.ucm_connector import UCMConnector
 from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
 from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
@@ -81,7 +82,7 @@ def transfer(
         sizes,
         offsets,
         tuple(
-            json.dumps({"type": attention_type.value, "block_index": i})
+            json.dumps({"type": attention_type.value, "chunk_index": i})
             for i in indices
         ),
         np.full(len(keys), record_size, dtype=np.uint64),
@@ -152,19 +153,19 @@ def test_layerwise_roundtrip_through_real_proxy(tmp_path, mode, store_kind):
             full,
             ptrs=full.ptrs[:, column : column + 1],
             sizes=full.sizes[:, column : column + 1],
-            ucm_block_offsets=full.ucm_block_offsets[:, column : column + 1],
+            ucm_chunk_offsets=full.ucm_chunk_offsets[:, column : column + 1],
         )
         for array in (
             layer.ptrs,
             layer.sizes,
-            layer.ucm_block_offsets,
-            layer.block_indices,
+            layer.ucm_chunk_offsets,
+            layer.chunk_indices,
         ):
             array.flags.writeable = False
         adapter.submit("dump", layer)
-        assert not any(adapter.lookup(keys, full.block_indices))
-    adapter.commit(keys, full.block_indices)
-    assert adapter.lookup(keys, full.block_indices) == (True, True, True)
+        assert not any(adapter.lookup(keys, full.chunk_indices))
+    adapter.commit(keys, full.chunk_indices)
+    assert adapter.lookup(keys, full.chunk_indices) == (True, True, True)
     # Mixed order must restore rows after splitting routes.
     load = transfer((keys[1], keys[0], keys[2]), [8, 7, 9], [[400], [500], [600]])
     adapter.submit("load", load)
@@ -185,7 +186,7 @@ def test_pipeline_writeback_eviction_and_complete_record_promotion(tmp_path):
         batch = transfer((key,), [index], [[ptr]], attention_type=AttentionType.STATE)
         adapter.submit("dump", batch)
         assert lower.lookup((key,)) == (False,)
-        adapter.commit(batch.ucm_block_ids, batch.block_indices)
+        adapter.commit(batch.ucm_chunk_ids, batch.chunk_indices)
         assert lower.read_record(key) == (data, batch.metadata[0])
     assert a not in upper.records and a not in middle.records
     adapter.submit("load", transfer((a,), [7], [[300]], offsets=[[4]], sizes=[[4]]))
@@ -210,7 +211,7 @@ def test_failed_writeback_pins_source_and_flush_retries(tmp_path):
     adapter.submit("dump", batch)
     with patch.object(lower, "write_record", side_effect=OSError("disk failure")):
         with pytest.raises(UCMProxyError, match="commit"):
-            adapter.commit(batch.ucm_block_ids, batch.block_indices)
+            adapter.commit(batch.ucm_chunk_ids, batch.chunk_indices)
         memory.write(100, b"XXXXXXXX")
         with pytest.raises(MemoryError):
             upper.write_record(b"b" * 16, b"ijklmnop", "{}")
@@ -253,7 +254,7 @@ def test_parallel_never_falls_back_or_spills_to_other_route(tmp_path):
         # Pending reservations consume capacity without becoming visible.
         with pytest.raises(UCMProxyError):
             adapter.submit("dump", transfer((b"b" * 16,), [6], [[100]]))
-        adapter.abort(batch.ucm_block_ids, batch.block_indices)
+        adapter.abort(batch.ucm_chunk_ids, batch.chunk_indices)
         assert cache.lookup((key,)) == (False,)
     assert disk.read_record(key)[0] == b"wrongway"
     proxy.close()
@@ -288,7 +289,7 @@ def test_parallel_drains_other_route_when_one_fails(failure):
         adapter.submit("dump", batch)
     assert stores[0].waited == 1
     assert stores[1].waited == (0 if failure == "submit" else 1)
-    adapter.abort(batch.ucm_block_ids, batch.block_indices)
+    adapter.abort(batch.ucm_chunk_ids, batch.chunk_indices)
     assert not any(store.store._pending for store in stores)
 
 
@@ -299,7 +300,7 @@ def test_parallel_drains_other_route_when_one_fails(failure):
 def test_invalid_positions_fail_before_store_io(indices):
     store = MemoryTestStore(MemoryByteAccess(ByteMemory()))
     adapter = UCMProxyAdapter(PipelineProxy(store))
-    batch = replace(transfer((b"a" * 16,), [0], [[100]]), block_indices=indices)
+    batch = replace(transfer((b"a" * 16,), [0], [[100]]), chunk_indices=indices)
     with pytest.raises(UCMProxyError):
         adapter.submit("dump", batch)
     assert store._pending == {}
@@ -346,7 +347,7 @@ def test_factory_one_proxy_per_process_ranks_differ_only_by_id(tmp_path, mode):
     common_ids = (b"a" * 12, b"b" * 12)
     # Two TP ranks with distinct heads: one shard each, same Stores.
     ids = [
-        make_local_ucm_block_ids(common_ids, AttentionType.FA, 0, ShardKey(head_key=tp))
+        make_local_ucm_chunk_ids(common_ids, AttentionType.FA, 0, ShardKey(head_key=tp))
         for tp in range(2)
     ]
     every_rank = (*ids[0], *ids[1])
@@ -363,11 +364,11 @@ def test_factory_one_proxy_per_process_ranks_differ_only_by_id(tmp_path, mode):
             for row in range(2):
                 one = transfer((ids[i][row],), [7 + row], [[100]])
                 writer.submit("dump", one)
-                writer.commit(one.ucm_block_ids, one.block_indices)
+                writer.commit(one.ucm_chunk_ids, one.chunk_indices)
         else:
             writer.submit("dump", batch)
-            writer.commit(ids[i], batch.block_indices)
-        assert scheduler.lookup(every_rank, np.tile(batch.block_indices, 2)) == (
+            writer.commit(ids[i], batch.chunk_indices)
+        assert scheduler.lookup(every_rank, np.tile(batch.chunk_indices, 2)) == (
             (True, True, False, False) if i == 0 else (True,) * 4
         )
         writer.submit("load", transfer(ids[i], [7, 8], [[200], [300]]))
@@ -425,8 +426,8 @@ def test_all_shard_lookup_accepts_hits_at_different_store_levels(tmp_path):
     access = MemoryByteAccess(ByteMemory())
     disk = FileTestStore(tmp_path, access)
     cache = MemoryTestStore(access, backend=disk)
-    group_info = UCMKVCacheGroupInfo(
-        0, 512, frozenset((KVCacheSpecKind.FULL_ATTENTION,)), tail_blocks=1
+    group_info = UCMKVCacheGroupSpec(
+        0, 512, frozenset((KVCacheSpecKind.FULL_ATTENTION,)), blocks_per_chunk=1
     )
     spec = UCMKVCacheSpec((group_info,), 512, 512, "cpu")
     lookup = UCMLookup(
@@ -435,16 +436,16 @@ def test_all_shard_lookup_accepts_hits_at_different_store_levels(tmp_path):
         UCMSharding(spec, ParallelLayout(tp=2)),
     )
     common_ids = (b"a" * 12,)
-    (shard0,) = make_local_ucm_block_ids(
+    (shard0,) = make_local_ucm_chunk_ids(
         common_ids, AttentionType.FA, 0, ShardKey(head_key=0)
     )
-    (shard1,) = make_local_ucm_block_ids(
+    (shard1,) = make_local_ucm_chunk_ids(
         common_ids, AttentionType.FA, 0, ShardKey(head_key=1)
     )
     cache.records[shard0] = (b"abcdefgh", "{}")
-    assert lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1) == 0
+    assert lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1) == 0
     disk.write_record(shard1, b"ijklmnop", "{}")
-    assert lookup._prefix_hit_end_block(AttentionType.FA, common_ids, 0, 1) == 1
+    assert lookup._prefix_hit_end_chunk(AttentionType.FA, common_ids, 0, 1) == 1
     cache.close()
 
 
@@ -455,12 +456,12 @@ def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
         KVCacheSpecKind.MAMBA,
     )
     groups = tuple(
-        UCMKVCacheGroupInfo(
+        UCMKVCacheGroupSpec(
             i,
             512,
             frozenset((kind,)),
             tail_tokens=512 if i == 1 else None,
-            tail_blocks=1,
+            blocks_per_chunk=1,
         )
         for i, kind in enumerate(kinds)
     )
@@ -479,16 +480,16 @@ def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
         b"seed",
     )
     request = FakeRequest("request", 5120)
-    ucm_block_ids_by_attention_type = request_ucm_ids(dispatcher, request)
-    for ucm_block_ids in ucm_block_ids_by_attention_type:
-        for index, ucm_block_id in enumerate(ucm_block_ids):
-            stores[0 if index < 8 else 1].write_record(ucm_block_id, b"", "{}")
+    ucm_chunk_ids_by_attention_type = request_ucm_ids(dispatcher, request)
+    for ucm_chunk_ids in ucm_chunk_ids_by_attention_type:
+        for index, ucm_chunk_id in enumerate(ucm_chunk_ids):
+            stores[0 if index < 8 else 1].write_record(ucm_chunk_id, b"", "{}")
     assert dispatcher.lookup(request, 3072).external_hit_tokens == 2048
     # Latest State exists only in the wrong route. The common boundary backs up.
-    stores[1].records.pop(ucm_block_ids_by_attention_type[2][9])
-    stores[0].write_record(ucm_block_ids_by_attention_type[2][9], b"", "{}")
+    stores[1].records.pop(ucm_chunk_ids_by_attention_type[2][9])
+    stores[0].write_record(ucm_chunk_ids_by_attention_type[2][9], b"", "{}")
     assert dispatcher.lookup(request, 3072).external_hit_tokens == 1536
-    stores[1].records.pop(ucm_block_ids_by_attention_type[1][8])
+    stores[1].records.pop(ucm_chunk_ids_by_attention_type[1][8])
     assert dispatcher.lookup(request, 3072).external_hit_tokens == 1024
 
 
@@ -540,17 +541,22 @@ def test_transfer_builder_keeps_absolute_positions_and_complete_record_size():
     layout, _, _ = make_layout()
     builder = UCMTransferBuilder(layout)
     keys = (b"a" * 12, b"b" * 12)
-    plan = UCMGroupDispatchPlan(AttentionType.FA, keys, 12, 20, (np.array([1, 2]),))
+    plan = UCMGroupDispatchPlan(
+        AttentionType.FA,
+        keys,
+        plan_token_starts(12, 20, len(keys)),
+        (np.array([1, 2]),),
+    )
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,), load_plans=(plan,))}
     )
     for layer in layout.layer_id_by_name:
         (dump,) = builder.build_dump_transfers(metadata, layer_name=layer)
         (load,) = builder.build_load_transfers(metadata, layer_name=layer)
-        np.testing.assert_array_equal(dump.block_indices, [3, 4])
-        np.testing.assert_array_equal(load.block_indices, [3, 4])
+        np.testing.assert_array_equal(dump.chunk_indices, [3, 4])
+        np.testing.assert_array_equal(load.chunk_indices, [3, 4])
         np.testing.assert_array_equal(dump.record_nbytes, [16, 16])
-        assert [json.loads(item)["block_index"] for item in dump.metadata] == [3, 4]
+        assert [json.loads(item)["chunk_index"] for item in dump.metadata] == [3, 4]
         assert int(dump.sizes.sum(axis=1)[0]) == 8
         assert load.record_nbytes is None
 
@@ -578,22 +584,22 @@ def test_connector_save_commits_to_original_route_and_shutdown_drains(layerwise)
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 12,), 12, 16, (np.array([1]),)
+        AttentionType.FA, (b"a" * 12,), plan_token_starts(12, 16, 1), (np.array([1]),)
     )
     worker._connector_metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
     )
     worker.wait_for_save()
-    ucm_block_ids = ucm_ids(plan.common_ucm_block_ids)
-    assert stores[0].store.lookup(ucm_block_ids) == (False,)
-    assert stores[1].store.lookup(ucm_block_ids) == (True,)
-    assert stores[1].store.records[ucm_block_ids[0]][0] == b"abcdefghijklmnop"
+    ucm_chunk_ids = ucm_ids(plan.common_ucm_chunk_ids)
+    assert stores[0].store.lookup(ucm_chunk_ids) == (False,)
+    assert stores[1].store.lookup(ucm_chunk_ids) == (True,)
+    assert stores[1].store.records[ucm_chunk_ids[0]][0] == b"abcdefghijklmnop"
     worker.shutdown()
 
 
 def test_empty_pp_marker_carries_position_and_commits_only_its_route():
-    group_info = UCMKVCacheGroupInfo(
-        0, 512, frozenset((KVCacheSpecKind.MAMBA,)), tail_blocks=1
+    group_info = UCMKVCacheGroupSpec(
+        0, 512, frozenset((KVCacheSpecKind.MAMBA,)), blocks_per_chunk=1
     )
     spec = UCMKVCacheSpec((group_info,), 512, 512, "cpu")
     stores = [MemoryTestStore(MemoryByteAccess(ByteMemory())) for _ in range(2)]
@@ -603,19 +609,22 @@ def test_empty_pp_marker_carries_position_and_commits_only_its_route():
     worker.transfer_builder = UCMTransferBuilder(worker.layout)
     worker._proxy = UCMProxyAdapter(ParallelProxy(stores, [4096, None], 512))
     plan = UCMGroupDispatchPlan(
-        AttentionType.STATE, (b"s" * 12,), 4096, 4608, (np.array([], dtype=np.uint64),)
+        AttentionType.STATE,
+        (b"s" * 12,),
+        plan_token_starts(4096, 4608, 1),
+        (np.array([], dtype=np.uint64),),
     )
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
     )
     (batch,) = worker._dump_empty_shards(metadata)
-    np.testing.assert_array_equal(batch.block_indices, [8])
-    ucm_block_ids = ucm_ids(plan.common_ucm_block_ids, AttentionType.STATE)
-    assert batch.ucm_block_ids == ucm_block_ids
-    assert stores[1].lookup(ucm_block_ids) == (False,)
-    worker._proxy.commit(batch.ucm_block_ids, batch.block_indices)
-    assert stores[1].records[ucm_block_ids[0]][0] == b""
-    assert stores[0].lookup(ucm_block_ids) == (False,)
+    np.testing.assert_array_equal(batch.chunk_indices, [8])
+    ucm_chunk_ids = ucm_ids(plan.common_ucm_chunk_ids, AttentionType.STATE)
+    assert batch.ucm_chunk_ids == ucm_chunk_ids
+    assert stores[1].lookup(ucm_chunk_ids) == (False,)
+    worker._proxy.commit(batch.ucm_chunk_ids, batch.chunk_indices)
+    assert stores[1].records[ucm_chunk_ids[0]][0] == b""
+    assert stores[0].lookup(ucm_chunk_ids) == (False,)
 
 
 def test_reused_committed_record_is_pinned_until_its_commit():
@@ -628,7 +637,7 @@ def test_reused_committed_record_is_pinned_until_its_commit():
     adapter.submit("dump", batch)
     with pytest.raises(MemoryError):
         store.write_record(b"b" * 16, b"ijklmnop", "{}")
-    adapter.commit(batch.ucm_block_ids, batch.block_indices)
+    adapter.commit(batch.ucm_chunk_ids, batch.chunk_indices)
     store.write_record(b"b" * 16, b"ijklmnop", "{}")
     assert store.lookup((key,)) == (False,)
 
@@ -654,7 +663,10 @@ def test_connector_failed_dump_drains_and_aborts_pending(layerwise):
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 12, b"b" * 12), 8, 16, (np.array([1, 2]),)
+        AttentionType.FA,
+        (b"a" * 12, b"b" * 12),
+        plan_token_starts(8, 16, 2),
+        (np.array([1, 2]),),
     )
     worker._connector_metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
@@ -768,7 +780,7 @@ def test_late_load_failure_discards_already_enqueued_layer_dumps():
     worker._failed_load_reqs = set()
     worker._save_complete = False
     plan = UCMGroupDispatchPlan(
-        AttentionType.FA, (b"a" * 12,), 12, 16, (np.array([1]),)
+        AttentionType.FA, (b"a" * 12,), plan_token_starts(12, 16, 1), (np.array([1]),)
     )
     metadata = UCMConnectorMetadata(
         requests={"r": RequestDispatchMeta("r", dump_plans=(plan,))}
@@ -779,5 +791,5 @@ def test_late_load_failure_discards_already_enqueued_layer_dumps():
     worker.wait_for_save()
     assert store.waited == 1
     assert not store.store._pending
-    assert store.store.lookup(ucm_ids(plan.common_ucm_block_ids)) == (False,)
+    assert store.store.lookup(ucm_ids(plan.common_ucm_chunk_ids)) == (False,)
     worker.shutdown()

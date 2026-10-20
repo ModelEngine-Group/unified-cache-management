@@ -1,7 +1,7 @@
 """KV-cache metadata and the layout aggregate, independent of dispatch plans.
 
 Parse shared persistence policy from KVCacheConfig; worker registration binds
-HBM group layouts and compiles each group's storage template. No UCM block ids,
+HBM group layouts and compiles each group's storage template. No UCM chunk ids,
 connector metadata or proxy transfers are interpreted here.
 """
 
@@ -68,31 +68,30 @@ class UCMLayerSpec:
 
 
 @dataclass
-class UCMKVCacheGroupInfo:
-    """Shared persistence policy; token_block_size is tokens per block ID."""
+class UCMKVCacheGroupSpec:
+    """Shared persistence policy; tokens_per_block is tokens per block ID."""
 
     group_id: int
-    token_block_size: int
+    tokens_per_block: int
     kinds: frozenset[KVCacheSpecKind]
     tail_tokens: int | None = None
-    # vLLM blocks one UCM block's window spans (0 = the group stores
-    # nothing); the parser stamps it once the cache block size is known.
-    tail_blocks: int = 0
+    # vLLM blocks one UCM chunk's window spans (0 = the group stores
+    # nothing); the parser stamps it once tokens_per_chunk is known.
+    blocks_per_chunk: int = 0
     is_eagle_group: bool = False
-    # transient kv cache is not stored
-    # (vLLM does not list it in prefix_cacheable_group_ids)
-    is_transient: bool = False
+    # Only groups vLLM lists in prefix_cacheable_group_ids are stored.
+    is_persistent: bool = True
     # Number of different shards of this group's data across TP ranks.
     # None means every TP rank holds different data. MLA and replicated
     # Mamba state have 1.
     tp_shards: int | None = None
     # Same as vLLM's dcp_sharded: tokens are spread over DCP ranks, so one
-    # block covers dcp * token_block_size tokens.
+    # block covers dcp * tokens_per_block tokens.
     dcp_sharded: bool = True
 
     @property
     def is_attention(self) -> bool:
-        return not self.is_transient and KVCacheSpecKind.MAMBA not in self.kinds
+        return self.is_persistent and KVCacheSpecKind.MAMBA not in self.kinds
 
     @property
     def is_sliding_window(self) -> bool:
@@ -110,26 +109,26 @@ class UCMKVCacheSpec:
     scheduler_block_size is what vLLM's
     ``resolve_kv_cache_block_sizes`` reports for this engine -- the
     token-alignment invariant of the resident KV pool (single group:
-    ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
-    counts tokens per record (one UCM block id), defining the
+    ``cache_config.block_size``; multiple groups: LCM).  tokens_per_chunk
+    counts tokens per record (one UCM chunk id), defining the
     restore boundaries. An explicit size must be a multiple of
     scheduler_block_size; State defaults to that common alignment, while
     attention-only models default to their smallest FA block span.
     """
 
-    groups: tuple[UCMKVCacheGroupInfo, ...]
+    groups: tuple[UCMKVCacheGroupSpec, ...]
     scheduler_block_size: int
-    ucm_cache_block_size: int
+    tokens_per_chunk: int
     device_type: str
     # Attention modules per decoder layer, for layer ids (Longcat has 2).
     num_attn_module: int = 1
 
     @property
-    def state_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def state_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(group for group in self.groups if group.is_state_snapshot)
 
     @property
-    def fa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def fa_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(
             group
             for group in self.groups
@@ -137,33 +136,35 @@ class UCMKVCacheSpec:
         )
 
     @property
-    def wa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+    def wa_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
         return tuple(group for group in self.groups if group.is_sliding_window)
 
 
-def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
-    """vLLM blocks one UCM block's window spans (0 = the group stores nothing).
+def _group_blocks_per_chunk(group: UCMKVCacheGroupSpec, tokens_per_chunk: int) -> int:
+    """vLLM blocks one UCM chunk's window spans (0 = the group stores nothing).
 
     HMA's ``tail_blocks`` with the one generalization v2 needs: a tail
     that does not divide the block still keeps its partial head block
     (ceil, not HMA's floor).  A state snapshot is one indivisible
-    checkpoint page; a full-attention UCM block spans every vLLM block it
+    checkpoint page; a full-attention UCM chunk spans every vLLM block it
     covers, or one slice of a vLLM block when it is smaller.
     """
 
-    token_block_size = group.token_block_size
-    if group.is_transient:
-        return 0
+    tokens_per_block = group.tokens_per_block
     if group.is_state_snapshot:
         return 1
-    if group.is_sliding_window:
+    elif group.is_sliding_window:
         tail_tokens = group.tail_tokens or 0
         return (
-            (tail_tokens + token_block_size - 1) // token_block_size
+            (tail_tokens + tokens_per_block - 1) // tokens_per_block
             if tail_tokens > 0
             else 0
         )
-    return (ucm_block_size + token_block_size - 1) // token_block_size
+    elif group.is_persistent:
+        return (tokens_per_chunk + tokens_per_block - 1) // tokens_per_block
+    else:
+        # A group that is not stored has no kind and spans no blocks.
+        return 0
 
 
 def _concrete_specs(
@@ -279,54 +280,56 @@ def _sliding_tail_tokens(
     return tail_sizes.pop()
 
 
-def _select_cache_block_size(
-    groups: Sequence[UCMKVCacheGroupInfo],
+def _select_tokens_per_chunk(
+    groups: Sequence[UCMKVCacheGroupSpec],
     scheduler_block_size: int,
-    requested_block_size: int | None,
+    requested_tokens_per_chunk: int | None,
     tokens_per_state: Mapping[int, int],
 ) -> int:
-    # By default a UCM block is one vLLM scheduler block.
-    if requested_block_size is None:
-        ucm_block_size = scheduler_block_size
-    elif requested_block_size > 0:
-        ucm_block_size = requested_block_size
+    # By default a UCM chunk is one vLLM scheduler block.
+    if requested_tokens_per_chunk is None:
+        tokens_per_chunk = scheduler_block_size
+    elif requested_tokens_per_chunk > 0:
+        tokens_per_chunk = requested_tokens_per_chunk
         logger.info(
-            "Use ucm_cache_block_size=%d from the connector config instead of "
+            "Use tokens_per_chunk=%d from the connector config instead of "
             "scheduler_block_size=%d.",
-            requested_block_size,
+            requested_tokens_per_chunk,
             scheduler_block_size,
         )
     else:
-        raise ValueError("ucm_cache_block_size must be positive")
+        raise ValueError("tokens_per_chunk must be positive")
 
     for group in groups:
         is_full_attention = group.is_attention and not group.is_sliding_window
-        if is_full_attention and ucm_block_size < group.token_block_size:
-            # Each UCM block stores one slice of a vLLM block. Slices must
+        if is_full_attention and tokens_per_chunk < group.tokens_per_block:
+            # Each UCM chunk stores one slice of a vLLM block. Slices must
             # tile the block and hold whole compressed KV rows.
             if (
-                group.token_block_size % ucm_block_size
-                or ucm_block_size % tokens_per_state[group.group_id]
+                group.tokens_per_block % tokens_per_chunk
+                or tokens_per_chunk % tokens_per_state[group.group_id]
             ):
                 raise ValueError(
-                    f"FA group {group.group_id}: UCM block size {ucm_block_size} "
-                    f"must divide its block span {group.token_block_size} and be a "
+                    f"FA group {group.group_id}: tokens_per_chunk {tokens_per_chunk} "
+                    f"must divide its block span {group.tokens_per_block} and be a "
                     f"multiple of its tokens_per_state="
                     f"{tokens_per_state[group.group_id]}"
                 )
-        elif group.is_transient or (group.is_sliding_window and not group.tail_tokens):
-            # A transient group or a sliding group with no tail stores nothing,
-            # so it puts no limit on the UCM block size.
+        elif not group.is_persistent or (
+            group.is_sliding_window and not group.tail_tokens
+        ):
+            # A group that is not stored or a sliding group with no tail stores nothing,
+            # so it puts no limit on tokens_per_chunk.
             continue
         else:
-            # FA, State and sliding groups with a tail: a UCM block holds
+            # FA, State and sliding groups with a tail: a UCM chunk holds
             # whole vLLM blocks of this group.
-            if ucm_block_size % group.token_block_size:
+            if tokens_per_chunk % group.tokens_per_block:
                 raise ValueError(
-                    f"Group {group.group_id} block span {group.token_block_size} "
-                    f"must divide UCM block size {ucm_block_size}"
+                    f"Group {group.group_id} block span {group.tokens_per_block} "
+                    f"must divide tokens_per_chunk {tokens_per_chunk}"
                 )
-    return ucm_block_size
+    return tokens_per_chunk
 
 
 def parse_kv_cache_config(
@@ -334,7 +337,7 @@ def parse_kv_cache_config(
     *,
     scheduler_block_size: int,
     hf_text_config: Any,
-    ucm_cache_block_size: int | None = None,
+    tokens_per_chunk: int | None = None,
     device_type: str = "npu",
     num_attn_module: int = 1,
 ) -> UCMKVCacheSpec:
@@ -344,13 +347,13 @@ def parse_kv_cache_config(
     hf_text_config supplies the DSV4 compressor ratios the native specs do not
     carry. vLLM's prefix_cacheable_group_ids selects the groups UCM stores;
     rebuilding scratch caches belongs to the engine. Native group positions
-    remain block-table IDs, including transient and empty PP groups.
+    remain block-table IDs, including non-persistent and empty PP groups.
     """
     device_type = device_type.lower()
     native_groups = kv_cache_config.kv_cache_groups
     if not native_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
-    group_infos: list[UCMKVCacheGroupInfo] = []
+    group_infos: list[UCMKVCacheGroupSpec] = []
     # Groups vLLM does not list as prefix-cacheable (scratch rings, replayed
     # windows) are not stored.
     stored_group_ids = set(kv_cache_config.prefix_cacheable_group_ids)
@@ -370,58 +373,60 @@ def parse_kv_cache_config(
         uses_prefix_replay = uses_prefix_replay or any(
             getattr(spec, "prefix_replay_tokens", 0) > 0 for spec in member_specs
         )
-        is_transient = group_id not in stored_group_ids
-        # Transient groups are not stored, so they get no kind.
-        if is_transient:
-            spec_kinds = frozenset()
-        else:
+        is_persistent = group_id in stored_group_ids
+        # Groups that are not stored get no kind.
+        if is_persistent:
             spec_kinds = _classify(member_specs)
+        else:
+            spec_kinds = frozenset()
         if KVCacheSpecKind.MAMBA in spec_kinds and any(
             spec.mamba_cache_mode != "align" for spec in member_specs
         ):
             raise ValueError("connector v2 requires mamba_cache_mode='align'")
         is_sliding_window = not spec_kinds.isdisjoint(_SLIDING_KINDS)
-        if is_transient:
-            tail_tokens = 0
-        elif is_sliding_window:
+        if is_sliding_window:
             tail_tokens = _sliding_tail_tokens(
                 native_group, hf_text_config, device_type, num_attn_module
             )
-        else:
+        elif is_persistent:
             tail_tokens = None
+        else:
+            tail_tokens = 0
         tp_shards, dcp_sharded = _group_sharding(member_specs)
         group_infos.append(
-            UCMKVCacheGroupInfo(
+            UCMKVCacheGroupSpec(
                 group_id=group_id,
-                token_block_size=native_group.kv_cache_spec.block_size,
+                tokens_per_block=native_group.kv_cache_spec.block_size,
                 kinds=spec_kinds,
                 tail_tokens=tail_tokens,
                 is_eagle_group=native_group.is_eagle_group,
-                is_transient=is_transient,
+                is_persistent=is_persistent,
                 tp_shards=tp_shards,
                 dcp_sharded=dcp_sharded,
             )
         )
-    selected_block_size = _select_cache_block_size(
+    selected_tokens_per_chunk = _select_tokens_per_chunk(
         group_infos,
         scheduler_block_size,
-        ucm_cache_block_size,
+        tokens_per_chunk,
         tokens_per_state,
     )
-    if uses_prefix_replay and selected_block_size < scheduler_block_size:
+    if uses_prefix_replay and selected_tokens_per_chunk < scheduler_block_size:
         logger.warning(
-            "ucm_cache_block_size=%d is smaller than scheduler_block_size=%d, but "
+            "tokens_per_chunk=%d is smaller than scheduler_block_size=%d, but "
             "vLLM SWA bounded replay rounds external hits down to "
-            "scheduler_block_size, so the smaller UCM blocks give no finer hits.",
-            selected_block_size,
+            "scheduler_block_size, so the smaller UCM chunks give no finer hits.",
+            selected_tokens_per_chunk,
             scheduler_block_size,
         )
     for group_info in group_infos:
-        group_info.tail_blocks = _group_tail_blocks(group_info, selected_block_size)
+        group_info.blocks_per_chunk = _group_blocks_per_chunk(
+            group_info, selected_tokens_per_chunk
+        )
     spec = UCMKVCacheSpec(
         tuple(group_infos),
         scheduler_block_size,
-        selected_block_size,
+        selected_tokens_per_chunk,
         device_type,
         num_attn_module,
     )
@@ -430,13 +435,13 @@ def parse_kv_cache_config(
             layout_debug(
                 f"policy group={group_info.group_id} "
                 f"kinds={sorted(kind.value for kind in group_info.kinds)} "
-                f"transient={group_info.is_transient} "
-                f"token_block={group_info.token_block_size} "
-                f"tail={group_info.tail_tokens} tail_blocks={group_info.tail_blocks}"
+                f"persistent={group_info.is_persistent} "
+                f"token_block={group_info.tokens_per_block} "
+                f"tail={group_info.tail_tokens} blocks_per_chunk={group_info.blocks_per_chunk}"
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
-            f"ucm_cache_block={selected_block_size} device={device_type}"
+            f"ucm_cache_block={selected_tokens_per_chunk} device={device_type}"
         )
     return spec
 
@@ -465,7 +470,7 @@ class UCMKVCacheLayout:
             group.group_id: GroupStoreLayout.build(
                 group,
                 self.group_layouts[group.group_id],
-                spec.ucm_cache_block_size,
+                spec.tokens_per_chunk,
                 use_layerwise=use_layerwise,
             )
             for group in spec.groups
@@ -476,7 +481,7 @@ class UCMKVCacheLayout:
         self.layer_id_by_name = {
             layer.layer_name: layer.layer_index
             for group_layout in self.group_layouts.values()
-            for layer in group_layout.layers
+            for layer in group_layout.layer_specs
         }
         layer_name_lists: dict[int, list[str]] = {}
         for layer_name, layer_id in self.layer_id_by_name.items():

@@ -113,7 +113,7 @@ class TorchTensorByteAccess:
 
 
 def record_segments(
-    ucm_block_ids: Sequence[bytes],
+    ucm_chunk_ids: Sequence[bytes],
     offsets: np.ndarray,
     ptrs: np.ndarray,
     sizes: np.ndarray,
@@ -125,34 +125,34 @@ def record_segments(
             # A single segment needs no row views or three map iterators.
             # Column views also work for strided/broadcast matrices.
             return (
-                (bytes(ucm_block_id), ((int(o), int(p), int(s)),))
-                for ucm_block_id, o, p, s in zip(
-                    ucm_block_ids, offsets[:, 0], ptrs[:, 0], sizes[:, 0], strict=True
+                (bytes(ucm_chunk_id), ((int(o), int(p), int(s)),))
+                for ucm_chunk_id, o, p, s in zip(
+                    ucm_chunk_ids, offsets[:, 0], ptrs[:, 0], sizes[:, 0], strict=True
                 )
             )
         return (
-            (bytes(ucm_block_id), zip(map(int, o), map(int, p), map(int, s)))
-            for ucm_block_id, o, p, s in zip(
-                ucm_block_ids, offsets, ptrs, sizes, strict=True
+            (bytes(ucm_chunk_id), zip(map(int, o), map(int, p), map(int, s)))
+            for ucm_chunk_id, o, p, s in zip(
+                ucm_chunk_ids, offsets, ptrs, sizes, strict=True
             )
         )
     # Compatibility for the legacy flat test/toolkit API only.
     records: dict[bytes, list[tuple[int, int, int]]] = {}
-    for ucm_block_id, offset, ptr, size in zip(
-        ucm_block_ids, offsets, ptrs, sizes, strict=True
+    for ucm_chunk_id, offset, ptr, size in zip(
+        ucm_chunk_ids, offsets, ptrs, sizes, strict=True
     ):
-        records.setdefault(bytes(ucm_block_id), []).append(
+        records.setdefault(bytes(ucm_chunk_id), []).append(
             (int(offset), int(ptr), int(size))
         )
     return records.items()
 
 
 class FileTestStore:
-    """Synchronous file backend with explicit UCM block publication.
+    """Synchronous file backend with explicit UCM chunk publication.
 
-    Dump accumulates byte ranges in a private .tmp file per ucm_block_id. Commit
+    Dump accumulates byte ranges in a private .tmp file per ucm_chunk_id. Commit
     atomically renames it to the visible .ucm file. The caller guarantees
-    all required ranges have been written before committing a ucm_block_id.
+    all required ranges have been written before committing a ucm_chunk_id.
     """
 
     _SUFFIX = ".ucm"
@@ -172,37 +172,37 @@ class FileTestStore:
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
         self.byte_access.register_tensors(kv_caches)
 
-    def _path(self, ucm_block_id: bytes) -> Path:
-        return self.root / f"{bytes(ucm_block_id).hex()}{self._SUFFIX}"
+    def _path(self, ucm_chunk_id: bytes) -> Path:
+        return self.root / f"{bytes(ucm_chunk_id).hex()}{self._SUFFIX}"
 
-    def lookup(self, ucm_block_ids: Sequence[bytes]) -> tuple[bool, ...]:
+    def lookup(self, ucm_chunk_ids: Sequence[bytes]) -> tuple[bool, ...]:
         return tuple(
-            self._path(ucm_block_id).is_file() for ucm_block_id in ucm_block_ids
+            self._path(ucm_chunk_id).is_file() for ucm_chunk_id in ucm_chunk_ids
         )
 
-    def lookup_on_prefix(self, ucm_block_ids: Sequence[bytes]) -> int:
+    def lookup_on_prefix(self, ucm_chunk_ids: Sequence[bytes]) -> int:
         return next(
             (
                 row - 1
-                for row, ucm_block_id in enumerate(ucm_block_ids)
-                if not self._path(ucm_block_id).is_file()
+                for row, ucm_chunk_id in enumerate(ucm_chunk_ids)
+                if not self._path(ucm_chunk_id).is_file()
             ),
-            len(ucm_block_ids) - 1,
+            len(ucm_chunk_ids) - 1,
         )
 
-    def lookup_on_reverse(self, ucm_block_ids: Sequence[bytes]) -> int:
+    def lookup_on_reverse(self, ucm_chunk_ids: Sequence[bytes]) -> int:
         return next(
             (
                 row
-                for row in range(len(ucm_block_ids) - 1, -1, -1)
-                if self._path(ucm_block_ids[row]).is_file()
+                for row in range(len(ucm_chunk_ids) - 1, -1, -1)
+                if self._path(ucm_chunk_ids[row]).is_file()
             ),
             -1,
         )
 
     def dump(
         self,
-        ucm_block_ids: Sequence[bytes],
+        ucm_chunk_ids: Sequence[bytes],
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
@@ -210,21 +210,21 @@ class FileTestStore:
         record_nbytes: np.ndarray | None = None,
     ) -> None:
         if metadata:
-            self._pending_metadata.update(zip(ucm_block_ids, metadata, strict=True))
+            self._pending_metadata.update(zip(ucm_chunk_ids, metadata, strict=True))
         self.byte_access.synchronize()
-        for row, (ucm_block_id, segments) in enumerate(
-            record_segments(ucm_block_ids, offsets, ptrs, sizes)
+        for row, (ucm_chunk_id, segments) in enumerate(
+            record_segments(ucm_chunk_ids, offsets, ptrs, sizes)
         ):
-            temporary = self._pending.get(ucm_block_id)
+            temporary = self._pending.get(ucm_chunk_id)
             if temporary is None:
-                target = self._path(ucm_block_id)
+                target = self._path(ucm_chunk_id)
                 temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
                 mode = "xb"
             else:
                 mode = "r+b"
             try:
                 with temporary.open(mode) as stream:
-                    self._pending[ucm_block_id] = temporary
+                    self._pending[ucm_chunk_id] = temporary
                     if record_nbytes is not None and mode == "xb":
                         stream.truncate(int(record_nbytes[row]))
                     for offset, ptr, size in segments:
@@ -236,50 +236,50 @@ class FileTestStore:
                         stream.seek(offset)
                         stream.write(payload)
             except Exception:
-                self._pending.pop(ucm_block_id, None)
-                self._pending_metadata.pop(ucm_block_id, None)
+                self._pending.pop(ucm_chunk_id, None)
+                self._pending_metadata.pop(ucm_chunk_id, None)
                 temporary.unlink(missing_ok=True)
                 raise
 
-    def commit(self, ucm_block_ids: Sequence[bytes]) -> None:
-        """Publish only the supplied ucm_block_ids; already committed ucm_block_ids are a no-op.
+    def commit(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+        """Publish only the supplied ucm_chunk_ids; already committed ucm_chunk_ids are a no-op.
 
-        Publication is atomic per ucm_block_id, not across the whole ucm_block_id sequence.
+        Publication is atomic per ucm_chunk_id, not across the whole ucm_chunk_id sequence.
         Private temporary names isolate independent Proxy writers.
         """
-        for ucm_block_id in ucm_block_ids:
-            temporary = self._pending.get(ucm_block_id)
+        for ucm_chunk_id in ucm_chunk_ids:
+            temporary = self._pending.get(ucm_chunk_id)
             if temporary is None:
-                if self._path(ucm_block_id).is_file():
+                if self._path(ucm_chunk_id).is_file():
                     continue
-                raise KeyError(f"No pending UCM block to commit: {ucm_block_id.hex()}")
-            self._path(ucm_block_id).with_suffix(".json").write_text(
-                self._pending_metadata.get(ucm_block_id, "{}")
+                raise KeyError(f"No pending UCM chunk to commit: {ucm_chunk_id.hex()}")
+            self._path(ucm_chunk_id).with_suffix(".json").write_text(
+                self._pending_metadata.get(ucm_chunk_id, "{}")
             )
-            os.replace(temporary, self._path(ucm_block_id))
-            del self._pending[ucm_block_id]
-            self._pending_metadata.pop(ucm_block_id, None)
+            os.replace(temporary, self._path(ucm_chunk_id))
+            del self._pending[ucm_chunk_id]
+            self._pending_metadata.pop(ucm_chunk_id, None)
 
     def load(
         self,
-        ucm_block_ids: Sequence[bytes],
+        ucm_chunk_ids: Sequence[bytes],
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> None:
-        records = record_segments(ucm_block_ids, offsets, ptrs, sizes)
-        for ucm_block_id, segments in records:
-            path = self._path(ucm_block_id)
+        records = record_segments(ucm_chunk_ids, offsets, ptrs, sizes)
+        for ucm_chunk_id, segments in records:
+            path = self._path(ucm_chunk_id)
             try:
                 record = path.read_bytes()
             except FileNotFoundError as exc:
-                raise KeyError(f"UCM record not found: {ucm_block_id.hex()}") from exc
+                raise KeyError(f"UCM record not found: {ucm_chunk_id.hex()}") from exc
             for offset, ptr, size in segments:
                 end = offset + size
                 if end > len(record):
                     raise ValueError(
                         f"Load range [{offset}, {end}) exceeds record "
-                        f"{ucm_block_id.hex()} size {len(record)}"
+                        f"{ucm_chunk_id.hex()} size {len(record)}"
                     )
                 self.byte_access.write(ptr, record[offset:end])
         self.byte_access.synchronize()
@@ -288,17 +288,17 @@ class FileTestStore:
         if task is not None:
             raise ValueError(f"FileTestStore is synchronous, got task {task!r}")
 
-    def read_record(self, ucm_block_id: bytes) -> tuple[bytes, str]:
+    def read_record(self, ucm_chunk_id: bytes) -> tuple[bytes, str]:
         try:
-            payload = self._path(ucm_block_id).read_bytes()
+            payload = self._path(ucm_chunk_id).read_bytes()
         except FileNotFoundError as exc:
-            raise KeyError(ucm_block_id) from exc
-        metadata_path = self._path(ucm_block_id).with_suffix(".json")
+            raise KeyError(ucm_chunk_id) from exc
+        metadata_path = self._path(ucm_chunk_id).with_suffix(".json")
         metadata = metadata_path.read_text() if metadata_path.exists() else "{}"
         return payload, metadata
 
-    def write_record(self, ucm_block_id: bytes, payload: bytes, metadata: str) -> None:
-        target = self._path(ucm_block_id)
+    def write_record(self, ucm_chunk_id: bytes, payload: bytes, metadata: str) -> None:
+        target = self._path(ucm_chunk_id)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
             temporary.write_bytes(payload)
@@ -307,12 +307,12 @@ class FileTestStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def abort(self, ucm_block_ids: Sequence[bytes]) -> None:
-        for ucm_block_id in ucm_block_ids:
-            temporary = self._pending.pop(ucm_block_id, None)
+    def abort(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+        for ucm_chunk_id in ucm_chunk_ids:
+            temporary = self._pending.pop(ucm_chunk_id, None)
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-            self._pending_metadata.pop(ucm_block_id, None)
+            self._pending_metadata.pop(ucm_chunk_id, None)
 
     def flush(self) -> None:
         pass
@@ -352,87 +352,87 @@ class MemoryTestStore:
         used = sum(len(payload) for payload, _ in self.records.values())
         used += sum(len(payload) for payload, _ in self._pending.values())
         victims = []
-        for ucm_block_id, (payload, _) in self.records.items():
+        for ucm_chunk_id, (payload, _) in self.records.items():
             if used + size <= self.capacity_bytes:
                 break
-            if ucm_block_id not in self._writeback and ucm_block_id not in self._reused:
-                victims.append(ucm_block_id)
+            if ucm_chunk_id not in self._writeback and ucm_chunk_id not in self._reused:
+                victims.append(ucm_chunk_id)
                 used -= len(payload)
         if used + size > self.capacity_bytes:
             raise MemoryError(
                 "Test Store capacity exhausted by pending or pinned records"
             )
-        for ucm_block_id in victims:
-            del self.records[ucm_block_id]
+        for ucm_chunk_id in victims:
+            del self.records[ucm_chunk_id]
 
-    def lookup(self, ucm_block_ids: Sequence[bytes]) -> tuple[bool, ...]:
-        hits = [ucm_block_id in self.records for ucm_block_id in ucm_block_ids]
+    def lookup(self, ucm_chunk_ids: Sequence[bytes]) -> tuple[bool, ...]:
+        hits = [ucm_chunk_id in self.records for ucm_chunk_id in ucm_chunk_ids]
         missing_rows = [row for row, is_hit in enumerate(hits) if not is_hit]
         if self.backend is not None and missing_rows:
             backend_hits = self.backend.lookup(
-                tuple(ucm_block_ids[row] for row in missing_rows)
+                tuple(ucm_chunk_ids[row] for row in missing_rows)
             )
             for row, is_hit in zip(missing_rows, backend_hits, strict=True):
                 hits[row] = is_hit
         return tuple(hits)
 
-    def _has_record(self, ucm_block_id: bytes) -> bool:
-        if ucm_block_id in self.records:
+    def _has_record(self, ucm_chunk_id: bytes) -> bool:
+        if ucm_chunk_id in self.records:
             return True
         else:
             return self.backend is not None and bool(
-                self.backend.lookup((ucm_block_id,))[0]
+                self.backend.lookup((ucm_chunk_id,))[0]
             )
 
-    def lookup_on_prefix(self, ucm_block_ids: Sequence[bytes]) -> int:
+    def lookup_on_prefix(self, ucm_chunk_ids: Sequence[bytes]) -> int:
         return next(
             (
                 row - 1
-                for row, ucm_block_id in enumerate(ucm_block_ids)
-                if not self._has_record(ucm_block_id)
+                for row, ucm_chunk_id in enumerate(ucm_chunk_ids)
+                if not self._has_record(ucm_chunk_id)
             ),
-            len(ucm_block_ids) - 1,
+            len(ucm_chunk_ids) - 1,
         )
 
-    def lookup_on_reverse(self, ucm_block_ids: Sequence[bytes]) -> int:
+    def lookup_on_reverse(self, ucm_chunk_ids: Sequence[bytes]) -> int:
         return next(
             (
                 row
-                for row in range(len(ucm_block_ids) - 1, -1, -1)
-                if self._has_record(ucm_block_ids[row])
+                for row in range(len(ucm_chunk_ids) - 1, -1, -1)
+                if self._has_record(ucm_chunk_ids[row])
             ),
             -1,
         )
 
-    def read_record(self, ucm_block_id: bytes) -> tuple[bytes, str]:
-        if ucm_block_id in self.records:
-            self.records.move_to_end(ucm_block_id)
-            return self.records[ucm_block_id]
+    def read_record(self, ucm_chunk_id: bytes) -> tuple[bytes, str]:
+        if ucm_chunk_id in self.records:
+            self.records.move_to_end(ucm_chunk_id)
+            return self.records[ucm_chunk_id]
         if self.backend is None:
-            raise KeyError(ucm_block_id)
-        record = self.backend.read_record(ucm_block_id)
+            raise KeyError(ucm_chunk_id)
+        record = self.backend.read_record(ucm_chunk_id)
         # A partial device load promotes the complete record, never just a layer.
-        if ucm_block_id not in self._pending:
+        if ucm_chunk_id not in self._pending:
             try:
                 self._reserve(len(record[0]))
             except MemoryError:
                 pass
             else:
-                self.records[ucm_block_id] = record
+                self.records[ucm_chunk_id] = record
         return record
 
-    def write_record(self, ucm_block_id: bytes, payload: bytes, metadata: str) -> None:
-        if ucm_block_id not in self.records:
+    def write_record(self, ucm_chunk_id: bytes, payload: bytes, metadata: str) -> None:
+        if ucm_chunk_id not in self.records:
             self._reserve(len(payload))
-            self.records[ucm_block_id] = (bytes(payload), metadata)
+            self.records[ucm_chunk_id] = (bytes(payload), metadata)
         if self.backend is not None:
-            self._writeback[ucm_block_id] = self.records[ucm_block_id]
-            self.backend.write_record(ucm_block_id, *self._writeback[ucm_block_id])
-            del self._writeback[ucm_block_id]
+            self._writeback[ucm_chunk_id] = self.records[ucm_chunk_id]
+            self.backend.write_record(ucm_chunk_id, *self._writeback[ucm_chunk_id])
+            del self._writeback[ucm_chunk_id]
 
     def dump(
         self,
-        ucm_block_ids: Sequence[bytes],
+        ucm_chunk_ids: Sequence[bytes],
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
@@ -440,17 +440,17 @@ class MemoryTestStore:
         record_nbytes: np.ndarray,
     ) -> None:
         self.byte_access.synchronize()
-        for row, (ucm_block_id, segments) in enumerate(
-            record_segments(ucm_block_ids, offsets, ptrs, sizes)
+        for row, (ucm_chunk_id, segments) in enumerate(
+            record_segments(ucm_chunk_ids, offsets, ptrs, sizes)
         ):
-            if ucm_block_id in self.records:
-                self._reused.add(ucm_block_id)
+            if ucm_chunk_id in self.records:
+                self._reused.add(ucm_chunk_id)
                 continue
             size = int(record_nbytes[row])
-            if ucm_block_id not in self._pending:
+            if ucm_chunk_id not in self._pending:
                 self._reserve(size)
-                self._pending[ucm_block_id] = (bytearray(size), metadata[row])
-            payload, description = self._pending[ucm_block_id]
+                self._pending[ucm_chunk_id] = (bytearray(size), metadata[row])
+            payload, description = self._pending[ucm_chunk_id]
             if len(payload) != size or description != metadata[row]:
                 raise ValueError(
                     "Inconsistent record size or metadata across dump calls"
@@ -463,40 +463,40 @@ class MemoryTestStore:
                     raise ValueError("Byte access returned an incomplete range")
                 payload[offset : offset + count] = data
 
-    def commit(self, ucm_block_ids: Sequence[bytes]) -> None:
-        for ucm_block_id in ucm_block_ids:
-            self._reused.discard(ucm_block_id)
-            if ucm_block_id in self._pending:
-                payload, metadata = self._pending.pop(ucm_block_id)
-                self.records[ucm_block_id] = (bytes(payload), metadata)
-            if ucm_block_id not in self.records:
-                raise KeyError(f"No pending record to commit: {ucm_block_id.hex()}")
+    def commit(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+        for ucm_chunk_id in ucm_chunk_ids:
+            self._reused.discard(ucm_chunk_id)
+            if ucm_chunk_id in self._pending:
+                payload, metadata = self._pending.pop(ucm_chunk_id)
+                self.records[ucm_chunk_id] = (bytes(payload), metadata)
+            if ucm_chunk_id not in self.records:
+                raise KeyError(f"No pending record to commit: {ucm_chunk_id.hex()}")
             if self.backend is not None:
-                self._writeback[ucm_block_id] = self.records[ucm_block_id]
-                self.backend.write_record(ucm_block_id, *self._writeback[ucm_block_id])
-                del self._writeback[ucm_block_id]
+                self._writeback[ucm_chunk_id] = self.records[ucm_chunk_id]
+                self.backend.write_record(ucm_chunk_id, *self._writeback[ucm_chunk_id])
+                del self._writeback[ucm_chunk_id]
 
     def load(
         self,
-        ucm_block_ids: Sequence[bytes],
+        ucm_chunk_ids: Sequence[bytes],
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
     ) -> None:
-        for ucm_block_id, segments in record_segments(
-            ucm_block_ids, offsets, ptrs, sizes
+        for ucm_chunk_id, segments in record_segments(
+            ucm_chunk_ids, offsets, ptrs, sizes
         ):
-            payload, _ = self.read_record(ucm_block_id)
+            payload, _ = self.read_record(ucm_chunk_id)
             for offset, ptr, size in segments:
                 if offset < 0 or offset + size > len(payload):
                     raise ValueError("Load range exceeds record size")
                 self.byte_access.write(ptr, payload[offset : offset + size])
         self.byte_access.synchronize()
 
-    def abort(self, ucm_block_ids: Sequence[bytes]) -> None:
-        for ucm_block_id in ucm_block_ids:
-            self._pending.pop(ucm_block_id, None)
-            self._reused.discard(ucm_block_id)
+    def abort(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+        for ucm_chunk_id in ucm_chunk_ids:
+            self._pending.pop(ucm_chunk_id, None)
+            self._reused.discard(ucm_chunk_id)
 
     def wait(self, task: object) -> None:
         if task is not None:
@@ -504,9 +504,9 @@ class MemoryTestStore:
 
     def flush(self) -> None:
         if self.backend is not None:
-            for ucm_block_id, record in tuple(self._writeback.items()):
-                self.backend.write_record(ucm_block_id, *record)
-                del self._writeback[ucm_block_id]
+            for ucm_chunk_id, record in tuple(self._writeback.items()):
+                self.backend.write_record(ucm_chunk_id, *record)
+                del self._writeback[ucm_chunk_id]
             self.backend.flush()
 
     def close(self) -> None:

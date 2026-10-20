@@ -63,7 +63,7 @@ def create_proxy(
     *,
     record_token_span: int,
 ) -> UCMProxyAdapter:
-    """One Proxy per process. Records differ only by UCM block id: model,
+    """One Proxy per process. Records differ only by UCM chunk id: model,
     layout and topology are in the hash seed, the rank in the id's tag."""
     stores_config = launch_config.get("v2_stores")
     proxy_config = launch_config.get("v2_proxy")

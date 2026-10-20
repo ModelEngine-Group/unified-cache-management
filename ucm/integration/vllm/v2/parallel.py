@@ -71,7 +71,7 @@ class ParallelLayout:
 
         vLLM gives per-rank block sizes. Like resolve_dcp_kv_block_size, only
         dcp_sharded groups cover dcp times more tokens. PCP does not split KV.
-        The UCM block size comes from vLLM's scheduler block size, which
+        tokens_per_chunk comes from vLLM's scheduler block size, which
         already counts DCP, so it must hold whole DCP-scaled blocks.
         """
         if self.dcp == 1:
@@ -79,23 +79,23 @@ class ParallelLayout:
         elif spec.wa_groups or spec.state_groups:
             raise NotImplementedError("v2 CP currently supports full attention only")
         else:
-            # Transient groups are not stored, so they keep their block size.
-            stored_groups = [group for group in spec.groups if not group.is_transient]
+            # Groups that are not stored keep their block size.
+            stored_groups = [group for group in spec.groups if group.is_persistent]
             token_block_sizes = [
-                group.token_block_size * (self.dcp if group.dcp_sharded else 1)
+                group.tokens_per_block * (self.dcp if group.dcp_sharded else 1)
                 for group in stored_groups
             ]
-            ucm_block_size = spec.ucm_cache_block_size
+            tokens_per_chunk = spec.tokens_per_chunk
             if any(
-                ucm_block_size % token_block_size
-                for token_block_size in token_block_sizes
+                tokens_per_chunk % tokens_per_block
+                for tokens_per_block in token_block_sizes
             ):
-                # This also rejects FA UCM blocks smaller than a vLLM block,
+                # This also rejects FA UCM chunks smaller than a vLLM block,
                 # which are not supported with DCP.
                 raise ValueError(
-                    "CP UCM blocks must contain whole distributed KV pages"
+                    "CP UCM chunks must contain whole distributed KV pages"
                 )
             else:
-                for group, token_block_size in zip(stored_groups, token_block_sizes):
-                    group.token_block_size = token_block_size
-                    group.tail_blocks = ucm_block_size // token_block_size
+                for group, tokens_per_block in zip(stored_groups, token_block_sizes):
+                    group.tokens_per_block = tokens_per_block
+                    group.blocks_per_chunk = tokens_per_chunk // tokens_per_block
