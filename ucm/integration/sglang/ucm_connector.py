@@ -117,9 +117,7 @@ class UnifiedCacheStoreConfig:
 
         cfg = dict(ucm_cfg)
         cfg["store_pipeline"] = "Posix"
-        storage_backends = [
-            path for path in cfg["storage_backends"].split(":") if path
-        ]
+        storage_backends = [path for path in cfg["storage_backends"].split(":") if path]
         pp_rank = int(getattr(storage_config, "pp_rank", 0))
         pp_size = int(getattr(storage_config, "pp_size", 1))
         if pp_size > 1:
@@ -159,8 +157,7 @@ class SglangUcmConnector:
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
         # PP stages own disjoint layer ranges for the same logical prefix. The
-        # storage root is stage-scoped in load_from_config(), so object keys and
-        # v2 pool namespaces do not need to duplicate the PP identity.
+        # storage root is stage-scoped in load_from_config().
         self.pp_rank = int(getattr(storage_config, "pp_rank", 0))
         self.pp_size = int(getattr(storage_config, "pp_size", 1))
         if self.pp_size <= 0 or not 0 <= self.pp_rank < self.pp_size:

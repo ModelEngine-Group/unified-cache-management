@@ -125,9 +125,7 @@ def connector(monkeypatch, tmp_path):
     return value, stores
 
 
-def make_v1_connector(
-    *, is_mla=False, tp_rank=0, tp_size=1, pp_rank=0, pp_size=1
-):
+def make_v1_connector(*, is_mla=False, tp_rank=0, tp_size=1, pp_rank=0, pp_size=1):
     component_sizes = [128] if is_mla else [64, 64]
     host_pool = FakeHostPool(page_size=2, component_sizes=component_sizes)
     storage_config = SimpleNamespace(
@@ -193,13 +191,9 @@ def test_pp_scopes_storage_backend_root(monkeypatch, tmp_path):
     logical_pool = FakeHostPool(page_size=2, component_sizes=[])
     logical_pool.kv_buffer = None
 
-    config = UnifiedCacheStoreConfig.load_from_config(
-        storage_config, logical_pool
-    )
+    config = UnifiedCacheStoreConfig.load_from_config(storage_config, logical_pool)
 
-    assert config.config["storage_backends"] == [
-        str(tmp_path / "sglang_pp" / "pp_1_2")
-    ]
+    assert config.config["storage_backends"] == [str(tmp_path / "sglang_pp" / "pp_1_2")]
 
 
 @pytest.mark.parametrize("operation", ["get", "set"])
