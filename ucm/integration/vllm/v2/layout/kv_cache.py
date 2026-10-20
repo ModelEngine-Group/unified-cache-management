@@ -207,9 +207,12 @@ def _group_sharding(specs: Sequence["KVCacheSpec"]) -> tuple[int | None, bool]:
     Sideeffect is the specs which are not dcp_sharded are replicated
     """
     tp_shards = {_spec_tp_shards(spec) for spec in specs}
+    # vLLM 0.30.0 has no dcp_sharded. It splits every group's tokens over DCP
+    # ranks, and caches that are not split cannot run with DCP, so a missing
+    # flag means sharded.
     return (
         None if None in tp_shards else max(tp_shards),
-        any(spec.dcp_sharded for spec in specs),
+        any(getattr(spec, "dcp_sharded", True) for spec in specs),
     )
 
 
@@ -220,13 +223,16 @@ def _spec_tp_shards(spec: "KVCacheSpec") -> int | None:
         # Mamba state that every TP rank holds in full.
         return 1
     elif get_kv_cache_spec_kind(spec) in _MLA_KINDS:
-        # Ascend MLA specs do not set max_tp_shards.
-        assert spec.max_tp_shards in (None, 1), (
+        # vLLM 0.30.0 and Ascend MLA specs do not have max_tp_shards.
+        max_tp_shards = getattr(spec, "max_tp_shards", None)
+        assert max_tp_shards in (None, 1), (
             f"MLA cache split across TP is not supported: "
-            f"max_tp_shards={spec.max_tp_shards}"
+            f"max_tp_shards={max_tp_shards}"
         )
         return 1
     else:
+        # vLLM 0.30.0 has no max_tp_shards. None means every TP rank stores
+        # its own copy, which is always correct.
         return getattr(spec, "max_tp_shards", None)
 
 

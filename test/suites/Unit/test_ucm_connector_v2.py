@@ -1889,6 +1889,28 @@ class ParallelShardTest(unittest.TestCase):
         )
         self.assertEqual([g.dcp_sharded for g in parsed.groups], [True, False])
 
+    def test_specs_without_vllm_031_sharding_fields(self):
+        # vLLM 0.30.0 specs have no dcp_sharded or max_tp_shards: groups are
+        # DCP-sharded, MLA has one TP shard and other caches differ per rank.
+        for spec_class in (_KVCacheSpec, _AttentionSpec):
+            for name in ("dcp_sharded", "max_tp_shards"):
+                if name in spec_class.__dict__:
+                    self.addCleanup(
+                        setattr, spec_class, name, spec_class.__dict__[name]
+                    )
+                    delattr(spec_class, name)
+        parsed = parse_spec(
+            config(
+                group(["model.layers.0.attn"], MLAAttentionSpec(4)),
+                group(["model.layers.1.attn"], FullAttentionSpec(4)),
+            ),
+            scheduler_block_size=4,
+        )
+        self.assertEqual(
+            [(g.tp_shards, g.dcp_sharded) for g in parsed.groups],
+            [(1, True), (None, True)],
+        )
+
     def test_parser_reads_mamba_tp_replication_from_specs(self):
         parsed = parse_spec(
             config(
