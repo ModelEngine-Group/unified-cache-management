@@ -20,10 +20,13 @@ Dense GQA 异构 TP、DSpark、HLA/Mamba Decode 回写不在本次范围。
 | 开关 | 角色 | Prefill 保存 | Decode 保存 |
 |---|---|---|---|
 | false | 任意 | 保持已有行为 | 不启用本功能 |
-| true | kv_consumer | 跳过 | 保存可持久化完整单元 |
+| true | kv_consumer | 保留实际计算的 Prefill/重新 Prefill 保存 | 保存可持久化完整单元 |
 | true | kv_producer / kv_both | 保留 | 保存可持久化完整单元 |
 
 角色不是物理节点类型：这里 Prefill/Decode 是每个请求当前阶段，而不是根据角色猜测。
+consumer 故障接管时实际执行的 Prefill，以及抢占恢复后 prompt＋已生成历史的重新计算，
+均允许保存有效完整单元；不因角色跳过。保存仍受源页面安全、阈值、成功确认和去重限制。
+本功能不实现故障路由切换，也不要求对直接接收而未重新计算的 KV 强制重复 PUT。
 `save_decode_cache=false` 不禁止读取 KV。Prefill 端无需打开该开关即可读 Decode 对象。
 不要添加 AscendStore 专用的 `consumer_is_to_put`。
 
@@ -134,7 +137,7 @@ python benchmarks/verify_decode_writeback.py \
 
 CPU 回归：
 
-本地记录（2026-10-20）：下列四个测试文件共 **155 项通过、22 项子用例通过**；
+本地记录（2026-10-20）：下列四个测试文件共 **169 项通过、22 项子用例通过**；
 Python 编译检查、Black 24.4.2 / isort 6.0.1 格式检查及 `git diff --check` 通过。
 测试包含真实 CPU 地址的字节 PUT/GET、共享后端 FA/WA 隔离，以及源内存覆盖后的回读。
 这些结果不能替代 Linux/NPU 服务上的模型输出、MTP 和 TTFT/TPOT 验证。

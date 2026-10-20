@@ -290,10 +290,8 @@ def test_no_new_block_progresses_and_next_turn_hash_matches(cls, role):
     obj = connector(role, cls)
     req = request(range(5))
     dispatch = step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23]), new=True)
-    if role == "kv_consumer":
-        assert dispatch.save_job is None
-    elif dispatch.save_job:
-        complete(obj, dispatch.save_job)
+    assert dispatch.save_job is not None and dispatch.save_job.phase == "prefill"
+    assert complete(obj, dispatch.save_job)
     for count in range(6, 9):
         req.all_token_ids.append(count)
         req.num_computed_tokens = count - 1
@@ -310,16 +308,48 @@ def test_no_new_block_progresses_and_next_turn_hash_matches(cls, role):
     assert obj._writeback_states["req"].computed_end == 8
 
 
+@pytest.mark.parametrize("cls", [Direct, FAWA])
+def test_consumer_failover_prefill_saves_only_computed_complete_units(cls):
+    # Simulate the local compute path after external routing hands the request
+    # to a consumer. This does not exercise a real router or failure detector.
+    obj = connector("kv_consumer", cls)
+    req = request(range(8))
+    initial = step(obj, req, 2, groups=([11, 12, 13], [21, 22, 23]), new=True)
+    assert initial.save_job is None  # allocated blocks are not computed KV
+    req.num_computed_tokens = 2
+    first = step(obj, req, 2)
+    assert first.save_job.phase == "prefill"
+    assert (first.save_job.start, first.save_job.end) == (0, 4)
+    assert list(first.save_job.keys) == obj.request_block_hasher(req)[:1]
+    assert complete(obj, first.save_job)
+    req.num_computed_tokens = 4
+    second = step(obj, req, 4)
+    assert second.save_job.phase == "prefill"
+    assert (second.save_job.start, second.save_job.end) == (4, 8)
+    assert complete(obj, second.save_job)
+    req.all_token_ids.extend(range(8, 12))
+    req.num_computed_tokens = 8
+    decoded = step(obj, req, 4)
+    assert decoded.save_job.phase == "decode"
+    assert (decoded.save_job.start, decoded.save_job.end) == (8, 12)
+    assert complete(obj, decoded.save_job)
+    next_turn = request(req.all_token_ids + [100, 101])
+    assert obj._writeback_states["req"].saved == set(
+        obj.request_block_hasher(next_turn)
+    )
+
+
 def test_rejected_speculative_tokens_not_hashed_or_saved():
     obj = connector()
     req = request(range(5))
-    step(obj, req, 5, groups=([10, 11, 12],), new=True)
+    initial = step(obj, req, 5, groups=([10, 11, 12],), new=True)
+    assert complete(obj, initial.save_job)
     req.all_token_ids.extend([5, 6, 7, 8])  # committed, excluding draft candidates
     req.num_computed_tokens = 5
     dispatch = step(obj, req, 7)  # schedules beyond the committed length
     job = dispatch.save_job
     assert job.end == 8
-    assert list(job.keys) == obj.request_block_hasher(request(range(8)))
+    assert list(job.keys) == obj.request_block_hasher(request(range(8)))[1:]
     assert obj._writeback_states["req"].computed_end == 9
 
 
@@ -361,7 +391,8 @@ def test_recovery_records_full_reprefill_range_and_ignores_old_generation(mrv2):
 def test_window_snapshot_uses_completed_pages_not_the_current_partial_page():
     obj = connector(cls=FAWA)
     req = request(range(5))
-    step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23]), new=True)
+    initial = step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23]), new=True)
+    assert complete(obj, initial.save_job)
     req.all_token_ids.extend(range(5, 10))
     req.num_computed_tokens = 5
     dispatch = step(obj, req, 4)
@@ -381,7 +412,10 @@ def test_window_snapshot_skips_when_small_state_pages_may_have_expired():
     obj = connector(cls=FAWA)
     obj.group_metas[1] = SYMS["KVCacheGroupMeta"](1, 2, 1, 2)
     req = request(range(5))
-    step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23, 24, 25, 26]), new=True)
+    initial = step(
+        obj, req, 5, groups=([11, 12, 13], [21, 22, 23, 24, 25, 26]), new=True
+    )
+    assert complete(obj, initial.save_job)
     req.all_token_ids.extend(range(5, 12))
     req.num_computed_tokens = 5
     assert step(obj, req, 6).save_job is None  # remainder 3 >= state page 2
@@ -392,7 +426,8 @@ def test_window_snapshot_skips_when_small_state_pages_may_have_expired():
 def test_snapshot_guard_accounts_for_writes_of_uncommitted_mtp_candidates():
     obj = connector(cls=FAWA)
     req = request(range(5))
-    step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23]), new=True)
+    initial = step(obj, req, 5, groups=([11, 12, 13], [21, 22, 23]), new=True)
+    assert complete(obj, initial.save_job)
     req.all_token_ids.extend(range(5, 8))
     req.num_computed_tokens = 7
     # Committed key ends at 8, but forward will write through position 12.
@@ -405,7 +440,8 @@ def test_snapshot_guard_accounts_for_writes_of_uncommitted_mtp_candidates():
 def test_expired_window_source_does_not_publish_or_leave_a_pending_job():
     obj = connector(cls=FAWA)
     req = request(range(5))
-    step(obj, req, 5, groups=([11, 12], [21, 0]), new=True)
+    initial = step(obj, req, 5, groups=([11, 12], [21, 0]), new=True)
+    assert complete(obj, initial.save_job)
     req.all_token_ids.extend(range(5, 8))
     req.num_computed_tokens = 7
     dispatch = step(obj, req, 1)
@@ -415,12 +451,11 @@ def test_expired_window_source_does_not_publish_or_leave_a_pending_job():
 
 @pytest.mark.parametrize("cls", [Direct, FAWA])
 @pytest.mark.parametrize("mrv2", [False, True])
-def test_resumed_scheduled_request_resets_generation_and_does_not_decode_during_reprefill(
-    cls, mrv2
-):
+def test_resumed_scheduled_request_saves_reprefill_and_resets_generation(cls, mrv2):
     obj = connector(cls=cls)
     req = request(range(5))
-    step(obj, req, 5, groups=([11, 12], [21, 22]), new=True)
+    initial = step(obj, req, 5, groups=([11, 12], [21, 22]), new=True)
+    assert complete(obj, initial.save_job)
     old = obj._writeback_states["req"]
     req.all_token_ids.extend(range(5, 8))
     req.num_computed_tokens = 7
@@ -430,9 +465,22 @@ def test_resumed_scheduled_request_resets_generation_and_does_not_decode_during_
     current = obj._writeback_states["req"]
     assert current.generation > old.generation
     assert current.prefill_end == 8
-    assert resumed.save_job is None
+    assert resumed.save_job is not None and resumed.save_job.phase == "prefill"
+    assert (resumed.save_job.start, resumed.save_job.end) == (0, 4)
     assert not current.complete_save(Result(pending, {0}, set()))
     assert current.blocks == [[31, 32], [41, 42]]
+    assert complete(obj, resumed.save_job)
+    # Continue re-prefilling generated history without allocating another block.
+    req.num_computed_tokens = 4
+    tail = step(obj, req, 4)
+    assert tail.save_job.phase == "prefill"
+    assert (tail.save_job.start, tail.save_job.end) == (4, 8)
+    assert list(tail.save_job.keys) == obj.request_block_hasher(req)[1:]
+    assert complete(obj, tail.save_job)
+    req.all_token_ids.extend(range(8, 12))
+    req.num_computed_tokens = 8
+    decoded = step(obj, req, 4, groups=([33], [43]))
+    assert decoded.save_job.phase == "decode" and decoded.save_job.end == 12
 
 
 @pytest.mark.parametrize("cls", [Direct, FAWA])
@@ -571,9 +619,10 @@ class RankManager:
 @pytest.mark.parametrize("wa_failure", [False, True])
 def test_fawa_real_dispatch_waits_both_stores_before_ack_and_retries(wa_failure):
     obj = connector(cls=FAWA)
-    req = request(range(5))
-    step(obj, req, 5, groups=([11, 12], [21, 22]), new=True)
-    req.all_token_ids.extend(range(5, 8))
+    req = request(range(3))
+    initial = step(obj, req, 3, groups=([11, 12], [21, 22]), new=True)
+    assert initial.save_job is None
+    req.all_token_ids.extend(range(3, 8))
     req.num_computed_tokens = 7
     dispatch = step(obj, req, 1)
     obj.fa_store, obj.wa_store = MemoryStore(), MemoryStore(fail=wa_failure)
@@ -920,18 +969,24 @@ class ByteRankManager(RankManager):
 
 @pytest.mark.parametrize("writer_tp,reader_tp", [(1, 2), (2, 1), (2, 4), (4, 2)])
 @pytest.mark.parametrize("model", ["glm_moe_dsa", "deepseek_v4", "deepseek_v41"])
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
 def test_real_pointer_put_get_bytes_across_tp_and_source_reuse(
-    model, writer_tp, reader_tp
+    model, writer_tp, reader_tp, phase
 ):
     cls = Direct if model == "glm_moe_dsa" else FAWA
     scheduler = connector(cls=cls, tp=writer_tp)
-    req = request(range(5))
     source_ids = ([11, 12], [21, 22])
-    step(scheduler, req, 5, groups=source_ids, new=True)
-    req.all_token_ids.extend(range(5, 8))
-    req.num_computed_tokens = 7
-    dispatch = step(scheduler, req, 1)
+    if phase == "prefill":
+        req = request(range(8))
+        dispatch = step(scheduler, req, 8, groups=source_ids, new=True)
+    else:
+        req = request(range(3))
+        assert step(scheduler, req, 3, groups=source_ids, new=True).save_job is None
+        req.all_token_ids.extend(range(3, 8))
+        req.num_computed_tokens = 7
+        dispatch = step(scheduler, req, 1)
     job = dispatch.save_job
+    assert job is not None and job.phase == phase
     sources = [
         (np.arange(32 * 16).reshape(32, 16) + i * 17).astype("uint8") for i in range(2)
     ]

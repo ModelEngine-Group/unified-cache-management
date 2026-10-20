@@ -1878,12 +1878,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         meta.num_token_ids = len(state.request.all_token_ids)
         meta.token_processed = state.computed_end
         reason = None
-        if (
-            not decoding
-            and self._vllm_config.kv_transfer_config.kv_role == "kv_consumer"
-        ):
-            reason = "consumer_prefill"
-        elif state.computed_end < self.persist_token_threshold:
+        # A consumer can compute Prefill after failover or preemption. Preserve
+        # saving of computed KV in every role; role alone does not prove that
+        # another instance has already persisted this request's prefix.
+        if state.computed_end < self.persist_token_threshold:
             reason = "persist_token_threshold"
         elif getattr(self, "window_group_ids", ()) and not window_boundary_available(
             state.computed_end,

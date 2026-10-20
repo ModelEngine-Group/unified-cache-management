@@ -12,8 +12,11 @@ Put it in the existing UCM YAML or override it through
 `kv_connector_extra_config` alongside `UCM_CONFIG_FILE`. Both endpoints use
 `use_layerwise: false` and compatible weights, KV formats, blocks and shared storage.
 
-When enabled, `kv_consumer` skips this request's Prefill writes and saves Decode
-KV. Producer/both retain Prefill writes and also save Decode KV. A reader need
+When enabled, all three roles retain saving of computed Prefill/re-prefill KV
+and also save Decode KV. This includes consumer-side Prefill after failover
+and recomputation of prompts plus generated history after preemption. Role alone
+does not suppress writes; complete-unit, source-safety and deduplication checks
+still apply. This feature does not implement failover routing. A reader need
 not enable the flag. Disabled behavior retains the original prompt-only saving.
 There is no `consumer_is_to_put` option.
 
