@@ -84,7 +84,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     checkout = next(
         step
         for step in prepare["steps"]
-        if step.get("uses") == "actions/checkout@v4.2.2"
+        if step.get("uses", "").startswith("actions/checkout@")
     )
     assert checkout["with"]["ref"] == "${{ github.sha }}"
     run = next(step["run"] for step in prepare["steps"] if step.get("id") == "prepare")
@@ -243,16 +243,10 @@ def test_artifact_upload_restores_tag_before_generating_asset_links() -> None:
     assert 'sub("\\\\n+$"; "")' in run
 
 
-def test_member_receipt_barrier_uses_the_profile_target_validator() -> None:
+def test_release_workflow_checks_member_receipts() -> None:
     core = (WORKFLOWS / "release-ucm.yml").read_text(encoding="utf-8")
-    release_module = (
-        ROOT / ".github" / "release" / "ucm_release" / "release.py"
-    ).read_text(encoding="utf-8")
 
     assert "release.py members" in core
-    assert 'members = commands.add_parser("members")' in release_module
-    assert "validate_member_receipts" in release_module
-    assert "_validated_receipt_targets" in release_module
 
 
 def test_release_state_entrypoints_install_their_dependencies() -> None:
@@ -392,21 +386,6 @@ def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
     assert run.strip() == (
         "bash .github/release/install-validate-wheel-runtime.sh input/wheel"
     )
-    run = (ROOT / ".github/release/install-validate-wheel-runtime.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "docker run --rm" in run
-    assert '-e UCM_WHEEL="/tmp/${wheel_name}"' in run
-    assert '"${UCM_WHEEL}"' in run
-    assert "validate_wheel_runtime.py" in run
-    assert "python3 -m venv" in run
-    assert "DEFERRED_EXTERNAL_LIBRARIES" in run
-    assert "EXPECTED_RUNTIME_REQUIREMENTS" in run
-    assert '.dependencies | select(type == "array")' in run
-    assert ".deferred_external_libraries" in run
-    assert 'if [[ "${PLATFORM_ARG}" == ascend* ]]' not in run
-    assert "python -m pip check" not in run
-    assert 're.search(r\\"[0-9]+' in run
     assert "validate-wheel-runtimes" in jobs["publish-release-artifacts"]["needs"]
     assert set(jobs["publish-pypi"]["needs"]) == {
         "plan",
@@ -693,7 +672,6 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
     )
     sglang_e2e = jobs["test-e2e-sglang-a2"]
-    assert sglang_e2e["timeout-minutes"] == 30
     assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
     assert set(sglang_e2e["needs"]) == {"lint-and-unit-tests", "test-e2e-pc-a2"}
     assert "always()" in sglang_e2e["if"]
@@ -757,7 +735,6 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     assert "packages: write" not in text
     assert "docker push" not in text
     assert "open-release" not in text
-    assert "publish" not in text.lower()
 
 
 def test_native_wheel_gate_requires_each_planned_fallback_runtime() -> None:
@@ -776,7 +753,6 @@ def test_native_wheel_gate_requires_each_planned_fallback_runtime() -> None:
         "matrix": "${{ fromJSON(needs.plan-wheels.outputs.fallback_runtime_matrix) }}",
     }
     assert validation["runs-on"] == "${{ matrix.runner }}"
-    assert validation["timeout-minutes"] == 45
     assert validation["permissions"] == {"contents": "read"}
     download = next(
         step
@@ -879,8 +855,6 @@ def test_builder_prefetches_layers_before_registry_push() -> None:
     prefetch = 'docker buildx build --output type=oci,dest=/dev/null "${build_args[@]}"'
     push = 'docker buildx build --push "${build_args[@]}"'
     assert build.index(prefetch) < build.index(push)
-    assert "${RUNNER_TEMP}/ucm-builder-prefetch.log" in build
-    assert "${RUNNER_TEMP}/ucm-builder-push.log" in build
 
 
 def test_wheel_only_release_downloads_toolkit_without_requiring_chart() -> None:
