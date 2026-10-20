@@ -1,5 +1,6 @@
 import copy
 import glob
+import json
 import math
 import os
 import re
@@ -36,6 +37,15 @@ from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import RequestStatus
 
 import ucm.integration.vllm.request_hasher as request_hasher_module
+from ucm.integration.vllm.decode_writeback import (
+    DecodeWritebackState,
+    WritebackJob,
+    WritebackResult,
+    merge_writeback_results,
+    prefill_end_tokens,
+    validate_decode_config,
+    window_boundary_available,
+)
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -47,7 +57,12 @@ from ucm.integration.vllm.metrics import (
     UCMPromMetrics,
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
-from ucm.integration.vllm.request_hasher import RequestHasher
+from ucm.integration.vllm.replicated_mla_layout import (
+    ReplicatedMLAStoreLayout,
+    build_namespace,
+    supports_replicated_mla,
+)
+from ucm.integration.vllm.request_hasher import IncrementalRequestHasher, RequestHasher
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -82,8 +97,16 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
-def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
+def build_kv_hash_meta(
+    vllm_config: "VllmConfig", rank_id: int, kv_cache_config=None
+) -> str:
     """Build the KV namespace with DCP and layout compatibility isolation."""
+    shared = build_namespace(vllm_config, kv_cache_config)
+    if shared is not None:
+        return (
+            f"{shared}:platform={getattr(current_platform, 'device_type', None)}"
+            f":layout={request_hasher_module._layout_source_digest()}"
+        )
     speculative_config = getattr(vllm_config, "speculative_config", None)
     spec_info = ""
     if speculative_config is not None:
@@ -393,6 +416,10 @@ class RequestDispatchMeta:
     # Keep this keyword-only so adding the optional async flag does not change
     # positional constructor semantics for connector-specific subclasses.
     load_async: bool = field(default=False, kw_only=True)
+    save_job: Optional[WritebackJob] = field(default=None, kw_only=True)
+    load_groups: tuple[list[int], ...] = field(default=(), kw_only=True)
+    dump_groups: tuple[list[int], ...] = field(default=(), kw_only=True)
+    load_token_start: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -1503,6 +1530,7 @@ class PendingDumpTask:
     request_ids: set[str]
     event_handle: int = 0
     wait_for_save_start_ms: float = 0.0
+    save_jobs: tuple[WritebackJob, ...] = ()
 
 
 @dataclass
@@ -1510,6 +1538,8 @@ class PendingLoadTask:
     task: Task
     request_id: str
     vllm_block_ids: list[int]
+    keys: tuple[bytes, ...] = ()
+    token_start: int = 0
 
 
 @dataclass
@@ -1521,6 +1551,7 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
     missing_reqs: set[str] = field(default_factory=set)
     missing_blocks: set[bytes] = field(default_factory=set)
     dump_succeeded_blocks: set[bytes] = field(default_factory=set)
+    writeback_results: dict[int, WritebackResult] = field(default_factory=dict)
 
     def mark_failed(self, req_id: str) -> None:
         """Record a failed load request from this worker."""
@@ -1537,6 +1568,7 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
         self.load_failed_reqs.update(other.load_failed_reqs)
         self.missing_reqs.update(other.missing_reqs)
         self.missing_blocks.update(other.missing_blocks)
+        merge_writeback_results(self.writeback_results, other.writeback_results)
         # TODO: Support PP-aware Dump success aggregation.
         # for mla, blocks can only be dumped by 1 rank, for FAWA, the dump is distributed across ranks
         # for non-mla, blocks should be dumped by all ranks
@@ -1617,6 +1649,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        self.save_decode_cache = validate_decode_config(
+            self.launch_config, vllm_config, kv_cache_config
+        )
+        self.shared_mla = (
+            kv_cache_config is not None
+            and supports_replicated_mla(vllm_config)
+            and type(self).__name__ in ("UCMDirectConnector", "UCMFAWAConnector")
+            and (
+                not self.launch_config.get("use_layerwise", True)
+                or type(self).__name__ == "UCMFAWAConnector"
+            )
+        )
+        if self.shared_mla:
+            self.tp_rank %= self.tp_size
+        self._writeback_states: dict[str, DecodeWritebackState] = {}
+        self._writeback_generation = 0
+        self._next_writeback_job = 0
+        self._writeback_results: dict[int, WritebackResult] = {}
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         share_buffer_enable = (
@@ -1643,7 +1693,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
+            self.request_hasher = RequestHasher(
+                build_kv_hash_meta(
+                    vllm_config, 0, kv_cache_config if self.shared_mla else None
+                )
+            )
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
@@ -1651,7 +1705,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(
-                build_kv_hash_meta(vllm_config, self.tp_rank % self.tp_size)
+                build_kv_hash_meta(
+                    vllm_config,
+                    self.tp_rank % self.tp_size,
+                    kv_cache_config if self.shared_mla else None,
+                )
             )
             self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
 
@@ -1697,6 +1755,277 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.block_size *= self.cp_world_size
         self.request_block_hasher = None
         self._bind_request_block_hasher()
+
+    def on_new_request(self, request: "Request") -> None:
+        state = self._writeback_states.get(request.request_id)
+        if state is None or state.request is not request:
+            self._register_writeback_request(request)
+
+    def _register_writeback_request(self, request, scheduled_new=None):
+        self._writeback_generation += 1
+        state = DecodeWritebackState(
+            request,
+            self._writeback_generation,
+            prefill_end_tokens(request, scheduled_new),
+            IncrementalRequestHasher(
+                self.request_hasher, self.hash_block_size, self._seed
+            ),
+        )
+        self._writeback_states[request.request_id] = state
+        return state
+
+    def _ensure_writeback_meta(self, request_id, factory=RequestMeta):
+        state = self._writeback_states.get(request_id)
+        if self.save_decode_cache and state and request_id not in self.requests_meta:
+            self.requests_meta[request_id] = factory(
+                ucm_block_ids=self.request_block_hasher(state.request),
+                num_token_ids=len(state.request.all_token_ids),
+            )
+
+    def _debug_keys(
+        self, event, request_id, keys, *, start=0, job=None, hit_count=None, **fields
+    ):
+        if not logger.isEnabledFor(10):
+            return
+        job_offsets = (
+            {
+                key: job.start + i * self.hash_block_size
+                for i, key in enumerate(job.keys)
+            }
+            if job is not None
+            else {}
+        )
+        for index, key in enumerate(keys):
+            token_start = job_offsets.get(key, start + index * self.hash_block_size)
+            record = dict(
+                request_id=request_id,
+                rank=self.tp_rank,
+                tp_size=self.tp_size,
+                kv_role=self._vllm_config.kv_transfer_config.kv_role,
+                token_start=token_start,
+                token_end=token_start + self.hash_block_size,
+                key=key.hex(),
+                **fields,
+            )
+            if job is not None:
+                record.update(
+                    store_job_id=job.job_id, generation=job.generation, phase=job.phase
+                )
+            if hit_count is not None:
+                record["hit"] = index < hit_count
+            for family, attr in (("FA", "fa_store"), ("WA", "wa_store")):
+                store = getattr(self, attr, None)
+                key_for = getattr(store, "key_for", None)
+                if callable(key_for):
+                    record[f"backend_key_{family.lower()}"] = key_for(key).hex()
+            logger.debug(f"[{event}] {json.dumps(record, sort_keys=True)}")
+
+    def _prepare_writeback_dispatch(
+        self,
+        request_id,
+        dispatch,
+        groups,
+        scheduled,
+        *,
+        new_request=None,
+        resumed=False,
+        full_groups=None,
+    ):
+        state = self._writeback_states.get(request_id)
+        if state is None:
+            if self.save_decode_cache:
+                raise RuntimeError(
+                    "Decode saving requires on_new_request/update_state_after_alloc"
+                )
+            return dispatch
+        resumed = resumed or (new_request is not None and state.scheduled_once)
+        if resumed:
+            state = self._register_writeback_request(state.request, new_request)
+        elif new_request is not None:
+            state.prefill_end = prefill_end_tokens(state.request, new_request)
+        state.scheduled_once = True
+        state.update_blocks(
+            groups if full_groups is None else full_groups,
+            replace=full_groups is not None or new_request is not None or resumed,
+        )
+        meta = self.requests_meta[request_id]
+        if full_groups is not None:
+            meta.vllm_block_ids = (
+                list(full_groups[0])
+                if isinstance(dispatch, RequestDispatchMeta)
+                else tuple(list(group) for group in full_groups)
+            )
+        if self.shared_mla and isinstance(dispatch, RequestDispatchMeta):
+            first = meta.hbm_hit_block_num
+            last = meta.total_hit_block_num
+            dispatch.load_groups = tuple(group[first:last] for group in state.blocks)
+            dispatch.load_token_start = first * self.hash_block_size
+            if dispatch.load_block_ids[0]:
+                dispatch.load_block_ids = (
+                    dispatch.load_block_ids[0],
+                    list(state.blocks[0][first:last]),
+                )
+            if not self.save_decode_cache and dispatch.dump_block_ids[0]:
+                first = meta.ucm_block_ids.index(dispatch.dump_block_ids[0][0])
+                last = first + len(dispatch.dump_block_ids[0])
+                dispatch.dump_groups = tuple(
+                    group[first:last] for group in state.blocks
+                )
+        if not self.save_decode_cache:
+            return dispatch
+        hashes, decoding = state.refresh_request(scheduled)
+        meta.ucm_block_ids = hashes
+        meta.num_token_ids = len(state.request.all_token_ids)
+        meta.token_processed = state.computed_end
+        reason = None
+        if (
+            not decoding
+            and self._vllm_config.kv_transfer_config.kv_role == "kv_consumer"
+        ):
+            reason = "consumer_prefill"
+        elif state.computed_end < self.persist_token_threshold:
+            reason = "persist_token_threshold"
+        elif getattr(self, "window_group_ids", ()) and not window_boundary_available(
+            state.computed_end,
+            self.hash_block_size,
+            [self.group_metas[gid].token_block_size for gid in self.window_group_ids],
+            scheduled_end=state.scheduled_end,
+        ):
+            reason = "window_boundary_pages_may_have_expired"
+        job = None
+        if reason is None:
+            self._next_writeback_job += 1
+            job = state.plan_save(
+                hashes,
+                self._next_writeback_job,
+                range(self.tp_size),
+                "decode" if decoding else "prefill",
+            )
+        if job is None:
+            logger.debug(
+                f"[UCM_DECODE_SAVE_SKIP] request_id={request_id} "
+                f"reason={reason or ('in_flight' if state.pending else 'no_complete_unsaved_unit')} "
+                f"computed_end={state.computed_end} scheduled_end={state.scheduled_end} "
+                f"committed_tokens={len(state.request.all_token_ids)} prefill_end={state.prefill_end} "
+                f"granularity={self.hash_block_size}"
+            )
+        dispatch.save_job = job
+        if isinstance(dispatch, RequestDispatchMeta):
+            first = 0 if job is None else job.start // self.hash_block_size
+            last = 0 if job is None else job.end // self.hash_block_size
+            dispatch.dump_block_ids = (
+                [] if job is None else list(job.keys),
+                state.blocks[0][first:last],
+            )
+            dispatch.dump_groups = tuple(group[first:last] for group in state.blocks)
+        else:
+            # Window state is a snapshot, not an append-only KV array. Old
+            # boundaries cannot be reconstructed after subsequent forwards.
+            first = 0 if job is None else job.start // self.hash_block_size
+            last = 0 if job is None else job.end // self.hash_block_size
+            dispatch.dump_keys = [] if job is None else list(job.keys)
+            dispatch.dump_hash_start, dispatch.dump_hash_end = first, last
+            dispatch.dump_wa_block_wise = False
+            rows = self._writeback_window_rows(state, job) if job is not None else ()
+            dispatch.dump_vllm_block_ids = rows or ()
+            if job is not None and (
+                rows is None
+                or any(
+                    block_id == 0
+                    for gid, ids in enumerate(rows)
+                    if gid not in self.transient_group_ids
+                    for block_id in ids
+                )
+            ):
+                state.pending.pop(job.job_id, None)
+                dispatch.save_job = job = None
+                dispatch.dump_keys = []
+                dispatch.dump_vllm_block_ids = ()
+                logger.debug(
+                    "[UCM_DECODE_SAVE_SKIP] request_id=%s reason=expired_source_blocks",
+                    request_id,
+                )
+        if job:
+            self._debug_keys(
+                "UCM_DECODE_SAVE_PLAN", request_id, job.keys, start=job.start, job=job
+            )
+        return dispatch
+
+    def _writeback_window_rows(self, state, job):
+        try:
+            first, last = (
+                job.start // self.hash_block_size,
+                job.end // self.hash_block_size,
+            )
+            return tuple(
+                self._slice_group_block_ids(
+                    gid,
+                    group,
+                    np.arange(first + 1, last + 1) * self.hash_block_size - 1,
+                    fetch_wa_block_wise=False,
+                )
+                for gid, group in enumerate(state.blocks)
+            )
+        except (IndexError, RuntimeError, ValueError):
+            logger.warning(
+                "[UCM_DECODE_SAVE_SKIP] request_id=%s reason=source_mapping_unavailable",
+                job.request_id,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _resolve_writeback_blocks(scheduler_output, request_id):
+        """Prefer 0.30's authoritative table, including copy-on-write updates."""
+        block_state = getattr(scheduler_output, "kv_connector_block_state", None)
+        if block_state is not None:
+            groups = block_state.get_block_ids(request_id)
+            if groups is not None:
+                return groups
+        return (getattr(scheduler_output, "block_table_updates", None) or {}).get(
+            request_id
+        )
+
+    def _begin_writeback_jobs(self, metadata):
+        jobs = tuple(
+            item.save_job
+            for item in metadata.request_meta.values()
+            if getattr(item, "save_job", None) is not None
+        )
+        return jobs
+
+    def _complete_writeback_jobs(self, jobs, success, *, io_owner=True, status=None):
+        for job in jobs:
+            result = WritebackResult(
+                job, {self.tp_rank}, set() if success else {self.tp_rank}
+            )
+            merge_writeback_results(self._writeback_results, {job.job_id: result})
+            self._debug_keys(
+                "UCM_DECODE_SAVE_RESULT",
+                job.request_id,
+                job.keys,
+                start=job.start,
+                job=job,
+                status=status
+                or (
+                    "failed"
+                    if not success
+                    else ("success" if io_owner else "not_writer")
+                ),
+            )
+
+    def _direct_ptrs(self, groups, fallback):
+        if isinstance(self.kv_cache_layout, ReplicatedMLAStoreLayout) and groups:
+            return self.kv_cache_layout.extract_block_addrs_for_groups(groups)
+        return self.kv_cache_layout.extract_block_addrs(fallback)
+
+    def _missing_store_rows(self, store, keys, ptrs):
+        """Retry only missing objects; a failed batch may already have PUT some."""
+        exists = store.lookup(keys)
+        if len(exists) != len(keys):
+            raise RuntimeError("Store lookup returned an invalid result length")
+        missing = [index for index, present in enumerate(exists) if not present]
+        return [keys[index] for index in missing], ptrs[missing]
 
     def get_block_size(self) -> int:
         return self.block_size
@@ -1890,12 +2219,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
             layout_cls = SharedIndexerKVCacheLayout
         else:
             layout_cls = KVCacheLayout
-        self.kv_cache_layout = layout_cls(
-            self.kv_caches,
-            self.launch_config,
-            self._vllm_config,
-            self._kv_cache_config,
-        )
+        if self.shared_mla:
+            self.kv_cache_layout = ReplicatedMLAStoreLayout(
+                self.kv_caches,
+                self.launch_config,
+                self._vllm_config,
+                self._kv_cache_config,
+                KVCacheLayout,
+            )
+        else:
+            self.kv_cache_layout = layout_cls(
+                self.kv_caches,
+                self.launch_config,
+                self._vllm_config,
+                self._kv_cache_config,
+            )
         self.block_data_size = self.kv_cache_layout.block_size
         self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
         self.layer_ids = sorted(set(self.layer_name_to_id.values()))
@@ -1975,6 +2313,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
+        self.on_new_request(request)
         # A request can be queried again after preemption. Drop scheduler-side
         # state from its previous load attempt before recording a new one.
         self._pending_async_load_dispatches.pop(request.request_id, None)
@@ -2104,6 +2443,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
         external_hit_tokens = external_hit_blocks * self.block_size
+        self._debug_keys(
+            "UCM_PREFILL_LOOKUP",
+            request.request_id,
+            ucm_block_ids[hbm_hit_block_num * self.cp_world_size :],
+            start=hbm_hit_block_num * self.block_size,
+            hit_count=external_hit_blocks * self.cp_world_size,
+        )
 
         # Ensure vLLM recomputes enough tokens to avoid FULL cudagraph
         # (which skips layerwise hooks). To be removed when vLLM scheduler
@@ -2138,6 +2484,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
+        self.on_new_request(request)
+        self._writeback_states[request.request_id].update_blocks(
+            blocks.get_block_ids(), replace=True
+        )
         if not self.use_request_async_load or num_external_tokens <= 0:
             return
 
@@ -2181,6 +2531,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
             load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
             dump_block_ids=([], []),
             load_async=True,
+            load_token_start=external_start * self.block_size,
+            load_groups=(
+                tuple(
+                    list(group[external_start:external_end])
+                    for group in block_ids_by_group
+                )
+                if self.shared_mla
+                else ()
+            ),
         )
         self._async_load_req_ids.add(request_id)
 
@@ -2218,7 +2577,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ]
             load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
 
-        if req_meta.token_processed < req_meta.num_token_ids:
+        if (
+            not self.save_decode_cache
+            and req_meta.token_processed < req_meta.num_token_ids
+        ):
             start_idx = req_meta.token_processed // self.block_size
             end_idx = (req_meta.token_processed + new_tokens) // self.block_size
             dump_ucm_block_ids = ucm_block_ids[
@@ -2247,23 +2609,38 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids[0]
+            self._ensure_writeback_meta(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
+                state = self._writeback_states.get(request_id)
+                if state is not None and state.scheduled_once:
+                    req_meta.vllm_block_ids = []
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     vllm_block_ids,
                     need_load=request_id not in self._async_load_req_ids,
                 )
+                self._prepare_writeback_dispatch(
+                    request_id,
+                    requests_dispatch_meta[request_id],
+                    request.block_ids,
+                    scheduler_output.num_scheduled_tokens[request_id],
+                    new_request=request,
+                    full_groups=self._resolve_writeback_blocks(
+                        scheduler_output, request_id
+                    ),
+                )
 
         # for cached request, there are 3 situation:
         # 1. chunked prefill: we only need dump
         # 2. resumed: we need to handle like new request
-        # 3. TODO decode stage: nothing happened
+        # 3. Decode: save committed complete units when explicitly enabled.
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         if not isinstance(scheduled_cached_reqs, list):
             # >= 0.9.2
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                self._ensure_writeback_meta(request_id)
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     new_block_ids = []
@@ -2277,12 +2654,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         resumed_from_preemption = (
                             request_id in scheduled_cached_reqs.resumed_req_ids
                         )
+                    if resumed_from_preemption:
+                        req_meta.vllm_block_ids = []
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
                         new_block_ids,
                         resumed_from_preemption
                         and request_id not in self._async_load_req_ids,
+                    )
+                    self._prepare_writeback_dispatch(
+                        request_id,
+                        requests_dispatch_meta[request_id],
+                        scheduled_cached_reqs.new_block_ids[i],
+                        scheduler_output.num_scheduled_tokens[request_id],
+                        resumed=resumed_from_preemption,
+                        full_groups=self._resolve_writeback_blocks(
+                            scheduler_output, request_id
+                        ),
                     )
         else:
             for request in scheduled_cached_reqs:
@@ -2302,6 +2691,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            self._writeback_states.pop(request_id, None)
 
         # Async loads are intentionally absent from scheduled request lists.
         # Dispatch their transfer plans independently of model-forward work.
@@ -2369,7 +2759,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 continue
             try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
+                total_ptrs = self._direct_ptrs(request.load_groups, vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(ucm_block_ids)
                 task = self._rank_consistency.submit_load(
@@ -2384,6 +2774,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         task=task,
                         request_id=request_id,
                         vllm_block_ids=list(vllm_block_ids),
+                        keys=tuple(store_block_ids),
+                        token_start=request.load_token_start,
                     )
                 else:
                     request_to_task[request_id] = task
@@ -2392,6 +2784,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(
                     f"request {request_id} submit load task error. "
                     f"{type(e).__name__}: {e}"
+                )
+                self._debug_keys(
+                    "UCM_PREFILL_LOAD_RESULT",
+                    request_id,
+                    store_block_ids,
+                    start=request.load_token_start,
+                    status="failed",
+                    stage="submit",
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
@@ -2407,6 +2807,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         for request_id, task in request_to_task.items():
             try:
                 self._rank_consistency.wait_load(task)
+                self._debug_keys(
+                    "UCM_PREFILL_LOAD_RESULT",
+                    request_id,
+                    metadata.request_meta[request_id].load_block_ids[0],
+                    status="success",
+                    start=metadata.request_meta[request_id].load_token_start,
+                )
             except Exception as e:
                 logger.error(
                     f"request {request_id} wait load task error. "
@@ -2419,6 +2826,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
+                self._debug_keys(
+                    "UCM_PREFILL_LOAD_RESULT",
+                    request_id,
+                    metadata.request_meta[request_id].load_block_ids[0],
+                    status="failed",
+                    start=metadata.request_meta[request_id].load_token_start,
+                )
 
         load_bytes = num_loaded_block * self.block_data_size
         if is_load:
@@ -2448,8 +2862,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _wait_pending_dump_task(self, pending_dump_task: PendingDumpTask) -> None:
         wait_start_ms = time.perf_counter() * 1000
+        success = False
         try:
-            self._rank_consistency.wait_dump(pending_dump_task.task)
+            success = self._rank_consistency.wait_dump(pending_dump_task.task) is True
             wait_end_ms = time.perf_counter() * 1000
             stats = {}
             if pending_dump_task.wait_for_save_start_ms > 0:
@@ -2462,6 +2877,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if stats:
                 ucmmetrics.update_stats(stats)
         finally:
+            self._complete_writeback_jobs(pending_dump_task.save_jobs, success)
             self._release_dump_event_handle(pending_dump_task)
 
     def _release_dump_event_handle(self, pending_dump_task: PendingDumpTask) -> None:
@@ -2523,8 +2939,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if isinstance(kv_connector_metadata, set)
             else getattr(kv_connector_metadata, "preempted_req_ids", None)
         )
-        if preempted_req_ids:
-            self._flush_pending_dump_tasks(preempted_req_ids)
+        if self.save_decode_cache or preempted_req_ids:
+            self._flush_pending_dump_tasks(
+                None if self.save_decode_cache else preempted_req_ids
+            )
 
     def wait_for_save(self) -> None:
         # TODO support PP
@@ -2539,8 +2957,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if len(request.dump_block_ids[0]) > 0
         }
         self._async_dump_req_ids.update(metadata_dump_request_ids)
+        save_jobs = self._begin_writeback_jobs(metadata)
 
         if self.is_mla and self.tp_rank != 0:
+            # A replicated payload has only one physical writer. Non-writers
+            # still report their participation, not a fictitious PUT.
+            self._complete_writeback_jobs(save_jobs, True, io_owner=False)
             return
 
         is_save = False
@@ -2548,6 +2970,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         block_ids_by_request: dict[str, set[bytes]] = {}
+        pointer_rows = []
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -2561,6 +2984,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            try:
+                ptrs = self._direct_ptrs(request.dump_groups, vllm_block_ids)
+                if len(ptrs) != len(ucm_block_ids):
+                    raise ValueError("Incomplete KV pointer rows for planned keys")
+            except Exception:
+                if not self.save_decode_cache:
+                    logger.exception("UCM save pointer mapping failed; skip this batch")
+                    return
+                logger.exception(
+                    "[UCM_DECODE_SAVE_MAPPING_FAILED] request_id=%s", request_id
+                )
+                self._complete_writeback_jobs(
+                    (request.save_job,) if request.save_job is not None else (), False
+                )
+                continue
             is_save = True
             dump_request_ids.add(request_id)
             block_ids_by_request[request_id] = set(ucm_block_ids)
@@ -2572,14 +3010,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 ]
             total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
+            pointer_rows.append(ptrs)
 
         if is_save:
+            save_jobs = tuple(
+                job for job in save_jobs if job.request_id in dump_request_ids
+            )
             event_handle = 0
             try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                    total_vllm_block_ids
-                )
+                total_ptrs = np.vstack(pointer_rows)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+                if self.save_decode_cache:
+                    total_ucm_block_ids, total_ptrs = self._missing_store_rows(
+                        self.store, total_ucm_block_ids, total_ptrs
+                    )
+                    num_saved_block = len(total_ucm_block_ids)
+                    if not total_ucm_block_ids:
+                        self._complete_writeback_jobs(
+                            save_jobs, True, status="already_present"
+                        )
+                        return
                 shard_indexs = [0] * len(total_ucm_block_ids)
                 event_handle = self._get_dump_event_handle()
                 task = self._rank_consistency.submit_dump(
@@ -2594,6 +3044,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
                 if self.enable_event_sync and event_handle and self.device is not None:
                     self.device.destroy_event_handle(event_handle)
+                self._complete_writeback_jobs(save_jobs, False)
                 return
 
             save_bytes = num_saved_block * self.block_data_size
@@ -2604,8 +3055,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     request_ids=set(dump_request_ids),
                     event_handle=event_handle,
                     wait_for_save_start_ms=wait_for_save_start_ms,
+                    save_jobs=save_jobs,
                 )
             )
+        elif save_jobs:
+            self._complete_writeback_jobs(save_jobs, False)
 
     @staticmethod
     def _non_negative_ms(value: float) -> float:
@@ -2634,10 +3088,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if (
             not self._rank_consistency.enabled
             and not self._connector_worker_meta.load_failed_reqs
+            and not self._writeback_results
         ):
             return None
         self._rank_consistency.update_worker_meta(self._connector_worker_meta)
         meta = self._connector_worker_meta
+        merge_writeback_results(meta.writeback_results, self._writeback_results)
+        self._writeback_results = {}
         self._connector_worker_meta = UCMWorkerMetadata(is_mla=meta.is_mla)
         return meta
 
@@ -2647,6 +3104,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return
         if not isinstance(meta, UCMWorkerMetadata):
             return
+        for result in meta.writeback_results.values():
+            state = self._writeback_states.get(result.job.request_id)
+            if state is not None:
+                state.complete_save(result)
         self._rank_consistency.apply_worker_meta(meta)
         for req_id in meta.load_failed_reqs:
             req_meta = self.requests_meta.get(req_id)
@@ -2699,6 +3160,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 # A completed poll is followed by wait_load() to surface any
                 # deferred Store error and release the task context.
                 self._rank_consistency.wait_load(pending.task)
+                self._debug_keys(
+                    "UCM_PREFILL_LOAD_RESULT",
+                    request_id,
+                    pending.keys,
+                    start=pending.token_start,
+                    status="success",
+                    stage="async_wait",
+                )
             except Exception as e:
                 completed = True
                 logger.error(
@@ -2710,6 +3179,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     pending.vllm_block_ids,
                 )
                 self._connector_worker_meta.mark_failed(request_id)
+                self._debug_keys(
+                    "UCM_PREFILL_LOAD_RESULT",
+                    request_id,
+                    pending.keys,
+                    start=pending.token_start,
+                    status="failed",
+                    stage="async_wait",
+                )
             finally:
                 if completed:
                     pending_load_tasks.pop(request_id, None)
@@ -3458,6 +3935,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             if role == KVConnectorRole.WORKER
             else "scheduler" if role == KVConnectorRole.SCHEDULER else None
         )
+        save_decode = validate_decode_config(
+            self.launch_config, vllm_config, kv_cache_config
+        )
         if role == KVConnectorRole.WORKER and self._worker_rank == 0:
             logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
         self._setup_ucm_metrics(vllm_config, role)
@@ -3574,6 +4054,28 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+
+        if save_decode and type(self.connector) not in (
+            UCMDirectConnector,
+            UCMFAWAConnector,
+        ):
+            raise ValueError(
+                "Decode writeback is supported by Direct and FAWA layouts only"
+            )
+        logger.info(
+            "[UCM_DECODE_SAVE_CONFIG] save_decode_cache=%s connector=%s role=%s "
+            "hash_block_size=%s shared_mla=%s",
+            save_decode,
+            type(self.connector).__name__,
+            vllm_config.kv_transfer_config.kv_role,
+            getattr(self.connector, "hash_block_size", None),
+            getattr(self.connector, "shared_mla", False),
+        )
+
+    def on_new_request(self, request: "Request") -> None:
+        hook = getattr(self.connector, "on_new_request", None)
+        if callable(hook):
+            hook(request)
 
     @property
     def requires_kv_delivery(self) -> bool:

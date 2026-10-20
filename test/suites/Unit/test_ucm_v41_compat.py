@@ -4,8 +4,11 @@ import ast
 import copy
 import ctypes
 import hashlib
+import importlib.util
+import json
 import math
 import pickle
+import sys
 import types
 import unittest
 from collections import namedtuple
@@ -19,11 +22,24 @@ UCM_PATH = ROOT / "ucm/integration/vllm/ucm_connector.py"
 HASHER_PATH = ROOT / "ucm/integration/vllm/request_hasher.py"
 
 
+def _replicated_symbols():
+    path = ROOT / "ucm/integration/vllm/replicated_mla_layout.py"
+    spec = importlib.util.spec_from_file_location("v41_replicated_layout", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_hash_helpers():
+    replicated = _replicated_symbols()
     namespace = {
         "hashlib": hashlib,
         "pickle": pickle,
         "Callable": Callable,
+        "build_namespace": replicated.build_namespace,
+        "supports_replicated_mla": replicated.supports_replicated_mla,
+        "target_layers": replicated.target_layers,
         "request_hasher_module": types.SimpleNamespace(
             _layout_source_digest=lambda: "test-layout"
         ),
@@ -92,7 +108,9 @@ def _load_hma_methods(names):
         "SchedulerOutput": object,
         "extract_layer_index": lambda name: int(name.split(".")[1]),
         "logger": types.SimpleNamespace(
-            info_once=lambda *_args: None, info=lambda *_args: None
+            info_once=lambda *_args: None,
+            info=lambda *_args: None,
+            debug=lambda *_args: None,
         ),
     }
     store_helpers = [
@@ -107,6 +125,30 @@ def _load_hma_methods(names):
         value = namespace[name]
         if isinstance(value, (staticmethod, classmethod)):
             namespace[name] = value.__func__
+        if name in {
+            "get_num_new_matched_tokens",
+            "build_connector_meta",
+            "wait_for_save",
+        }:
+            # These legacy tests exercise disabled-feature behavior using
+            # SimpleNamespace fixtures, not the real Direct base constructor.
+            original = namespace[name]
+
+            def legacy_call(connector, *args, _method=original, **kwargs):
+                for attr, default in {
+                    "save_decode_cache": False,
+                    "on_new_request": lambda *_args: None,
+                    "_ensure_writeback_meta": lambda *_args: None,
+                    "_prepare_writeback_dispatch": lambda *_args, **_kwargs: None,
+                    "_resolve_writeback_blocks": lambda *_args: None,
+                    "_debug_keys": lambda *_args, **_kwargs: None,
+                    "_writeback_states": {},
+                }.items():
+                    if not hasattr(connector, attr):
+                        setattr(connector, attr, default)
+                return _method(connector, *args, **kwargs)
+
+            namespace[name] = legacy_call
     return namespace
 
 
@@ -873,7 +915,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         connector = UCM_PATH.read_text(encoding="utf-8")
         # The lite branch runs its own FAWA/HLA probe, so scope the check to the
         # main path; otherwise that earlier branch satisfies it by accident.
-        main_path = connector[connector.index("use_inference_duration_monitor") :]
+        main_path = connector[
+            connector.index("        use_inference_duration_monitor =") :
+        ]
         self.assertLess(
             main_path.index("is_fawa = UCMFAWAConnector.can_handle_kv_cache_config"),
             main_path.index(

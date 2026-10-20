@@ -61,6 +61,10 @@ def handle_preemptions(self: Any, kv_connector_metadata: Any) -> None:
     self._call_ucm_reserved_hook("handle_preemptions", kv_connector_metadata)
 
 
+def on_new_request(self: Any, request: Any) -> None:
+    self._call_ucm_reserved_hook("on_new_request", request)
+
+
 def request_finished_all_groups(
     self: Any,
     request: Any,
@@ -148,6 +152,7 @@ def patch_ucm_connector_v1(mod: Any) -> None:
     patch_or_inject(target_cls, "shutdown", shutdown)
     patch_or_inject(target_cls, "set_host_xfer_buffer_ops", set_host_xfer_buffer_ops)
     patch_or_inject(target_cls, "handle_preemptions", handle_preemptions)
+    patch_or_inject(target_cls, "on_new_request", on_new_request)
     patch_or_inject(
         target_cls,
         "request_finished_all_groups",

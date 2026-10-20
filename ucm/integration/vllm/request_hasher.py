@@ -70,6 +70,7 @@ def _collect_layout_classes() -> list[type]:
     import ucm.integration.vllm.hla_connector
     import ucm.integration.vllm.hma_connector as hma_module
     import ucm.integration.vllm.ucm_connector as ucm_module
+    from ucm.integration.vllm.replicated_mla_layout import ReplicatedMLAStoreLayout
 
     classes: set[type] = set()
 
@@ -80,6 +81,7 @@ def _collect_layout_classes() -> list[type]:
 
     walk(ucm_module.KVCacheLayout)
     classes.add(hma_module.KVCacheGroupLayout)
+    classes.add(ReplicatedMLAStoreLayout)
     return sorted(classes, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
 
 
@@ -164,4 +166,40 @@ class RequestHasher:
         return hash_request
 
 
-__all__ = ["RequestHashError", "RequestHasher"]
+class IncrementalRequestHasher:
+    """Append committed hash blocks without rehashing an expanding conversation.
+
+    The cache belongs to one request generation. Reset it after preemption or
+    replacement of committed history; speculative drafts are never passed here.
+    """
+
+    def __init__(self, hasher: RequestHasher, block_size: int, root=None):
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        self.hasher = hasher
+        self.block_size = block_size
+        self.root = hasher.seed if root is None else root
+        self.hashes: list[bytes] = []
+        self.mm_cursors = [0]
+
+    def update(self, request: "Request", token_end: int) -> list[bytes]:
+        _validate_request_hash_semantics(request)
+        tokens = request.all_token_ids
+        count = min(max(token_end, 0), len(tokens)) // self.block_size
+        # Scheduler accounting can roll back; never retain hashes past the
+        # authoritative committed/computed extent.
+        del self.hashes[count:]
+        del self.mm_cursors[count + 1 :]
+        while len(self.hashes) < count:
+            start = len(self.hashes) * self.block_size
+            end = start + self.block_size
+            extra, cursor = _generate_extra_keys(
+                request, start, end, self.mm_cursors[-1]
+            )
+            parent = self.hashes[-1] if self.hashes else self.root
+            self.hashes.append(self.hasher((parent, tuple(tokens[start:end]), extra)))
+            self.mm_cursors.append(cursor)
+        return list(self.hashes)
+
+
+__all__ = ["IncrementalRequestHasher", "RequestHashError", "RequestHasher"]

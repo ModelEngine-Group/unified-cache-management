@@ -20,7 +20,13 @@ try:
 except ImportError:  # Older vLLM versions do not expose this helper.
     resolve_kv_cache_block_sizes = None
 
+from ucm.integration.vllm.decode_writeback import WritebackJob
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.replicated_mla_layout import (
+    CacheFamilyStore,
+    supports_replicated_mla,
+    target_layers,
+)
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
@@ -56,6 +62,12 @@ def _build_v41_hash_meta(
     cache_config = getattr(vllm_config, "cache_config", None)
     if cache_config is None:
         raise ValueError("DeepSeek V4.1 cache namespace needs cache_config.")
+    shared = supports_replicated_mla(vllm_config)
+    if shared:
+        # The versioned schema describes the transferred record, not group IDs,
+        # base addresses or local alias placement. It also survives the
+        # scheduler's flattening of per-layer V4.1 inner specs.
+        return build_kv_hash_meta(vllm_config, rank_id, kv_cache_config) + ":fawa=v41"
     ratios = ",".join(str(int(ratio)) for ratio in compress_ratios or ())
     layout_info = (
         ":kv_layout=v41_packed_v3"
@@ -662,6 +674,8 @@ class FAWARequestDispatchMeta:
     dump_hash_start: int = 0
     dump_hash_end: int = 0
     dump_vllm_block_ids: tuple[list[int], ...] = field(default_factory=tuple)
+    save_job: Optional[WritebackJob] = field(default=None, kw_only=True)
+    dump_wa_block_wise: Optional[bool] = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -681,6 +695,8 @@ class FAWALoadTask:
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
+    keys: tuple[bytes, ...] = ()
+    token_start: int = 0
 
 
 @dataclass
@@ -966,6 +982,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if not getattr(group, "enable_kv_transfer", True)
             or not getattr(group.kv_cache_spec, "prefix_cacheable", True)
         }
+        self.target_group_layers = (
+            target_layers(self._vllm_config, self._kv_cache_config)
+            if getattr(self, "shared_mla", False)
+            else {}
+        )
+        if getattr(self, "shared_mla", False):
+            self.transient_group_ids.update(
+                set(range(len(groups))) - self.target_group_layers.keys()
+            )
         self.prefix_replay_tokens = max(
             (
                 getattr(group.kv_cache_spec, "prefix_replay_tokens", 0)
@@ -1113,6 +1138,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 tail_blocks=tail_blocks,
                 tail_tokens=tail_tokens,
             )
+        if getattr(self, "shared_mla", False):
+            self.fa_group_ids.sort(key=lambda gid: self.target_group_layers[gid])
+            self.window_group_ids.sort(key=lambda gid: self.target_group_layers[gid])
         logger.info_once(
             f"max token_block_size of all groups: {self.max_token_block_size}"
         )
@@ -1482,7 +1510,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
         )
-        return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+        store = UcmConnectorFactoryV1.create_connector(name, config, module_path)
+        return (
+            CacheFamilyStore(store, label)
+            if getattr(self, "shared_mla", False)
+            else store
+        )
 
     @staticmethod
     def _summarize_store_config(config: dict[str, object]) -> dict[str, object]:
@@ -1516,7 +1549,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if group_id in self.transient_group_ids:
                 continue
             group_caches: dict[str, torch.Tensor] = {}
-            for layer_name in group_spec.layer_names:
+            for layer_name in self.target_group_layers.get(
+                group_id, group_spec.layer_names
+            ):
                 if (
                     self.is_ascend_v41_layout
                     and layer_name not in self.whole_page_sizes
@@ -1668,15 +1703,25 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
+        self.on_new_request(request)
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
         if request.num_tokens <= self.persist_token_threshold:
+            logger.debug(
+                "[UCM_PREFILL_LOOKUP_SKIP] request_id=%s reason=persist_token_threshold",
+                request.request_id,
+            )
             return 0, False
         skip_external_load = request.num_tokens <= (
             wa_computed_tokens + self.load_tokens_threshold
         )
         if skip_external_load and wa_hbm_hit_block_num <= 0:
+            logger.debug(
+                "[UCM_PREFILL_LOOKUP_SKIP] request_id=%s reason=load_tokens_threshold threshold=%s",
+                request.request_id,
+                self.load_tokens_threshold,
+            )
             return 0, False
 
         assert self.request_block_hasher is not None
@@ -1693,6 +1738,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # cache hit and should remain hot in both FAWA backing stores.
         if skip_external_load:
             self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
+            logger.debug(
+                "[UCM_PREFILL_LOOKUP_SKIP] request_id=%s reason=load_tokens_threshold threshold=%s",
+                request.request_id,
+                self.load_tokens_threshold,
+            )
             return 0, False
 
         # A full prompt hit must leave its final complete hash block for the
@@ -1747,6 +1797,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
             wa_hbm_hit_block_num += external_hit_blocks
 
+        self._debug_keys(
+            "UCM_PREFILL_LOOKUP",
+            request.request_id,
+            external_keys,
+            start=wa_computed_tokens,
+            hit_count=external_hit_blocks,
+            store="FA+WA",
+            returned_hit_tokens=external_hit_tokens,
+        )
         # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
             ucm_block_ids=canonical_hashes,
@@ -1771,7 +1830,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        pass
+        self.on_new_request(request)
+        self._writeback_states[request.request_id].update_blocks(
+            blocks.get_block_ids(), replace=True
+        )
 
     def _slice_group_block_ids(
         self,
@@ -1897,7 +1959,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         dump_end = computed_end_token // self.hash_block_size
         dump_block_keys: list[bytes] = []
         dump_vllm_block_ids: list[list[int]] = []
-        if dump_end > dump_start:
+        if dump_end > dump_start and not getattr(self, "save_decode_cache", False):
             dump_block_keys = req_meta.ucm_block_ids[dump_start:dump_end]
             window_boundary_token_idx = (
                 np.arange(dump_start + 1, dump_end + 1) * self.hash_block_size - 1
@@ -1931,8 +1993,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids
+            self._ensure_writeback_meta(request_id, FAWARequestMeta)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
+                state = self._writeback_states.get(request_id)
+                if state is not None and state.scheduled_once:
+                    req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
@@ -1943,9 +2009,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         else None
                     ),
                 )
+                self._prepare_writeback_dispatch(
+                    request_id,
+                    requests_dispatch_meta[request_id],
+                    vllm_block_ids,
+                    scheduler_output.num_scheduled_tokens[request_id],
+                    new_request=request,
+                    full_groups=self._resolve_writeback_blocks(
+                        scheduler_output, request_id
+                    ),
+                )
 
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+            self._ensure_writeback_meta(request_id, FAWARequestMeta)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 new_block_ids = scheduled_cached_reqs.new_block_ids[i]
@@ -1974,9 +2051,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         else None
                     ),
                 )
+                self._prepare_writeback_dispatch(
+                    request_id,
+                    requests_dispatch_meta[request_id],
+                    new_block_ids,
+                    scheduler_output.num_scheduled_tokens[request_id],
+                    resumed=resumed_from_preemption,
+                    full_groups=self._resolve_writeback_blocks(
+                        scheduler_output, request_id
+                    ),
+                )
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._writeback_states.pop(request_id, None)
 
         preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
         return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
@@ -2005,6 +2093,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             store=store,
             task=task,
             key_count=len(keys),
+            keys=tuple(keys),
+            token_start=(
+                (
+                    self._get_connector_metadata()
+                    .request_meta[request_id]
+                    .load_hash_start
+                    + self._get_connector_metadata()
+                    .request_meta[request_id]
+                    .load_keys.index(keys[0])
+                )
+                * self.hash_block_size
+                if keys
+                else 0
+            ),
         )
 
     def _handle_load_err(self, request_id: str):
@@ -2029,7 +2131,23 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
             self._handle_load_err(load_task.request_id)
+            self._debug_keys(
+                "UCM_PREFILL_LOAD_RESULT",
+                load_task.request_id,
+                load_task.keys,
+                start=load_task.token_start,
+                store=load_task.label,
+                status="failed",
+            )
             return False
+        self._debug_keys(
+            "UCM_PREFILL_LOAD_RESULT",
+            load_task.request_id,
+            load_task.keys,
+            start=load_task.token_start,
+            store=load_task.label,
+            status="success",
+        )
         return True
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -2225,6 +2343,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         self._poll_completed_dump_tasks()
 
+        if self.save_decode_cache:
+            self._save_writeback_requests(metadata)
+            return
+
         fa_dump_keys: list[bytes] = []
         wa_dump_keys: list[bytes] = []
         fa_ptr_rows: list[np.ndarray] = []
@@ -2381,6 +2503,117 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self._record_counter("connector_dump_submit_errors_total")
         if fa_dump_keys or wa_dump_keys:
             ucmmetrics.update_stats({"save_bytes_total": save_bytes})
+
+    def _save_writeback_requests(self, metadata) -> None:
+        """Commit an FA prefix plus its final WA snapshot as one logical job.
+
+        FA rows may be distributed across TP writers; WA has one writer per
+        job. All TP workers acknowledge, and the scheduler advances only after
+        every participant succeeds. Waiting here deliberately bounds the source
+        lifetime: rolling window pages cannot survive the next model forward.
+        """
+        for request_id, request in metadata.request_meta.items():
+            job = request.save_job
+            if job is None:
+                continue
+            tasks = []
+            success = True
+            start = len(job.keys) * self.tp_rank // self.tp_size
+            end = len(job.keys) * (self.tp_rank + 1) // self.tp_size
+            try:
+                fa_keys = list(job.keys[start:end])
+                if fa_keys:
+                    groups = tuple(
+                        ids[start:end] if gid in self.fa_group_ids else ids
+                        for gid, ids in enumerate(request.dump_vllm_block_ids)
+                    )
+                    ptrs = self._extract_fa_ptr(
+                        fa_keys,
+                        request.dump_hash_start + start,
+                        request.dump_hash_start + end,
+                        groups,
+                    )
+                    self._submit_writeback_part(
+                        tasks,
+                        job,
+                        "FA",
+                        self.fa_store,
+                        fa_keys,
+                        ptrs,
+                        job.start + start * self.hash_block_size,
+                    )
+                if self.window_group_ids and job.job_id % self.tp_size == self.tp_rank:
+                    wa_keys = list(job.keys[-1:])
+                    self._submit_writeback_part(
+                        tasks,
+                        job,
+                        "WA",
+                        self.wa_store,
+                        wa_keys,
+                        self._extract_wa_ptr(wa_keys, request.dump_vllm_block_ids),
+                        job.end - self.hash_block_size,
+                    )
+            except Exception:
+                success = False
+                logger.exception(
+                    "[UCM_DECODE_SAVE_SUBMIT_FAILED] request_id=%s job_id=%s",
+                    request_id,
+                    job.job_id,
+                )
+            finally:
+                # Even if WA submission fails, the FA DMA must finish before
+                # HBM is reused. Never abandon an already submitted task.
+                for task, keys, token_start in tasks:
+                    part_success = False
+                    try:
+                        part_success = (
+                            self._rank_consistency.wait_dump(task.task) is True
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[UCM_DECODE_SAVE_WAIT_FAILED] request_id=%s store=%s",
+                            request_id,
+                            task.label,
+                        )
+                    finally:
+                        self.device.destroy_event_handle(task.event_handle)
+                    success = success and part_success
+                    self._debug_keys(
+                        "UCM_DECODE_STORE_RESULT",
+                        request_id,
+                        keys,
+                        start=token_start,
+                        job=job,
+                        store=task.label,
+                        status="success" if part_success else "failed",
+                    )
+                self._complete_writeback_jobs((job,), success, io_owner=bool(tasks))
+
+    def _submit_writeback_part(self, tasks, job, label, store, keys, ptrs, start):
+        planned_keys = keys
+        keys, ptrs = self._missing_store_rows(store, keys, ptrs)
+        missing = set(keys)
+        self._debug_keys(
+            "UCM_DECODE_STORE_PRESENT",
+            job.request_id,
+            [key for key in planned_keys if key not in missing],
+            start=start,
+            job=job,
+            store=label,
+            status="already_present",
+        )
+        if not keys:
+            return
+        event = self._get_dump_event_handle()
+        try:
+            task = self._submit_dump_task(
+                label, store, keys, ptrs, event, {job.request_id: set(keys)}
+            )
+        except Exception:
+            self.device.destroy_event_handle(event)
+            raise
+        tasks.append((task, keys, start))
+        ucmmetrics.update_stats({"save_bytes_total": len(keys) * self.file_size[label]})
 
     def _poll_completed_dump_tasks(self) -> None:
         """Reap completed FAWA dump tasks without waiting for in-flight tasks."""
