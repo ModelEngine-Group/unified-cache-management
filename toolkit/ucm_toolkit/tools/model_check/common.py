@@ -85,7 +85,7 @@ def make_ucm_config(
     storage_backends: str,
     use_layerwise: bool,
     enable_event_sync: bool = True,
-    ucm_cache_block_size: int | None = None,
+    tokens_per_chunk: int | None = None,
 ) -> dict[str, Any]:
     """Build the fixed UCM configuration used by the compatibility check."""
 
@@ -113,9 +113,8 @@ def make_ucm_config(
         "load_tokens_threshold": 0,
         "enable_record_traces": False,
     }
-    if ucm_cache_block_size is not None:
-        # connector v2 reads the UCM chunk size from tokens_per_chunk.
-        config["tokens_per_chunk"] = ucm_cache_block_size
+    if tokens_per_chunk is not None:
+        config["tokens_per_chunk"] = tokens_per_chunk
     return config
 
 
@@ -132,7 +131,7 @@ def make_config(
     use_layerwise: bool,
     device: str,
     connector_module_path: str = "ucm.integration.vllm.ucm_connector",
-    ucm_cache_block_size: int | None = None,
+    tokens_per_chunk: int | None = None,
 ) -> Any:
     """Create the requested vLLM parallel configuration for the synthetic request."""
 
@@ -149,7 +148,7 @@ def make_config(
                 store_pipeline,
                 storage_backends,
                 use_layerwise,
-                ucm_cache_block_size=ucm_cache_block_size,
+                tokens_per_chunk=tokens_per_chunk,
             ),
         },
     )
@@ -1203,9 +1202,9 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
         transfers = builder(metadata)
     # Diagnostics iterate bytes; worker IO keeps the native [K,S] matrices.
     block_ids = tuple(
-        ucm_block_id
+        ucm_chunk_id
         for transfer in transfers
-        for ucm_block_id in transfer.ucm_chunk_ids
+        for ucm_chunk_id in transfer.ucm_chunk_ids
         for _ in range(transfer.ptrs.shape[1])
     )
     return SimpleNamespace(

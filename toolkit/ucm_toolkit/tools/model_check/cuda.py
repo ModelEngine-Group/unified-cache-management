@@ -126,7 +126,7 @@ def make_config() -> Any:
         use_layerwise,
         "cuda",
         connector_module_path,
-        ucm_cache_block_size=config.ucm_cache_block_size,
+        tokens_per_chunk=config.tokens_per_chunk,
     )
 
 
