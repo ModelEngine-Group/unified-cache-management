@@ -324,6 +324,12 @@ def apply_all_patches() -> None:
         import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
         import ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch
 
+        # GDN/KDA (hybrid linear-attention) forwards never receive
+        # @maybe_transfer_kv_layer; wire the per-layer KV hooks in for the
+        # layerwise v2 connector. @when_imported is self-guarding (only fires
+        # when the GDN modules exist).
+        import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch
+
         logger.info("UCM patch initialization completed!")
 
     except Exception as e:
