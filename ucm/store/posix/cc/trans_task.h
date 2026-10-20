@@ -37,7 +37,11 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    size_t backendIndex{0};
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    // Set when a worker starts on the task. A timeout before that is queueing, not a backend
+    // failure.
+    std::atomic<bool> started{false};
     // When set, the engine reclaims the handle before invoking this callback.
     std::function<void(Status)> onComplete;
 
@@ -47,7 +51,9 @@ public:
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
+          backendIndex{other.backendIndex},
           failureStatus{other.failureStatus.load()},
+          started{other.started.load()},
           onComplete{std::move(other.onComplete)}
     {
     }

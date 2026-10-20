@@ -128,8 +128,9 @@ TEST_F(UCPosixTransManagerTest, PsyncLoadSubmitAfterCloseFailsCleanly)
     data.Generate();
 
     ASSERT_TRUE(layout.InitBackend(Path(), true).Success());
+    const std::vector<std::string> backends{Path()};
     IoEnginePsync engine;
-    ASSERT_EQ(engine.Setup(config, &layout, Path(), 0), UC::Status::OK());
+    ASSERT_EQ(engine.Setup(config, &layout, &backends), UC::Status::OK());
     UC::Detail::TaskDesc dumpDesc;
     dumpDesc.brief = "Dump";
     dumpDesc.push_back(UC::Detail::Shard{block, 0, {data.Buffer()}});

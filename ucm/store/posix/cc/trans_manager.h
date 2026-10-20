@@ -67,9 +67,9 @@ private:
 
     const BackendManager* backendMgr_{nullptr};
     size_t timeoutMs_{0};
-    std::vector<std::unique_ptr<IoEngineAio>> aioEngines_;
-    std::vector<std::unique_ptr<IoEnginePsync>> psyncEngines_;
-    std::vector<IoEngine*> engines_;
+    std::unique_ptr<IoEngineAio> aioEngine_;
+    std::unique_ptr<IoEnginePsync> psyncEngine_;
+    IoEngine* engine_{nullptr};
     std::unordered_map<Detail::TaskHandle, std::shared_ptr<Request>> requests_;
     std::shared_mutex mutex_;
     std::shared_ptr<CallbackState> callbacks_{std::make_shared<CallbackState>()};

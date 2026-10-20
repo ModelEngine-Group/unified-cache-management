@@ -21,8 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <chrono>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <sys/stat.h>
+#include <thread>
+#include <utime.h>
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
 #include "posix/cc/posix_file.h"
@@ -164,4 +168,30 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
         std::vector<uint8_t> expected{true, true, false, true};
         ASSERT_TRUE(founds == expected);
     }
+}
+
+TEST_F(UCPosixSpaceManagerTest, PrefetchTouchesFileThroughBatchPool)
+{
+    using namespace UC::PosixStore;
+    SpaceManager spaceMgr;
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.storageBackends.push_back(Path());
+    ASSERT_TRUE(spaceMgr.Setup(config).Success());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto archived = spaceMgr.GetLayout()->ArchivedFilePath(Path(), block);
+    ASSERT_EQ(PosixFile{archived}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
+    constexpr time_t kOldTime = 1000;
+    struct utimbuf old{kOldTime, kOldTime};
+    ASSERT_EQ(utime(archived.c_str(), &old), 0);
+
+    spaceMgr.Prefetch(&block, 1);
+    time_t mtime = kOldTime;
+    for (size_t i = 0; i < 200 && mtime == kOldTime; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        struct stat st{};
+        ASSERT_EQ(stat(archived.c_str(), &st), 0);
+        mtime = st.st_mtime;
+    }
+    EXPECT_GT(mtime, kOldTime);
 }

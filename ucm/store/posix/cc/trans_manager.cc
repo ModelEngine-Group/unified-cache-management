@@ -32,8 +32,8 @@ TransManager::~TransManager()
         std::unique_lock<std::shared_mutex> lock(callbacks_->mutex);
         callbacks_->stopped = true;
     }
-    aioEngines_.clear();
-    psyncEngines_.clear();
+    aioEngine_.reset();
+    psyncEngine_.reset();
 }
 
 Status TransManager::Setup(const Config& config, const SpaceLayout* layout,
@@ -46,23 +46,15 @@ Status TransManager::Setup(const Config& config, const SpaceLayout* layout,
     timeoutMs_ = config.timeoutMs;
     auto backendConfig = config;
     backendConfig.timeoutMs = backendMgr->IoTimeoutMs();
-    const auto& backends = backendMgr->Backends();
-    for (size_t index = 0; index < backends.size(); ++index) {
-        Status status = Status::OK();
-        if (config.ioEngine == "aio") {
-            auto engine = std::make_unique<IoEngineAio>();
-            status = engine->Setup(backendConfig, layout, backends[index], index);
-            engines_.push_back(engine.get());
-            aioEngines_.push_back(std::move(engine));
-        } else {
-            auto engine = std::make_unique<IoEnginePsync>();
-            status = engine->Setup(backendConfig, layout, backends[index], index);
-            engines_.push_back(engine.get());
-            psyncEngines_.push_back(std::move(engine));
-        }
-        if (status.Failure()) { return status; }
+    if (config.ioEngine == "aio") {
+        aioEngine_ = std::make_unique<IoEngineAio>();
+        engine_ = aioEngine_.get();
+        return aioEngine_->Setup(backendConfig, layout, &backendMgr->Backends());
+    } else {
+        psyncEngine_ = std::make_unique<IoEnginePsync>();
+        engine_ = psyncEngine_.get();
+        return psyncEngine_->Setup(backendConfig, layout, &backendMgr->Backends());
     }
-    return Status::OK();
 }
 
 Expected<Detail::TaskHandle> TransManager::Submit(TransTask task)
@@ -139,6 +131,7 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
     Detail::TaskDesc desc{shardTask.shard};
     desc.brief = request->task.desc.brief;
     TransTask task{request->task.type, std::move(desc)};
+    task.backendIndex = shardTask.attempt.index;
     // check status in callback, if need retry then call TryNextBackend
     task.onComplete = [this, request, &shardTask, callbacks = callbacks_](Status status) {
         std::shared_lock<std::shared_mutex> lock(callbacks->mutex);
@@ -150,7 +143,7 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
             request->waiter.Done();
         }
     };
-    auto submitted = engines_[shardTask.attempt.index]->Submit(std::move(task));
+    auto submitted = engine_->Submit(std::move(task));
     if (submitted) {
         return;
     } else {

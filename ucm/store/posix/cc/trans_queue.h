@@ -47,8 +47,7 @@ private:
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
-    std::string backend_;
-    size_t backendIndex_{0};
+    const std::vector<std::string>* backends_{nullptr};
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;
@@ -58,8 +57,9 @@ private:
     size_t timeoutMs_;
 
 public:
+    // backends must outlive this queue; each task picks one by index.
     Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout,
-                 const std::string& backend, size_t backendIndex);
+                 const std::vector<std::string>* backends);
     void Push(TaskPtr task, WaiterPtr waiter);
     void Cancel(TaskPtr task);
 
@@ -67,6 +67,7 @@ private:
     void LoadWorker(IoUnit& ios);
     void DumpWorker(IoUnit& ios);
     void OnIoUnitTimeout(IoUnit& ios);
+    void OnIoUnitQueueTimeout(IoUnit& ios);
     Status H2S(IoUnit& ios);
     Status S2H(IoUnit& ios);
 };

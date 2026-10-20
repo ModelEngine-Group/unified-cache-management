@@ -46,7 +46,6 @@ public:
     Status Setup(const Config& config, const SpaceLayout* layout);
     Expected<std::string> GetBackendForBlock(const Detail::BlockId& blockId,
                                              const std::vector<std::string>& excluded = {}) const;
-    // Appends the selected path to attempted only on success.
     Expected<BackendAttempt> SelectNextBackend(const Detail::BlockId& blockId,
                                                std::vector<std::string>& attempted) const;
     size_t BackendCount() const { return storageBackends_.size(); }
@@ -54,7 +53,7 @@ public:
     size_t IoTimeoutMs() const { return ioTimeoutMs_; }
     Status RunOnAvailableBackend(const Detail::BlockId& blockId,
                                  const std::function<Status(size_t)>& operation) const;
-    // Records the attempt's I/O result and returns whether to try another backend.
+    void RecordResult(const BackendAttempt& attempt, const Status& status) const;
     bool ShouldRetry(const BackendAttempt& attempt, const Status& status) const;
     Status CheckHealth() const;
 
@@ -65,7 +64,6 @@ private:
     bool passiveEnabled_{true};
     Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
     std::vector<std::string> storageBackends_;
-    // HealthTracker is immovable; deque keeps element addresses stable on emplace_back.
     mutable std::deque<Detail::HealthTracker> backendHealth_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;

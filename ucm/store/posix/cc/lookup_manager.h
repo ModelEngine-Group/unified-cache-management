@@ -27,6 +27,8 @@
 #include <atomic>
 #include <future>
 #include <memory>
+#include <string>
+#include <vector>
 #include "global_config.h"
 #include "logger/logger.h"
 #include "posix_file.h"
@@ -38,6 +40,7 @@ namespace UC::PosixStore {
 class LookupManager {
     struct Task {
         std::string path;
+        size_t backendIndex{0};
         std::promise<Status> result;
         std::atomic<bool> completed{false};
 
@@ -49,12 +52,11 @@ class LookupManager {
     };
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend,
-                 size_t backendIndex)
+    Status Setup(const Config& config, const SpaceLayout* layout,
+                 const std::vector<std::string>* backends)
     {
         layout_ = layout;
-        backend_ = backend;
-        backendTag_ = fmt::format("{}:{}", backendIndex, backend);
+        backends_ = backends;
         const auto timeoutMs = config.timeoutMs;
         const auto success =
             lookupSrv_
@@ -65,15 +67,16 @@ public:
                     auto status = PosixFile{task->path}.Access(mode);
                     // NotFound is a cache miss, not a backend error.
                     if (status.Failure() && status != Status::NotFound()) {
-                        UC_ERROR("Failed({}) to look up file({}) in backend({}).", status,
-                                 task->path, backendTag_);
+                        UC_ERROR("Failed({}) to look up file({}) in backend({}:{}).", status,
+                                 task->path, task->backendIndex, (*backends_)[task->backendIndex]);
                     }
                     task->Complete(std::move(status));
                 })
                 .SetWorkerTimeoutFn(
                     [this, timeoutMs](std::shared_ptr<Task>& task, auto) {
-                        UC_ERROR("Lookup of file({}) in backend({}) timed out after {} ms.",
-                                 task->path, backendTag_, timeoutMs);
+                        UC_ERROR("Lookup of file({}) in backend({}:{}) timed out after {} ms.",
+                                 task->path, task->backendIndex, (*backends_)[task->backendIndex],
+                                 timeoutMs);
                         task->Complete(Status::Timeout());
                     },
                     config.timeoutMs, 100)
@@ -84,10 +87,11 @@ public:
         return Status::OK();
     }
 
-    Status Lookup(const Detail::BlockId& block)
+    Status Lookup(const Detail::BlockId& block, size_t backendIndex)
     {
         auto task = std::make_shared<Task>();
-        task->path = layout_->ArchivedFilePath(backend_, block);
+        task->path = layout_->ArchivedFilePath((*backends_)[backendIndex], block);
+        task->backendIndex = backendIndex;
         auto result = task->result.get_future();
         lookupSrv_.Push(std::move(task));
         return result.get();
@@ -95,9 +99,7 @@ public:
 
 private:
     const SpaceLayout* layout_{nullptr};
-    std::string backend_;
-    // "<index>:<path>", matching the backend health tracker name.
-    std::string backendTag_;
+    const std::vector<std::string>* backends_{nullptr};
     ThreadPool<std::shared_ptr<Task>> lookupSrv_;
 };
 

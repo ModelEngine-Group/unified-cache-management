@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
-#include <algorithm>
 #include <atomic>
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -50,17 +49,10 @@ Status SpaceManager::Setup(const Config& config)
         s = gcMgr_.Setup(&layout_, &backendMgr_, config);
         if (s.Failure()) [[unlikely]] { return s; }
     }
-    auto backendConfig = config;
-    backendConfig.timeoutMs = backendMgr_.IoTimeoutMs();
-    backendConfig.lookupConcurrency =
-        std::max<size_t>(1, config.lookupConcurrency / backendMgr_.BackendCount());
-    const auto& backends = backendMgr_.Backends();
-    for (size_t index = 0; index < backends.size(); ++index) {
-        auto manager = std::make_unique<LookupManager>();
-        s = manager->Setup(backendConfig, &layout_, backends[index], index);
-        if (s.Failure()) { return s; }
-        lookupManagers_.push_back(std::move(manager));
-    }
+    auto lookupConfig = config;
+    lookupConfig.timeoutMs = backendMgr_.IoTimeoutMs();
+    s = lookupManager_.Setup(lookupConfig, &layout_, &backendMgr_.Backends());
+    if (s.Failure()) { return s; }
     auto prefixSuccess =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
@@ -135,7 +127,7 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
     const auto status = backendMgr_.RunOnAvailableBackend(
-        *block, [&](size_t backendIndex) { return lookupManagers_[backendIndex]->Lookup(*block); });
+        *block, [&](size_t backendIndex) { return lookupManager_.Lookup(*block, backendIndex); });
     return status.Success();
 }
 

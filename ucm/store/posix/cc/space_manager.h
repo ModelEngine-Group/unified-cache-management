@@ -55,7 +55,7 @@ private:
     ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
-    std::vector<std::unique_ptr<LookupManager>> lookupManagers_;
+    LookupManager lookupManager_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
 public:

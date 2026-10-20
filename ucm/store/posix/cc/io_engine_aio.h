@@ -51,27 +51,27 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t nShardPerBlock_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
-    // "<index>:<path>", matching the backend health tracker name.
-    std::string backendTag_;
+    const std::vector<std::string>* backends_{nullptr};
     BlockOperator blockOperator_;
     AioImpl aio_;
 
 public:
     ~IoEngineAio() { blockOperator_.Stop(); }
-    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend,
-                 size_t backendIndex)
+    Status Setup(const Config& config, const SpaceLayout* layout,
+                 const std::vector<std::string>* backends)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        backendTag_ = fmt::format("{}:{}", backendIndex, backend);
-        blockOperator_.Setup(layout, backend, backendIndex, config.openConcurrency,
-                             config.commitConcurrency);
+        backends_ = backends;
+        auto s = blockOperator_.Setup(layout, backends, config.openConcurrency,
+                                      config.commitConcurrency, timeoutMs_);
+        if (s.Failure()) { return s; }
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
-            "AIO engine setup: backend={}, timeoutMs={}, "
+            "AIO engine setup: backends={}, timeoutMs={}, "
             "openConcurrency={}, commitConcurrency={}.",
-            backendTag_, timeoutMs_, config.openConcurrency, config.commitConcurrency);
+            backends_->size(), timeoutMs_, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(timeoutMs_);
     }
 
@@ -100,9 +100,13 @@ private:
         static UC::Metrics::CachedMetric ioErrors{"posix_io_errors_total"};
         UC::Metrics::UpdateStats(ioErrors, 1.0);
     }
-    void CommitBlock(Detail::BlockId id, bool success)
+    std::string BackendTag(const TransTask& task) const
     {
-        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
+        return fmt::format("{}:{}", task.backendIndex, (*backends_)[task.backendIndex]);
+    }
+    void CommitBlock(const TransTask& task, Detail::BlockId id, bool success)
+    {
+        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success, task.backendIndex});
     }
     template <bool dump>
     void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
@@ -112,14 +116,14 @@ private:
         const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(shardSize_);
         if (result.error != 0 || shortIo) {
             UC_ERROR("Failed(error={}, bytes={}/{}) to do io on block({}) in backend({}).",
-                     result.error, result.nBytes, shardSize_, id, backendTag_);
+                     result.error, result.nBytes, shardSize_, id, BackendTag(*task));
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
         }
         ::close(fd);
         if constexpr (dump) {
-            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
+            if (last) { CommitBlock(*task, id, !failureSet_.Contains(tid)); }
         }
         w->Done();
     }
@@ -135,13 +139,13 @@ private:
             failureSet_.Insert(tid);
             if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
+                if (last) { CommitBlock(*task, id, false); }
             }
             w->Done();
         };
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}) in backend({}).", result.error,
-                     shard.owner, backendTag_);
+                     shard.owner, BackendTag(*task));
             if (result.error != ECANCELED) { IncrementOpenErrorMetric(); }
             auto status = !dump && result.error == ENOENT ? Status::NotFound() : Status::Error();
             handleFailure(result.fd, status);
@@ -150,7 +154,7 @@ private:
         if (failureSet_.Contains(tid)) {
             if (result.fd >= 0) { ::close(result.fd); }
             if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
+                if (last) { CommitBlock(*task, id, false); }
             }
             w->Done();
             return;
@@ -167,7 +171,7 @@ private:
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {
             UC_ERROR("Failed({}) to submit io on block({}) in backend({}).", status, id,
-                     backendTag_);
+                     BackendTag(*task));
             if (status == Status::Timeout()) {
                 IncrementAioTimeoutMetric();
             } else {
@@ -190,9 +194,11 @@ private:
             task.activated = dump;
             task.flags = flags;
             task.tag = t->id;
+            task.backendIndex = t->backendIndex;
             task.callback = [this, t, w, i](BlockOperator::OpenResult result) {
                 OnOpenCallback<dump>(t, w, t->desc[i], result);
             };
+            task.onStart = [t] { t->started.store(true, std::memory_order_relaxed); };
             tasks.push_back(std::move(task));
         }
         blockOperator_.Submit(std::move(tasks));
@@ -253,29 +259,40 @@ private:
             Dispatch<false>(t, w);
         }
     }
+    static Status TimeoutStatus(bool started)
+    {
+        if (started) {
+            return Status::Timeout();
+        } else {
+            return Status::TimeoutInQueue();
+        }
+    }
     void SweepDeadlines()
     {
         auto now = NowTime::Now();
-        std::vector<std::tuple<Detail::TaskHandle, WaiterPtr, size_t>> due;
+        std::vector<std::tuple<TaskPtr, WaiterPtr, size_t, bool>> due;
         {
             std::lock_guard<std::mutex> lk(regMutex_);
             for (auto& [id, inf] : registry_) {
                 if (!inf.aborted && now >= inf.deadlineTp) {
                     inf.aborted = true;
-                    inf.t->Fail(Status::Timeout());
-                    due.emplace_back(id, inf.w, inf.shardCount);
+                    const auto started = inf.t->started.load(std::memory_order_relaxed);
+                    inf.t->Fail(TimeoutStatus(started));
+                    due.emplace_back(inf.t, inf.w, inf.shardCount, started);
                 }
             }
         }
-        for (auto& [id, w, shardCount] : due) {
+        for (auto& [t, w, shardCount, started] : due) {
             auto stuckMs = (now - w->startTp) * 1e3;
             auto pending = w->Pending();
             IncrementAioTimeoutMetric();
             UC_ERROR(
-                "AIO task({}) in backend({}) timed out after {:.1f}ms; force-draining latch "
+                "AIO task({}) in backend({}) timed out while {} after {:.1f}ms; force-draining "
+                "latch "
                 "({} of {} shard(s) outstanding).",
-                id, backendTag_, stuckMs, pending, shardCount);
-            ForceComplete(id, w);
+                t->id, BackendTag(*t), started ? "running" : "queued", stuckMs, pending,
+                shardCount);
+            ForceComplete(t, w);
         }
     }
     void Cancel(TaskPtr t) override
@@ -290,18 +307,19 @@ private:
             w = it->second.w;
         }
         UC_ERROR("AIO task({}) in backend({}) cancelled on wait timeout; force-draining latch.",
-                 t->id, backendTag_);
+                 t->id, BackendTag(*t));
         IncrementAioTimeoutMetric();
-        t->Fail(Status::Timeout());
-        ForceComplete(t->id, w);
+        t->Fail(TimeoutStatus(t->started.load(std::memory_order_relaxed)));
+        ForceComplete(t, w);
     }
-    void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
+    void ForceComplete(const TaskPtr& t, const WaiterPtr& w)
     {
+        const auto id = t->id;
         auto pending = w ? w->Pending() : 0;
         UC_WARN(
             "AIO task({}) in backend({}) force-completing; pending latch count before "
             "abort={}.",
-            id, backendTag_, pending);
+            id, BackendTag(*t), pending);
         failureSet_.Insert(id);
         aio_.CancelTask(id);
         blockOperator_.CancelQueued(id);

@@ -28,7 +28,9 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include "backend_manager.h"
+#include "thread/thread_pool.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -43,13 +45,23 @@ public:
     void Touch(const Detail::BlockId& blockId);
 
 private:
-    void UtimeWorkerLoop();
+    struct Batch {
+        BackendManager::BackendAttempt attempt;
+        std::vector<Detail::BlockId> blocks;
+    };
+
+    void DispatchLoop();
+    void TouchBatch(const Batch& batch);
     const SpaceLayout* layout_{nullptr};
     const BackendManager* backendMgr_{nullptr};
     std::deque<Detail::BlockId> produceQueue_;
     std::mutex queueMtx_;
+    // Blocks in produceQueue_ plus blocks in queued or running batches.
+    std::atomic<size_t> pendingBlocks_{0};
+    std::atomic<size_t> droppedBlocks_{0};
     std::atomic<bool> stop_{false};
-    std::thread utimeWorker_;
+    ThreadPool<Batch> utimeSrv_;
+    std::thread dispatcher_;
 };
 
 }  // namespace UC::PosixStore

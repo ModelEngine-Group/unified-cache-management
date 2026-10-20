@@ -520,9 +520,14 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(
-        layout.ArchivedFilePath(layoutConfig.storageBackends.front() + "/", block),
-        AIO_TEST_DATA_SIZE / 2);
+    // Commit runs after Wait returns, so wait for the archived file to show up.
+    const auto file = layout.ArchivedFilePath(layoutConfig.storageBackends.front() + "/", block);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!std::filesystem::exists(file) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(std::filesystem::exists(file));
+    std::filesystem::resize_file(file, AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
@@ -668,6 +673,65 @@ TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1500);
+    // Only the task stuck in open counts against the backend; the two queued ones do not,
+    // so one failure stays below the passive threshold of 2.
+    EXPECT_TRUE(store.CheckHealth().Success());
+}
+
+TEST_F(UCPosixStoreTest, AioStuckOpenWorkerIsReplaced)
+{
+    using namespace UC::PosixStore;
+    // Stall only the first open. Later opens go to the filesystem.
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool release = false;
+    std::atomic<size_t> calls{0};
+    std::atomic<bool> stalledReturned{false};
+    TestHooks::SetOpenHook([&](const std::string& path, int32_t flags, mode_t mode) {
+        if (calls.fetch_add(1) == 0) {
+            std::unique_lock<std::mutex> lock{mutex};
+            cv.wait(lock, [&] { return release; });
+            lock.unlock();
+            auto fd = ::open(path.c_str(), flags, mode);
+            stalledReturned.store(true);
+            return fd;
+        }
+        return ::open(path.c_str(), flags, mode);
+    });
+    {
+        PosixStore store;
+        ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 200, 1)), UC::Status::OK());
+        auto buffer1 = MakeAlignedBuffer(11);
+        auto buffer2 = MakeAlignedBuffer(12);
+        ASSERT_NE(buffer1.get(), nullptr);
+        ASSERT_NE(buffer2.get(), nullptr);
+        auto block1 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+        auto block2 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+
+        auto handle1 = store.Dump(MakeDumpDesc("AioStuckOpen1", block1, buffer1.get()));
+        ASSERT_TRUE(handle1.HasValue());
+        EXPECT_EQ(store.Wait(handle1.Value()), UC::Status::Timeout());
+
+        // The only open worker is still stuck. The pool replaces it once it runs past the
+        // 200 ms timeout, which the monitor notices within its 1 s interval.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        auto handle2 = store.Dump(MakeDumpDesc("AioStuckOpen2", block2, buffer2.get()));
+        ASSERT_TRUE(handle2.HasValue());
+        EXPECT_EQ(store.Wait(handle2.Value()), UC::Status::OK());
+
+        // The stuck worker was detached by the pool. Let its open return and give its callback
+        // time to finish before the store goes away.
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            release = true;
+        }
+        cv.notify_all();
+        for (size_t i = 0; i < 100 && !stalledReturned.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    TestHooks::ClearOpenHook();
 }
 
 TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)

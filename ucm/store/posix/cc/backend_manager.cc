@@ -199,10 +199,15 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
     }
 }
 
+void BackendManager::RecordResult(const BackendAttempt& attempt, const Status& status) const
+{
+    if (passiveEnabled_) { backendHealth_[attempt.index].RecordIo(attempt.generation, status); }
+}
+
 bool BackendManager::ShouldRetry(const BackendAttempt& attempt, const Status& status) const
 {
     if (status == Status::NotFound()) { return false; }
-    if (passiveEnabled_) { backendHealth_[attempt.index].RecordIo(attempt.generation, status); }
+    RecordResult(attempt, status);
     return status.Failure();
 }
 

@@ -29,12 +29,11 @@
 namespace UC::PosixStore {
 
 Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout,
-                         const std::string& backend, size_t backendIndex)
+                         const std::vector<std::string>* backends)
 {
     failureSet_ = failureSet;
     layout_ = layout;
-    backend_ = backend;
-    backendIndex_ = backendIndex;
+    backends_ = backends;
     ioSize_ = config.tensorSize;
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
@@ -65,9 +64,20 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 void TransQueue::OnIoUnitTimeout(IoUnit& ios)
 {
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_timeout_total"), 1.0);
+    const auto backendIndex = ios.task->backendIndex;
     UC_ERROR("Posix io on block({}) in backend({}:{}) timed out after {} ms.", ios.shard.owner,
-             backendIndex_, backend_, timeoutMs_);
+             backendIndex, (*backends_)[backendIndex], timeoutMs_);
     ios.task->Fail(Status::Timeout());
+    if (!failureSet_->Contains(ios.task->id)) { failureSet_->Insert(ios.task->id); }
+    ios.waiter->Done();
+}
+
+void TransQueue::OnIoUnitQueueTimeout(IoUnit& ios)
+{
+    const auto backendIndex = ios.task->backendIndex;
+    UC_WARN("Posix io on block({}) in backend({}:{}) waited in queue over {} ms; giving up.",
+            ios.shard.owner, backendIndex, (*backends_)[backendIndex], timeoutMs_);
+    ios.task->Fail(Status::TimeoutInQueue());
     if (!failureSet_->Contains(ios.task->id)) { failureSet_->Insert(ios.task->id); }
     ios.waiter->Done();
 }
@@ -111,6 +121,10 @@ void TransQueue::LoadWorker(IoUnit& ios)
         ios.waiter->Done();
         return;
     }
+    if (timeoutMs_ > 0 && ios.waiter->IsTimeout(timeoutMs_)) {
+        OnIoUnitQueueTimeout(ios);
+        return;
+    }
     auto s = S2H(ios);
     if (s.Failure()) [[unlikely]] {
         ios.task->Fail(s);
@@ -131,9 +145,14 @@ void TransQueue::DumpWorker(IoUnit& ios)
         ios.waiter->Done();
         return;
     }
+    if (timeoutMs_ > 0 && ios.waiter->IsTimeout(timeoutMs_)) {
+        OnIoUnitQueueTimeout(ios);
+        return;
+    }
     auto s = H2S(ios);
     if (ios.shard.index + 1 == nShardPerBlock_) {
-        layout_->CommitFile(backend_, backendIndex_, ios.shard.owner, s.Success());
+        const auto backendIndex = ios.task->backendIndex;
+        layout_->CommitFile((*backends_)[backendIndex], backendIndex, ios.shard.owner, s.Success());
     }
     if (s.Failure()) [[unlikely]] {
         ios.task->Fail(s);
@@ -144,14 +163,16 @@ void TransQueue::DumpWorker(IoUnit& ios)
 
 Status TransQueue::H2S(IoUnit& ios)
 {
-    const auto& path = layout_->ActivatedFilePath(backend_, backendIndex_, ios.shard.owner);
+    const auto backendIndex = ios.task->backendIndex;
+    const auto& backend = (*backends_)[backendIndex];
+    const auto& path = layout_->ActivatedFilePath(backend, backendIndex, ios.shard.owner);
     PosixFile file{path};
     auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
-                 backendIndex_, backend_);
+                 backendIndex, backend);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -160,7 +181,7 @@ Status TransQueue::H2S(IoUnit& ios)
         s = file.Write(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to write file({}:{}) in backend({}:{}).", s, path, offset,
-                     backendIndex_, backend_);
+                     backendIndex, backend);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
@@ -171,14 +192,16 @@ Status TransQueue::H2S(IoUnit& ios)
 
 Status TransQueue::S2H(IoUnit& ios)
 {
-    const auto& path = layout_->ArchivedFilePath(backend_, ios.shard.owner);
+    const auto backendIndex = ios.task->backendIndex;
+    const auto& backend = (*backends_)[backendIndex];
+    const auto& path = layout_->ArchivedFilePath(backend, ios.shard.owner);
     PosixFile file{path};
     auto flags = PosixFile::OpenFlag::READ_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
-                 backendIndex_, backend_);
+                 backendIndex, backend);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -187,7 +210,7 @@ Status TransQueue::S2H(IoUnit& ios)
         s = file.Read(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to read file({}:{}) in backend({}:{}).", s, path, offset,
-                     backendIndex_, backend_);
+                     backendIndex, backend);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
