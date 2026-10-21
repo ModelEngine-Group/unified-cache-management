@@ -82,6 +82,25 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
+    """Resolve cache quantization independently of weight quantization.
+
+    Newer Ascend engines derive C8 from the cache dtypes. Keep accepting the
+    additional-config switches used by older engines as well.
+    """
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    cache_config = getattr(vllm_config, "cache_config", None)
+    attention_config = getattr(vllm_config, "attention_config", None)
+    sfa_c8 = getattr(cache_config, "cache_dtype", None) in ("int8", "fp8") or bool(
+        additional_config.get("enable_sparse_sfa_c8", False)
+    )
+    li_c8 = getattr(attention_config, "indexer_kv_dtype", None) in (
+        "int8",
+        "fp8",
+    ) or bool(additional_config.get("enable_sparse_li_c8", False))
+    return sfa_c8, li_c8
+
+
 def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
     """Build the KV namespace with DCP and layout compatibility isolation."""
     speculative_config = getattr(vllm_config, "speculative_config", None)
@@ -90,9 +109,7 @@ def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
         spec_method = getattr(speculative_config, "method", "") or ""
         spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
         spec_info = f":{spec_method}:{spec_tokens}"
-    additional_config = getattr(vllm_config, "additional_config", None) or {}
-    sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-    sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    sparse_sfa_c8, sparse_li_c8 = _get_sparse_c8_flags(vllm_config)
     sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
     model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
     dcp_size = getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1)
@@ -1094,9 +1111,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         entries before assembling the fixed UCM slot order.
         """
 
-        additional_config = getattr(self.vllm_config, "additional_config", None) or {}
-        sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-        li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+        sfa_c8, li_c8 = _get_sparse_c8_flags(self.vllm_config)
         base_tensor_count = 1 if sfa_c8 else 2
         max_extra_count = 2 if li_c8 else 1
 
