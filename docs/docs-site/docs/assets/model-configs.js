@@ -285,25 +285,7 @@ function getEmbeddedModelConfigs() {
         },
 
         // Linear-Attention Hybrid Models (HLA) — handled in the Hybrid tab
-        "Qwen/Qwen3.6-35B-A3B": {
-            "is_linear_hybrid": true,
-            "dtype": "bfloat16",
-            "mtp_supported": true,
-            "num_hidden_layers": 40,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 2,
-            "head_dim": 256,
-            "full_attention_interval": 4,
-            "num_full_attn_layers": 10,
-            "num_linear_layers": 30,
-            "linear_num_key_heads": 16,
-            "linear_num_value_heads": 32,
-            "linear_key_head_dim": 128,
-            "linear_value_head_dim": 128,
-            "linear_conv_kernel_dim": 4,
-            "mamba_ssm_dtype": "float32"
-        },
-        "Qwen/Qwen3.6-27B": {
+        "Qwen/Qwen3.8-27B": {
             "is_linear_hybrid": true,
             "dtype": "bfloat16",
             "mtp_supported": true,
@@ -325,6 +307,7 @@ function getEmbeddedModelConfigs() {
             "is_linear_hybrid": true,
             "is_mla": true,
             "dtype": "bfloat16",
+            "mtp_supported": true,
             "num_hidden_layers": 93,
             "num_attention_heads": 96,
             "num_key_value_heads": 96,
@@ -338,6 +321,27 @@ function getEmbeddedModelConfigs() {
             "linear_value_head_dim": 128,
             "linear_conv_kernel_dim": 4,
             "mamba_ssm_dtype": "float32"
+        },
+        "zai-org/GLM-5.3-Flash": {
+            "is_linear_hybrid": true,
+            "is_glm5next": true,
+            "is_mla": true,
+            "dtype": "bfloat16",
+            "mtp_supported": true,
+            "num_hidden_layers": 45,
+            "num_attention_heads": 64,
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 0,
+            "num_full_attn_layers": 11,
+            "num_linear_layers": 34,
+            "linear_num_key_heads": 64,
+            "linear_num_value_heads": 64,
+            "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128,
+            "linear_conv_kernel_dim": 4,
+            "mamba_ssm_dtype": "float32",
+            "index_head_dim": 128,
+            "index_kpool": 4
         }
     };
 }

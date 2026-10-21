@@ -3563,6 +3563,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
+        if use_hybrid_linear_attention_layerwise:
+            layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
+                vllm_config
+            )
+            if layerwise_block_reason:
+                logger.warning(
+                    "Layerwise disabled, using direct mode: %s",
+                    layerwise_block_reason,
+                )
+                use_hybrid_linear_attention_layerwise = False
 
         if is_fawa:
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)

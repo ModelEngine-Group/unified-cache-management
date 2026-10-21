@@ -429,15 +429,19 @@ function updateHybridFormulaReference(modelName) {
 
     if (modelConfigs[modelName] && modelConfigs[modelName].is_linear_hybrid) {
         const isMLA = !!modelConfigs[modelName].is_mla;
+        const isGLM = !!modelConfigs[modelName].is_glm5next;
+        const headerLabel = isGLM
+            ? 'MLA + KDA + Indexer (GLM-5.3-Flash) Hybrid Attention'
+            : (isMLA ? 'MLA + Linear (Kimi-K3)' : 'GQA + Linear (Qwen3.8)') + ' Hybrid Attention';
         container.innerHTML = `
             <div class="formula-card" style="margin-bottom: 1.5rem;">
                 <div class="formula-header">
                     <span>🌟</span>
-                    <span>${isMLA ? 'MLA + Linear (Kimi-K3)' : 'GQA + Linear (Qwen3.6)'} Hybrid Attention</span>
+                    <span>${headerLabel}</span>
                 </div>
                 <div class="formula-content">
                     <div class="formula-main" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
-                        block_data_size = num_tensors × page_size<br>
+                        block_data_size = ${isGLM ? 'main_slots × main_page + num_full × small_page (GLM: two page families)' : 'num_tensors × page_size'}<br>
                         UCM dump = (fa_blocks × fa_tp_factor + mamba_blocks × TP) × block_data_size
                     </div>
                     <div style="background: rgba(81, 145, 238, 0.1); padding: 0.5rem; border-radius: 6px; margin-bottom: 0.75rem;">
@@ -446,7 +450,7 @@ function updateHybridFormulaReference(modelName) {
                     </div>
                     <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
                         <strong>Block counts (0-hit dump):</strong>
-                        <ul style="margin-left: 1rem; margin-top: 0.25rem;">
+                        <ul style="margin-left: 1rem; margin-top:  0.25rem;">
                             <li>fa_blocks = batch × ⌈seq_len / block_size⌉</li>
                             <li>mamba_blocks = batch × num_chunks × num_mamba_groups</li>
                             <li>num_chunks = ⌈seq_len / actual_chunk⌉, actual_chunk = ⌊chunk_prefill / block_size⌋ × block_size</li>
@@ -454,20 +458,21 @@ function updateHybridFormulaReference(modelName) {
                     </div>
                     <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
                         <strong>TP dump factors:</strong>
-                        <ul style="margin-left: 1rem; margin-top: 0.25rem;">
+                        <ul style="margin-left: 1rem; margin-top:  0.25rem;">
                             <li>FA: ${isMLA ? 'MLA latent rank-shared → UCM dumps TP0 only (×1)' : 'GQA KV head-sharded → UCM dumps every TP rank (×TP)'}</li>
                             <li>Mamba state: head-sharded (both) → UCM dumps every TP rank (×TP)</li>
                         </ul>
                     </div>
                     <div style="font-size: 0.75rem; margin-bottom: 0.5rem;">
-                        <strong>block_size alignment (not user-set):</strong>
+                        <strong>block_size alignment (not user-set, vLLM 0.30 padded pages — same on CUDA and Ascend):</strong>
                         <ul style="margin-left: 1rem; margin-top: 0.25rem;">
-                            <li>Ascend: 128 × ⌈ssm_size / (128 × attn_single_token_k)⌉</li>
-                            <li>CUDA: 16 × ⌈mamba_total / (16 × attn_token)⌉</li>
+                            <li>page = block_size × attn_token, with conv+ssm padded INSIDE the page</li>
+                            <li>block_size = kernel × ⌈mamba_total / (kernel × attn_token)⌉</li>
+                            <li>kernel = attention-type granularity: GQA 16 (Qwen3.8: 784 = 16×49), MLA 128 (Kimi-K3: 5,760 = 128×45; GLM-5.3: 4,352 = 128×34)</li>
                         </ul>
                     </div>
                     <div style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary);">
-                        <strong>Models:</strong> Qwen3.6-35B-A3B, Qwen3.6-27B, Kimi-K3
+                        <strong>Models:</strong> Qwen3.8-27B, Kimi-K3, GLM-5.3-Flash
                     </div>
                 </div>
             </div>
@@ -962,16 +967,15 @@ function deriveLinearHybridParams(config, tp, isAscend, mtp) {
     const ssmDtype = config.mamba_ssm_dtype || modelDtype;
     const ssmDtypeSize = dtypeSizes[ssmDtype] || 4;
     const isMLA = !!config.is_mla;
+    const isGLM = !!config.is_glm5next;
 
     // Layer partitioning (1 full-attn group + N mamba-align groups).
-    // MTP adds one full-attn layer → group_size grows by 1 (for Qwen3.6 where
+    // MTP adds one full-attn layer → group_size grows by 1 (for Qwen3.8 where
     // num_linear = 3×num_full, group_size = num_full + (mtp?1:0)).
     const numFull = config.num_full_attn_layers;
     const numLinear = config.num_linear_layers;
     const numFullEff = numFull + (mtp ? 1 : 0);
     const groupSize = Math.min(numFullEff, numLinear);
-    const numTensors = groupSize;
-    const numMambaGroups = cdiv(numLinear, groupSize);
 
     // GDN state sizes (per rank; conv/ssm are head-sharded → divided by TP)
     const linKeyHeads = config.linear_num_key_heads;
@@ -990,47 +994,80 @@ function deriveLinearHybridParams(config, tp, isAscend, mtp) {
     // Full-attention per-token size:
     //   GQA: K+V = 2 × head_dim × (kv_heads/TP) × dtype (head-sharded)
     //   MLA: latent = (kv_lora_rank + qk_rope_head_dim) × 1 × dtype (num_kv_heads=1, rank-shared, NOT /TP)
-    let attnTokenPerPageToken, attnSingleTokenK, faArchLabel, faPerTokenFormula;
+    //   GLM-5.3-Flash: pure nope latent (qk_rope_head_dim = 0) → 512 × 2 = 1024 B/token
+    let attnTokenPerPageToken, faArchLabel, faPerTokenFormula;
     if (isMLA) {
         const kvLora = config.kv_lora_rank;
         const qkRope = config.qk_rope_head_dim;
         attnTokenPerPageToken = (kvLora + qkRope) * 1 * modelDtypeSize;
-        attnSingleTokenK = kvLora * 1 * modelDtypeSize; // nope = kv_lora_rank
         faArchLabel = 'MLA (latent, rank-shared)';
         faPerTokenFormula = `(${kvLora} + ${qkRope}) × 1 × ${modelDtypeSize} = ${attnTokenPerPageToken} B/token`;
     } else {
         const headDim = config.head_dim;
-        const kvHeadsPerRank = config.num_key_value_heads / tp;
+        // vLLM divides GQA KV heads by TP and replicates when there are
+        // fewer KV heads than TP ranks (max(1, kv_heads // tp),
+        // ModelConfig.get_num_kv_heads) — each rank then stores one head.
+        const kvHeadsPerRank = Math.max(1, Math.floor(config.num_key_value_heads / tp));
         attnTokenPerPageToken = 2 * headDim * kvHeadsPerRank * modelDtypeSize;
-        attnSingleTokenK = headDim * kvHeadsPerRank * modelDtypeSize;
         faArchLabel = 'GQA (K+V, head-sharded)';
-        faPerTokenFormula = `2 × ${headDim} × (${config.num_key_value_heads}/${tp}) × ${modelDtypeSize} = ${attnTokenPerPageToken} B/token`;
+        faPerTokenFormula = `2 × ${headDim} × max(1, ⌊${config.num_key_value_heads}/${tp}⌋) × ${modelDtypeSize} = ${attnTokenPerPageToken} B/token`;
     }
 
-    // vLLM block_size (engine-aligned, NOT user-set) + page_size + block_data_size
-    let blockSize, pageSize, blockSizeFormula, pageSizeFormula;
-    if (isAscend) {
-        // block_size chosen so block_size × attn_single_token_k = ssm_size (K shares middle with ssm)
-        const KERNEL = 128; // NPU alignment granularity
-        const ratio = cdiv(ssmSize, KERNEL * attnSingleTokenK);
-        blockSize = KERNEL * ratio;
-        pageSize = blockSize * attnTokenPerPageToken + convSize; // ssm overlays K; conv added
-        blockSizeFormula = `128 × ⌈${ssmSize.toLocaleString()} / (128 × ${attnSingleTokenK})⌉ = 128 × ${ratio} = ${blockSize}`;
-        pageSizeFormula = `${blockSize} × ${attnTokenPerPageToken} (K+V) + ${convSize.toLocaleString()} (conv) = ${pageSize.toLocaleString()} B`;
+    // vLLM 0.30 padded pages — identical on CUDA and Ascend (the alignment
+    // hook runs once at config time, platform-independent):
+    //   block_size = kernel × ⌈mamba_total / (kernel × attn_token)⌉
+    //   page_size  = block_size × attn_token   (conv+ssm padded INSIDE the page)
+    // The kernel is the attention type's native block granularity, not a
+    // platform property (verified against vLLM 0.30 layouts):
+    //   GQA hybrid (Qwen3.8-27B): 16  → 784  = 16 × ⌈3,207,168 / 65,536⌉
+    //   MLA hybrid (Kimi-K3):     128 → 5,760 = 128 × ⌈6,512,640 / 147,456⌉
+    //   MLA hybrid (GLM-5.3):     128 → 4,352 = 128 × ⌈4,341,760 / 131,072⌉
+    const KERNEL = isMLA ? 128 : 16;
+    const ratio = cdiv(mambaTotal, KERNEL * attnTokenPerPageToken);
+    const blockSize = KERNEL * ratio;
+    const pageSize = blockSize * attnTokenPerPageToken;
+    const blockSizeFormula = `${KERNEL} × ⌈${mambaTotal.toLocaleString()} / (${KERNEL} × ${attnTokenPerPageToken})⌉ = ${KERNEL} × ${ratio} = ${blockSize}`;
+    const pageSizeFormula = `${blockSize} × ${attnTokenPerPageToken} = ${pageSize.toLocaleString()} B (mamba ${mambaTotal.toLocaleString()} B padded inside)`;
+
+    let numTensors, numMambaGroups, blockDataSize, blockDataSizeFormula, archLabel;
+    if (isGLM) {
+        // GLM-5.3-Flash: one block id spans TWO physical page families.
+        // Main slots (MLA latent / KDA state aliasing one page each):
+        //   CUDA: per-layer descriptors, mamba round-robin into cdiv(34,11)=4
+        //         groups (9/9/8/8) → main slots = num_full_attn_layers (11)
+        //   Ascend: per-slot descriptors, mamba run-stride into 3 groups
+        //         (12/11/11) → main slots = cdiv(num_linear, 3) (12)
+        // Small slots (one per MLA layer: indexer compressed K, with the
+        // request-local kpool tail ring padded inside — negligible):
+        //   entries/page = block_size / index_kpool (4352/4 = 1,088)
+        //   CUDA fp8:  index_head_dim × 1 B + 4 B fp32 scale = 132 B/entry
+        //   Ascend bf16 (unquantized): index_head_dim × 2 B = 256 B/entry
+        // MTP adds a DSA layer: one more main-slot consumer on CUDA
+        // (per-layer descriptors) and one more small page on both platforms.
+        // Ascend main slots are driven by the mamba grouping (cdiv(34,3)=12,
+        // unchanged by MTP).
+        const mainSlots = isAscend ? cdiv(numLinear, 3) : numFullEff;
+        const smallCount = numFullEff;
+        const entries = blockSize / config.index_kpool;
+        const entryBytes = isAscend
+            ? config.index_head_dim * 2
+            : config.index_head_dim * 1 + 4;
+        const smallPage = entries * entryBytes;
+        numTensors = mainSlots;
+        numMambaGroups = isAscend ? 3 : cdiv(numLinear, numFullEff);
+        blockDataSize = mainSlots * pageSize + smallCount * smallPage;
+        blockDataSizeFormula = `${mainSlots} main × ${pageSize.toLocaleString()} + ${smallCount} small × ${smallPage.toLocaleString()} = ${blockDataSize.toLocaleString()} B`;
+        archLabel = 'Linear-Attention Hybrid — GLM-5.3-Flash (MLA + KDA + indexer)';
     } else {
-        // CUDA: block_size × attn_token ≥ mamba_total (mamba padded into the K+V page)
-        const KERNEL = 16; // GPU FlashAttention alignment
-        const ratio = cdiv(mambaTotal, KERNEL * attnTokenPerPageToken);
-        blockSize = KERNEL * ratio;
-        pageSize = blockSize * attnTokenPerPageToken;
-        blockSizeFormula = `16 × ⌈${mambaTotal.toLocaleString()} / (16 × ${attnTokenPerPageToken})⌉ = 16 × ${ratio} = ${blockSize}`;
-        pageSizeFormula = `${blockSize} × ${attnTokenPerPageToken} = ${pageSize.toLocaleString()} B`;
+        numTensors = groupSize;
+        numMambaGroups = cdiv(numLinear, groupSize);
+        blockDataSize = numTensors * pageSize;
+        blockDataSizeFormula = `${numTensors} × ${pageSize.toLocaleString()} = ${blockDataSize.toLocaleString()} B`;
+        archLabel = isMLA
+            ? 'Linear-Attention Hybrid — MLA-based (Kimi-K3)'
+            : 'Linear-Attention Hybrid — GQA-based (Qwen3.8)';
+        if (mtp) archLabel += ' + MTP';
     }
-    const blockDataSize = numTensors * pageSize;
-
-    const archLabel = isMLA
-        ? 'Linear-Attention Hybrid — MLA-based (Kimi-K3)'
-        : 'Linear-Attention Hybrid — GQA-based (Qwen3.6)';
 
     return {
         isMLA, mtp, modelDtype, modelDtypeSize, ssmDtype, ssmDtypeSize,
@@ -1039,6 +1076,7 @@ function deriveLinearHybridParams(config, tp, isAscend, mtp) {
         ssmSize, convSize, mambaTotal,
         attnTokenPerPageToken, faArchLabel, faPerTokenFormula,
         blockSize, pageSize, blockDataSize, blockSizeFormula, pageSizeFormula,
+        blockDataSizeFormula,
         archLabel
     };
 }
@@ -1157,7 +1195,7 @@ function calculateLinearHybrid() {
                 <div style="font-size: 0.68rem; color: var(--text-primary); background: rgba(81, 145, 238, 0.08); padding: 0.4rem; border-radius: 4px; margin-bottom: 0.3rem; font-family: monospace;">
                     block_size = ${p.blockSizeFormula}<br>
                     page_size = ${p.pageSizeFormula}<br>
-                    block_data_size = ${p.numTensors} × ${p.pageSize.toLocaleString()} = ${p.blockDataSize.toLocaleString()} B
+                    block_data_size = ${p.blockDataSizeFormula}
                 </div>
                 <div style="font-size: 0.68rem; color: var(--text-secondary); line-height: 1.4;">
                     ssm_state (per rank) = ${p.ssmSize.toLocaleString()} B | conv_state (per rank) = ${p.convSize.toLocaleString()} B | mamba_total = ${p.mambaTotal.toLocaleString()} B<br>
@@ -1305,7 +1343,7 @@ function calculateLinearMaxTokens() {
                 <div style="font-size: 0.68rem; color: var(--text-primary); background: rgba(81, 145, 238, 0.08); padding: 0.4rem; border-radius: 4px; font-family: monospace;">
                     block_size = ${p.blockSizeFormula}<br>
                     page_size = ${p.pageSizeFormula}<br>
-                    block_data_size = ${p.numTensors} × ${p.pageSize.toLocaleString()} = ${p.blockDataSize.toLocaleString()} B
+                    block_data_size = ${p.blockDataSizeFormula}
                 </div>
             </div>
         </div>
