@@ -298,6 +298,52 @@ TEST(DramPoolConfigTest, ResolvesGiBSlotCountsWithAlignedStride)
     EXPECT_EQ(config.poolSlotCounts, (std::vector<std::uint32_t>{258'111}));
 }
 
+TEST(DramPoolConfigTest, CollapsesDuplicateBlockSizesAndMergesProportions)
+{
+    // BufferManager keeps one pool per distinct size, so a repeated size would
+    // otherwise register the same per-slot-size gauge twice and discard the
+    // repeated class's capacity share. The repeated class's proportions merge
+    // into the surviving one.
+    const char* argv[] = {
+        "drampool",
+        "--addr=127.0.0.1:9000",
+        "--pool-size-gb=128",
+        "--kvcache-block-sizes",
+        "4096",
+        "8192",
+        "4096",
+        "--kvcache-block-proportions",
+        "1",
+        "3",
+        "1",
+    };
+    DramPoolConfig config;
+
+    const auto status = ParseCommandLine(11, const_cast<char**>(argv), config);
+
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(config.poolBlockSizes, (std::vector<std::uint64_t>{4096, 8192}));
+    EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{2, 3}));
+    EXPECT_EQ(config.poolSlotCounts.size(), std::size_t{2});
+}
+
+TEST(DramPoolConfigTest, CollapsesDuplicateBlockSizesWithDefaultProportions)
+{
+    const char* argv[] = {
+        "drampool", "--addr=127.0.0.1:9000", "--pool-size-gb=64", "--kvcache-block-sizes", "512",
+        "512",
+    };
+    DramPoolConfig config;
+
+    const auto status = ParseCommandLine(6, const_cast<char**>(argv), config);
+
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(config.poolBlockSizes, (std::vector<std::uint64_t>{512}));
+    // The two default shares of 1 merge into 2.
+    EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{2}));
+    EXPECT_EQ(config.poolSlotCounts.size(), std::size_t{1});
+}
+
 TEST(DramPoolRuntimeConfigTest, LoadsRepositoryExample)
 {
     const char* argv[] = {

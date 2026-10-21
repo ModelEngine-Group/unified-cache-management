@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -160,6 +161,34 @@ Status ValidateBlockClassCount(const std::vector<std::uint64_t>& blockSizes,
             "--kvcache-block-sizes and --kvcache-block-proportions must have the same length");
     }
     return Status::OK();
+}
+
+// BufferManager keeps one pool per distinct size, so a repeated size would
+// register the same per-slot-size gauge twice (duplicate JSON keys in the
+// snapshot, duplicate Prometheus series) and silently discard the repeated
+// class's capacity share. Collapse duplicates here, merging their proportions
+// so the surviving class keeps the full capacity it was asked for.
+void NormalizeBlockClasses(DramPoolConfig& config)
+{
+    std::vector<std::uint64_t> sizes;
+    std::vector<std::uint32_t> proportions;
+    sizes.reserve(config.poolBlockSizes.size());
+    proportions.reserve(config.poolBlockProportions.size());
+    for (std::size_t index = 0; index < config.poolBlockSizes.size(); ++index) {
+        const auto blockSize = config.poolBlockSizes[index];
+        const auto existing = std::find(sizes.begin(), sizes.end(), blockSize);
+        if (existing == sizes.end()) {
+            sizes.push_back(blockSize);
+            proportions.push_back(config.poolBlockProportions[index]);
+            continue;
+        }
+        // Merging preserves the proportion total, which ValidateBlockProportions
+        // already bounded to uint32, so an accumulated share cannot overflow.
+        proportions[static_cast<std::size_t>(existing - sizes.begin())] +=
+            config.poolBlockProportions[index];
+    }
+    config.poolBlockSizes = std::move(sizes);
+    config.poolBlockProportions = std::move(proportions);
 }
 
 Status CalculatePoolSlotCounts(DramPoolConfig& config)
@@ -350,11 +379,19 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
         // Each configured block size receives an equal capacity share by default.
         config.poolBlockProportions.assign(config.poolBlockSizes.size(), 1);
     }
+    // Reject mismatched size/proportion counts before collapsing duplicates:
+    // NormalizeBlockClasses reads one proportion per size entry, so a short
+    // proportions list would read out of bounds, and collapsing first would
+    // equalize the lengths and mask the mismatch from this check.
     if (const auto status =
             ValidateBlockClassCount(config.poolBlockSizes, config.poolBlockProportions);
         status.Failure()) {
         return status;
     }
+    // Options are order-independent; both size and proportion inputs are final
+    // only here, so duplicate-size collapsing must precede the slot-count
+    // calculation below.
+    NormalizeBlockClasses(config);
     // Options are order-independent; all pool inputs are complete only here.
     if (const auto status = CalculatePoolSlotCounts(config); status.Failure()) { return status; }
     return Status::OK();

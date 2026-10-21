@@ -34,10 +34,12 @@ from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
     consumer_enabled,
+    dynamic_label_bases,
     get_metric_definitions,
     load_metrics_config,
     multiproc_metric_name,
     setup_ucm_metrics,
+    split_dynamic_metric_name,
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
 
@@ -80,6 +82,13 @@ class PrometheusStatsLogger:
             "worker_id": worker_id,
         }
         self.labelnames = list(self.labels.keys())
+        # Wire names carrying a dynamic label as a suffix map back to their
+        # base definition; the base metric is created with the extra labelname.
+        self._dynamic_bases = dynamic_label_bases(self.metric_definitions)
+        self._dynamic_label_by_name = {
+            base_name: definition.dynamic_labels[0]
+            for base_name, definition in self._dynamic_bases
+        }
 
         self.metric_type_config = {
             "counter": (Counter, {}),
@@ -108,11 +117,14 @@ class PrometheusStatsLogger:
                 continue
             doc = cfg.get("documentation", "")
             prometheus_name = multiproc_metric_name(self.config, name)
+            labelnames = list(self.labelnames)
+            if name in self._dynamic_label_by_name:
+                labelnames.append(self._dynamic_label_by_name[name])
 
             metric_kwargs = {
                 "name": prometheus_name,
                 "documentation": doc,
-                "labelnames": self.labelnames,
+                "labelnames": labelnames,
                 **default_kwargs,
                 **{k: v for k, v in cfg.items() if k in default_kwargs},
             }
@@ -170,13 +182,21 @@ class PrometheusStatsLogger:
         and update values via the specified function (update_func).
         """
         for stat_name, value in stats.items():
-            if stat_name not in _metric_mappings:
+            label_values = dict(self.labels)
+            resolved = split_dynamic_metric_name(stat_name, self._dynamic_bases)
+            if resolved is not None:
+                definition, label_name, label_value = resolved
+                label_values[label_name] = label_value
+                metric_name = definition.name
+            else:
+                metric_name = stat_name
+            if metric_name not in _metric_mappings:
                 logger.error(f"Metric {stat_name} not found")
                 continue
 
-            metric = _metric_mappings[stat_name]
+            metric = _metric_mappings[metric_name]
             try:
-                metric_with_labels = metric.labels(**self.labels)
+                metric_with_labels = metric.labels(**label_values)
                 update_func(metric_with_labels, value)
             except AttributeError as e:
                 logger.error(f"Metric {stat_name} does not support {op_desc}: {e}")

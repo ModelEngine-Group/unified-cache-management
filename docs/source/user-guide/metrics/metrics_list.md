@@ -2,7 +2,7 @@
 
 ## 1. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 135 Counters, 29 Gauges, and 109 Histograms.
+The tables below use the default `ucm:` prefix. The default configuration contains 148 Counters, 37 Gauges, and 129 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
