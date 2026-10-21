@@ -207,6 +207,9 @@ class _Logger:
     def info(self, *args, **kwargs):
         pass
 
+    def info_once(self, *args, **kwargs):
+        pass
+
     def debug(self, *args, **kwargs):
         pass
 
@@ -302,7 +305,7 @@ def _install_stubs():
     _install_package("ucm", REPO_ROOT / "ucm")
     _install_package("ucm.integration", REPO_ROOT / "ucm" / "integration")
     _install_package("ucm.integration.vllm", REPO_ROOT / "ucm" / "integration" / "vllm")
-    _install_module("torch", Tensor=type("Tensor", (), {}))
+    _install_module("torch", Tensor=type("Tensor", (), {}), dtype=object)
     _install_module(
         "prometheus_client",
         Counter=FakeCounter,
@@ -345,11 +348,16 @@ def _install_stubs():
         SchedulerOutput=type("SchedulerOutput", (), {}),
     )
     _install_module(
+        "vllm.v1.request",
+        RequestStatus=SimpleNamespace(PREEMPTED="preempted"),
+    )
+    _install_module(
         "vllm.v1.kv_cache_interface",
         FullAttentionSpec=type("FullAttentionSpec", (), {}),
         KVCacheConfig=type("KVCacheConfig", (), {}),
         KVCacheSpec=type("KVCacheSpec", (), {}),
         MambaSpec=type("MambaSpec", (), {}),
+        MLAAttentionSpec=type("MLAAttentionSpec", (), {}),
         SlidingWindowSpec=type("SlidingWindowSpec", (), {}),
         UniformTypeKVCacheSpecs=type("UniformTypeKVCacheSpecs", (), {}),
     )
@@ -360,6 +368,8 @@ def _install_stubs():
     _install_module(
         "ucm.integration.vllm.device",
         create_device=lambda *args, **kwargs: None,
+        get_current_device_id=lambda: 0,
+        get_ucm_worker_torch_device=lambda *_args: "cpu",
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
     _install_module(
@@ -1255,13 +1265,16 @@ def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypa
     monkeypatch.setitem(
         sys.modules,
         "ucm.integration.vllm.hma_connector",
-        SimpleNamespace(UCMFAWAConnector=FakeFawaConnector),
+        SimpleNamespace(
+            UCMFAWAConnector=FakeFawaConnector,
+            UCMFAWALiteConnector=FakeInnerConnector,
+        ),
     )
 
     connector = UCMConnector(
         _vllm_config(launch_config={"use_lite": True}),
         KVConnectorRole.SCHEDULER,
-        kv_cache_config=object(),
+        kv_cache_config=SimpleNamespace(kv_cache_groups=[]),
     )
 
     assert type(connector.connector) is FakeInnerConnector
@@ -2517,8 +2530,10 @@ def test_hybrid_layerwise_records_save_bytes_once():
 
     connector = object.__new__(UCMHybridLinearAttentionLayerWiseConnector)
     connector.is_save = True
-    connector._dump_transfer_data = ([], [], {"req-1"}, {})
+    connector._dump_transfer_data = ([], [], [], {"req-1"}, {})
+    connector._connector_metadata = None
     connector.row_ids = []
+    connector.commit_row_id = 0
     connector.dump_tasks = {}
     connector._layerwise_save_bytes = 896
     connector._rank_consistency = SimpleNamespace(finish_dump=lambda request_ids: None)
@@ -2579,6 +2594,7 @@ def test_fawa_records_submitted_save_bytes():
     connector._get_connector_metadata = lambda: metadata
     connector.fa_store = object()
     connector.wa_store = object()
+    connector.window_group_ids = [1]
     connector._poll_completed_dump_tasks = lambda: None
     connector.tp_size = 1
     connector.tp_rank = 0
