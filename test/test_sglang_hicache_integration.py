@@ -108,7 +108,12 @@ def connector(monkeypatch, tmp_path):
     )
     main_pool = FakeHostPool(page_size=2, component_sizes=[400])
     storage_config = SimpleNamespace(
-        model_name="org/model", is_mla_model=False, tp_rank=1, tp_size=2
+        model_name="org/model",
+        is_mla_model=False,
+        tp_rank=1,
+        tp_size=2,
+        pp_rank=0,
+        pp_size=1,
     )
     main_store = FakeStore({})
     value = SglangUcmConnector(main_store, main_pool, storage_config, [str(tmp_path)])
@@ -120,7 +125,7 @@ def connector(monkeypatch, tmp_path):
     return value, stores
 
 
-def make_v1_connector(*, is_mla=False, tp_rank=0, tp_size=1):
+def make_v1_connector(*, is_mla=False, tp_rank=0, tp_size=1, pp_rank=0, pp_size=1):
     component_sizes = [128] if is_mla else [64, 64]
     host_pool = FakeHostPool(page_size=2, component_sizes=component_sizes)
     storage_config = SimpleNamespace(
@@ -128,6 +133,8 @@ def make_v1_connector(*, is_mla=False, tp_rank=0, tp_size=1):
         is_mla_model=is_mla,
         tp_rank=tp_rank,
         tp_size=tp_size,
+        pp_rank=pp_rank,
+        pp_size=pp_size,
     )
     store = FakeStore({})
     value = SglangUcmConnector(store, host_pool, storage_config, [])
@@ -157,6 +164,36 @@ def test_v1_mla_uses_one_buffer_per_page_and_tp_shared_keys():
     assert tp0._get_physical_keys(keys) == tp3._get_physical_keys(keys)
     assert tp0.batch_set_v1(keys, host_indices) == [True, True]
     assert store.dump_calls[0][2] == [[10_000], [11_000]]
+
+
+def test_rejects_invalid_pp_topology():
+    with pytest.raises(ValueError, match="Invalid pipeline-parallel topology"):
+        make_v1_connector(pp_rank=2, pp_size=2)
+
+
+def test_pp_scopes_storage_backend_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "ucm.integration.sglang.ucm_connector.get_world_group",
+        lambda: SimpleNamespace(local_rank=0),
+    )
+    storage_config = SimpleNamespace(
+        is_mla_model=False,
+        pp_rank=1,
+        pp_size=2,
+        extra_config={
+            "kv_connector_extra_config": {
+                "ucm_connector_name": "FakePosix",
+                "ucm_connector_module_path": "fake.module",
+                "ucm_connector_config": {"storage_backends": str(tmp_path)},
+            }
+        },
+    )
+    logical_pool = FakeHostPool(page_size=2, component_sizes=[])
+    logical_pool.kv_buffer = None
+
+    config = UnifiedCacheStoreConfig.load_from_config(storage_config, logical_pool)
+
+    assert config.config["storage_backends"] == [str(tmp_path / "sglang_pp" / "pp_1_2")]
 
 
 @pytest.mark.parametrize("operation", ["get", "set"])
