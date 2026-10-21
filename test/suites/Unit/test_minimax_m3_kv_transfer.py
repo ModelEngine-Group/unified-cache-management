@@ -203,7 +203,11 @@ def connector_symbols(runtime, monkeypatch):
             "_generate_dispatch_meta",
             "_get_full_hit_recompute_tokens",
         },
-        "UCMLayerWiseConnector": {"start_load_kv", "wait_for_layer_load"},
+        "UCMLayerWiseConnector": {
+            "bind_connector_metadata",
+            "start_load_kv",
+            "wait_for_layer_load",
+        },
     }
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name in {
@@ -226,6 +230,9 @@ def connector_symbols(runtime, monkeypatch):
 
         def _setup_ucm_metrics(self, *args):
             pass
+
+        def bind_connector_metadata(self, metadata):
+            self._connector_metadata = metadata
 
     ns = dict(
         __name__=__name__,
@@ -331,6 +338,7 @@ def test_dense_to_sparse_load_chain_reaches_every_layer(runtime, connector_symbo
     runtime.transfer.get_kv_transfer_group.return_value = connector
     runtime.ctx.attn_metadata = dict.fromkeys(names, object())
     runtime.ctx.slot_mapping = dict.fromkeys(names, object())
+    connector.bind_connector_metadata(metadata)
     connector.start_load_kv(runtime.ctx)
     for i, name in enumerate(names):
         if i < 3:
