@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include "drampool_types.h"
@@ -45,10 +46,15 @@ private:
     bool SubmitResponse(CompletionRecord& record);
     bool PollResponseTransfer(CompletionRecord& record);
     void SettleDataTransfer(CompletionRecord& record, transport::TransferStatus terminalStatus);
+    // Flag-buffer lifecycle helpers. The flag pool is touched only by the poller
+    // thread, so flagPoolUsed_ is a plain counter rather than an atomic.
+    void ReleaseResponseBuffer(CompletionRecord& record);
+    void SettleResponseTransfer(CompletionRecord& record, bool failed);
     bool OperationTimedOut(const CompletionRecord& record, std::uint64_t nowMs) const;
 
     DramPoolRuntime& runtime_;
     std::deque<CompletionRecord> pending_;
+    std::size_t flagPoolUsed_{0};
 };
 
 }  // namespace UC::DramPool
