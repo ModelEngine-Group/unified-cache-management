@@ -30,6 +30,7 @@ def _load_hash_helpers():
     }
     for path, name in (
         (HASHER_PATH, "RequestHasher"),
+        (UCM_PATH, "_get_sparse_c8_flags"),
         (UCM_PATH, "build_kv_hash_meta"),
         (HMA_PATH, "_build_v41_hash_meta"),
     ):
