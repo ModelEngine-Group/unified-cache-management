@@ -28,6 +28,13 @@ gauge:
     documentation: "Most recent value"
     multiprocess_mode: "livemostrecent"
 
+  # A gauge split by a runtime dimension reports one Prometheus series per
+  # dimension value, exposed as a real label.
+  - name: "my_pool_usage_ratio"
+    documentation: "Used-slot ratio per block size, exported as my_pool_usage_ratio{slot_size=<size>}"
+    multiprocess_mode: "livemostrecent"
+    dynamic_labels: ["slot_size"]
+
 histogram:
   - name: "my_stage_duration_ms"
     documentation: "Stage duration in milliseconds"
@@ -35,6 +42,8 @@ histogram:
 ```
 
 Counters take positive increments, Gauges take current values and Histograms take observations. Configure buckets in ascending order; registration adds `+Inf` when needed. Keep a fixed event scope and unit: interface calls, transfer shards and user requests are different quantities.
+
+`dynamic_labels` declares a dimension whose value is not known at registration time. Because UCM's transport is name-keyed, the emitter reports each dimension value under the wire name `<name>_<value>` (`my_pool_usage_ratio_4096`), and both export paths split the numeric suffix back into a real Prometheus label (`my_pool_usage_ratio{slot_size="4096"}`). At most one label is supported and the suffix must be all digits. Metrics that do not declare the field are unaffected.
 
 ## Update at the operation boundary
 

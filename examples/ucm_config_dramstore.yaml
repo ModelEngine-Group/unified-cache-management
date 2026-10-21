@@ -1,0 +1,67 @@
+# DramStore UCM configuration example.
+#
+# Pass this file through kv_connector_extra_config, for example:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_dramstore.yaml"}
+# The connector supplies role, device_id, and tensor_size_list at runtime.
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Dram"
+
+      # This DramStore process listens on this control endpoint (host:port). The
+      # transport port is derived automatically as local_addr port + offset,
+      # where offset = physicalDeviceId * 2 + (worker ? 1 : 0); schedulers use
+      # offset 0. No separate transport-manager id is needed anymore.
+      local_addr: "127.0.0.1:9001"
+
+      # DramPool control endpoints (each daemon's --addr, host:port). The array
+      # index becomes the node id used for routing, so order must be stable.
+      peer_addrs: ["127.0.0.1:9000"]
+
+      # HIXL listen port. Final port = hixl_listen_port + the same offset used
+      # for local_addr (workers shift by device, schedulers keep the base port).
+      hixl_listen_port: 36666
+      enable_hixl_cs: false
+
+      # Maximum number of Manager request workers (optional; omit for default).
+      manager_max_threads: 4
+
+      # DramPool metrics snapshot file written by the DramPool daemon
+      # (drampool.yaml metrics output_dir + drampool_metrics.json); consumed
+      # by the UCM-side resource reporter.
+      drampool_resource_log_path: "./logs/drampool_metrics.json"
+      drampool_resource_metrics_enable: true
+      drampool_resource_metrics_interval_sec: 15
+
+      # Maximum number of active IO entries. A transfer shard expands to one
+      # entry per tensor in tensor_size_list, which the connector supplies.
+      max_io_entries: 10000
+
+      # Optional per-task timeouts and reconnect interval, in milliseconds.
+      # Omit to keep the defaults shown here.
+      lookup_timeout_ms: 1000
+      dump_timeout_ms: 3000
+      load_timeout_ms: 3000
+      reconnect_interval_ms: 3000
+
+      # Routing strategy for sharding keys across nodes.
+      # Options: ring_hash | maglev | contiguous_block_affinity | batch_topk_affinity
+      router_type: "ring_hash"
+
+      # Data-plane threads that execute dump/load transfers. Commands are
+      # dispatched by hash(nodeId), so a node's commands stay on one worker.
+      transport_worker_count: 1
+
+      # Control-plane threads driving the DramPool node actors (request/response
+      # scheduling, reconnection). Nodes are split round-robin across runners;
+      # effectively min(node_runner_count, node_count) runners. Both default to 1.
+      node_runner_count: 1
+
+
+# DramStore must wait for the compute-stream event before a dump exposes KV
+# cache memory to remote access.
+enable_event_sync: true
+
+# Whether to use layerwise loading/saving
+use_layerwise: true
