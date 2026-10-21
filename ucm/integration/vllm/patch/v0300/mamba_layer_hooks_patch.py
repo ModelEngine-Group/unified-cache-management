@@ -6,12 +6,38 @@ GDN/KDA (linear-attention) layers never receive the per-layer KV hooks, so the
 UCM per-layer layerwise connector (``hla_connector``) cannot dump a linear
 layer right after its forward nor wait for its load before it runs.
 
-This patch wraps ``forward`` of the GDN attention family:
+Two hook tiers are installed, matched to what each model family exposes:
 
-- ``vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention``
-- ``vllm.model_executor.layers.mamba.gdn.kimi_gdn_linear_attn.KimiGatedDeltaNetAttention``
-- ``vllm_ascend.ops.gdn.AscendGatedDeltaNetAttention`` (Qwen/Kimi on NPU)
-- ``vllm_ascend.models.glm5next.kda.Glm5NextLinearAttention`` (GLM KDA on NPU)
+1. **Op-body hooks (compile-safe, preferred).** The Qwen GDN core
+   ``torch.ops.vllm.qwen_gdn_attention_core`` (plus its ``fused_norm_packed``
+   and ROCm variants) dispatches into the layer module's ``_forward_core``
+   via ``forward_context.no_compile_layers``. Custom ops are opaque to
+   Dynamo and are piecewise split points, so a method wrapped at this
+   delegation point executes eagerly at runtime even when the surrounding
+   module forward is traced and compiled — the same location vLLM itself
+   uses for ``@maybe_transfer_kv_layer`` on attention ops, and the site
+   vllm-ascend already uses for its built-in
+   ``wait_for_kv_layer_from_connector`` inside the GDN op. This tier keeps
+   the depth-2 load pipeline alive under ``mode=VLLM_COMPILE`` (the default
+   on both platforms).
+
+2. **Module-forward hooks (fallback, eager-only).** Models whose linear
+   layers have no custom-op boundary (Kimi KDA on both platforms, GLM's
+   indexer/KDA on NPU, GLM's indexer-first MLA wrapper) are wrapped at the
+   module ``forward`` instead. That wrapper is pruned by Dynamo tracing, so
+   this tier requires ``mode=NONE`` (e.g. ``--enforce-eager``); under
+   compiled execution the hooks silently vanish.
+
+Classes covered per tier:
+
+- Tier 1 (op body): ``QwenGatedDeltaNetAttention`` (vllm core, CUDA),
+  ``vllm_ascend.ops.gdn.AscendGatedDeltaNetAttention`` (Qwen on NPU).
+- Tier 2 (module forward):
+  ``vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention``
+  ``vllm.model_executor.layers.mamba.gdn.kimi_gdn_linear_attn.KimiGatedDeltaNetAttention``
+  ``vllm_ascend.ops.gdn.AscendGatedDeltaNetAttention`` (Qwen/Kimi on NPU)
+  ``vllm_ascend.ops.kimi_kda.AscendKimiK3DeltaAttention``
+  ``vllm_ascend.models.glm5next.kda.Glm5NextLinearAttention`` (GLM KDA on NPU)
 
 matching the decorator's contract: on entry
 ``connector.wait_for_layer_load(prefix)``, on exit
@@ -19,14 +45,11 @@ matching the decorator's contract: on entry
 sides are idempotent per step (v2 dedups by layer position; v1's row logic
 guards submitted/waited rows), so double firing — e.g. alongside
 vllm-ascend's built-in ``wait_for_kv_layer_from_connector`` inside the GDN
-custom op — is harmless.
+custom op, or tier-1 alongside tier-2 in eager mode — is harmless.
 
-Compile safety: the GDN ``forward`` lives in Dynamo-traced regions (its core
-is an eager custom-op island).  The wrapper checks
-``torch.compiler.is_compiling()`` so fullgraph tracing prunes the hook branch
-instead of graph-breaking.  Hooks are prefill-relevant; decode captured in a
-full graph loses them, which matches UCM's prefill-only dump/load design
-(``wait_for_save`` still catches up undumped layers after the forward).
+Decode batches captured in full graphs replay without Python and lose both
+tiers; this matches UCM's prefill-only dump/load design (``wait_for_save``
+still catches up undumped layers after the forward).
 """
 
 import torch
@@ -119,6 +142,61 @@ def _wrap_gdn_forward(cls) -> None:
     )
 
 
+def _wrap_op_delegated_core(cls) -> None:
+    """Wrap the core method the GDN custom op dispatches into (tier 1).
+
+    ``torch.ops.vllm.qwen_gdn_attention_core`` (and the
+    ``fused_norm_packed`` / ROCm variants, which all funnel into
+    ``_forward_core``) resolves the layer module from
+    ``forward_context.no_compile_layers[layer_name]`` and calls its
+    ``_forward_core``.  A method wrapped at this delegation point runs inside
+    the op body: Dynamo never traces it (custom ops are opaque) and the
+    piecewise runner invokes it eagerly at runtime, so the hooks survive
+    ``mode=VLLM_COMPILE`` — unlike module-forward wraps, which tracing prunes.
+    """
+    original = cls.__dict__.get("_forward_core") if cls is not None else None
+    if original is None:
+        return
+    if getattr(original, _HOOK_FLAG, False):
+        return
+
+    def patched_core(self, *args, **kwargs):
+        layer_name = getattr(self, "prefix", None)
+        # This body normally executes only inside op dispatch (never traced),
+        # but keep the guard so any direct traced call degrades to the
+        # pruned-branch behaviour instead of graph-breaking Dynamo.
+        connector = None
+        if layer_name and not torch.compiler.is_compiling():
+            connector = _active_connector()
+
+        if connector is not None:
+            connector.wait_for_layer_load(layer_name)
+
+        result = original(self, *args, **kwargs)
+
+        if connector is not None:
+            try:
+                connector.save_kv_layer(
+                    layer_name,
+                    getattr(self, "kv_cache", None),
+                    _current_attn_metadata(layer_name),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"save_kv_layer failed for {layer_name}: "
+                    f"{type(e).__name__}: {e}"
+                )
+        return result
+
+    setattr(patched_core, _HOOK_FLAG, True)
+    cls._forward_core = patched_core
+    logger.info(
+        "UCM GDN op-body KV-hook patch applied: wait_for_layer_load / "
+        f"save_kv_layer wired into {cls.__name__}._forward_core "
+        "(custom-op delegated, compile-safe)"
+    )
+
+
 def _patch_module_classes(mod, class_names) -> None:
     for name in class_names:
         cls = getattr(mod, name, None)
@@ -137,6 +215,11 @@ def _patch_qwen_gdn(mod):
     _patch_module_classes(
         mod,
         ["QwenGatedDeltaNetAttention"],
+    )
+    # Tier-1 op-body hooks: the qwen_gdn_attention_core op (all variants)
+    # funnels into QwenGatedDeltaNetAttention._forward_core.
+    _wrap_op_delegated_core(
+        getattr(mod, "QwenGatedDeltaNetAttention", None)
     )
 
 
@@ -174,6 +257,13 @@ def _patch_ascend_gdn(mod):
     _patch_module_classes(
         mod,
         ["AscendGatedDeltaNetAttention"],
+    )
+    # Tier-1 op-body hooks on NPU: AscendGatedDeltaNetAttention._forward_core
+    # is the op-delegated body (it already opens with vllm-ascend's built-in
+    # wait_for_kv_layer_from_connector; our wrapper adds the save side and
+    # keeps the wait — the connector dedups double firing per step).
+    _wrap_op_delegated_core(
+        getattr(mod, "AscendGatedDeltaNetAttention", None)
     )
 
 
