@@ -324,6 +324,14 @@ def apply_all_patches() -> None:
         import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
         import ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch
 
+        # Fix: vLLM 0.30.0 GLM-5.3-Flash expands video prompts with the
+        # inherited GLM-4.6V placeholder timestamps while the encoder samples
+        # frames with the checkpoint's own fps_interval policy; outside
+        # 30-300s the placeholder count diverges from video_grid_thw and
+        # kills the engine core (upstream PR #55647). @when_imported only
+        # fires when vllm.models.glm5next.nvidia.multimodal is imported.
+        import ucm.integration.vllm.patch.v0300.vllm.models.glm5next.nvidia.glm5next_multimodal_patch
+
         logger.info("UCM patch initialization completed!")
 
     except Exception as e:
