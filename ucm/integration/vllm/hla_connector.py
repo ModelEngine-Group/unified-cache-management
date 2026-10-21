@@ -1779,70 +1779,73 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         task's writes land — no deferred commit layers, no per-layer catch-up.
         """
         if not self._connector_metadata:
+            self._dump_plan = None
             return
-        plan = self._ensure_dump_plan()
-        (
-            scoped_ucm_ids,
-            scoped_vllm_ids,
-            scoped_group_ids,
-            dump_request_ids,
-            block_ids_by_request,
-        ) = plan
-        if not scoped_ucm_ids:
-            return
-
-        layout = self.kv_cache_layout
-        assert isinstance(layout, HybridLinearAttentionLayout)
-        save_bytes = sum(
-            layout.direct_group_bytes.get(gid, 0) for gid in scoped_group_ids
-        )
-        event_handle = 0
         try:
-            ptrs = layout.extract_block_addrs(scoped_vllm_ids, scoped_group_ids)
-            event_handle = self._get_dump_event_handle()
-            save_start_time = time.perf_counter() * 1000
-            task = self._rank_consistency.submit_dump(
-                self.store,
-                block_ids_by_request,
+            plan = self._ensure_dump_plan()
+            (
                 scoped_ucm_ids,
-                [0] * len(scoped_ucm_ids),
-                ptrs,
-                event_handle,
-            )
-        except Exception as e:
-            logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
-            if self.enable_event_sync and event_handle and self.device is not None:
-                self.device.destroy_event_handle(event_handle)
-            self._rank_consistency.finish_dump(set(block_ids_by_request))
-            return
+                scoped_vllm_ids,
+                scoped_group_ids,
+                dump_request_ids,
+                block_ids_by_request,
+            ) = plan
+            if not scoped_ucm_ids:
+                return
 
-        try:
-            self._rank_consistency.wait_dump(task)
-            save_end_time = time.perf_counter() * 1000
-        except Exception as e:
-            logger.error_limit(
-                f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+            layout = self.kv_cache_layout
+            assert isinstance(layout, HybridLinearAttentionLayout)
+            save_bytes = sum(
+                layout.direct_group_bytes.get(gid, 0) for gid in scoped_group_ids
             )
+            event_handle = 0
+            try:
+                ptrs = layout.extract_block_addrs(scoped_vllm_ids, scoped_group_ids)
+                event_handle = self._get_dump_event_handle()
+                save_start_time = time.perf_counter() * 1000
+                task = self._rank_consistency.submit_dump(
+                    self.store,
+                    block_ids_by_request,
+                    scoped_ucm_ids,
+                    [0] * len(scoped_ucm_ids),
+                    ptrs,
+                    event_handle,
+                )
+            except Exception as e:
+                logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
+                if self.enable_event_sync and event_handle and self.device is not None:
+                    self.device.destroy_event_handle(event_handle)
+                self._rank_consistency.finish_dump(set(block_ids_by_request))
+                return
+
+            try:
+                self._rank_consistency.wait_dump(task)
+                save_end_time = time.perf_counter() * 1000
+            except Exception as e:
+                logger.error_limit(
+                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+                )
+                self._rank_consistency.finish_dump(set(block_ids_by_request))
+                return
+            finally:
+                if self.enable_event_sync and event_handle and self.device is not None:
+                    self.device.destroy_event_handle(event_handle)
+
             self._rank_consistency.finish_dump(set(block_ids_by_request))
-            return
+            ucmmetrics.update_stats(
+                {
+                    "save_duration": save_end_time - save_start_time,
+                    "save_bytes_total": save_bytes,
+                }
+            )
         finally:
-            if self.enable_event_sync and event_handle and self.device is not None:
-                self.device.destroy_event_handle(event_handle)
-
-        self._rank_consistency.finish_dump(set(block_ids_by_request))
-        ucmmetrics.update_stats(
-            {
-                "save_duration": save_end_time - save_start_time,
-                "save_bytes_total": save_bytes,
-            }
-        )
-        self._dump_tasks.clear()
-        self._dump_plan = None
-        self._dumped_layers.clear()
-        self._dumped_group_slots.clear()
-        self._submitted_group_slots.clear()
-        self._waited_group_slots.clear()
-        self.is_save = False
+            self._dump_tasks.clear()
+            self._dump_plan = None
+            self._dumped_layers.clear()
+            self._dumped_group_slots.clear()
+            self._submitted_group_slots.clear()
+            self._waited_group_slots.clear()
+            self.is_save = False
 
     def request_finished_all_groups(
         self,

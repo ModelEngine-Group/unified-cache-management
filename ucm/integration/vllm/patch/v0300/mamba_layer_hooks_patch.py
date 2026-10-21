@@ -244,9 +244,7 @@ def _patch_qwen_gdn(mod):
     )
     # Tier-1 op-body hooks: the qwen_gdn_attention_core op (all variants)
     # funnels into QwenGatedDeltaNetAttention._forward_core.
-    _wrap_op_delegated_core(
-        getattr(mod, "QwenGatedDeltaNetAttention", None)
-    )
+    _wrap_op_delegated_core(getattr(mod, "QwenGatedDeltaNetAttention", None))
 
 
 @when_imported("vllm.model_executor.layers.mamba.gdn.kimi_gdn_linear_attn")
@@ -288,9 +286,7 @@ def _patch_ascend_gdn(mod):
     # is the op-delegated body (it already opens with vllm-ascend's built-in
     # wait_for_kv_layer_from_connector; our wrapper adds the save side and
     # keeps the wait — the connector dedups double firing per step).
-    _wrap_op_delegated_core(
-        getattr(mod, "AscendGatedDeltaNetAttention", None)
-    )
+    _wrap_op_delegated_core(getattr(mod, "AscendGatedDeltaNetAttention", None))
 
 
 @when_imported("vllm_ascend.models.glm5next.kda")
