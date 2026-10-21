@@ -1493,6 +1493,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         Returns ``(layout, worker_cores, store_cores)``; the store itself is
         mode-specific and created by each subclass's ``register_kv_caches``.
         """
+        # Block-first: whole-page copy overruns the last block. Not supported yet.
+        layout_name = str(
+            getattr(self._kv_cache_config, "kv_cache_layout", "") or ""
+        ).split(".")[-1]
+        if layout_name.startswith("B"):
+            raise ValueError(
+                f"Block-first KV cache layout '{layout_name}' is not supported"
+            )
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
             for layer_name, value in kv_caches.items():
                 kv_cache, _ = value
@@ -1862,10 +1870,45 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
     shard, so max-pair layers defer their dump to the commit task in
     ``wait_for_save``. Loads pipeline with depth 2: ``start_load_kv``
     submits the first two layers; each ``wait_for_layer_load`` hook waits
-    its own pair and submits two positions ahead. Dumps fire per layer
+    its pair and submits two positions ahead. Dumps fire per layer
     right after the layer's forward (attention layers: vLLM's decorator;
     GDN/KDA layers: ``mamba_layer_hooks_patch``).
     """
+
+    # These families' linear layers have no custom-op boundary, so their
+    # module-forward hooks are pruned under compiled execution.
+    _MODULE_TIER_ONLY_ARCHITECTURES = (
+        "KimiK3ForConditionalGeneration",
+        "Glm5NextForConditionalGeneration",
+    )
+
+    @classmethod
+    def layerwise_engine_config_error(cls, vllm_config) -> Optional[str]:
+        """Why layerwise cannot run under this engine config, or None."""
+        hf_config = getattr(
+            getattr(vllm_config, "model_config", None), "hf_config", None
+        )
+        architectures = list(getattr(hf_config, "architectures", None) or [])
+        matched = [
+            arch
+            for arch in architectures
+            if arch in cls._MODULE_TIER_ONLY_ARCHITECTURES
+        ]
+        if not matched:
+            return None
+        cc = getattr(vllm_config, "compilation_config", None)
+        mode = str(getattr(getattr(cc, "mode", None), "name", None) or "NONE")
+        cg_mode = str(
+            getattr(getattr(cc, "cudagraph_mode", None), "name", None) or "NONE"
+        )
+        if mode == "NONE" and cg_mode != "FULL":
+            return None
+        return (
+            f"Layerwise for {matched[0]} requires mode=NONE and "
+            f"cudagraph_mode != FULL (got mode={mode}, "
+            f"cudagraph_mode={cg_mode}). Use --enforce-eager or "
+            '\'{"mode": "NONE", "cudagraph_mode": "FULL_DECODE_ONLY"}\'.'
+        )
 
     def __init__(
         self,
