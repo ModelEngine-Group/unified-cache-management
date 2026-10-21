@@ -35,8 +35,11 @@
 #include "type/dictionary.h"
 #include "ucmstore_v1.h"
 
-/* Defined by the build for platforms whose runtime can drive SDMA Direct; the
- * fallback keeps this header usable on its own. */
+/* Build-time copy capabilities; fallbacks keep this header usable on its own. */
+#ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
+#endif
+
 #ifndef UCM_RUNTIME_ASCEND_SDMA_DIRECT
 #define UCM_RUNTIME_ASCEND_SDMA_DIRECT 0
 #endif
@@ -119,6 +122,8 @@ struct Config {
         dict.Get("cache_sdma_direct", config.sdmaDirect);
         dict.Get("use_gdr", config.useGdr);
         dict.Get("cache_io_aggregation", config.ioAggregation);
+        // Match cc: HMA's FA default must not enable an unsupported copy path.
+        config.ioAggregation = config.ioAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
         dict.GetNumber("local_rank_size", config.localRankSize);
         dict.Get("share_buffer_enable", config.shareBufferEnable);
         if (dict.Contains("cache_detected_numa_node")) {
