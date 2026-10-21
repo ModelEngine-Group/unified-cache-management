@@ -88,6 +88,8 @@ class Config:
             if "UCM_CONFIG_FILE" in extra_config:
                 config_file = extra_config["UCM_CONFIG_FILE"]
                 self.config = self.load_ucm_config_from_yaml(config_file)
+                if "save_decode_cache" in extra_config:
+                    self.config["save_decode_cache"] = extra_config["save_decode_cache"]
             else:
                 if extra_config == {}:
                     self.config = self._get_default_config()

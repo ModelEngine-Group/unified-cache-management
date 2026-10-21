@@ -238,7 +238,7 @@ class RankConsistencyManager:
         self._dump_task_contexts[id(task)] = (store, request_context)
         return task
 
-    def wait_dump(self, task: Any) -> None:
+    def wait_dump(self, task: Any) -> bool:
         """Wait through the task's Store and record blocks affected by failure."""
         task_key = id(task)
         if task_key not in self._dump_task_contexts:
@@ -248,10 +248,11 @@ class RankConsistencyManager:
             store.wait(task)
         except StoreUnhealthyError:
             self._record_dump_failure(request_context)
-            return
+            return False
         except Exception:
             self._record_dump_failure(request_context)
             raise
+        return True
 
     def finish_dump(self, request_ids: set[str]) -> None:
         """Queue successful blocks for reporting to scheduler."""
