@@ -71,8 +71,9 @@ Status SpaceManager::Setup(const Config& config)
 Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     std::vector<uint8_t> results(num, false);
+    std::vector<std::string> failedBackendsInBatch;
     for (size_t i = 0; i < num; ++i) {
-        results[i] = Lookup(blocks + i);
+        results[i] = Lookup(blocks + i, failedBackendsInBatch);
         if (results[i] && hotnessTrackerEnable_) { hotnessTracker_.Touch(blocks[i]); }
     }
     return results;
@@ -115,8 +116,9 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
 Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
 {
     if (num == 0) { return static_cast<ssize_t>(-1); }
+    std::vector<std::string> failedBackendsInBatch;
     for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
-        if (Lookup(blocks + i)) {
+        if (Lookup(blocks + i, failedBackendsInBatch)) {
             if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(blocks + i)); }
             return i;
         }
@@ -124,10 +126,12 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
     return static_cast<ssize_t>(-1);
 }
 
-uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
+uint8_t SpaceManager::Lookup(const Detail::BlockId* block,
+                             std::vector<std::string>& failedBackendsInBatch)
 {
     const auto status = backendMgr_.RunOnAvailableBackend(
-        *block, [&](size_t backendIndex) { return lookupManager_.Lookup(*block, backendIndex); });
+        *block, [&](size_t backendIndex) { return lookupManager_.Lookup(*block, backendIndex); },
+        failedBackendsInBatch);
     return status.Success();
 }
 
@@ -140,13 +144,14 @@ void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
 
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
+    std::vector<std::string> failedBackendsInBatch;
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
         if (ctx.status->load() != Status::OK().Underlying()) { break; }
 
         auto curFail = ctx.firstFail->load();
         if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
 
-        if (!Lookup(ctx.blocks + i)) {
+        if (!Lookup(ctx.blocks + i, failedBackendsInBatch)) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
                 if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),

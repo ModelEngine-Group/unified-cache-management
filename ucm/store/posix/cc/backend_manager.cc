@@ -26,6 +26,7 @@
 #include <array>
 #include "detail/health_check_executor.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 #include "thread/cpu_affinity.h"
 
@@ -127,6 +128,17 @@ Expected<std::string> BackendManager::GetBackendForBlock(
     return Status::StoreUnhealthy();
 }
 
+Expected<BackendManager::BackendAttempt> BackendManager::PrimaryBackend(
+    const Detail::BlockId& blockId) const
+{
+    const auto index = Detail::BlockIdHasher{}(blockId) % storageBackends_.size();
+    if (backendHealth_[index].Healthy()) {
+        return BackendAttempt{index, backendHealth_[index].Generation()};
+    } else {
+        return Status::StoreUnhealthy();
+    }
+}
+
 Expected<BackendManager::BackendAttempt> BackendManager::SelectNextBackend(
     const Detail::BlockId& blockId, std::vector<std::string>& attempted) const
 {
@@ -140,13 +152,18 @@ Expected<BackendManager::BackendAttempt> BackendManager::SelectNextBackend(
 }
 
 Status BackendManager::RunOnAvailableBackend(const Detail::BlockId& blockId,
-                                             const std::function<Status(size_t)>& operation) const
+                                             const std::function<Status(size_t)>& operation,
+                                             std::vector<std::string>& failedBackendsInBatch) const
 {
-    std::vector<std::string> attempted;
+    auto attempted = failedBackendsInBatch;
     auto status = Status::StoreUnhealthy();
     while (auto attempt = SelectNextBackend(blockId, attempted)) {
         status = operation(attempt.Value().index);
-        if (!ShouldRetry(attempt.Value(), status)) { break; }
+        if (ShouldRetry(attempt.Value(), status)) {
+            failedBackendsInBatch.push_back(attempted.back());
+        } else {
+            break;
+        }
     }
     return status;
 }
@@ -201,7 +218,12 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
 
 void BackendManager::RecordResult(const BackendAttempt& attempt, const Status& status) const
 {
-    if (passiveEnabled_) { backendHealth_[attempt.index].RecordIo(attempt.generation, status); }
+    if (passiveEnabled_) {
+        backendHealth_[attempt.index].RecordIo(attempt.generation, status);
+        if (status.Failure() && Detail::ShouldRecordResult(status)) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_passive_failures_total"), 1.0);
+        }
+    }
 }
 
 bool BackendManager::ShouldRetry(const BackendAttempt& attempt, const Status& status) const

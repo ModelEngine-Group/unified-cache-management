@@ -119,7 +119,10 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
         request->waiter.Done();
         return;
     }
-    auto attempt = backendMgr_->SelectNextBackend(shardTask.shard.owner, shardTask.attempted);
+    // Dump only uses the primary backend, so all writers of a block go through the same path.
+    auto attempt = request->task.type == TransTask::Type::DUMP
+                       ? backendMgr_->PrimaryBackend(shardTask.shard.owner)
+                       : backendMgr_->SelectNextBackend(shardTask.shard.owner, shardTask.attempted);
     if (attempt) {
         shardTask.attempt = attempt.Value();
     } else {
@@ -137,7 +140,10 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
         std::shared_lock<std::shared_mutex> lock(callbacks->mutex);
         if (callbacks->stopped) { return; }
         shardTask.result = status;
-        if (backendMgr_->ShouldRetry(shardTask.attempt, status)) {
+        const auto retry = backendMgr_->ShouldRetry(shardTask.attempt, status);
+        if (retry && request->task.type == TransTask::Type::LOAD) {
+            // A queued timeout is not the backend's fault, so the retry may pick it again.
+            if (status == Status::TimeoutInQueue()) { shardTask.attempted.pop_back(); }
             TryNextBackend(request, shardTask);
         } else {
             request->waiter.Done();

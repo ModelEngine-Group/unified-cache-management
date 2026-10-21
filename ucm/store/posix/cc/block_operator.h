@@ -88,7 +88,8 @@ public:
         OpenCallback callback;
         uint64_t tag{0};
         size_t backendIndex{0};
-        std::function<void()> onStart;
+        // Called when a worker takes the task; returning false skips the open.
+        std::function<bool()> onStart;
     };
     struct CommitTask {
         Detail::BlockId id;
@@ -109,9 +110,9 @@ public:
         openSrv.reset();
         commitSrv.reset();
     }
-    // backends must outlive this object; tasks refer to it by index.
     Status Setup(const SpaceLayout* layout, const std::vector<std::string>* backends,
-                 size_t nOpenWorker, size_t nCommitWorker, size_t timeoutMs)
+                 size_t nOpenWorker, size_t nCommitWorker, size_t timeoutMs,
+                 std::function<void()> onOpenStuck)
     {
         layout_ = layout;
         backends_ = backends;
@@ -120,11 +121,12 @@ public:
             openSrv_->SetWorkerInitFn([](auto&) { return SetThreadName("ucm_posix_open"); })
                 .SetWorkerFn([this](OpenTask& task, auto&) { Open(task); })
                 .SetWorkerTimeoutFn(
-                    [this, timeoutMs](OpenTask& task, auto) {
+                    [this, timeoutMs, onOpenStuck](OpenTask& task, auto) {
                         UC_WARN(
                             "Open of block({}) in backend({}:{}) is stuck over {} ms; a new "
                             "worker takes over.",
                             task.id, task.backendIndex, (*backends_)[task.backendIndex], timeoutMs);
+                        if (onOpenStuck) { onOpenStuck(); }
                     },
                     timeoutMs)
                 .SetNWorker(nOpenWorker)
@@ -134,8 +136,7 @@ public:
         success =
             commitSrv_->SetWorkerInitFn([](auto&) { return SetThreadName("ucm_posix_cmit"); })
                 .SetWorkerFn([this](CommitTask& task, auto&) {
-                    layout_->CommitFile((*backends_)[task.backendIndex], task.backendIndex, task.id,
-                                        task.success);
+                    layout_->CommitFile((*backends_)[task.backendIndex], task.id, task.success);
                 })
                 .SetWorkerTimeoutFn(
                     [this, timeoutMs](CommitTask& task, auto) {
@@ -193,18 +194,21 @@ private:
     {
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         const auto& backend = (*backends_)[task.backendIndex];
-        const auto path = task.activated
-                              ? layout_->ActivatedFilePath(backend, task.backendIndex, task.id)
-                              : layout_->ArchivedFilePath(backend, task.id);
-        if (task.onStart) { task.onStart(); }
+        const auto path = task.activated ? layout_->ActivatedFilePath(backend, task.id)
+                                         : layout_->ArchivedFilePath(backend, task.id);
+        const auto shouldStart = !task.onStart || task.onStart();
+        if (shouldStart) {
 #ifdef UCM_ENABLE_TEST_HOOKS
-        auto hook = TestHooks::GetOpenHook();
-        auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
+            auto hook = TestHooks::GetOpenHook();
+            auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
 #else
-        auto fd = ::open(path.c_str(), task.flags, mode);
+            auto fd = ::open(path.c_str(), task.flags, mode);
 #endif
-        auto err = (fd < 0) ? errno : 0;
-        if (task.callback) { task.callback(OpenResult{fd, err}); }
+            auto err = (fd < 0) ? errno : 0;
+            if (task.callback) { task.callback(OpenResult{fd, err}); }
+        } else {
+            if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
+        }
     }
 
     const SpaceLayout* layout_{nullptr};

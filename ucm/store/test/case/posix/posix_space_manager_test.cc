@@ -81,13 +81,13 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     auto s = spaceMgr.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
-    auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), 0, blockId);
-    ASSERT_EQ(activated, fmt::format("{}data/{:02x}.tmp.0", this->Path(), fmt::join(blockId, "")));
+    auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), blockId);
+    ASSERT_EQ(activated, fmt::format("{}data/{:02x}.tmp", this->Path(), fmt::join(blockId, "")));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
     ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{false});
-    ASSERT_EQ(spaceMgr.GetLayout()->CommitFile(Path(), 0, blockId, true), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.GetLayout()->CommitFile(Path(), blockId, true), UC::Status::OK());
     ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{true});
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto archived = spaceMgr.GetLayout()->ArchivedFilePath(Path(), blockId);
@@ -107,13 +107,13 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
     const auto& file = fmt::format("{:02x}", fmt::join(blockId, ""));
     const auto& shard = file.substr(0, config.dataDirShardBytes);
-    auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), 0, blockId);
-    ASSERT_EQ(activated, fmt::format("{}{}/{}.tmp.0", this->Path(), shard, file));
+    auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), blockId);
+    ASSERT_EQ(activated, fmt::format("{}{}/{}.tmp", this->Path(), shard, file));
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
     ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{false});
-    ASSERT_EQ(spaceMgr.GetLayout()->CommitFile(Path(), 0, blockId, true), UC::Status::OK());
+    ASSERT_EQ(spaceMgr.GetLayout()->CommitFile(Path(), blockId, true), UC::Status::OK());
     ASSERT_EQ(spaceMgr.Lookup(&blockId, 1).Value(), std::vector<uint8_t>{true});
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto archived = spaceMgr.GetLayout()->ArchivedFilePath(Path(), blockId);
@@ -168,6 +168,75 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
         std::vector<uint8_t> expected{true, true, false, true};
         ASSERT_TRUE(founds == expected);
     }
+}
+
+TEST_F(UCPosixSpaceManagerTest, BatchSkipsFailedBackend)
+{
+    using namespace UC::PosixStore;
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.storageBackends = {Path(), Path() + "./"};
+    // Keep the backend healthy, so only the batch skip keeps the retries away from it.
+    config.backendHealth.passiveFailureThreshold = 1000;
+    SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
+    BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
+    const auto& backends = backendMgr.Backends();
+    ASSERT_EQ(backends.size(), 2);
+
+    // Every block prefers the second backend, which always fails.
+    std::vector<UC::Detail::BlockId> blocks;
+    while (blocks.size() < 8) {
+        auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+        if (backendMgr.GetBackendForBlock(block).Value() == backends[1]) {
+            blocks.push_back(block);
+        }
+    }
+    std::vector<size_t> calls(backends.size(), 0);
+    std::vector<std::string> failedBackendsInBatch;
+    for (const auto& block : blocks) {
+        auto status = backendMgr.RunOnAvailableBackend(
+            block,
+            [&](size_t index) {
+                ++calls[index];
+                return index == 1 ? UC::Status::Error() : UC::Status::OK();
+            },
+            failedBackendsInBatch);
+        EXPECT_EQ(status, UC::Status::OK());
+    }
+    EXPECT_EQ(calls[1], 1);
+    EXPECT_EQ(calls[0], blocks.size());
+}
+
+TEST_F(UCPosixSpaceManagerTest, PrimaryBackendFailsWhenUnhealthy)
+{
+    using namespace UC::PosixStore;
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.storageBackends = {Path(), Path() + "./"};
+    SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
+    BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
+    const auto& backends = backendMgr.Backends();
+
+    // Pick a block whose primary is the second backend, then trip that backend.
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    while (backendMgr.GetBackendForBlock(block).Value() != backends[1]) {
+        block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    }
+    auto attempt = backendMgr.PrimaryBackend(block);
+    ASSERT_TRUE(attempt.HasValue());
+    ASSERT_EQ(attempt.Value().index, 1);
+    for (size_t i = 0; i < config.backendHealth.passiveFailureThreshold; ++i) {
+        backendMgr.RecordResult(attempt.Value(), UC::Status::Error());
+    }
+    // Load can move to the other backend, but dump does not.
+    EXPECT_EQ(backendMgr.GetBackendForBlock(block).Value(), backends[0]);
+    attempt = backendMgr.PrimaryBackend(block);
+    ASSERT_FALSE(attempt.HasValue());
+    EXPECT_EQ(attempt.Error(), UC::Status::StoreUnhealthy());
 }
 
 TEST_F(UCPosixSpaceManagerTest, PrefetchTouchesFileThroughBatchPool)

@@ -68,7 +68,7 @@ public:
     const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
+    uint8_t Lookup(const Detail::BlockId* block, std::vector<std::string>& failedBackendsInBatch);
     void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };

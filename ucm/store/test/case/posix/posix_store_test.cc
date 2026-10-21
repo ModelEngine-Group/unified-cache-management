@@ -108,8 +108,9 @@ double ReadCounter(const std::string& name)
 
 class StallingOpenHook {
 public:
-    explicit StallingOpenHook(bool succeedAfterRelease = false)
-        : succeedAfterRelease_{succeedAfterRelease}
+    // An empty stalledPrefix stalls every open.
+    explicit StallingOpenHook(bool succeedAfterRelease = false, std::string stalledPrefix = {})
+        : succeedAfterRelease_{succeedAfterRelease}, stalledPrefix_{std::move(stalledPrefix)}
     {
         UC::PosixStore::TestHooks::SetOpenHook(
             [this](const std::string& path, int32_t flags, mode_t mode) {
@@ -137,6 +138,14 @@ public:
 private:
     int32_t Run(const std::string& path, int32_t flags, mode_t mode)
     {
+        if (stalledPrefix_.empty() || path.rfind(stalledPrefix_, 0) == 0) {
+            return Stall(path, flags, mode);
+        } else {
+            return ::open(path.c_str(), flags, mode);
+        }
+    }
+    int32_t Stall(const std::string& path, int32_t flags, mode_t mode)
+    {
         {
             std::lock_guard<std::mutex> lock{mutex_};
             ++active_;
@@ -162,6 +171,7 @@ private:
     bool entered_{false};
     bool release_{false};
     bool succeedAfterRelease_{false};
+    std::string stalledPrefix_;
     size_t active_{0};
 };
 
@@ -666,9 +676,10 @@ TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)
     ASSERT_TRUE(handle2.HasValue());
     ASSERT_TRUE(handle3.HasValue());
 
+    // Dump does not retry, so the queued ones report their own queued timeout.
     auto start = std::chrono::steady_clock::now();
-    ASSERT_EQ(store.Wait(handle2.Value()), UC::Status::Timeout());
-    ASSERT_EQ(store.Wait(handle3.Value()), UC::Status::Timeout());
+    ASSERT_EQ(store.Wait(handle2.Value()), UC::Status::TimeoutInQueue());
+    ASSERT_EQ(store.Wait(handle3.Value()), UC::Status::TimeoutInQueue());
     ASSERT_EQ(store.Wait(handle1.Value()), UC::Status::Timeout());
     auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -732,6 +743,74 @@ TEST_F(UCPosixStoreTest, AioStuckOpenWorkerIsReplaced)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     TestHooks::ClearOpenHook();
+}
+
+TEST_F(UCPosixStoreTest, AioLoadFailsOverWhenOneBackendStallsOpenWorkers)
+{
+    using namespace UC::PosixStore;
+    // Both backends are paths to the same directory; opens through the second one hang.
+    const auto stalledBackend = Path() + "./";
+    constexpr size_t timeoutMs = 4000;
+    auto config = MakeAioConfig(Path(), timeoutMs, 4);
+    config.Set("storage_backends", std::vector<std::string>{Path(), stalledBackend});
+    constexpr size_t nBlocks = 32;
+    std::vector<UC::Detail::BlockId> blocks;
+    std::vector<BufferPtr> buffers;
+    const auto makeDesc = [&](const char* brief, const std::vector<UC::Detail::BlockId>& ids) {
+        UC::Detail::TaskDesc desc;
+        desc.brief = brief;
+        for (const auto& block : ids) {
+            buffers.push_back(MakeAlignedBuffer(buffers.size() + 1));
+            desc.push_back(UC::Detail::Shard{block, 0, {buffers.back().get()}});
+        }
+        return desc;
+    };
+    for (size_t i = 0; i < nBlocks; ++i) {
+        blocks.push_back(UC::Test::Detail::TypesHelper::MakeBlockIdRandomly());
+    }
+    {
+        PosixStore store;
+        ASSERT_EQ(store.Setup(config), UC::Status::OK());
+        auto dump = store.Dump(makeDesc("Dump", blocks));
+        ASSERT_TRUE(dump.HasValue());
+        ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    }
+    // Commit runs after Wait returns, so wait for the archived files to show up.
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (const auto& block : blocks) {
+        const auto file = layout.ArchivedFilePath(Path(), block);
+        while (!std::filesystem::exists(file) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_TRUE(std::filesystem::exists(file));
+    }
+
+    // A fresh store starts with both backends healthy, so the stuck backend fills all open
+    // workers before it trips.
+    const auto loadedFrom = buffers.size();
+    {
+        PosixStore store;
+        ASSERT_EQ(store.Setup(config), UC::Status::OK());
+        {
+            StallingOpenHook hook{false, stalledBackend};
+            const auto start = std::chrono::steady_clock::now();
+            auto load = store.Load(makeDesc("Load", blocks));
+            ASSERT_TRUE(load.HasValue());
+            EXPECT_EQ(store.Wait(load.Value()), UC::Status::OK());
+            EXPECT_LT(std::chrono::steady_clock::now() - start,
+                      std::chrono::milliseconds(timeoutMs));
+        }
+        // Let the released open workers finish their callbacks before the store goes away.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    for (size_t i = 0; i < nBlocks; ++i) {
+        EXPECT_EQ(*reinterpret_cast<size_t*>(buffers[loadedFrom + i].get()), i + 1);
+    }
 }
 
 TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)

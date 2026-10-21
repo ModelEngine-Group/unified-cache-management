@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 
+#include <algorithm>
 #include <cerrno>
 #include <limits>
 #include <mutex>
@@ -64,8 +65,11 @@ public:
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         backends_ = backends;
-        auto s = blockOperator_.Setup(layout, backends, config.openConcurrency,
-                                      config.commitConcurrency, timeoutMs_);
+        // A stuck open is already past its task deadline. Sweep before the new worker starts,
+        // so the stuck backend trips and queued tasks retry first.
+        auto s =
+            blockOperator_.Setup(layout, backends, config.openConcurrency, config.commitConcurrency,
+                                 timeoutMs_, [this] { SweepDeadlines(); });
         if (s.Failure()) { return s; }
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
@@ -181,7 +185,7 @@ private:
         }
     }
     template <bool dump>
-    void Dispatch(TaskPtr t, WaiterPtr w)
+    void Dispatch(TaskPtr t, WaiterPtr w, double deadline)
     {
         const auto flags = O_DIRECT | (dump ? (O_CREAT | O_WRONLY) : O_RDONLY);
         const auto number = t->desc.size();
@@ -198,7 +202,16 @@ private:
             task.callback = [this, t, w, i](BlockOperator::OpenResult result) {
                 OnOpenCallback<dump>(t, w, t->desc[i], result);
             };
-            task.onStart = [t] { t->started.store(true, std::memory_order_relaxed); };
+            // A task taken after its deadline gives up without opening the file.
+            task.onStart = [t, deadline] {
+                if (NowTime::Now() < deadline) {
+                    t->started.store(true, std::memory_order_relaxed);
+                    return true;
+                } else {
+                    t->Fail(TimeoutStatus(t->started.load(std::memory_order_relaxed)));
+                    return false;
+                }
+            };
             tasks.push_back(std::move(task));
         }
         blockOperator_.Submit(std::move(tasks));
@@ -238,10 +251,10 @@ private:
                 onComplete(Wait(id));
             }
         });
+        const auto deadline = timeoutMs_ > 0 ? NowTime::Now() + timeoutMs_ / 1000.0
+                                             : std::numeric_limits<double>::max();
         {
             std::lock_guard<std::mutex> lk(regMutex_);
-            auto deadline = timeoutMs_ > 0 ? NowTime::Now() + timeoutMs_ / 1000.0
-                                           : std::numeric_limits<double>::max();
             registry_[id] = Inflight{t, w, deadline, num, false};
         }
         if (timeoutMs_ > 0) {
@@ -253,10 +266,10 @@ private:
         }
         if (isDump) {
             UpdateWaitMetrics<true>(wait);
-            Dispatch<true>(t, w);
+            Dispatch<true>(t, w, deadline);
         } else {
             UpdateWaitMetrics<false>(wait);
-            Dispatch<false>(t, w);
+            Dispatch<false>(t, w, deadline);
         }
     }
     static Status TimeoutStatus(bool started)
@@ -282,6 +295,11 @@ private:
                 }
             }
         }
+        // partition by if task has started, process started task first, they will be
+        // recorded in passive health window to make them become unhealthy,
+        // avoid later tasks to use the unhealthy backend again.
+        std::stable_partition(due.begin(), due.end(),
+                              [](const auto& item) { return std::get<3>(item); });
         for (auto& [t, w, shardCount, started] : due) {
             auto stuckMs = (now - w->startTp) * 1e3;
             auto pending = w->Pending();

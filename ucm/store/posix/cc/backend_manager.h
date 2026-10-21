@@ -46,13 +46,18 @@ public:
     Status Setup(const Config& config, const SpaceLayout* layout);
     Expected<std::string> GetBackendForBlock(const Detail::BlockId& blockId,
                                              const std::vector<std::string>& excluded = {}) const;
+    // The block's primary backend, or StoreUnhealthy when that backend is unhealthy.
+    Expected<BackendAttempt> PrimaryBackend(const Detail::BlockId& blockId) const;
     Expected<BackendAttempt> SelectNextBackend(const Detail::BlockId& blockId,
                                                std::vector<std::string>& attempted) const;
     size_t BackendCount() const { return storageBackends_.size(); }
     const std::vector<std::string>& Backends() const { return storageBackends_; }
     size_t IoTimeoutMs() const { return ioTimeoutMs_; }
+    // Skips backends that already failed in the same batch, and adds the ones that fail here, so
+    // a batch waits on a bad backend only once.
     Status RunOnAvailableBackend(const Detail::BlockId& blockId,
-                                 const std::function<Status(size_t)>& operation) const;
+                                 const std::function<Status(size_t)>& operation,
+                                 std::vector<std::string>& failedBackendsInBatch) const;
     void RecordResult(const BackendAttempt& attempt, const Status& status) const;
     bool ShouldRetry(const BackendAttempt& attempt, const Status& status) const;
     Status CheckHealth() const;

@@ -98,17 +98,16 @@ std::string SpaceLayout::ArchivedFilePath(const std::string& backend,
     return fmt::format("{}{}/{}", backend, shard, file);
 }
 
-std::string SpaceLayout::ActivatedFilePath(const std::string& backend, size_t backendIndex,
+std::string SpaceLayout::ActivatedFilePath(const std::string& backend,
                                            const Detail::BlockId& blockId) const
 {
-    return fmt::format("{}{}.{}", ArchivedFilePath(backend, blockId), ACTIVATED_FILE_EXTENSION,
-                       backendIndex);
+    return ArchivedFilePath(backend, blockId) + ACTIVATED_FILE_EXTENSION;
 }
 
-Status SpaceLayout::CommitFile(const std::string& backend, size_t backendIndex,
-                               const Detail::BlockId& blockId, bool success) const
+Status SpaceLayout::CommitFile(const std::string& backend, const Detail::BlockId& blockId,
+                               bool success) const
 {
-    const auto& activated = ActivatedFilePath(backend, backendIndex, blockId);
+    const auto& activated = ActivatedFilePath(backend, blockId);
     auto s = Status::OK();
     if (success) {
         const auto& archived = ArchivedFilePath(backend, blockId);

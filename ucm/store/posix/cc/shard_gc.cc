@@ -269,10 +269,14 @@ void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
         ctx.waiter->Done();
         return;
     }
-    const auto removeFile = [this](const Detail::BlockId& blockId) {
-        backendMgr_->RunOnAvailableBackend(blockId, [&](size_t backendIndex) {
-            return layout_->RemoveFile(backendMgr_->Backends()[backendIndex], blockId);
-        });
+    std::vector<std::string> failedBackendsInBatch;
+    const auto removeFile = [this, &failedBackendsInBatch](const Detail::BlockId& blockId) {
+        backendMgr_->RunOnAvailableBackend(
+            blockId,
+            [&](size_t backendIndex) {
+                return layout_->RemoveFile(backendMgr_->Backends()[backendIndex], blockId);
+            },
+            failedBackendsInBatch);
     };
     switch (ctx.type) {
         case ShardTaskContext::Type::SAMPLE: {

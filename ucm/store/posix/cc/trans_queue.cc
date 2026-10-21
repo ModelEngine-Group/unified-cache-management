@@ -151,8 +151,7 @@ void TransQueue::DumpWorker(IoUnit& ios)
     }
     auto s = H2S(ios);
     if (ios.shard.index + 1 == nShardPerBlock_) {
-        const auto backendIndex = ios.task->backendIndex;
-        layout_->CommitFile((*backends_)[backendIndex], backendIndex, ios.shard.owner, s.Success());
+        layout_->CommitFile((*backends_)[ios.task->backendIndex], ios.shard.owner, s.Success());
     }
     if (s.Failure()) [[unlikely]] {
         ios.task->Fail(s);
@@ -165,7 +164,7 @@ Status TransQueue::H2S(IoUnit& ios)
 {
     const auto backendIndex = ios.task->backendIndex;
     const auto& backend = (*backends_)[backendIndex];
-    const auto& path = layout_->ActivatedFilePath(backend, backendIndex, ios.shard.owner);
+    const auto& path = layout_->ActivatedFilePath(backend, ios.shard.owner);
     PosixFile file{path};
     auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }

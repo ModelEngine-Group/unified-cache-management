@@ -46,12 +46,9 @@ public:
     Status Setup(const Config& config);
     Status InitBackend(const std::string& backend, bool create) const;
     std::string ArchivedFilePath(const std::string& backend, const Detail::BlockId& blockId) const;
-    // Backends are paths to one filesystem, so the temp file carries the backend index: a
-    // timed-out attempt on one path must not touch the file a retry writes through another.
-    std::string ActivatedFilePath(const std::string& backend, size_t backendIndex,
-                                  const Detail::BlockId& blockId) const;
-    Status CommitFile(const std::string& backend, size_t backendIndex,
-                      const Detail::BlockId& blockId, bool success) const;
+    std::string ActivatedFilePath(const std::string& backend, const Detail::BlockId& blockId) const;
+    Status CommitFile(const std::string& backend, const Detail::BlockId& blockId,
+                      bool success) const;
     Status RemoveFile(const std::string& backend, const Detail::BlockId& blockId) const;
     std::vector<std::string> SampleShards(double sampleRatio) const;
     size_t CountFilesInShard(const std::string& backend, const std::string& shard) const;

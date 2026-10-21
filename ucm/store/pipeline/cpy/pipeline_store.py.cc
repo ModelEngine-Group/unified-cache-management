@@ -188,8 +188,12 @@ public:
         if (healthConfig.enabled) {
             const auto storeId =
                 "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
+            auto breakerConfig = healthConfig;
+            // Posix counts I/O failures per backend itself. Its store breaker only probes, so one
+            // bad backend cannot trip the whole store.
+            if (name == "Posix") { breakerConfig.passiveEnabled = false; }
             auto healthBreakerStore = std::make_shared<HealthBreakerStore>();
-            ThrowIfFailed(healthBreakerStore->Setup(stores_.back().get(), storeId, healthConfig));
+            ThrowIfFailed(healthBreakerStore->Setup(stores_.back().get(), storeId, breakerConfig));
             ThrowIfFailed(healthBreakerStore->Start());
             healthBreakerStores_.push_back(std::move(healthBreakerStore));
             entry_ = healthBreakerStores_.back().get();
