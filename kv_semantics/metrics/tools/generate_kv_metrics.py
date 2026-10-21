@@ -144,10 +144,11 @@ def check_metric_document(
     for name in sorted(actual.keys() - expected.keys()):
         errors.append(f"unexpected documented KV metric: {name}")
     if has_default_totals:
-        total_summary = (
-            f"{counts['counter']} Counters, {counts['gauge']} Gauges, "
-            f"and {counts['histogram']} Histograms"
-        )
+        parts = [
+            f"{counts[section]} {section.title()}{'s' if counts[section] != 1 else ''}"
+            for section in SECTIONS
+        ]
+        total_summary = ", ".join(parts[:-1]) + ", and " + parts[-1]
         if content.count(total_summary) != 1:
             errors.append(
                 f"default metric counts out of date: expected {total_summary}"

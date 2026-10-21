@@ -49,7 +49,7 @@ def document(definitions, language, totals):
     )
     lines = ["# Metrics"]
     if totals:
-        lines.append("Defaults: 2 Counters, 1 Gauges, and 1 Histograms.")
+        lines.append("Defaults: 2 Counters, 1 Gauge, and 1 Histogram.")
     lines.extend(["### 1.6 ASU / KV metrics", summary])
     for section in generator.SECTIONS:
         lines.extend(
