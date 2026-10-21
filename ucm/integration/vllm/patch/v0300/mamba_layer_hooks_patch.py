@@ -98,8 +98,31 @@ def _current_attn_metadata(layer_name: str):
     return attn_metadata
 
 
-def _wrap_gdn_forward(cls) -> None:
-    """Wrap one GDN-family class's own ``forward`` with the KV hooks."""
+def _glm_mla_layer_name(self):
+    """Resolve Glm5NextMLAAttention's registered cache-layer name.
+
+    vLLM 0.30.0's ``Glm5NextMLAAttention`` (both platforms) stores no
+    ``prefix`` member: the constructor's prefix goes into the nested
+    ``self.mla_attn`` wrapper, whose ``MLAAttention`` core registers the
+    cache layer as ``<prefix>.attn`` and keeps that name in
+    ``layer_name``.  Waiting under that name orders the whole
+    (group, pair) load — GLM's indexer and MLA share the pair — ahead of
+    the wrapper's forward, which runs the indexer first.
+    """
+    name = getattr(self, "prefix", None)
+    if name:
+        return name
+    wrapper = getattr(self, "mla_attn", None)
+    core = getattr(wrapper, "mla_attn", None) if wrapper is not None else None
+    return getattr(core, "layer_name", None)
+
+
+def _wrap_gdn_forward(cls, layer_name_resolver=None) -> None:
+    """Wrap one GDN-family class's own ``forward`` with the KV hooks.
+
+    ``layer_name_resolver``: callable(instance) -> layer name, for classes
+    that store no ``prefix`` member (GLM's MLA wrapper).
+    """
     original = cls.__dict__.get("forward")
     if original is None:
         return
@@ -107,7 +130,10 @@ def _wrap_gdn_forward(cls) -> None:
         return
 
     def patched_forward(self, *args, **kwargs):
-        layer_name = getattr(self, "prefix", None)
+        if layer_name_resolver is not None:
+            layer_name = layer_name_resolver(self)
+        else:
+            layer_name = getattr(self, "prefix", None)
         # Skip side-effecting connector calls while Dynamo traces the region:
         # fullgraph compilation prunes this branch, and eager runs (prefill,
         # piecewise-graph runtime, cudagraph capture warmups) fire the hooks.
@@ -197,13 +223,13 @@ def _wrap_op_delegated_core(cls) -> None:
     )
 
 
-def _patch_module_classes(mod, class_names) -> None:
+def _patch_module_classes(mod, class_names, layer_name_resolver=None) -> None:
     for name in class_names:
         cls = getattr(mod, name, None)
         if cls is None:
             continue
         try:
-            _wrap_gdn_forward(cls)
+            _wrap_gdn_forward(cls, layer_name_resolver)
         except Exception as e:
             logger.warning(
                 f"UCM GDN KV-hook patch failed for {name}: " f"{type(e).__name__}: {e}"
@@ -282,11 +308,19 @@ def _patch_glm_kda(mod):
 # the exit save duplicates the op-internal save (deduped by the connector).
 # Without this, GLM's indexer reads unloaded cache under the depth-2
 # pipeline (v1 avoided it only by preloading every row).
+#
+# Name resolution: Glm5NextMLAAttention (both platforms) stores no
+# ``self.prefix`` — the constructor's prefix went into the nested
+# ``self.mla_attn`` wrapper (its MLAAttention core registers the cache
+# layer as ``<prefix>.attn`` in ``layer_name``).  _glm_mla_layer_name
+# resolves that registered name; a plain ``getattr(self, "prefix")`` here
+# would silently return None and never fire the entry wait (review #2).
 @when_imported("vllm.models.glm5next.nvidia.attention")
 def _patch_glm_mla(mod):
     _patch_module_classes(
         mod,
         ["Glm5NextMLAAttention"],
+        layer_name_resolver=_glm_mla_layer_name,
     )
 
 
@@ -295,4 +329,5 @@ def _patch_glm_mla_ascend(mod):
     _patch_module_classes(
         mod,
         ["Glm5NextMLAAttention"],
+        layer_name_resolver=_glm_mla_layer_name,
     )
