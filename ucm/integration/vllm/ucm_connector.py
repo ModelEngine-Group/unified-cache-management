@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import glob
 import math
 import os
@@ -1472,6 +1472,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
 
+    def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
+        """Select this TP rank's share of replicated MLA cache blocks."""
+        # MLA cache is replicated across TP ranks. Distribute blocks among ranks
+        # to avoid duplicate writes and share the dump workload.
+        rank = self.tp_rank % self.tp_size
+        # Use absolute block positions so small incremental dumps rotate across
+        # ranks instead of always starting at rank 0.
+        first_index = (rank - dump_block_start) % self.tp_size
+        return slice(first_index, None, self.tp_size)
+
     def _select_mla_dump_blocks(
         self,
         ucm_block_ids: list[bytes],
@@ -1479,23 +1489,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_block_start: int = 0,
     ) -> tuple[list[bytes], list[int]]:
         """Stripe replicated MLA blocks across TP, keeping keys and addresses paired."""
-        rank, size = self.tp_rank % self.tp_size, self.tp_size
-        # Relative indices restart at 0 in every dump batch, so the first block
-        # would always go to rank 0 and small batches would repeatedly favor
-        # the first few ranks. Using absolute request block positions rotates
-        # ownership as the request advances, spreading dumps across TP ranks.
-        # Select relative indices i where (dump_block_start + i) % size == rank.
-        # Example: start=6, size=4, six dump blocks at absolute positions 6..11:
-        # rank | rank - start | first_rank | relative indices | absolute positions
-        #   0  |     -6       |     2      |       2          |         8
-        #   1  |     -5       |     3      |       3          |         9
-        #   2  |     -4       |     0      |       0, 4       |         6, 10
-        #   3  |     -3       |     1      |       1, 5       |         7, 11
-        # first_rank is this rank's first relative block index, not a rank ID.
-        # Python's modulo with positive size keeps first_rank in [0, size).
-        # If first_rank >= len(ucm_block_ids), the slice is empty for this rank.
-        first_rank = (rank - dump_block_start) % size
-        key_slice = slice(first_rank, None, size)
+        key_slice = self._get_mla_dump_slice(dump_block_start)
         return ucm_block_ids[key_slice], vllm_block_ids[key_slice]
 
     def _make_other_rank_hashers(self, vllm_config) -> list[RequestHasher]:
