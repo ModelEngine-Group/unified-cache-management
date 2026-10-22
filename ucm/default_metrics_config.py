@@ -3,8 +3,10 @@
 #
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
 #
-# This file is generated from examples/metrics/metrics_configs.yaml.
-# Update the YAML first, then regenerate this file.
+# Keep non-KV definitions in sync with examples/metrics/metrics_configs.yaml.
+# BEGIN/END GENERATED KV blocks come from kv_semantics/metrics/config/kv_metrics.yaml.
+# Update that source, then run:
+# python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm
 #
 
 from copy import deepcopy
@@ -12,6 +14,31 @@ from typing import Any
 
 # fmt: off
 _COUNTER_METRICS = [
+    # BEGIN GENERATED KV counter
+    ("kv_client_query_requests_total", "Total KV client query submissions"),
+    ("kv_client_query_entries_total", "Total keys submitted to KV client query"),
+    ("kv_client_query_errors_total", "Total failed KV client query submissions"),
+    ("kv_client_load_requests_total", "Total KV client load submissions"),
+    ("kv_client_load_entries_total", "Total entries submitted to KV client load"),
+    ("kv_client_load_errors_total", "Total failed KV client load submissions"),
+    ("kv_client_store_requests_total", "Total KV client store submissions"),
+    ("kv_client_store_entries_total", "Total entries submitted to KV client store"),
+    ("kv_client_store_errors_total", "Total failed KV client store submissions"),
+    ("kv_client_batch_load_requests_total", "Total KV client batch-load submissions"),
+    ("kv_client_batch_load_entries_total", "Total entries submitted to KV client batch-load"),
+    ("kv_client_batch_load_errors_total", "Total failed KV client batch-load submissions"),
+    ("kv_client_batch_store_requests_total", "Total KV client batch-store submissions"),
+    ("kv_client_batch_store_entries_total", "Total entries submitted to KV client batch-store"),
+    ("kv_client_batch_store_errors_total", "Total failed KV client batch-store submissions"),
+    ("kv_client_delete_requests_total", "Total KV client delete submissions"),
+    ("kv_client_delete_entries_total", "Total keys submitted to KV client delete"),
+    ("kv_client_delete_errors_total", "Total failed KV client delete submissions"),
+    ("kv_client_wait_requests_total", "Total KV client wait calls"),
+    ("kv_client_wait_errors_total", "Total failed KV client wait calls"),
+    ("kv_transport_task_completion_timeouts_total", "Total KV transport task completion timeouts"),
+    ("kv_transport_task_io_timeouts_total", "Total KV transport sub-batch IO timeouts"),
+    ("kv_transport_task_connection_errors_total", "Total KV transport connection errors"),
+    # END GENERATED KV counter
     (
         "cache_lookup_hit_blocks_total",
         "Number of lookup hits served by the Cache stage (no descent to backend)",
@@ -756,6 +783,22 @@ _CONNECTOR_INTERFACE_DURATION_BUCKETS = [
     2000, 5000, 10000,
 ]
 _HISTOGRAM_METRICS = [
+    # BEGIN GENERATED KV histogram
+    ("kv_client_task_enqueue_duration_seconds", "KV client API-to-enqueue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_client_task_queue_duration_seconds", "KV client task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_client_task_process_duration_seconds", "KV client task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_client_task_send_duration_seconds", "KV client duration until all Send calls return", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_client_task_e2e_duration_seconds", "KV client task end-to-end duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_pre_send_duration_seconds", "KV transport duration before Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_queue_duration_seconds", "KV transport task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_process_duration_seconds", "KV transport task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_send_duration_seconds", "KV transport duration until Send returns", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_send_call_duration_seconds", "KV transport provider Send call duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_completion_duration_seconds", "KV transport completion duration after Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_node_task_send_duration_seconds", "KV transport node task send duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_node_task_completion_duration_seconds", "KV transport node task completion duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_transport_task_e2e_duration_seconds", "KV transport task end-to-end duration from submit to completion", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    # END GENERATED KV histogram
     (
         "save_duration",
         "Time from UCM connector wait_for_save entry to async dump task completion (ms)",

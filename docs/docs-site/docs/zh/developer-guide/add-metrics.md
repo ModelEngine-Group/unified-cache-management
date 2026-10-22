@@ -14,7 +14,7 @@
 
 ## 定义一个指标
 
-运行时自定义指标写入实际使用的指标 YAML；向默认集合添加指标时，同步更新 `examples/metrics/metrics_configs.yaml` 和 `ucm/default_metrics_config.py`，保留两者一致。现有 `test_default_metrics_config_matches_example_yaml` 用例检查这一关系。
+运行时自定义指标写入实际使用的指标 YAML；向默认集合添加非 KV 指标时，同步更新 `examples/metrics/metrics_configs.yaml` 和 `ucm/default_metrics_config.py`，保留两者一致。现有 `test_default_metrics_config_matches_example_yaml` 用例检查这一关系。KV 指标使用下述生成流程。
 
 以下片段展示定义格式，需放入完整指标配置中：
 
@@ -44,6 +44,29 @@ histogram:
 Counter 更新正增量，Gauge 更新当前值，Histogram 更新一次观测。桶边界按升序配置，注册时按需补充 `+Inf`。为一个指标固定事件范围和单位；接口调用次数、传输分片和用户请求数不能互换。
 
 `dynamic_labels` 用于声明注册时未知的维度。UCM 的传输以指标名为键，因此上报方用 `<指标名>_<维度值>` 的形式分别上报（如 `my_pool_usage_ratio_4096`），两条导出路径再把数字后缀还原为真实的 Prometheus label（`my_pool_usage_ratio{slot_size="4096"}`）。目前最多支持一个 label，且后缀必须是纯数字。未声明该字段的指标不受影响。
+
+## 生成和校验 KV 指标
+
+KV 指标定义以 `kv_semantics/metrics/config/kv_metrics.yaml` 为源。修改该文件后，在仓库根目录执行：
+
+```bash
+python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm
+python kv_semantics/metrics/tools/generate_kv_metrics.py --check
+```
+
+`--sync-ucm` 更新 `kv_semantics/metrics/include/kv_metrics/default_metric_descriptors.h`，以及 `examples/metrics/metrics_configs.yaml` 和 `ucm/default_metrics_config.py` 中的 `BEGIN/END GENERATED KV` 标记块。源文件与三个输出应一起提交，不要直接编辑生成块。`--check` 只检查、不写文件；任一输出过期时返回非零退出码。
+
+新增、删除 KV 指标或修改其类型时，还需同步修改中英文 `metrics-reference.md` 和 `docs/source/user-guide/metrics/metrics_list.md` 中的 KV 表格与数量摘要。`--check` 会拒绝遗漏、重复、已删除或类型分组错误的 KV 行，以及过期的数量摘要。旧版参考文档中的全局数量会与完整 Python 默认配置比较，包括非 KV 指标。翻译说明和单位仍需人工审核；`--sync-ucm` 不会重写文档。请先更新这些文档，再执行最后的 `--check`。
+
+部署使用自定义指标目录时，同步其中的 KV 定义，再单独校验该目录（需要 PyYAML）：
+
+```bash
+python kv_semantics/metrics/tools/generate_kv_metrics.py --ucm-config /etc/ucm/metrics_configs.yaml
+```
+
+参数应指向指标目录，而非顶层服务配置。此只读检查要求每个 KV 指标恰好定义一次，类型、documentation 文本和直方图桶均精确匹配；允许额外的自定义指标。因此，描述文本的修改也需要同步到部署目录。`--ucm-config` 不能与 `--check` 或 `--sync-ucm` 同时使用，请分别运行。桶值使用 `0.00001` 这样的不带引号的十进制数；YAML 1.1 可能把 `1e-5` 解析成字符串。
+
+KV 耗时直方图使用**秒**，观测值与桶边界应保持这一单位；看板显示毫秒时，将均值或分位数乘以 `1000`。standalone 的节点任务直方图保留 `node_id`。在 UCM 指标目录中注册定义本身不会将 KVClient 观测值转发到 UCM，还需要运行时后端接入。
 
 ## 在操作完成处更新
 

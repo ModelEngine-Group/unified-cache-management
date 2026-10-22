@@ -14,7 +14,7 @@ Default labels include engine labels and `worker_rank`. The optional `multiproc`
 
 ## Define a metric
 
-Put runtime custom metrics in the deployed metrics YAML. For additions to the default set, update both `examples/metrics/metrics_configs.yaml` and `ucm/default_metrics_config.py`. The existing `test_default_metrics_config_matches_example_yaml` checks their consistency.
+Put runtime custom metrics in the deployed metrics YAML. For non-KV additions to the default set, update both `examples/metrics/metrics_configs.yaml` and `ucm/default_metrics_config.py`. The existing `test_default_metrics_config_matches_example_yaml` checks their consistency. For KV metrics, use the generation workflow below.
 
 This fragment illustrates definitions and belongs inside a complete metrics configuration:
 
@@ -44,6 +44,29 @@ histogram:
 Counters take positive increments, Gauges take current values and Histograms take observations. Configure buckets in ascending order; registration adds `+Inf` when needed. Keep a fixed event scope and unit: interface calls, transfer shards and user requests are different quantities.
 
 `dynamic_labels` declares a dimension whose value is not known at registration time. Because UCM's transport is name-keyed, the emitter reports each dimension value under the wire name `<name>_<value>` (`my_pool_usage_ratio_4096`), and both export paths split the numeric suffix back into a real Prometheus label (`my_pool_usage_ratio{slot_size="4096"}`). At most one label is supported and the suffix must be all digits. Metrics that do not declare the field are unaffected.
+
+## Generate and validate KV metrics
+
+The source of KV definitions is `kv_semantics/metrics/config/kv_metrics.yaml`. Edit that file, then run these commands from the repository root:
+
+```bash
+python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm
+python kv_semantics/metrics/tools/generate_kv_metrics.py --check
+```
+
+`--sync-ucm` updates `kv_semantics/metrics/include/kv_metrics/default_metric_descriptors.h` and the `BEGIN/END GENERATED KV` blocks in both `examples/metrics/metrics_configs.yaml` and `ucm/default_metrics_config.py`. Commit the source and all three outputs together; do not edit the generated blocks directly. `--check` is read-only and exits nonzero if any output is stale.
+
+When adding, removing, or changing the type of a KV metric, also update the KV table and count summary in the English and Chinese `metrics-reference.md` files and `docs/source/user-guide/metrics/metrics_list.md`. `--check` rejects missing, duplicate, obsolete, or incorrectly grouped KV rows and stale summaries. The legacy reference's overall catalog counts are checked against the complete Python defaults, including non-KV metrics. Translated descriptions and units remain manually reviewed; `--sync-ucm` does not rewrite documentation. Update these documents before running the final `--check`.
+
+For a deployment with a custom metrics catalog, synchronize its KV definitions and validate the catalog separately (requires PyYAML):
+
+```bash
+python kv_semantics/metrics/tools/generate_kv_metrics.py --ucm-config /etc/ucm/metrics_configs.yaml
+```
+
+Pass the metrics catalog, not the top-level serving configuration. This read-only check requires every KV definition exactly once, with matching type, documentation text and histogram buckets. Additional custom metrics are allowed. Documentation changes must therefore also be copied into deployment catalogs. `--ucm-config` cannot be combined with `--check` or `--sync-ucm`; run separate commands. Write buckets as unquoted decimal numbers such as `0.00001`: YAML 1.1 may parse `1e-5` as a string.
+
+KV duration histograms use **seconds**. Preserve that unit in observations and buckets; multiply a displayed mean or quantile by `1000` to show milliseconds. The standalone node-task histograms retain `node_id`. Registering definitions in the UCM catalog does not by itself forward KVClient observations to UCM; this requires runtime backend integration.
 
 ## Update at the operation boundary
 
