@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 
