@@ -3,7 +3,6 @@ import glob
 import math
 import os
 import re
-import shutil
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.request import RequestStatus
 
 from ucm.integration.vllm.device import create_device, get_current_device_id
 from ucm.integration.vllm.metrics import (
@@ -155,35 +155,6 @@ def _get_store_gc_block_size(
     if object_size <= 0:
         raise ValueError("tensor_size_list is required for YuanRong|Posix")
     return object_size * shard_count
-
-
-_SHM_DIR = "/dev/shm"
-
-
-def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
-    """Early-validate that /dev/shm can hold the shared-buffer store.
-
-    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
-    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
-    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
-    the C++ store; raise here instead with an actionable message.
-    """
-    if cache_buffer_capacity_gb <= 0:
-        return
-    try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
-    except OSError:
-        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
-        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
-        return
-    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
-        raise RuntimeError(
-            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
-            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
-            f"larger size= option) or decrease cache_buffer_capacity_gb."
-        )
 
 
 def _drop_null_vllm_blocks(
@@ -1551,7 +1522,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.hash_block_size, self._seed
             )
 
-    def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
+    def _set_default_shared_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
         if config.get("cache_buffer_capacity_gb") is None:
@@ -1559,9 +1530,62 @@ class UCMDirectConnector(KVConnectorBase_V1):
             logger.info(
                 "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
             )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold it.
-        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
+
+    def _configure_numa_placement(self, config: dict[str, Any]) -> None:
+        """
+        Attach this worker's NUMA hint to the store config.
+
+        A real device affinity becomes cache_detected_numa_node and wins
+        outright: the store binds to it and never re-derives it. Otherwise
+        cache_fallback_numa_rank carries the worker's index within its own
+        machine, and cache_fallback_numa_rank_count carries the total number
+        of workers on that machine. The store uses both values to divide the
+        workers into contiguous NUMA-node slices. They are deliberately
+        independent of local_rank_size: internal DP instances use separate
+        Cache domains, while their memory placement still spans all workers
+        on the machine.
+        """
+        if self._role != KVConnectorRole.WORKER:
+            return
+        numa_node = self.device.get_numa_node(self.device_id)
+        if numa_node is not None:
+            config["cache_detected_numa_node"] = numa_node
+            return
+        parallel = self._vllm_config.parallel_config
+        model_parallel_size = (
+            parallel.pipeline_parallel_size * parallel.tensor_parallel_size
+        )
+        local_dp_rank = getattr(parallel, "data_parallel_rank_local", None)
+        local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
+        if local_dp_rank is not None and local_dp_size > 0:
+            local_model_worker_count = int(parallel.local_world_size)
+            fallback_rank = (
+                int(local_dp_rank) * local_model_worker_count + self.local_rank
+            )
+            fallback_rank_count = local_dp_size * local_model_worker_count
+        else:
+            # External-launcher and legacy configurations do not always expose
+            # local DP metadata. Preserve their existing global worker index;
+            # external_launcher includes DP in world_size.
+            model_parallel_rank = parallel.rank % model_parallel_size
+            fallback_rank = (
+                int(parallel.data_parallel_index) * model_parallel_size
+                + model_parallel_rank
+            )
+            fallback_rank_count = int(parallel.world_size)
+
+        if not 0 <= fallback_rank < fallback_rank_count:
+            raise ValueError(
+                "Invalid fallback NUMA worker geometry: "
+                f"rank={fallback_rank}, count={fallback_rank_count}."
+            )
+        config["cache_fallback_numa_rank"] = fallback_rank
+        config["cache_fallback_numa_rank_count"] = fallback_rank_count
+        logger.info(
+            "UCM fallback NUMA placement: worker_rank=%s, worker_count=%s",
+            fallback_rank,
+            fallback_rank_count,
+        )
 
     def _get_world_size(self) -> int:
         parallel = self._vllm_config.parallel_config
@@ -1589,7 +1613,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
-        self._set_default_shm_buffer_capacity(config)
+        self._set_default_shared_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
@@ -1729,10 +1754,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
-    def _prefetch_other_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
-        if not self._other_rank_hashers or not rank0_block_ids:
+    def _prefetch_all_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
+        if not rank0_block_ids:
             return
+        self.store.prefetch(rank0_block_ids)
 
+        if not self._other_rank_hashers:
+            return
         other_rank_block_ids = [
             rank_hasher(block_id)
             for rank_hasher in self._other_rank_hashers
@@ -1764,12 +1792,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if all_hit_block_ids:
             try:
-                self._prefetch_other_rank_hashes(all_hit_block_ids)
+                self._prefetch_all_rank_hashes(all_hit_block_ids)
             except Exception as e:
                 # Prefetch is only a GC hotness hint. A failure must not turn a
                 # valid cache hit into a scheduler-side miss.
                 logger.warning(
-                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                    "UCM all-rank hotness update failed. " f"{type(e).__name__}: {e}"
                 )
 
     def get_num_new_matched_tokens(
@@ -1783,15 +1811,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_load_req_ids.discard(request.request_id)
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        if request.status == RequestStatus.PREEMPTED:
+            self.requests_meta.pop(request.request_id, None)
 
-        assert self.request_block_hasher is not None
-        try:
-            ucm_block_ids = self.request_block_hasher(request)
-        except Exception as e:
-            logger.error(
-                f"request {request.request_id} hash error. {type(e).__name__}: {e}"
-            )
-            return 0, False
+        if request.request_id not in self.requests_meta:
+            assert self.request_block_hasher is not None
+            try:
+                ucm_block_ids = self.request_block_hasher(request)
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} hash error. {type(e).__name__}: {e}"
+                )
+                return 0, False
+        else:
+            request_meta = self.requests_meta[request.request_id]
+            ucm_block_ids = request_meta.ucm_block_ids
 
         if (
             self.enable_record_traces
@@ -1814,7 +1848,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             return 0, False
 
-        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
+        # Waiting-queue requests are re-checked often. Resume from the last
+        # previously-hit block only when this request is already in
+        # requests_meta AND hbm_hit_block_num did not decrease. Otherwise (first
+        # lookup, or HBM hit boundary moved) do a full prefix lookup from
+        # hbm_hit_block_num. If the last previously-hit block is gone, fall
+        # back to that same full lookup.
+        lookup_start_block_num = hbm_hit_block_num
+        resume_from_last_hit = False
+        if request.request_id in self.requests_meta:
+            req_meta = self.requests_meta[request.request_id]
+            if (
+                req_meta.hbm_hit_block_num <= hbm_hit_block_num
+                and req_meta.total_hit_block_num > hbm_hit_block_num
+            ):
+                lookup_start_block_num = req_meta.total_hit_block_num - 1
+                resume_from_last_hit = True
+
+        external_block_ids = ucm_block_ids[
+            lookup_start_block_num * self.cp_world_size :
+        ]
         external_hit_blocks = 0
         if external_block_ids:
             try:
@@ -1824,7 +1877,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                external_hit_blocks = external_hit_hashes // self.cp_world_size
+                if resume_from_last_hit and external_hit_hashes == 0:
+                    lookup_start_block_num = hbm_hit_block_num
+                    external_block_ids = ucm_block_ids[
+                        hbm_hit_block_num * self.cp_world_size :
+                    ]
+                    if external_block_ids:
+                        external_hit_hashes = (
+                            self._rank_consistency.lookup_on_prefix(
+                                self.store, external_block_ids
+                            )
+                            + 1
+                        )
+                    else:
+                        external_hit_hashes = 0
+                found_blocks = external_hit_hashes // self.cp_world_size
+                external_hit_blocks = (
+                    lookup_start_block_num - hbm_hit_block_num
+                ) + found_blocks
             except Exception as e:
                 logger.error(
                     f"request {request.request_id} look up error. {type(e).__name__}: {e}"

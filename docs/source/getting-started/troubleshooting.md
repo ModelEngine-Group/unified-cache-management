@@ -120,13 +120,13 @@ unknown store pipeline: <name>
 #### Error Code -50001 (OutOfMemory)
 
 **Common causes**:
-- `cache_buffer_capacity_gb` is set too large for available `/dev/shm`
+- `cache_buffer_capacity_gb` is set too large for available host memory
 - Multiple DP instances on the same node each allocate their own CacheStore buffer
 - MLA models require more shared memory
 
 **Solution**:
 1. Check system memory: `free -h`
-2. Check shared memory: `df -h /dev/shm`
+2. Inspect the per-NUMA-node 1 GiB and 2 MiB HugeTLB pools; Cache2 automatically falls back from 1 GiB to 2 MiB, then to base pages when explicit pools are insufficient
 3. Reduce `cache_buffer_capacity_gb` in the config (default is 256 GB)
 4. When running multiple DP instances on one node, reduce the value proportionally
 

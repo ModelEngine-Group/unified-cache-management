@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include <new>
 #include <optional>
+#include <set>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -36,13 +37,14 @@ struct BufferTestAccess {
         buffer.rankCount_ = rankCount;
         buffer.slotsPerRank_ = slotsPerRank;
         buffer.slotSize_ = 4096;
+        buffer.shardsPerBlock_ = 1;
         buffer.bucketCount_ = bucketCount;
         buffer.reservedSlots_ = 0;
     }
 
     static size_t ReferenceCount(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
     {
-        auto iBucket = buffer.HashKey(blockId);
+        auto iBucket = buffer.HashKey(blockId, offset);
         auto& layout = buffer.ctrl_.Layout();
         auto iNode = buffer.Lookup(layout, iBucket, blockId, offset);
         return iNode == kInvalid
@@ -56,10 +58,25 @@ struct BufferTestAccess {
         buffer.myRank_ = rank;
     }
 
-    static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
-                                 size_t attempts, bool& owner)
+    static void Attach(Buffer& buffer, void* memory, size_t rankCount, size_t slotsPerRank,
+                       size_t bucketCount, size_t lockCount, size_t rank)
     {
-        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner);
+        auto& layout = buffer.ctrl_.Layout();
+        layout.Bind(memory, rankCount, slotsPerRank, bucketCount, lockCount);
+        layout.InitSlotRange(rank);
+        buffer.myRank_ = rank;
+        buffer.rankCount_ = rankCount;
+        buffer.slotsPerRank_ = slotsPerRank;
+        buffer.slotSize_ = 4096;
+        buffer.shardsPerBlock_ = 1;
+        buffer.bucketCount_ = bucketCount;
+        buffer.reservedSlots_ = 0;
+    }
+
+    static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
+                                 size_t attempts, bool& owner, size_t preferredRank = kInvalid)
+    {
+        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner, preferredRank);
     }
 
     static void Release(Buffer& buffer, size_t slot) { buffer.Release(slot); }
@@ -68,14 +85,16 @@ struct BufferTestAccess {
 
     static CtrlLayout& Layout(Buffer& buffer) { return buffer.ctrl_.Layout(); }
 
-    static size_t BucketOf(Buffer& buffer, const Detail::BlockId& blockId)
+    static size_t BucketOf(Buffer& buffer, const Detail::BlockId& blockId, size_t offset = 0)
     {
-        return buffer.HashKey(blockId);
+        return buffer.HashKey(blockId, offset);
     }
+
+    static void SetShardsPerBlock(Buffer& buffer, size_t count) { buffer.shardsPerBlock_ = count; }
 
     static size_t FindSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
     {
-        auto iBucket = buffer.HashKey(blockId);
+        auto iBucket = buffer.HashKey(blockId, offset);
         return buffer.Lookup(buffer.ctrl_.Layout(), iBucket, blockId, offset);
     }
 };
@@ -115,6 +134,103 @@ protected:
 
     void TearDown() override { ::operator delete(memory_, std::align_val_t{64}); }
 };
+
+TEST_F(Cache2BufferTest, LayerOffsetsUseDevelopHashMixAndSeparateBuckets)
+{
+    constexpr size_t kLayers{78};
+    const auto block = MakeBlockId(78);
+    const auto h1 = Detail::BlockIdHasher{}(block);
+    constexpr auto goldenSection = 0x9e3779b97f4a7c15ULL;
+    std::set<size_t> buckets;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        const auto h2 = std::hash<size_t>{}(layer);
+        const auto expected = (h1 ^ (h2 + goldenSection + (h1 << 6) + (h1 >> 2))) % kBuckets;
+        const auto bucket = BufferTestAccess::BucketOf(buffer_, block, layer);
+        EXPECT_EQ(bucket, expected) << "layer " << layer;
+        buckets.insert(bucket);
+    }
+    EXPECT_EQ(buckets.size(), kLayers);
+}
+
+TEST_F(Cache2BufferTest, LayerwisePreallocAndHitsRetainDistinctSlots)
+{
+    constexpr size_t kLayers{78};
+    const auto block = MakeBlockId(79);
+    std::vector<size_t> slots;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        buffer_.Prealloc(block, layer);
+        ASSERT_TRUE(buffer_.Exist(block, layer));
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, layer), 0);
+        auto handle = buffer_.Get(block, layer);
+        EXPECT_TRUE(handle.Owner());
+        handle.MarkReady();
+        slots.push_back(handle.SlotIndex());
+        EXPECT_EQ(BufferTestAccess::Layout(buffer_).SlotMetaArr()[handle.SlotIndex()].hash.load(),
+                  BufferTestAccess::BucketOf(buffer_, block, layer));
+    }
+    const std::set<size_t> distinctSlots(slots.begin(), slots.end());
+    EXPECT_EQ(distinctSlots.size(), kLayers);
+    EXPECT_FALSE(buffer_.Exist(block, kLayers));
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        buffer_.Prealloc(block, layer);
+        auto handle = buffer_.Get(block, layer);
+        EXPECT_FALSE(handle.Owner());
+        EXPECT_EQ(handle.GetState(), CtrlLayout::SlotMeta::State::Ready);
+        EXPECT_EQ(handle.SlotIndex(), slots[layer]);
+    }
+}
+
+TEST_F(Cache2BufferTest, TouchMarksAllLayerBucketsWithoutTouchingAnotherBlock)
+{
+    constexpr size_t kLayers{78};
+    BufferTestAccess::SetShardsPerBlock(buffer_, kLayers);
+    const auto block = MakeBlockId(80);
+    const auto otherBlock = MakeBlockId(81);
+    std::vector<size_t> slots;
+    for (size_t layer = 0; layer < kLayers; ++layer) {
+        auto handle = buffer_.Get(block, layer);
+        handle.MarkReady();
+        slots.push_back(handle.SlotIndex());
+    }
+    size_t otherSlot;
+    {
+        auto handle = buffer_.Get(otherBlock, 0);
+        handle.MarkReady();
+        otherSlot = handle.SlotIndex();
+    }
+    auto* meta = BufferTestAccess::Layout(buffer_).SlotMetaArr();
+    for (const auto slot : slots) { meta[slot].accessed.store(0); }
+    meta[otherSlot].accessed.store(0);
+
+    buffer_.Touch(&block, 1);
+    for (const auto slot : slots) {
+        EXPECT_EQ(meta[slot].accessed.load(), 1);
+        EXPECT_EQ(meta[slot].reference.load(), 0);
+        EXPECT_EQ(meta[slot].state.load(), CtrlLayout::SlotMeta::State::Ready);
+    }
+    EXPECT_EQ(meta[otherSlot].accessed.load(), 0);
+}
+
+TEST_F(Cache2BufferTest, TouchHandlesMissingLayersAndEmptyInputs)
+{
+    BufferTestAccess::SetShardsPerBlock(buffer_, 78);
+    const auto block = MakeBlockId(82);
+    const auto missing = MakeBlockId(83);
+    size_t slot;
+    {
+        auto handle = buffer_.Get(block, 37);
+        handle.MarkReady();
+        slot = handle.SlotIndex();
+    }
+    auto& meta = BufferTestAccess::Layout(buffer_).SlotMetaArr()[slot];
+    meta.accessed.store(0);
+    buffer_.Touch(nullptr, 1);
+    buffer_.Touch(&block, 0);
+    buffer_.Touch(&missing, 1);
+    EXPECT_EQ(meta.accessed.load(), 0);
+    buffer_.Touch(&block, 1);
+    EXPECT_EQ(meta.accessed.load(), 1);
+}
 
 TEST_F(Cache2BufferTest, PreallocLeavesOwnerElectionForDemandGet)
 {
@@ -308,6 +424,94 @@ TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondCha
             EXPECT_EQ(meta.hash.load(std::memory_order_relaxed), kInvalid);
         }
     }
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, PreferredRankClaimsPreallocatedKeyInItsOwnSegment)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1000);
+    rank1.Prealloc(block, 0, false, 1);
+
+    bool owner = false;
+    auto wrongRank = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    EXPECT_EQ(wrongRank, kInvalid);
+
+    auto slot = BufferTestAccess::TryAcquireSlot(rank1, block, 0, 1, owner, 1);
+    ASSERT_NE(slot, kInvalid);
+    EXPECT_TRUE(owner);
+    EXPECT_GE(slot, kSlotsPerRank);
+    EXPECT_LT(slot, kRanks * kSlotsPerRank);
+    BufferTestAccess::MarkReady(rank1, slot);
+
+    auto reader = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    ASSERT_EQ(reader, slot);
+    EXPECT_FALSE(owner);
+    BufferTestAccess::Release(rank0, reader);
+    BufferTestAccess::Release(rank1, slot);
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, PreallocRunsOnlyOnPreferredRank)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1001);
+    rank0.Prealloc(block, 0, false, 1);
+    EXPECT_EQ(BufferTestAccess::FindSlot(rank0, block, 0), kInvalid);
+    rank1.Prealloc(block, 0, false, 1);
+    const auto slot = BufferTestAccess::FindSlot(rank0, block, 0);
+    EXPECT_GE(slot, kSlotsPerRank);
+    EXPECT_LT(slot, kRanks * kSlotsPerRank);
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferPartitionTest, NonPreferredRankCanObserveFailedSlotWithoutTakingOwnership)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer rank0;
+    Buffer rank1;
+    BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+
+    auto block = MakeBlockId(1002);
+    {
+        auto failedOwner = rank1.Get(block, 0, false, 1);
+        ASSERT_TRUE(failedOwner.Owner());
+        failedOwner.MarkFailed();
+    }
+
+    bool owner = true;
+    auto slot = BufferTestAccess::TryAcquireSlot(rank0, block, 0, 1, owner, 1);
+    ASSERT_NE(slot, kInvalid);
+    EXPECT_FALSE(owner);
+    EXPECT_EQ(BufferTestAccess::Layout(rank0).SlotMetaArr()[slot].state.load(),
+              CtrlLayout::SlotMeta::State::Failed);
+    BufferTestAccess::Release(rank0, slot);
     ::operator delete(memory, std::align_val_t{64});
 }
 

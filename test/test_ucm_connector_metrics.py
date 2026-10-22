@@ -569,6 +569,44 @@ def _reset_fakes():
     dispatcher_module._DISPATCHER = None
 
 
+def test_direct_connector_uses_machine_worker_geometry_for_numa_fallback():
+    connector = object.__new__(UCMDirectConnector)
+    connector._role = KVConnectorRole.WORKER
+    connector.device = SimpleNamespace(get_numa_node=lambda _device_id: None)
+    connector.device_id = 3
+    connector.local_rank = 3
+    connector._vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            tensor_parallel_size=8,
+            data_parallel_rank_local=1,
+            data_parallel_size_local=2,
+            local_world_size=8,
+            data_parallel_index=1,
+            rank=3,
+            world_size=8,
+        )
+    )
+    config = {}
+
+    connector._configure_numa_placement(config)
+
+    assert config["cache_fallback_numa_rank"] == 11
+    assert config["cache_fallback_numa_rank_count"] == 16
+
+
+def test_direct_connector_prefers_detected_numa_affinity():
+    connector = object.__new__(UCMDirectConnector)
+    connector._role = KVConnectorRole.WORKER
+    connector.device = SimpleNamespace(get_numa_node=lambda _device_id: 4)
+    connector.device_id = 3
+    config = {}
+
+    connector._configure_numa_placement(config)
+
+    assert config == {"cache_detected_numa_node": 4}
+
+
 def test_config_definitions_register_enable_list_and_metric_names():
     _reset_fakes()
     config = _metrics_config()

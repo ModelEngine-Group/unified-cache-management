@@ -23,11 +23,25 @@
  * */
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include "numa/numa_policy.h"
 #include "status/status.h"
 
 namespace UC::Cache2 {
+
+/* Everything a backend needs to prepare and map the data segments. Assembled by
+ * DataStrategy from DataOptions; backends never read user configuration
+ * directly. */
+struct BackendOptions {
+    int32_t deviceId{-1};
+    size_t rankCount{0};
+    size_t rankBytes{0};
+    Numa::Plan localPlacement{};
+    bool requireHostDeviceAddress{false};
+    std::chrono::steady_clock::time_point deadline{};
+};
 
 /* One shared segment per rank. A backend creates the local rank's segment,
  * exports it as a handle published through CtrlLayout::RankDataDesc, and
@@ -42,7 +56,7 @@ public:
 
     virtual const char* Name() const = 0;
     /* Prepares backend-wide state (device binding, geometry bookkeeping). */
-    virtual Status Setup(int32_t deviceId, size_t nRanks, size_t rankBytes) = 0;
+    virtual Status Setup(const BackendOptions& options) = 0;
     /* Creates and maps the local rank's segment. */
     virtual Status BindLocal(size_t rank) = 0;
     /* Returns the handle to publish for the local segment. */
@@ -56,6 +70,12 @@ public:
     virtual void* HostAddrOf(size_t rank) const = 0;
     /* Returns the device-accessible segment address, nullptr if unmapped. */
     virtual void* DeviceAddrOf(size_t rank) const = 0;
+    /* Returns the device-visible alias of a host-accessible segment, nullptr
+     * when the backend provides none. This is a third address category: neither
+     * HostAddrOf nor DeviceAddrOf, it refers to the same physical pages as
+     * HostAddrOf and is meant for device descriptors only, never CPU access.
+     * Defaults to nullptr so backends that never need it stay unchanged. */
+    virtual void* HostMappedDeviceAddrOf(size_t rank) const { return nullptr; }
     /* Releases every mapping and the local segment; idempotent. */
     virtual void Reset() = 0;
 

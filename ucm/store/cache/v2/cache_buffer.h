@@ -27,6 +27,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <thread>
 #include <utility>
@@ -51,6 +52,7 @@ class Buffer {
     size_t rankCount_{0};
     size_t slotsPerRank_{0};
     size_t slotSize_{0};
+    size_t shardsPerBlock_{0};
     size_t bucketCount_{0};
     size_t reservedSlots_{0};
 
@@ -96,8 +98,13 @@ public:
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
         size_t SlotIndex() const { return slotIdx_; }
+        size_t Segment() const { return slotIdx_ / buf_->slotsPerRank_; }
         void* Data() { return buf_->data_.DataAt(slotIdx_); }
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
+        // The device-visible alias of this slot's host memory. Only transfer
+        // modes that build device descriptors (SDMA Direct) use it; never for
+        // CPU access.
+        void* HostMappedData() { return buf_->data_.HostMappedDeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
         void MarkReady()
         {
@@ -137,6 +144,7 @@ public:
         rankCount_ = layout.RankCount();
         slotsPerRank_ = layout.SlotsPerRank();
         slotSize_ = layout.SlotSize();
+        shardsPerBlock_ = cfg.blockSize / slotSize_;
         bucketCount_ = layout.BucketCount();
         reservedSlots_ = cfg.loadExclusiveBufferNumber / rankCount_;
 
@@ -150,14 +158,33 @@ public:
         myRank_ = static_cast<size_t>(cfg.deviceId);
         myRank_ = myRank_ % rankCount_;
         layout.InitSlotRange(myRank_);
-        return data_.Setup(layout, cfg.uniqueId, cfg.deviceId, myRank_, slotSize_, slotsPerRank_);
+        DataOptions dataOptions;
+        dataOptions.domainId = cfg.uniqueId;
+        dataOptions.deviceId = cfg.deviceId;
+        dataOptions.myRank = myRank_;
+        dataOptions.slotSize = slotSize_;
+        dataOptions.slotsPerRank = slotsPerRank_;
+        dataOptions.setupTimeoutMs = cfg.dataSetupTimeoutMs;
+        dataOptions.deviceNumaNode = cfg.detectedNumaNode;
+        /* Derived from the transfer mode: only a path that puts the host
+         * segment into a device descriptor needs its device-visible alias. */
+        dataOptions.requireHostDeviceAddress = cfg.sdmaDirect;
+        if (cfg.fallbackNumaRank.has_value()) {
+            dataOptions.fallbackNumaRank = static_cast<size_t>(*cfg.fallbackNumaRank);
+        }
+        if (cfg.fallbackNumaRankCount.has_value()) {
+            dataOptions.fallbackNumaRankCount = static_cast<size_t>(*cfg.fallbackNumaRankCount);
+        }
+        return data_.Setup(layout, dataOptions);
     }
 
     // Requires successful worker-side Setup; observers must not call Get.
     // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
-    Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+               size_t preferredRank = kInvalid)
     {
         assert(myRank_ < rankCount_);
+        assert(preferredRank == kInvalid || preferredRank < rankCount_);
         assert(reservedSlots_ < slotsPerRank_);
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
@@ -165,15 +192,19 @@ public:
                             : 2 * usable;
         for (;;) {
             bool owner = false;
-            auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner);
+            auto slot =
+                TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
             if (slot != kInvalid) { return Handle{this, slot, owner}; }
             std::this_thread::yield();
         }
     }
 
-    void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+                  size_t preferredRank = kInvalid)
     {
         if (myRank_ == kInvalid) { return; }
+        assert(preferredRank == kInvalid || preferredRank < rankCount_);
+        if (preferredRank != kInvalid && myRank_ != preferredRank) { return; }
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
         if (usable == 0) { return; }
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
@@ -185,7 +216,7 @@ public:
     bool Exist(const Detail::BlockId& blockId, size_t offset)
     {
         if (bucketCount_ == 0) { return false; }
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
@@ -209,16 +240,13 @@ public:
         if (blocks == nullptr || bucketCount_ == 0) { return; }
         auto& layout = ctrl_.Layout();
         for (size_t i = 0; i < num; ++i) {
-            auto iBucket = HashKey(blocks[i]);
-            auto iNode = layout.Buckets()[iBucket].load(std::memory_order_acquire);
-            size_t walked = 0;
-            while (iNode != kInvalid && iNode < layout.SlotCount() &&
-                   walked++ < layout.SlotCount()) {
-                auto* meta = &layout.SlotMetaArr()[iNode];
-                if (MatchBlock(*meta, iBucket, blocks[i])) {
-                    meta->accessed.store(1, std::memory_order_relaxed);
+            // Shards of one block now live in separate hash buckets.
+            for (size_t offset = 0; offset < shardsPerBlock_; ++offset) {
+                auto iBucket = HashKey(blocks[i], offset);
+                auto iNode = LookupOptimistic(layout, iBucket, blocks[i], offset);
+                if (iNode != kInvalid) {
+                    layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed);
                 }
-                iNode = meta->next.load(std::memory_order_acquire);
             }
         }
     }
@@ -235,10 +263,15 @@ private:
         std::memcpy(words, blockId.data(), sizeof(blockId));
     }
 
-    size_t HashKey(const Detail::BlockId& blockId) const
+    size_t HashKey(const Detail::BlockId& blockId, size_t offset) const
     {
-        static Detail::BlockIdHasher hasher;
-        return hasher(blockId) & (bucketCount_ - 1);
+        static Detail::BlockIdHasher blockIdHasher;
+        static std::hash<size_t> shardHasher;
+        // Keep the cc core's block/shard mix, with Cache2's power-of-two buckets.
+        constexpr auto goldenSection = 0x9e3779b97f4a7c15ULL;
+        size_t h1 = blockIdHasher(blockId);
+        size_t h2 = shardHasher(offset);
+        return (h1 ^ (h2 + goldenSection + (h1 << 6) + (h1 >> 2))) & (bucketCount_ - 1);
     }
 
     static void StoreKey(SlotMeta& meta, const Detail::BlockId& blockId, size_t offset)
@@ -269,16 +302,21 @@ private:
     // On success, the caller owns one reference and must transfer it into a Handle.
     // kInvalid means retry; owner is only meaningful on success.
     size_t TryAcquireSlot(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
-                          size_t attempts, bool& owner)
+                          size_t attempts, bool& owner, size_t preferredRank = kInvalid)
     {
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
+        const bool mayOwn = preferredRank == kInvalid || myRank_ == preferredRank;
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner)) {
+            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, mayOwn)) {
                 return iNode;
             }
         }
+        /* All ranks may pin a ready or already-owned shared key. Only the
+         * selected rank may create or take ownership of a key that needs a
+         * host-backend fill, because HAL exposes only its local segment to host. */
+        if (!mayOwn) { return kInvalid; }
 
         auto* targetLock = layout.LockOf(iBucket);
         if (!targetLock->TryLock()) { return kInvalid; }
@@ -297,7 +335,7 @@ private:
     bool TryPrealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
                      size_t attempts)
     {
-        auto iBucket = HashKey(blockId);
+        auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto* targetLock = layout.LockOf(iBucket);
         if (!targetLock->TryLock()) { return false; }
@@ -326,7 +364,10 @@ private:
             }
             if (reference == kSlotClaimed - 1) { return false; }
             auto state = meta->state.load(std::memory_order_acquire);
-            if (!takeOwnership && reference == 0 && state != State::Ready) { return false; }
+            /* A non-owner may observe Ready or Failed. Loading with no
+             * reference is a preallocated slot that still needs its selected
+             * rank to claim and fill it. */
+            if (!takeOwnership && reference == 0 && state == State::Loading) { return false; }
             if (!meta->reference.compare_exchange_weak(reference, reference + 1,
                                                        std::memory_order_acq_rel)) {
                 ++spin;
