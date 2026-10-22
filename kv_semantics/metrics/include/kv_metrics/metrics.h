@@ -24,7 +24,16 @@ public:
     const MetricLabels& Labels() const noexcept { return labels_; }
 
     struct Binding {
+        // Built-in kinds identify the concrete binding layout, not a backend
+        // instance. Custom bindings must keep Unknown unless they use that layout.
+        enum class Kind { Unknown, Standalone, Ucm };
+
+        explicit Binding(Kind kind = Kind::Unknown) noexcept : kind_(kind) {}
         virtual ~Binding() = default;
+        Kind GetKind() const noexcept { return kind_; }
+
+    private:
+        const Kind kind_;
     };
 
     template <typename Factory>
@@ -74,6 +83,8 @@ bool InstallBackend(std::shared_ptr<KvMetricsBackend> backend, std::string* erro
 void Shutdown();
 void Flush();
 bool IsEnabled() noexcept;
+// Snapshot of backend identity; callers must quiesce writers before Shutdown.
+bool IsBackendInstalled(const KvMetricsBackend* backend) noexcept;
 MetricTimer StartMetricTimer() noexcept;
 inline std::optional<double> ElapsedSeconds(const MetricTimer& timer) noexcept
 {

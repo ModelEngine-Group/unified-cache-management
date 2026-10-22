@@ -1421,6 +1421,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        if config.get("store_pipeline") == "ASU":
+            config["enable_metrics"] = self._asu_metrics_enabled(config)
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:

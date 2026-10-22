@@ -1347,6 +1347,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        if config.get("store_pipeline") == "ASU":
+            config["enable_metrics"] = self._asu_metrics_enabled(config)
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
         # MLA ranks share one logical store buffer; non-MLA stores are per rank.

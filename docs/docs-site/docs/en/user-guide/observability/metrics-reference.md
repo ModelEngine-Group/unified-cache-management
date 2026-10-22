@@ -252,13 +252,23 @@ For slow loads, inspect queuing, batch-get, backend waits and H2D. For slow save
 
 ### 1.6 ASU / KV metrics
 
-The shared KV catalog defines 37 KV metrics (23 Counters and 14 Histograms). Names below use the default `ucm:` prefix.
-
-These entries describe the registered metric definitions. Exporting KVClient observations through UCM additionally requires runtime backend integration.
+ASU forwards these 37 KV metrics (23 Counters and 14 Histograms) into the UCM collector. Names below use the default `ucm:` prefix. Submission counts describe KV API calls and entries, not unique inference requests or successful asynchronous completions.
 
 The generator's `--check` validates KV table names, type sections, duplicates, omissions, and counts in the English, Chinese, and legacy references. Descriptions and units remain manually maintained; `--sync-ucm` does not rewrite these tables.
 
 **Units:** all `kv_*_duration_seconds` observations and bucket boundaries are in seconds. Existing `*_duration_ms` metrics, `save_duration` and `save_completion_wait_duration` use milliseconds. Multiply a KV duration mean or quantile by `1000` when displaying milliseconds; do not combine seconds and milliseconds without conversion.
+
+The two `kv_transport_node_task_*` histograms retain `node_id` in standalone mode. The UCM adapter aggregates their observations across nodes and does not expose that node label; other exporter labels still apply.
+
+#### Installation switches
+
+In Direct, HMA, HLA, and HLA LayerWise connector paths, ASU adapter installation requires the top-level `enable_metrics` switch (default `true`), a nonempty effective metrics configuration, at least one enabled consumer (`vllm_connector` or `multiproc`), and the store-level `ucm_connectors[].ucm_connector_config.enable_metrics` switch (default `true`). The built-in configuration enables `vllm_connector`; a custom `consumers` mapping with both consumers disabled prevents installation. Store-level `true` cannot override a disabled global or consumer gate. Custom catalogs must also contain the KV definitions to collect these metrics.
+
+To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. This setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers only have the store installation switch and must arrange UCM metric registration and draining themselves.
+
+Metrics installation is best-effort: failure emits a rate-limited UCM ERROR log and Store initialization continues without installing UCM metrics. An existing backend is left unchanged. Installation failures are not cached permanently; a later Store `Setup()` can retry. After all metric writers have stopped and `kv::metrics::Shutdown()` has completed, a later setup can reinstall the retained UCM adapter. Concurrent shutdown and writes, or switching backend types with live cached bindings, remain unsupported. Incompatible cached bindings and failed updates are skipped with rate-limited ERROR logs; if diagnostic logging itself fails, a bounded stderr fallback remains available. These failures do not fail Store setup or propagate from metric updates.
+
+Samples skipped because the collector is not initialized or the metric is unregistered emit WARNING diagnostics containing the metric name and setup/catalog guidance. The adapter allows at most one diagnostic per cached metric and reason per 60 seconds, before applying the UCM logger's own rate limit. Later initialization and registration restore sampling through the same cached metric; previously skipped samples are not replayed. These runtime diagnostics cover only sampled metrics, so use `--ucm-config` to check the completeness of a custom catalog.
 
 #### Counters
 
@@ -303,8 +313,8 @@ The generator's `--check` validates KV table names, type sections, duplicates, o
 | `ucm:kv_transport_task_send_duration_seconds` | seconds | KV transport duration until Send returns |
 | `ucm:kv_transport_task_send_call_duration_seconds` | seconds | KV transport provider Send call duration |
 | `ucm:kv_transport_task_completion_duration_seconds` | seconds | KV transport completion duration after Send |
-| `ucm:kv_transport_node_task_send_duration_seconds` | seconds | KV transport node task send duration; standalone labels by node_id |
-| `ucm:kv_transport_node_task_completion_duration_seconds` | seconds | KV transport node task completion duration; standalone labels by node_id |
+| `ucm:kv_transport_node_task_send_duration_seconds` | seconds | KV transport node task send duration; standalone labels by node_id, UCM aggregates across nodes |
+| `ucm:kv_transport_node_task_completion_duration_seconds` | seconds | KV transport node task completion duration; standalone labels by node_id, UCM aggregates across nodes |
 | `ucm:kv_transport_task_e2e_duration_seconds` | seconds | KV transport task end-to-end duration from submit to completion |
 
 For definition synchronization and custom catalog validation, see [metrics development](../../developer-guide/add-metrics.md).

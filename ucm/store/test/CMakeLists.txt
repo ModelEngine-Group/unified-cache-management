@@ -1,6 +1,9 @@
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
+    # The adapter fixture owns the process-wide KV backend; keep it separate from
+    # AsuStore tests, whose shared backend persists across store destruction.
+    list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX "/ucm_metrics_adapter_test\\.cc$")
     if(NOT BUILD_UCM_ASU)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
     endif()
@@ -31,7 +34,13 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE yuanrongstore)
     endif()
     if(BUILD_UCM_ASU)
+        add_executable(ucm_metrics_adapter.test case/asu/ucm_metrics_adapter_test.cc)
+        target_link_libraries(ucm_metrics_adapter.test PRIVATE
+            kv_metrics_ucm_adapter metrics infra_logger gtest_main gtest)
+        gtest_discover_tests(ucm_metrics_adapter.test)
         target_link_libraries(ucmstore.test PRIVATE
+            kv_metrics_ucm_adapter
+            metrics
             kv_client
             buffer_pool
             trans

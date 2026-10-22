@@ -354,18 +354,23 @@ public:
     }
 
     struct SlotBinding final : CachedMetric::Binding {
-        explicit SlotBinding(std::size_t slot) : slot(slot) {}
+        explicit SlotBinding(std::size_t slot) : CachedMetric::Binding(Kind::Standalone), slot(slot)
+        {
+        }
         const std::size_t slot;
     };
 
     std::size_t ResolveMetric(CachedMetric& metric)
     {
-        auto* binding = static_cast<SlotBinding*>(metric.Resolve([&] {
+        auto* binding = metric.Resolve([&] {
             const auto iter = metricIds_.find(MetricKey(metric.Name(), metric.Labels()));
             return std::make_unique<SlotBinding>(iter == metricIds_.end() ? kInvalidMetricId
                                                                           : iter->second);
-        }));
-        return binding->slot;
+        });
+        if (binding == nullptr || binding->GetKind() != CachedMetric::Binding::Kind::Standalone) {
+            return kInvalidMetricId;
+        }
+        return static_cast<SlotBinding*>(binding)->slot;
     }
 
     void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept

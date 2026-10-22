@@ -42,6 +42,11 @@ void UpdateStats(CachedMetric& metric, double value)
     Metrics::GetInstance().UpdateStats(metric, value);
 }
 
+UpdateResult TryUpdateStats(CachedMetric& metric, double value)
+{
+    return Metrics::GetInstance().TryUpdateStats(metric, value);
+}
+
 void UpdateStats(const std::unordered_map<std::string, double>& values)
 {
     Metrics::GetInstance().UpdateStats(values);
