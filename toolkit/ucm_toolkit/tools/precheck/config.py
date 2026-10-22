@@ -20,7 +20,7 @@ from .parseutil import parse_size
 # --- Fallback defaults (used only when precheck.defaults.json is missing) ---
 DEFAULT_SHARD_SIZES: List[int] = [184320, 8388608]  # 180 KiB, 8 MiB
 DEFAULT_WORKER_COUNTS: List[int] = [1, 8, 16]
-DEFAULT_ENGINES: List[str] = ["psync", "aio"]
+DEFAULT_ENGINES: List[str] = ["psync"]
 DEFAULT_MODES: List[str] = ["dump", "read", "mix"]
 
 DEFAULT_KERNEL_MIN: str = "5.10"
