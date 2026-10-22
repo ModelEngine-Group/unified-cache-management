@@ -77,6 +77,10 @@ class LoadQ {
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     size_t streamNumber_{1};
+    bool sdmaDirect_{false};
+    bool ioAggregation_{false};
+    bool useGdr_{false};
+    bool shareBufferEnable_{false};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     std::vector<size_t> tensorSizes_{};
@@ -98,7 +102,11 @@ public:
         buffer_ = buffer;
         backend_ = config.storeBackend;
         deviceId_ = config.deviceId;
-        streamNumber_ = config.streamNumber;
+        streamNumber_ = config.EffectiveStreamNumber();
+        sdmaDirect_ = config.sdmaDirect;
+        ioAggregation_ = config.ioAggregation;
+        useGdr_ = config.useGdr;
+        shareBufferEnable_ = config.shareBufferEnable;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         tensorSizes_ = config.tensorSizes;
@@ -131,7 +139,7 @@ public:
 private:
     void DispatchStage()
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_load_disp");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_disp");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set load dispatch thread name.", nameStatus);
         }
@@ -153,12 +161,18 @@ private:
         const auto startTp = NowTime::Now();
         const auto nShard = task->desc.size();
         const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
+        std::vector<size_t> preallocRanks;
+        if (shareBufferEnable_) { preallocRanks.reserve(nShard); }
         size_t backendSubmitCount = 0;
         size_t waitShardCount = 0;
         for (size_t i = 0; i < nShard; ++i) {
-            auto& shard = task->desc[indexes[i]];
+            const auto originalIndex = indexes[i];
+            auto& shard = task->desc[originalIndex];
             ShardTask shardTask;
-            auto handle = buffer_->Get(shard.owner, shard.index, true);
+            auto handle = shareBufferEnable_ ? buffer_->Get(shard.owner, shard.index, true,
+                                                            originalIndex % localRankSize_)
+                                             : buffer_->Get(shard.owner, shard.index, true);
+            if (shareBufferEnable_) { preallocRanks.push_back(handle.Segment()); }
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
@@ -184,7 +198,7 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
         RecordLoadSourceShards(nShard, waitShardCount);
-        PreallocNextShards(task, indexes);
+        PreallocNextShards(task, indexes, preallocRanks);
     }
     Expected<Detail::TaskHandle> SubmitBackendLoad(const TaskPtr& task, const Detail::Shard& shard,
                                                    Handle& handle)
@@ -207,12 +221,18 @@ private:
         }
         return res;
     }
-    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes)
+    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes,
+                            const std::vector<size_t>& preallocRanks)
     {
-        for (auto i : indexes) {
+        for (size_t order = 0; order < indexes.size(); ++order) {
+            const auto i = indexes[order];
             auto& shard = task->desc[i];
             if (shard.index + 1 != nShardPerBlock_) {
-                buffer_->Prealloc(shard.owner, shard.index + 1, true);
+                if (shareBufferEnable_) {
+                    buffer_->Prealloc(shard.owner, shard.index + 1, true, preallocRanks[order]);
+                } else {
+                    buffer_->Prealloc(shard.owner, shard.index + 1, true);
+                }
             }
         }
     }
@@ -232,12 +252,19 @@ private:
     }
     void TransferStage(std::promise<Status>& started)
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_c2_load_h2d");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_h2d");
         if (nameStatus.Failure()) {
             UC_WARN("Failed({}) to set load h2d thread name.", nameStatus);
         }
         StreamT stream;
-        auto s = stream.Setup(deviceId_, streamNumber_);
+        auto s = Status::OK();
+        if (ioAggregation_) {
+            s = stream.SetupIoAggregation(deviceId_, useGdr_);
+        } else if (sdmaDirect_) {
+            s = stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_);
+        } else {
+            s = stream.Setup(deviceId_, streamNumber_);
+        }
         started.set_value(s);
         if (s.Failure()) [[unlikely]] { return; }
         running_.ConsumerLoop(stop_, &LoadQ::TransferOneTask, this, stream);
@@ -299,11 +326,15 @@ private:
     Status ScatterShard(StreamT& stream, ShardTask& task)
     {
         const auto startTp = NowTime::Now();
-        auto s = task.bufferHandle->HostAccessible()
-                     ? stream.HostToDeviceScatterAsync(task.bufferHandle->Data(),
-                                                       task.shard->addrs.data(), tensorSizes_)
-                     : stream.DeviceToDeviceScatterAsync(task.bufferHandle->DeviceData(),
-                                                         task.shard->addrs.data(), tensorSizes_);
+        /* SDMA Direct feeds device descriptors, so the host side has to be the
+         * device-visible alias rather than the CPU address. */
+        void* hostSrc =
+            sdmaDirect_ ? task.bufferHandle->HostMappedData() : task.bufferHandle->Data();
+        auto s =
+            task.bufferHandle->HostAccessible()
+                ? stream.HostToDeviceScatterAsync(hostSrc, task.shard->addrs.data(), tensorSizes_)
+                : stream.DeviceToDeviceScatterAsync(task.bufferHandle->DeviceData(),
+                                                    task.shard->addrs.data(), tensorSizes_);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         if (s.Failure()) [[unlikely]] {

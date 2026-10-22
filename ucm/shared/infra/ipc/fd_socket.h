@@ -106,6 +106,8 @@ public:
         return Status::OK();
     }
 
+    /* Blocks until a descriptor arrives. Callers that need a bound should wait
+     * for readability on NativeHandle() first. */
     Status RecvFd(int32_t& fdOut)
     {
         fdOut = -1;
@@ -129,6 +131,9 @@ public:
         if (fdOut < 0) { return Status::OsApiError("invalid descriptor"); }
         return Status::OK();
     }
+
+    /* Read-only descriptor, for callers that need to wait on readability. */
+    int32_t NativeHandle() const { return sock_.load(std::memory_order_acquire); }
 
     void Close()
     {

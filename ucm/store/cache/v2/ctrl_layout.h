@@ -241,8 +241,8 @@ public:
         return result;
     }
 
-    /* Marks that this rank has mapped every peer segment; gates segment-name
-     * release so no participant can miss a shm_open. */
+    /* Marks that this rank has mapped every peer segment; gates release of the
+     * descriptor-transfer endpoint until every participant has received its fds. */
     Status MarkRankDataReady(size_t rank)
     {
         if (rank >= rankCount_) { return Status::InvalidParam("rank out of range"); }

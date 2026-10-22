@@ -99,6 +99,9 @@ public:
         bool HostAccessible() const { return hostAccessible_; }
         void* Data() { return gSlotBase + slotIdx_ * kShardSize; }
         void* DeviceData() { return gDeviceSlotBase + slotIdx_ * kShardSize; }
+        // Only the SDMA path asks for this; the mock has no separate device
+        // alias, so it mirrors the CPU address.
+        void* HostMappedData() { return Data(); }
         SlotState GetState() const { return state_; }
         void MarkReady()
         {
@@ -198,6 +201,16 @@ public:
         lastDeviceId.store(deviceId, std::memory_order_relaxed);
         lastStreamNumber.store(streamNumber, std::memory_order_relaxed);
         return onSetup ? onSetup() : UC::Status::OK();
+    }
+    UC::Status SetupIoAggregation(const int32_t deviceId, const bool useGdr)
+    {
+        (void)useGdr;
+        return Setup(deviceId, 1);
+    }
+    UC::Status SetupSdmaDirect(const int32_t deviceId, const size_t streamNumber, const bool useGdr)
+    {
+        (void)useGdr;
+        return Setup(deviceId, streamNumber);
     }
     UC::Status DeviceToHostGatherAsync(void* src[], void* dst, const std::vector<size_t>& sizes)
     {

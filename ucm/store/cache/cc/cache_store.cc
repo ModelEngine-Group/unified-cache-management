@@ -281,4 +281,11 @@ private:
 
 }  // namespace UC::CacheStore
 
+/* A library that also carries the v2 core must not export two entry points.
+ * v2 is the core those platforms run, so cc steps aside there. */
+#ifndef UCM_CACHE_STORE_BOTH_CORES
+#define UCM_CACHE_STORE_BOTH_CORES 0
+#endif
+#if !UCM_CACHE_STORE_BOTH_CORES
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::CacheStore::CacheStore(); }
+#endif

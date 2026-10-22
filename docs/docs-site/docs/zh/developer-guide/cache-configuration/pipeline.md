@@ -43,7 +43,7 @@ persist_token_threshold: 0
 | 原生 Cache，`share_buffer_enable: false` | 每个 worker 32 GiB |
 | 当前 vLLM Connector，启用共享缓冲 | 128 GiB |
 
-vLLM Connector 根据模型是否使用 MLA 决定 `share_buffer_enable` 的默认值。正数 `cache_buffer_capacity_gb` 会覆盖原生默认值。共享缓冲需要足够的 `/dev/shm`；非共享 worker 分别分配内存，因此要按同一主机上的 worker 数量汇总预算。模型权重、设备 KV Cache 和其他主机内存开销需要另外计入。
+vLLM Connector 根据模型是否使用 MLA 决定 `share_buffer_enable` 的默认值。正数 `cache_buffer_capacity_gb` 会覆盖原生默认值。Cache2 共享缓冲使用 memfd 主机内存，不占用 `/dev/shm`；非共享 worker 分别分配内存，因此要按同一主机上的 worker 数量汇总预算。Memfd 对不小于 1 GiB 的数据段依次尝试 1 GiB、2 MiB 显式 HugeTLB，最后退回设置了透明大页建议的普通页 memfd；应按 NUMA 节点预留所需的显式大页。模型权重、设备 KV Cache 和其他主机内存开销需要另外计入。
 
 ## 存储容量与健康检查
 

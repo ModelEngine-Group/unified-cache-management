@@ -18,7 +18,6 @@ from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
-    _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
@@ -698,7 +697,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
 
-    def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
+    def _set_default_shared_buffer_capacity(self, config: dict[str, object]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
 
@@ -714,9 +713,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"{config['cache_buffer_capacity_gb']}GB by splitting the "
             f"{capacity}GB shared-buffer capacity across FA/WA stores."
         )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold the FA+WA total.
-        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
@@ -746,7 +742,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         name, module_path, config = self._base_store_config(store_suffix)
         config["local_rank_size"] = self._get_world_size()
-        self._set_default_shm_buffer_capacity(config)
+        self._set_default_shared_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)
         else:
@@ -1268,8 +1265,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             event_handle=event_handle,
         )
 
-    def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
-        """Build store pointer rows for full-attention cache segments."""
+    def _extract_fa_ptr(self, store_keys, hash_indices, candidate_vllm_ids):
+        """Build store pointer rows for full-attention cache segments.
+
+        *hash_indices* holds the canonical block index of every row, which is
+        not contiguous once TP ranks stripe the dump keys among themselves.
+        """
 
         all_ptrs = []
         for group_id in self.fa_group_ids:
@@ -1284,7 +1285,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if self.hash_block_size == meta.token_block_size:
                 group_ptrs = layout.extract_addrs(block_ids)
             else:
-                token_start = np.arange(hash_start, hash_end) * self.hash_block_size
+                token_start = (
+                    np.asarray(hash_indices, dtype=np.int64) * self.hash_block_size
+                )
                 token_offsets = token_start % meta.token_block_size
                 group_ptrs = layout.extract_addrs_with_offsets(
                     block_ids, meta.token_block_size, token_offsets
@@ -1363,8 +1366,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 # FA groups are loaded for every external-hit canonical block.
                 fa_ptrs = self._extract_fa_ptr(
                     request.load_keys,
-                    request.load_hash_start,
-                    request.load_hash_end,
+                    np.arange(request.load_hash_start, request.load_hash_end),
                     request.load_vllm_block_ids,
                 )
                 fa_task = self._submit_load_task(
@@ -1428,22 +1430,22 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
         if self.tp_size > 1:
-            # Split FA rows by canonical block index. Block-wise WA follows the same
-            # TP key slice; chunk-wise WA assigns one final boundary per request.
+            # Stripe FA rows across ranks by canonical block index. Block-wise WA
+            # follows the same TP key selection; chunk-wise WA assigns one final
+            # boundary per request.
             wa_dump_ring_idx = 0
             for request_id, request in metadata.request_meta.items():
                 if not request.dump_keys:
                     continue
                 dump_request_ids += (request_id,)
-                num_keys = len(request.dump_keys)
-                tp_block_start = num_keys * self.tp_rank // self.tp_size
-                tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
-                tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
+                # Use one selection for keys, block addresses and hash positions.
+                key_slice = self._get_mla_dump_slice(request.dump_hash_start)
+                tp_dump_keys = request.dump_keys[key_slice]
                 if tp_dump_keys:
                     fa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
                     fa_dump_vllm_block_ids = tuple(
                         (
-                            group_block_ids[tp_block_start:tp_block_end]
+                            group_block_ids[key_slice]
                             if group_id in self.fa_group_ids
                             else group_block_ids
                         )
@@ -1456,8 +1458,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     fa_ptr_rows.append(
                         self._extract_fa_ptr(
                             tp_dump_keys,
-                            request.dump_hash_start + tp_block_start,
-                            request.dump_hash_start + tp_block_end,
+                            np.arange(request.dump_hash_start, request.dump_hash_end)[
+                                key_slice
+                            ],
                             fa_dump_vllm_block_ids,
                         )
                     )
@@ -1466,13 +1469,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         wa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
                         wa_dump_vllm_block_ids = tuple(
                             (
-                                group_block_ids[
-                                    tp_block_start
-                                    * self.group_metas[
-                                        group_id
-                                    ].tail_blocks : tp_block_end
-                                    * self.group_metas[group_id].tail_blocks
+                                # Keep all WA blocks belonging to the same key on
+                                # one TP rank so it submits a complete WA record.
+                                # Select whole groups of tail_blocks per key,
+                                # rather than distributing individual WA blocks.
+                                np.asarray(group_block_ids)
+                                .reshape(-1, self.group_metas[group_id].tail_blocks)[
+                                    key_slice
                                 ]
+                                .reshape(-1)
+                                .tolist()
                                 if group_id in self.window_group_ids
                                 else group_block_ids
                             )
@@ -1508,8 +1514,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 fa_ptr_rows.append(
                     self._extract_fa_ptr(
                         request.dump_keys,
-                        request.dump_hash_start,
-                        request.dump_hash_end,
+                        np.arange(request.dump_hash_start, request.dump_hash_end),
                         request.dump_vllm_block_ids,
                     )
                 )

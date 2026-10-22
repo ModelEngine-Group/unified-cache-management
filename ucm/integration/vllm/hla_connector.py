@@ -845,7 +845,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
-        self._set_default_shm_buffer_capacity(config)
+        self._set_default_shared_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends

@@ -64,10 +64,14 @@ chosen capacity is too small.
 | Current vLLM connector with shared buffers | 128 GiB |
 
 The vLLM connector defaults `share_buffer_enable` to whether the model uses MLA.
-A positive `cache_buffer_capacity_gb` overrides the native defaults. Shared
-buffers need sufficient `/dev/shm`; unshared workers allocate separately, so
-multiply their budget by the number of workers on the host. Model weights,
-device KV cache, and other host allocations remain additional costs.
+A positive `cache_buffer_capacity_gb` overrides the native defaults. Cache2
+shared buffers use memfd-backed host memory and do not consume `/dev/shm`;
+unshared workers allocate separately, so multiply their budget by the number of
+workers on the host. Memfd automatically tries 1 GiB HugeTLB for segments of at
+least 1 GiB, then 2 MiB HugeTLB, and finally a base-page memfd with transparent
+huge-page advice. Reserve the desired explicit huge-page capacity per NUMA node.
+Model weights, device KV cache, and other host allocations remain additional
+costs.
 
 ## Storage capacity and health
 

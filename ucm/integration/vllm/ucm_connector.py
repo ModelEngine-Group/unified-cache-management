@@ -1,9 +1,8 @@
-﻿import copy
+import copy
 import glob
 import math
 import os
 import re
-import shutil
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -157,35 +156,6 @@ def _get_store_gc_block_size(
     return object_size * shard_count
 
 
-_SHM_DIR = "/dev/shm"
-
-
-def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
-    """Early-validate that /dev/shm can hold the shared-buffer store.
-
-    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
-    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
-    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
-    the C++ store; raise here instead with an actionable message.
-    """
-    if cache_buffer_capacity_gb <= 0:
-        return
-    try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
-    except OSError:
-        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
-        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
-        return
-    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
-        raise RuntimeError(
-            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
-            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
-            f"larger size= option) or decrease cache_buffer_capacity_gb."
-        )
-
-
 def _drop_null_vllm_blocks(
     ucm_block_ids: list[bytes],
     vllm_block_ids: list[int],
@@ -313,6 +283,8 @@ class RequestDispatchMeta:
         list[bytes], list[int]
     ]  # [0] mean ucm_block_ids, [1] means vllm_block_ids
     dump_block_ids: tuple[list[bytes], list[int]]
+    # Absolute request block index corresponding to the first dump entry.
+    dump_block_start: int = field(default=0, kw_only=True)
     # Keep this keyword-only so adding the optional async flag does not change
     # positional constructor semantics for connector-specific subclasses.
     load_async: bool = field(default=False, kw_only=True)
@@ -1309,7 +1281,7 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
         self.missing_reqs.update(other.missing_reqs)
         self.missing_blocks.update(other.missing_blocks)
         # TODO: Support PP-aware Dump success aggregation.
-        # for mla, blocks can only be dumped by 1 rank, for FAWA, the dump is distributed across ranks
+        # MLA blocks are distributed across ranks, with one writer per block.
         # for non-mla, blocks should be dumped by all ranks
         # so for mla, aggregation logic is union, for non-mla, aggregation is intersection
         if self.is_mla:
@@ -1499,6 +1471,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
 
+    def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
+        """Select this TP rank's share of replicated MLA cache blocks."""
+        # MLA cache is replicated across TP ranks. Distribute blocks among ranks
+        # to avoid duplicate writes and share the dump workload.
+        rank = self.tp_rank % self.tp_size
+        # Use absolute block positions so small incremental dumps rotate across
+        # ranks instead of always starting at rank 0.
+        first_index = (rank - dump_block_start) % self.tp_size
+        return slice(first_index, None, self.tp_size)
+
+    def _select_mla_dump_blocks(
+        self,
+        ucm_block_ids: list[bytes],
+        vllm_block_ids: list[int],
+        dump_block_start: int = 0,
+    ) -> tuple[list[bytes], list[int]]:
+        """Stripe replicated MLA blocks across TP, keeping keys and addresses paired."""
+        key_slice = self._get_mla_dump_slice(dump_block_start)
+        return ucm_block_ids[key_slice], vllm_block_ids[key_slice]
+
     def _make_other_rank_hashers(self, vllm_config) -> list[RequestHasher]:
         if self.is_mla:
             return []
@@ -1523,7 +1515,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self.hash_block_size, self._seed
             )
 
-    def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
+    def _set_default_shared_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
         if config.get("cache_buffer_capacity_gb") is None:
@@ -1531,9 +1523,62 @@ class UCMDirectConnector(KVConnectorBase_V1):
             logger.info(
                 "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
             )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold it.
-        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
+
+    def _configure_numa_placement(self, config: dict[str, Any]) -> None:
+        """
+        Attach this worker's NUMA hint to the store config.
+
+        A real device affinity becomes cache_detected_numa_node and wins
+        outright: the store binds to it and never re-derives it. Otherwise
+        cache_fallback_numa_rank carries the worker's index within its own
+        machine, and cache_fallback_numa_rank_count carries the total number
+        of workers on that machine. The store uses both values to divide the
+        workers into contiguous NUMA-node slices. They are deliberately
+        independent of local_rank_size: internal DP instances use separate
+        Cache domains, while their memory placement still spans all workers
+        on the machine.
+        """
+        if self._role != KVConnectorRole.WORKER:
+            return
+        numa_node = self.device.get_numa_node(self.device_id)
+        if numa_node is not None:
+            config["cache_detected_numa_node"] = numa_node
+            return
+        parallel = self._vllm_config.parallel_config
+        model_parallel_size = (
+            parallel.pipeline_parallel_size * parallel.tensor_parallel_size
+        )
+        local_dp_rank = getattr(parallel, "data_parallel_rank_local", None)
+        local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
+        if local_dp_rank is not None and local_dp_size > 0:
+            local_model_worker_count = int(parallel.local_world_size)
+            fallback_rank = (
+                int(local_dp_rank) * local_model_worker_count + self.local_rank
+            )
+            fallback_rank_count = local_dp_size * local_model_worker_count
+        else:
+            # External-launcher and legacy configurations do not always expose
+            # local DP metadata. Preserve their existing global worker index;
+            # external_launcher includes DP in world_size.
+            model_parallel_rank = parallel.rank % model_parallel_size
+            fallback_rank = (
+                int(parallel.data_parallel_index) * model_parallel_size
+                + model_parallel_rank
+            )
+            fallback_rank_count = int(parallel.world_size)
+
+        if not 0 <= fallback_rank < fallback_rank_count:
+            raise ValueError(
+                "Invalid fallback NUMA worker geometry: "
+                f"rank={fallback_rank}, count={fallback_rank_count}."
+            )
+        config["cache_fallback_numa_rank"] = fallback_rank
+        config["cache_fallback_numa_rank_count"] = fallback_rank_count
+        logger.info(
+            "UCM fallback NUMA placement: worker_rank=%s, worker_count=%s",
+            fallback_rank,
+            fallback_rank_count,
+        )
 
     def _get_world_size(self) -> int:
         parallel = self._vllm_config.parallel_config
@@ -1561,7 +1606,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
-        self._set_default_shm_buffer_capacity(config)
+        self._set_default_shared_buffer_capacity(config)
+        self._configure_numa_placement(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
@@ -1940,6 +1986,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         load_ucm_block_ids, load_vllm_block_ids = [], []
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
+        dump_block_start = 0
         if need_load:
             load_ucm_block_ids = ucm_block_ids[
                 hbm_hit_block_num
@@ -1950,6 +1997,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if req_meta.token_processed < req_meta.num_token_ids:
             start_idx = req_meta.token_processed // self.block_size
+            dump_block_start = start_idx
             end_idx = (req_meta.token_processed + new_tokens) // self.block_size
             dump_ucm_block_ids = ucm_block_ids[
                 start_idx * self.cp_world_size : end_idx * self.cp_world_size
@@ -1968,6 +2016,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return RequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
             (dump_ucm_block_ids, dump_vllm_block_ids),
+            dump_block_start=dump_block_start,
         )
 
     def build_connector_meta(
@@ -2270,9 +2319,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         }
         self._async_dump_req_ids.update(metadata_dump_request_ids)
 
-        if self.is_mla and self.tp_rank != 0:
-            return
-
         is_save = False
         num_saved_block = 0
         total_ucm_block_ids, total_vllm_block_ids = [], []
@@ -2283,6 +2329,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
+            if self.is_mla:
+                ucm_block_ids, vllm_block_ids = self._select_mla_dump_blocks(
+                    ucm_block_ids, vllm_block_ids, request.dump_block_start
+                )
             if self._skip_null_vllm_blocks:
                 ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
                     ucm_block_ids,
@@ -2291,12 +2341,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            if not ucm_block_ids:
+                continue
             is_save = True
             dump_request_ids.add(request_id)
             block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
             store_block_ids = ucm_block_ids
-            if self.tp_rank != 0:
+            if self.tp_rank != 0 and not self.is_mla:
                 store_block_ids = [
                     self.request_hasher(block_id) for block_id in ucm_block_ids
                 ]
@@ -2530,7 +2582,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         metadata = self._get_connector_metadata()
         block_ids_by_request = {
-            request_id: set(metadata.request_meta[request_id].dump_block_ids[0])
+            request_id: set(
+                self._select_mla_dump_blocks(
+                    *metadata.request_meta[request_id].dump_block_ids,
+                    metadata.request_meta[request_id].dump_block_start,
+                )[0]
+                if self.is_mla
+                else metadata.request_meta[request_id].dump_block_ids[0]
+            )
             for request_id in dump_request_ids
         }
         local_layer_id = layer_id - self.first_layer_id
@@ -2721,9 +2780,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     ) -> None:
         if not self._connector_metadata:
             return
-        if self.is_mla and self.tp_rank % self.tp_size != 0:
-            return
-
         metadata = self._get_connector_metadata()
 
         total_ucm_block_ids, total_vllm_block_ids = [], []
@@ -2740,10 +2796,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
-            dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
+            if self.is_mla:
+                ucm_block_ids, vllm_block_ids = self._select_mla_dump_blocks(
+                    ucm_block_ids, vllm_block_ids, request.dump_block_start
+                )
+            if not ucm_block_ids:
+                continue
+            dump_request_ids.add(request_id)
             store_block_ids = ucm_block_ids
-            if self.tp_rank % self.tp_size != 0:
+            if self.tp_rank % self.tp_size != 0 and not self.is_mla:
                 store_block_ids = [
                     self.request_hasher(block_id) for block_id in ucm_block_ids
                 ]

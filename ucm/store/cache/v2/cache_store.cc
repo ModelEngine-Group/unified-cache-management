@@ -86,6 +86,6 @@ public:
 
 }  // namespace UC::Cache2
 
-#ifndef UCM_BUILD_TESTS
+/* The entry point of this library. Where the cc core is compiled in as well
+ * (simu), cc hides its own so exactly one MakeCacheStore is exported. */
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::Cache2::Store(); }
-#endif
