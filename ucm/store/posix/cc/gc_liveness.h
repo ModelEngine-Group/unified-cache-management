@@ -32,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "backend_manager.h"
 #include "status/status.h"
 
 namespace UC::PosixStore {
@@ -61,7 +62,8 @@ public:
     GcHeartbeat& operator=(const GcHeartbeat&) = delete;
     ~GcHeartbeat();
 
-    void Setup(std::function<Expected<std::string>()> selectPath, std::string threadName,
+    void Setup(const BackendManager* backendMgr,
+               std::function<std::string(const std::string&)> pathOf, std::string threadName,
                size_t intervalSec, OnMissing onMissing);
     Status Start();
     void RequestStop();
@@ -69,8 +71,10 @@ public:
 
 private:
     void Loop();
+    bool Refresh(bool create);
 
-    std::function<Expected<std::string>()> selectPath_;
+    const BackendManager* backendMgr_{nullptr};
+    std::function<std::string(const std::string&)> pathOf_;
     std::string threadName_;
     size_t intervalSec_{5};
     OnMissing onMissing_{OnMissing::Stop};

@@ -26,8 +26,10 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -41,15 +43,25 @@
 
 namespace UC::PosixStore {
 
+// Result of one GC shard task. The task owns it, so a worker that returns after its task timed
+// out writes here instead of into the GC round, which may already have ended.
+struct ShardTaskResult {
+    std::atomic<bool> finished{false};
+    bool scanned{false};
+    size_t files{0};
+    bool limited{false};
+    std::vector<FileInfo> candidates;
+    std::mutex attemptMutex;
+    std::optional<BackendManager::BackendAttempt> attempt;
+};
+
 struct ShardTaskContext {
     enum class Type { GC, SAMPLE, COLLECT, DELETE };
     Type type;
     std::string shard;
     std::shared_ptr<Latch> waiter;
-    std::atomic<size_t>* sampledFiles{nullptr};
-    std::atomic<bool>* gcLimited{nullptr};
-    std::vector<FileInfo>* candidates{nullptr};
-    const std::vector<Detail::BlockId>* victims{nullptr};
+    std::shared_ptr<ShardTaskResult> result;
+    std::shared_ptr<const std::vector<Detail::BlockId>> victims;
 };
 
 class ShardGarbageCollector {
@@ -66,7 +78,11 @@ private:
     bool ExecutePrecise();
     std::tuple<bool, size_t, size_t> ShouldTrigger();
     void RunGcCycle();
+    std::vector<std::shared_ptr<ShardTaskResult>> RunShardTasks(
+        std::vector<ShardTaskContext> tasks);
     void ProcessTask(ShardTaskContext& ctx);
+    void RemoveFiles(const std::vector<Detail::BlockId>& blocks,
+                     const BackendManager::BackendAttempt& attempt, const ShardTaskResult& result);
     void OnTaskTimeout(const ShardTaskContext& ctx, ssize_t tid);
     void GCCheckLoop();
     void StopBackgroundCheck();

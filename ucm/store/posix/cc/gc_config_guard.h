@@ -61,7 +61,6 @@ private:
     Expected<size_t> CountLiveMembers() const;
     Status RegisterMember();
     void UnregisterMember() const;
-    Expected<std::string> SelectMemberPath() const;
 
     const BackendManager* backendMgr_{nullptr};
     std::string backend_;

@@ -102,6 +102,10 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
                                     config.backendHealth);
     }
     ioTimeoutMs_ = std::max<size_t>(1, config.timeoutMs / BackendCount());
+    if (config.posixGcEnable) {
+        status = gcExecutor_.Setup(BackendCount(), ioTimeoutMs_);
+        if (status.Failure()) { return status; }
+    }
     try {
         probeThread_ = std::thread(&BackendManager::ProbeBackends, this, config.backendHealth);
     } catch (const std::exception& e) {
@@ -214,6 +218,11 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
                                                      : std::chrono::milliseconds{0};
         stopLock.lock();
     }
+}
+
+Status BackendManager::RunGcOp(std::function<Status()> op) const
+{
+    return gcExecutor_.Run(std::move(op));
 }
 
 void BackendManager::RecordResult(const BackendAttempt& attempt, const Status& status) const

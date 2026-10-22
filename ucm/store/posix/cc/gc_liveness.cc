@@ -120,10 +120,12 @@ Expected<std::vector<GcMemberInfo>> ScanMembers(const std::string& dir, const st
 
 GcHeartbeat::~GcHeartbeat() { Stop(); }
 
-void GcHeartbeat::Setup(std::function<Expected<std::string>()> selectPath, std::string threadName,
-                        size_t intervalSec, OnMissing onMissing)
+void GcHeartbeat::Setup(const BackendManager* backendMgr,
+                        std::function<std::string(const std::string&)> pathOf,
+                        std::string threadName, size_t intervalSec, OnMissing onMissing)
 {
-    selectPath_ = std::move(selectPath);
+    backendMgr_ = backendMgr;
+    pathOf_ = std::move(pathOf);
     threadName_ = std::move(threadName);
     intervalSec_ = intervalSec == 0 ? 1 : intervalSec;
     onMissing_ = onMissing;
@@ -159,6 +161,25 @@ void GcHeartbeat::Stop()
     if (worker_.joinable()) { worker_.join(); }
 }
 
+bool GcHeartbeat::Refresh(bool create)
+{
+    std::vector<std::string> attempted;
+    auto attempt = backendMgr_->SelectNextBackend({}, attempted);
+    if (!attempt) { return false; }
+    const auto path = pathOf_(backendMgr_->Backends()[attempt.Value().index]);
+    auto s = backendMgr_->RunGcOp([path, create] {
+        time_t ignored = 0;
+        return GcClock::Touch(path, ignored, create);
+    });
+    backendMgr_->RecordResult(attempt.Value(), s);
+    if (s == Status::NotFound() && !create) {
+        UC_WARN("GC heartbeat({}) is gone; the lock was taken over. Stopping heartbeat.", path);
+        return true;
+    }
+    if (s.Failure()) { UC_WARN("Failed({}) to refresh GC heartbeat({}).", s, path); }
+    return false;
+}
+
 void GcHeartbeat::Loop()
 {
     auto nameStatus = CpuAffinity::SetCurrentThreadName(threadName_.c_str());
@@ -170,21 +191,9 @@ void GcHeartbeat::Loop()
     const bool create = onMissing_ == OnMissing::Recreate;
     while (!cv_.wait_for(lock, interval, [this] { return stop_; })) {
         lock.unlock();
-        auto selected = selectPath_();
-        if (!selected) {
-            lock.lock();
-            continue;
-        }
-        const auto& path = selected.Value();
-        time_t ignored = 0;
-        auto s = GcClock::Touch(path, ignored, create);
-        if (s == Status::NotFound() && !create) {
-            UC_WARN("GC heartbeat({}) is gone; the lock was taken over. Stopping heartbeat.", path);
-            lock.lock();
-            break;
-        }
-        if (s.Failure()) { UC_WARN("Failed({}) to refresh GC heartbeat({}).", s, path); }
+        const auto gone = Refresh(create);
         lock.lock();
+        if (gone) { break; }
     }
 }
 

@@ -26,6 +26,8 @@
 
 #include <atomic>
 #include <ctime>
+#include <functional>
+#include <memory>
 #include <string>
 #include "backend_manager.h"
 #include "gc_liveness.h"
@@ -56,21 +58,31 @@ public:
 
 private:
     struct Paths {
+        BackendManager::BackendAttempt attempt;
         std::string backend;
         std::string lockDir;
         std::string checkTime;
-        std::string heartbeat;
     };
+    struct Holder {
+        bool locked{false};
+        std::string name;
+        time_t mtime{0};
+        size_t lag{0};
+    };
+    static Status ProbeLock(const std::string& lockDir, const std::string& checkTime,
+                            const std::shared_ptr<Holder>& holder);
     Expected<Paths> SelectPaths() const;
+    Status Run(const Paths& paths, std::function<Status()> op) const;
     Status Claim(const Paths& paths);
+    bool IsStale(const Paths& paths, const Holder& holder);
     bool EntryPresent(const Paths& paths) const;
-    Status ProbeHolder(const Paths& paths, bool& stale);
-    Status TakeOverStale(const Paths& paths);
-    void SweepParked(const Paths& paths) const;
     void StopHeartbeat();
 
     const BackendManager* backendMgr_{nullptr};
     std::string identity_;
+    // Heartbeat file name of the current claim. Each claim gets a new name, so a late release
+    // from an earlier claim cannot remove the current lock.
+    std::string heartbeatName_;
     size_t heartbeatIntervalSec_{5};
     size_t staleThresholdSec_{180};
 

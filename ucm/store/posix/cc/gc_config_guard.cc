@@ -232,17 +232,9 @@ Status GcConfigGuard::RegisterMember()
     return Status::OK();
 }
 
-Expected<std::string> GcConfigGuard::SelectMemberPath() const
-{
-    auto backend = backendMgr_->GetBackendForBlock({});
-    if (!backend) { return backend.Error(); }
-    return backend.Value() + kMembersDirName + "/" + identity_;
-}
-
 void GcConfigGuard::UnregisterMember() const
 {
-    auto path = SelectMemberPath();
-    if (path) { PosixFile{path.Value()}.Remove(); }
+    PosixFile{memberPath_}.Remove();
     UC_INFO("Left the GC config membership of backend({}) as {}.", backend_, identity_);
 }
 
@@ -370,8 +362,12 @@ Status GcConfigGuard::Setup(const Config& config, const BackendManager* backendM
     ReleaseGate();
     if (s.Failure()) { return s; }
 
-    heartbeat_.Setup([this] { return SelectMemberPath(); }, "ucm_posix_gccfg",
-                     heartbeatIntervalSec_, GcHeartbeat::OnMissing::Recreate);
+    heartbeat_.Setup(
+        backendMgr_,
+        [identity = identity_](const std::string& backend) {
+            return backend + kMembersDirName + "/" + identity;
+        },
+        "ucm_posix_gccfg", heartbeatIntervalSec_, GcHeartbeat::OnMissing::Recreate);
     s = heartbeat_.Start();
     if (s.Failure()) {
         if (registered_.exchange(false)) { UnregisterMember(); }

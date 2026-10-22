@@ -30,6 +30,7 @@
 #include <mutex>
 #include <thread>
 #include "detail/health_tracker.h"
+#include "gc_executor.h"
 #include "space_layout.h"
 #include "type/random_block_id.h"
 
@@ -58,6 +59,7 @@ public:
     Status RunOnAvailableBackend(const Detail::BlockId& blockId,
                                  const std::function<Status(size_t)>& operation,
                                  std::vector<std::string>& failedBackendsInBatch) const;
+    Status RunGcOp(std::function<Status()> op) const;
     void RecordResult(const BackendAttempt& attempt, const Status& status) const;
     bool ShouldRetry(const BackendAttempt& attempt, const Status& status) const;
     Status CheckHealth() const;
@@ -70,6 +72,7 @@ private:
     Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
     std::vector<std::string> storageBackends_;
     mutable std::deque<Detail::HealthTracker> backendHealth_;
+    mutable GcExecutor gcExecutor_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;
     bool stop_{false};
