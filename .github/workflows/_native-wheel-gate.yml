@@ -47,12 +47,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/inputs
+          # The PR Gate smokes only the newest SGLang selector; its older supported
+          # versions are still exercised by release/nightly.
           PYTHONPATH=.github/release python -m ucm_release upstreams candidates \
+            --latest-per-product sglang \
             --output out/inputs/runtime-candidates.json >/dev/null
           jq -er '.references[]' out/inputs/runtime-candidates.json \
             >out/inputs/runtime-refs.txt
+          # The PR Gate compiles one architecture only (amd64) to keep the matrix
+          # small; every Runtime is still validated across the full version/
+          # variant range, and arm64 coverage happens on release.
           PYTHONPATH=.github/release python -m ucm_release runtime inspect \
             --references-file out/inputs/runtime-refs.txt \
+            --architecture amd64 \
             --output out/inputs/runtime-inspection.json >/dev/null
           artifact="ucm-native-wheel-inputs-run-${GITHUB_RUN_ID}"
           {

@@ -242,13 +242,22 @@ def _select_runtime_tags(
     tags: Sequence[str],
     *,
     excluded_variants: Sequence[str] = (),
+    latest_only: bool = False,
 ) -> list[dict[str, str]]:
-    """Resolve version.ini ranges to one published Runtime version per selector."""
+    """Resolve version.ini ranges to one published Runtime version per selector.
+
+    ``latest_only`` narrows the product to its single newest selector so a
+    caller can smoke one version without changing the configured support range.
+    """
 
     product_id = _string(product, "id", "release product")
     raw_selectors = product.get("runtime_selectors")
     if not isinstance(raw_selectors, list) or not raw_selectors:
         raise ValueError(f"{product_id}: version.ini has no Runtime selectors")
+    if latest_only and len(raw_selectors) > 1:
+        raw_selectors = [
+            max(raw_selectors, key=lambda item: Version(str(item["version"])))
+        ]
     available_tags = sorted(set(str(tag) for tag in tags))
     parsed_by_tag = {
         tag: parsed
@@ -342,8 +351,14 @@ def resolve_runtime_candidates(
     tag_fixture: Mapping[str, object] | None = None,
     tag_loader: Callable[[str], Sequence[str]] | None = None,
     pr_default: bool = False,
+    latest_per_product: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Select formal Runtime references strictly from published Registry tags."""
+    """Select formal Runtime references strictly from published Registry tags.
+
+    ``latest_per_product`` keeps only the newest selector for the named products,
+    so a caller can smoke one version of a product without changing the product's
+    configured support range.
+    """
 
     products = release.get("products")
     if not isinstance(products, list) or not products:
@@ -352,6 +367,16 @@ def resolve_runtime_candidates(
     excluded_by_product = _mapping(
         release.get("excluded_upstream_variants"), "excluded upstream variants"
     )
+    latest_products = {str(item) for item in latest_per_product}
+    known_products = {
+        _string(_mapping(raw, "release product"), "id", "release product")
+        for raw in products
+    }
+    unknown_products = sorted(latest_products - known_products)
+    if unknown_products:
+        raise ValueError(
+            f"latest-per-product names unknown products: {unknown_products}"
+        )
     runtimes: list[dict[str, str]] = []
     problems: list[dict[str, object]] = []
     for index, raw_product in enumerate(products):
@@ -385,6 +410,7 @@ def resolve_runtime_candidates(
                 product,
                 repository_tags,
                 excluded_variants=excluded,
+                latest_only=product_id in latest_products,
             )
             selected = _without_sglang_runtime_tags(product_id, selected)
         if not selected:
