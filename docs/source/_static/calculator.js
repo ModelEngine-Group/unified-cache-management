@@ -988,7 +988,11 @@ function deriveLinearHybridParams(config, tp, isAscend, mtp) {
     const ssmSize = valueHeadsPerRank * linValueDim * linKeyDim * ssmDtypeSize;
     const convDim = linKeyDim * linKeyHeads * 2 + linValueDim * linValueHeads; // ×2 = GDN double key
     const convDimPerRank = convDim / tp;
-    const convSize = (convKernel - 1) * convDimPerRank * modelDtypeSize;
+    // MTP widens the conv state: engine shape is (conv_k - 1 + num_spec, conv_dim)
+    // — with num_speculative_tokens=3 and conv_k=4 the engine log shows (6, conv_dim)
+    // at TP2. Without MTP the first dim is conv_k - 1 = 3. ssm is NOT widened.
+    const convRows = convKernel - 1 + (mtp ? 3 : 0);
+    const convSize = convRows * convDimPerRank * modelDtypeSize;
     const mambaTotal = convSize + ssmSize;
 
     // Full-attention per-token size:
@@ -1013,16 +1017,19 @@ function deriveLinearHybridParams(config, tp, isAscend, mtp) {
         faPerTokenFormula = `2 × ${headDim} × max(1, ⌊${config.num_key_value_heads}/${tp}⌋) × ${modelDtypeSize} = ${attnTokenPerPageToken} B/token`;
     }
 
-    // vLLM 0.30 padded pages — identical on CUDA and Ascend (the alignment
-    // hook runs once at config time, platform-independent):
+    // vLLM 0.30 padded pages — kernel alignment is a PLATFORM+BACKEND property
+    // (verified against engine source and Ascend TP2 server log):
     //   block_size = kernel × ⌈mamba_total / (kernel × attn_token)⌉
     //   page_size  = block_size × attn_token   (conv+ssm padded INSIDE the page)
-    // The kernel is the attention type's native block granularity, not a
-    // platform property (verified against vLLM 0.30 layouts):
-    //   GQA hybrid (Qwen3.8-27B): 16  → 784  = 16 × ⌈3,207,168 / 65,536⌉
-    //   MLA hybrid (Kimi-K3):     128 → 5,760 = 128 × ⌈6,512,640 / 147,456⌉
-    //   MLA hybrid (GLM-5.3):     128 → 4,352 = 128 × ⌈4,341,760 / 131,072⌉
-    const KERNEL = isMLA ? 128 : 16;
+    //   vllm-ascend: CUSTOM backend returns [128] → kernel = 128 always
+    //   vllm (CUDA) GQA: FlashAttention MultipleOf(16), default block_size=16
+    //                    → kernel = 16 (passing --block-size 128 would give 128)
+    //   MLA models: forced ≥128 on both platforms
+    // Ascend examples (TP-invariant — mamba and attn both scale with TP):
+    //   Qwen3.8-27B: 128 × ⌈1,634,304 / 262,144⌉ = 896 (engine log, TP2+MTP)
+    //   GLM-5.3:      128 × ⌈4,341,760 / 131,072⌉ = 4,352
+    // CUDA example: Qwen3.8-27B 16 × ⌈3,207,168 / 65,536⌉ = 784 (TP1, no MTP)
+    const KERNEL = (isMLA || isAscend) ? 128 : 16;
     const ratio = cdiv(mambaTotal, KERNEL * attnTokenPerPageToken);
     const blockSize = KERNEL * ratio;
     const pageSize = blockSize * attnTokenPerPageToken;
