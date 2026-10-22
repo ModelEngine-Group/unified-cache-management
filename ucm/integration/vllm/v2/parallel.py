@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import lcm
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -66,29 +67,37 @@ class ParallelLayout:
             )
         return namespace
 
-    def apply_context_parallel(self, spec: UCMKVCacheSpec) -> None:
-        """Multiply block sizes by DCP in place.
+    def apply_context_parallel(
+        self, spec: UCMKVCacheSpec, requested_tokens_per_chunk: int | None = None
+    ) -> UCMKVCacheSpec:
+        """Return the spec with block sizes multiplied by DCP.
 
         vLLM gives per-rank block sizes. Like resolve_dcp_kv_block_size, only
         dcp_sharded groups cover dcp times more tokens. PCP does not split KV.
-        tokens_per_chunk comes from vLLM's scheduler block size, which
-        already counts DCP, so it must hold whole DCP-scaled blocks.
+        Without a configured size, a UCM chunk is the LCM of the scaled
+        stored block spans; it must hold whole DCP-scaled blocks.
         """
         if self.dcp == 1:
-            return
+            return spec
         elif spec.wa_groups or spec.state_groups:
             raise NotImplementedError("v2 CP currently supports full attention only")
         else:
             # Groups that are not stored keep their block size.
-            stored_groups = [group for group in spec.groups if group.is_persistent]
-            token_block_sizes = [
-                group.tokens_per_block * (self.dcp if group.dcp_sharded else 1)
-                for group in stored_groups
+            groups = tuple(
+                (
+                    replace(group, tokens_per_block=group.tokens_per_block * self.dcp)
+                    if group.is_persistent and group.dcp_sharded
+                    else group
+                )
+                for group in spec.groups
+            )
+            stored_block_sizes = [
+                group.tokens_per_block for group in groups if group.is_persistent
             ]
-            tokens_per_chunk = spec.tokens_per_chunk
+            tokens_per_chunk = requested_tokens_per_chunk or lcm(*stored_block_sizes)
             if any(
                 tokens_per_chunk % tokens_per_block
-                for tokens_per_block in token_block_sizes
+                for tokens_per_block in stored_block_sizes
             ):
                 # This also rejects FA UCM chunks smaller than a vLLM block,
                 # which are not supported with DCP.
@@ -96,6 +105,4 @@ class ParallelLayout:
                     "CP UCM chunks must contain whole distributed KV pages"
                 )
             else:
-                for group, tokens_per_block in zip(stored_groups, token_block_sizes):
-                    group.tokens_per_block = tokens_per_block
-                    group.blocks_per_chunk = tokens_per_chunk // tokens_per_block
+                return replace(spec, groups=groups, tokens_per_chunk=tokens_per_chunk)

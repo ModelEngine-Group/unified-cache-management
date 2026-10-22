@@ -37,6 +37,10 @@ class UCMLookup:
         self._attention_types = tuple(
             attention_type for attention_type, _ in groups_by_attention_type(spec)
         )
+        self.set_sharding(sharding)
+
+    def set_sharding(self, sharding: UCMSharding) -> None:
+        """Check the shards of this sharding, e.g. after the worker handshake."""
         # All (record class, shard) pairs a chunk of each attention type needs.
         self._record_shards: dict[AttentionType, tuple[tuple[int, ShardKey], ...]] = {
             attention_type: tuple(

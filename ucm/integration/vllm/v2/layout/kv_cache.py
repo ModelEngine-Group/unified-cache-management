@@ -8,7 +8,7 @@ connector metadata or proxy transfers are interpreted here.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import lcm
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -67,7 +67,7 @@ class UCMLayerSpec:
     attention_view_order: Literal["BHNC", "BNHC"] = "BHNC"
 
 
-@dataclass
+@dataclass(frozen=True)
 class UCMKVCacheGroupSpec:
     """Shared persistence policy; tokens_per_block is tokens per block ID."""
 
@@ -75,9 +75,6 @@ class UCMKVCacheGroupSpec:
     tokens_per_block: int
     kinds: frozenset[KVCacheSpecKind]
     tail_tokens: int | None = None
-    # vLLM blocks one UCM chunk's window spans (0 = the group stores
-    # nothing); the parser stamps it once tokens_per_chunk is known.
-    blocks_per_chunk: int = 0
     is_eagle_group: bool = False
     # Only groups vLLM lists in prefix_cacheable_group_ids are stored.
     is_persistent: bool = True
@@ -102,7 +99,7 @@ class UCMKVCacheGroupSpec:
         return KVCacheSpecKind.MAMBA in self.kinds
 
 
-@dataclass
+@dataclass(frozen=True)
 class UCMKVCacheSpec:
     """UCM policy sizes, all in tokens.
 
@@ -122,6 +119,20 @@ class UCMKVCacheSpec:
     device_type: str
     # Attention modules per decoder layer, for layer ids (Longcat has 2).
     num_attn_module: int = 1
+    # vLLM blocks one UCM chunk's window spans in each group, indexed by the
+    # native group ID (0 = the group stores nothing). Scheduler and worker
+    # share it.
+    blocks_per_chunk: tuple[int, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "blocks_per_chunk",
+            tuple(
+                _group_blocks_per_chunk(group, self.tokens_per_chunk)
+                for group in self.groups
+            ),
+        )
 
     @property
     def state_groups(self) -> tuple[UCMKVCacheGroupSpec, ...]:
@@ -205,13 +216,19 @@ def _group_sharding(specs: Sequence["KVCacheSpec"]) -> tuple[int | None, bool]:
 
     If any spec in a group is dcp_sharded, the group is sharded for correctness,
     Sideeffect is the specs which are not dcp_sharded are replicated
+
+    Specs that split TP differently cannot share one shard layout (2 and 3
+    shards on TP6 put different heads on ranks 2 and 3), so the group falls
+    back to None: every TP rank stores its own copy.
+    The scheduler only sees one spec of a group, so it takes this result
+    from the workers' handshake.
     """
     tp_shards = {_spec_tp_shards(spec) for spec in specs}
     # vLLM 0.30.0 has no dcp_sharded. It splits every group's tokens over DCP
     # ranks, and caches that are not split cannot run with DCP, so a missing
     # flag means sharded.
     return (
-        None if None in tp_shards else max(tp_shards),
+        tp_shards.pop() if len(tp_shards) == 1 else None,
         any(getattr(spec, "dcp_sharded", True) for spec in specs),
     )
 
@@ -292,9 +309,21 @@ def _select_tokens_per_chunk(
     requested_tokens_per_chunk: int | None,
     tokens_per_state: Mapping[int, int],
 ) -> int:
-    # By default a UCM chunk is one vLLM scheduler block.
-    if requested_tokens_per_chunk is None:
+    if requested_tokens_per_chunk is None and any(
+        group.is_state_snapshot for group in groups
+    ):
+        # State needs restore boundaries that every group shares.
         tokens_per_chunk = scheduler_block_size
+    elif requested_tokens_per_chunk is None:
+        # Attention only: the smallest FA block span.
+        tokens_per_chunk = min(
+            (
+                group.tokens_per_block
+                for group in groups
+                if group.is_attention and not group.is_sliding_window
+            ),
+            default=scheduler_block_size,
+        )
     elif requested_tokens_per_chunk > 0:
         tokens_per_chunk = requested_tokens_per_chunk
         logger.info(
@@ -425,10 +454,6 @@ def parse_kv_cache_config(
             selected_tokens_per_chunk,
             scheduler_block_size,
         )
-    for group_info in group_infos:
-        group_info.blocks_per_chunk = _group_blocks_per_chunk(
-            group_info, selected_tokens_per_chunk
-        )
     spec = UCMKVCacheSpec(
         tuple(group_infos),
         scheduler_block_size,
@@ -437,13 +462,13 @@ def parse_kv_cache_config(
         num_attn_module,
     )
     if LAYOUT_DEBUG:
-        for group_info in spec.groups:
+        for group_info, blocks_per_chunk in zip(spec.groups, spec.blocks_per_chunk):
             layout_debug(
                 f"policy group={group_info.group_id} "
                 f"kinds={sorted(kind.value for kind in group_info.kinds)} "
                 f"persistent={group_info.is_persistent} "
                 f"token_block={group_info.tokens_per_block} "
-                f"tail={group_info.tail_tokens} blocks_per_chunk={group_info.blocks_per_chunk}"
+                f"tail={group_info.tail_tokens} blocks_per_chunk={blocks_per_chunk}"
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
@@ -474,9 +499,8 @@ class UCMKVCacheLayout:
         )
         self.store_layouts = {
             group.group_id: GroupStoreLayout.build(
-                group,
+                spec,
                 self.group_layouts[group.group_id],
-                spec.tokens_per_chunk,
                 use_layerwise=use_layerwise,
             )
             for group in spec.groups

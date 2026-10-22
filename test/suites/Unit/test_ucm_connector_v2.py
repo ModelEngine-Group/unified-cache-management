@@ -1,4 +1,5 @@
 import enum
+import importlib.util
 import inspect
 import json
 import math
@@ -114,7 +115,12 @@ class SupportsHMA:
     pass
 
 
+class KVConnectorHandshakeMetadata:
+    pass
+
+
 vllm_base.KVConnectorBase_V1 = KVConnectorBaseV1
+vllm_base.KVConnectorHandshakeMetadata = KVConnectorHandshakeMetadata
 vllm_base.KVConnectorMetadata = KVConnectorMetadata
 vllm_base.KVConnectorRole = KVConnectorRole
 vllm_base.KVConnectorWorkerMetadata = KVConnectorWorkerMetadata
@@ -122,6 +128,40 @@ vllm_base.SupportsHMA = SupportsHMA
 vllm_base.KVConnectorTransferResults = SimpleNamespace
 sys.modules["vllm"].envs = SimpleNamespace(VLLM_KV_CACHE_LAYOUT="NHD")
 sys.modules[vllm_base.__name__] = vllm_base
+vllm_multi_connector = types.ModuleType(
+    "vllm.distributed.kv_transfer.kv_connector.v1.multi_connector"
+)
+
+
+class MultiConnector:
+    """vLLM 0.30 MultiConnector handshake, before UCM's patch."""
+
+    def __init__(self, connectors):
+        self._connectors = list(connectors)
+
+    def get_handshake_metadata(self):
+        for connector in self._connectors:
+            metadata = connector.get_handshake_metadata()
+            if metadata is not None:
+                return metadata
+        return None
+
+    def set_xfer_handshake_metadata(self, metadata):
+        for connector in self._connectors:
+            connector.set_xfer_handshake_metadata(metadata)
+
+    def set_xfer_handshake_metadata_pp_aware(self, metadata):
+        for connector in self._connectors:
+            connector.set_xfer_handshake_metadata_pp_aware(metadata)
+
+
+vllm_multi_connector.MultiConnector = MultiConnector
+sys.modules[vllm_multi_connector.__name__] = vllm_multi_connector
+# UCM's patch helpers import wrapt for operator proxies only.
+if importlib.util.find_spec("wrapt") is None:
+    wrapt_stub = types.ModuleType("wrapt")
+    wrapt_stub.ObjectProxy = object
+    sys.modules["wrapt"] = wrapt_stub
 
 # Single-process worker: rank 0 in every parallel group. Tests patch
 # ucm_connector._worker_parallel_ranks for other ranks.
@@ -910,6 +950,36 @@ class FakeTensor:
 
 
 class KVCacheSpecTest(unittest.TestCase):
+    def test_default_chunk_is_smallest_fa_span_or_scheduler_block_with_state(self):
+        fa_groups = (
+            group(["model.layers.0.attn"], FullAttentionSpec(8)),
+            group(["model.layers.1.attn"], FullAttentionSpec(16)),
+        )
+        attention_only = parse_spec(config(*fa_groups), scheduler_block_size=16)
+        self.assertEqual(attention_only.tokens_per_chunk, 8)
+        self.assertEqual(attention_only.blocks_per_chunk, (1, 1))
+        with_state = parse_spec(
+            config(
+                group(["model.layers.0.attn"], FullAttentionSpec(8)),
+                group(["model.layers.1.mixer"], MambaSpec(16)),
+            ),
+            scheduler_block_size=16,
+        )
+        self.assertEqual(with_state.tokens_per_chunk, 16)
+        self.assertEqual(with_state.blocks_per_chunk, (2, 1))
+
+    def test_spec_is_frozen(self):
+        from dataclasses import FrozenInstanceError
+
+        parsed = parse_spec(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
+            scheduler_block_size=8,
+        )
+        with self.assertRaises(FrozenInstanceError):
+            parsed.tokens_per_chunk = 16
+        with self.assertRaises(FrozenInstanceError):
+            parsed.groups[0].tp_shards = 2
+
     def test_direct_custom_chunk_keeps_base_hash_size(self):
         parsed = parse_spec(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
@@ -918,7 +988,7 @@ class KVCacheSpecTest(unittest.TestCase):
         )
 
         self.assertEqual(parsed.tokens_per_chunk, 512)
-        self.assertEqual(parsed.groups[0].blocks_per_chunk, 4)
+        self.assertEqual(parsed.blocks_per_chunk[0], 4)
 
     def test_hybrid_classifies_attention_and_state(self):
         parsed = parse_spec(
@@ -1019,7 +1089,7 @@ class KVCacheSpecTest(unittest.TestCase):
                 scratch = parsed.groups[1]
                 self.assertFalse(scratch.is_persistent)
                 self.assertEqual(scratch.kinds, frozenset())
-                self.assertEqual(scratch.blocks_per_chunk, 0)
+                self.assertEqual(parsed.blocks_per_chunk[1], 0)
 
     def test_unsupported_restore_semantics_are_rejected(self):
         for kind in (
@@ -1148,11 +1218,8 @@ class StateLoadTargetTest(unittest.TestCase):
                     0,
                     128,
                     frozenset({KVCacheSpecKind.FULL_ATTENTION}),
-                    blocks_per_chunk=1,
                 ),
-                UCMKVCacheGroupSpec(
-                    1, 128, frozenset({KVCacheSpecKind.MAMBA}), blocks_per_chunk=1
-                ),
+                UCMKVCacheGroupSpec(1, 128, frozenset({KVCacheSpecKind.MAMBA})),
             ),
             scheduler_block_size=128,
             tokens_per_chunk=128,
@@ -1206,7 +1273,6 @@ class RequestAwareKeyTest(unittest.TestCase):
                     0,
                     128,
                     frozenset({KVCacheSpecKind.FULL_ATTENTION}),
-                    blocks_per_chunk=1,
                 ),
             ),
             scheduler_block_size=128,
@@ -1700,6 +1766,139 @@ class HashAndLookupTest(unittest.TestCase):
         self.assertEqual(result.external_hit_tokens, 1024)
 
 
+class ShardingHandshakeTest(unittest.TestCase):
+    MIXED = {
+        "model.layers.0.attn": MLAAttentionSpec(4),
+        "model.layers.1.attn": FullAttentionSpec(4),
+    }
+
+    def _scheduler(self):
+        """Scheduler connector that, like vLLM, sees only the first spec."""
+        from ucm.integration.vllm.v2.parallel import ParallelLayout
+        from ucm.integration.vllm.v2.ucm_lookup import UCMLookup
+        from ucm.integration.vllm.v2.ucm_sharding import UCMSharding
+
+        connector = UCMConnector.__new__(UCMConnector)
+        connector.spec = parse_spec(
+            config(group(["model.layers.0.attn"], MLAAttentionSpec(4))),
+            scheduler_block_size=4,
+        )
+        connector.parallel_layout = ParallelLayout(tp=2)
+        connector._sharding = UCMSharding(connector.spec, connector.parallel_layout)
+        connector._lookup = UCMLookup(
+            connector.spec,
+            UCMProxyAdapter(PipelineProxy(RecordingTestStore())),
+            connector._sharding,
+        )
+        return connector
+
+    def _worker_handshake(self, specs):
+        from ucm.integration.vllm.v2.handshake import (
+            UCMShardingHandshake,
+            group_sharding,
+        )
+
+        worker_spec = parse_spec(
+            config(group(list(specs), specs)), scheduler_block_size=4
+        )
+        return UCMShardingHandshake(group_sharding(worker_spec))
+
+    def test_scheduler_looks_up_the_shards_workers_write(self):
+        connector = self._scheduler()
+        self.assertEqual(len(connector._lookup._record_shards[AttentionType.FA]), 1)
+        handshake = self._worker_handshake(self.MIXED)
+        connector.set_xfer_handshake_metadata_pp_aware(
+            {(0, 0): handshake, (0, 1): handshake}
+        )
+        self.assertIsNone(connector.spec.groups[0].tp_shards)
+        # Each TP rank stores its own copy, so lookup checks both.
+        self.assertEqual(len(connector._lookup._record_shards[AttentionType.FA]), 2)
+
+    def test_workers_must_agree(self):
+        connector = self._scheduler()
+        with self.assertRaisesRegex(ValueError, "different UCM group sharding"):
+            connector.set_xfer_handshake_metadata_pp_aware(
+                {
+                    (0, 0): self._worker_handshake(self.MIXED),
+                    (1, 0): self._worker_handshake(
+                        {"model.layers.2.attn": MLAAttentionSpec(4)}
+                    ),
+                }
+            )
+
+    def test_dcp_sharded_must_match(self):
+        from ucm.integration.vllm.v2.handshake import UCMShardingHandshake
+
+        connector = self._scheduler()
+        with self.assertRaisesRegex(ValueError, "dcp_sharded"):
+            connector.set_xfer_handshake_metadata(
+                {0: UCMShardingHandshake(((0, 1, False),))}
+            )
+
+    def test_without_handshake_the_scheduler_keeps_its_sharding(self):
+        connector = self._scheduler()
+        with mock.patch("ucm.integration.vllm.v2.handshake.logger") as logger:
+            connector.set_xfer_handshake_metadata_pp_aware({(0, 0): object()})
+        logger.warning.assert_called_once()
+        self.assertEqual(connector.spec.groups[0].tp_shards, 1)
+
+
+class MultiConnectorHandshakePatchTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Patches the stub MultiConnector, which is already imported.
+        import ucm.integration.vllm.patch.v0300.vllm.multi_connector_handshake_patch  # noqa: F401
+
+    class Sub:
+        def __init__(self, metadata):
+            self.metadata = metadata
+            self.received = []
+
+        def get_handshake_metadata(self):
+            return self.metadata
+
+        def set_xfer_handshake_metadata(self, metadata):
+            self.received.append(metadata)
+
+        def set_xfer_handshake_metadata_pp_aware(self, metadata):
+            self.received.append(metadata)
+
+    def test_each_sub_connector_gets_only_its_own_metadata(self):
+        from ucm.integration.vllm.patch.v0300.vllm.multi_connector_handshake_patch import (
+            MultiConnectorHandshakeMetadata,
+        )
+
+        # Mooncake first, UCM second: vLLM would send Mooncake's only.
+        mooncake, ucm = self.Sub("mooncake"), self.Sub("ucm")
+        worker = MultiConnector([mooncake, ucm])
+        self.assertEqual(
+            worker.get_handshake_metadata(),
+            MultiConnectorHandshakeMetadata(("mooncake", "ucm")),
+        )
+        scheduler = MultiConnector([self.Sub(None), self.Sub(None)])
+        scheduler.set_xfer_handshake_metadata_pp_aware(
+            {
+                (0, 0): MultiConnectorHandshakeMetadata(("m0", "u0")),
+                (0, 1): MultiConnectorHandshakeMetadata((None, "u1")),
+            }
+        )
+        self.assertEqual(
+            [sub.received for sub in scheduler._connectors],
+            [[{(0, 0): "m0"}], [{(0, 0): "u0", (0, 1): "u1"}]],
+        )
+
+    def test_no_metadata_and_unpatched_workers_keep_vllm_behavior(self):
+        self.assertIsNone(
+            MultiConnector([self.Sub(None), self.Sub(None)]).get_handshake_metadata()
+        )
+        scheduler = MultiConnector([self.Sub(None), self.Sub(None)])
+        scheduler.set_xfer_handshake_metadata({0: "plain"})
+        self.assertEqual(
+            [sub.received for sub in scheduler._connectors],
+            [[{0: "plain"}], [{0: "plain"}]],
+        )
+
+
 class StateBytePageTest(unittest.TestCase):
     def test_dense_permutation_keeps_storage_offset_stride_and_aliasing(self):
         import torch
@@ -1772,7 +1971,6 @@ class ParallelShardTest(unittest.TestCase):
                     group_id,
                     4,
                     frozenset((kind,)),
-                    blocks_per_chunk=1,
                     tp_shards=tp_shards,
                     dcp_sharded=dcp_sharded,
                 )
@@ -1872,10 +2070,10 @@ class ParallelShardTest(unittest.TestCase):
         spec = self._spec(
             self.MLA, (KVCacheSpecKind.FULL_ATTENTION, None, False), tokens_per_chunk=8
         )
-        ParallelLayout(tp=2, dcp=2).apply_context_parallel(spec)
+        spec = ParallelLayout(tp=2, dcp=2).apply_context_parallel(spec)
         self.assertEqual([g.tokens_per_block for g in spec.groups], [8, 4])
         self.assertEqual(spec.tokens_per_chunk, 8)
-        self.assertEqual([g.blocks_per_chunk for g in spec.groups], [1, 2])
+        self.assertEqual(spec.blocks_per_chunk, (1, 2))
 
     def test_parser_reads_dcp_flags_from_specs(self):
         draft = FullAttentionSpec(4)
@@ -1911,6 +2109,24 @@ class ParallelShardTest(unittest.TestCase):
             [(1, True), (None, True)],
         )
 
+    def test_group_with_different_tp_splits_stores_per_rank(self):
+        # One shard layout cannot hold specs that split TP differently, e.g.
+        # 2 and 3 shards on TP6, or replicated MLA next to GQA.
+        two, three = FullAttentionSpec(4), FullAttentionSpec(4)
+        two.max_tp_shards, three.max_tp_shards = 2, 3
+        for specs in (
+            {"model.layers.0.attn": two, "model.layers.1.attn": three},
+            {
+                "model.layers.0.attn": MLAAttentionSpec(4),
+                "model.layers.1.attn": FullAttentionSpec(4),
+            },
+        ):
+            with self.subTest(specs=sorted(type(v).__name__ for v in specs.values())):
+                parsed = parse_spec(
+                    config(group(list(specs), specs)), scheduler_block_size=4
+                )
+                self.assertIsNone(parsed.groups[0].tp_shards)
+
     def test_parser_reads_mamba_tp_replication_from_specs(self):
         parsed = parse_spec(
             config(
@@ -1942,9 +2158,9 @@ class ParallelShardTest(unittest.TestCase):
         self.assertFalse(kpool_group.is_persistent)
         self.assertEqual(kpool_group.kinds, frozenset())
         self.assertEqual(parsed.wa_groups, ())
-        ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
+        parsed = ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
         self.assertEqual(parsed.tokens_per_chunk, 8)
-        self.assertEqual(kpool_group.blocks_per_chunk, 0)
+        self.assertEqual(parsed.blocks_per_chunk[1], 0)
 
     def test_empty_pp_sliding_group_reads_tail_from_all_stages(self):
         # vLLM keeps the map of all stages in an empty PP group.
@@ -2169,22 +2385,19 @@ class ParallelShardTest(unittest.TestCase):
 
         # PCP splits prefill compute only: PCP ranks hold whole blocks.
         pcp_only = spec()
-        ParallelLayout(tp=4, pcp=2).apply_context_parallel(pcp_only)
-        self.assertEqual(pcp_only, spec())
+        self.assertEqual(
+            ParallelLayout(tp=4, pcp=2).apply_context_parallel(pcp_only), spec()
+        )
         parallel = ParallelLayout(tp=4, pp=2, pcp=2, dcp=2)
         self.assertEqual(parallel.world_size, 16)
         # vLLM's scheduler block already counts DCP.
-        scaled = spec(8)
-        parallel.apply_context_parallel(scaled)
+        scaled = parallel.apply_context_parallel(spec(8))
         self.assertEqual(scaled.groups[0].tokens_per_block, 8)
         self.assertEqual(scaled.tokens_per_chunk, 8)
-        self.assertEqual(scaled.groups[0].blocks_per_chunk, 1)
-        # A UCM chunk that cannot hold a whole DCP block is rejected and
-        # the spec is left untouched.
-        rejected = spec()
+        self.assertEqual(scaled.blocks_per_chunk, (1,))
+        # A configured UCM chunk that cannot hold a whole DCP block is rejected.
         with self.assertRaisesRegex(ValueError, "whole distributed"):
-            parallel.apply_context_parallel(rejected)
-        self.assertEqual(rejected, spec())
+            parallel.apply_context_parallel(spec(), 4)
 
     def test_dcp_rejects_fa_slices(self):
         from ucm.integration.vllm.v2.parallel import ParallelLayout
@@ -2195,7 +2408,7 @@ class ParallelShardTest(unittest.TestCase):
             tokens_per_chunk=4,
         )
         with self.assertRaisesRegex(ValueError, "whole distributed"):
-            ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
+            ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed, 4)
 
     def test_dcp_sizes_follow_vllm_rules(self):
         from ucm.integration.vllm.v2.parallel import ParallelLayout
@@ -2233,7 +2446,7 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=8,
             device_type="npu",
         )
-        ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
+        parsed = ParallelLayout(tp=2, dcp=2).apply_context_parallel(parsed)
         layout = UCMKVCacheLayout(
             parsed,
             {"model.layers.0.indexer": FakeTensor(1000, (6, 4, 1, 2), (8, 2, 2, 1))},
@@ -2297,7 +2510,7 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=4,
         )
         self.assertEqual(parsed.wa_groups[0].tail_tokens, 8)
-        self.assertEqual(parsed.wa_groups[0].blocks_per_chunk, 2)
+        self.assertEqual(parsed.blocks_per_chunk[parsed.wa_groups[0].group_id], 2)
 
     def test_pp_empty_state_spec_can_be_parsed(self):
         parsed = parse_spec(
@@ -2308,7 +2521,7 @@ class ParallelShardTest(unittest.TestCase):
             scheduler_block_size=4,
         )
         self.assertEqual(len(parsed.state_groups), 1)
-        self.assertEqual(parsed.state_groups[0].blocks_per_chunk, 1)
+        self.assertEqual(parsed.blocks_per_chunk[parsed.state_groups[0].group_id], 1)
 
 
 class LayerwiseLifecycleTest(unittest.TestCase):
@@ -4194,10 +4407,7 @@ class RaggedLayoutTest(unittest.TestCase):
         from ucm.integration.vllm.v2.layout.store_layout import GroupStoreLayout
 
         layerwise_store = GroupStoreLayout.build(
-            parsed.groups[group_layout.group_id],
-            group_layout,
-            parsed.tokens_per_chunk,
-            use_layerwise=True,
+            parsed, group_layout, use_layerwise=True
         )
         self.assertFalse(layerwise_store.merge_whole_blocks)
         self.assertEqual(
@@ -5673,10 +5883,7 @@ class MatrixTransferTest(unittest.TestCase):
             group([names[1]], FullAttentionSpec(16)),
             num_blocks=4,
         )
-        spec = parse_spec(
-            raw_config,
-            scheduler_block_size=16,
-        )
+        spec = parse_spec(raw_config, scheduler_block_size=16, tokens_per_chunk=16)
         layout = UCMKVCacheLayout(
             spec,
             {

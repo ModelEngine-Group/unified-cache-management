@@ -81,7 +81,7 @@ class UCMGroupDispatchPlan:
     token_starts: np.ndarray
     # vLLM block IDs per participating group, in groups_by_attention_type()
     # order, block-major (blocks_per_chunk blocks per UCM chunk) -- the static
-    # window shape lives on the spec's groups (``blocks_per_chunk``), so
+    # window shape lives on the spec (``blocks_per_chunk[group_id]``), so
     # only the ids travel.
     vllm_block_ids_by_group: tuple[np.ndarray, ...]
 
@@ -425,7 +425,7 @@ class UCMDispatcher:
 
         tokens_per_chunk = self.spec.tokens_per_chunk
         vllm_block_table = state.vllm_block_tables[group.group_id]
-        blocks_per_chunk = group.blocks_per_chunk
+        blocks_per_chunk = self.spec.blocks_per_chunk[group.group_id]
         if attention_type is AttentionType.STATE:
             # The caller picks the running or boundary slot from the
             # runner's load/copy ordering.

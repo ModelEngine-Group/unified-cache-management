@@ -100,7 +100,7 @@ Store 只接收 ucm_chunk_id，connector 不向 Store 传任何路径或 namespa
 
 ### 4.2 公共元数据与 worker 绑定
 
-`parse_kv_cache_config` 只解析逻辑元数据，返回 `UCMKVCacheSpec` 与 `UCMKVCacheGroupSpec`。公共 spec 拥有 `tokens_per_chunk`，每个 group 的 `blocks_per_chunk` 记录一个 UCM chunk 引用的 vLLM block 数，不含 tensor 指针。要存的 group 取原生 prefix_cacheable_group_ids；其余 `is_persistent=False`，保留原生 ID，`blocks_per_chunk` 为 0。持久项只允许已支持的 FA/MLA/Sink、SWA 与 align State；其他语义明确拒绝。
+`parse_kv_cache_config` 只解析逻辑元数据，返回 `UCMKVCacheSpec` 与 `UCMKVCacheGroupSpec`。公共 spec（frozen）拥有 `tokens_per_chunk` 和按原生 group ID 索引的 `blocks_per_chunk`（一个 UCM chunk 引用的 vLLM block 数，构造 spec 时算出），不含 tensor 指针。要存的 group 取原生 prefix_cacheable_group_ids；其余 `is_persistent=False`，保留原生 ID，`blocks_per_chunk` 为 0。持久项只允许已支持的 FA/MLA/Sink、SWA 与 align State；其他语义明确拒绝。
 
 - 将 group 的统一或逐层 spec 展开为 `UCMLayerSpec`，分类 attention/sliding/state。
 - 官方 0.29 的 `KVCacheTensor.layers/offset/layer_stride/block_stride` 转成 `TensorDescriptor`；旧 Ascend 入口没有相同声明时以实际 views 为依据。
@@ -110,7 +110,7 @@ Store 只接收 ucm_chunk_id，connector 不向 Store 传任何路径或 namespa
 - Mamba 当前要求 `mamba_cache_mode='align'`。只有 State 的模型没有 FA 前缀，可以从任意完整块恢复。
 - 普通 `swa_cache` 的 tail 使用整个 window；压缩状态的 tail 使用 window 减对应层的 attention 压缩比。tail 为零的 group 不进入 WA 存储路由。
 
-U 默认等于 vLLM 的 scheduler 粒度，即各 group 块大小的最小公倍数（DCP 下已乘 dcp）。配置了 `tokens_per_chunk` 时使用配置值，并打一条 INFO 日志。DeepSeek V4 这类块很大的模型，可以调小 vLLM 的 block size 控制命中粒度（例如 Ascend 上 block size 32 时为 4K tokens）；也可以把 `tokens_per_chunk` 配得比 FA 块小，一个 vLLM block 拆成多个 UCM chunk 存储（FA 子块，见 8.2）。
+U 默认值：有 State 时等于 vLLM 的 scheduler 粒度（各 group 块大小的最小公倍数），保证所有 group 有共同的恢复边界；只有 attention 时取最小的 FA block 跨度。开 DCP 时 `apply_context_parallel` 返回新的 spec，未配置 U 时取放大后各存储 group 块大小的最小公倍数。配置了 `tokens_per_chunk` 时使用配置值，并打一条 INFO 日志。DeepSeek V4 这类块很大的模型，可以调小 vLLM 的 block size 控制命中粒度（例如 Ascend 上 block size 32 时为 4K tokens）；也可以把 `tokens_per_chunk` 配得比 FA 块小，一个 vLLM block 拆成多个 UCM chunk 存储（FA 子块，见 8.2）。
 
 整除约束（解析配置时检查）：
 - FA group：T 整除 U（一个 UCM chunk 含整数个 vLLM block），或 U 整除 T 且 U 是该 group 每个 state 覆盖 token 数（`tokens_per_state`）的整数倍（FA 子块）。
@@ -246,7 +246,7 @@ offsets, ptrs, sizes = store_layout.resolve_matrices(
 )
 ```
 
-GroupLayout 的 layers 保存逐层声明，layer_views 保存实际物理视图；vLLM block id 信任引擎的计划，不逐批扫描范围。GroupStoreLayout 持有 group 信息与 group_layout，依据 group.blocks_per_chunk 编译 `[window block, segment]` 的源 byte offsets/sizes 和外存 offsets。运行时组织为 `[UCM chunk, window block, segment]`，添加固定/动态偏移，再展平为二维 IO 矩阵。HBM 中不再有 BlockAccess/compile_access。
+GroupLayout 的 layers 保存逐层声明，layer_views 保存实际物理视图；vLLM block id 信任引擎的计划，不逐批扫描范围。GroupStoreLayout 持有公共 spec 与 group_layout，依据 spec.blocks_per_chunk 编译 `[window block, segment]` 的源 byte offsets/sizes 和外存 offsets。运行时组织为 `[UCM chunk, window block, segment]`，添加固定/动态偏移，再展平为二维 IO 矩阵。HBM 中不再有 BlockAccess/compile_access。
 
 HBM 的 `tokens_to_bytes` 直接计算 `bytes_j(t) = t * payload_j // T`，先乘后整除，不经过 stored states；逻辑 span T 由 Store 传入。Store 在初始化编译固定范围时检查完整 entry 对齐及整组部分访问能力，states_per_block 只用于该检查，删除无其他用途的 state_strides。UCM chunk 的起点都是 k×U，继承初始化确认的对齐，不在运行时重复验证。全部组件的部分访问能力取 all；按层选择不绕过整组限制。
 
@@ -423,7 +423,8 @@ layerwise 只传输有效 payload，不复制 Block First 的 slot padding。文
 所有 rank 共用一套 Proxy/Store，`UCMSharding` 决定记录如何划分：
 
 - 每个 group 的切分方式来自 spec：`max_tp_shards`（TP 上的不同副本数，MLA 为 1）与 `dcp_sharded`（是否按 DCP 切 token）；Ascend MLA 规格缺 `max_tp_shards` 时按 1；Ascend 的 replicated SFA indexer 和 MLA 在同一个 group，随 group 按 DCP 切分，所以每个 DCP 分片都会存一份完整的 indexer（已知冗余，暂不处理）；Mamba/KDA state 的 `dcp_sharded` 为 False，不切 DCP；`tp_replicated=True` 的 state 每个 TP rank 都存整份，按 1 个分片处理，否则按 TP 切。spec 未声明时按每个 TP rank 都不同处理，不会丢数据。
-- 记录类别：同一 attention type 内切分方式相同的 group 合成一条记录，不同的分开（例如开 DCP 时 MLA 主 cache 与 DCP 复制的 indexer）。同一 KV cache group 内成员切分不同（GLM-5.3 的 MLA 主 cache 与 indexer 同组）时取最细切分，较粗成员在每个分片里各存一份，是已知的剩余冗余。
+- 记录类别：同一 attention type 内切分方式相同的 group 合成一条记录，不同的分开（例如开 DCP 时 MLA 主 cache 与 DCP 复制的 indexer）。同一 KV cache group 内成员的 TP 切分不同时（比如 TP6 下一层 2 份、一层 3 份，或 MLA 和普通 FA 同组），一套分片键放不下两种切法，按每个 TP rank 各存一份处理，结果一定正确，只是多存几份。
+- scheduler 和 worker 用同一份分片：vLLM 只给 scheduler 每个 uniform group 的一个代表 spec，worker 有每层的 spec，两边各自算可能不同。所以 worker 通过 KV connector 握手（`get_handshake_metadata`）把每个要存的 group 的 `(group_id, tp_shards, dcp_sharded)` 发给 scheduler，scheduler 检查所有 worker（含各 PP 段）完全一致后以它为准重建 lookup 的分片；不一致或 `dcp_sharded` 与 scheduler 不同则启动报错。vLLM 的 MultiConnector 原本只转发第一个子 connector 的握手；`ucm/integration/vllm/patch/v0300/vllm/multi_connector_handshake_patch.py` 在 vLLM ≥ 0.30 时让它把各子 connector 的握手打包发送、再按子 connector 拆开分发，Mooncake、NIXL 收到的内容不变。这个 patch 和其他 UCM patch 一样，只在设置 `ENABLE_UCM_PATCH` 时应用；没打上时 MultiConnector 里的 UCM 收不到握手，scheduler 打 warning 并沿用自己算的分片。
 - 分片键 `(head, token, pp)`：head = `tp_rank × tp_shards / TP`，token = 按 vLLM 规则算出的 dcp_rank（不切 DCP 时为 0）。分片键相同的 rank 互为副本，例如 MLA 在 TP 上、只开 PCP 时的各 PCP rank。
 - 写入：副本按 common_ucm_chunk_id 分工（`writer_rows`），每个 block 只由一个副本写一次；connector 用 `_owned_rows` 选出本 rank 负责的行，transfer builder 只为这些行生成矩阵，commit/abort 也只针对这些行。读取：所有副本按同一个分片 id 读同一条记录。
 - PP 某 stage 没有某记录类别的 group 时，由负责写入的副本提交零字节标记，使 lookup 只需"每个分片都已提交"。

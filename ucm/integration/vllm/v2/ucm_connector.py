@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +25,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from ucm.utils import Config
 
 from .factory import create_proxy
+from .handshake import UCMShardingHandshake, apply_worker_sharding, group_sharding
 from .layout import (
     UCMKVCacheLayout,
     UCMKVCacheSpec,
@@ -50,6 +51,9 @@ from .ucm_sharding import (
 if TYPE_CHECKING:
     import torch
     from vllm.config import VllmConfig
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorHandshakeMetadata,
+    )
     from vllm.forward_context import ForwardContext
     from vllm.v1.attention.backend import AttentionMetadata
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -277,7 +281,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 else 1
             ),
         )
-        self.parallel_layout.apply_context_parallel(self.spec)
+        self.spec = self.parallel_layout.apply_context_parallel(
+            self.spec, tokens_per_chunk
+        )
         # Raises at startup if the topology does not fit in UCM chunk ids.
         self._sharding = UCMSharding(self.spec, self.parallel_layout)
         if role == KVConnectorRole.WORKER:
@@ -338,10 +344,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.transfer_builder: UCMTransferBuilder | None = None
         self._worker_metadata = UCMWorkerMetadata()
         self._invalid_vllm_block_ids: set[int] = set()
+        self._lookup = (
+            UCMLookup(self.spec, self._proxy, self._sharding)
+            if role == KVConnectorRole.SCHEDULER
+            else None
+        )
         self.dispatcher = (
             UCMDispatcher(
                 self.spec,
-                UCMLookup(self.spec, self._proxy, self._sharding),
+                self._lookup,
                 # Plans carry common UCM chunk ids. Each worker builds the
                 # local UCM chunk ids of its own shards when building transfers.
                 hasher,
@@ -389,6 +400,29 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         lookup_result = self.dispatcher.lookup(request, num_computed_tokens)
         return lookup_result.external_hit_tokens, False
 
+    def set_xfer_handshake_metadata(
+        self, metadata: Mapping[int, "KVConnectorHandshakeMetadata"]
+    ) -> None:
+        self._apply_worker_sharding(metadata.values())
+
+    def set_xfer_handshake_metadata_pp_aware(
+        self, metadata: Mapping[tuple[int, int], "KVConnectorHandshakeMetadata"]
+    ) -> None:
+        # Every PP stage reports, so this also checks the stages agree.
+        self._apply_worker_sharding(metadata.values())
+
+    def _apply_worker_sharding(self, worker_metadata: Iterable[object]) -> None:
+        """Look up the shards workers write, not the scheduler's guess."""
+        assert self._lookup is not None
+        spec = apply_worker_sharding(self.spec, worker_metadata)
+        if spec is self.spec:
+            return
+        else:
+            # Only tp_shards changes, and only the sharding reads it.
+            self.spec = spec
+            self._sharding = UCMSharding(spec, self.parallel_layout)
+            self._lookup.set_sharding(self._sharding)
+
     def build_connector_meta(
         self, scheduler_output: "SchedulerOutput"
     ) -> UCMConnectorMetadata:
@@ -418,6 +452,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.layout, self._sharding, self._parallel_rank
         )
         self._proxy.register_tensors(kv_caches)
+
+    def get_handshake_metadata(self) -> UCMShardingHandshake | None:
+        """Send this worker's group sharding to the scheduler."""
+        return UCMShardingHandshake(group_sharding(self.spec))
 
     def _mark_load_failed(self, request_id: str, request: Any) -> None:
         self._failed_load_reqs.add(request_id)

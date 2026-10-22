@@ -11,19 +11,20 @@ from .group import KVCacheGroupLayout
 from .view import LAYOUT_DEBUG, layout_debug
 
 if TYPE_CHECKING:
-    from .kv_cache import UCMKVCacheGroupSpec
+    from .kv_cache import UCMKVCacheGroupSpec, UCMKVCacheSpec
 
 
 @dataclass(frozen=True)
 class GroupStoreLayout:
     """One group's byte templates within a UCM chunk, independent of plans.
 
-    HBM supplies physical block bases and segment geometry; this object owns
-    token ranges, sizes and offsets. Selecting layers keeps their configured
-    positions in the stored value.
+    The shared spec owns the chunk's block count. HBM supplies physical block
+    bases and segment geometry; this object owns token ranges, sizes and
+    offsets. Selecting layers keeps their configured positions in the stored
+    value.
     """
 
-    group: UCMKVCacheGroupSpec
+    spec: UCMKVCacheSpec
     group_layout: KVCacheGroupLayout
     block_byte_offsets: np.ndarray
     segment_bytes: np.ndarray
@@ -33,15 +34,20 @@ class GroupStoreLayout:
     whole_block_bytes: int
     merge_whole_blocks: bool
 
+    @property
+    def group(self) -> UCMKVCacheGroupSpec:
+        return self.spec.groups[self.group_layout.group_id]
+
     @classmethod
     def build(
         cls,
-        group: UCMKVCacheGroupSpec,
+        spec: UCMKVCacheSpec,
         layout: KVCacheGroupLayout,
-        tokens_per_chunk: int,
         *,
         use_layerwise: bool,
     ) -> GroupStoreLayout:
+        group = spec.groups[layout.group_id]
+        tokens_per_chunk = spec.tokens_per_chunk
         tokens_per_block = group.tokens_per_block
         if group.is_sliding_window:
             partial_tokens = (group.tail_tokens or 0) % tokens_per_block
@@ -73,7 +79,7 @@ class GroupStoreLayout:
             )
 
         # Zero-tail groups join no route, but still have a valid layout.
-        blocks_per_chunk = max(group.blocks_per_chunk, 1)
+        blocks_per_chunk = max(spec.blocks_per_chunk[group.group_id], 1)
         token_starts = np.zeros(blocks_per_chunk, dtype=np.uint64)
         token_counts = np.full(blocks_per_chunk, tokens_per_block, dtype=np.uint64)
         if partial_tokens:
@@ -110,11 +116,11 @@ class GroupStoreLayout:
                 f"store-layout group={group.group_id} "
                 f"segments={len(layout.layer_names)} "
                 f"block-first={int(merge_whole_blocks)} "
-                f"blocks_per_chunk={group.blocks_per_chunk} partial_tokens={partial_tokens} "
+                f"blocks_per_chunk={blocks_per_chunk} partial_tokens={partial_tokens} "
                 f"store_bytes={store_bytes}"
             )
         return cls(
-            group=group,
+            spec=spec,
             group_layout=layout,
             block_byte_offsets=block_byte_offsets,
             segment_bytes=segment_bytes,
@@ -142,7 +148,7 @@ class GroupStoreLayout:
         """
         layout = self.group_layout
         num_ucm_chunks = len(token_starts)
-        blocks_per_chunk = max(self.group.blocks_per_chunk, 1)
+        blocks_per_chunk = max(self.spec.blocks_per_chunk[self.group.group_id], 1)
         if self.merge_whole_blocks and segment_mask is None:
             segment_ptrs = layout.resolve_block_first_ptrs(vllm_block_ids)
             store_offsets = self.ucm_chunk_offsets.reshape(-1).copy()

@@ -427,7 +427,7 @@ def test_all_shard_lookup_accepts_hits_at_different_store_levels(tmp_path):
     disk = FileTestStore(tmp_path, access)
     cache = MemoryTestStore(access, backend=disk)
     group_info = UCMKVCacheGroupSpec(
-        0, 512, frozenset((KVCacheSpecKind.FULL_ATTENTION,)), blocks_per_chunk=1
+        0, 512, frozenset((KVCacheSpecKind.FULL_ATTENTION,))
     )
     spec = UCMKVCacheSpec((group_info,), 512, 512, "cpu")
     lookup = UCMLookup(
@@ -461,7 +461,6 @@ def test_scheduler_sliced_lookup_and_wa_state_route_by_boundary():
             512,
             frozenset((kind,)),
             tail_tokens=512 if i == 1 else None,
-            blocks_per_chunk=1,
         )
         for i, kind in enumerate(kinds)
     )
@@ -598,9 +597,7 @@ def test_connector_save_commits_to_original_route_and_shutdown_drains(layerwise)
 
 
 def test_empty_pp_marker_carries_position_and_commits_only_its_route():
-    group_info = UCMKVCacheGroupSpec(
-        0, 512, frozenset((KVCacheSpecKind.MAMBA,)), blocks_per_chunk=1
-    )
+    group_info = UCMKVCacheGroupSpec(0, 512, frozenset((KVCacheSpecKind.MAMBA,)))
     spec = UCMKVCacheSpec((group_info,), 512, 512, "cpu")
     stores = [MemoryTestStore(MemoryByteAccess(ByteMemory())) for _ in range(2)]
     worker = UCMConnector.__new__(UCMConnector)

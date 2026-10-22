@@ -61,9 +61,13 @@ def _metadata(layout, attention_type, groups, ucm_chunk_id, block_base, attribut
     cursor = block_base
     for group in groups:
         vllm_block_ids_by_group.append(
-            np.arange(cursor, cursor + group.blocks_per_chunk, dtype=np.uint64)
+            np.arange(
+                cursor,
+                cursor + layout.spec.blocks_per_chunk[group.group_id],
+                dtype=np.uint64,
+            )
         )
-        cursor += group.blocks_per_chunk
+        cursor += layout.spec.blocks_per_chunk[group.group_id]
     plan = UCMGroupDispatchPlan(
         attention_type,
         (ucm_chunk_id,),
@@ -82,7 +86,9 @@ def _exercise_attention_type(
 ):
     # Groups share a native block pool: use distinct IDs across groups and
     # disjoint source/target windows, rather than overwriting shared slots.
-    window_blocks = sum(group.blocks_per_chunk for group in groups)
+    window_blocks = sum(
+        layout.spec.blocks_per_chunk[group.group_id] for group in groups
+    )
     for group in groups:
         if group.group_id in layout.group_layouts:
             if 2 * window_blocks > layout.group_layouts[group.group_id].num_blocks:

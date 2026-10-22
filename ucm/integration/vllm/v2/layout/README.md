@@ -8,8 +8,8 @@
 
 | 对象 | 内容与职责 |
 | --- | --- |
-| `UCMKVCacheGroupSpec` | 原生 group ID、`tokens_per_block`、kinds、tail、`blocks_per_chunk`、`is_persistent`、分片方式；不含 tensor 指针或存储模板 |
-| `UCMKVCacheSpec` | groups、`tokens_per_chunk`、scheduler 粒度、`num_attn_module`；scheduler/worker 共用 |
+| `UCMKVCacheGroupSpec` | 原生 group ID、`tokens_per_block`、kinds、tail、`is_persistent`、分片方式；不含 tensor 指针或存储模板 |
+| `UCMKVCacheSpec` | groups、`tokens_per_chunk`、scheduler 粒度、`num_attn_module`，以及按原生 group ID 索引的 `blocks_per_chunk`；scheduler/worker 共用 |
 | `UCMLayerSpec` | worker 逐层原生 spec、storage entries、descriptor、轴约定；不含物理指针 |
 | `LayerView` / `ComponentView` | 实际 tensor 的 shape/stride 和连续 `MemorySegment`；不分配或复制 KV storage |
 | `KVCacheGroupLayout` | HBM 几何、`layer_specs`/层选择、vLLM block id 到 segment 起始地址、token→byte 物理换算；不持有 group 策略或 UCM chunk大小 |
@@ -21,7 +21,7 @@ Layout 不依赖 scheduler/proxy，不接收请求 metadata/plan，不生成 Tra
 
 ## UCM chunk 的公共约定
 
-`tokens_per_chunk` 是逻辑记录/恢复边界的 token 粒度，默认等于 vLLM 的 scheduler 粒度。`UCMKVCacheGroupSpec.blocks_per_chunk` 是一个 UCM chunk 要引用的 vLLM block 数，由 parser 写入；CP 调整有效 token span 后由 `apply_context_parallel` 原地更新。
+`tokens_per_chunk` 是逻辑记录/恢复边界的 token 粒度。默认值：有 State 时取 vLLM 的 scheduler 粒度，只有 attention 时取最小的 FA block 跨度。`spec.blocks_per_chunk[group_id]` 是一个 UCM chunk 要引用的 vLLM block 数，构造 spec 时算出。spec 和 group 都是 frozen；CP 调整有效 token span 时，`apply_context_parallel` 返回新的 spec，`blocks_per_chunk` 随之重算。
 
 | group | 每 UCM chunk 的 vLLM block 数 | 保存范围 |
 | --- | --- | --- |
