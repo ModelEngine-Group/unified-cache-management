@@ -24,6 +24,7 @@
 #include "backend_manager.h"
 #include <algorithm>
 #include <array>
+#include <future>
 #include "detail/health_check_executor.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -54,6 +55,23 @@ static Status CheckPathHealth(const std::string& path, bool ioDirect)
     if (status.Success()) { status = closed; }
     auto cleanup = file.Remove();
     return status.Failure() ? status : cleanup;
+}
+
+static Status RunStartupCheck(std::function<Status()> check, size_t timeoutMs)
+{
+    auto result = std::make_shared<std::promise<Status>>();
+    auto future = result->get_future();
+    try {
+        std::thread([check = std::move(check), result] { result->set_value(check()); }).detach();
+    } catch (const std::exception& e) {
+        return Status::Error(fmt::format("failed to start backend startup check: {}", e.what()));
+    }
+    if (future.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready) {
+        return future.get();
+    } else {
+        return Status{Status::Timeout().Underlying(),
+                      fmt::format("no response in {} ms", timeoutMs)};
+    }
 }
 
 BackendManager::~BackendManager()
@@ -93,15 +111,24 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
             UC_ERROR("{}", message);
             return Status{error.Underlying(), std::move(message)};
         };
-        status = layout_->InitBackend(normalizedPath, index == 0);
-        if (status.Failure()) { return startupError(status); }
-        status = CheckPathHealth(
-            layout_->ArchivedFilePath(normalizedPath, healthBlockId_) + ".health_probe", ioDirect_);
+        status = RunStartupCheck(
+            [layout = *layout_, backend = normalizedPath, create = index == 0,
+             probe = layout_->ArchivedFilePath(normalizedPath, healthBlockId_) + ".health_probe",
+             ioDirect = ioDirect_] {
+                auto s = layout.InitBackend(backend, create);
+                return s.Success() ? CheckPathHealth(probe, ioDirect) : s;
+            },
+            config.timeoutMs);
         if (status.Failure()) { return startupError(status); }
         backendHealth_.emplace_back("PosixBackend", fmt::format("{}:{}", index, normalizedPath),
                                     config.backendHealth);
     }
-    ioTimeoutMs_ = std::max<size_t>(1, config.timeoutMs / BackendCount());
+    // The thread pool checks for stuck workers once a second, so it may take up to 1s more to
+    // notice a timed-out worker and finish its task. Leave that 1s out of each backend's share,
+    // so a retry on the next backend still fits in timeout_ms. A share under 2s keeps at least
+    // half of it.
+    const auto perBackendMs = config.timeoutMs / BackendCount();
+    ioTimeoutMs_ = std::max<size_t>(1, perBackendMs - std::min<size_t>(1000, perBackendMs / 2));
     if (config.posixGcEnable) {
         status = gcExecutor_.Setup(BackendCount(), ioTimeoutMs_);
         if (status.Failure()) { return status; }
