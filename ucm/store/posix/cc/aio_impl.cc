@@ -189,16 +189,18 @@ AioImpl::~AioImpl()
     // The completion thread has stopped; callbacks no longer consume this request state.
     for (const auto& entry : iocbToTag_) {
         auto* cb = entry.first;
-        ::close(cb->aio_fildes);
+        // Load callbacks release BorrowedFd; only Dump owns a raw descriptor.
+        if (cb->aio_lio_opcode == IOCB_CMD_PWRITE) { ::close(cb->aio_fildes); }
         delete reinterpret_cast<Callback*>(cb->aio_data);
         delete cb;
     }
 }
 
-Status AioImpl::Setup(size_t timeoutMs)
+Status AioImpl::Setup(size_t timeoutMs, size_t queueDepth)
 {
     constexpr size_t defaultSweepIntervalMs = 100;
     constexpr size_t defaultEpollTimeoutMs = 10;
+    queueDepth_ = queueDepth;
     sweepIntervalMs_ = defaultSweepIntervalMs;
     epollTimeoutMs_ = defaultEpollTimeoutMs;
     submitTimeoutMs_ = timeoutMs;
