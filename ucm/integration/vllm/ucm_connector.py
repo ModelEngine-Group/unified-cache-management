@@ -3862,6 +3862,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector.wait_for_layer_load(layer_name)
 
     @_record_connector_interface_duration
+    def prepare_mamba_state_copy(self, mamba_state_or_copy_bufs) -> bool:
+        """Delegate to the routed connector; False when it does not
+        implement the protocol (direct/lite -> engine fallback)."""
+        prepare = getattr(self.connector, "prepare_mamba_state_copy", None)
+        return prepare(mamba_state_or_copy_bufs) if callable(prepare) else False
+
+    @_record_connector_interface_duration
+    def finish_mamba_state_copy(self) -> None:
+        """Only called when prepare_mamba_state_copy returned True."""
+        finish = getattr(self.connector, "finish_mamba_state_copy", None)
+        if callable(finish):
+            finish()
+
+    @_record_connector_interface_duration
     def save_kv_layer(
         self,
         layer_name: str,

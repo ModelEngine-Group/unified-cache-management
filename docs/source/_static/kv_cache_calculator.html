@@ -158,8 +158,8 @@
                     <div class="form-group">
                         <label class="form-label">Deployment Method</label>
                         <select id="hybrid-deployment" class="form-select" onchange="currentDeployment = this.value; updateHybridBlockSizeOptions();">
+                            <option value="vllm-ascend" selected>vLLM-Ascend</option>
                             <option value="vllm">vLLM</option>
-                            <option value="vllm-ascend">vLLM-Ascend</option>
                         </select>
                     </div>
 

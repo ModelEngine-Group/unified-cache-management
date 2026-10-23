@@ -313,11 +313,6 @@ def apply_all_patches() -> None:
         if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (0, 26):
             import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch
 
-        # Fix: vllm-ascend >= 0.21.0 defers do_mamba_copy_block to after
-        # start_load_kv, overwriting UCM-loaded data. @when_imported is
-        # self-guarding (only fires when the module exists).
-        import ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch
-
         # Fix: vLLM >= 0.27.0 Kimi-K3's MLA bypasses @maybe_transfer_kv_layer,
         # so wait_for_layer_load/save_kv_layer are never called. @when_imported
         # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
