@@ -51,7 +51,7 @@ import traceback
 from typing import Any
 
 import torch
-from .config import load_config
+
 from .common import (
     CacheFixture,
     UnsupportedEnvironment,
@@ -66,6 +66,7 @@ from .common import (
     schedule,
     verify,
 )
+from .config import load_config
 
 # =========================== User configuration ===========================
 config = load_config()

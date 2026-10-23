@@ -4,7 +4,7 @@ One entry point, :func:`build_group_layouts`: walk every KV group of the
 parsed spec and hand the runtime views to :class:`KVCacheGroupLayout`,
 which flattens them into addressing columns. Bind the worker's native
 per-layer specs and placement here; the shared group policy carries no
-physical declarations. Transient and empty PP groups keep their native
+physical declarations. Non-persistent and empty PP groups keep their native
 group IDs but do not compile a physical layout.
 """
 
@@ -35,17 +35,17 @@ def _parse_descriptors(
     kv_cache_tensors: Sequence[object],
 ) -> dict[str, tuple[TensorDescriptor, int]]:
     """Index the worker's native placement declarations by registered owner."""
-    declared_at = {}
-    for entry in kv_cache_tensors:
+    descriptor_by_layer_name = {}
+    for native_tensor in kv_cache_tensors:
         descriptor = TensorDescriptor(
-            layers=tuple(entry.layers),
-            offset=entry.offset,
-            layer_stride=entry.layer_stride,
-            block_stride=entry.block_stride,
+            layers=tuple(native_tensor.layers),
+            offset=native_tensor.offset,
+            layer_stride=native_tensor.layer_stride,
+            block_stride=native_tensor.block_stride,
         )
-        for position, name in enumerate(descriptor.layers):
-            declared_at[name] = (descriptor, position)
-    return declared_at
+        for position, layer_name in enumerate(descriptor.layers):
+            descriptor_by_layer_name[layer_name] = (descriptor, position)
+    return descriptor_by_layer_name
 
 
 def _storage_block_size(spec: "KVCacheSpec", device_type: str) -> int:
@@ -105,45 +105,49 @@ def build_group_layouts(
             native_layout.is_block_outermost and native_layout.is_block_compact
         )
 
-    declared_at = _parse_descriptors(kv_cache_config.kv_cache_tensors)
-    layouts = {}
+    descriptor_by_layer_name = _parse_descriptors(kv_cache_config.kv_cache_tensors)
+    group_layouts = {}
     for group in spec.groups:
         native_group = kv_cache_config.kv_cache_groups[group.group_id]
-        if not group.is_persistent or not native_group.layer_names:
-            continue
-        layer_specs = []
-        for name, native_spec in _concrete_specs(native_group):
-            storage_block_size = (
-                1  # State is one indivisible checkpoint, not a token-row array.
-                if group.is_state_snapshot
-                else _storage_block_size(native_spec, spec.device_type)
-            )
-            descriptor, position = declared_at.get(name, (None, 0))
-            layer_specs.append(
-                UCMLayerSpec(
-                    layer_name=name,
-                    layer_index=_layer_index(
-                        name, spec.device_type, num_hidden_layers, spec.num_attn_module
-                    ),
-                    kv_cache_spec=native_spec,
-                    storage_block_size=storage_block_size,
-                    num_blocks=kv_cache_config.num_blocks,
-                    descriptor=descriptor,
-                    descriptor_position=position,
-                    attention_view_order=_attention_view_order(
-                        native_spec, spec.device_type, name
-                    ),
+        if group.is_persistent and native_group.layer_names:
+            layer_specs = []
+            for layer_name, native_spec in _concrete_specs(native_group):
+                storage_block_size = (
+                    1  # State is one indivisible checkpoint, not a token-row array.
+                    if group.is_state_snapshot
+                    else _storage_block_size(native_spec, spec.device_type)
                 )
+                descriptor, position = descriptor_by_layer_name.get(
+                    layer_name, (None, 0)
+                )
+                layer_specs.append(
+                    UCMLayerSpec(
+                        layer_name=layer_name,
+                        layer_index=_layer_index(
+                            layer_name,
+                            spec.device_type,
+                            num_hidden_layers,
+                            spec.num_attn_module,
+                        ),
+                        kv_cache_spec=native_spec,
+                        storage_block_size=storage_block_size,
+                        num_blocks=kv_cache_config.num_blocks,
+                        descriptor=descriptor,
+                        descriptor_position=position,
+                        attention_view_order=_attention_view_order(
+                            native_spec, spec.device_type, layer_name
+                        ),
+                    )
+                )
+            group_layouts[group.group_id] = KVCacheGroupLayout(
+                group.group_id,
+                kv_caches,
+                layer_specs=layer_specs,
+                block_first_layout=block_first_layout,
+                state_snapshot=group.is_state_snapshot,
+                device_type=spec.device_type,
             )
-        layouts[group.group_id] = KVCacheGroupLayout(
-            group.group_id,
-            kv_caches,
-            layer_specs=layer_specs,
-            state_snapshot=group.is_state_snapshot,
-            device_type=spec.device_type,
-            block_first_layout=block_first_layout,
-        )
-    return layouts
+    return group_layouts
 
 
 __all__ = [

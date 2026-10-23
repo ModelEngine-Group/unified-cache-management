@@ -39,7 +39,6 @@ from unittest.mock import patch
 
 import torch
 
-from .config import load_config
 from .common import (
     CacheFixture,
     UnsupportedEnvironment,
@@ -49,11 +48,12 @@ from .common import (
 from .common import make_cache as make_common_cache
 from .common import make_config as make_common_config
 from .common import (
-    no_real_device_move_from_meta_context,
     make_worker,
+    no_real_device_move_from_meta_context,
     schedule,
     verify,
 )
+from .config import load_config
 
 # =========================== User configuration ===========================
 config = load_config()
@@ -166,15 +166,25 @@ def _patch_cpu_platform_config_for_sim() -> None:
     def _sim_safe(cls, vllm_config):
         cc = vllm_config.cache_config
         sc = vllm_config.scheduler_config
-        saved = (cc.block_size, cc.user_specified_block_size,
-                 cc.enable_prefix_caching, cc.mamba_ssm_cache_dtype,
-                 sc.enable_chunked_prefill, sc.max_num_batched_tokens)
+        saved = (
+            cc.block_size,
+            cc.user_specified_block_size,
+            cc.enable_prefix_caching,
+            cc.mamba_ssm_cache_dtype,
+            sc.enable_chunked_prefill,
+            sc.max_num_batched_tokens,
+        )
         try:
             orig(cls, vllm_config)
         finally:
-            (cc.block_size, cc.user_specified_block_size,
-             cc.enable_prefix_caching, cc.mamba_ssm_cache_dtype,
-             sc.enable_chunked_prefill, sc.max_num_batched_tokens) = saved
+            (
+                cc.block_size,
+                cc.user_specified_block_size,
+                cc.enable_prefix_caching,
+                cc.mamba_ssm_cache_dtype,
+                sc.enable_chunked_prefill,
+                sc.max_num_batched_tokens,
+            ) = saved
 
     _sim_safe._ucm_sim_patched = True
     CpuPlatform.check_and_update_config = classmethod(_sim_safe)
@@ -189,16 +199,30 @@ def _patch_cpu_runtime() -> None:
     forward/metadata 仅占位（model-check 只 schedule，无 forward）。"""
 
     from vllm.v1.attention.backend import (
-        AttentionBackend, AttentionImpl, AttentionMetadataBuilder)
+        AttentionBackend,
+        AttentionImpl,
+        AttentionMetadataBuilder,
+    )
 
     class _FakeImpl(AttentionImpl):
         # CUDA layout simulation only: FlashAttention/MLA can return decode LSE.
         # No attention kernel is executed or validated by this checker.
         can_return_lse_for_decode = True
-        def __init__(self, num_heads, head_size, scale, num_kv_heads=None,
-                     alibi_slopes=None, sliding_window=None, kv_cache_dtype="auto",
-                     logits_soft_cap=None, attn_type="decoder",
-                     kv_sharing_target_layer_name=None, **kwargs):
+
+        def __init__(
+            self,
+            num_heads,
+            head_size,
+            scale,
+            num_kv_heads=None,
+            alibi_slopes=None,
+            sliding_window=None,
+            kv_cache_dtype="auto",
+            logits_soft_cap=None,
+            attn_type="decoder",
+            kv_sharing_target_layer_name=None,
+            **kwargs,
+        ):
             self.num_heads = num_heads
             self.head_size = head_size
             self.scale = scale
@@ -244,8 +268,15 @@ def _patch_cpu_runtime() -> None:
             return _FakeBuilder
 
         @classmethod
-        def get_kv_cache_shape(cls, num_blocks, block_size, num_kv_heads, head_size,
-                               cache_dtype_str="auto", **kwargs):
+        def get_kv_cache_shape(
+            cls,
+            num_blocks,
+            block_size,
+            num_kv_heads,
+            head_size,
+            cache_dtype_str="auto",
+            **kwargs,
+        ):
             # vllm 0.27 及更早按 backend 的 shape 创建 KV 缓冲（0.29 runner
             # 路径已移除此调用，仅作旧版后备）：GQA 是 K/V 合并 5D，MLA 是 4D
             if cls._mla:
@@ -270,8 +301,7 @@ def _patch_cpu_runtime() -> None:
             return None
 
     _FakeMLABackend = type("FakeMLABackend", (_CUDASimBackend,), {"_mla": True})
-    _FakeGQABackend = type(
-        "FakeGQABackend", (_CUDASimBackend,), {"_mla": False})
+    _FakeGQABackend = type("FakeGQABackend", (_CUDASimBackend,), {"_mla": False})
 
     def _gqa_name(cls) -> str:
         # vllm 0.27+ 会把 backend 名转成 AttentionBackendEnum 校验；
@@ -294,17 +324,21 @@ def _patch_cpu_runtime() -> None:
 
     import vllm.v1.attention.selector as sel
 
-    def _fake_get_attn_backend(head_size, dtype, kv_cache_dtype,
-                               use_mla=False, **kwargs):
+    def _fake_get_attn_backend(
+        head_size, dtype, kv_cache_dtype, use_mla=False, **kwargs
+    ):
         return _FakeMLABackend if use_mla else _FakeGQABackend
 
     sel.get_attn_backend = _fake_get_attn_backend
-    sel._cached_get_attn_backend = lambda backend, attn_selector_config, num_heads=None: (
-        _FakeMLABackend if attn_selector_config.use_mla else _FakeGQABackend)
+    sel._cached_get_attn_backend = (
+        lambda backend, attn_selector_config, num_heads=None: (
+            _FakeMLABackend if attn_selector_config.use_mla else _FakeGQABackend
+        )
+    )
 
     try:
-        import vllm.v1.attention.backends.mla.prefill.selector as _sel_mod
         import vllm.v1.attention.backends.mla.prefill as _pf_mod
+        import vllm.v1.attention.backends.mla.prefill.selector as _sel_mod
     except Exception:
         _sel_mod = _pf_mod = None
 
@@ -322,9 +356,7 @@ def _patch_cpu_runtime() -> None:
             # 0.27 起官方 Kimi-K3 有自己的 MLA 模块（module-level 绑定 prefill 入口）
             import vllm.models.kimi_k3.nvidia.mla as _kimi_mla_mod
 
-            _kimi_mla_mod.get_mla_prefill_backend = (
-                lambda *a, **k: _FakePrefillBackend
-            )
+            _kimi_mla_mod.get_mla_prefill_backend = lambda *a, **k: _FakePrefillBackend
         except Exception:
             pass
 
@@ -372,6 +404,7 @@ def _patch_cpu_runtime() -> None:
     _torch.cuda.get_device_name = lambda *a, **k: "FAKE-CPU-SM100"  # type: ignore[misc]
 
     from collections import namedtuple
+
     from vllm.platforms import current_platform as _plat
 
     _Cap = namedtuple("_Cap", "major minor")
@@ -389,10 +422,11 @@ def _patch_fused_moe_stub() -> None:
     路由/量化属性。"""
 
     import torch.nn as nn
-    from vllm.model_executor.layers.fused_moe import layer as _fm_layer
     import vllm.model_executor.layers.fused_moe as _fm_pkg
+    from vllm.model_executor.layers.fused_moe import layer as _fm_layer
     from vllm.model_executor.layers.fused_moe.routed_experts import (
-        RoutedExperts as _RoutedExperts)
+        RoutedExperts as _RoutedExperts,
+    )
 
     def _stub_factory(*args, **kwargs):
         m = nn.Module()
@@ -414,12 +448,12 @@ def _patch_fused_moe_stub() -> None:
         self.routed_scaling_factor = kwargs.get("routed_scaling_factor", 1.0)
         self.e_score_correction_bias = kwargs.get("e_score_correction_bias", None)
         self.apply_router_weight_on_input = kwargs.get(
-            "apply_router_weight_on_input", False)
+            "apply_router_weight_on_input", False
+        )
         self.quant_config = kwargs.get("quant_config", None)
         self.quant_method = kwargs.get("quant_method", None)
         self.expert_map_manager = kwargs.get("expert_map_manager", None)
-        self._ascend_moe_lora_context = kwargs.get(
-            "_ascend_moe_lora_context", None)
+        self._ascend_moe_lora_context = kwargs.get("_ascend_moe_lora_context", None)
 
     _fm_layer.FusedMoEFactory = _stub_factory
     _fm_pkg.FusedMoEFactory = _stub_factory
@@ -559,9 +593,7 @@ def main() -> int:
         # UCM's MLA shared buffer is created by the worker.  The scheduler reads
         # the worker-published id, so initialize the worker before Scheduler.
         worker = make_worker(fixture)
-        dispatch = schedule(
-            fixture, tokens, request_token_salt, patch_groups, worker
-        )
+        dispatch = schedule(fixture, tokens, request_token_salt, patch_groups, worker)
         verify(fixture, dispatch, worker, torch.cpu.synchronize)
         return 0
     finally:

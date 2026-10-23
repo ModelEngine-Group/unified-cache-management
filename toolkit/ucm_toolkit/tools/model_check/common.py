@@ -644,10 +644,13 @@ def assert_shared_dispatch(metadata):
         (
             request_id,
             phase,
-            plan.hash_group,
-            plan.keys,
-            tuple(int(x) for x in plan.token_starts),
-            tuple(tuple(int(x) for x in blocks) for blocks in plan.group_block_ids),
+            plan.attention_type,
+            plan.common_ucm_chunk_ids,
+            tuple(int(token) for token in plan.token_starts),
+            tuple(
+                tuple(int(x) for x in vllm_block_ids)
+                for vllm_block_ids in plan.vllm_block_ids_by_group
+            ),
         )
         for request_id, request in metadata.requests.items()
         for phase in ("load", "dump")
@@ -1164,7 +1167,7 @@ def metadata_key_count(metadata: Any, phase: str) -> int:
     v2_requests = getattr(metadata, "requests", None)
     if v2_requests is not None:
         return sum(
-            len(plan.keys)
+            len(plan.common_ucm_chunk_ids)
             for request_meta in v2_requests.values()
             for plan in getattr(request_meta, f"{phase}_plans")
         )
@@ -1199,14 +1202,14 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
         transfers = builder(metadata)
     # Diagnostics iterate bytes; worker IO keeps the native [K,S] matrices.
     block_ids = tuple(
-        key
+        ucm_chunk_id
         for transfer in transfers
-        for key in transfer.keys
+        for ucm_chunk_id in transfer.ucm_chunk_ids
         for _ in range(transfer.ptrs.shape[1])
     )
     return SimpleNamespace(
         block_ids=block_ids,
-        offsets=tuple(v for t in transfers for v in t.ucm_block_offsets.reshape(-1)),
+        offsets=tuple(v for t in transfers for v in t.ucm_chunk_offsets.reshape(-1)),
         ptrs=tuple(v for t in transfers for v in t.ptrs.reshape(-1)),
         sizes=tuple(v for t in transfers for v in t.sizes.reshape(-1)),
     )
@@ -1232,7 +1235,7 @@ def fill_v2_dump_segments(
 ) -> int:
     """Fill every v2 dump byte range with a deterministic offset pattern."""
 
-    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+    from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
 
     batch = _v2_batch(worker, metadata, "dump")
     if batch is None:
@@ -1254,7 +1257,7 @@ def compare_v2_load_segments(
 ) -> int:
     """Compare loaded v2 ranges against their key/offset-derived byte pattern."""
 
-    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+    from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
 
     batch = _v2_batch(worker, metadata, "load")
     if batch is None:
@@ -1277,7 +1280,7 @@ def compare_v2_load_segments(
 
 def poison_v2_load_segments(fixture: Any, worker: Any, metadata: Any) -> int:
     """Overwrite target ranges with bytes outside the dump pattern's [0,250]."""
-    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+    from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
 
     batch = _v2_batch(worker, metadata, "load")
     access = TorchTensorByteAccess()

@@ -40,9 +40,10 @@ class TensorDescriptor:
 class BlockFirstView:
     """One group's contiguous per-block span on a Block First layout.
 
-    The group's descriptors tile the block slot back to back (offset
-    chain, paddings riding inside), so one block of this group is one
-    IO span: every layer page of every descriptor in it.
+    The group's descriptors tile the block slot back to back (each
+    starting where the previous ends, paddings riding inside), so one
+    block of this group is one IO span: every layer page of every
+    descriptor in it.
     """
 
     base_ptr: int  # first layer of the first (lowest-offset) descriptor
@@ -146,16 +147,16 @@ class KVCacheGroupLayout:
             if descriptor is None:
                 return None
             descriptors[id(descriptor)] = descriptor
-        first = min(descriptors.values(), key=lambda item: item.offset)
+        first_descriptor = min(descriptors.values(), key=lambda item: item.offset)
         if any(
             not 0 < descriptor.layer_stride < descriptor.block_stride
-            or descriptor.block_stride != first.block_stride
+            or descriptor.block_stride != first_descriptor.block_stride
             for descriptor in descriptors.values()
         ):
             return None
         return BlockFirstView(
-            base_ptr=self.layer_views[first.layers[0]].segments[0].base_ptr,
-            block_stride=first.block_stride,
+            base_ptr=self.layer_views[first_descriptor.layers[0]].segments[0].base_ptr,
+            block_stride=first_descriptor.block_stride,
             block_size_bytes=sum(
                 len(descriptor.layers) * descriptor.layer_stride
                 for descriptor in descriptors.values()
@@ -183,31 +184,36 @@ class KVCacheGroupLayout:
             return np.isin(self.layer_ids, np.asarray(layer_ids, dtype=np.uint64))
         if layer_names is None:
             return None
-        wanted = set(layer_names)
-        return np.asarray([name in wanted for name in self.layer_names], dtype=np.bool_)
+        wanted_layer_names = set(layer_names)
+        return np.asarray(
+            [layer_name in wanted_layer_names for layer_name in self.layer_names],
+            dtype=np.bool_,
+        )
 
     def resolve_ptrs(
         self,
-        block_ids: Sequence[int] | np.ndarray,
+        vllm_block_ids: Sequence[int] | np.ndarray,
         *,
         segment_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return [block, segment] bases, in caller-supplied block order."""
-        blocks = np.asarray(block_ids, dtype=np.uint64)
-        columns = slice(None) if segment_mask is None else segment_mask
+        vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+        segment_columns = slice(None) if segment_mask is None else segment_mask
         return (
-            self.base_ptrs[None, columns]
-            + blocks[:, None] * self.block_strides[None, columns]
+            self.base_ptrs[None, segment_columns]
+            + vllm_block_ids[:, None] * self.block_strides[None, segment_columns]
         )
 
     def resolve_block_first_ptrs(
-        self, block_ids: Sequence[int] | np.ndarray
+        self, vllm_block_ids: Sequence[int] | np.ndarray
     ) -> np.ndarray:
         """Return one contiguous group-span base per physical block."""
-        span = self.block_first
-        assert span is not None
-        blocks = np.asarray(block_ids, dtype=np.uint64)
-        return np.uint64(span.base_ptr) + blocks * np.uint64(span.block_stride)
+        block_first_view = self.block_first
+        assert block_first_view is not None
+        vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
+        return np.uint64(block_first_view.base_ptr) + vllm_block_ids * np.uint64(
+            block_first_view.block_stride
+        )
 
     def tokens_to_bytes(
         self,
@@ -221,7 +227,7 @@ class KVCacheGroupLayout:
         retained here. StoreLayout validates physical capability and entry
         alignment once when compiling the fixed ranges.
         """
-        columns = slice(None) if segment_mask is None else segment_mask
-        return np.multiply.outer(tokens, self.payload_bytes[columns]) // np.uint64(
-            tokens_per_block
-        )
+        segment_columns = slice(None) if segment_mask is None else segment_mask
+        return np.multiply.outer(
+            tokens, self.payload_bytes[segment_columns]
+        ) // np.uint64(tokens_per_block)

@@ -78,7 +78,7 @@ class ModelCheckTool(ToolAdapter):
             parser.add_argument(f"--{dimension}", type=int, default=1)
         parser.add_argument("--tokens", type=int, help="synthetic request length")
         parser.add_argument(
-            "--tokens-per-chunk", type=int, help="connector-v2 tokens per UCM key"
+            "--tokens-per-chunk", type=int, help="connector-v2 tokens per UCM chunk"
         )
         parser.add_argument(
             "--block-size", type=int, help="vLLM KV-cache block size in tokens"

@@ -31,18 +31,18 @@ for package_name, package_path in (
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
+from ucm.integration.vllm.v2.test_stores import FileTestStore, TorchTensorByteAccess
 from ucm.integration.vllm.v2.ucm_connector import UCMConnector
 from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
 from ucm.integration.vllm.v2.ucm_proxy import (
-    SimpleFileUCMProxy,
-    TorchTensorByteAccess,
+    PipelineProxy,
     UCMProxyAdapter,
 )
 from ucm.integration.vllm.v2.ucm_scheduler import (
     RequestDispatchMeta,
     UCMConnectorMetadata,
     UCMGroupDispatchPlan,
-    dispatch_routes,
+    groups_by_attention_type,
 )
 
 if (
@@ -56,11 +56,11 @@ if (
 from ucm_toolkit.tools.model_check import ascend
 
 
-def _metadata(layout, kind, groups, key, block_base, attribute):
-    group_block_ids = []
+def _metadata(layout, attention_type, groups, ucm_chunk_id, block_base, attribute):
+    vllm_block_ids_by_group = []
     cursor = block_base
     for group in groups:
-        group_block_ids.append(
+        vllm_block_ids_by_group.append(
             np.arange(
                 cursor,
                 cursor + layout.spec.blocks_per_chunk[group.group_id],
@@ -69,10 +69,10 @@ def _metadata(layout, kind, groups, key, block_base, attribute):
         )
         cursor += layout.spec.blocks_per_chunk[group.group_id]
     plan = UCMGroupDispatchPlan(
-        kind,
-        (key,),
-        np.array([0], dtype=np.uint64),
-        tuple(group_block_ids),
+        attention_type,
+        (ucm_chunk_id,),
+        np.zeros(1, dtype=np.uint64),
+        tuple(vllm_block_ids_by_group),
     )
     return UCMConnectorMetadata(
         requests={
@@ -81,7 +81,9 @@ def _metadata(layout, kind, groups, key, block_base, attribute):
     )
 
 
-def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
+def _exercise_attention_type(
+    layout, proxy, byte_access, attention_type, groups, sequence
+):
     # Groups share a native block pool: use distinct IDs across groups and
     # disjoint source/target windows, rather than overwriting shared slots.
     window_blocks = sum(
@@ -90,10 +92,12 @@ def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
     for group in groups:
         if group.group_id in layout.group_layouts:
             if 2 * window_blocks > layout.group_layouts[group.group_id].num_blocks:
-                raise ValueError("NPU probe needs disjoint source/target route windows")
-    key = sequence.to_bytes(16, "little")
-    dump_meta = _metadata(layout, kind, groups, key, 0, "dump_plans")
-    load_meta = _metadata(layout, kind, groups, key, window_blocks, "load_plans")
+                raise ValueError("NPU probe needs disjoint source/target windows")
+    ucm_chunk_id = sequence.to_bytes(16, "little")
+    dump_meta = _metadata(layout, attention_type, groups, ucm_chunk_id, 0, "dump_plans")
+    load_meta = _metadata(
+        layout, attention_type, groups, ucm_chunk_id, window_blocks, "load_plans"
+    )
     (dump_transfer,) = UCMTransferBuilder(layout).build_dump_transfers(dump_meta)
     (load_transfer,) = UCMTransferBuilder(layout).build_load_transfers(load_meta)
     source_ptrs = dump_transfer.ptrs.reshape(-1)
@@ -112,7 +116,7 @@ def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
         expected.append(payload)
     torch.npu.synchronize()
     proxy.submit("dump", dump_transfer)
-    proxy.commit(dump_transfer.keys)
+    proxy.commit(dump_transfer.ucm_chunk_ids, dump_transfer.chunk_indices)
 
     for ptr, size in zip(target_ptrs, sizes, strict=True):
         byte_access.write(int(ptr), bytes(int(size)))
@@ -123,7 +127,7 @@ def _exercise_route(layout, proxy, byte_access, kind, groups, sequence):
         actual = byte_access.read(int(ptr), int(size))
         if actual != expected[index]:
             raise AssertionError(
-                f"NPU byte mismatch for route={kind}, segment={index}, size={size}"
+                f"NPU byte mismatch for attention_type={attention_type.value}, segment={index}, size={size}"
             )
     return len(sizes), int(sizes.sum())
 
@@ -152,23 +156,25 @@ def main() -> int:
             )
             worker.register_kv_caches(fixture.kv_caches)
             layout = worker.layout
-            adapter = UCMProxyAdapter(SimpleFileUCMProxy(directory, byte_access))
-            routes = dispatch_routes(layout.spec)
-            for sequence, (kind, groups) in enumerate(routes, 1):
-                segments, transferred = _exercise_route(
-                    layout, adapter, byte_access, kind, groups, sequence
+            adapter = UCMProxyAdapter(
+                PipelineProxy(FileTestStore(directory, byte_access))
+            )
+            groups_by_type = groups_by_attention_type(layout.spec)
+            for sequence, (attention_type, groups) in enumerate(groups_by_type, 1):
+                segments, transferred = _exercise_attention_type(
+                    layout, adapter, byte_access, attention_type, groups, sequence
                 )
                 total_segments += segments
                 total_bytes += transferred
                 print(
                     "[ucm-v2-npu] PASS "
-                    f"route={kind} segments={segments} bytes={transferred}",
+                    f"attention_type={attention_type.value} segments={segments} bytes={transferred}",
                     flush=True,
                 )
 
         print(
             "[ucm-v2-npu] PASS real NPU layout/file-proxy round-trip: "
-            f"routes={len(routes)} "
+            f"groups_by_type={len(groups_by_type)} "
             f"segments={total_segments}, bytes={total_bytes}",
             flush=True,
         )
