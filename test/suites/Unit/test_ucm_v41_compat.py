@@ -82,6 +82,7 @@ def _load_hma_methods(names):
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
         "Optional": Optional,
+        "uses_partitioned_cache": lambda: False,
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
@@ -1259,6 +1260,31 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             self.assertEqual(connector.hash_block_size, 64)
             self.assertEqual(connector.file_size, {"FA": 45056, "WA": 0})
 
+    def test_striped_fa_uses_absolute_hash_positions_for_token_offsets(self):
+        import numpy as np
+
+        methods = _load_hma_methods({"_extract_fa_ptr"})
+        layout = types.SimpleNamespace(
+            extract_addrs_with_offsets=lambda ids, _size, offsets: np.column_stack(
+                (ids, offsets)
+            )
+        )
+        connector = types.SimpleNamespace(
+            fa_group_ids=[0],
+            group_layouts={0: layout},
+            group_metas={0: types.SimpleNamespace(token_block_size=128)},
+            hash_block_size=32,
+        )
+        result = methods["_extract_fa_ptr"](
+            connector,
+            [b"a", b"b"],
+            3,
+            11,
+            ([101, 102],),
+            hash_positions=np.array([6, 10]),
+        )
+        self.assertEqual(result.tolist(), [[101, 64], [102, 64]])
+
     def test_fa_only_prefix_can_be_found_and_saved_without_a_window_store(self):
         methods = _load_hma_methods(
             {"_create_wa_store", "_lookup_external_hit_blocks", "wait_for_save"}
@@ -1292,9 +1318,12 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                         request_meta={"req": request}
                     ),
                     _poll_completed_dump_tasks=lambda: None,
-                    _extract_fa_ptr=lambda keys, *_args: __import__("numpy").zeros(
-                        (len(keys), 2), dtype="uint64"
+                    _get_mla_dump_slice=lambda start, rank=rank, size=tp_size: slice(
+                        (rank - start) % size, None, size
                     ),
+                    _extract_fa_ptr=lambda keys, *_args, **_kwargs: __import__(
+                        "numpy"
+                    ).zeros((len(keys), 2), dtype="uint64"),
                     _get_dump_event_handle=lambda: 1,
                     _submit_dump_task=submit,
                     tp_size=tp_size,
@@ -1307,9 +1336,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     methods["_lookup_external_hit_blocks"](connector, keys), 8
                 )
                 methods["wait_for_save"](connector)
-                start = len(keys) * rank // tp_size
-                end = len(keys) * (rank + 1) // tp_size
-                self.assertEqual(saved, [("FA", keys[start:end])])
+                self.assertEqual(saved, [("FA", keys[rank::tp_size])])
 
     def test_replay_chunks_do_not_dump_past_the_scheduler_computed_position(self):
         methods = _load_hma_methods(

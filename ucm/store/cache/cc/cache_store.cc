@@ -283,4 +283,7 @@ private:
 
 }  // namespace UC::CacheStore
 
+#if !defined(UCM_CACHE_STORE_BOTH_CORES)
+extern "C" uint32_t UcmCacheCoreVersion() { return 1; }
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::CacheStore::CacheStore(); }
+#endif
