@@ -27,15 +27,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <gtest/gtest.h>
 #include <limits>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 #include "detail/types_helper.h"
+#include "metrics_api.h"
 
 namespace {
 
@@ -61,6 +64,7 @@ struct FakeKvClientState {
     std::size_t shutdownCalls{0};
     std::uintptr_t lastStoreEventHandle{0};
     bool failRegistration{false};
+    bool failInit{false};
     bool omitRegisteredHandle{false};
 };
 
@@ -71,6 +75,7 @@ public:
     kv::Status Init(const kv::KvClientConfig& config) override
     {
         (void)config;
+        if (state_->failInit) { return NotInitialized(); }
         initialized_ = true;
         return kv::Status::OK();
     }
@@ -78,6 +83,7 @@ public:
     kv::Status Init(const std::string& configPath) override
     {
         (void)configPath;
+        if (state_->failInit) { return NotInitialized(); }
         initialized_ = true;
         return kv::Status::OK();
     }
@@ -1409,6 +1415,209 @@ TEST(UCAsuStoreTest, RejectsInvalidKvCacheConfigBeforeClientInit)
         EXPECT_TRUE(state->initConfigs.empty());
         EXPECT_EQ(state->registrationCalls, std::size_t{0});
     }
+}
+
+namespace {
+
+// Re-exec each lifecycle scenario to isolate process-wide backend ownership.
+// This also permits shuffled/repeated runs.
+class UCAsuMetricsDeathTest : public testing::Test {
+protected:
+    void SetUp() override { GTEST_FLAG_SET(death_test_style, "threadsafe"); }
+};
+
+void RunMetricsChild(const std::function<void()>& scenario)
+{
+    EXPECT_FALSE(kv::metrics::IsEnabled());
+    UC::Metrics::SetUp();
+    scenario();
+    _exit(testing::Test::HasFailure() ? 1 : 0);
+}
+
+UC::Detail::Dictionary MakeMetricsConfig()
+{
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    return config;
+}
+
+void ExpectMetricsRoute(double value)
+{
+    UC::Metrics::CreateStats("asu_lifecycle_counter", "counter");
+    kv::metrics::CachedMetric metric{"asu_lifecycle_counter"};
+    kv::metrics::UpdateStats(metric, value);
+    const auto counters = std::get<0>(UC::Metrics::GetAllStatsAndClear());
+    ASSERT_EQ(counters.count(metric.Name()), 1U);
+    EXPECT_DOUBLE_EQ(counters.at(metric.Name()), value);
+}
+
+class RecordingMetricsBackend final : public kv::metrics::KvMetricsBackend {
+public:
+    void UpdateStats(kv::metrics::CachedMetric&, double value) noexcept override { total += value; }
+    void UpdateStats(const kv::metrics::MetricUpdate*, std::size_t) noexcept override {}
+    double total{0.0};
+};
+
+}  // namespace
+
+TEST_F(UCAsuMetricsDeathTest, DisabledStoreDoesNotInstallBackend)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    UC::AsuStore::AsuStore store;
+                    UseFakeClient(store);
+                    auto config = MakeMetricsConfig();
+                    config.Set("enable_metrics", false);
+                    ASSERT_TRUE(store.Setup(config).Success());
+                    EXPECT_FALSE(kv::metrics::IsEnabled());
+                    UC::Metrics::CreateStats("disabled_counter", "counter");
+                    kv::metrics::CachedMetric metric{"disabled_counter"};
+                    kv::metrics::UpdateStats(metric, 1.0);
+                    EXPECT_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).count(metric.Name()),
+                              0U);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, DefaultEnablementSurvivesMultipleStoresAndRecreation)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto config = MakeMetricsConfig();
+                    {
+                        UC::AsuStore::AsuStore first;
+                        UseFakeClient(first);
+                        ASSERT_TRUE(first.Setup(config).Success());
+                        ASSERT_TRUE(kv::metrics::IsEnabled());
+                        {
+                            UC::AsuStore::AsuStore second;
+                            UseFakeClient(second);
+                            ASSERT_TRUE(second.Setup(config).Success());
+                        }
+                        ExpectMetricsRoute(2.0);
+                    }
+                    EXPECT_TRUE(kv::metrics::IsEnabled());
+                    UC::AsuStore::AsuStore recreated;
+                    UseFakeClient(recreated);
+                    ASSERT_TRUE(recreated.Setup(config).Success());
+                    ExpectMetricsRoute(3.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, ExplicitEnablementInstallsBeforeClientCreation)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    UC::AsuStore::AsuStore store;
+                    auto state = std::make_shared<FakeKvClientState>();
+                    store.SetClientFactory([state](const UC::AsuStore::Config&) {
+                        EXPECT_TRUE(kv::metrics::IsEnabled());
+                        return std::make_unique<FakeKvClient>(state);
+                    });
+                    auto config = MakeMetricsConfig();
+                    config.Set("enable_metrics", true);
+                    ASSERT_TRUE(store.Setup(config).Success());
+                    ASSERT_TRUE(kv::metrics::EnsureUcmKvMetricsInstalled());
+                    ExpectMetricsRoute(4.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, DisabledStorePreservesExistingBackend)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto backend = std::make_shared<RecordingMetricsBackend>();
+                    ASSERT_TRUE(kv::metrics::InstallBackend(backend));
+                    {
+                        UC::AsuStore::AsuStore store;
+                        UseFakeClient(store);
+                        auto config = MakeMetricsConfig();
+                        config.Set("enable_metrics", false);
+                        ASSERT_TRUE(store.Setup(config).Success());
+                    }
+                    kv::metrics::CachedMetric metric{"existing_backend"};
+                    kv::metrics::UpdateStats(metric, 7.0);
+                    EXPECT_DOUBLE_EQ(backend->total, 7.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, FailedClientSetupRetainsBackendForLaterStore)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    for (const bool failInit : {true, false}) {
+                        UC::AsuStore::AsuStore store;
+                        auto state = UseFakeClient(store);
+                        state->failInit = failInit;
+                        state->failRegistration = !failInit;
+                        auto config = MakeMetricsConfig();
+                        config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+                        config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+                        ASSERT_TRUE(store.Setup(config).Failure());
+                        EXPECT_TRUE(kv::metrics::IsEnabled());
+                    }
+                    UC::AsuStore::AsuStore later;
+                    UseFakeClient(later);
+                    ASSERT_TRUE(later.Setup(MakeMetricsConfig()).Success());
+                    ExpectMetricsRoute(5.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, BackendConflictDoesNotBlockStoreAndLaterSetupRetries)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto backend = std::make_shared<RecordingMetricsBackend>();
+                    ASSERT_TRUE(kv::metrics::InstallBackend(backend));
+                    {
+                        UC::AsuStore::AsuStore store;
+                        const auto state = UseFakeClient(store);
+                        ASSERT_TRUE(store.Setup(MakeMetricsConfig()).Success());
+                        ASSERT_EQ(state->initConfigs.size(), 1U);
+                        const auto block = UC::Test::Detail::TypesHelper::MakeBlockId(
+                            "a2b2c3d4e5f6789012345678901234ab");
+                        ExpectLookupMiss(store, block);
+                    }
+                    std::string error;
+                    EXPECT_FALSE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
+                    EXPECT_EQ(error, "metrics backend is already initialized");
+                    kv::metrics::CachedMetric metric{"existing_backend"};
+                    kv::metrics::UpdateStats(metric, 9.0);
+                    EXPECT_DOUBLE_EQ(backend->total, 9.0);
+                    // The conflicting backend has stopped all its writers.
+                    kv::metrics::Shutdown();
+                    UC::AsuStore::AsuStore recovered;
+                    UseFakeClient(recovered);
+                    ASSERT_TRUE(recovered.Setup(MakeMetricsConfig()).Success());
+                    ASSERT_TRUE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
+                    EXPECT_TRUE(error.empty());
+                    ExpectMetricsRoute(6.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, StoreRecreationRestoresMetricsAfterQuiescentShutdown)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    {
+                        UC::AsuStore::AsuStore first;
+                        UseFakeClient(first);
+                        ASSERT_TRUE(first.Setup(MakeMetricsConfig()).Success());
+                    }
+                    UC::Metrics::CreateStats("reused_binding", "counter");
+                    kv::metrics::CachedMetric metric{"reused_binding"};
+                    kv::metrics::UpdateStats(metric, 2.0);
+                    kv::metrics::Shutdown();
+                    EXPECT_FALSE(kv::metrics::IsEnabled());
+                    UC::AsuStore::AsuStore recreated;
+                    UseFakeClient(recreated);
+                    ASSERT_TRUE(recreated.Setup(MakeMetricsConfig()).Success());
+                    std::string error;
+                    EXPECT_TRUE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
+                    EXPECT_TRUE(error.empty());
+                    kv::metrics::UpdateStats(metric, 3.0);
+                    EXPECT_DOUBLE_EQ(
+                        std::get<0>(UC::Metrics::GetAllStatsAndClear()).at("reused_binding"), 5.0);
+                }),
+                testing::ExitedWithCode(0), "");
 }
 
 TEST(UCAsuStoreTest, RegistrationFailureShutsDownClient)

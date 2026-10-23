@@ -36,6 +36,9 @@ void UpdateStats(const std::string& name, double value);
 
 void UpdateStats(CachedMetric& metric, double value);
 
+// Like UpdateStats, but distinguish missing initialization/registration from success.
+UpdateResult TryUpdateStats(CachedMetric& metric, double value);
+
 void UpdateStats(const std::unordered_map<std::string, double>& values);
 
 void MergeHistogramStats(const HistogramStatsMap& values);

@@ -56,6 +56,8 @@ from ucm.metrics_config import (
     get_vllm_connector_metric_definitions,
     load_launch_metrics_config,
     setup_ucm_metrics,
+    should_setup_metrics,
+    store_metrics_enabled,
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
 from ucm.observability import PrometheusStatsLogger
@@ -1796,6 +1798,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config["enable_metrics"] = store_metrics_enabled(self.launch_config, config)
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
@@ -3631,10 +3634,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
         metrics_config_path = self.launch_config.get("metrics_config_path", "")
         self.metrics_config = load_launch_metrics_config(self.launch_config)
-        if self.metrics_config and (
-            consumer_enabled(self.metrics_config, MULTIPROC_CONSUMER)
-            or consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER)
-        ):
+        if should_setup_metrics(self.metrics_config):
             setup_ucm_metrics(self.metrics_config)
             self._metrics_dispatcher = get_metrics_dispatcher(self.metrics_config)
         if (
