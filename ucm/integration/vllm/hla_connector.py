@@ -1705,10 +1705,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if not self.need_load or not self.layer_order:
             return
 
-        # Ensure do_mamba_copy_block (preprocess_mamba, compute stream) has
-        # completed before load DMA (store stream) can overwrite the state
-        # it copies.
-        self.device.synchronize()
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
@@ -1929,6 +1925,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
         self._group_commit_layer: dict[int, str] = {}
+        self._mamba_copy_bufs = None
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Layerwise registration: per-pair store + deferred commit plan.
@@ -2182,15 +2179,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self._reset_transfer_state()
+        self._mamba_copy_bufs = None
         self._prepare_load_plan(metadata)
 
         if not self.need_load or not self.layer_order:
             return
 
-        # Ensure do_mamba_copy_block (preprocess_mamba, compute stream)
-        # has completed before load DMA (store stream) can overwrite the
-        # state it copies.
-        self.device.synchronize()
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.
@@ -2219,11 +2213,53 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
                 self._record_load_bytes()
+        # Takeover: the pair wait guarantees this layer's row has landed,
+        # so its staged copy reads a fully-loaded checkpoint slice.
+        if self._mamba_copy_bufs is not None:
+            self._mamba_utils().do_mamba_copy_block_for_layer(
+                self._mamba_copy_bufs, layer_name
+            )
         # Keep at most two layers in flight: the next position was normally
         # submitted two waits ago; resubmitting is a no-op and covers a gap
         # where an earlier layer's wait hook never fired.
         self._submit_layer_load(pos + 1)
         self._submit_layer_load(pos + 2)
+
+    @staticmethod
+    def _mamba_utils():
+        """vllm-ascend's per-layer copy helpers installed onto core's
+        mamba_utils (adapt_patch, worker startup). Lazy import keeps
+        vllm.v1.worker out of the scheduler process.
+        """
+        from vllm.v1.worker import mamba_utils
+
+        return mamba_utils
+
+    def prepare_mamba_state_copy(self, mamba_state_or_copy_bufs) -> bool:
+        """Take over this step's staged align copies (probed every step).
+
+        Only on load steps — the engine's batched fallback would race our
+        in-flight load DMAs. Otherwise decline; the fallback is race-free.
+        """
+        if hasattr(mamba_state_or_copy_bufs, "do_mamba_copy_for_layer"):
+            # MRV2 hands its model-state object, not the V1 copy buffers.
+            return False
+        if not self.need_load or not self.layer_order:
+            return False
+        self._mamba_utils().prepare_mamba_copy_by_layer(mamba_state_or_copy_bufs)
+        self._mamba_copy_bufs = mamba_state_or_copy_bufs
+        return True
+
+    def finish_mamba_state_copy(self) -> None:
+        """Post-forward checkpoint. Raises if any layer's copy was skipped:
+        running it now could neither repair the step's output nor safely
+        overwrite the state the forward just advanced.
+        """
+        bufs = self._mamba_copy_bufs
+        if bufs is None:
+            return
+        self._mamba_copy_bufs = None
+        self._mamba_utils().finish_mamba_copy_by_layer(bufs)
 
     def save_kv_layer(
         self,
@@ -2266,6 +2302,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._wait_dump_tasks()
 
         self._record_load_bytes()
+        # need_load is only valid within its own step: with the post-forward
+        # load order, prepare_mamba_state_copy may read it before the next
+        # start_load_kv can refresh it — clear here (before the early return)
+        # so a stale True can't trigger a takeover.
+        self.need_load = False
         if not self.is_save:
             self._dump_tasks.clear()
             self._dump_plan = None
