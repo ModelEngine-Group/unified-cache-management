@@ -33,6 +33,7 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.v1.core.sched.output import SchedulerOutput
 
+from ucm.integration.vllm.cache_config import cache_rank_count, configure_cache_numa
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -47,6 +48,7 @@ from ucm.integration.vllm.ucm_connector import (
     _worker_generate_unique_id,
 )
 from ucm.logger import init_logger
+from ucm.store.cache.capabilities import uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -286,7 +288,18 @@ def create_ucm_ec_store(
             "posix_gc_enable": gc_owner,
         }
     )
+    if uses_partitioned_cache():
+        local_count = cache_rank_count(parallel_config)
+        store_config["local_rank_size"] = local_count
     if role == ECConnectorRole.WORKER:
+        if uses_partitioned_cache():
+            configure_cache_numa(
+                store_config,
+                create_device(),
+                device_id,
+                parallel_config,
+                device_id % local_count,
+            )
         store_config.update(
             {
                 "tensor_size_list": tensor_size_list,
