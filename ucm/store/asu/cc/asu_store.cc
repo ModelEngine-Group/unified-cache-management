@@ -271,7 +271,7 @@ public:
         auto status = CheckConfig(config);
         if (status.Failure()) { return status; }
 
-        if (config.installMetrics) {
+        if (config.enableMetrics) {
             // The helper logs failures; continue with the available backend state.
             // Installation is best-effort and does not disable an existing backend.
             (void)kv::metrics::EnsureUcmKvMetricsInstalled();
@@ -451,7 +451,7 @@ private:
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
         Config config;
-        inConfig.Get("enable_metrics", config.installMetrics);
+        inConfig.Get("enable_metrics", config.enableMetrics);
         inConfig.Get("asu_mode", config.mode);
         inConfig.Get("asu_config_path", config.configPath);
         inConfig.Get("asu_client_id", config.clientId);

@@ -2753,7 +2753,7 @@ def _create_metrics_test_store(monkeypatch, kind, launch_config, store_config):
 @pytest.mark.parametrize("pipeline", ["ASU", "Cache|Empty"])
 @pytest.mark.parametrize("launch_enabled", [None, False, True])
 @pytest.mark.parametrize("store_enabled", [None, False, True])
-def test_asu_store_metrics_switch_reaches_store_config(
+def test_store_metrics_switch_reaches_store_config(
     monkeypatch, kind, pipeline, launch_enabled, store_enabled
 ):
     launch_config = {} if launch_enabled is None else {"enable_metrics": launch_enabled}
@@ -2761,17 +2761,13 @@ def test_asu_store_metrics_switch_reaches_store_config(
     if store_enabled is not None:
         store_config["enable_metrics"] = store_enabled
     config = _create_metrics_test_store(monkeypatch, kind, launch_config, store_config)
-    if pipeline == "ASU":
-        assert config["enable_metrics"] is (
-            launch_enabled is not False and store_enabled is not False
-        )
-    elif store_enabled is None:
-        assert "enable_metrics" not in config
-    else:
-        assert config["enable_metrics"] is store_enabled
+    assert config["enable_metrics"] is (
+        launch_enabled is not False and store_enabled is not False
+    )
 
 
 @pytest.mark.parametrize("kind", ["direct", "hma", "hla", "hla_layerwise"])
+@pytest.mark.parametrize("pipeline", ["ASU", "Cache|Empty"])
 @pytest.mark.parametrize("store_enabled", [False, True])
 @pytest.mark.parametrize(
     "source, consumers, expected_setup",
@@ -2830,8 +2826,15 @@ def test_asu_store_metrics_switch_reaches_store_config(
         ),
     ],
 )
-def test_asu_metrics_gate_matches_outer_setup(
-    monkeypatch, tmp_path, kind, store_enabled, source, consumers, expected_setup
+def test_store_metrics_gate_matches_outer_setup(
+    monkeypatch,
+    tmp_path,
+    kind,
+    pipeline,
+    store_enabled,
+    source,
+    consumers,
+    expected_setup,
 ):
     _reset_fakes()
     launch_config = {"enable_metrics": True}
@@ -2880,7 +2883,7 @@ def test_asu_metrics_gate_matches_outer_setup(
         monkeypatch,
         kind,
         launch_config,
-        {"store_pipeline": "ASU", "enable_metrics": store_enabled},
+        {"store_pipeline": pipeline, "enable_metrics": store_enabled},
     )
     assert config["enable_metrics"] is (expected_setup and store_enabled)
     # Store creation only decides installation; the outer connector owns setup.
@@ -2889,7 +2892,7 @@ def test_asu_metrics_gate_matches_outer_setup(
 
 
 @pytest.mark.parametrize("kind", ["direct", "hma", "hla", "hla_layerwise"])
-def test_disabled_consumers_do_not_rewrite_non_asu_store_config(monkeypatch, kind):
+def test_disabled_consumers_disable_store_metrics(monkeypatch, kind):
     config = _create_metrics_test_store(
         monkeypatch,
         kind,
@@ -2900,7 +2903,7 @@ def test_disabled_consumers_do_not_rewrite_non_asu_store_config(monkeypatch, kin
         },
         {"store_pipeline": "Cache|Empty", "enable_metrics": True},
     )
-    assert config["enable_metrics"] is True
+    assert config["enable_metrics"] is False
 
 
 def test_sparse_utils_annotations_resolve_with_torch_stub():

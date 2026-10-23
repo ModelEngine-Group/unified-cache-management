@@ -11,9 +11,9 @@
 namespace UC::AsuStore {
 
 struct Config {
-    // Legacy configuration key: enable_metrics. Controls installation only;
+    // Configuration key: enable_metrics. Controls installation only;
     // does not filter this store's samples or disable a process-wide backend.
-    bool installMetrics{true};
+    bool enableMetrics{true};
     std::string mode{"client"};
     std::string configPath;
     std::string clientId{"ucm-asu-store"};

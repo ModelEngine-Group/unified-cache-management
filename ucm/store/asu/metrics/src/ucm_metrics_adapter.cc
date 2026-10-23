@@ -96,7 +96,7 @@ bool InstallationFailed(std::string* error, const char* reason) noexcept
     return false;
 }
 
-class UcmKvMetricsAdapter final : public KvMetricsBackend {
+class UcmMetricsBackend final : public KvMetricsBackend {
 public:
     void UpdateStats(CachedMetric& metric, double value) noexcept override
     {
@@ -139,24 +139,24 @@ public:
 
 }  // namespace
 
-std::shared_ptr<KvMetricsBackend> CreateUcmKvMetricsAdapter()
+std::shared_ptr<KvMetricsBackend> CreateUcmMetricsBackend()
 {
-    return std::make_shared<UcmKvMetricsAdapter>();
+    return std::make_shared<UcmMetricsBackend>();
 }
 
 bool EnsureUcmKvMetricsInstalled(std::string* error) noexcept
 {
     try {
         static std::mutex mutex;
-        // Retain the same adapter across quiescent shutdown/reinstallation.
+        // Retain the same backend across quiescent shutdown/reinstallation.
         // Its cached bindings remain valid across Store lifetimes.
-        static std::shared_ptr<KvMetricsBackend> adapter;
+        static std::shared_ptr<KvMetricsBackend> backend;
         std::lock_guard<std::mutex> lock{mutex};
         if (error != nullptr) { error->clear(); }
-        if (!adapter) { adapter = CreateUcmKvMetricsAdapter(); }
-        if (IsBackendInstalled(adapter.get())) { return true; }
+        if (!backend) { backend = CreateUcmMetricsBackend(); }
+        if (IsBackendInstalled(backend.get())) { return true; }
         std::string installError;
-        if (!InstallBackend(adapter, &installError)) {
+        if (!InstallBackend(backend, &installError)) {
             return InstallationFailed(error, installError.c_str());
         }
         return true;

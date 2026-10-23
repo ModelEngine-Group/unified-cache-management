@@ -32,6 +32,7 @@ from ucm.integration.vllm.ucm_connector import (
     build_kv_hash_meta,
 )
 from ucm.logger import init_logger
+from ucm.metrics_config import store_metrics_enabled
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
@@ -1347,8 +1348,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
-        if config.get("store_pipeline") == "ASU":
-            config["enable_metrics"] = self._asu_metrics_enabled(config)
+        config["enable_metrics"] = store_metrics_enabled(self.launch_config, config)
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
         # MLA ranks share one logical store buffer; non-MLA stores are per rank.

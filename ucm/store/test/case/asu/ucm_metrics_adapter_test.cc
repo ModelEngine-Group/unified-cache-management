@@ -137,7 +137,7 @@ TEST_F(UcmKvMetricsInstallDeathTest, DoesNotMistakeAnotherBackendForRetainedAdap
         {
             ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
             Shutdown();
-            auto other = CreateUcmKvMetricsAdapter();
+            auto other = CreateUcmMetricsBackend();
             ASSERT_TRUE(InstallBackend(other));
             std::string error;
             EXPECT_FALSE(EnsureUcmKvMetricsInstalled(&error));
@@ -160,7 +160,7 @@ TEST_F(UcmKvMetricsInstallDeathTest, DiagnosesUninitializedCollectorAndLaterRegi
             UC::Metrics::CachedMetric native{metric.Name()};
             EXPECT_EQ(UC::Metrics::TryUpdateStats(native, 100.0),
                       UC::Metrics::UpdateResult::NotInitialized);
-            ASSERT_TRUE(InstallBackend(CreateUcmKvMetricsAdapter()));
+            ASSERT_TRUE(InstallBackend(CreateUcmMetricsBackend()));
             UpdateStats(metric, 100.0);
             const auto uninitialized =
                 "KV UCM metric " + metric.Name() + " skipped: collector is not initialized";
@@ -184,13 +184,13 @@ TEST_F(UcmKvMetricsInstallDeathTest, DiagnosesUninitializedCollectorAndLaterRegi
         testing::ExitedWithCode(0), "");
 }
 
-class UcmKvMetricsAdapterTest : public testing::Test {
+class UcmMetricsBackendTest : public testing::Test {
 protected:
     void SetUp() override
     {
         UC::Metrics::SetUp();
         UC::Metrics::GetAllStatsAndClear();
-        backend_ = CreateUcmKvMetricsAdapter();
+        backend_ = CreateUcmMetricsBackend();
         ASSERT_TRUE(InstallBackend(backend_));
         // UCM registrations persist in a process, including across --gtest_repeat.
         static unsigned sequence = 0;
@@ -215,7 +215,7 @@ protected:
     std::shared_ptr<KvMetricsBackend> backend_;
 };
 
-TEST_F(UcmKvMetricsAdapterTest, RoutesSingleUpdatesAndDrainsOnlyOnce)
+TEST_F(UcmMetricsBackendTest, RoutesSingleUpdatesAndDrainsOnlyOnce)
 {
     CachedMetric counter{Register("counter", "counter")};
     CachedMetric gauge{Register("gauge", "gauge")};
@@ -238,7 +238,7 @@ TEST_F(UcmKvMetricsAdapterTest, RoutesSingleUpdatesAndDrainsOnlyOnce)
     EXPECT_EQ(std::get<2>(drained).count(histogram.Name()), 0U);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, RoutesBatchAndIgnoresNullEntries)
+TEST_F(UcmMetricsBackendTest, RoutesBatchAndIgnoresNullEntries)
 {
     CachedMetric counter{Register("counter", "counter")};
     CachedMetric gauge{Register("gauge", "gauge")};
@@ -262,7 +262,7 @@ TEST_F(UcmKvMetricsAdapterTest, RoutesBatchAndIgnoresNullEntries)
     EXPECT_DOUBLE_EQ(std::get<2>(stats).at(histogram.Name()).sum, 0.5);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, ResolvesSameCachedMetricAfterLateRegistration)
+TEST_F(UcmMetricsBackendTest, ResolvesSameCachedMetricAfterLateRegistration)
 {
     CachedMetric metric{prefix_ + "late"};
     UpdateStats(metric, 100.0);
@@ -272,7 +272,7 @@ TEST_F(UcmKvMetricsAdapterTest, ResolvesSameCachedMetricAfterLateRegistration)
     EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 2.0);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, BoundsUnregisteredDiagnosticsAndRecovers)
+TEST_F(UcmMetricsBackendTest, BoundsUnregisteredDiagnosticsAndRecovers)
 {
     // Disable the logger's own limiter to exercise the adapter's pre-format gate.
     ScopedMetricsDiagnostics diagnostics;
@@ -299,7 +299,7 @@ TEST_F(UcmKvMetricsAdapterTest, BoundsUnregisteredDiagnosticsAndRecovers)
     EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 2.0);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, AggregatesNodeHistogramsIntoBaseName)
+TEST_F(UcmMetricsBackendTest, AggregatesNodeHistogramsIntoBaseName)
 {
     const auto name = Register("nodes", "histogram", {1.0, 5.0});
     CachedMetric first{name, {{"node_id", "1"}}};
@@ -317,7 +317,7 @@ TEST_F(UcmKvMetricsAdapterTest, AggregatesNodeHistogramsIntoBaseName)
     EXPECT_DOUBLE_EQ(histograms.at(name).sum, 17.5);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, FlushAndStopLeaveDrainingToUcm)
+TEST_F(UcmMetricsBackendTest, FlushAndStopLeaveDrainingToUcm)
 {
     CachedMetric metric{Register("counter", "counter")};
     UpdateStats(metric, 2.0);
@@ -329,7 +329,7 @@ TEST_F(UcmKvMetricsAdapterTest, FlushAndStopLeaveDrainingToUcm)
     EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 5.0);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, DrainsUpdatesFromRetiredThreads)
+TEST_F(UcmMetricsBackendTest, DrainsUpdatesFromRetiredThreads)
 {
     CachedMetric counter{Register("counter", "counter")};
     CachedMetric histogram{Register("histogram", "histogram", {1.0})};
@@ -353,7 +353,7 @@ TEST_F(UcmKvMetricsAdapterTest, DrainsUpdatesFromRetiredThreads)
     EXPECT_DOUBLE_EQ(std::get<2>(stats).at(histogram.Name()).sum, 500.0);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, LogsRepeatedUpdateFailuresAndRecovers)
+TEST_F(UcmMetricsBackendTest, LogsRepeatedUpdateFailuresAndRecovers)
 {
     // Disable rate limiting only in this test to distinguish recurring logger
     // diagnostics from the old process-wide, one-shot stderr message.
@@ -391,7 +391,7 @@ TEST_F(UcmKvMetricsAdapterTest, LogsRepeatedUpdateFailuresAndRecovers)
     EXPECT_TRUE(reportedTwice);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, LoggingAllocationFailureDoesNotEscapeUpdate)
+TEST_F(UcmMetricsBackendTest, LoggingAllocationFailureDoesNotEscapeUpdate)
 {
     CachedMetric metric{Register("logging_failure", "counter")};
     allocationFailures = 2;
@@ -401,7 +401,7 @@ TEST_F(UcmKvMetricsAdapterTest, LoggingAllocationFailureDoesNotEscapeUpdate)
     EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 4.0);
 }
 
-TEST_F(UcmKvMetricsAdapterTest, SkipsForeignCachedBindingWithoutInvalidCast)
+TEST_F(UcmMetricsBackendTest, SkipsForeignCachedBindingWithoutInvalidCast)
 {
     struct ForeignBinding : CachedMetric::Binding {
         explicit ForeignBinding(Kind kind) : CachedMetric::Binding(kind) {}

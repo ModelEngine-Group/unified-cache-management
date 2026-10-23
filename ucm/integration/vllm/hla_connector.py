@@ -41,6 +41,7 @@ from ucm.integration.vllm.ucm_connector import (
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
+from ucm.metrics_config import store_metrics_enabled
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
@@ -1421,8 +1422,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
-        if config.get("store_pipeline") == "ASU":
-            config["enable_metrics"] = self._asu_metrics_enabled(config)
+        config["enable_metrics"] = store_metrics_enabled(self.launch_config, config)
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
