@@ -8,11 +8,13 @@ pulls in numpy and the ucm C++ store.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import platform
 import re
 import shutil
 import subprocess
+import sys
 from importlib.metadata import PackageNotFoundError, distributions
 from importlib.metadata import version as pkg_version
 from typing import List, Optional, Tuple
@@ -22,6 +24,7 @@ from .parseutil import (
     compare_versions,
     extract_nvidia_compute_cap,
     normalize_vllm_ascend_version,
+    parse_ascend_driver_version_info,
     parse_npu_smi_versions,
     parse_nvidia_smi_csv,
     parse_version,
@@ -124,30 +127,94 @@ def check_serving_stack() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
+def _is_ucm_distribution(name: str) -> bool:
+    normalized = re.sub(r"[-_.]+", "-", name).lower()
+    return re.search(r"(?:^|-)uc-manager(?:-|$)", normalized) is not None
+
+
 def installed_ucm_distributions() -> dict[str, str]:
     """Return names and versions matching uc-manager, including Forks and variants."""
     installed = {}
     for dist in distributions():
         name = dist.metadata["Name"] or ""
-        normalized = re.sub(r"[-_.]+", "-", name).lower()
-        if re.search(r"(?:^|-)uc-manager(?:-|$)", normalized):
+        if _is_ucm_distribution(name):
             installed[name] = dist.version
     return dict(sorted(installed.items()))
+
+
+def _ucm_distributions_from_pip() -> Tuple[dict, Optional[str], Optional[str]]:
+    """List UCM distributions through the ``pip``/``pip3`` found on PATH.
+
+    ``ucm-toolkit`` and the serving stack are sometimes installed in different
+    Python environments. importlib.metadata then correctly reports nothing for
+    the toolkit interpreter even though ``pip list`` in the user's shell sees
+    ``uc-manager-cann910-a5``. Querying pip is a display-only fallback and makes
+    that common split-environment deployment visible instead of showing ``-``.
+    """
+    pip = shutil.which("pip") or shutil.which("pip3")
+    if pip is None:
+        return {}, None, "pip/pip3 not found on PATH"
+
+    command = [pip, "list", "--format=json"]
+    rc, out, err = _run(command, timeout=15)
+    if rc != 0:
+        return {}, pip, err.strip() or f"pip list failed with rc={rc}"
+
+    # Pip normally emits pure JSON on stdout and sends LD_PRELOAD and similar
+    # warnings to stderr. Restricting json.loads to the outer array also makes
+    # this tolerant of unexpected prefix/suffix text.
+    start, end = out.find("["), out.rfind("]")
+    if start < 0 or end <= start:
+        return {}, pip, "pip list did not return JSON rows"
+    try:
+        rows = json.loads(out[start : end + 1])
+    except (TypeError, ValueError) as exc:
+        return {}, pip, f"could not parse pip list output: {exc}"
+    if not isinstance(rows, list):
+        return {}, pip, "pip list output was not a JSON array"
+
+    installed: dict = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not name or not _is_ucm_distribution(str(name)):
+            continue
+        installed[str(name)] = str(row.get("version") or "")
+    return dict(sorted(installed.items())), pip, None
 
 
 def check_uc_manager_version() -> CheckResult:
     """Report installed UCM package names and versions without importing UCM."""
     installed = installed_ucm_distributions()
-    raw: dict = {"distributions": installed}
+    raw: dict = {
+        "distributions": installed,
+        "source": "importlib.metadata",
+        "python": sys.executable,
+    }
+    if not installed:
+        pip_installed, pip_command, pip_error = _ucm_distributions_from_pip()
+        if pip_command:
+            raw["pip_command"] = pip_command
+        if pip_error:
+            raw["pip_error"] = pip_error
+        if pip_installed:
+            installed = pip_installed
+            raw["distributions"] = installed
+            raw["source"] = "pip"
+        else:
+            raw["source"] = "importlib.metadata+pip"
+
     if installed:
         if len(installed) == 1:
             raw["version"] = next(iter(installed.values()))
+        source = raw["source"]
         return CheckResult(
             name="uc_manager",
             severity=INFO,
             status=STATUS_INFO,
             value=", ".join(f"{name}={version}" for name, version in installed.items()),
-            detail="installed UCM packages",
+            detail=f"installed UCM packages (source: {source})",
             raw=raw,
         )
     return CheckResult(
@@ -155,7 +222,7 @@ def check_uc_manager_version() -> CheckResult:
         severity=INFO,
         status=STATUS_INFO,
         value="-",
-        detail="ucm package not installed",
+        detail="uc-manager is not visible to the ucm-toolkit Python or pip on PATH",
         raw=raw,
     )
 
@@ -272,6 +339,47 @@ def _check_nvidia(cfg: PrecheckConfig) -> CheckResult:
     )
 
 
+def _ascend_driver_version_info_path() -> str:
+    driver_home = os.environ.get("ASCEND_DRIVER_HOME")
+    if driver_home:
+        return os.path.join(driver_home, "version.info")
+    return "/usr/local/Ascend/driver/version.info"
+
+
+def _read_text_file(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _ascend_driver_version_from_info() -> Tuple[Optional[str], dict]:
+    path = _ascend_driver_version_info_path()
+    text = _read_text_file(path)
+    if text is None:
+        return None, {"path": path, "error": "not readable"}
+
+    info = parse_ascend_driver_version_info(text)
+    raw: dict = {"path": path, **info}
+    version = next(
+        (
+            info[key]
+            for key in (
+                "Version",
+                "Driver Version",
+                "driver_version",
+                "package_version",
+            )
+            if info.get(key) and parse_version(info[key])
+        ),
+        None,
+    )
+    if version is None:
+        raw["error"] = "no usable Version or package_version key"
+    return version, raw
+
+
 def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
     rc, out, err = _run(["npu-smi", "info"])
     if rc != 0:
@@ -286,10 +394,24 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
             raw={"platform": "ascend", "rc": rc, "stderr": err},
         )
     parsed = parse_npu_smi_versions(out)
-    hdk = parsed.get("hdk")
+    # An explicit npu-smi HDK/driver label is authoritative. If only the
+    # ambiguous banner "Version" is present, prefer the driver package's
+    # version.info and use the banner only when that file is unavailable.
+    hdk = parsed.get("hdk") if parsed.get("source") in ("hdk", "driver") else None
+    version_source = parsed.get("source")
+    driver_info: Optional[dict] = None
+    if hdk is None:
+        file_version, driver_info = _ascend_driver_version_from_info()
+        if file_version is not None:
+            hdk = file_version
+            version_source = "driver/version.info"
+        else:
+            hdk = parsed.get("hdk")
     floor = parse_version(cfg.ascend_min_hdk)
     value = f"HDK={hdk or '?'}"
-    raw = {"platform": "ascend", **parsed}
+    raw = {"platform": "ascend", **parsed, "version_source": version_source}
+    if driver_info is not None:
+        raw["driver_info"] = driver_info
 
     if hdk is None:
         return CheckResult(
@@ -299,10 +421,14 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
             value=value,
             threshold=f"HDK > {cfg.ascend_min_hdk}",
             detail=(
-                "could not extract an HDK/driver version; heuristic parse "
-                f"found: {parsed['raw_versions'] or 'none'}"
+                "could not extract an HDK/driver version from npu-smi info or "
+                f"{_ascend_driver_version_info_path()}; heuristic parse found: "
+                f"{parsed['raw_versions'] or 'none'}"
             ),
-            remediation="upgrade npu-smi to a version that reports an HDK/driver label",
+            remediation=(
+                "ensure the Ascend driver is installed and npu-smi or "
+                f"{_ascend_driver_version_info_path()} reports a version"
+            ),
             raw=raw,
         )
     if compare_versions(parse_version(hdk), floor) <= 0:
@@ -312,7 +438,10 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
             status=STATUS_WARN,
             value=value,
             threshold=f"HDK > {cfg.ascend_min_hdk}",
-            detail=f"HDK {hdk} is not strictly newer than {cfg.ascend_min_hdk}",
+            detail=(
+                f"HDK {hdk} is not strictly newer than {cfg.ascend_min_hdk} "
+                f"(source: {version_source})"
+            ),
             remediation=(
                 f"upgrade the Ascend HDK/driver to a version newer "
                 f"than {cfg.ascend_min_hdk}"
@@ -325,7 +454,7 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
         status=STATUS_PASS,
         value=value,
         threshold=f"HDK > {cfg.ascend_min_hdk}",
-        detail=f"Ascend HDK/driver version OK",
+        detail=f"Ascend HDK/driver version OK (source: {version_source})",
         raw=raw,
     )
 

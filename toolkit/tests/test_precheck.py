@@ -7,6 +7,7 @@ across hosts.
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from types import SimpleNamespace
@@ -24,11 +25,13 @@ from ucm_toolkit.tools.precheck.checks import (
     check_accelerator_driver,
     check_aio_resources,
     check_kernel_version,
+    check_uc_manager_version,
 )
 from ucm_toolkit.tools.precheck.config import PrecheckConfig
 from ucm_toolkit.tools.precheck.parseutil import (
     compare_versions,
     normalize_vllm_ascend_version,
+    parse_ascend_driver_version_info,
     parse_int_list,
     parse_npu_smi_versions,
     parse_size,
@@ -57,6 +60,7 @@ class TestVersionParsing(unittest.TestCase):
         self.assertEqual(parse_version("5.15.0-25-generic"), (5, 15, 0))
         self.assertEqual(parse_version("8.0"), (8, 0))
         self.assertEqual(parse_version("25.2.0"), (25, 2, 0))
+        self.assertEqual(parse_version("25.6.rc1.b999"), (25, 6))
 
     def test_parse_version_garbage(self):
         self.assertEqual(parse_version(""), ())
@@ -131,6 +135,44 @@ class TestNpuSmi(unittest.TestCase):
         parsed = parse_npu_smi_versions(sample)
         self.assertEqual(parsed["hdk"], "25.3.0")
         self.assertEqual(parsed["driver"], "25.3.0")
+
+    def test_release_candidate_version_is_recognized(self):
+        sample = "npu-smi 24.1.0\nVersion: 25.6.rc1.b999\n"
+        parsed = parse_npu_smi_versions(sample)
+        self.assertEqual(parsed["version"], "25.6.rc1.b999")
+        self.assertEqual(parsed["hdk"], "25.6.rc1.b999")
+        self.assertEqual(parsed["source"], "version")
+
+    def test_driver_version_info(self):
+        sample = (
+            "Version=25.6.rc1.b999\n"
+            "ascendhal_version=7.35.23\n"
+            "package_version=25.6.rc1.b999\n"
+        )
+        parsed = parse_ascend_driver_version_info(sample)
+        self.assertEqual(parsed["Version"], "25.6.rc1.b999")
+        self.assertEqual(parsed["ascendhal_version"], "7.35.23")
+        self.assertEqual(parsed["package_version"], "25.6.rc1.b999")
+
+
+class TestUcManagerVersion(unittest.TestCase):
+    def test_pip_fallback_detects_variant_in_another_environment(self):
+        pip_rows = [
+            {"name": "ucm-toolkit", "version": "0.9.0rc1"},
+            {"name": "uc-manager-cann910-a5", "version": "0.9.0rc1"},
+        ]
+        with (
+            patch.object(checks_mod, "installed_ucm_distributions", return_value={}),
+            patch.object(checks_mod.shutil, "which", return_value="/serving/bin/pip"),
+            patch.object(
+                checks_mod, "_run", return_value=(0, json.dumps(pip_rows), "")
+            ),
+        ):
+            result = check_uc_manager_version()
+        self.assertEqual(result.status, STATUS_INFO)
+        self.assertIn("uc-manager-cann910-a5=0.9.0rc1", result.value)
+        self.assertEqual(result.raw["source"], "pip")
+        self.assertEqual(result.raw["pip_command"], "/serving/bin/pip")
 
 
 class TestConfig(unittest.TestCase):
@@ -329,10 +371,25 @@ class TestAcceleratorDriver(unittest.TestCase):
         with (
             patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
             patch.object(checks_mod, "_run", return_value=(0, real_out, "")),
+            patch.object(checks_mod, "_read_text_file", return_value=None),
         ):
             r = check_accelerator_driver(self._cfg())
         self.assertEqual(r.status, STATUS_PASS)
         self.assertIn("HDK=25.5.2", r.value)
+
+    def test_ascend_driver_version_info_pass(self):
+        # Ascend 950-style output: npu-smi works but exposes no version label.
+        real_out = "+----+\n| NPU0 | AICORE |  |  |\n+----+\n"
+        version_info = "Version=25.6.rc1.b999\n" "package_version=25.6.rc1.b999\n"
+        with (
+            patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
+            patch.object(checks_mod, "_run", return_value=(0, real_out, "")),
+            patch.object(checks_mod, "_read_text_file", return_value=version_info),
+        ):
+            r = check_accelerator_driver(self._cfg())
+        self.assertEqual(r.status, STATUS_PASS)
+        self.assertIn("HDK=25.6.rc1.b999", r.value)
+        self.assertEqual(r.raw["version_source"], "driver/version.info")
 
     def test_ascend_below_floor_warns_with_remediation(self):
         with (
