@@ -232,6 +232,23 @@ def _build_minimax(bundle, model, config, platform, dtype):
         )
 
 
+def _dsv4_main_layer_ratios(model):
+    """Select main-model layers, excluding reserved/draft configuration slots.
+
+    This probe builds start_layer=0, end_layer=num_hidden_layers and does not
+    construct an MTP worker. Extra configuration entries are not extra active
+    cache layers; missing main-layer entries must not be silently padded.
+    """
+    ratios = list(model.compress_ratios)
+    num_layers = model.num_hidden_layers
+    if len(ratios) < num_layers:
+        raise PoolProbeUnavailable(
+            f"compress_ratios has {len(ratios)} entries, "
+            f"but {num_layers} main model layers are required"
+        )
+    return ratios[:num_layers]
+
+
 def _build_dsv4(bundle, model, config, platform, dtype):
     from sglang.srt.mem_cache import deepseek_v4_memory_pool as native
     from sglang.srt.mem_cache.hybrid_cache import hybrid_pool_assembler as assembler
@@ -244,9 +261,7 @@ def _build_dsv4(bundle, model, config, platform, dtype):
         raise PoolProbeUnavailable("paged DeepSeek V4 requires --page-size 256 on CUDA/ROCm")
     pages = config.pages * 2 + 2
     size = pages * config.page_size
-    ratios = list(model.compress_ratios)
-    if len(ratios) != model.num_hidden_layers:
-        raise PoolProbeUnavailable("compress_ratios must describe every model layer")
+    ratios = _dsv4_main_layer_ratios(model)
     cls = native.DeepSeekV4TokenToKVPool
     layout_args = {}
     if platform == "ascend":

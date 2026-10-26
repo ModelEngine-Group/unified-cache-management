@@ -23,6 +23,20 @@ from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import server_
 
 
 class NativeRoutingTest(unittest.TestCase):
+    def test_dsv4_ratios_select_only_main_layers(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_main_layer_ratios
+        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable
+
+        ratios = [0, 0] + [4, 128] * 20 + [4] + [0, 0, 0]
+        model = SimpleNamespace(num_hidden_layers=43, compress_ratios=ratios)
+        self.assertEqual(_dsv4_main_layer_ratios(model), ratios[:43])
+        self.assertEqual(len(model.compress_ratios), 46)
+        self.assertEqual(_dsv4_main_layer_ratios(
+            SimpleNamespace(num_hidden_layers=2, compress_ratios=[4, 128])), [4, 128])
+        with self.assertRaisesRegex(PoolProbeUnavailable, "1 entries.*2 main model layers"):
+            _dsv4_main_layer_ratios(
+                SimpleNamespace(num_hidden_layers=2, compress_ratios=[4]))
+
     def test_registered_families(self):
         for facts, family in (
             ({"attention_arch": "MLA", "is_deepseek_v4": True}, "deepseek_v4"),
@@ -240,7 +254,7 @@ class NativeAssemblyTest(unittest.TestCase):
                 "DeepSeekV4StateHostPool": Host,
             },
         })
-        model = SimpleNamespace(num_hidden_layers=2, compress_ratios=[4, 128],
+        model = SimpleNamespace(num_hidden_layers=2, compress_ratios=[4, 128, 0, 0, 0],
                                 qk_nope_head_dim=448, qk_rope_head_dim=64,
                                 index_head_dim=128, window_size=128, hf_config=SimpleNamespace())
         bundle = NativePools()
