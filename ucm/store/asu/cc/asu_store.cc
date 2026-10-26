@@ -36,7 +36,7 @@
 #include <string>
 #include <utility>
 #include "kv_client.h"
-#include "kv_metrics/ucm_metrics_adapter.h"
+#include "kv_metrics/ucm_metrics_backend.h"
 #include "logger/logger.h"
 #include "ucmstore_v1.h"
 
@@ -274,7 +274,7 @@ public:
         if (config.enableMetrics) {
             // The helper logs failures; continue with the available backend state.
             // Installation is best-effort and does not disable an existing backend.
-            (void)kv::metrics::EnsureUcmKvMetricsInstalled();
+            kv::metrics::EnsureUcmKvMetricsInstalled();
         }
 
         tensorLayout_ = ParseTensorLayout(config.tensorLayout);

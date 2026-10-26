@@ -1,4 +1,4 @@
-add_library(kv_metrics_ucm_adapter SHARED src/ucm_metrics_adapter.cc)
+add_library(kv_metrics_ucm_adapter SHARED src/ucm_metrics_backend.cc)
 target_include_directories(kv_metrics_ucm_adapter PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(kv_metrics_ucm_adapter PUBLIC kv_metrics PRIVATE metrics infra_logger)
 

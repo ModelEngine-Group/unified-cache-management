@@ -1515,7 +1515,7 @@ TEST_F(UCAsuMetricsDeathTest, ExplicitEnablementInstallsBeforeClientCreation)
                     auto config = MakeMetricsConfig();
                     config.Set("enable_metrics", true);
                     ASSERT_TRUE(store.Setup(config).Success());
-                    EXPECT_FALSE(kv::metrics::EnsureUcmKvMetricsInstalled());
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
                     ExpectMetricsRoute(4.0);
                 }),
                 testing::ExitedWithCode(0), "");
@@ -1576,9 +1576,7 @@ TEST_F(UCAsuMetricsDeathTest, BackendConflictDoesNotBlockStoreAndLaterSetupRetri
                             "a2b2c3d4e5f6789012345678901234ab");
                         ExpectLookupMiss(store, block);
                     }
-                    std::string error;
-                    EXPECT_FALSE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
-                    EXPECT_EQ(error, "metrics backend is already initialized");
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
                     kv::metrics::CachedMetric metric{"existing_backend"};
                     kv::metrics::UpdateStats(metric, 9.0);
                     EXPECT_DOUBLE_EQ(backend->total, 9.0);
@@ -1587,8 +1585,7 @@ TEST_F(UCAsuMetricsDeathTest, BackendConflictDoesNotBlockStoreAndLaterSetupRetri
                     UC::AsuStore::AsuStore recovered;
                     UseFakeClient(recovered);
                     ASSERT_TRUE(recovered.Setup(MakeMetricsConfig()).Success());
-                    EXPECT_FALSE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
-                    EXPECT_EQ(error, "metrics backend is already initialized");
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
                     ExpectMetricsRoute(6.0);
                 }),
                 testing::ExitedWithCode(0), "");
@@ -1610,9 +1607,7 @@ TEST_F(UCAsuMetricsDeathTest, StoreRecreationRestoresMetricsAfterQuiescentShutdo
                     UC::AsuStore::AsuStore recreated;
                     UseFakeClient(recreated);
                     ASSERT_TRUE(recreated.Setup(MakeMetricsConfig()).Success());
-                    std::string error;
-                    EXPECT_FALSE(kv::metrics::EnsureUcmKvMetricsInstalled(&error));
-                    EXPECT_EQ(error, "metrics backend is already initialized");
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
                     kv::metrics::UpdateStats(metric, 3.0);
                     EXPECT_DOUBLE_EQ(
                         std::get<0>(UC::Metrics::GetAllStatsAndClear()).at("reused_binding"), 5.0);

@@ -1,4 +1,4 @@
-#include "kv_metrics/ucm_metrics_adapter.h"
+#include "kv_metrics/ucm_metrics_backend.h"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -43,55 +43,55 @@ TEST_F(UcmKvMetricsInstallDeathTest, AllocationFailureDoesNotPoisonLaterInstalla
 {
     ASSERT_EXIT(
         {
-            std::string error;
             allocationFailures = 1;
-            const bool first = EnsureUcmKvMetricsInstalled(&error);
+            EnsureUcmKvMetricsInstalled();
             allocationFailures = 0;
-            EXPECT_FALSE(first);
             EXPECT_FALSE(IsEnabled());
-            EXPECT_FALSE(error.empty());
-            ASSERT_TRUE(EnsureUcmKvMetricsInstalled(&error));
-            EXPECT_TRUE(error.empty());
+            EnsureUcmKvMetricsInstalled();
             EXPECT_TRUE(IsEnabled());
             _exit(testing::Test::HasFailure() ? 1 : 0);
         },
         testing::ExitedWithCode(0), "");
 }
 
-TEST_F(UcmKvMetricsInstallDeathTest, ConcurrentSetupInstallsOnlyOnce)
+TEST_F(UcmKvMetricsInstallDeathTest, ConcurrentSetupPreservesMetricUpdates)
 {
     ASSERT_EXIT(
         {
-            std::atomic<unsigned> successes{0};
+            UC::Metrics::SetUp();
+            UC::Metrics::CreateStats("concurrent_setup_counter", "counter");
             std::vector<std::thread> callers;
             for (int i = 0; i < 8; ++i) {
                 callers.emplace_back([&] {
-                    if (EnsureUcmKvMetricsInstalled()) { ++successes; }
+                    EnsureUcmKvMetricsInstalled();
+                    CachedMetric metric{"concurrent_setup_counter"};
+                    UpdateStats(metric, 1.0);
                 });
             }
             for (auto& caller : callers) { caller.join(); }
-            EXPECT_EQ(successes.load(), 1U);
+            EXPECT_DOUBLE_EQ(
+                std::get<0>(UC::Metrics::GetAllStatsAndClear()).at("concurrent_setup_counter"),
+                8.0);
             EXPECT_TRUE(IsEnabled());
             _exit(testing::Test::HasFailure() ? 1 : 0);
         },
         testing::ExitedWithCode(0), "");
 }
 
-TEST_F(UcmKvMetricsInstallDeathTest, DoesNotMistakeAnotherBackendForRetainedAdapter)
+TEST_F(UcmKvMetricsInstallDeathTest, PreservesExistingBackendAndReinstallsAfterShutdown)
 {
     ASSERT_EXIT(
         {
-            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
+            EnsureUcmKvMetricsInstalled();
             Shutdown();
             auto other = CreateUcmMetricsBackend();
             ASSERT_TRUE(InstallBackend(other));
-            std::string error;
-            EXPECT_FALSE(EnsureUcmKvMetricsInstalled(&error));
-            EXPECT_EQ(error, "metrics backend is already initialized");
+            EnsureUcmKvMetricsInstalled();
+            EXPECT_EQ(other.use_count(), 2);
             EXPECT_FALSE(InstallBackend(other));
             Shutdown();
-            EXPECT_TRUE(EnsureUcmKvMetricsInstalled(&error));
-            EXPECT_TRUE(error.empty());
+            EnsureUcmKvMetricsInstalled();
+            EXPECT_TRUE(IsEnabled());
             _exit(testing::Test::HasFailure() ? 1 : 0);
         },
         testing::ExitedWithCode(0), "");
@@ -106,12 +106,10 @@ TEST_F(UcmKvMetricsInstallDeathTest, RepeatedSetupRetainsBackendWithoutErrorDiag
             UC::Logger::Setup("log", 3, 5);
             UC::Metrics::SetUp();
             UC::Metrics::CreateStats("repeated_setup_counter", "counter");
-            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
+            EnsureUcmKvMetricsInstalled();
             CachedMetric metric{"repeated_setup_counter"};
             for (int i = 0; i < 3; ++i) {
-                std::string error;
-                EXPECT_FALSE(EnsureUcmKvMetricsInstalled(&error));
-                EXPECT_EQ(error, "metrics backend is already initialized");
+                EnsureUcmKvMetricsInstalled();
                 UpdateStats(metric, 1.0);
             }
             EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
@@ -119,12 +117,12 @@ TEST_F(UcmKvMetricsInstallDeathTest, RepeatedSetupRetainsBackendWithoutErrorDiag
             Shutdown();
             auto other = CreateUcmMetricsBackend();
             ASSERT_TRUE(InstallBackend(other));
-            EXPECT_FALSE(EnsureUcmKvMetricsInstalled());
+            EnsureUcmKvMetricsInstalled();
             UpdateStats(metric, 2.0);
             EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
                              2.0);
             Shutdown();
-            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
+            EnsureUcmKvMetricsInstalled();
             UpdateStats(metric, 4.0);
             EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
                              4.0);
