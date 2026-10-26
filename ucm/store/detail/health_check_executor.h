@@ -52,7 +52,6 @@ class HealthCheckExecutor {
 
         Worker()
         {
-            // Linux threads inherit the creating monitor thread's CPU affinity.
             thread = std::thread([this] {
                 std::unique_lock<std::mutex> lock(mutex);
                 while (true) {
