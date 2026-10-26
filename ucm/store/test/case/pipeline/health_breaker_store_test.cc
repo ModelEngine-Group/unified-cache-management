@@ -155,7 +155,8 @@ TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_EQ(CountSubstring(output, "[PipelineStore] Store health check(posix-0) failed"), 3);
+    EXPECT_EQ(CountSubstring(output, "[PipelineStore] Active store health check(posix-0) failed"),
+              3);
     EXPECT_THAT(output, testing::HasSubstr("health probe write failed"));
 }
 
