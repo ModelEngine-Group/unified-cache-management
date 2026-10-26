@@ -127,7 +127,7 @@ void ShardGarbageCollector::GCCheckLoop()
                     UC_INFO("Another instance holds the GC lock; skipping this cycle.");
                     break;
                 case GcLease::Acquisition::Unavailable:
-                    UC_ERROR(
+                    UC_WARN(
                         "GC lock is unusable; skipping this cycle. Capacity will not be "
                         "reclaimed until this is resolved.");
                     break;

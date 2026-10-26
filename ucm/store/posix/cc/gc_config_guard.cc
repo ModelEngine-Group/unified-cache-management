@@ -367,7 +367,7 @@ Status GcConfigGuard::Setup(const Config& config, const BackendManager* backendM
         [identity = identity_](const std::string& backend) {
             return backend + kMembersDirName + "/" + identity;
         },
-        "ucm_posix_gccfg", heartbeatIntervalSec_, GcHeartbeat::OnMissing::Recreate);
+        heartbeatIntervalSec_, GcHeartbeat::OnMissing::Recreate, "ucm_posix_gccfg");
     s = heartbeat_.Start();
     if (s.Failure()) {
         if (registered_.exchange(false)) { UnregisterMember(); }

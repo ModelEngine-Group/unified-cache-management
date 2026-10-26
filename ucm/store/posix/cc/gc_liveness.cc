@@ -121,8 +121,8 @@ Expected<std::vector<GcMemberInfo>> ScanMembers(const std::string& dir, const st
 GcHeartbeat::~GcHeartbeat() { Stop(); }
 
 void GcHeartbeat::Setup(const BackendManager* backendMgr,
-                        std::function<std::string(const std::string&)> pathOf,
-                        std::string threadName, size_t intervalSec, OnMissing onMissing)
+                        std::function<std::string(const std::string&)> pathOf, size_t intervalSec,
+                        OnMissing onMissing, std::string threadName)
 {
     backendMgr_ = backendMgr;
     pathOf_ = std::move(pathOf);
@@ -140,7 +140,7 @@ Status GcHeartbeat::Start()
     try {
         worker_ = std::thread(&GcHeartbeat::Loop, this);
     } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to start GC heartbeat thread for {}.", e.what(), threadName_);
+        UC_ERROR("Failed({}) to start GC heartbeat thread.", e.what());
         return Status::OutOfMemory();
     }
     return Status::OK();
@@ -182,9 +182,11 @@ bool GcHeartbeat::Refresh(bool create)
 
 void GcHeartbeat::Loop()
 {
-    auto nameStatus = CpuAffinity::SetCurrentThreadName(threadName_.c_str());
-    if (nameStatus.Failure()) {
-        UC_WARN("Failed({}) to set GC heartbeat thread name({}).", nameStatus, threadName_);
+    if (!threadName_.empty()) {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName(threadName_.c_str());
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set GC heartbeat thread name({}).", nameStatus, threadName_);
+        }
     }
     std::unique_lock<std::mutex> lock(mtx_);
     const auto interval = std::chrono::seconds(intervalSec_);

@@ -34,7 +34,6 @@
 #include <vector>
 #include "logger/logger.h"
 #include "status/status.h"
-#include "thread/cpu_affinity.h"
 
 namespace UC::Detail {
 
@@ -55,11 +54,6 @@ class HealthCheckExecutor {
         {
             // Linux threads inherit the creating monitor thread's CPU affinity.
             thread = std::thread([this] {
-                auto nameStatus =
-                    CpuAffinity::SetCurrentThreadName("ucm_health_backend_check_worker");
-                if (nameStatus.Failure()) {
-                    UC_WARN("Failed({}) to set UCM health I/O thread name.", nameStatus);
-                }
                 std::unique_lock<std::mutex> lock(mutex);
                 while (true) {
                     cv.wait(lock, [this] { return stop || check; });

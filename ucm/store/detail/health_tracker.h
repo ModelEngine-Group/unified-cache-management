@@ -188,12 +188,12 @@ public:
     // Captured before issuing a probe or I/O; results carrying an older generation are dropped.
     uint64_t Generation() const { return generation_.load(); }
 
-    // Record Active probe results
+    // Record Active probe results, return not null if transitioned to healthy
     std::optional<HealthTransition> RecordProbe(uint64_t generation, const Status& result,
                                                 Time now = Clock::now())
     {
         if (result.Failure()) {
-            UC_WARN("[{}] Store health check({}) failed({}).", module_, name_, result);
+            UC_WARN("[{}] Active store health check({}) failed({}).", module_, name_, result);
         }
         std::lock_guard<std::mutex> lock(mutex_);
         if (generation != generation_.load()) { return std::nullopt; }

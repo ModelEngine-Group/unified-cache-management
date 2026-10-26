@@ -66,6 +66,7 @@ public:
 
 private:
     void ProbeBackends(const Detail::StoreHealthConfig& config);
+    void UpdateStoreHealthMetric() const;
     const SpaceLayout* layout_{nullptr};
     bool ioDirect_{true};
     bool passiveEnabled_{true};

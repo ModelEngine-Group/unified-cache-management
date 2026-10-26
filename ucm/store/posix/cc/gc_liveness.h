@@ -63,8 +63,8 @@ public:
     ~GcHeartbeat();
 
     void Setup(const BackendManager* backendMgr,
-               std::function<std::string(const std::string&)> pathOf, std::string threadName,
-               size_t intervalSec, OnMissing onMissing);
+               std::function<std::string(const std::string&)> pathOf, size_t intervalSec,
+               OnMissing onMissing, std::string threadName = {});
     Status Start();
     void RequestStop();
     void Stop();

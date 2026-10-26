@@ -120,8 +120,9 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
             },
             config.timeoutMs);
         if (status.Failure()) { return startupError(status); }
-        backendHealth_.emplace_back("PosixBackend", fmt::format("{}:{}", index, normalizedPath),
-                                    config.backendHealth);
+        backendHealth_.emplace_back(
+            "PosixBackend", fmt::format("device({}) {}:{}", config.deviceId, index, normalizedPath),
+            config.backendHealth);
     }
     // The thread pool checks for stuck workers once a second, so it may take up to 1s more to
     // notice a timed-out worker and finish its task. Leave that 1s out of each backend's share,
@@ -138,6 +139,7 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
     } catch (const std::exception& e) {
         return Status::Error(fmt::format("failed to start backend recovery probes: {}", e.what()));
     }
+    UpdateStoreHealthMetric();
     return Status::OK();
 }
 
@@ -209,7 +211,7 @@ Status BackendManager::CheckHealth() const
 
 void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
 {
-    auto status = CpuAffinity::SetCurrentThreadName("ucm_health_backend_probe");
+    auto status = CpuAffinity::SetCurrentThreadName("ucm_health_be");
     if (status.Failure()) { UC_WARN("Failed to name backend health monitor: {}.", status); }
     Detail::HealthCheckExecutor executor(std::chrono::milliseconds{ioTimeoutMs_}, 8);
     std::unique_lock<std::mutex> stopLock(stopMutex_);
@@ -237,7 +239,11 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
             // Timed-out I/O may still access this file through any backend path.
             // So we use a new file after timeout.
             if (status == Status::Timeout()) { healthBlockId_ = Detail::RandomBlockId(); }
-            health.RecordProbe(generation, status);
+            UC::Metrics::UpdateStats(status.Success()
+                                         ? NAME_TO_METRIC_ID("posix_healthy_count_total")
+                                         : NAME_TO_METRIC_ID("posix_unhealthy_count_total"),
+                                     1.0);
+            if (health.RecordProbe(generation, status)) { UpdateStoreHealthMetric(); }
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -252,10 +258,19 @@ Status BackendManager::RunGcOp(std::function<Status()> op) const
     return gcExecutor_.Run(std::move(op));
 }
 
+// The store is usable while any backend is healthy.
+void BackendManager::UpdateStoreHealthMetric() const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_health"),
+                             CheckHealth().Success() ? 1.0 : 0.0);
+}
+
 void BackendManager::RecordResult(const BackendAttempt& attempt, const Status& status) const
 {
     if (passiveEnabled_) {
-        backendHealth_[attempt.index].RecordIo(attempt.generation, status);
+        if (backendHealth_[attempt.index].RecordIo(attempt.generation, status)) {
+            UpdateStoreHealthMetric();
+        }
         if (status.Failure() && Detail::ShouldRecordResult(status)) {
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_passive_failures_total"), 1.0);
         }

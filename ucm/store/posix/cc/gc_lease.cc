@@ -251,7 +251,7 @@ Status GcLease::Claim(const Paths& paths)
         [name = heartbeatName_](const std::string& backend) {
             return backend + kLockDirName + "/" + name;
         },
-        "ucm_posix_gclk", heartbeatIntervalSec_, GcHeartbeat::OnMissing::Stop);
+        heartbeatIntervalSec_, GcHeartbeat::OnMissing::Stop);
     auto started = heartbeat_.Start();
     if (started.Failure()) {
         UC_ERROR("Failed({}) to start GC heartbeat thread; releasing lock.", started);
