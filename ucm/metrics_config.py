@@ -108,23 +108,6 @@ def consumer_enabled(
     return _as_bool(consumers.get(consumer), False)
 
 
-def should_setup_metrics(config: dict[str, Any] | None) -> bool:
-    """Whether the effective config enables a supported metrics consumer."""
-    return bool(config) and (
-        consumer_enabled(config, MULTIPROC_CONSUMER)
-        or consumer_enabled(config, VLLM_CONNECTOR_CONSUMER)
-    )
-
-
-def store_metrics_enabled(
-    launch_config: dict[str, Any] | None, store_config: dict[str, Any] | None
-) -> bool:
-    """Combine the store switch with the shared metrics initialization gate."""
-    return metrics_enabled(store_config) and should_setup_metrics(
-        load_launch_metrics_config(launch_config)
-    )
-
-
 def get_metric_definitions(config: dict[str, Any] | None) -> list[MetricDefinition]:
     if not config:
         return []

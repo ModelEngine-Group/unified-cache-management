@@ -262,7 +262,9 @@ The two `kv_transport_node_task_*` histograms retain `node_id` in standalone mod
 
 #### Installation switches
 
-In Direct, HMA, HLA, and HLA LayerWise connector paths, ASU adapter installation requires the top-level `enable_metrics` switch (default `true`), a nonempty effective metrics configuration, at least one enabled consumer (`vllm_connector` or `multiproc`), and the store-level `ucm_connectors[].ucm_connector_config.enable_metrics` switch (default `true`). The built-in configuration enables `vllm_connector`; a custom `consumers` mapping with both consumers disabled prevents installation. Store-level `true` cannot override a disabled global or consumer gate. Custom catalogs must also contain the KV definitions to collect these metrics.
+ASU backend installation is controlled only by the store-level `ucm_connectors[].ucm_connector_config.enable_metrics` switch (default `true`). Direct, HMA, HLA, and HLA LayerWise connectors pass the store configuration through without rewriting this switch. The top-level `enable_metrics`, effective metrics catalog, and consumer settings retain their existing UCM initialization and export behavior; they do not prevent ASU backend installation. Custom catalogs must contain the KV definitions to collect these metrics.
+
+Installing the backend does not initialize the UCM collector or start an exporter. When the collector is not initialized, UCM ignores forwarded updates. If another component has already initialized the process-wide collector and export path, these samples may still be collected and exported. The store installation switch does not provide per-store filtering.
 
 To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. This setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers only have the store installation switch and must arrange UCM metric registration and draining themselves.
 

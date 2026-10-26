@@ -2750,7 +2750,7 @@ def _create_metrics_test_store(monkeypatch, kind, launch_config, store_config):
 @pytest.mark.parametrize("pipeline", ["ASU", "Cache|Empty"])
 @pytest.mark.parametrize("launch_enabled", [None, False, True])
 @pytest.mark.parametrize("store_enabled", [None, False, True])
-def test_store_metrics_switch_reaches_store_config(
+def test_store_metrics_switch_is_passed_through(
     monkeypatch, kind, pipeline, launch_enabled, store_enabled
 ):
     launch_config = {} if launch_enabled is None else {"enable_metrics": launch_enabled}
@@ -2758,9 +2758,10 @@ def test_store_metrics_switch_reaches_store_config(
     if store_enabled is not None:
         store_config["enable_metrics"] = store_enabled
     config = _create_metrics_test_store(monkeypatch, kind, launch_config, store_config)
-    assert config["enable_metrics"] is (
-        launch_enabled is not False and store_enabled is not False
-    )
+    if store_enabled is None:
+        assert "enable_metrics" not in config
+    else:
+        assert config["enable_metrics"] is store_enabled
 
 
 @pytest.mark.parametrize("kind", ["direct", "hma", "hla", "hla_layerwise"])
@@ -2823,7 +2824,7 @@ def test_store_metrics_switch_reaches_store_config(
         ),
     ],
 )
-def test_store_metrics_gate_matches_outer_setup(
+def test_store_metrics_switch_is_independent_of_outer_setup(
     monkeypatch,
     tmp_path,
     kind,
@@ -2882,14 +2883,14 @@ def test_store_metrics_gate_matches_outer_setup(
         launch_config,
         {"store_pipeline": pipeline, "enable_metrics": store_enabled},
     )
-    assert config["enable_metrics"] is (expected_setup and store_enabled)
-    # Store creation only decides installation; the outer connector owns setup.
+    assert config["enable_metrics"] is store_enabled
+    # Store creation leaves the switch untouched; the outer connector owns setup.
     assert len(setup_configs) == int(expected_setup)
     assert fake_ucmmetrics.setup_calls == int(expected_setup)
 
 
 @pytest.mark.parametrize("kind", ["direct", "hma", "hla", "hla_layerwise"])
-def test_disabled_consumers_disable_store_metrics(monkeypatch, kind):
+def test_disabled_consumers_preserve_store_metrics_switch(monkeypatch, kind):
     config = _create_metrics_test_store(
         monkeypatch,
         kind,
@@ -2900,7 +2901,7 @@ def test_disabled_consumers_disable_store_metrics(monkeypatch, kind):
         },
         {"store_pipeline": "Cache|Empty", "enable_metrics": True},
     )
-    assert config["enable_metrics"] is False
+    assert config["enable_metrics"] is True
 
 
 def test_sparse_utils_annotations_resolve_with_torch_stub():

@@ -262,7 +262,9 @@ ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 
 
 #### 安装开关
 
-Direct、HMA、HLA 和 HLA LayerWise connector 安装 ASU adapter 的条件相同：顶层 `enable_metrics` 开启（默认 `true`）、有效指标配置非空、至少一个 consumer（`vllm_connector` 或 `multiproc`）启用，且 store 级 `ucm_connectors[].ucm_connector_config.enable_metrics` 开启（默认 `true`）。内置配置启用 `vllm_connector`；自定义 `consumers` 将两个 consumer 都关闭时不会安装。store 级 `true` 不能覆盖全局或 consumer 的关闭状态。自定义指标目录还需包含 KV 定义，才能采集这些指标。
+ASU backend 安装仅由 store 级 `ucm_connectors[].ucm_connector_config.enable_metrics` 开关控制（默认 `true`）。Direct、HMA、HLA 和 HLA LayerWise connector 原样传递 store 配置，不再重写该开关。顶层 `enable_metrics`、有效指标目录及 consumer 配置仍按 UCM 原有逻辑控制初始化与导出，不阻止 ASU backend 安装。自定义指标目录需包含 KV 定义，才能采集这些指标。
+
+安装 backend 不会初始化 UCM 采集器，也不会启动导出器。采集器未初始化时，UCM 会忽略转发的更新。如果其他组件已初始化进程级采集器和导出链路，这些样本仍可能被采集和导出。store 安装开关不提供逐 store 的数据过滤。
 
 若要让某个 ASU store 不触发安装，在其已有的 `ucm_connector_config` 中、与 `store_pipeline: "ASU"` 同级添加 `enable_metrics: false`。该键控制安装，不是逐 store 的数据过滤或关闭开关：backend 是进程级的，设为 `false` 不会卸载其他 store 已安装的 backend。直接调用 C++ 的使用者只有 store 安装开关，需自行安排 UCM 指标注册和数据读取。
 
