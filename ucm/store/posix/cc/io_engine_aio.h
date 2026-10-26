@@ -57,6 +57,8 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     AioImpl aio_;
 
 public:
+    // aio_ is destroyed before blockOperator_, but open callbacks submit I/O to aio_ and
+    // completion callbacks submit commits to blockOperator_; stop the open/commit workers first.
     ~IoEngineAio() { blockOperator_.Stop(); }
     Status Setup(const Config& config, const SpaceLayout* layout,
                  const std::vector<std::string>* backends)
