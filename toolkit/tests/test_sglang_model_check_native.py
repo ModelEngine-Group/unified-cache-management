@@ -121,6 +121,43 @@ class NativeRoutingTest(unittest.TestCase):
             _fill_pattern(tensor)
         self.assertEqual(calls, [(1, 127)])
 
+    def test_rank_context_is_complete_scoped_and_does_not_read_unset_properties(self):
+        from contextlib import contextmanager
+
+        class Parallel:
+            def __init__(self):
+                self.values = {}
+
+            @contextmanager
+            def override(self, **values):
+                previous = self.values.copy()
+                self.values.update(values)
+                try:
+                    yield
+                finally:
+                    self.values = previous
+
+        prefixes = ("tp", "pp", "attn_tp", "attn_cp", "moe_ep",
+                    "moe_dp", "moe_tp", "dcp", "attn_dcp")
+        for prefix in prefixes:
+            name = f"{prefix}_rank"
+            setattr(Parallel, name, property(lambda self, name=name: self.values[name]))
+        parallel = Parallel()
+        runtime = SimpleNamespace(get_server_args=lambda: object(),
+                                  get_parallel=lambda: parallel)
+        with patch("ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector.importlib.import_module",
+                   return_value=runtime):
+            with self.assertRaisesRegex(RuntimeError, "constructor failed"):
+                with server_args_guard():
+                    for prefix in prefixes:
+                        self.assertEqual(getattr(parallel, f"{prefix}_rank"), 0)
+                        self.assertEqual(parallel.values[f"{prefix}_size"], 1)
+                    with server_args_guard():
+                        self.assertEqual(parallel.tp_rank, 0)
+                    self.assertEqual(parallel.tp_rank, 0)
+                    raise RuntimeError("constructor failed")
+        self.assertEqual(parallel.values, {})
+
     def test_page_byte_views_reference_real_host_memory(self):
         backing = (ctypes.c_ubyte * 16)()
         pool = SimpleNamespace(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import inspect
 from contextlib import contextmanager
 from typing import Any
 
@@ -35,10 +36,18 @@ def server_args_guard(**fields):
         if not callable(override):
             yield
             return
-        with override(
-            attn_dp_size=1,
-            attn_dp_rank=0,
-        ):
+        values = {"attn_dp_size": 1, "attn_dp_rank": 0}
+        # Modern SGLang publishes groups independently of process placement.
+        # Building a singleton TP group alone does not populate tp_rank, etc.
+        # Read declarations statically: reading an unset rank property raises.
+        # Older contexts without declared rank properties retain their old path.
+        for prefix in ("tp", "pp", "attn_tp", "attn_cp", "moe_ep",
+                       "moe_dp", "moe_tp", "dcp", "attn_dcp"):
+            rank = f"{prefix}_rank"
+            if inspect.getattr_static(parallel, rank, None) is not None:
+                values[rank] = 0
+                values[f"{prefix}_size"] = 1
+        with override(**values):
             yield
 
     get_server_args = getattr(runtime, "get_server_args", None)
