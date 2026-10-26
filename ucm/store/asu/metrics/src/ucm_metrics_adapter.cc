@@ -90,11 +90,18 @@ bool EnsureUcmKvMetricsInstalled(std::string* error) noexcept
         std::lock_guard<std::mutex> lock{mutex};
         if (error != nullptr) { error->clear(); }
         if (!backend) { backend = CreateUcmMetricsBackend(); }
-        UC_INFO("Initializing KV metrics backend: UcmMetricsBackend");
         std::string installError;
         if (!InstallBackend(backend, &installError)) {
+            // Store recreation may reuse any already-installed backend. Keep the
+            // installation result, but do not report this normal state as an error.
+            if (IsEnabled()) {
+                if (error != nullptr) { *error = installError; }
+                UC_INFO("KV metrics backend already initialized; retaining the existing backend");
+                return false;
+            }
             return InstallationFailed(error, installError.c_str());
         }
+        UC_INFO("Installed KV metrics backend: UcmMetricsBackend");
         return true;
     } catch (const std::exception& ex) {
         return InstallationFailed(error, ex.what());

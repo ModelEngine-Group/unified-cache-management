@@ -14,6 +14,8 @@ std::shared_ptr<KvMetricsBackend> CreateUcmMetricsBackend();
 // not replaced. After all writers stop and Shutdown completes, Setup may reinstall
 // the retained backend. Switching backend types with live cached bindings remains
 // unsupported; incompatible bindings are skipped with a diagnostic.
+// An existing backend is retained and reported at INFO level; the return value
+// remains false when InstallBackend rejects a repeated installation.
 bool EnsureUcmKvMetricsInstalled(std::string* error = nullptr) noexcept;
 
 }  // namespace kv::metrics

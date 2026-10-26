@@ -97,6 +97,58 @@ TEST_F(UcmKvMetricsInstallDeathTest, DoesNotMistakeAnotherBackendForRetainedAdap
         testing::ExitedWithCode(0), "");
 }
 
+TEST_F(UcmKvMetricsInstallDeathTest, RepeatedSetupRetainsBackendWithoutErrorDiagnostic)
+{
+    ASSERT_EXIT(
+        {
+            setenv("UCM_LOG_RATE_LIMIT_ENABLE", "false", 1);
+            UC::Logger::Logger::GetInstance().LoadRateLimitConfig();
+            UC::Logger::Setup("log", 3, 5);
+            UC::Metrics::SetUp();
+            UC::Metrics::CreateStats("repeated_setup_counter", "counter");
+            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
+            CachedMetric metric{"repeated_setup_counter"};
+            for (int i = 0; i < 3; ++i) {
+                std::string error;
+                EXPECT_FALSE(EnsureUcmKvMetricsInstalled(&error));
+                EXPECT_EQ(error, "metrics backend is already initialized");
+                UpdateStats(metric, 1.0);
+            }
+            EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
+                             3.0);
+            Shutdown();
+            auto other = CreateUcmMetricsBackend();
+            ASSERT_TRUE(InstallBackend(other));
+            EXPECT_FALSE(EnsureUcmKvMetricsInstalled());
+            UpdateStats(metric, 2.0);
+            EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
+                             2.0);
+            Shutdown();
+            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
+            UpdateStats(metric, 4.0);
+            EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
+                             4.0);
+
+            const std::string marker = "repeated_setup_diagnostics_complete";
+            UC_INFO_UNLIMITED("{}", marker);
+            UC::Logger::Flush();
+            std::string content;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            do {
+                std::ifstream file{"log/ucm-" + std::to_string(getpid()) + ".log"};
+                content.assign(std::istreambuf_iterator<char>{file},
+                               std::istreambuf_iterator<char>{});
+                if (content.find(marker) != std::string::npos) { break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            } while (std::chrono::steady_clock::now() < deadline);
+            EXPECT_NE(content.find(marker), std::string::npos);
+            EXPECT_NE(content.find("retaining the existing backend"), std::string::npos);
+            EXPECT_EQ(content.find("Failed to install ASU UCM metrics backend"), std::string::npos);
+            _exit(testing::Test::HasFailure() ? 1 : 0);
+        },
+        testing::ExitedWithCode(0), "");
+}
+
 TEST_F(UcmKvMetricsInstallDeathTest, RecoversAfterCollectorInitializationAndRegistration)
 {
     ASSERT_EXIT(
