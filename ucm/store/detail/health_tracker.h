@@ -188,7 +188,7 @@ public:
     // Captured before issuing a probe or I/O; results carrying an older generation are dropped.
     uint64_t Generation() const { return generation_.load(); }
 
-    // Record Active probe results, return not null if transitioned to healthy
+    // Record Active probe results, return not null if health state has changed
     std::optional<HealthTransition> RecordProbe(uint64_t generation, const Status& result,
                                                 Time now = Clock::now())
     {
