@@ -34,44 +34,6 @@ void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 namespace kv::metrics {
 namespace {
 
-class ScopedMetricsDiagnostics {
-public:
-    ScopedMetricsDiagnostics()
-    {
-        const char* configured = std::getenv("UCM_LOG_RATE_LIMIT_ENABLE");
-        hadSetting_ = configured != nullptr;
-        previous_ = configured != nullptr ? configured : "true";
-        setenv("UCM_LOG_RATE_LIMIT_ENABLE", "false", 1);
-        UC::Logger::Logger::GetInstance().LoadRateLimitConfig();
-        UC::Logger::Setup("log", 3, 5);
-    }
-
-    ~ScopedMetricsDiagnostics()
-    {
-        setenv("UCM_LOG_RATE_LIMIT_ENABLE", previous_.c_str(), 1);
-        UC::Logger::Logger::GetInstance().LoadRateLimitConfig();
-        if (!hadSetting_) { unsetenv("UCM_LOG_RATE_LIMIT_ENABLE"); }
-    }
-
-private:
-    bool hadSetting_{false};
-    std::string previous_;
-};
-
-std::string WaitForMetricDiagnostic(const std::string& message)
-{
-    UC::Logger::Flush();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    do {
-        std::ifstream file{"log/ucm-" + std::to_string(getpid()) + ".log"};
-        const std::string content{std::istreambuf_iterator<char>{file},
-                                  std::istreambuf_iterator<char>{}};
-        if (content.find(message) != std::string::npos) { return content; }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    } while (std::chrono::steady_clock::now() < deadline);
-    return {};
-}
-
 class UcmKvMetricsInstallDeathTest : public testing::Test {
 protected:
     void SetUp() override { GTEST_FLAG_SET(death_test_style, "threadsafe"); }
@@ -96,23 +58,7 @@ TEST_F(UcmKvMetricsInstallDeathTest, AllocationFailureDoesNotPoisonLaterInstalla
         testing::ExitedWithCode(0), "");
 }
 
-TEST_F(UcmKvMetricsInstallDeathTest, DiagnosticAllocationFailureCannotEscapeInstallation)
-{
-    ASSERT_EXIT(
-        {
-            std::string error;
-            allocationFailures = 8;
-            const bool first = EnsureUcmKvMetricsInstalled(&error);
-            allocationFailures = 0;
-            EXPECT_FALSE(first);
-            EXPECT_FALSE(IsEnabled());
-            ASSERT_TRUE(EnsureUcmKvMetricsInstalled());
-            _exit(testing::Test::HasFailure() ? 1 : 0);
-        },
-        testing::ExitedWithCode(0), "diagnostic logging also failed");
-}
-
-TEST_F(UcmKvMetricsInstallDeathTest, ConcurrentSetupSharesOneAdapter)
+TEST_F(UcmKvMetricsInstallDeathTest, ConcurrentSetupInstallsOnlyOnce)
 {
     ASSERT_EXIT(
         {
@@ -124,7 +70,7 @@ TEST_F(UcmKvMetricsInstallDeathTest, ConcurrentSetupSharesOneAdapter)
                 });
             }
             for (auto& caller : callers) { caller.join(); }
-            EXPECT_EQ(successes.load(), 8U);
+            EXPECT_EQ(successes.load(), 1U);
             EXPECT_TRUE(IsEnabled());
             _exit(testing::Test::HasFailure() ? 1 : 0);
         },
@@ -142,7 +88,7 @@ TEST_F(UcmKvMetricsInstallDeathTest, DoesNotMistakeAnotherBackendForRetainedAdap
             std::string error;
             EXPECT_FALSE(EnsureUcmKvMetricsInstalled(&error));
             EXPECT_EQ(error, "metrics backend is already initialized");
-            EXPECT_TRUE(IsBackendInstalled(other.get()));
+            EXPECT_FALSE(InstallBackend(other));
             Shutdown();
             EXPECT_TRUE(EnsureUcmKvMetricsInstalled(&error));
             EXPECT_TRUE(error.empty());
@@ -151,34 +97,20 @@ TEST_F(UcmKvMetricsInstallDeathTest, DoesNotMistakeAnotherBackendForRetainedAdap
         testing::ExitedWithCode(0), "");
 }
 
-TEST_F(UcmKvMetricsInstallDeathTest, DiagnosesUninitializedCollectorAndLaterRegistration)
+TEST_F(UcmKvMetricsInstallDeathTest, RecoversAfterCollectorInitializationAndRegistration)
 {
     ASSERT_EXIT(
         {
-            ScopedMetricsDiagnostics diagnostics;
             CachedMetric metric{"collector_startup_counter"};
-            UC::Metrics::CachedMetric native{metric.Name()};
-            EXPECT_EQ(UC::Metrics::TryUpdateStats(native, 100.0),
-                      UC::Metrics::UpdateResult::NotInitialized);
             ASSERT_TRUE(InstallBackend(CreateUcmMetricsBackend()));
             UpdateStats(metric, 100.0);
-            const auto uninitialized =
-                "KV UCM metric " + metric.Name() + " skipped: collector is not initialized";
-            EXPECT_FALSE(WaitForMetricDiagnostic(uninitialized).empty());
-
             UC::Metrics::SetUp();
-            EXPECT_EQ(UC::Metrics::TryUpdateStats(native, 100.0),
-                      UC::Metrics::UpdateResult::Unregistered);
             UpdateStats(metric, 100.0);
-            const auto unregistered =
-                "KV UCM metric " + metric.Name() + " skipped: unregistered metric";
-            EXPECT_FALSE(WaitForMetricDiagnostic(unregistered).empty());
-
+            EXPECT_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).count(metric.Name()), 0U);
             UC::Metrics::CreateStats(metric.Name(), "counter");
-            EXPECT_EQ(UC::Metrics::TryUpdateStats(native, 2.0), UC::Metrics::UpdateResult::Updated);
             UpdateStats(metric, 3.0);
             EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()),
-                             5.0);
+                             3.0);
             _exit(testing::Test::HasFailure() ? 1 : 0);
         },
         testing::ExitedWithCode(0), "");
@@ -214,6 +146,20 @@ protected:
     std::string prefix_;
     std::shared_ptr<KvMetricsBackend> backend_;
 };
+
+TEST_F(UcmMetricsBackendTest, InstallationPreservesExistingBackend)
+{
+    std::string error;
+    EXPECT_FALSE(InstallBackend(backend_, &error));
+    EXPECT_EQ(error, "metrics backend is already initialized");
+    EXPECT_FALSE(InstallBackend(CreateUcmMetricsBackend(), &error));
+    EXPECT_EQ(error, "metrics backend is already initialized");
+    EXPECT_FALSE(InstallBackend(nullptr, &error));
+    EXPECT_EQ(error, "metrics backend is null");
+    CachedMetric metric{Register("retained_backend", "counter")};
+    UpdateStats(metric, 3.0);
+    EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 3.0);
+}
 
 TEST_F(UcmMetricsBackendTest, RoutesSingleUpdatesAndDrainsOnlyOnce)
 {
@@ -272,10 +218,8 @@ TEST_F(UcmMetricsBackendTest, ResolvesSameCachedMetricAfterLateRegistration)
     EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 2.0);
 }
 
-TEST_F(UcmMetricsBackendTest, BoundsUnregisteredDiagnosticsAndRecovers)
+TEST_F(UcmMetricsBackendTest, ConcurrentUnregisteredUpdatesRecoverAfterRegistration)
 {
-    // Disable the logger's own limiter to exercise the adapter's pre-format gate.
-    ScopedMetricsDiagnostics diagnostics;
     CachedMetric metric{prefix_ + "missing_catalog_entry"};
     std::vector<std::thread> writers;
     for (int i = 0; i < 4; ++i) {
@@ -284,14 +228,6 @@ TEST_F(UcmMetricsBackendTest, BoundsUnregisteredDiagnosticsAndRecovers)
         });
     }
     for (auto& writer : writers) { writer.join(); }
-    const auto message = "KV UCM metric " + metric.Name() + " skipped: unregistered metric";
-    // Wait for a trailing message so the async logger has processed earlier samples.
-    const auto marker = prefix_ + "missing_diagnostics_drained";
-    UC_WARN_UNLIMITED("{}", marker);
-    const auto content = WaitForMetricDiagnostic(marker);
-    const auto first = content.find(message);
-    ASSERT_NE(first, std::string::npos);
-    EXPECT_EQ(content.find(message, first + message.size()), std::string::npos);
     EXPECT_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).count(metric.Name()), 0U);
 
     UC::Metrics::CreateStats(metric.Name(), "counter");
@@ -389,16 +325,6 @@ TEST_F(UcmMetricsBackendTest, LogsRepeatedUpdateFailuresAndRecovers)
     UC::Logger::Logger::GetInstance().LoadRateLimitConfig();
     if (!hadSetting) { unsetenv("UCM_LOG_RATE_LIMIT_ENABLE"); }
     EXPECT_TRUE(reportedTwice);
-}
-
-TEST_F(UcmMetricsBackendTest, LoggingAllocationFailureDoesNotEscapeUpdate)
-{
-    CachedMetric metric{Register("logging_failure", "counter")};
-    allocationFailures = 2;
-    UpdateStats(metric, 100.0);
-    allocationFailures = 0;
-    UpdateStats(metric, 4.0);
-    EXPECT_DOUBLE_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).at(metric.Name()), 4.0);
 }
 
 TEST_F(UcmMetricsBackendTest, SkipsForeignCachedBindingWithoutInvalidCast)

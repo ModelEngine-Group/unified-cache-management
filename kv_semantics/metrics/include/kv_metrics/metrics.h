@@ -83,8 +83,6 @@ bool InstallBackend(std::shared_ptr<KvMetricsBackend> backend, std::string* erro
 void Shutdown();
 void Flush();
 bool IsEnabled() noexcept;
-// Snapshot of backend identity; callers must quiesce writers before Shutdown.
-bool IsBackendInstalled(const KvMetricsBackend* backend) noexcept;
 MetricTimer StartMetricTimer() noexcept;
 inline std::optional<double> ElapsedSeconds(const MetricTimer& timer) noexcept
 {

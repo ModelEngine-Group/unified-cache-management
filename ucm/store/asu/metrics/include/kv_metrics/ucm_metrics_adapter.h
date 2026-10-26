@@ -10,7 +10,7 @@ namespace kv::metrics {
 std::shared_ptr<KvMetricsBackend> CreateUcmMetricsBackend();
 
 // Install before starting a KV client; all AsuStore instances share the backend.
-// Failures are logged, never thrown or permanently cached. Existing backends are
+// Installation failures are logged and not permanently cached. Existing backends are
 // not replaced. After all writers stop and Shutdown completes, Setup may reinstall
 // the retained backend. Switching backend types with live cached bindings remains
 // unsupported; incompatible bindings are skipped with a diagnostic.

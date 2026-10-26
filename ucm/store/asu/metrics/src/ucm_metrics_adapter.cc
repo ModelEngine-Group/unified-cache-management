@@ -1,7 +1,4 @@
 #include "kv_metrics/ucm_metrics_adapter.h"
-#include <atomic>
-#include <chrono>
-#include <cstdio>
 #include <exception>
 #include <mutex>
 #include "logger.h"
@@ -16,78 +13,20 @@ struct UcmMetricBinding final : CachedMetric::Binding {
     {
     }
     UC::Metrics::CachedMetric nativeMetric;
-    std::atomic<int64_t> nextUninitializedReport{0};
-    std::atomic<int64_t> nextUnregisteredReport{0};
 };
 
-void ReportLoggingFailure() noexcept
+void ReportUpdateFailure(const char* metric, const char* reason)
 {
-    // Allocation-free fallback if the normal logger also fails (e.g. bad_alloc).
-    // Keep it periodic, but bounded even during sustained memory pressure.
-    static std::atomic<int64_t> nextReport{0};
-    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now().time_since_epoch())
-                         .count();
-    auto next = nextReport.load(std::memory_order_relaxed);
-    if (now >= next &&
-        nextReport.compare_exchange_strong(next, now + 60, std::memory_order_relaxed)) {
-        std::fputs("KV UCM metrics failure; diagnostic logging also failed.\n", stderr);
-    }
-}
-
-void ReportUpdateFailure(const char* metric, const char* reason) noexcept
-{
-    try {
-        UC_ERROR("KV UCM metric update failed for {}; sample skipped: {}", metric, reason);
-    } catch (...) {
-        ReportLoggingFailure();
-    }
-}
-
-void ReportSkippedUpdate(UcmMetricBinding& binding, UC::Metrics::UpdateResult result) noexcept
-{
-    // Only the skipped-update path reads the clock. Gate before formatting so a
-    // missing catalog entry does not allocate a log message for every sample.
-    auto& nextReport = result == UC::Metrics::UpdateResult::NotInitialized
-                           ? binding.nextUninitializedReport
-                           : binding.nextUnregisteredReport;
-    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now().time_since_epoch())
-                         .count();
-    auto next = nextReport.load(std::memory_order_relaxed);
-    if (now < next ||
-        !nextReport.compare_exchange_strong(next, now + 60, std::memory_order_relaxed)) {
-        return;
-    }
-    try {
-        if (result == UC::Metrics::UpdateResult::NotInitialized) {
-            UC_WARN(
-                "KV UCM metric {} skipped: collector is not initialized; call UCM metrics "
-                "SetUp and register the catalog before sampling.",
-                binding.nativeMetric.name);
-        } else {
-            UC_WARN(
-                "KV UCM metric {} skipped: unregistered metric; check that the effective "
-                "metrics catalog includes the KV definitions. Later registration can "
-                "restore sampling.",
-                binding.nativeMetric.name);
-        }
-    } catch (...) {
-        ReportLoggingFailure();
-    }
+    UC_ERROR("KV UCM metric update failed for {}; sample skipped: {}", metric, reason);
 }
 
 bool InstallationFailed(std::string* error, const char* reason) noexcept
 {
-    try {
-        UC_ERROR(
-            "Failed to install ASU UCM metrics backend: {}. "
-            "Continuing without UCM metrics installation; existing backend unchanged. "
-            "A later Store Setup can retry.",
-            reason);
-    } catch (...) {
-        ReportLoggingFailure();
-    }
+    UC_ERROR(
+        "Failed to install ASU UCM metrics backend: {}. "
+        "Continuing without UCM metrics installation; existing backend unchanged. "
+        "A later Store Setup can retry.",
+        reason);
     // Even diagnostic string allocation must not make Store initialization fail.
     try {
         if (error != nullptr) { *error = reason; }
@@ -110,10 +49,7 @@ public:
             auto* binding = static_cast<UcmMetricBinding*>(cached);
             // UCM resolves late registration using its own cached ID and epoch.
             // Node labels deliberately aggregate into the base name in this backend.
-            const auto result = UC::Metrics::TryUpdateStats(binding->nativeMetric, value);
-            if (result != UC::Metrics::UpdateResult::Updated) {
-                ReportSkippedUpdate(*binding, result);
-            }
+            UC::Metrics::UpdateStats(binding->nativeMetric, value);
         } catch (const std::exception& ex) {
             ReportUpdateFailure(metric.Name().c_str(), ex.what());
         } catch (...) {
@@ -154,7 +90,7 @@ bool EnsureUcmKvMetricsInstalled(std::string* error) noexcept
         std::lock_guard<std::mutex> lock{mutex};
         if (error != nullptr) { error->clear(); }
         if (!backend) { backend = CreateUcmMetricsBackend(); }
-        if (IsBackendInstalled(backend.get())) { return true; }
+        UC_INFO("Initializing KV metrics backend: UcmMetricsBackend");
         std::string installError;
         if (!InstallBackend(backend, &installError)) {
             return InstallationFailed(error, installError.c_str());

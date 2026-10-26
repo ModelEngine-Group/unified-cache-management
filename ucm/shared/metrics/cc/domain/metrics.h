@@ -41,7 +41,6 @@
 namespace UC::Metrics {
 using MetricId = uint32_t;
 constexpr MetricId INVALID_METRIC_ID = std::numeric_limits<MetricId>::max();
-enum class UpdateResult { Updated, NotInitialized, Unregistered };
 struct HistogramStat {
     std::vector<uint64_t> bucketCounts;
     double sum{0.0};
@@ -148,9 +147,6 @@ public:
     void UpdateStats(const std::string& name, double value);
 
     void UpdateStats(CachedMetric& metric, double value);
-
-    // Report skipped updates without resolving the metric name a second time.
-    UpdateResult TryUpdateStats(CachedMetric& metric, double value);
 
     void UpdateStats(const std::unordered_map<std::string, double>& values);
 

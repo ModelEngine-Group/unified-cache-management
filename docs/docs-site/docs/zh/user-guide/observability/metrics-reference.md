@@ -266,9 +266,9 @@ Direct、HMA、HLA 和 HLA LayerWise connector 安装 ASU adapter 的条件相�
 
 若要让某个 ASU store 不触发安装，在其已有的 `ucm_connector_config` 中、与 `store_pipeline: "ASU"` 同级添加 `enable_metrics: false`。该键控制安装，不是逐 store 的数据过滤或关闭开关：backend 是进程级的，设为 `false` 不会卸载其他 store 已安装的 backend。直接调用 C++ 的使用者只有 store 安装开关，需自行安排 UCM 指标注册和数据读取。
 
-指标安装失败时记录限速的 UCM ERROR 日志，Store 继续初始化，但不安装 UCM 指标后端；已有 backend 保持不变。安装失败不会被永久缓存，后续 Store `Setup()` 可以重试。所有指标写入线程停止且 `kv::metrics::Shutdown()` 完成后，后续 setup 可以重新安装保留的 UCM adapter。仍不支持并发执行 shutdown 与指标写入，也不支持在存在活跃缓存绑定时切换 backend 类型。不兼容的缓存绑定和失败的指标更新会被跳过，并持续通过限速 ERROR 日志报告；若日志自身也失败，则使用限频的 stderr 兜底。这些失败不会导致 Store 初始化失败，也不会从指标更新接口抛出异常。
+指标安装失败时记录限速的 UCM ERROR 日志，Store 继续初始化，但不安装 UCM 指标后端；已有 backend 保持不变。安装失败不会被永久缓存，后续 Store `Setup()` 可以重试。所有指标写入线程停止且 `kv::metrics::Shutdown()` 完成后，后续 setup 可以重新安装保留的 UCM adapter。仍不支持并发执行 shutdown 与指标写入，也不支持在存在活跃缓存绑定时切换 backend 类型。不兼容的缓存绑定和失败的指标更新会被跳过，并持续通过限速 ERROR 日志报告。adapter 捕获安装和更新异常；日志直接使用 UCM 日志框架，不再提供独立的日志失败兜底。
 
-采集器尚未初始化或指标尚未注册时，跳过的采样会触发 WARNING 诊断，包含指标名称及初始化或目录配置提示。adapter 对每个缓存指标、每种原因每 60 秒最多报告一次，再应用 UCM 日志框架自身的限速。后续完成初始化和注册后，同一个缓存指标可以恢复采样；此前跳过的样本不会补发。运行时诊断只能发现发生过采样的指标，完整自定义目录仍需通过 `--ucm-config` 校验。
+adapter 使用现有 UCM `UpdateStats()` 接口。采集器尚未初始化或指标尚未注册时，采样会被静默跳过。后续完成初始化和注册后，同一个缓存指标可以恢复采样；此前跳过的样本不会补发。请使用 `--ucm-config` 校验自定义目录的完整性。
 
 #### Counters
 

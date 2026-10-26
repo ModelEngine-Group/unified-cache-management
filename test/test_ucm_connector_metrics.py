@@ -2663,11 +2663,11 @@ def test_hybrid_layerwise_records_load_bytes_once():
     )
 
     connector = object.__new__(UCMHybridLinearAttentionLayerWiseConnector)
-    connector._load_bytes_total = 768
-    connector._load_bytes_recorded = False
+    connector._layerwise_load_bytes = 768
+    connector._layerwise_load_bytes_recorded = False
 
-    connector._record_load_bytes()
-    connector._record_load_bytes()
+    connector._record_layerwise_load_bytes()
+    connector._record_layerwise_load_bytes()
 
     assert fake_ucmmetrics.updated == [{"load_bytes_total": 768}]
 
@@ -2680,22 +2680,19 @@ def test_hybrid_layerwise_records_save_bytes_once():
 
     connector = object.__new__(UCMHybridLinearAttentionLayerWiseConnector)
     connector.is_save = True
-    connector._dump_plan = ([], [], [], {"req-1"}, {})
+    connector._dump_transfer_data = ([], [], {}, {"req-1"})
     connector._connector_metadata = None
-    connector._dump_tasks = []
-    connector._dumped_layers = set()
-    connector._dumped_group_slots = set()
-    connector._submitted_group_slots = set()
-    connector._waited_group_slots = set()
-    connector._load_bytes_recorded = True
-    connector._save_bytes_total = 896
+    connector.commit_row_id = 0
+    connector.row_ids = []
+    connector.dump_tasks = {}
+    connector._layerwise_save_bytes = 896
     connector._rank_consistency = SimpleNamespace(finish_dump=lambda request_ids: None)
     connector.enable_event_sync = False
 
     connector.wait_for_save()
 
     assert fake_ucmmetrics.updated == [{"save_bytes_total": 896}]
-    assert connector._save_bytes_total == 0
+    assert connector._layerwise_save_bytes == 0
     assert connector.is_save is False
 
 

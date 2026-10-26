@@ -80,16 +80,7 @@ void Metrics::UpdateStats(const std::string& name, double value)
 
 void Metrics::UpdateStats(CachedMetric& metric, double value)
 {
-    (void)TryUpdateStats(metric, value);
-}
-
-UpdateResult Metrics::TryUpdateStats(CachedMetric& metric, double value)
-{
-    if (!isInited_.load(std::memory_order_acquire)) { return UpdateResult::NotInitialized; }
-    const auto id = ResolveCachedMetric(metric);
-    if (id == INVALID_METRIC_ID) { return UpdateResult::Unregistered; }
-    UpdateStats(id, value);
-    return UpdateResult::Updated;
+    UpdateStats(ResolveCachedMetric(metric), value);
 }
 
 void Metrics::UpdateStats(MetricId id, double value)

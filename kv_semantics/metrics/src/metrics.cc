@@ -64,11 +64,6 @@ void Flush()
 
 bool IsEnabled() noexcept { return LoadBackendFast() != nullptr; }
 
-bool IsBackendInstalled(const KvMetricsBackend* backend) noexcept
-{
-    return backend != nullptr && LoadBackendFast() == backend;
-}
-
 MetricTimer StartMetricTimer() noexcept
 {
     if (!IsEnabled()) { return std::nullopt; }
