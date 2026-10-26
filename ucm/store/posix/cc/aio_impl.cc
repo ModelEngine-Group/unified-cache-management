@@ -311,7 +311,7 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
         // if the number of events is exactly batchSize,
-        // another call to AioGetEvents will block will block until next event complete,
+        // another call to AioGetEvents will block until next event complete,
         // set zero here will let AioGetEvents return immediately if no events
         timespec zero{0, 0};
         auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), &zero);
