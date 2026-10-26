@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "posix_file.h"
+#include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -29,6 +30,13 @@ namespace UC::PosixStore {
 
 static constexpr auto NewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 static constexpr auto NewDirPerm = (S_IRWXU | S_IRWXG | S_IROTH);
+
+static Status FileError(const char* operation, const std::string& path, int error,
+                        const Status& status = Status::OsApiError())
+{
+    return {status.Underlying(), fmt::format("{}('{}') failed: errno={} ({})", operation, path,
+                                             error, std::strerror(error))};
+}
 
 PosixFile::~PosixFile()
 {
@@ -42,7 +50,7 @@ Status PosixFile::MkDir()
     auto eno = errno;
     if (ret != 0) [[unlikely]] {
         if (eno == EEXIST) { return Status::DuplicateKey(); }
-        return Status::OsApiError(std::to_string(eno));
+        return FileError("mkdir", path_, eno);
     }
     chmod(dir, NewDirPerm);
     return Status::OK();
@@ -52,7 +60,7 @@ Status PosixFile::RmDir()
 {
     auto ret = rmdir(path_.c_str());
     auto eno = errno;
-    if (ret != 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
+    if (ret != 0) [[unlikely]] { return FileError("rmdir", path_, eno); }
     return Status::OK();
 }
 
@@ -62,7 +70,7 @@ Status PosixFile::Rename(const std::string& newName)
     auto eno = errno;
     if (ret != 0) [[unlikely]] {
         if (eno == ENOENT) { return Status::NotFound(); }
-        return Status::OsApiError(std::to_string(eno));
+        return FileError("rename", path_, eno);
     }
     return Status::OK();
 }
@@ -72,8 +80,8 @@ Status PosixFile::Access(const int32_t mode)
     auto ret = access(path_.c_str(), mode);
     auto eno = errno;
     if (ret != 0) [[unlikely]] {
-        if (eno == ENOENT) { return Status::NotFound(); }
-        return Status::OsApiError(std::to_string(eno));
+        if (eno == ENOENT) { return FileError("access", path_, eno, Status::NotFound()); }
+        return FileError("access", path_, eno);
     }
     return Status::OK();
 }
@@ -83,17 +91,21 @@ Status PosixFile::Open(const uint32_t flags)
     handle_ = open(path_.c_str(), flags, NewFilePerm);
     auto eno = errno;
     if (handle_ < 0) [[unlikely]] {
-        if (eno == EEXIST) { return Status::DuplicateKey(); }
-        if (eno == ENOENT) { return Status::NotFound(); }
-        return Status::OsApiError(std::to_string(eno));
+        if (eno == EEXIST) { return FileError("open", path_, eno, Status::DuplicateKey()); }
+        if (eno == ENOENT) { return FileError("open", path_, eno, Status::NotFound()); }
+        return FileError("open", path_, eno);
     }
     return Status::OK();
 }
 
-void PosixFile::Close()
+Status PosixFile::Close()
 {
-    close(handle_);
+    if (handle_ < 0) { return Status::OK(); }
+    const auto ret = close(handle_);
+    const auto eno = errno;
     handle_ = -1;
+    if (ret != 0) { return FileError("close", path_, eno); }
+    return Status::OK();
 }
 
 Status PosixFile::Remove()
@@ -101,7 +113,7 @@ Status PosixFile::Remove()
     auto ret = remove(path_.c_str());
     auto eno = errno;
     if (ret == 0 || eno == ENOENT) { return Status::OK(); }
-    return Status::OsApiError(std::to_string(eno));
+    return FileError("remove", path_, eno);
 }
 
 Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
@@ -113,8 +125,13 @@ Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
         nBytes = read(handle_, buffer, size);
     }
     auto eno = errno;
-    if (nBytes < 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
-    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] { return Status::NotFound(); }
+    const auto operation = offset == -1 ? "read" : "pread";
+    if (nBytes < 0) [[unlikely]] { return FileError(operation, path_, eno); }
+    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] {
+        return {Status::NotFound().Underlying(),
+                fmt::format("{}('{}') short read: expected {} bytes, got {}", operation, path_,
+                            size, nBytes)};
+    }
     return Status::OK();
 }
 
@@ -127,8 +144,11 @@ Status PosixFile::Write(const void* buffer, size_t size, off64_t offset)
         nBytes = write(handle_, buffer, size);
     }
     auto eno = errno;
+    const auto operation = offset == -1 ? "write" : "pwrite";
+    if (nBytes < 0) [[unlikely]] { return FileError(operation, path_, eno); }
     if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] {
-        return Status::OsApiError(std::to_string(eno));
+        return Status::OsApiError(fmt::format("{}('{}') short write: expected {} bytes, got {}",
+                                              operation, path_, size, nBytes));
     }
     return Status::OK();
 }
@@ -137,7 +157,7 @@ Status PosixFile::Sync()
 {
     auto ret = fsync(handle_);
     auto eno = errno;
-    if (ret != 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
+    if (ret != 0) [[unlikely]] { return FileError("fsync", path_, eno); }
     return Status::OK();
 }
 
