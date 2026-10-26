@@ -49,7 +49,6 @@ Example override file:
   "bandwidth": {
     "shard_sizes": ["180k", "1m"],
     "worker_counts": [1, 16],
-    "engines": ["psync", "aio"],
     "block_number": 64,
     "shard_number": 1,
     "dump_epochs": 32,
@@ -80,7 +79,7 @@ ucm-toolkit run precheck --config /path/to/precheck.json
 
 ## Bandwidth interpretation
 
-Defaults sweep 180 KiB and 8 MiB shards, 1/8/16 workers, and psync/aio. Each combination runs dump, read and read-heavy mixed phases. The mixed ratio is one write to four reads, with eight epochs per phase.
+Defaults sweep 180 KiB and 8 MiB shards, 1/8/16 workers, and the psync engine only. Each combination runs dump, read and read-heavy mixed phases. The mixed ratio is one write to four reads, with eight epochs per phase.
 
 The tool reports sample means, variation and aggregates. Selection prefers mixed bandwidth and falls back to the dump/read mean when mixed data is absent. Non-Direct I/O reads may be served by the OS page cache; interpret results as throughput of that tested path. State I/O mode and cache state when measuring storage media.
 

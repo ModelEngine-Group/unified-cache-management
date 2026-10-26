@@ -54,9 +54,10 @@ class UnifiedCacheStore(HiCacheStorage):
         )
 
         super().register_mem_pool_host(storage_host_pool)
-        if storage_host_pool.layout != "page_first":
+        if storage_host_pool.layout not in ("page_first", "page_first_direct"):
             raise ValueError(
-                "UnifiedCacheStore currently requires --hicache-mem-layout page_first, "
+                "UnifiedCacheStore currently requires --hicache-mem-layout "
+                "page_first or page_first_direct, "
                 f"got {storage_host_pool.layout!r}."
             )
 

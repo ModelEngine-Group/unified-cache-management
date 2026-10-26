@@ -57,7 +57,11 @@
       } : {};
       guides.forEach(function (guide) {
         guide.hidden = guide.dataset.quickstartGuide !== requested.engine;
-        if (guide.dataset.quickstartGuide === "sglang" || guide.hidden) return;
+        if (guide.hidden) return;
+        var runtimeClass = combination && combination.runtime.indexOf("cann-") === 0 ? "cann" : "cuda";
+        guide.querySelectorAll("[data-runtime]").forEach(function (node) {
+          node.hidden = node.dataset.runtime !== runtimeClass;
+        });
         guide.querySelector("[data-environment-summary]").hidden = !combination;
         guide.querySelectorAll("[data-env-value]").forEach(function (node) {
           node.textContent = values[node.dataset.envValue] || "—";
@@ -70,7 +74,10 @@
         });
         guide.querySelectorAll("[data-command-template]").forEach(function (container) {
           // Missing artifacts keep their command sections hidden, including stale commands.
-          if (!selection[container.closest("[data-requires]").dataset.requires]) return;
+          var requirement = container.closest("[data-requires]");
+          var available = !!selection[requirement.dataset.requires];
+          requirement.hidden = !available;
+          if (!available) return;
           var command = templates.get(container).replace(/\{\{ (\w+) \}\}/g, function (_, key) {
             return values[key];
           });
@@ -110,6 +117,9 @@
     if (guide && select) {
       select(guide.dataset.quickstartGuide);
       var target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (target && target.matches("input[type=radio]")) {
+        target.click();
+      }
       var block = target.closest(".tabbed-block");
       if (block) {
         var tabs = block.closest(".tabbed-set");

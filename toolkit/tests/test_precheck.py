@@ -144,7 +144,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.shm_min_gib, 512.0)
         self.assertEqual(cfg.bandwidth.shard_sizes, [184320, 8388608])
         self.assertEqual(cfg.bandwidth.worker_counts, [1, 8, 16])
-        self.assertEqual(cfg.bandwidth.engines, ["psync", "aio"])
+        self.assertEqual(cfg.bandwidth.engines, ["psync"])
         self.assertEqual(cfg.bandwidth.modes, ["dump", "read", "mix"])
         self.assertEqual(cfg.bandwidth.block_number, 32)
         self.assertEqual(cfg.bandwidth.dump_epochs, 8)
@@ -160,7 +160,7 @@ class TestConfig(unittest.TestCase):
         # PrecheckConfig() (no JSON) uses the code-constant fallback.
         cfg = PrecheckConfig()
         self.assertEqual(cfg.bandwidth.shard_sizes, [184320, 8388608])
-        self.assertEqual(cfg.bandwidth.engines, ["psync", "aio"])
+        self.assertEqual(cfg.bandwidth.engines, ["psync"])
         self.assertEqual(cfg.shm_min_gib, 512.0)
 
     def test_from_dict_sizes_as_strings(self):

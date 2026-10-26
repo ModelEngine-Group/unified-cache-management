@@ -117,9 +117,17 @@ class UnifiedCacheStoreConfig:
 
         cfg = dict(ucm_cfg)
         cfg["store_pipeline"] = "Posix"
-        cfg["storage_backends"] = [
-            path for path in cfg["storage_backends"].split(":") if path
-        ]
+        storage_backends = [path for path in cfg["storage_backends"].split(":") if path]
+        pp_rank = int(getattr(storage_config, "pp_rank", 0))
+        pp_size = int(getattr(storage_config, "pp_size", 1))
+        if pp_size > 1:
+            scoped_backends = []
+            for path in storage_backends:
+                stage_path = Path(path) / "sglang_pp" / f"pp_{pp_rank}_{pp_size}"
+                stage_path.mkdir(parents=True, exist_ok=True)
+                scoped_backends.append(str(stage_path))
+            storage_backends = scoped_backends
+        cfg["storage_backends"] = storage_backends
         cfg["device_id"] = get_world_group().local_rank
         cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
@@ -148,6 +156,15 @@ class SglangUcmConnector:
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
+        # PP stages own disjoint layer ranges for the same logical prefix. The
+        # storage root is stage-scoped in load_from_config().
+        self.pp_rank = int(getattr(storage_config, "pp_rank", 0))
+        self.pp_size = int(getattr(storage_config, "pp_size", 1))
+        if self.pp_size <= 0 or not 0 <= self.pp_rank < self.pp_size:
+            raise ValueError(
+                "Invalid pipeline-parallel topology: "
+                f"pp_rank={self.pp_rank}, pp_size={self.pp_size}"
+            )
 
         self.config_suffix = self._build_config_suffix()
         self.ucm_store_config: Optional[UnifiedCacheStoreConfig] = None
@@ -441,10 +458,7 @@ class SglangUcmConnector:
                     self._component_key(key, transfer.name, 0)
                     for key in keys[:kv_pages]
                 ]
-                page_exists = [bool(value) for value in store.lookup(encoded)]
-                boundary = (
-                    page_exists.index(False) if False in page_exists else kv_pages
-                )
+                boundary = store.lookup_on_prefix(encoded) + 1
                 pool_restorable = list(range(1, boundary + 1))
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
                 # Trailing pools are sparse: an object marks a candidate

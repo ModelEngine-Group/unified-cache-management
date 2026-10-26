@@ -3,7 +3,7 @@
 The active pipeline builds UCM Wheels and the Helm Chart from actual published
 runtime images. Stable, Prerelease, Draft, and Nightly Profiles independently
 select the five publication channels and retention limits. The pipeline never
-reads vLLM or vLLM-Ascend source branches to decide versions or Builder
+reads vLLM, vLLM-Ascend or SGLang source branches to decide versions or Builder
 capabilities.
 
 
@@ -17,9 +17,26 @@ Builders and synchronizes checked mirrors. `plan` only combines these results
 into build tasks. `wheel` and `meta` prepare and record their own artifacts.
 
 `release` aggregates publication state and renders release notes. `manifest`
-owns the public Schema 9 contract shared with documentation and cleanup;
-`cleanup` projects resources directly from it. The package import has no CLI
+owns the public Schema 10 contract shared with documentation and cleanup, while
+retaining Schema 9 compatibility. `cleanup` supplies CLI parsing and the
+top-level cleanup flow. The package import has no CLI
 side effects; `python -m ucm_release` dispatches through `__main__`.
+
+Cleanup responsibilities have explicit boundaries:
+
+| Module | Responsibility |
+| --- | --- |
+| `cleanup` | Own the common CLI, deletion phases, retries, activity checks and confirmed absence. |
+| `cleanup_records` | Decode supported records and manifests, project exact resources, and select excess versions. |
+| `cleanup_inventory` | Discover versions, resolve trusted evidence without writes, and explicitly save attempt snapshots or recovered plans. |
+| `cleanup_remote` | Own GitHub/registry access, transport errors, resource mutation and readback. |
+
+Wire-format readers preserve the two existing cleanup formats. Both produce
+`CleanupTarget` values with explicit Actions and Release recovery holders;
+only `cleanup.execute_cleanup()` owns destructive phase ordering. Nightly and
+Draft use the same discovery, selection, resolution and execution operations;
+release type selects the profile and ordering rule, rather than a separate
+cleanup implementation.
 
 Use `plan create/select/retag-pr`, `wheel prepare-source/record-result`, and
 `meta materialize-source/record-result`. The Catalog planner, old Wheel authority
@@ -30,8 +47,8 @@ manual `scripts/build_*.sh` packaging and root Dockerfiles remain independent.
 
 The human-maintained release authorities are:
 
-- `version.ini`: the UCM base version plus the exact supported vLLM and
-  vLLM-Ascend Runtime selectors for this source version;
+- `version.ini`: the UCM base version plus the exact supported vLLM,
+  vLLM-Ascend and SGLang Runtime selectors for this source version;
 - `release.yaml`: runtime repositories, runners, fixed publication addresses,
   four fully expanded Release Profiles, retention, and Chart smoke inputs;
 - `platforms.yaml`: raw Builder registries, excluded variants, Builder checks,
@@ -47,11 +64,12 @@ The built Wheel metadata must match those declarations before publication.
 
 Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
 Patch range. Every range is resolved independently from parsed Registry tags:
-the selector first chooses the highest available channel in `stable`, `rc`,
-`nightly` order, then the highest complete version in that channel, and finally
-expands every legal variant of only that version and channel. A newer RC never
-displaces a stable version in the same range, and missing variants are never
-backfilled from another version or channel.
+vLLM and SGLang choose `stable` before `rc`; vLLM-Ascend also allows a
+`nightly` fallback. The selector then chooses the highest complete version in
+that channel and expands every legal variant of only that version and channel.
+A newer RC never displaces a stable version in the same range, and missing
+variants are never backfilled from another version or channel. SGLang
+`main-cann*` and `nightly-*` tags are not automatic release candidates.
 
 An explicit `version@tag` binding such as
 `0.25@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag. The
@@ -63,15 +81,20 @@ produce no publishable Runtime fail the release. All four Release Profiles
 consume the same selectors. After a winning version is chosen, 310P is filtered
 and A5 is reported as blocked; neither condition causes fallback.
 
-These range rules apply only to `UCM_SUPPORTED_VLLM_VERSIONS` and
-`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `UCM_VERSION` remains a canonical PEP 440
-`X.Y.Z` package version because it drives Wheel, Chart, and Release coordinates.
+These range rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
+`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`, and `UCM_SUPPORTED_SGLANG_VERSIONS`.
+Upstream candidate channels are independent of UCM's Stable, Prerelease, Draft,
+and Nightly Profiles: the Profile controls which artifacts are built and
+published, without widening the candidate set. `UCM_VERSION` remains a canonical
+PEP 440 `X.Y.Z` package version because it drives Wheel, Chart, and Release
+coordinates.
 
 For example:
 
 ```ini
 UCM_SUPPORTED_VLLM_VERSIONS=0.26,0.27,0.28
 UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.23,0.24,0.25,0.26
+UCM_SUPPORTED_SGLANG_VERSIONS=0.5.18,0.5.19,0.5.20
 ```
 
 ## Registry-only flow
@@ -89,12 +112,32 @@ Runtime Registry Tags
 
 Crane reads each immutable member manifest/config to obtain CUDA/CANN,
 SOC/backend, Python ABI, and CPU architecture without downloading
-image layers. Only a member missing Python, CUDA/CANN, or SOC metadata is pulled
-and probed on its native architecture. Runtime glibc does not gate planning:
+image layers. Only a member with missing or conflicting Python, CUDA/CANN, or
+SOC metadata is pulled and probed on its native architecture. Runtime glibc does not gate planning:
 the Wheel's actual GLIBC floor comes from `auditwheel`, then the final
 install-only Runtime image verifies its glibc floor, installs the Wheel, and
 runs `import ucm` before publication. Every runtime member resolves exactly one
 Wheel ID. Zero or ambiguous matches fail instead of guessing.
+
+Ascend Builder selection first filters SoC, Python ABI, native architecture and
+the configured manylinux policy. An exact complete CANN version wins. Only a
+bare Runtime version such as `9.2.0` may fall back to the highest parseable
+suffixed version with the same `X.Y.Z`, for example `9.2.0-beta.2`. Version
+ordering uses `packaging.Version`, not Registry order or creation time. A Runtime
+that explicitly reports a suffix requires that exact version. A selected
+Builder's verification or build failure never triggers an older-version retry.
+
+`accelerator_runtime` continues to describe the target Runtime requirement and
+therefore the Wheel's existing identity. The complete source Builder version is
+owned by `source_image`, with its native member pinned by `source_image_digest`;
+`checks.accelerator_runtime` is derived from that source for actual Toolkit
+verification. Ascend PRs select the current upstream source before reusing a
+checked GHCR mirror with the same source, digest and recipe revision.
+
+The Native Wheel Gate installs and loads each suffix-fallback Wheel in every
+matching Runtime member before passing. It reuses the release installation
+validator without publishing images. These checks cover glibc, dependencies and
+native loading; they do not exercise NPU operations or FFTS transfers.
 
 The explicit `-openeuler` Runtime Tag suffix is retained as an OS hint for
 Release mapping and final-image validation. OS hints never participate in the
@@ -127,6 +170,13 @@ The workflow accepts:
 | `draft/vX.Y.Z` | Draft | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
 | `draft/vX.Y.Z-N` | Draft | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
 | `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
+
+Automatic release image tags use `<upstream-tag>-ucm-<UCM-image-version>` for
+every product, with the existing repository-owner prefix on Forks. The UCM image
+version is the OCI-compatible package version selected by the Git Tag, such as
+`0.9.0rc2` or `0.9.0.dev1`. Multi-architecture members append `-amd64` or
+`-arm64`; their index and single-architecture images use the bare tag. SGLang
+does not add a creation-time suffix.
 
 The tagged source owns the package model, and public versions must be canonical
 and non-local. Before opening or reusing a Release, the reusable core requires
@@ -198,7 +248,7 @@ addresses become usable only after their existing publication checks succeed.
 
 `release-state.json` remains the rich internal staging file in the
 `ucm-release-stage-run-<run>` Actions artifact. Only after all enabled channels
-succeed, a public `release-manifest.json` Schema 9 is uploaded and read back.
+succeed, a public `release-manifest.json` Schema 10 is uploaded and read back.
 The pure `ucm_release.manifest` module generates and validates this contract
 for publication, cleanup and documentation. It records Python package identity,
 extras and published index URLs, backend Wheels, Runtime image families, Chart
@@ -491,19 +541,98 @@ After completion, verify all of the following:
 
 ## Retention and cleanup
 
-`max_count: -1` disables retention. Finite retention considers only successful
-same-type Releases carrying an exact supported manifest, never the current
-Tag; old Releases without one are skipped rather than guessed. When PyPI is
-enabled for a finite Profile, retention is skipped with an explicit reason.
+`max_count: -1` disables automatic retention. Nightly counts every unique
+Nightly Tag, including successful Releases, failed or cancelled Drafts, legacy
+manifests and orphaned Releases. It keeps the newest configured number by the
+Tag's date and numeric sequence, using the base version as the tie-breaker.
+Duplicate Releases and run attempts count once. Existing objects determine the
+quota; a current Tag that was never created does not reserve a slot. Active,
+queued and waiting runs are protected even when their version is over quota,
+and the report explicitly records the deferral until a terminal sweep.
+Ordinary Draft retention also counts successful and failed versions without
+requiring a public manifest. Tags count once, in GitHub Release creation order
+rather than the tagged commit's date. Current and active publications are
+protected without substituting newer deletion candidates. Immutable PyPI
+publication still disables retention for its Profile.
 
-Cleanup is manifest-driven and retryable through
-`cleanup-ucm-release.yml(tag=...)`. Each resource is probed before up to three
-attempts with waits of 0, 5, and 15 seconds. Registry resources are removed
-first, followed by the associated Actions Run, Git Tag, and all exact-tag
-GitHub Releases. A failed phase blocks later phases while other resources in
-that phase are still attempted. GHCR package versions carrying any non-target
-Tag are refused. Re-running cleanup is idempotent because missing resources are
-treated as already removed.
+All release types use `record-targets` to persist small
+`release-cleanup-<run>-<attempt>-<opened|planned>.json` snapshots with kind
+`ucm-release-targets` and schema version 1. Each snapshot binds the repository,
+Tag, source SHA, source run and exact release-only registry targets; its filename
+identifies the run attempt and publication stage. Opening is independent of
+Runtime discovery, and planning records all enabled targets before publishers
+can start. Snapshots are immutable: reruns preserve earlier attempts and cleanup
+combines their resources. Python writes the snapshot to `--output-dir` before
+uploading it to the exact Release and verifying the readback. An `always()`
+artifact upload saves the local copy even if the remote write fails.
+
+Nightly preparation and the Nightly Tag caller use the local `record` command
+before a Release exists. Their artifact preserves the initial Tag/SHA binding
+when preparation fails or is cancelled. The independent `retain-releases` job
+runs after success or failure for non-Nightly publications; Nightly uses the
+separate lifecycle sweep described below.
+
+Historical failures can recover an exact repository-owned Actions plan and
+persist it before deleting its run. A plan-less early failure is recoverable
+when all-attempt job results prove every release publisher was skipped.
+Missing, expired or conflicting evidence otherwise reports a cleanup failure
+while the version remains in the count. Non-Nightly `--dry-run` resolves the
+same read-only target as actual cleanup, including pending historical evidence.
+Actual execution explicitly saves and reads back that evidence before deletion;
+the preview does not upload recovery assets or delete resources.
+
+Builders, base runtimes and PyPI packages are never cleanup targets. Existing
+Nightly `release-cleanup.json` records and `ucm-nightly-cleanup-*` artifacts remain
+readable alongside the new snapshots and `ucm-release-cleanup-*` artifacts.
+The public Schema 10 manifest continues to require complete publication. Schema 9
+manifests remain readable, and the internal cleanup reader also supports proven
+legacy Schema 6 records without weakening the public contract.
+
+`nightly-cleanup.yml` runs after trusted Nightly or Nightly-Tag workflows finish,
+including failure and cancellation. It uses default-branch code and shares a
+repository lifecycle concurrency group with both publishing entrypoints and
+manual Nightly cleanup, with `queue: max` and `cancel-in-progress: false`. The
+common release core retains its separate Tag-level group. Non-Nightly cleanup
+remains available through `cleanup-ucm-release.yml(tag=...)`.
+
+Cleanup resolves immutable identities before mutation and uses recoverable
+phases: registry, Actions run, Tag, then Releases holding the recovery inventory.
+If no live Release attachment covers the full inventory, the artifact-holding
+run is also retained until the last phase. Each resource is probed and deleted
+with up to three attempts, waiting 0, 5 and 15 seconds, followed by an exact
+ID/digest readback. Only confirmed absence is a successful deletion. GHCR errors,
+including denied access, a last tagged version, and versions with non-target
+Tags, are recorded as nonfatal skips after the applicable retries. Cleanup
+continues with other registry targets, non-recovery Actions runs, the Tag and
+non-recovery Releases. Releases or runs holding the recovery inventory remain
+available for retry. The job succeeds if GHCR skips are its only errors; it never
+falls back to deleting an entire package. Other failed phases preserve later
+recovery holders and fail the job; independent resources and versions continue
+to be attempted. Missing or conflicting publication ownership remains a blocker.
+
+Preview the configured quota without deleting:
+
+```bash
+python .github/release/ucm_release/cleanup.py retention \
+  --repository ModelEngine-Group/unified-cache-management \
+  --release-type nightly --max-count 7 --pypi-enabled false \
+  --dry-run --report out/cleanup/report.json
+```
+
+A reviewed offline inventory can be supplied with
+`--inventory /path/to/reviewed-inventory.json`. It restores exact resource
+ownership for older failed Drafts and already deleted GitHub objects; these
+registry-only leftovers are cleaned separately from the live quota. Keep this
+recovery evidence until registry cleanup is confirmed. No references are guessed
+from a prefix.
+The JSON report distinguishes kept, would-delete, deleted, partial, deferred and
+blocked versions. A `partial` result lists each GHCR skip with its reference,
+attempt count and final error; the Actions summary also lists these warnings.
+Dry-run records GHCR probe errors as skips without remote writes. Non-GHCR API
+errors or an unresolved publication keep the result failed. Retained recovery
+objects remain in the quota. Manual `tag` cleanup can retry them even after the
+Tag is gone; retention retries them when they are selected as excess versions.
+Reruns are idempotent when resources have already been removed.
 
 Every published Runtime image also contains the same Tag's example config at
 `/workspace/ucm_config_example.yaml`. It is not selected automatically; callers
@@ -558,8 +687,10 @@ An ordinary PR selects one latest Stable vLLM-Ascend A2 Ubuntu runtime, falling
 back to RC and release-nightly. Its actual architecture members determine the
 Wheel and image tasks. Explicit `/ucm-build image <repository:tag>` accepts one
 runtime reference, inspects its OCI config, pulls only metadata-incomplete
-members for fallback probing, and publishes PR-scoped GHCR tags. `/ucm-build
-all` retains the complete formal matrix behavior.
+members for fallback probing, and publishes PR-scoped GHCR tags. Explicit image
+requests use the `pinned` channel independently of automatic release candidate
+selection, so a SGLang `main-cann*` image can still be requested this way.
+`/ucm-build all` retains the complete formal matrix behavior.
 
 ## Artifact names
 
@@ -576,6 +707,10 @@ Artifacts are scoped by run and overwritten by failed-job reruns:
 - image member/index receipt artifacts;
 - `ucm-release-stage-run-<run>` containing internal `release-state.json`.
 
+Candidates or selection artifacts containing SGLang `main` images are no longer
+accepted. Regenerate discovery and selection with the updated code before
+planning; rerunning only the failed Plan job reuses the unsupported artifacts.
+
 When image publication is enabled, trusted Tag builds keep the verified OCI
 archive on the native build runner, copy it directly to GHCR, and upload only
 the small member receipt. They do not retain multi-gigabyte OCI archives as
@@ -583,6 +718,12 @@ Actions artifacts. PR Robot builds keep the separate read-only build to trusted
 publisher artifact boundary.
 
 ## Verification
+
+The release suite checks planning, artifact validation, publication, and recovery.
+Runtime engine patch routing belongs in `test/suites/Unit`, outside this suite.
+Prefer observable behavior over copied dependency pins, internal function names,
+or shell command spelling. Workflow checks should protect publication ordering,
+resource ownership, and failure handling.
 
 ```bash
 python -m pytest -q .github/release/tests

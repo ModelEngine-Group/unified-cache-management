@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -18,7 +19,10 @@ class FakeStore:
         self.objects = set()
         self.dump_calls = []
         self.load_calls = []
+        self.lookup_calls = []
+        self.lookup_on_prefix_calls = []
         self.closed = False
+        self.wait_error = None
 
     def dump_data(self, keys, shard_indices, pointers):
         self.dump_calls.append((keys, shard_indices, pointers))
@@ -32,12 +36,16 @@ class FakeStore:
         return object()
 
     def wait(self, task):
+        if self.wait_error is not None:
+            raise self.wait_error
         return None
 
     def lookup(self, keys):
+        self.lookup_calls.append(keys)
         return [key in self.objects for key in keys]
 
     def lookup_on_prefix(self, keys):
+        self.lookup_on_prefix_calls.append(keys)
         last = -1
         for index, key in enumerate(keys):
             if key not in self.objects:
@@ -100,7 +108,12 @@ def connector(monkeypatch, tmp_path):
     )
     main_pool = FakeHostPool(page_size=2, component_sizes=[400])
     storage_config = SimpleNamespace(
-        model_name="org/model", is_mla_model=False, tp_rank=1, tp_size=2
+        model_name="org/model",
+        is_mla_model=False,
+        tp_rank=1,
+        tp_size=2,
+        pp_rank=0,
+        pp_size=1,
     )
     main_store = FakeStore({})
     value = SglangUcmConnector(main_store, main_pool, storage_config, [str(tmp_path)])
@@ -110,6 +123,126 @@ def connector(monkeypatch, tmp_path):
         config={"storage_backends": [str(tmp_path)]},
     )
     return value, stores
+
+
+def make_v1_connector(*, is_mla=False, tp_rank=0, tp_size=1, pp_rank=0, pp_size=1):
+    component_sizes = [128] if is_mla else [64, 64]
+    host_pool = FakeHostPool(page_size=2, component_sizes=component_sizes)
+    storage_config = SimpleNamespace(
+        model_name="org/model",
+        is_mla_model=is_mla,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        pp_rank=pp_rank,
+        pp_size=pp_size,
+    )
+    store = FakeStore({})
+    value = SglangUcmConnector(store, host_pool, storage_config, [])
+    return value, store
+
+
+def test_v1_non_mla_round_trip_uses_physical_keys_and_paired_pointers():
+    value, store = make_v1_connector(tp_rank=1, tp_size=2)
+    keys = ["page-0", "page-1"]
+    host_indices = torch.tensor([0, 1, 2, 3])
+    expected_keys = value._encode_keys(value._get_physical_keys(keys))
+    expected_pointers = [[10_000, 10_100], [11_000, 11_100]]
+
+    assert value.batch_set_v1(keys, host_indices) == [True, True]
+    assert store.dump_calls == [(expected_keys, [0, 0], expected_pointers)]
+
+    assert value.batch_get_v1(keys, host_indices) == [True, True]
+    assert store.load_calls == [(expected_keys, [0, 0], expected_pointers)]
+
+
+def test_v1_mla_uses_one_buffer_per_page_and_tp_shared_keys():
+    tp0, store = make_v1_connector(is_mla=True, tp_rank=0, tp_size=4)
+    tp3, _ = make_v1_connector(is_mla=True, tp_rank=3, tp_size=4)
+    keys = ["page-0", "page-1"]
+    host_indices = torch.tensor([0, 1, 2, 3])
+
+    assert tp0._get_physical_keys(keys) == tp3._get_physical_keys(keys)
+    assert tp0.batch_set_v1(keys, host_indices) == [True, True]
+    assert store.dump_calls[0][2] == [[10_000], [11_000]]
+
+
+def test_rejects_invalid_pp_topology():
+    with pytest.raises(ValueError, match="Invalid pipeline-parallel topology"):
+        make_v1_connector(pp_rank=2, pp_size=2)
+
+
+def test_pp_scopes_storage_backend_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "ucm.integration.sglang.ucm_connector.get_world_group",
+        lambda: SimpleNamespace(local_rank=0),
+    )
+    storage_config = SimpleNamespace(
+        is_mla_model=False,
+        pp_rank=1,
+        pp_size=2,
+        extra_config={
+            "kv_connector_extra_config": {
+                "ucm_connector_name": "FakePosix",
+                "ucm_connector_module_path": "fake.module",
+                "ucm_connector_config": {"storage_backends": str(tmp_path)},
+            }
+        },
+    )
+    logical_pool = FakeHostPool(page_size=2, component_sizes=[])
+    logical_pool.kv_buffer = None
+
+    config = UnifiedCacheStoreConfig.load_from_config(storage_config, logical_pool)
+
+    assert config.config["storage_backends"] == [str(tmp_path / "sglang_pp" / "pp_1_2")]
+
+
+@pytest.mark.parametrize("operation", ["get", "set"])
+def test_v1_batch_io_reports_wait_failures(operation):
+    value, store = make_v1_connector()
+    keys = ["page-0", "page-1"]
+    host_indices = torch.tensor([0, 1, 2, 3])
+    store.objects.update(value._encode_keys(value._get_physical_keys(keys)))
+    store.wait_error = RuntimeError("transfer failed")
+
+    method = value.batch_get_v1 if operation == "get" else value.batch_set_v1
+
+    assert method(keys, host_indices) == [False, False]
+
+
+def test_v1_exists_and_batch_exists_use_the_physical_key_prefix():
+    value, store = make_v1_connector(tp_rank=1, tp_size=2)
+    keys = ["page-0", "page-1", "page-2"]
+    encoded_keys = value._encode_keys(value._get_physical_keys(keys))
+    store.objects.update(encoded_keys[:2])
+
+    assert value.exists("page-0")
+    assert not value.exists("page-2")
+    assert value.batch_exists(keys) == 2
+    assert value.batch_exists([]) == 0
+
+
+def test_v1_non_owner_mla_rank_treats_primary_cache_as_available():
+    value, store = make_v1_connector(is_mla=True, tp_rank=1, tp_size=2)
+
+    assert value.exists("page-0")
+    assert value.batch_exists(["page-0", "page-1"]) == 2
+    assert store.objects == set()
+
+
+def test_store_v1_methods_delegate_to_connector_with_extra_info():
+    store = UnifiedCacheStore(storage_config=SimpleNamespace())
+    store.mem_pool_host = object()
+    store.connector = Mock()
+    store.connector.batch_get_v1.return_value = [True]
+    store.connector.batch_set_v1.return_value = [False]
+    keys = ["page-0"]
+    host_indices = torch.tensor([0, 1])
+    extra_info = object()
+
+    assert store.batch_get_v1(keys, host_indices, extra_info) == [True]
+    assert store.batch_set_v1(keys, host_indices, extra_info) == [False]
+    store.connector.batch_get_v1.assert_called_once_with(keys, host_indices, extra_info)
+    store.connector.batch_set_v1.assert_called_once_with(keys, host_indices, extra_info)
 
 
 def test_v2_creates_one_fixed_size_store_per_pool(connector):
@@ -171,8 +304,10 @@ def test_logical_anchor_defers_store_creation_to_v2_pool(monkeypatch, tmp_path):
     assert len(stores) == 1
 
 
-def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch):
+@pytest.mark.parametrize("layout", ["page_first", "page_first_direct"])
+def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch, layout):
     anchor_pool = FakeHostPool(page_size=2, component_sizes=[64, 64])
+    anchor_pool.layout = layout
     host_pool_group = SimpleNamespace(
         anchor_entry=SimpleNamespace(host_pool=anchor_pool),
         layout=anchor_pool.layout,
@@ -193,6 +328,19 @@ def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch):
     assert seen == [anchor_pool]
     assert value.mem_pool_host is anchor_pool
     assert value.connector.mem_pool_host is anchor_pool
+
+
+def test_store_rejects_unsupported_host_layout():
+    anchor_pool = FakeHostPool(page_size=2, component_sizes=[64, 64])
+    anchor_pool.layout = "layer_first"
+    host_pool_group = SimpleNamespace(
+        anchor_entry=SimpleNamespace(host_pool=anchor_pool),
+        layout=anchor_pool.layout,
+    )
+    value = UnifiedCacheStore(storage_config=SimpleNamespace())
+
+    with pytest.raises(ValueError, match="page_first or page_first_direct"):
+        value.register_mem_pool_host(host_pool_group)
 
 
 def test_v2_round_trip_groups_component_results_by_logical_page(connector):
@@ -251,6 +399,8 @@ def test_v2_exists_intersects_all_required_components(connector):
 
     assert result.kv_hit_pages == 1
     assert result.restorable_prefix_pages == [1]
+    assert stores[0].lookup_calls == []
+    assert len(stores[0].lookup_on_prefix_calls) == 1
 
 
 def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
@@ -317,6 +467,8 @@ def test_trailing_pool_restores_prefix_from_persisted_tail_window(connector):
     assert result.kv_hit_pages == 3
     assert result.extra_pool_hit_pages[pool_name] == 3
     assert result.restorable_prefix_pages == [3]
+    assert len(stores[0].lookup_calls) == 1
+    assert stores[0].lookup_on_prefix_calls == []
 
 
 def test_trailing_pool_miss_rejects_current_prefix(connector):

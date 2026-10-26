@@ -35,6 +35,7 @@ _NIGHTLY_TAG = re.compile(
     r"^nightly-releases-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+rc(?:[0-9]+)?)"
     r"(?P<suffix>(?:-[A-Za-z0-9_.]+)*)$"
 )
+_SGLANG_CANN_SUFFIX = re.compile(r"^cann[0-9]+\.[0-9]+\.[0-9]+-(?:910b|a3)$")
 
 _WHEEL_BUILD_FIELDS = {
     "id",
@@ -96,7 +97,46 @@ def _string(mapping: Mapping[str, object], key: str, context: str) -> str:
     return value.strip()
 
 
+def _parsed_sglang_tag(tag: str) -> dict[str, object] | None:
+    """Parse versioned SGLang CUDA and CANN image tags (stable or RC)."""
+
+    match = _FORMAL_TAG.fullmatch(tag)
+    if match is None:
+        return None
+    suffix = match.group("suffix")
+    tokens = [token for token in suffix.removeprefix("-").split("-") if token]
+    is_cuda = all(re.fullmatch(r"cu[0-9]+|runtime", token) for token in tokens)
+    is_cann = (
+        len(tokens) == 2 and _SGLANG_CANN_SUFFIX.fullmatch("-".join(tokens)) is not None
+    )
+    if not is_cuda and not is_cann:
+        return None
+    if is_cuda and (
+        sum(token.startswith("cu") for token in tokens) != 1
+        or tokens.count("runtime") > 1
+    ):
+        return None
+    try:
+        version = Version(match.group("version"))
+    except InvalidVersion:
+        return None
+    channel = "rc" if version.is_prerelease else "stable"
+    variant = "a2" if "910b" in tokens else "a3" if "a3" in tokens else "default"
+    return {
+        "tag": tag,
+        "version": version,
+        "version_text": match.group("version"),
+        "channel": channel,
+        "suffix": suffix,
+        "tokens": tokens,
+        "variant": variant,
+        "backend": f"cann-{variant}" if is_cann else "cuda",
+    }
+
+
 def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
+    if product_id == "sglang":
+        return _parsed_sglang_tag(tag)
     nightly = _NIGHTLY_TAG.fullmatch(tag) if product_id == "vllm-ascend" else None
     formal = _FORMAL_TAG.fullmatch(tag)
     match = nightly or formal
@@ -116,12 +156,16 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
             or sum(token.startswith("ubuntu") for token in tokens) > 1
         ):
             return None
+        variant = "default"
+        backend = "cuda"
     elif product_id == "vllm-ascend":
         if any(token not in {"310p", "a3", "a5", "openeuler"} for token in tokens):
             return None
         accelerator_tokens = set(tokens) & {"310p", "a3", "a5"}
         if len(accelerator_tokens) > 1 or tokens.count("openeuler") > 1:
             return None
+        variant = next(iter(accelerator_tokens), "a2")
+        backend = f"cann-{variant}"
     else:
         raise ValueError(f"unsupported runtime product {product_id!r}")
     try:
@@ -140,19 +184,29 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
+        "variant": variant,
+        "backend": backend,
     }
 
 
-def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
-    tokens = set(parsed["tokens"])
-    if product_id == "vllm":
-        return "default"
-    if product_id == "vllm-ascend":
-        return next(
-            (token for token in ("310p", "a3", "a5") if token in tokens),
-            "a2",
-        )
-    raise ValueError(f"unsupported runtime product {product_id!r}")
+def _is_sglang_runtime_variant(product_id: str, parsed: Mapping[str, object]) -> bool:
+    """SGLang publishes CUDA ``-runtime`` tags, which are not UCM build inputs."""
+
+    return product_id == "sglang" and "runtime" in set(parsed.get("tokens", ()))
+
+
+def _without_sglang_runtime_tags(
+    product_id: str, selected: Sequence[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """Drop SGLang's image-only CUDA runtime tags from build candidates."""
+
+    if product_id != "sglang":
+        return [dict(item) for item in selected]
+    return [
+        dict(item)
+        for item in selected
+        if not str(item.get("runtime_tag", "")).endswith("-runtime")
+    ]
 
 
 def _version_is_in_selector(version: Version, selector: Version) -> bool:
@@ -233,7 +287,7 @@ def _select_runtime_tags(
                 raise ValueError(
                     f"{context}: explicit Runtime tag is outside its version range"
                 )
-            if _runtime_variant(product_id, parsed) in excluded_variants:
+            if parsed["variant"] in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
             values = [parsed]
         else:
@@ -244,9 +298,7 @@ def _select_runtime_tags(
             ]
             winners = _preferred_runtime_tags(matching)
             values = [
-                item
-                for item in winners
-                if _runtime_variant(product_id, item) not in excluded_variants
+                item for item in winners if item["variant"] not in excluded_variants
             ]
             if not values:
                 reason = (
@@ -325,7 +377,8 @@ def resolve_runtime_candidates(
                 }
                 for tag in repository_tags
                 if (item := _parsed_runtime_tag(product_id, tag)) is not None
-                and _runtime_variant(product_id, item) not in excluded
+                and item["variant"] not in excluded
+                and not _is_sglang_runtime_variant(product_id, item)
             ]
         else:
             selected = _select_runtime_tags(
@@ -333,6 +386,7 @@ def resolve_runtime_candidates(
                 repository_tags,
                 excluded_variants=excluded,
             )
+            selected = _without_sglang_runtime_tags(product_id, selected)
         if not selected:
             raise ValueError(
                 f"{product_id}: no Runtime Registry tags satisfy the selection windows"
@@ -340,31 +394,32 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _parsed_runtime_tag(product_id, tag)
-            tokens = set(parsed["tokens"]) if parsed is not None else set()
-            if product_id == "vllm-ascend" and "a5" in tokens:
-                backend = "cann-a5"
-                backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            parsed = _mapping(
+                _parsed_runtime_tag(product_id, tag),
+                f"selected Runtime tag {tag}",
+            )
+            backend = str(parsed["backend"])
+            backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            if backend_policy.get("status") == "blocked":
                 problems.append(
                     _blocked_problem(
                         backend=backend,
-                        capability="Ascend A5 runtime",
-                        reason=str(backend_policy.get("reason", "backend is blocked")),
+                        capability=f"{backend} runtime",
+                        reason=str(backend_policy["reason"]),
                         repository=repository,
                         tag=tag,
                     )
                 )
                 continue
-            runtimes.append(
-                {
-                    "product_id": product_id,
-                    "runtime_repository": repository,
-                    "runtime_tag": tag,
-                    "runtime_ref": f"{repository}:{tag}",
-                    "version": item["version"],
-                    "channel": item["channel"],
-                }
-            )
+            candidate = {
+                "product_id": product_id,
+                "runtime_repository": repository,
+                "runtime_tag": tag,
+                "runtime_ref": f"{repository}:{tag}",
+                "version": item["version"],
+                "channel": item["channel"],
+            }
+            runtimes.append(candidate)
         if len(runtimes) == product_runtime_count:
             raise ValueError(
                 f"{product_id}: no publishable Runtime Registry tags satisfy policy"
@@ -429,6 +484,8 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
     seen: set[str] = set()
     for index, raw in enumerate(runtimes):
         item = _mapping(raw, f"runtime candidates[{index}]")
+        product_id = _string(item, "product_id", f"runtime candidates[{index}]")
+        runtime_tag = _string(item, "runtime_tag", f"runtime candidates[{index}]")
         fields = {
             "product_id",
             "runtime_repository",
@@ -451,8 +508,6 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        product_id = _string(item, "product_id", reference)
-        runtime_tag = _string(item, "runtime_tag", reference)
         parsed = _parsed_runtime_tag(product_id, runtime_tag)
         if parsed is None:
             raise ValueError(f"{reference}: Runtime tag does not match product grammar")
@@ -553,9 +608,6 @@ def resolve_upstreams(
         str(item["id"]): _mapping(item, "release product")
         for item in release["products"]  # type: ignore[index]
     }
-    image_suffix = (
-        f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
-    )
     runtimes: list[dict[str, object]] = []
     for reference, group in sorted(grouped.items()):
         candidate = candidate_by_ref[reference]
@@ -605,6 +657,9 @@ def resolve_upstreams(
         tag = _string(first, "tag", reference)
         runtime_id = re.sub(r"[^a-z0-9._-]+", "-", f"{product_id}-{tag}".lower()).strip(
             ".-"
+        )
+        image_suffix = (
+            f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
         )
         target_tag = runtime_contract.project_runtime_image_tag(
             tag + image_suffix,
@@ -740,12 +795,10 @@ def validate_selection(value: object) -> dict[str, object]:
         targets.add(target)
         if _DIGEST.fullmatch(_string(runtime, "runtime_digest", runtime_id)) is None:
             raise ValueError(f"{runtime_id}: malformed runtime_digest")
-        if runtime.get("channel") not in {
-            "stable",
-            "rc",
-            "nightly",
-            "pinned",
-        }:
+        supported_channels = {"stable", "rc", "pinned"}
+        if runtime.get("product_id") != "sglang":
+            supported_channels.add("nightly")
+        if runtime.get("channel") not in supported_channels:
             raise ValueError(f"{runtime_id}: unsupported runtime channel")
         architectures = runtime.get("architectures")
         wheel_ids = runtime.get("wheel_build_ids")

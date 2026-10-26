@@ -127,6 +127,7 @@ def _load_layout_symbols():
     source = CONNECTOR_PATH.read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     selected_names = {
+        "_get_sparse_c8_flags",
         "_get_store_gc_block_size",
         "_get_store_io_sizes",
         "_is_minimax_m3",
