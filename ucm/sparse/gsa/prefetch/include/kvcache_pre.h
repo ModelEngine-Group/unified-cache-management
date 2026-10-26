@@ -1,3 +1,6 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+ */
 #ifndef ATB_KV_CACHE_PRE_H
 #define ATB_KV_CACHE_PRE_H
 #include <atomic>
@@ -7,7 +10,6 @@
 #include <functional>
 #include <future>
 #include <iostream>
-#include <kvcache_log.h>
 #include <map>
 #include <mutex>
 #include <omp.h>
@@ -23,157 +25,606 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "../../../../store/ucmstore.h"
+#include <cstdint>
+#include <unistd.h>
+#include "kvcache_task_manger.h"
+#include "kvcache_hbm_manger.h"
+#include "ucmstore_v1.h"
+#include "kvcache_pre_detail.h"
 
 namespace py = pybind11;
 
 namespace ucmprefetch {
-typedef struct {
-    int topkLen;
-    std::string reqID;
-    int layerID;
-    int topkIndex;
-    int bsIndex;
-} PrefetchReqInfo;
+    using BlockId = std::array<std::byte, 16>; /* 16-byte block hash */
+    typedef struct {
+        int topkLen;
+        std::string reqID;
+        int layerID;
+        int topkIndex;
+        int bsIndex;
+    } PrefetchReqInfo;
 
-class ThreadPool {
-public:
-    static ThreadPool* GetInst()
-    {
-        static ThreadPool pool(1);
-        return &pool;
-    }
+void MultiBSThreadFun(const TaskInfo& taskInfo, ThreadInfo& threadInfo);
+void MultiBSThreadFunIndexer(const TaskInfo& taskInfo, ThreadInfo& threadInfo);
 
-    ~ThreadPool();
-
-    template <class F, class... Args>
-    auto Enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
-
-    size_t GetActiveThreads() const;
-
-private:
-    explicit ThreadPool(size_t threadCount);
-    std::vector<std::thread> workers;
-    std::queue<std::function<void()>> tasks;
-    mutable std::mutex queueMutex;
-    bool stop;
-    std::condition_variable condition;
-    std::atomic<size_t> activeThreads{0};
-    size_t maxThreads;
-};
-
-void MutliBSThreadFun(void* args);
+float average(const std::vector<float>& vec);
+float average2d(const std::vector<std::vector<float>>& matrix);
 
 class __attribute__((visibility("hidden"))) GSAPrefetchEngineC {
-private:
-    std::map<std::string, std::vector<std::map<int, int>>> mDocsTables;
-    std::map<std::string, std::vector<std::map<int, int>>> mBlocksMap;
-    torch::Tensor mLoadSuccessBlocks;
-    torch::Tensor mFreeBlock;
-    torch::Tensor mFreeBlockLen;
-    torch::Tensor mSuccessTableLen;
-    torch::Tensor mUseTopkIdxs;
-    int mLayerNum;
-    int mRank = -1;
-    uint32_t mMaxBs = 30;
-    std::vector<std::string> mReqIdList;
-    int* mTopkLenList = NULL;
-    int* mBsIndexList = NULL;
-    uint32_t runBsLen = 0;
-    bool mIsLog = false;
-    bool mIsPrefetchDone = true;
-    bool mUseMla = false;
-    Logger mLogger;
-    ThreadPool* mThreadPool;
-    uint32_t mDecodeStep = 0;
-    uint32_t mMaxTopkLen = 0;
-    uint32_t mMaxBlocksLen = 0;
-    std::unordered_set<std::string> mDelSeqIds;
-    std::map<std::string, std::vector<std::vector<int>>> allNeedLoadBlock;
-    std::map<std::string, std::vector<std::vector<int>>> allMissIdxs;
-    std::map<std::string, int> mPromptLen;
-    UC::CCStore<>* mStore = nullptr;
-    std::vector<torch::Tensor> mKvCaches;
-    uint32_t mBlockSize = 128;
-    uint32_t mTensorElemSize = 2; // fp16
-    uint32_t mHeadNum = 40;
-    uint32_t mHeadSzie = 128;
-    uint32_t mTPSize = 2;
-    std::map<std::string, std::vector<std::string>> mAllBlcoksHash;
-    uint32_t mKVSzieBytes = 0;
-    uint32_t mExtraTopkLen = 16;
-    bool mIsPythonLoad = false;
-
+    friend struct UCMMergeHostAddress;
 public:
-    std::mutex mMutex;
+    std::mutex mMutexUseToken;
+    std::mutex mDelReqMutex;
+    std::mutex mUpdateReqMutex;
     bool mStopPrefetch = false;
+    std::atomic<bool> mIsPrefetchRunning{false};
+    std::atomic<bool> mIsIndexerLoadRunning{false};
+    int mRank = -1;
+    uint32_t mSpaTopkLen = 5120;
+    std::vector<std::vector<float>> mAvgHitRate;
+    // task manger class
+    std::unique_ptr<TaskManager> mTaskManger;
+    std::unique_ptr<TaskManager> mIndexerTaskManger;
+    std::vector<int> mPrefetchLen;
+    std::vector<bool> mIsIndexerOffload;
+    std::vector<void*> mDumpKBuffer;
+    std::vector<void*> mDumpVBuffer;
+    std::map<std::string, std::vector<std::vector<int>>> mUseBlockTableIdx;
+    std::map<std::string, std::vector<std::vector<int>>> mRealTimeIdx;
+    std::map<std::string, std::vector<std::vector<int>>> mPrefetchBlockTableIdx;
+    std::map<std::string, int> mSeqLen;
 
-private:
-    void LoadKVToHBM(std::vector<int> loadNPUBlockIDs, std::vector<int> missIdxs, int layerID,
-                     std::string reqID);
-
-    void GetHitAndMissBlock(PrefetchReqInfo oneBsInfo, std::unordered_set<int>& hitBlocks,
-                            std::map<int, int>& hitBlocksIdx, std::vector<int>& missIdxs);
-
-    void RunPrefetchH2D(PrefetchReqInfo oneBsInfo, std::unordered_set<int>& hitBlocks,
-                        std::map<int, int>& hitBlocksIdx, std::vector<int>& missIdxs);
-
-    void RunOneBsPrefetch(std::string reqID, int topkLen, int bsIndex, int topkIndex);
+    /* UCM store for Host-only KV load */
+    UC::StoreV1* mStoreV1_{nullptr};
+    bool mISSPAC8{false};
 
 public:
     ~GSAPrefetchEngineC();
 
-    GSAPrefetchEngineC(torch::Tensor& freeBlock, torch::Tensor& loadSuccessBlocks,
-                       torch::Tensor& freeBlockLen, torch::Tensor& successTableLen,
-                       std::vector<uint32_t>& kvShape, bool useMla, bool isLog, int tpSize,
-                       int rank, int extraTopkLen, bool isPythonLoad);
+    GSAPrefetchEngineC(std::vector<int>& modelInfo,
+        std::vector<int>& sizeinfo,
+        bool isLog, int rank, int threadNum,
+        std::vector<int> cpuToBind,
+        std::vector<int> topkLayerMap,
+        std::string logFileName);
 
-    void SetBlocksMap(std::string reqID, std::vector<int>& blockTableList,
-                      std::vector<int>& selectIndex, std::vector<std::string>& blocksHash,
-                      int maxIdx);
+    // Initialize/Update HBM manger mapping
+    // Hash map setup
+    void SetBlocksMap(
+        const std::string& reqID,
+        const std::vector<BlockId>& blocksHash,
+        int maxIdx,
+        const std::vector<int>& blockIdxs,
+        const std::vector<uintptr_t>& kAddrs,
+        const std::vector<uintptr_t>& vAddrs);
 
-    void SetBlocksMapMultiLayer(std::string reqID, std::vector<std::map<int, int>>& remainMap,
-                                std::vector<std::map<int, int>>& prefetchMap,
-                                std::vector<std::string>& blocksHash, int maxIdx);
+    void LastChunkMove(int layerID, const std::string& reqID, const std::vector<int>& moveMap);
 
-    void CheckInputIndex(uint32_t maxLen, uint32_t index);
+    void SetTokensMap(int layerID, const std::string& reqID, torch::Tensor& qTopkTensor,
+        const std::vector<int>& remainBlockTable, int maxIdx,
+        const std::vector<int>& slots, bool isNeedInit);
 
-    void AddBlocksMap(std::string reqID, int idx, int blockID);
+    // kvcache dump
+    void SetKvTensor(torch::Tensor kCachesTensor,
+        torch::Tensor vCachesTensor,
+        torch::Tensor lastChunkKBuffer,
+        torch::Tensor lastChunkvBuffer,
+        int layerID);
 
+    void SetKvTensorIndex(int layerID,
+                          torch::Tensor indexCache);
+
+    void SetKvBuffer(torch::Tensor kBufferHost,
+                     torch::Tensor vBufferHost,
+                     torch::Tensor kBufferDevice,
+                     torch::Tensor vBufferDevice,
+                     torch::Tensor loadIndexHost,
+                     torch::Tensor loadIndexDevice);
+
+    // ============================== 新增的一些函数 ==============================
+    // UC::Detail::BlockId ToBlockId(const std::string& hash);
+    void UCMTensorMerge(
+        int layerID,
+        int streamIdx,
+        std::vector<uint64_t>& hbmSlotIndex,
+        const std::string& reqID, uint32_t requestIndex);
+    /* Host-only KV load from UCM */
+    int LoadMissKVFromUCMHost(int reqID,
+                               int layerID,
+                               const std::vector<int>& missIdxs,
+                               void* kBufferOffset,
+                               void* vBufferOffset);
+    void SetStoreV1(UC::StoreV1* store) { mStoreV1_ = store; }
+
+    void SetStoreV1Raw(uintptr_t storePtr)
+    {
+        mStoreV1_ = reinterpret_cast<UC::StoreV1*>(storePtr);
+    }
+
+    uintptr_t GetStoreV1Raw() const
+    {
+        return reinterpret_cast<uintptr_t>(mStoreV1_);
+    }
+
+    uintptr_t GetSelfRaw() const
+    {
+        return reinterpret_cast<uintptr_t>(this);
+    }
+
+    void KVCacheInplaceScatter(std::string type, int layerID,
+        aclrtStream stream, aclrtContext context);
+
+    void DealLessPrefetchBlock(std::unordered_set<int>& hitBlocks,
+        std::map<int, int>& hitBlocksIdx,
+        std::string reqID,
+        int layerID, int topkLen);
+
+    // Trigger deletion
     void DelBlocksMap(std::string reqID);
 
     void DelReqIDRun();
 
-    void SetBlockTableInfo(torch::Tensor& blockTables, torch::Tensor& blockLengths,
-                           torch::Tensor& inputTopkBuf, int step);
+    // Task assignment and execution
+    void SubmitTask(std::vector<int>& topkLensInput,
+                    std::vector<int>& bsIndexInput,
+                    std::vector<std::string>& reqIDList,
+                    torch::Tensor& topkLists,
+                    std::vector<bool> &isIndexerOffload,
+                    std::vector<int>& seqLens,
+                    uint32_t stepTime);
 
-    void RunAsyncPrefetchBs(std::vector<std::string>& reqIDsInput, std::vector<int>& topkLensInput,
-                            std::vector<int>& bsIndexInput, std::vector<torch::Tensor>& kvCaches,
-                            void* storePtr);
+    int CallPrefetchProcess(const TaskInfo& taskInfo, ThreadInfo& threadInfo);
 
-    int CallPrefetchProcessFun();
+    // set output
+    void SetTopkIndies(std::string reqID, torch::Tensor& topIndices);
 
-    void PrintMap(std::string reqID, int i);
+    void PreSwapTokens(
+        std::vector<uintptr_t>& useTokenPtrs,
+        std::vector<int32_t>& seqLens,
+        std::vector<std::vector<int>>& swapIndex,
+        std::vector<uintptr_t>& spaTokensPtr,
+        std::vector<std::string>& reqIDs,
+        int sparseLen,
+        int spaMaxBs,
+        int mtpToken);
 
+    void TopkExpend(std::vector<int>& topkLensInput, std::string reqID);
+
+    // Prefetch running status
     bool GetPrefetchStatus();
-
-    void SetPrefetchStatus(bool flag);
 
     void SetModelRunningStatus(bool flag);
 
-    size_t GetOffset(uint32_t layerID, bool isV);
+    std::vector<int> GetTokenBlockMap(int layerID, std::string reqID);
 
-    size_t GetOffsetNew(uint32_t layerID, bool isV);
+    std::vector<int> GetBlockTokenMap(int layerID, std::string reqID);
 
-    std::map<std::string, std::vector<std::vector<int>>> ObtainLoadBlocks();
+    std::map<int, std::pair<int, int>> GetPrefetchToken(int layerID, std::string reqID);
 
-    std::map<std::string, std::vector<std::vector<int>>> ObtainMissIdxs();
+    std::vector<int> GetReqUseBlockTable(std::string reqID);
 
-    std::map<std::string, std::vector<std::map<int, int>>> ObtainBlocksMap();
+    int GetSparseSeqLen(std::string reqID);
 
-    std::map<std::string, std::vector<std::map<int, int>>> ObtainDocsMap();
-};
+    // indexer offload
+    void SetIndexerMap(std::string reqID, std::vector<int>& blockTableList,
+                       std::vector<std::vector<int>>& remainIdx,
+                       std::vector<std::vector<int>>& prefetchIdx,
+                       std::vector<int>& blockSlot,
+                       torch::Tensor& dsaSBT);
 
-} // namespace ucmprefetch
+    void UpdateIndexerMap(std::string reqID, int idx, int blockID, std::string type);
 
+    void AddIndexerMap();
+
+    void DeleteIndexerMap();
+
+    int IndexerLoadProcess(const TaskInfo& taskInfo, ThreadInfo& threadInfo);
+
+    void RunOneBsPrefetch(std::string reqID, int topkLen,
+                          int topkIndex, const torch::Tensor& topkList);
+
+    void GetHitAndMissBlock(PrefetchReqInfo oneBsInfo,
+                            std::vector<int> &topkList,
+                            std::unordered_set<int>& hitBlocks,
+                            std::map<int, int>& hitBlocksIdx,
+                            std::vector<int>& missIdxs);
+
+    void RunPrefetchH2D(PrefetchReqInfo oneBsInfo,
+                        std::unordered_set<int>& hitBlocks,
+                        std::map<int, int>& hitBlocksIdx,
+                        std::vector<int>& missIdxs);
+
+    void LoadKVToHBM(std::vector<int> loadNPUBlockIDs, std::vector<int> missIdxs,
+                     int layerID, std::string reqID);
+
+    void UCMIndexerLoadAsync(void* context, void* stream);
+
+    void SubmitTaskIndxer(std::vector<int>& topkLensInput,
+                          std::vector<std::string>& reqIDList,
+                          std::vector<torch::Tensor>& topkLists,
+                          uint32_t stepTime);
+
+    void IndexerInitLoad(std::vector<std::vector<int>>& blockTable,
+                         std::vector<std::vector<int>>& slabIdx,
+                         std::string reqID);
+
+    void TokenIndexMapInter(
+        std::vector<int>& oneTopkList,
+        int bsIndex,
+        int layerID,
+        int topkLen,
+        std::string reqID);
+
+    bool GetIndexerStatus();
+
+    std::map<int, int> GetIndexerBlockMap(int layerID, std::string reqID);
+
+    std::map<int, int> GetIndexerTokensMap(int layerID, std::string reqID);
+
+    void SetLastIndexerBlock (
+        const std::string& reqID,
+        const std::vector<int>& blockIdxs,
+        const std::vector<uintptr_t>& indexerAddrs
+    );
+private:
+#ifdef KV_CACHE_PRE_TEST_PRIVATE_AS_PUBLIC
+public:
 #endif
+    // HBM manger mapping
+    // toekns topks
+    // mTokenBlockMaps  LN[{reqID, [token-idx]}]
+    // mBlockTokenMaps  LN[{reqID, {blockID, [token-idx]}}]
+    // mPrefetchTokens LN[{reqID, {token-idx, (blockID, slot)}}]
+    std::map<std::string, std::vector<int>> mAllReqIdSlots;
+    std::map<std::string, std::vector<int>> mReqUseBlockTable;
+    std::map<std::string, int> mPromptLen;
+    std::map<std::string, int> mSparseSeqLen;
+    std::map<std::string, std::vector<std::unique_ptr<HBMManager>>> mHBMMangers;
+
+    // kv_load_info
+    std::map<std::string, std::vector<std::vector<int>>> mMissGlobalToken;
+    std::map<std::string, std::vector<std::vector<int>>> mLoadSlot;
+
+    // Shared memory for cross-rank prefetch result synchronization
+    void* mPrefetchResultShm;
+    size_t mPrefetchResultShmSize;
+    std::atomic<uint32_t> mPrefetchResultVersion;
+    bool mIsPrefetchResultShmCreator;
+    std::string mPrefetchResultShmName;
+    SharedKVPackHeader* mKVPackControl{nullptr};
+    size_t mKVPackControlSize{0};
+    std::string mKVPackControlName;
+    bool mIsKVPackControlCreator{false};
+    std::vector<uint64_t> mKVPackPreviousEpoch;
+    int mKVPackDpRank{-1};
+    std::vector<uint64_t> mSharedKBufferHostPtr;
+    std::vector<uint64_t> mSharedVBufferHostPtr;
+    int mMaxLoadNum = 2048;
+
+    // kv_load_info
+    std::map<std::string, std::vector<std::map<int, int>>> mDocsTables;
+    std::map<std::string, std::vector<std::map<int, int>>> mBlocksMap;
+    std::map<std::string, std::vector<std::vector<int>>> mPrefetchIdx;
+    std::map<std::string, std::vector<std::vector<int>>> allNeedLoadBlock;
+    std::map<std::string, std::vector<std::vector<int>>> allMissIdxs;
+    std::map<std::string, std::vector<int>> mIndexerSlot;
+    std::map<std::string, std::vector<std::pair<int, int>>> mIndexerAdd;
+    std::map<std::string, std::vector<int>> mIndexerDel;
+
+    //  output tensor
+    std::map<std::string, torch::Tensor> mAllTopkIndicesTensor;
+    std::map<std::string, torch::Tensor> mIndexerLoadResultT;
+
+    // delete info
+    std::unordered_set<std::string> mDelSeqIds;
+
+    // hash id
+    std::map<std::string, std::vector<BlockId>> mAllBlocksHash;
+
+    // kv cache tensor and ptr
+    std::vector<uint64_t> mKcachePtr;
+    std::vector<uint64_t> mVcachePtr;
+    std::vector<torch::Tensor> mKcacheTensor;
+    std::vector<torch::Tensor> mVcacheTensor;
+    torch::Tensor mKBufferHost;
+    torch::Tensor mVBufferHost;
+    torch::Tensor mKBufferDevice;
+    torch::Tensor mVBufferDevice;
+    torch::Tensor mLoadIndexHost;
+    torch::Tensor mLoadIndexDevice;
+    std::vector<uint64_t> mKBufferHostPtr;
+    std::vector<uint64_t> mVBufferHostPtr;
+    std::vector<std::vector<void*>> mH2DPtrInfo;
+    std::vector<int> mLoadNum;
+    std::vector<torch::Tensor> mLastCHunkKBuffer;
+    std::vector<torch::Tensor> mLastCHunkVBuffer;
+    std::vector<uint64_t> mLastCHunkKPtr;
+    std::vector<uint64_t> mLastCHunkVPtr;
+    std::vector<torch::Tensor> mIndexerTensor;
+    std::vector<uint64_t> mIndexerPtr;
+    uint32_t mIndexerSizeBytesBlock = 0;
+    int mLocalWindows = 5;
+
+    int mSparseLen = 0;
+    void* mStream;
+    void* mContext;
+    bool mOpenIndexerOffload = false;
+
+    // ops value
+    std::vector<aclTensor*> mKCacheAcl;
+    std::vector<aclTensor*> mVCacheAcl;
+    std::vector<void*> mKWorkspaceAddr;
+    std::vector<void*> mVWorkspaceAddr;
+    std::vector<uint64_t> mKMaxWorkspaceSize;
+    std::vector<uint64_t> mVMaxWorkspaceSize;
+    std::vector<aclTensor*> mKDstIndexAcl;
+    std::vector<aclTensor*> mKHBMBufferAcl;
+    std::vector<aclTensor*> mVDstIndexAcl;
+    std::vector<aclTensor*> mVHBMBufferAcl;
+
+    // model information
+    int mLayerNum;
+    uint32_t mTensorElemSize = 0;
+    uint32_t mKVSizeBytesBlock = 0;
+    uint32_t mKVSizeBytesBlockRe = 0;
+    uint32_t mKVSizeBytesToken = 0;
+    uint32_t mKVSizeBytesTokenRe = 0;
+    int mMaxLen = 131072;
+    int mBlockSize = 128;
+    int mKDim = 512;
+    int mVDim = 64;
+    int mNumHead = 1;
+    std::vector<int> mTopkLayerMap;
+    int mTopkIndexerNum = 21;
+    size_t mTpSize = 16;
+    size_t mMaxBs = 64;
+
+    // Runtime information
+    uint32_t mDecodeStep = 0;
+    int totalTaskNum = 0;
+    int mThreadNum = 16;
+    int mStreamNum = 4;
+
+    // log information
+    Logger mLogger;
+    bool mIsLog = false;
+
+// ptr bound
+    uint32_t mIndexerSparseLen = 0;
+    int mKVHostBlockLen = 0;
+    int mKVHBMBlockLen = 0;
+    int mLastChunkNum = 0;
+    int mKVBufferLen = 0;
+    int mLoadIndexBufferLen = 0;
+    int mDeviceIndexerLen = 0;
+
+std::unordered_map<std::string, std::unordered_map<int, LastKVBlockAddress>> mLastKVBlockAddress;
+
+private:
+#ifdef KV_CACHE_PRE_TEST_PRIVATE_AS_PUBLIC
+public:
+#endif
+    // Abnormality determination
+    void CheckInputIndex(uint32_t maxLen, uint32_t index);
+    int InitKVPackControl(int dpRank);
+    void CleanupKVPackControl();
+    int BeginKVPackSlot(int streamIdx, uint64_t epoch);
+    int FinishKVPack(int streamIdx, uint64_t epoch);
+    void MarkKVH2DDone(int streamIdx, uint64_t epoch);
+
+    // KVPack 初始化分解辅助方法（huge_method 序号47）
+    const char* WaitKVPackControlInitialized(
+        const std::chrono::steady_clock::time_point& deadline);
+    const char* CreateKVPackControlFile(size_t bytes, int& fd);
+    const char* OpenKVPackControlFollower(
+        const std::chrono::steady_clock::time_point& deadline, size_t bytes, int& fd);
+    void InitKVPackSharedStates(size_t stateCount);
+    void SetupKVPackSharedBuffers(size_t controlBytes, size_t streamCount,
+        size_t kBytes, size_t vBytes);
+
+    // CopyUCMMergeTokensParallel 分解辅助（huge_method 序号48）
+    void BuildTokenCopyTasks(
+        const std::vector<UCMMergeBlockContext>& blockContexts,
+        std::vector<TokenCopyTask>& tokenCopyTasks,
+        const std::vector<int>& missGlobalIds,
+        const std::vector<int>& missSlots,
+        const std::vector<int>& blockTable,
+        size_t kTokenBytes, size_t vTokenBytes, size_t previousLoadNum);
+
+    void InitModelInfo(std::vector<int>& modelInfo, bool isLog,
+        std::vector<int> cpuToBind, std::vector<int> topkLayerMap,
+        int rank, int threadNum);
+    void InitBufferInfo(std::vector<int>& sizeinfo);
+    void InitAclRuntime();
+    void InitPrefetchResultShm(std::vector<int>& modelInfo);
+    void CreatePrefetchResultShm();
+    void AttachPrefetchResultShm();
+
+    bool LoadIndexerLayer(int layerID, size_t&  totalNumber);
+    bool LoadIndexerRequest(const std::string& reqID,
+                            const std::vector<int>& hbmBlockIDs,
+                            int layerID,
+                            std::uint8_t* indexerBaseAddr,
+                            size_t& totalNumber);
+    bool BuildIndexerLoadTask(const std::string& reqID,
+                            int layerID,
+                            std::uint8_t* indexerBaseAddr,
+                            const std::vector<int>& hbmBlockIDs,
+                            const std::vector<int>& missBlockIdxs,
+                            const std::vector<BlockId>& hashVec,
+                            UC::Detail::TaskDesc& task,
+                            size_t& totalNumber);
+    bool CopyNonUCMIndexerBlock(const std::string& reqID,
+                                int layerID,
+                                int missBlockIdx,
+                                int hbmBlockID,
+                                void* indexerAddr,
+                                size_t& totalNumber);
+    bool LoadIndexerTask(const std::string& reqID,
+                        int layerID,
+                        UC::Detail::TaskDesc& task,
+                        size_t& totalNumber);
+
+    // 从KVCacheInplaceScatter拆分出来
+    void PrepareScatterAclTensor(
+        const std::string& type,
+        int streamIdx,
+        torch::Tensor& dstIndexND,
+        torch::Tensor& hbmBufferND,
+        aclTensor*& dstIndexTensor,
+        aclTensor*& dstHBMBufferTensor);
+
+    void* GetScatterWorkspace(
+        const std::string& type,
+        int layerID,
+        int streamIdx,
+        uint64_t workspaceSize);
+
+    void RunInplaceScatter(
+        const std::string& type,
+        int layerID,
+        int streamIdx,
+        aclTensor* dstTensor,
+        aclTensor* dstIndexTensor,
+        aclTensor* dstHBMBufferTensor,
+        aclrtStream stream);
+
+    // 0923 开始
+    // UCMTensorMerge
+    bool LoadUCMMergeHostAddress(UC::Detail::TaskDesc task,
+        UCMMergeHostAddress& address, int layerID, const std::string& reqID);
+
+    void ReleaseUCMMergeHostAddress(UCMMergeHostAddress& address);
+
+    bool MemcpyUCMMergeHostAddress(const UCMMergeHostAddress& address,
+        std::vector<UCMMergeBlockContext>& blockContexts, int layerID, int streamIdx,
+        std::vector<uint64_t>& hbmSlotIndex, const std::string& reqID,
+        size_t previousLoadNum);
+    size_t FillFailedUCMMerge(
+        const std::vector<UCMMergeBlockContext>& blockContexts,
+        int layerID, int streamIdx,
+        std::vector<uint64_t>& hbmSlotIndex,
+        const std::string& reqID, size_t previousLoadNum);
+
+    // UCMTensorMerge 分解辅助方法（huge_method 序号51）
+    bool ValidateUCMMergeRequest(int layerID, const std::string& reqID);
+    void BuildUCMMergeBlockContexts(
+        int layerID, const std::string& reqID,
+        uint32_t requestIndex,
+        std::vector<UCMMergeBlockContext>& blockContexts,
+        UC::Detail::TaskDesc& task,
+        std::map<int, std::vector<size_t>>& blockIdxToTokenIdx);
+    // IndexerInitLoad
+    bool ProcessIndexerInitLoadLayer(
+        std::vector<std::vector<int>>& blockTable,
+        std::vector<std::vector<int>>& slabIdx,
+        const std::string& reqID,
+        int layerID,
+        int number);
+
+    bool LoadNonUcmIndexerBlock(
+        const std::string& reqID,
+        int layerID,
+        int blockIdx,
+        int deviceBlockId,
+        std::uint8_t* indexerAddr);
+
+    // LastChunkMove
+    bool PrepareLastChunkSources(
+        int layerID, const std::string& reqID,
+        const std::vector<int>& moveMap, const std::vector<int>& blockTable,
+        std::vector<LastChunkSourceBlock>& sourceBlocks,
+        UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+
+    bool LoadLastChunkSources(
+        int layerID, const std::string& reqID,
+        UC::Detail::TaskDesc& task,
+        const std::vector<int>& loadedBlockIndices,
+        std::vector<LastChunkSourceBlock>& sourceBlocks,
+        UC::Detail::TaskHandle& hostTaskId, bool& hasHostTask);
+
+    void CopyLastChunkTokens(
+        int layerID, const std::string& reqID,
+        const std::vector<int>& moveMap,
+        const std::vector<LastChunkSourceBlock>& sourceBlocks,
+        UC::Detail::TaskHandle hostTaskId, bool hasHostTask);
+
+    // CallPrefetchProcess
+    void PreparePrefetchResults(const TaskInfo& taskInfo);
+
+    void ProcessPrefetchRequest(const TaskInfo& taskInfo, size_t i, int layerID,
+        const PrefetchShmLayout& layout);
+
+    void WritePrefetchResult(const std::string& oneReqID, size_t i, int layerID,
+        const std::vector<int>& useBlockTable, const PrefetchShmLayout& layout);
+
+    void ReadPrefetchResults(const TaskInfo& taskInfo, const PrefetchShmLayout& layout);
+
+    void MergeAndCopyPrefetchLayer(const TaskInfo& taskInfo, ThreadInfo& threadInfo,
+        int layerID, PrefetchTiming& timing);
+
+    // MergeAndCopyPrefetchLayer 分解辅助方法（huge_method 序号50）
+    void CopyPrefetchToH2DBuffers(int streamIdx, int layerID);
+    void ValidateAndPublishHbmSlotIndex(int streamIdx, int layerID,
+        std::vector<uint64_t>& hbmSlotIndex);
+
+    void TransferAndScatterPrefetchLayer(ThreadInfo& threadInfo, int layerID,
+        int streamIdx, PrefetchTiming& timing, PrefetchTimePoint syncEnd);
+
+    void CopyPreSwapTokens(
+        uintptr_t useTokenBase, uintptr_t spaTokenBase,
+        const std::vector<int>& swapRange, const std::vector<int>& needAppend,
+        int sparseLen, int spaMaxBs, int mtpToken, int changeLen);
+
+    bool SubmitIndexerInitLoadTask(
+        UC::Detail::TaskDesc& task, const std::string& reqID, int layerID);
+
+    void FinishOneLayerPrefetch(
+        const std::string& reqID, int layerID,
+        std::map<int, int>& hitBlocksIdx, std::vector<int>& missIdxs);
+
+    bool PrepareUCMMergeSources(
+        const UCMMergeHostAddress& address,
+        std::vector<UCMMergeBlockContext>& blockContexts,
+        int layerID, const std::string& reqID);
+
+    void CopyUCMMergeTokensSerial(
+        const std::vector<UCMMergeBlockContext>& blockContexts,
+        int layerID, int streamIdx, std::vector<uint64_t>& hbmSlotIndex,
+        const std::string& reqID, size_t previousLoadNum);
+
+    // CopyUCMMergeTokensSerial 分解辅助（huge_depth 序号41）
+    void CopySingleTokenKV(std::byte* kDstBase, std::byte* vDstBase,
+        const UCMMergeBlockContext& context, size_t tokenOffset,
+        size_t dstOffset, size_t kTokenBytes, size_t vTokenBytes);
+
+    void CopyUCMMergeTokensParallel(
+        const std::vector<UCMMergeBlockContext>& blockContexts,
+        int layerID, int streamIdx, std::vector<uint64_t>& hbmSlotIndex,
+        const std::string& reqID, size_t previousLoadNum, int tokenThreadNum);
+
+    bool BuildLastChunkSources(
+        int layerID, const std::string& reqID, const std::vector<int>& moveMap,
+        std::vector<LastChunkSourceBlock>& sourceBlocks,
+        UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+
+    void AddIndexerMapForRequest(const std::string& reqID);
+
+    void DeleteIndexerMapForRequest(const std::string& reqID);
+
+    void SetIndexerMapForLayer(
+        const std::string& reqID, int layerID, std::vector<int>& blockTableList,
+        std::vector<std::vector<int>>& remainIdx,
+        std::vector<std::vector<int>>& prefetchIdx, std::vector<int>& blockSlot);
+
+    void ProcessTokensMapTopk(
+        int layerID, const std::string& reqID,
+        torch::Tensor& qTopkTensor, int maxIdx, size_t sparseSeqLen);
+
+    void ReleasePrefetchStreamResources(int layerID);
+
+    void InitBufferContainers();
+    };  //
+}  // namespace ucmprefetch
+
+# endif
