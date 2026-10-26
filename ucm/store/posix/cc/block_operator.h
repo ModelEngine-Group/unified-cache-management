@@ -92,7 +92,8 @@ public:
         bool success;
     };
 
-    ~BlockOperator()
+    ~BlockOperator() { Stop(); }
+    void Stop()
     {
         stop_ = true;
         {

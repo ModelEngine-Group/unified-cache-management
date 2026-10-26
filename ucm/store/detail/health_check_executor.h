@@ -40,101 +40,119 @@ namespace UC::Detail {
 class HealthCheckExecutor {
     static constexpr size_t kMaxInFlight = 64;
 
-    struct State {
+    struct Worker {
         std::mutex mutex;
         std::condition_variable cv;
+        std::function<Status()> check;
         Status status{Status::Error()};
         bool done{false};
-    };
-    struct Worker {
-        std::shared_ptr<State> state;
+        bool stop{false};
+        bool exited{false};
         std::thread thread;
+
+        Worker()
+        {
+            thread = std::thread([this] {
+                std::unique_lock<std::mutex> lock(mutex);
+                while (true) {
+                    cv.wait(lock, [this] { return stop || check; });
+                    if (!check) { break; }
+                    auto work = std::move(check);
+                    check = nullptr;
+                    lock.unlock();
+                    auto result = Status::Error();
+                    try {
+                        result = work();
+                    } catch (const std::exception& e) {
+                        result = Status::Error(e.what());
+                    } catch (...) {
+                        result = Status::Error("health check threw an unknown exception");
+                    }
+                    lock.lock();
+                    status = std::move(result);
+                    done = true;
+                    cv.notify_all();
+                }
+                exited = true;
+            });
+        }
+        ~Worker()
+        {
+            if (!thread.joinable()) { return; }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                stop = true;
+            }
+            cv.notify_all();
+            thread.join();
+        }
     };
 
 public:
-    explicit HealthCheckExecutor(std::chrono::milliseconds timeout) : timeout_(timeout) {}
+    explicit HealthCheckExecutor(std::chrono::milliseconds timeout,
+                                 size_t maxInFlight = kMaxInFlight)
+        : timeout_(timeout), maxInFlight_(maxInFlight)
+    {
+    }
     ~HealthCheckExecutor() { Stop(); }
 
+    // Calls to Run on same executor must not overlap.
     Status Run(std::function<Status()> check)
     {
-        auto state = std::make_shared<State>();
-        {
-            std::lock_guard<std::mutex> runLock(runMutex_);
-            ReapFinished();
-            if (workers_.size() >= kMaxInFlight) {
+        std::lock_guard<std::mutex> runLock(runMutex_);
+        auto it = cleanup_.begin();
+        while (it != cleanup_.end()) {
+            std::unique_lock<std::mutex> lock((*it)->mutex, std::try_to_lock);
+            if (!lock.owns_lock() || !(*it)->exited) {
+                ++it;
+                continue;
+            }
+            lock.unlock();
+            it = cleanup_.erase(it);
+        }
+        if (!current_worker_) {
+            if (maxInFlight_ != 0 && cleanup_.size() >= maxInFlight_) {
                 UC_WARN(
-                    "Health check executor reached max threads, rejecting probe with Timeout, "
-                    "in-flight={}.",
-                    workers_.size());
+                    "Health check executor reached max threads, rejecting probe with "
+                    "Timeout, in-flight={}.",
+                    cleanup_.size());
                 return Status::Timeout();
             }
             try {
-                if (workers_.capacity() < kMaxInFlight) { workers_.reserve(kMaxInFlight); }
-                // Linux threads inherit the creating monitor thread's CPU affinity.
-                workers_.push_back(Worker{
-                    state, std::thread([state, check = std::move(check)]() mutable {
-                        auto status = Status::Error();
-                        try {
-                            status = check();
-                        } catch (const std::exception& e) {
-                            status = Status::Error(e.what());
-                        } catch (...) {
-                            status = Status::Error("health check threw an unknown exception");
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(state->mutex);
-                            state->status = std::move(status);
-                            state->done = true;
-                        }
-                        state->cv.notify_all();
-                    })});
+                current_worker_ = std::make_unique<Worker>();
             } catch (const std::exception& e) {
                 return Status::Error(e.what());
             }
         }
 
-        std::unique_lock<std::mutex> stateLock(state->mutex);
-        const auto finished = state->cv.wait_for(stateLock, timeout_, [&] { return state->done; });
-        if (!finished) { return Status::Timeout(); }
-        auto status = state->status;
-        stateLock.unlock();
-        {
-            std::lock_guard<std::mutex> runLock(runMutex_);
-            ReapFinished();
+        auto& worker = *current_worker_;
+        std::unique_lock<std::mutex> lock(worker.mutex);
+        worker.check = std::move(check);
+        worker.done = false;
+        worker.cv.notify_all();
+        const auto finished = worker.cv.wait_for(lock, timeout_, [&] { return worker.done; });
+        if (!finished) {
+            worker.stop = true;
+            worker.cv.notify_all();
+            cleanup_.push_back(std::move(current_worker_));
+            return Status::Timeout();
         }
-        return status;
+        return worker.status;
     }
 
     void Stop()
     {
         std::lock_guard<std::mutex> lock(runMutex_);
-        for (auto& worker : workers_) {
-            if (worker.thread.joinable()) { worker.thread.join(); }
-        }
-        workers_.clear();
+        current_worker_.reset();
+        cleanup_.clear();
     }
 
 private:
-    void ReapFinished()
-    {
-        auto worker = workers_.begin();
-        while (worker != workers_.end()) {
-            bool done = false;
-            {
-                std::lock_guard<std::mutex> stateLock(worker->state->mutex);
-                done = worker->state->done;
-            }
-            if (!done) {
-                ++worker;
-                continue;
-            }
-            if (worker->thread.joinable()) { worker->thread.join(); }
-            worker = workers_.erase(worker);
-        }
-    }
     std::chrono::milliseconds timeout_;
+    size_t maxInFlight_;
     std::mutex runMutex_;
-    std::vector<Worker> workers_;
+    std::unique_ptr<Worker> current_worker_;
+    std::vector<std::unique_ptr<Worker>> cleanup_;
 };
 
 }  // namespace UC::Detail

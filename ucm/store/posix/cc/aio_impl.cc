@@ -186,9 +186,12 @@ AioImpl::~AioImpl()
     if (eventFd_ >= 0) { close(eventFd_); }
     if (ctx_) { AioDestroy(ctx_); }
     std::lock_guard<std::mutex> lk(tableMutex_);
-    if (!iocbToTag_.empty()) {
-        UC_WARN("AIO teardown: {} in-flight IO(s) abandoned (never completed; not reclaimed).",
-                iocbToTag_.size());
+    // The completion thread has stopped; callbacks no longer consume this request state.
+    for (const auto& entry : iocbToTag_) {
+        auto* cb = entry.first;
+        ::close(cb->aio_fildes);
+        delete reinterpret_cast<Callback*>(cb->aio_data);
+        delete cb;
     }
 }
 
@@ -307,7 +310,11 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 {
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
-        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
+        // if the number of events is exactly batchSize,
+        // another call to AioGetEvents will block until next event complete,
+        // set zero here will let AioGetEvents return immediately if no events
+        timespec zero{0, 0};
+        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), &zero);
         for (auto i = 0; i < num; i++) {
             auto* iocbPtr = reinterpret_cast<struct iocb*>(events[i].obj);
             auto cb = (Callback*)(void*)events[i].data;
@@ -411,7 +418,7 @@ Status AioImpl::SubmitIo(iocb* cb)
             std::this_thread::sleep_for(std::chrono::microseconds(200));
             continue;
         }
-        return Status::Error(std::string(strerror(eno)));
+        return Status::OsApiError(std::string(strerror(eno)));
     }
 }
 
