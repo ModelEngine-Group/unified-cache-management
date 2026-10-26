@@ -18,6 +18,7 @@ TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 builders = importlib.import_module("ucm_release.builders")
+cleanup_records = importlib.import_module("ucm_release.cleanup_records")
 wheel_ops = importlib.import_module("ucm_release.wheel")
 planner = importlib.import_module("ucm_release.plan")
 serialization = importlib.import_module("ucm_release.serialization")
@@ -39,6 +40,9 @@ def _fixture_policy(
         "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
         "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
     }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -54,9 +58,13 @@ def _inputs(
         formal,
         tag_fixture=serialization.load_json(TAG_FIXTURE),
     )
+    return formal, selection, _builder_catalog(formal, selection)
+
+
+def _builder_catalog(formal, selection):
     catalog = builders.catalog_from_builds(
         selection["wheel_builds"],
-        owner=repository.split("/", 1)[0],
+        owner=formal["repository"].split("/", 1)[0],
         formal_policy=formal,
     )
     observations = {
@@ -69,8 +77,7 @@ def _inputs(
         }
         for index, item in enumerate(catalog["builders"])
     }
-    catalog = builders.finalize_catalog(catalog, observations)
-    return formal, selection, catalog
+    return builders.finalize_catalog(catalog, observations)
 
 
 def _plan(
@@ -84,6 +91,73 @@ def _plan(
         builder_catalog=catalog,
         route="release",
     )
+
+
+@pytest.fixture
+def cann_fallback_plan():
+    document = _plan()
+    for wheel in document["wheels"]:
+        if wheel["backend"].startswith("cann-"):
+            wheel["builder"]["source_image"] = wheel["builder"]["source_image"].replace(
+                "9.0.1-", "9.0.1-beta.2-"
+            )
+    return document
+
+
+def test_fallback_matrix_covers_every_runtime_member(cann_fallback_plan) -> None:
+    document = cann_fallback_plan
+    image = next(
+        image
+        for image in document["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    )
+    second = copy.deepcopy(image)
+    second["id"] += "-openeuler"
+    second["runtime"]["image_reference"] = (
+        "quay.io/ascend/vllm-ascend@sha256:" + "d" * 64
+    )
+    document["images"].append(second)
+
+    selected = planner.fallback_runtime_matrix(document)["include"]
+    expected = [
+        image
+        for image in document["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    ]
+    assert [
+        (item["wheel_id"], item["runtime_image"], item["runner"]) for item in selected
+    ] == [
+        (image["wheel_id"], image["runtime"]["image_reference"], image["runner"])
+        for image in expected
+    ]
+    assert all("id" not in item for item in selected)
+    assert {item["runtime_cann_version"] for item in selected} == {"9.0.1"}
+    assert {item["builder_cann_version"] for item in selected} == {"9.0.1-beta.2"}
+
+
+@pytest.mark.parametrize("version", ["9.0.1", "9.0.1-beta.2"])
+def test_exact_cann_versions_need_no_fallback_matrix(cann_fallback_plan, version):
+    document = cann_fallback_plan
+    for image in document["images"]:
+        if image["runtime"]["accelerator_runtime"].startswith("cann-"):
+            image["runtime"]["accelerator_runtime"] = "cann-" + version
+    for wheel in document["wheels"]:
+        wheel["builder"]["source_image"] = wheel["builder"]["source_image"].replace(
+            "9.0.1-beta.2-", version + "-"
+        )
+    assert planner.fallback_runtime_matrix(document) == {"include": []}
+
+
+@pytest.mark.parametrize("version", ["9.1.0", "9.0.1-beta.1"])
+def test_fallback_matrix_rejects_unapproved_substitution(cann_fallback_plan, version):
+    image = next(
+        image
+        for image in cann_fallback_plan["images"]
+        if image["runtime"]["accelerator_runtime"].startswith("cann-")
+    )
+    image["runtime"]["accelerator_runtime"] = "cann-" + version
+    with pytest.raises(ValueError, match="unsupported CANN Builder substitution"):
+        planner.fallback_runtime_matrix(cann_fallback_plan)
 
 
 def _write_wheel_fixture(
@@ -202,22 +276,34 @@ def _write_auditwheel_report(
     return report
 
 
-def test_blocked_a5_projects_only_runtime_referenced_wheel_union() -> None:
-    plan = _plan()
-
-    assert (len(plan["wheels"]), len(plan["images"]), len(plan["families"])) == (
-        4,
-        4,
-        3,
+def test_plan_projects_only_runtime_referenced_wheel_union() -> None:
+    formal, selection, catalog = _inputs()
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=catalog,
+        route="release",
     )
-    assert sum(bool(item["create_index"]) for item in plan["families"]) == 1
-    assert sorted(len(item["members"]) for item in plan["families"]) == [1, 1, 2]
+    runtimes = selection["runtimes"]
+    assert {wheel["id"] for wheel in plan["wheels"]} == {
+        wheel_id
+        for runtime in runtimes
+        for wheel_id in runtime["wheel_build_ids"].values()
+    }
+    assert len(plan["images"]) == sum(
+        len(runtime["architectures"]) for runtime in runtimes
+    )
+    assert len(plan["families"]) == len(runtimes)
+    assert sum(bool(item["create_index"]) for item in plan["families"]) == sum(
+        len(runtime["architectures"]) > 1 for runtime in runtimes
+    )
+    assert sorted(len(item["members"]) for item in plan["families"]) == sorted(
+        len(runtime["architectures"]) for runtime in runtimes
+    )
     assert len({item["id"] for item in plan["families"]}) == len(plan["families"])
     assert len(
         {(item["target_repository"], item["target_tag"]) for item in plan["families"]}
     ) == len(plan["families"])
-    assert not any("a5" in item["id"] for item in plan["wheels"])
-    assert not any("a5" in item["id"] for item in plan["families"])
     assert all(
         item["builder"]["digest"].startswith("sha256:") for item in plan["wheels"]
     )
@@ -229,6 +315,7 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
     assert plan["publish"]["pypi"]["distributions"] == [
         "release-org-uc-manager-cann901-a2",
         "release-org-uc-manager-cann901-a3",
+        "release-org-uc-manager-cann901-a5",
         "release-org-uc-manager-cuda-cu129",
         "release-org-ucm-toolkit",
     ]
@@ -244,6 +331,7 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
         "extras": {
             "cann901-a2": "release-org-uc-manager-cann901-a2==0.7.60rc1",
             "cann901-a3": "release-org-uc-manager-cann901-a3==0.7.60rc1",
+            "cann901-a5": "release-org-uc-manager-cann901-a5==0.7.60rc1",
             "cu129": "release-org-uc-manager-cuda-cu129==0.7.60rc1",
             "toolkit": "release-org-ucm-toolkit==0.7.60rc1",
         },
@@ -403,6 +491,130 @@ def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
     assert plan["release_kind"] == "draft"
     assert plan["is_prerelease"] is True
     assert plan["chart"]["version"] == "0.7.62-draft.4"
+
+
+@pytest.mark.parametrize(
+    ("release_type", "version", "git_tag", "repository", "prefix"),
+    (
+        ("prerelease", "0.9.0rc2", "v0.9.0rc2", policy.OFFICIAL_REPOSITORY, ""),
+        (
+            "draft",
+            "0.9.0.dev1",
+            "draft/v0.9.0-1",
+            "release-org/unified-cache-management",
+            "release-org-",
+        ),
+    ),
+    ids=("prerelease-official", "draft-fork"),
+)
+def test_sglang_versioned_images_have_release_owned_cleanup_coordinates(
+    release_type: str,
+    version: str,
+    git_tag: str,
+    repository: str,
+    prefix: str,
+) -> None:
+    formal = policy.resolve(
+        repository=repository,
+        version_override=version,
+        release_type=release_type,
+        dockerhub_namespace="docker.io/release-test",
+    )
+    product = next(item for item in formal["products"] if item["id"] == "sglang")
+    selectors = [
+        {"raw": value, "version": value, "tag": None} for value in ("0.5.19", "0.5.20")
+    ]
+    product["runtime_selectors"] = selectors
+    formal["products"] = [product]
+    formal["runtime_selectors"] = {"sglang": selectors}
+
+    fixture = serialization.load_json(TAG_FIXTURE)
+    source = "docker.io/lmsysorg/sglang"
+    tags = {"cuda": "v0.5.19-cu129", "cann-a3": "v0.5.20rc1-cann9.0.1-a3"}
+    probes = [
+        probe
+        for probe in fixture["runtime_probe"]["probes"]
+        if probe["backend"] in tags
+    ]
+    for probe in probes:
+        tag = tags[probe["backend"]]
+        probe.update(
+            product_id="sglang",
+            repository=source,
+            tag=tag,
+            runtime_ref=f"{source}:{tag}",
+            target_repository=product["target_repository"],
+            image_reference=f"{source}@{probe['image_reference'].split('@')[1]}",
+        )
+    fixture["runtime_probe"]["probes"] = probes
+    # Main tags have no probes because they must never become build candidates.
+    fixture["repositories"][source] = {
+        "pages": [
+            {"tags": [*tags.values(), "main-cann9.0.0-910b", "main-cann9.0.0-a3"]}
+        ]
+    }
+
+    selection = upstream.resolve_upstreams(formal, tag_fixture=fixture)
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=_builder_catalog(formal, selection),
+        route="release",
+        git_tag=git_tag,
+        release_kind="draft" if release_type == "draft" else "publish",
+    )
+    assert {item["runtime"]["channel"] for item in plan["families"]} == {
+        "stable",
+        "rc",
+    }
+    source_members = {
+        (probe["tag"], probe["cpu_arch"]): probe["image_reference"] for probe in probes
+    }
+    assert {
+        (image["runtime"]["tag"], image["cpu_arch"]): image["runtime"][
+            "image_reference"
+        ]
+        for image in plan["images"]
+    } == source_members
+
+    owner = repository.split("/", 1)[0].lower()
+    cuda_tag = f"{prefix}{tags['cuda']}-ucm-{version}"
+    cann_tag = f"{prefix}{tags['cann-a3']}-ucm-{version}"
+    families = {family["runtime"]["tag"]: family for family in plan["families"]}
+    assert set(families) == set(tags.values())
+    cuda_family = families[tags["cuda"]]
+    assert cuda_family["target_tag"] == cuda_tag
+    assert cuda_family["create_index"] is True
+    assert cuda_family["published_reference"] == f"ghcr.io/{owner}/sglang:{cuda_tag}"
+    assert {member["reference"] for member in cuda_family["members"]} == {
+        f"ghcr.io/{owner}/sglang:{cuda_tag}-{architecture}"
+        for architecture in ("amd64", "arm64")
+    }
+    cann_family = families[tags["cann-a3"]]
+    assert cann_family["target_tag"] == cann_tag
+    assert cann_family["create_index"] is False
+    assert cann_family["published_reference"] == f"ghcr.io/{owner}/sglang:{cann_tag}"
+
+    record = cleanup_records.record_from_plan(
+        cleanup_records.record_for_tag(repository, git_tag, "a" * 40, 12345, 1),
+        plan,
+    )
+    expected = set()
+    channels = {"ghcr": f"ghcr.io/{owner}/sglang"}
+    if release_type == "prerelease":
+        channels["dockerhub"] = "docker.io/release-test/sglang"
+    for channel, target in channels.items():
+        expected.add((f"{channel}-index", f"{target}:{cuda_tag}"))
+        expected.add((f"{channel}-member", f"{target}:{cann_tag}"))
+        expected.update(
+            (f"{channel}-member", f"{target}:{cuda_tag}-{architecture}")
+            for architecture in ("amd64", "arm64")
+        )
+    assert {
+        (item["kind"], item["reference"])
+        for item in record["resources"]
+        if item["kind"] != "chart-oci"
+    } == expected
 
 
 def test_fork_owner_prefix_changes_runtime_and_python_coordinates() -> None:
@@ -757,8 +969,13 @@ def test_wheel_plan_can_build_directly_from_pinned_upstream_builders(
 
     builds = {item["id"]: item for item in selection["wheel_builds"]}
     assert len(plan["wheels"]) == len(builds)
+    assert {wheel["id"] for wheel in plan["wheels"]} == {
+        item["id"] for item in plan["wheel_matrix"]["include"]
+    }
     for wheel in plan["wheels"]:
         build = builds[wheel["id"]]
+        backend = formal["backends"][build["backend"]]
         source_repository, _source_tag = build["source_image"].rsplit(":", 1)
         assert wheel["builder"]["repository"] == source_repository
         assert wheel["builder"]["digest"] == build["source_image_digest"]
+        assert wheel["build"]["platform_arg"] == backend["platform"]

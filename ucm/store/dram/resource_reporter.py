@@ -135,17 +135,24 @@ def snapshot_deltas(
             counts, total = list(value.bucket_counts), value.sum
         else:
             if old.upper_bounds != value.upper_bounds:
-                raise ValueError(f"Histogram schema changed: {name}")
-            counts = [a - b for a, b in zip(value.bucket_counts, old.bucket_counts)]
-            total = value.sum - old.sum
-            if (
-                any(v < 0 for v in counts)
-                or total < 0
-                or (all(v == 0 for v in counts) and total != 0)
-            ):
-                # Like a counter decrease, infer a reset. Reset the whole
-                # distribution rather than mixing reset and differenced buckets.
+                # The persisted baseline predates a bucket-layout change (an
+                # upgrade re-registered the histograms with new bounds), so the
+                # old distribution cannot be differenced. Re-baseline to the
+                # current one, like a source reset; _report_snapshot persists
+                # the new schema in the same cycle, so later cycles difference
+                # normally instead of stalling on the stale state forever.
                 counts, total = list(value.bucket_counts), value.sum
+            else:
+                counts = [a - b for a, b in zip(value.bucket_counts, old.bucket_counts)]
+                total = value.sum - old.sum
+                if (
+                    any(v < 0 for v in counts)
+                    or total < 0
+                    or (all(v == 0 for v in counts) and total != 0)
+                ):
+                    # Like a counter decrease, infer a reset. Reset the whole
+                    # distribution rather than mixing reset and differenced buckets.
+                    counts, total = list(value.bucket_counts), value.sum
         histograms[name] = (counts, total)
     return counters, current.gauges, histograms
 
@@ -182,6 +189,7 @@ class DramPoolResourceReporter(FileResourceMetricsReporter):
             interval_sec=interval_sec,
             shared_memory_dir=shared_memory_dir,
         )
+        self._registered_gauges: set[str] = set()
 
     def _read_state(self):
         try:
@@ -196,9 +204,21 @@ class DramPoolResourceReporter(FileResourceMetricsReporter):
     def _write_state(self, snapshot):
         self._write_previous_state({"snapshot": _snapshot_record(snapshot)})
 
+    def _ensure_gauges_registered(self, gauges: dict[str, int | float]) -> None:
+        # The C++ Render emits the dynamic drampool_buffer_pool_usage_ratio_<size>
+        # gauges, whose names do not exist in the static metrics config. The
+        # native store silently drops updates to unregistered names, so register
+        # each gauge name on first sight. create_stats is idempotent and
+        # first-registration-wins, so re-registering a static gauge is a no-op.
+        for name in gauges:
+            if name not in self._registered_gauges:
+                ucmmetrics.create_stats(name, "gauge")
+                self._registered_gauges.add(name)
+
     def _report_snapshot(self, snapshot, previous):
         counters, gauges, histograms = snapshot_deltas(snapshot, previous)
         try:
+            self._ensure_gauges_registered(gauges)
             ucmmetrics.merge_histogram_stats(histograms)
             ucmmetrics.update_stats(counters | gauges)
         except Exception as error:

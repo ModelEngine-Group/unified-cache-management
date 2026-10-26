@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = ROOT / ".github" / "release"
@@ -20,6 +21,13 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
+def test_sglang_main_tag_is_outside_formal_runtime_grammar() -> None:
+    assert (
+        upstream._parsed_runtime_tag("sglang", "main-cann9.0.0-a3")  # noqa: SLF001
+        is None
+    )
+
+
 def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
     return {
         "raw": version if tag is None else f"{version}@{tag}",
@@ -28,18 +36,24 @@ def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
     }
 
 
-def _policy(release_type: str = "stable") -> dict[str, object]:
+def _policy(
+    release_type: str = "stable", *, platforms_path: Path | None = None
+) -> dict[str, object]:
     resolved = copy.deepcopy(
         policy.resolve(
             repository="release-org/unified-cache-management",
             version_override="0.7.60rc1",
             release_type=release_type,
+            platforms_path=platforms_path,
         )
     )
     selectors = {
         "vllm": [_selector("0.22.1")],
         "vllm-ascend": [_selector("0.22.1")],
     }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -48,6 +62,19 @@ def _policy(release_type: str = "stable") -> dict[str, object]:
 
 def _fixture() -> dict[str, object]:
     return serialization.load_json(TAG_FIXTURE)
+
+
+def _sglang_policy(
+    selector: dict[str, str | None] | None = None,
+) -> dict[str, object]:
+    resolved = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override="0.7.60rc1",
+    )
+    product = next(item for item in resolved["products"] if item["id"] == "sglang")
+    product["runtime_selectors"] = [selector or _selector("0.5")]
+    resolved["products"] = [product]
+    return resolved
 
 
 def _selection(fixture: dict[str, object] | None = None) -> dict[str, object]:
@@ -102,6 +129,187 @@ def test_registry_tag_selection_uses_version_ranges_and_all_winner_variants() ->
             "channel": "nightly",
         },
     ]
+
+
+@pytest.mark.parametrize("version", ("0.5.18", "0.5.19", "0.5.20"))
+def test_sglang_selector_keeps_cuda_runtime_and_cann_variants(
+    version: str,
+) -> None:
+    product = {"id": "sglang", "runtime_selectors": [_selector(version)]}
+
+    selected = upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        [
+            f"v{version}-cu129",
+            f"v{version}-cu130",
+            f"v{version}-cu129-runtime",
+            f"v{version}-cu130-runtime",
+            f"v{version}-cann9.0.0-910b",
+            f"v{version}-cann9.0.0-a3",
+            f"v{version}-cu129-aarch64",
+            "v0.5.21-cu130",
+        ],
+    )
+
+    assert selected == [
+        {
+            "runtime_tag": f"v{version}-cann9.0.0-910b",
+            "version": version,
+            "channel": "stable",
+        },
+        {
+            "runtime_tag": f"v{version}-cann9.0.0-a3",
+            "version": version,
+            "channel": "stable",
+        },
+        {"runtime_tag": f"v{version}-cu129", "version": version, "channel": "stable"},
+        {
+            "runtime_tag": f"v{version}-cu129-runtime",
+            "version": version,
+            "channel": "stable",
+        },
+        {"runtime_tag": f"v{version}-cu130", "version": version, "channel": "stable"},
+        {
+            "runtime_tag": f"v{version}-cu130-runtime",
+            "version": version,
+            "channel": "stable",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("formal_tags", "expected"),
+    [
+        (
+            ["v0.5.19-cu129", "v0.5.19-cann9.0.0-a3", "v0.5.20rc1-cu130"],
+            {"v0.5.19-cu129": "stable", "v0.5.19-cann9.0.0-a3": "stable"},
+        ),
+        (
+            ["v0.5.19rc1-cu129", "v0.5.19rc2-cu130", "v0.5.19rc2-cann9.0.0-a3"],
+            {"v0.5.19rc2-cu130": "rc", "v0.5.19rc2-cann9.0.0-a3": "rc"},
+        ),
+    ],
+    ids=["stable-before-newer-rc", "rc-fallback"],
+)
+def test_sglang_candidates_select_formal_tags_without_appending_main(
+    formal_tags: list[str], expected: dict[str, str]
+) -> None:
+    candidates = upstream.resolve_runtime_candidates(
+        _sglang_policy(),
+        tag_loader=lambda _repository: [*formal_tags, "main-cann9.0.0-a3"],
+    )
+
+    assert {
+        item["runtime_tag"]: item["channel"] for item in candidates["runtimes"]
+    } == expected
+    assert all("created_at" not in item for item in candidates["runtimes"])
+
+
+def test_sglang_candidates_fail_when_registry_only_has_main_tags() -> None:
+    with pytest.raises(ValueError, match="no published Runtime tag matches"):
+        upstream.resolve_runtime_candidates(
+            _sglang_policy(),
+            tag_loader=lambda _repository: ["main-cann9.0.0-910b", "main-cann9.0.0-a3"],
+        )
+
+
+def test_sglang_explicit_main_tag_cannot_bypass_formal_selection() -> None:
+    tag = "main-cann9.0.0-a3"
+    with pytest.raises(ValueError, match="explicit Runtime tag does not match"):
+        upstream.resolve_runtime_candidates(
+            _sglang_policy(_selector("0.0.0", tag)),
+            tag_loader=lambda _repository: [tag],
+        )
+
+
+@pytest.mark.parametrize(
+    ("version", "channel", "metadata"),
+    [
+        ("main-cann9.0.0-a3", "main", {}),
+        (
+            "main-cann9.0.0-a3",
+            "main",
+            {"created_at": "2026-09-23T00:00:00+00:00"},
+        ),
+        ("0.0.0.dev20260923000000", "nightly", {}),
+    ],
+    ids=["main", "main-with-created-at", "legacy-synthetic-nightly"],
+)
+def test_sglang_candidates_reject_saved_main_documents(
+    version: str, channel: str, metadata: dict[str, str]
+) -> None:
+    candidates = upstream.resolve_runtime_candidates(
+        _sglang_policy(), tag_loader=lambda _repository: ["v0.5.19-cu129"]
+    )
+    tag = "main-cann9.0.0-a3"
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    candidates["runtimes"][0].update(
+        runtime_tag=tag,
+        runtime_ref=reference,
+        version=version,
+        channel=channel,
+        **metadata,
+    )
+    candidates["references"] = [reference]
+
+    with pytest.raises(
+        ValueError, match="fields must be exact|does not match product grammar"
+    ):
+        upstream.validate_runtime_candidates(candidates)
+
+
+@pytest.mark.parametrize("channel", ["main", "nightly", "pinned"])
+def test_sglang_selection_rejects_main_channels_but_preserves_pinned(
+    channel: str,
+) -> None:
+    selection = _selection()
+    runtime = next(
+        item for item in selection["runtimes"] if item["backend"] == "cann-a2"
+    )
+    tag = f"main-{runtime['accelerator_runtime']}-910b"
+    runtime.update(
+        product_id="sglang",
+        runtime_repository="docker.io/lmsysorg/sglang",
+        runtime_tag=tag,
+        version=tag if channel != "nightly" else "0.0.0.dev20260923000000",
+        channel=channel,
+    )
+    selection["runtimes"] = [runtime]
+
+    if channel == "pinned":
+        validated = upstream.validate_selection(selection)
+        assert validated["runtimes"][0]["channel"] == "pinned"
+    else:
+        with pytest.raises(
+            ValueError, match="unsupported.*channel|channel.*unsupported"
+        ):
+            upstream.validate_selection(selection)
+
+
+def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
+    probe = next(
+        item
+        for item in _fixture()["runtime_probe"]["probes"]
+        if item["product_id"] == "vllm" and item["cpu_arch"] == "amd64"
+    )
+    sglang_probe = copy.deepcopy(probe)
+    sglang_probe.update(
+        {
+            "product_id": "sglang",
+            "runtime_ref": "docker.io/lmsysorg/sglang:v0.5.19-cu129",
+            "repository": "docker.io/lmsysorg/sglang",
+            "tag": "v0.5.19-cu129",
+            "target_repository": "ghcr.io/release-org/sglang",
+        }
+    )
+
+    builds = builders.resolve_probe_builds(
+        _policy(), [probe, sglang_probe], tag_fixture=_fixture()
+    )
+
+    assert len(builds) == 1
+    assert builds[0]["id"] == "cu129-cp312-amd64"
+    assert builds[0]["product_id"] == "shared"
 
 
 def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
@@ -319,14 +527,49 @@ def test_candidate_resolution_selects_each_minor_independently() -> None:
     }
 
 
-def test_excluded_variant_policy_is_the_runtime_filter_authority() -> None:
-    release = _policy()
-    release["excluded_upstream_variants"]["vllm-ascend"] = ["310p", "a3"]
+@pytest.mark.parametrize("excluded", [[], ["310p", "a3"]])
+def test_excluded_variant_policy_is_the_runtime_filter_authority(
+    tmp_path: Path, excluded: list[str]
+) -> None:
+    platforms = yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text())
+    platforms["excluded_upstream_variants"]["vllm-ascend"] = excluded
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+    release = _policy(platforms_path=path)
+    probes = _fixture()["runtime_probe"]["probes"]
 
-    candidates = upstream.resolve_runtime_candidates(release, tag_fixture=_fixture())
+    # Use implemented Runtime members so this test isolates policy filtering.
+    candidates = upstream.resolve_runtime_candidates(
+        release,
+        tag_loader=lambda repository: [
+            probe["tag"] for probe in probes if probe["repository"] == repository
+        ],
+    )
 
-    assert all("-a3" not in reference for reference in candidates["references"])
-    assert all("-310p" not in reference for reference in candidates["references"])
+    for probe in probes:
+        expected = not (probe["backend"] == "cann-a3" and "a3" in excluded)
+        assert (probe["runtime_ref"] in candidates["references"]) == expected
+
+
+@pytest.mark.parametrize("variant_files", [{}, {"a2": ["libruntime.so"]}])
+def test_variant_file_policy_reaches_builder_checks(
+    tmp_path: Path, variant_files: dict[str, list[str]]
+) -> None:
+    platforms = yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text())
+    platforms["builder_families"]["ascend"]["variant_required_files"] = variant_files
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+    release = _policy(platforms_path=path)
+    selection = upstream.resolve_upstreams(release, tag_fixture=_fixture())
+
+    catalog = builders.catalog_from_builds(
+        selection["wheel_builds"], owner="release-org", formal_policy=release
+    )
+
+    for builder in catalog["builders"]:
+        if builder["accelerator"] == "ascend":
+            expected = {"acl.h", *variant_files.get(builder["variant"], [])}
+            assert set(builder["checks"]["required_files"]) == expected
 
 
 def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
@@ -344,18 +587,20 @@ def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
         )
 
 
-def test_product_with_only_blocked_variants_fails_selection() -> None:
+def test_product_with_only_blocked_variants_fails_selection(runtime_probe) -> None:
     release = _policy()
-    for product in release["products"]:
-        product["runtime_selectors"] = [_selector("0.27")]
-    tags = {
-        "docker.io/vllm/vllm-openai": ["v0.27.0"],
-        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.27.1-a5"],
-    }
+    release["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
+    )
+    release["products"] = [
+        product
+        for product in release["products"]
+        if product["id"] == runtime_probe["product_id"]
+    ]
 
-    with pytest.raises(ValueError, match="vllm-ascend: no publishable Runtime"):
+    with pytest.raises(ValueError, match="no publishable Runtime"):
         upstream.resolve_runtime_candidates(
-            release, tag_loader=lambda repository: tags[repository]
+            release, tag_loader=lambda repository: [runtime_probe["tag"]]
         )
 
 
@@ -493,6 +738,291 @@ def test_raw_builder_selection_honors_configured_manylinux_policy() -> None:
     assert build["source_image"].endswith("9.0.1-910b-manylinux_2_34-py3.12")
 
 
+def _cann_inputs(
+    versions: list[str],
+    requested: str = "9.2.0",
+    architecture: str = "amd64",
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    fixture = _fixture()
+    probe = copy.deepcopy(
+        next(
+            item
+            for item in fixture["runtime_probe"]["probes"]
+            if item["backend"] == "cann-a2"
+        )
+    )
+    probe["accelerator_runtime"] = f"cann-{requested}"
+    probe["cpu_arch"] = architecture
+    repository = "quay.io/ascend/manylinux"
+    tags = [f"{version}-910b-manylinux_2_34-py3.12" for version in versions]
+    fixture["repositories"][repository] = {"pages": [{"tags": tags}]}
+    for index, tag in enumerate(tags, start=1):
+        fixture["source_image_members"][f"{repository}:{tag}"] = {
+            "amd64": f"sha256:{index:064x}",
+            "arm64": f"sha256:{index + 100:064x}",
+        }
+    return _policy(), fixture, probe
+
+
+@pytest.mark.parametrize(
+    ("requested", "available", "winner"),
+    [
+        ("9.2.0", ["9.2.0-beta.2", "9.2.0"], "9.2.0"),
+        ("9.2.0", ["9.2.0-beta.1", "9.2.0-beta.2"], "9.2.0-beta.2"),
+        ("9.2.0", ["9.2.0-beta.2", "9.2.0-beta.10"], "9.2.0-beta.10"),
+        ("9.2.0", ["9.2.0-beta.10", "9.2.0-beta.2"], "9.2.0-beta.10"),
+        ("9.2.0", ["9.2.0-beta.10", "9.2.0-rc.1"], "9.2.0-rc.1"),
+        ("9.2.0-beta.2", ["9.2.0b2"], "9.2.0b2"),
+        (
+            "9.2.0-beta.1",
+            ["9.2.0-beta.2", "9.2.0-beta.1", "9.2.0"],
+            "9.2.0-beta.1",
+        ),
+    ],
+)
+def test_cann_selection_prefers_exact_then_latest_same_base_suffix(
+    requested: str, available: list[str], winner: str
+) -> None:
+    formal, fixture, probe = _cann_inputs(available, requested)
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == winner
+    assert build["accelerator_runtime"] == f"cann-{requested}"
+
+
+@pytest.mark.parametrize(
+    ("requested", "available"),
+    [
+        ("9.2.0-beta.1", ["9.2.0-beta.2", "9.2.0"]),
+        ("9.2.0", ["9.1.0-beta.9", "9.2.1-beta.1", "9.3.0-beta.1"]),
+    ],
+)
+def test_cann_selection_does_not_relax_explicit_suffix_or_numeric_base(
+    requested: str, available: list[str]
+) -> None:
+    formal, fixture, probe = _cann_inputs(available, requested)
+
+    with pytest.raises(ValueError, match="found 0"):
+        builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)
+
+
+def test_cann_fallback_preserves_target_names_and_records_actual_source_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2"])
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+    catalog = builders.catalog_from_builds(
+        [build], owner="release-org", formal_policy=formal
+    )
+    selected = catalog["builders"][0]
+
+    assert build["id"] == "cann920-a2-cp312-amd64"
+    assert build["runtime_variant"] == "cann920-a2"
+    assert selected["accelerator_runtime"] == "cann-9.2.0"
+    assert selected["checks"]["accelerator_runtime"] == "cann-9.2.0-beta.2"
+    labels = builders.builder_labels(selected)
+    reopened = builders.registry_builder_record(
+        selected["target_repository"],
+        selected["target_tag"],
+        {"created": "2026-10-14T00:00:00Z", "config": {"Labels": labels}},
+    )
+    assert reopened["source_image"] == build["source_image"]
+    assert reopened["source_image_digest"] == build["source_image_digest"]
+    diagnostic = capsys.readouterr()
+    assert diagnostic.out == ""
+    assert "same-base latest suffix" in diagnostic.err
+    assert "9.2.0-beta.2" in diagnostic.err
+
+
+def test_cann_selection_filters_capability_and_diagnoses_bad_tags_before_ranking(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0-unknown"])
+    tags = fixture["repositories"]["quay.io/ascend/manylinux"]["pages"][0]["tags"]
+    tags.extend(
+        [
+            "9.2.0-rc.1-a3-manylinux_2_34-py3.12",
+            "9.2.0-rc.1-910b-manylinux_2_34-py3.11",
+            "9.2.0-rc.1-910b-manylinux_2_28-py3.12",
+            "latest",
+        ]
+    )
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.2"
+    assert "unparseable CANN version" in capsys.readouterr().err
+
+
+def test_cann_ranks_only_builder_versions_that_supply_requested_architecture() -> None:
+    formal, fixture, probe = _cann_inputs(
+        ["9.2.0-beta.1", "9.2.0-beta.2"], architecture="arm64"
+    )
+    newest = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][newest]["arm64"]
+
+    build = builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.1"
+    assert build["cpu_arch"] == "arm64"
+
+
+@pytest.mark.parametrize("invalid_member", ["duplicate", "bad-digest"])
+def test_cann_architecture_filter_preserves_manifest_errors(
+    invalid_member: str,
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2"])
+    reference = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][reference]
+    member = {
+        "platform": {"os": "linux", "architecture": "amd64"},
+        "digest": "sha256:" + "1" * 64,
+    }
+    members = (
+        [member, member]
+        if invalid_member == "duplicate"
+        else [{**member, "digest": "invalid"}]
+    )
+
+    with pytest.raises(ValueError, match="exactly one|invalid.*digest"):
+        builders.resolve_probe_builds(
+            formal,
+            [probe],
+            tag_fixture=fixture,
+            manifest_loader=lambda _reference: {"manifests": members},
+            digest_loader=lambda _reference: "sha256:" + "9" * 64,
+        )
+
+
+def test_cann_missing_architecture_in_real_index_is_ineligible() -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.1", "9.2.0-beta.2"])
+    newest = "quay.io/ascend/manylinux:9.2.0-beta.2-910b-manylinux_2_34-py3.12"
+    del fixture["source_image_members"][newest]
+
+    build = builders.resolve_probe_builds(
+        formal,
+        [probe],
+        tag_fixture=fixture,
+        manifest_loader=lambda _reference: {
+            "manifests": [
+                {
+                    "platform": {"os": "linux", "architecture": "arm64"},
+                    "digest": "sha256:" + "2" * 64,
+                }
+            ]
+        },
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.1"
+
+
+def test_cann_equal_version_aliases_remain_ambiguous() -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0b2"])
+
+    with pytest.raises(ValueError, match="found 2"):
+        builders.resolve_probe_builds(formal, [probe], tag_fixture=fixture)
+
+
+def test_cann_selection_filters_platform_and_actual_manifest_architecture(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    formal, fixture, probe = _cann_inputs(["9.2.0-beta.2", "9.2.0-unknown"])
+    repository = "quay.io/ascend/manylinux"
+    tags = fixture["repositories"][repository]["pages"][0]["tags"]
+    wrong_platform = [
+        "9.2.0-rc.1-a3-manylinux_2_34-py3.12",
+        "9.2.0-rc.1-910b-manylinux_2_34-py3.11",
+        "9.2.0-rc.1-910b-manylinux_2_28-py3.12",
+    ]
+    tags.extend(wrong_platform)
+    for tag in wrong_platform:
+        fixture["source_image_members"][f"{repository}:{tag}"] = {
+            "amd64": "sha256:" + "8" * 64
+        }
+    tags.append("9.2.0-rc.1-910b-manylinux_2_34-py3.12")
+
+    build = builders.resolve_probe_builds(
+        formal,
+        [probe],
+        tag_fixture=fixture,
+        manifest_loader=lambda _reference: {
+            "manifests": [
+                {
+                    "platform": {"os": "linux", "architecture": "arm64"},
+                    "digest": "sha256:" + "2" * 64,
+                }
+            ]
+        },
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )[0]
+
+    assert builders.source_cann_version(build["source_image"]) == "9.2.0-beta.2"
+    assert "9.2.0-unknown" in capsys.readouterr().err
+
+
+def test_ascend_builder_floor_can_vary_by_runtime() -> None:
+    fixture = _fixture()
+    repository = "quay.io/ascend/manylinux"
+    source_members = fixture["source_image_members"]
+    tags = fixture["repositories"][repository]["pages"][0]["tags"]
+    probes = []
+    cases = (
+        ("cann-a2", "ascend910b1", "910b", "amd64", "5"),
+        ("cann-a3", "ascend910_9391", "a3", "arm64", "6"),
+    )
+    for index, (backend, soc, token, architecture, digest_digit) in enumerate(
+        cases, start=1
+    ):
+        tag = f"9.0.0-{token}-manylinux_2_28-py3.11"
+        if tag not in tags:
+            tags.append(tag)
+        reference = f"{repository}:{tag}"
+        source_members.setdefault(reference, {})[architecture] = (
+            "sha256:" + digest_digit * 64
+        )
+        probe = copy.deepcopy(fixture["runtime_probe"]["probes"][index + 1])
+        probe.update(
+            {
+                "product_id": "sglang",
+                "runtime_ref": ("docker.io/lmsysorg/sglang:v0.5.19-cann9.0.0-" + token),
+                "backend": backend,
+                "accelerator_runtime": "cann-9.0.0",
+                "soc_version": soc,
+                "python_version": "3.11",
+                "python_abi": "cp311",
+                "cpu_arch": architecture,
+            }
+        )
+        probes.append(probe)
+
+    builds = builders.resolve_probe_builds(_policy(), probes, tag_fixture=fixture)
+
+    assert {
+        (
+            build["backend"],
+            build["cpu_arch"],
+            build["manylinux"],
+            build["source_image"],
+        )
+        for build in builds
+    } == {
+        (
+            "cann-a2",
+            "amd64",
+            "manylinux_2_28",
+            f"{repository}:9.0.0-910b-manylinux_2_28-py3.11",
+        ),
+        (
+            "cann-a3",
+            "arm64",
+            "manylinux_2_28",
+            f"{repository}:9.0.0-a3-manylinux_2_28-py3.11",
+        ),
+    }
+
+
 def test_runtime_glibc_is_not_required_for_wheel_or_builder_planning() -> None:
     fixture = _fixture()
     for probe in fixture["runtime_probe"]["probes"]:
@@ -554,6 +1084,50 @@ def test_final_catalog_binds_checked_labels_and_target_digests() -> None:
     )
     with pytest.raises(ValueError, match="unfinalized Catalog"):
         builders.compute_sync_plan(finalized, {})
+
+
+@pytest.mark.parametrize("legacy_product_id", ["vllm", "vllm-ascend", "sglang"])
+def test_final_catalog_accepts_legacy_product_label_for_shared_builder(
+    legacy_product_id: str,
+) -> None:
+    catalog = _catalog()
+    first = catalog["builders"][0]
+    observations = {}
+    for index, item in enumerate(catalog["builders"]):
+        labels = builders.builder_labels(item)
+        if item["id"] == first["id"]:
+            labels["io.ucm.builder.product_id"] = legacy_product_id
+        observations[item["id"]] = {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": labels},
+            },
+        }
+
+    finalized = builders.finalize_catalog(catalog, observations)
+
+    assert finalized["builders"][0]["product_id"] == "shared"
+
+
+def test_final_catalog_rejects_unknown_product_label_for_shared_builder() -> None:
+    catalog = _catalog()
+    first = catalog["builders"][0]
+    observations = {}
+    for index, item in enumerate(catalog["builders"]):
+        labels = builders.builder_labels(item)
+        if item["id"] == first["id"]:
+            labels["io.ucm.builder.product_id"] = "unrelated-product"
+        observations[item["id"]] = {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": labels},
+            },
+        }
+
+    with pytest.raises(ValueError, match="label product_id differs"):
+        builders.finalize_catalog(catalog, observations)
 
 
 def test_final_catalog_rejects_stale_builder_labels() -> None:

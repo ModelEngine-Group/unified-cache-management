@@ -7,7 +7,7 @@
   "bandwidth": {
     "shard_sizes": ["180k", "8m"],
     "worker_counts": [1, 8, 16],
-    "engines": ["psync", "aio"],
+    "engines": ["psync"],
     "modes": ["dump", "read", "mix"],
     "block_number": 32,
     "shard_number": 1,

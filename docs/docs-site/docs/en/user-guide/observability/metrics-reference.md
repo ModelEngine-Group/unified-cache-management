@@ -250,6 +250,65 @@ For slow loads, inspect queuing, batch-get, backend waits and H2D. For slow save
 | `ucm:mooncake_dump_backend_submit_duration_ms` | Time to submit a backend Dump after the D2H archival copy             |
 | `ucm:mooncake_dump_backend_wait_duration_ms`   | Time waiting for backend archival to complete                         |
 
+### 1.6 ASU / KV metrics
+
+The shared KV catalog defines 37 KV metrics (23 Counters and 14 Histograms). Names below use the default `ucm:` prefix.
+
+These entries describe the registered metric definitions. Exporting KVClient observations through UCM additionally requires runtime backend integration.
+
+The generator's `--check` validates KV table names, type sections, duplicates, omissions, and counts in the English, Chinese, and legacy references. Descriptions and units remain manually maintained; `--sync-ucm` does not rewrite these tables.
+
+**Units:** all `kv_*_duration_seconds` observations and bucket boundaries are in seconds. Existing `*_duration_ms` metrics, `save_duration` and `save_completion_wait_duration` use milliseconds. Multiply a KV duration mean or quantile by `1000` when displaying milliseconds; do not combine seconds and milliseconds without conversion.
+
+#### Counters
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:kv_client_query_requests_total` | count | Total KV client query submissions |
+| `ucm:kv_client_query_entries_total` | keys / entries | Total keys submitted to KV client query |
+| `ucm:kv_client_query_errors_total` | count | Total failed KV client query submissions |
+| `ucm:kv_client_load_requests_total` | count | Total KV client load submissions |
+| `ucm:kv_client_load_entries_total` | keys / entries | Total entries submitted to KV client load |
+| `ucm:kv_client_load_errors_total` | count | Total failed KV client load submissions |
+| `ucm:kv_client_store_requests_total` | count | Total KV client store submissions |
+| `ucm:kv_client_store_entries_total` | keys / entries | Total entries submitted to KV client store |
+| `ucm:kv_client_store_errors_total` | count | Total failed KV client store submissions |
+| `ucm:kv_client_batch_load_requests_total` | count | Total KV client batch-load submissions |
+| `ucm:kv_client_batch_load_entries_total` | keys / entries | Total entries submitted to KV client batch-load |
+| `ucm:kv_client_batch_load_errors_total` | count | Total failed KV client batch-load submissions |
+| `ucm:kv_client_batch_store_requests_total` | count | Total KV client batch-store submissions |
+| `ucm:kv_client_batch_store_entries_total` | keys / entries | Total entries submitted to KV client batch-store |
+| `ucm:kv_client_batch_store_errors_total` | count | Total failed KV client batch-store submissions |
+| `ucm:kv_client_delete_requests_total` | count | Total KV client delete submissions |
+| `ucm:kv_client_delete_entries_total` | keys / entries | Total keys submitted to KV client delete |
+| `ucm:kv_client_delete_errors_total` | count | Total failed KV client delete submissions |
+| `ucm:kv_client_wait_requests_total` | count | Total KV client wait calls |
+| `ucm:kv_client_wait_errors_total` | count | Total failed KV client wait calls |
+| `ucm:kv_transport_task_completion_timeouts_total` | count | Total KV transport task completion timeouts |
+| `ucm:kv_transport_task_io_timeouts_total` | count | Total KV transport sub-batch IO timeouts |
+| `ucm:kv_transport_task_connection_errors_total` | count | Total KV transport connection errors |
+
+#### Histograms
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:kv_client_task_enqueue_duration_seconds` | seconds | KV client API-to-enqueue duration |
+| `ucm:kv_client_task_queue_duration_seconds` | seconds | KV client task queue duration |
+| `ucm:kv_client_task_process_duration_seconds` | seconds | KV client task processing duration |
+| `ucm:kv_client_task_send_duration_seconds` | seconds | KV client duration until all Send calls return |
+| `ucm:kv_client_task_e2e_duration_seconds` | seconds | KV client task end-to-end duration |
+| `ucm:kv_transport_task_pre_send_duration_seconds` | seconds | KV transport duration before Send |
+| `ucm:kv_transport_task_queue_duration_seconds` | seconds | KV transport task queue duration |
+| `ucm:kv_transport_task_process_duration_seconds` | seconds | KV transport task processing duration |
+| `ucm:kv_transport_task_send_duration_seconds` | seconds | KV transport duration until Send returns |
+| `ucm:kv_transport_task_send_call_duration_seconds` | seconds | KV transport provider Send call duration |
+| `ucm:kv_transport_task_completion_duration_seconds` | seconds | KV transport completion duration after Send |
+| `ucm:kv_transport_node_task_send_duration_seconds` | seconds | KV transport node task send duration; standalone labels by node_id |
+| `ucm:kv_transport_node_task_completion_duration_seconds` | seconds | KV transport node task completion duration; standalone labels by node_id |
+| `ucm:kv_transport_task_e2e_duration_seconds` | seconds | KV transport task end-to-end duration from submit to completion |
+
+For definition synchronization and custom catalog validation, see [metrics development](../../developer-guide/add-metrics.md).
+
 ## 2. Raw Metrics Usage
 
 Run the PromQL examples in Prometheus or against a Prometheus data source in Grafana. They assume the scrape job is named `vllm`; change `job` to match your deployment. If a job contains several models or services, add label filters before aggregating. Examples use the last five minutes; in Grafana, `[5m]` can be replaced with `[$__rate_interval]`.

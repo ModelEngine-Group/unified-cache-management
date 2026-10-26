@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
+import sys
 from importlib import metadata
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / ".github" / "release" / "validate_wheel_runtime.py"
@@ -10,6 +16,77 @@ SPEC = importlib.util.spec_from_file_location("validate_wheel_runtime", MODULE_P
 assert SPEC is not None and SPEC.loader is not None
 runtime_validation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime_validation)
+
+
+@pytest.fixture
+def local_wheel_runtime(tmp_path, monkeypatch):
+    wheel = tmp_path / "backend.whl"
+    wheel.write_bytes(b"local Wheel")
+    result = {
+        "distribution": "uc-manager-cann901-a2",
+        "version": "0.2.0",
+        "external_libraries": [],
+        "deferred_external_libraries": [],
+        "dependencies": ["wrapt==1.17.2"],
+        "glibc_floor": "GLIBC_2.34",
+    }
+    (tmp_path / "wheel-result.json").write_text(json.dumps(result))
+    calls = tmp_path / "docker-calls.jsonl"
+    docker = tmp_path / "docker"
+    docker.write_text(
+        f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ['DOCKER_CALLS'], 'a') as calls:
+    calls.write(json.dumps(sys.argv[1:]) + '\\n')
+sys.exit(int(os.environ['DOCKER_RUN_STATUS']) if sys.argv[1] == 'run' else 0)
+"""
+    )
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+    for name, value in {
+        "DOCKER_CALLS": str(calls),
+        "DOCKER_RUN_STATUS": "0",
+        "RUNTIME_IMAGE": "quay.io/ascend/vllm-ascend@sha256:" + "a" * 64,
+        "RUNTIME_PLATFORM": "linux/arm64",
+        "BACKEND_DISTRIBUTION": result["distribution"],
+        "PLATFORM_ARG": "ascend",
+    }.items():
+        monkeypatch.setenv(name, value)
+    return wheel, calls
+
+
+@pytest.mark.parametrize("status", [0, 53], ids=["success", "runtime-failure"])
+def test_runtime_install_uses_local_wheel_and_propagates_failure(
+    local_wheel_runtime, monkeypatch, status
+) -> None:
+    wheel, calls_path = local_wheel_runtime
+    monkeypatch.setenv("DOCKER_RUN_STATUS", str(status))
+    completed = subprocess.run(
+        [
+            "bash",
+            str(MODULE_PATH.with_name("install-validate-wheel-runtime.sh")),
+            str(wheel.parent),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == status, completed.stderr
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    pinned_runtime = os.environ["RUNTIME_IMAGE"]
+    assert len(calls) == 2  # No Runtime/Builder retry after a validation failure.
+    assert calls[0] == ["pull", "--platform", "linux/arm64", pinned_runtime]
+    assert calls[1][:6] == [
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "--entrypoint",
+        "bash",
+    ]
+    assert calls[1][-3:-1] == [pinned_runtime, "-c"]
+    assert f"{wheel}:/tmp/{wheel.name}:ro" in calls[1]
+    assert "EXPECTED_WHEEL_GLIBC_FLOOR=GLIBC_2.34" in calls[1]
+    assert 'EXPECTED_RUNTIME_REQUIREMENTS=["wrapt==1.17.2"]' in calls[1]
 
 
 def test_parse_ldd_dependencies_collects_resolved_sonames() -> None:

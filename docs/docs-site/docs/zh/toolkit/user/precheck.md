@@ -49,7 +49,6 @@ ucm-toolkit run precheck --skip-bandwidth --json
   "bandwidth": {
     "shard_sizes": ["180k", "1m"],
     "worker_counts": [1, 16],
-    "engines": ["psync", "aio"],
     "block_number": 64,
     "shard_number": 1,
     "dump_epochs": 32,
@@ -80,7 +79,7 @@ ucm-toolkit run precheck --config /path/to/precheck.json
 
 ## 带宽结果的边界
 
-当前默认扫描 180 KiB 和 8 MiB 分片、1/8/16 个 worker、psync/aio 两种引擎。每个组合执行保存、读取和读多写少的混合阶段；混合比例默认为一次写入对应四次读取，每阶段八轮。
+当前默认扫描 180 KiB 和 8 MiB 分片、1/8/16 个 worker、仅 psync 引擎。每个组合执行保存、读取和读多写少的混合阶段；混合比例默认为一次写入对应四次读取，每阶段八轮。
 
 工具报告样本均值、波动和聚合值，优先按混合带宽选择组合，缺少混合数据时使用保存与读取均值。默认非 Direct I/O 读取可能由操作系统页缓存满足，因此应把结果解释为该测试路径的吞吐。测量真实存储介质时需明确 I/O 模式和缓存状态。
 

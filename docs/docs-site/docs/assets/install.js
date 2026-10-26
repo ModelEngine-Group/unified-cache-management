@@ -64,7 +64,7 @@
   }
 
   function selectableProduct(artifact) {
-    return ["vllm", "vllm-ascend"].includes(artifact.product) &&
+    return ["vllm", "vllm-ascend", "sglang"].includes(artifact.product) &&
       ![artifact.accelerator.variant, artifact.accelerator.soc_version].some(function (value) {
         return /(^|[-_.])a5($|[-_.])/i.test(String(value));
       });
@@ -87,11 +87,27 @@
   function standardImageReference(image, repositories) {
     var prefix = image.product + "-";
     var repository = repositories[image.product];
-    // Schema 9 family IDs retain the product prefix and full upstream runtime tag.
+    // Release family IDs retain the product prefix and full upstream runtime tag.
     if (!repository || !image.id.startsWith(prefix)) return null;
     var tag = image.id.slice(prefix.length);
-    if (!/^(v\d|nightly-releases-v\d)/.test(tag)) return null;
+    if (!/^(v\d|nightly-releases-v\d|nightly-|main-)/.test(tag)) return null;
     return repository + ":" + tag;
+  }
+
+  function wheelSupportsImage(wheel, image) {
+    if (Array.isArray(wheel.capabilities)) {
+      return wheel.capabilities.some(function (capability) {
+        return capability.product === image.product &&
+          capability.accelerator.runtime === image.accelerator.runtime &&
+          capability.accelerator.variant === image.accelerator.variant &&
+          capability.accelerator.soc_version === image.accelerator.soc_version;
+      });
+    }
+    // Schema 9 compatibility for previously published Releases.
+    return wheel.product === image.product &&
+      wheel.accelerator.runtime === image.accelerator.runtime &&
+      wheel.accelerator.variant === image.accelerator.variant &&
+      wheel.accelerator.soc_version === image.accelerator.soc_version;
   }
 
   function buildSelectorModel(manifest, runtimeRepositories) {
@@ -121,9 +137,7 @@
       });
       targets.forEach(function (pull, architecture) {
         var wheels = manifest.wheels.filter(function (wheel) {
-          return wheel.product === image.product && wheel.architecture === architecture &&
-            wheel.accelerator.runtime === image.accelerator.runtime &&
-            wheel.accelerator.variant === image.accelerator.variant;
+          return wheel.architecture === architecture && wheelSupportsImage(wheel, image);
         });
         if (wheels.length > 1) throw new TypeError("Multiple Wheels match image " + image.id + " / " + architecture);
         var channel = image.upstream.channel;

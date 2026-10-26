@@ -8,6 +8,7 @@ on:
 
 concurrency:
   group: ucm-nightly-${{ github.repository_id }}
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -68,13 +69,8 @@ jobs:
           while IFS= read -r candidate; do
             [ -n "${candidate}" ] || continue
             [ "$(git rev-list -n 1 "${candidate}")" = "${source_sha}" ] || continue
-            releases="$(gh api --paginate --slurp \
-              "/repos/${GH_REPO}/releases?per_page=100" \
-              | jq -ce --arg tag "${candidate}" \
-                '[.[][] | select(
-                  (.tag_name == $tag) or
-                  (.name == $tag and .draft == true and
-                   ((.tag_name // "") | startswith("untagged-"))))]')"
+            releases="$(bash .github/release/find-github-release.sh \
+              "${GH_REPO}" "${candidate}")"
             test "$(jq 'length' <<<"${releases}")" -le 1
             if [ "$(jq 'length' <<<"${releases}")" -eq 0 ] || \
                ! jq -e '.[0] | .draft == false and .prerelease == true and
@@ -85,8 +81,18 @@ jobs:
             fi
           done < <(git tag --list "${prefix}*" --sort=-version:refname)
 
+          create_tag=false
           if [ -z "${selected_tag}" ]; then
             selected_tag="${next_tag}"
+            create_tag=true
+          fi
+          python .github/release/ucm_release/cleanup.py record \
+            --repository "${GH_REPO}" --tag "${selected_tag}" \
+            --source-sha "${source_sha}" --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output-dir out/cleanup
+
+          if [ "${create_tag}" = true ]; then
             if ! gh api --method POST "/repos/${GH_REPO}/git/refs" \
               -f "ref=refs/tags/${selected_tag}" -f "sha=${source_sha}" >/dev/null; then
               git fetch --force origin "refs/tags/${selected_tag}:refs/tags/${selected_tag}"
@@ -106,6 +112,13 @@ jobs:
             echo "image_version=$(jq -r '.image_version' <<<"${classification}")"
             echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
           } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() && hashFiles('out/cleanup/*.json') != '' }}
+        with:
+          name: ucm-release-cleanup-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/cleanup/*.json
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Run common Release core
@@ -125,4 +138,11 @@ jobs:
       is_prerelease: ${{ needs.prepare-nightly.outputs.is_prerelease == 'true' }}
       source_sha: ${{ needs.prepare-nightly.outputs.source_sha }}
       publication_scope: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'official' || 'fork' }}
-    secrets: inherit
+    # Same scope-gated contract as release-tag.yml: production PyPI only for
+    # the official repository and TestPyPI only for Forks.
+    secrets:
+      PYPI_API_TOKEN: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && secrets.PYPI_API_TOKEN || '' }}
+      TEST_PYPI_API_TOKEN: ${{ github.repository != 'ModelEngine-Group/unified-cache-management' && secrets.TEST_PYPI_API_TOKEN || '' }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      RTD_API_TOKEN: ${{ secrets.RTD_API_TOKEN }}

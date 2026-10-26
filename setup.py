@@ -95,7 +95,7 @@ def print_platform_warning():
 {RED}{'=' * 80}
 {BOLD}⚠️  WARNING: PLATFORM environment variable is not set! ⚠️{RESET}
 {RED}{'=' * 80}{RESET}
-{YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, musa, maca{RESET}
+{YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, ascend-a5, musa, maca{RESET}
 Example:
   {BOLD}export PLATFORM=cuda{RESET}    # For CUDA platform
 {YELLOW}In CI scenarios only, you don't need to specify PLATFORM. If it's not a CI scenario, please uninstall and then reinstall with PLATFORM specified.{RESET}
@@ -233,6 +233,8 @@ class CMakeBuild(build_ext):
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend"]
             case "ascend-a3":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend-a3"]
+            case "ascend-a5":
+                cmake_args += ["-DRUNTIME_ENVIRONMENT=ascend-a5"]
             case "musa":
                 cmake_args += ["-DRUNTIME_ENVIRONMENT=musa"]
             case "maca":

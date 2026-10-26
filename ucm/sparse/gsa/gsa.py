@@ -22,7 +22,7 @@ from vllm.v1.core.kv_cache_utils import NONE_HASH
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.ucm_connector import RequestHasher
+from ucm.integration.vllm.ucm_connector import RequestHasher, build_kv_hash_meta
 from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
@@ -71,7 +71,7 @@ class GSAReqStat:
         self._vllm_config = vllm_config
         self.rank = vllm_config.parallel_config.rank
         self.use_mla = vllm_config.model_config.use_mla
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
 
     def step(self) -> int:
         return self.num_output_tokens
@@ -122,7 +122,9 @@ class GSAReqStat:
             parent_block_hash_value = hash_value
 
         if self.rank != 0 and not self.use_mla:
-            self.newqrequest_hasher = RequestHasher(self._vllm_config, self.rank)
+            self.newqrequest_hasher = RequestHasher(
+                build_kv_hash_meta(self._vllm_config, self.rank)
+            )
             for i, ucm_block_id in enumerate(self.block_hashes):
                 self.block_hashes[i] = str(self.newqrequest_hasher(ucm_block_id))
 

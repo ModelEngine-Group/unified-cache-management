@@ -38,6 +38,6 @@ histogram:
   - {name: "kv_transport_task_send_duration_seconds", documentation: "KV transport duration until Send returns", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
   - {name: "kv_transport_task_send_call_duration_seconds", documentation: "KV transport provider Send call duration", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
   - {name: "kv_transport_task_completion_duration_seconds", documentation: "KV transport completion duration after Send", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_node_task_send_duration_seconds", documentation: "KV transport send duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
-  - {name: "kv_transport_node_task_completion_duration_seconds", documentation: "KV transport completion duration by node", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
+  - {name: "kv_transport_node_task_send_duration_seconds", documentation: "KV transport node task send duration; standalone labels by node_id", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
+  - {name: "kv_transport_node_task_completion_duration_seconds", documentation: "KV transport node task completion duration; standalone labels by node_id", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}
   - {name: "kv_transport_task_e2e_duration_seconds", documentation: "KV transport task end-to-end duration from submit to completion", buckets: [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]}

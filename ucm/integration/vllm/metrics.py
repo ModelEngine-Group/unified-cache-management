@@ -8,8 +8,10 @@ from vllm.config import VllmConfig
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MetricDefinition,
+    dynamic_label_bases,
     get_vllm_connector_metric_definitions,
     load_launch_metrics_config,
+    split_dynamic_metric_name,
 )
 
 try:
@@ -69,9 +71,26 @@ class UCMConnectorStats(KVConnectorStats):
             for definition in metric_definitions
             if definition.vllm_connector_enabled
         }
+        # Dynamic-label wire names (base_<digits>) resolve to their base
+        # definition for the type check, but stay keyed by the suffixed name so
+        # observe() can decode the label value.
+        dynamic_bases = dynamic_label_bases(
+            [
+                definition
+                for definition in metric_definitions
+                if definition.vllm_connector_enabled
+            ]
+        )
+
+        def _resolve(metric_name: str) -> MetricDefinition | None:
+            definition = definitions_by_name.get(metric_name)
+            if definition is not None:
+                return definition
+            resolved = split_dynamic_metric_name(metric_name, dynamic_bases)
+            return resolved[0] if resolved is not None else None
 
         for metric_name, value in counter_stats.items():
-            definition = definitions_by_name.get(metric_name)
+            definition = _resolve(metric_name)
             if definition is None or definition.metric_type != "counter":
                 continue
             value_float = stats._finite(value)
@@ -82,7 +101,7 @@ class UCMConnectorStats(KVConnectorStats):
             ] = value_float
 
         for metric_name, value in gauge_stats.items():
-            definition = definitions_by_name.get(metric_name)
+            definition = _resolve(metric_name)
             if definition is None or definition.metric_type != "gauge":
                 continue
             value_float = stats._finite(value)
@@ -91,7 +110,7 @@ class UCMConnectorStats(KVConnectorStats):
             stats.data["gauges_by_rank"].setdefault(rank, {})[metric_name] = value_float
 
         for metric_name, value in histogram_stats.items():
-            definition = definitions_by_name.get(metric_name)
+            definition = _resolve(metric_name)
             if definition is None or definition.metric_type != "histogram":
                 continue
             histogram = _histogram_snapshot(value)
@@ -203,14 +222,26 @@ if UCM_HAS_PROM_METRICS:
             self._definitions = {
                 definition.name: definition for definition in definitions
             }
+            # Wire names carrying a dynamic label as a suffix (name_<digits>)
+            # map back to their base definition; the base metric is created with
+            # the extra labelname and observe() supplies the decoded label value.
+            self._dynamic_bases = dynamic_label_bases(definitions)
+            self._dynamic_label_by_name = {
+                base_name: definition.dynamic_labels[0]
+                for base_name, definition in self._dynamic_bases
+            }
             self._metrics_by_name: dict[str, PromMetricT] = {}
             self._labeled_metrics: dict[tuple[int, str, str], PromMetricT] = {}
             counts = {"counter": 0, "gauge": 0, "histogram": 0}
 
             for definition in definitions:
+                metric_labelnames = labelnames + ["worker_rank"]
+                dynamic_label = self._dynamic_label_by_name.get(definition.name)
+                if dynamic_label is not None:
+                    metric_labelnames = metric_labelnames + [dynamic_label]
                 self._metrics_by_name[definition.name] = self._create_metric(
                     definition,
-                    labelnames + ["worker_rank"],
+                    metric_labelnames,
                 )
                 counts[definition.metric_type] += 1
             logger.info(
@@ -323,9 +354,12 @@ if UCM_HAS_PROM_METRICS:
             self, metric_name: str, metric_type: str
         ) -> MetricDefinition | None:
             definition = self._definitions.get(metric_name)
+            if definition is None:
+                resolved = split_dynamic_metric_name(metric_name, self._dynamic_bases)
+                definition = resolved[0] if resolved is not None else None
             if definition is None or definition.metric_type != metric_type:
                 return None
-            if metric_name not in self._metrics_by_name:
+            if definition.name not in self._metrics_by_name:
                 return None
             return definition
 
@@ -333,11 +367,26 @@ if UCM_HAS_PROM_METRICS:
             self, engine_idx: int, worker_rank: int | str, metric_name: str
         ) -> PromMetricT:
             worker_rank = str(worker_rank)
+            # Keyed by the full wire name so each slot_size value gets its own
+            # labeled child metric.
             key = (engine_idx, worker_rank, metric_name)
             if key not in self._labeled_metrics:
-                self._labeled_metrics[key] = self._metrics_by_name[metric_name].labels(
-                    *(self._engine_labelvalues[engine_idx] + [worker_rank])
-                )
+                resolved = split_dynamic_metric_name(metric_name, self._dynamic_bases)
+                if resolved is not None:
+                    definition, _label_name, label_value = resolved
+                    metric = self._metrics_by_name[definition.name]
+                    labelvalues = self._engine_labelvalues[engine_idx] + [
+                        worker_rank,
+                        label_value,
+                    ]
+                else:
+                    # Normal path: a metric with no dynamic-label suffix, so it
+                    # carries only the engine labels plus worker_rank. The name is
+                    # guaranteed registered — every caller resolves it through
+                    # _definition() before reaching _metric().
+                    metric = self._metrics_by_name[metric_name]
+                    labelvalues = self._engine_labelvalues[engine_idx] + [worker_rank]
+                self._labeled_metrics[key] = metric.labels(*labelvalues)
             return self._labeled_metrics[key]
 
         @property
