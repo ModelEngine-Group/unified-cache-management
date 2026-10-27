@@ -388,6 +388,28 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         result.fail("UCM_STORAGE_API_UNSUPPORTED", "capability_check", "v2")
         self.assertEqual(result.status, "incompatible")
 
+    def test_summary_hides_large_pool_details_but_verbose_preserves_them(self):
+        result = CheckResult(model="hybrid", mode="roundtrip")
+        specs = {"swa": {"layer_ids": list(range(43))}}
+        native = {"compress_ratios": [4, 128] * 22}
+        result.cache_requirements = {"pool_names": ["kv", "swa"],
+                                     "storage_api": "v2", "pool_specs": specs,
+                                     "native_provider": native}
+        result.roundtrip = {"bytes_compared": 1000, "storage_api": "v2",
+                            "logical_anchor": True, "pool_specs": specs,
+                            "native_provider": native, "pages_written": 0,
+                            "persisted_pages": {"swa": [1]},
+                            "checks": ["component_data_compare"]}
+        summary = result.to_dict()
+        self.assertEqual(summary["roundtrip"], {"bytes_compared": 1000,
+                         "storage_api": "v2", "logical_anchor": True})
+        self.assertNotIn("pool_specs", summary["cache_requirements"])
+        self.assertNotIn("native_provider", summary["cache_requirements"])
+        verbose = result.to_dict(verbose=True)
+        self.assertEqual(verbose["roundtrip"], result.roundtrip)
+        self.assertEqual(verbose["cache_requirements"], result.cache_requirements)
+        self.assertEqual(result.roundtrip["pool_specs"], specs)
+
 
 if __name__ == "__main__":
     unittest.main()

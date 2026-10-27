@@ -73,8 +73,6 @@ class CheckResult:
             "storage_api",
             "host_layout",
             "probe_fidelity",
-            "pool_specs",
-            "native_provider",
         )
         capability_keys = ("api_versions", "detection")
         environment_keys = ("sglang_version", "platform", "requested_platform",
@@ -99,6 +97,14 @@ class CheckResult:
             key: self.environment[key]
             for key in environment_keys
             if key in self.environment and self.environment[key] is not None
+        }
+        # Keep the default report bounded: per-layer geometry, native producer
+        # settings and checkpoint positions can be very large for hybrid models.
+        # Full original data remains available through --verbose.
+        data["roundtrip"] = {
+            key: self.roundtrip[key]
+            for key in ("storage_api", "logical_anchor", "bytes_compared")
+            if key in self.roundtrip
         }
         if "\n" in data["reason"]:
             data["reason"] = data["reason"].splitlines()[0]
