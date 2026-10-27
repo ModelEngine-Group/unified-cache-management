@@ -95,7 +95,7 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
     if (config.storageBackends.empty()) { return Status::InvalidParam("empty storage backends"); }
     layout_ = layout;
     ioDirect_ = config.ioDirect;
-    passiveEnabled_ = config.backendHealth.passiveEnabled;
+    passiveEnabled_ = config.backendHealth.enabled && config.backendHealth.passiveEnabled;
     for (const auto& path : config.storageBackends) {
         if (path.empty()) { return Status::InvalidParam("empty storage backend path"); }
         auto normalizedPath = path.back() == '/' ? path : path + '/';
