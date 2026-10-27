@@ -17,6 +17,7 @@ from typing import Any, Callable
 import torch
 
 from .oracle import (
+    POISON_BYTE,
     StorageSnapshot,
     fill_pattern,
     first_mismatch,
@@ -1861,24 +1862,55 @@ def verified_block_indices(
     return {group_id: keep for group_id, keep in indices.items() if keep}
 
 
-def fill_native_source(
-    fixture: Any, groups: list[int], source_ids: tuple[list[int], ...]
-) -> list[str]:
-    """Fill every native byte of the source FA blocks; return unverified layers."""
+def _block_table_entries(
+    fixture: Any, block_ids: tuple[list[int], ...], groups: list[int]
+) -> list[tuple[int, str, int, int, torch.Tensor]]:
+    """``(group, layer, part, index, block view)`` for every usable block.
+
+    Blocks whose geometry the checker cannot map (``_native_block`` returns
+    None) and vLLM's null block are left out, so nothing is guessed at.
+    """
 
     num_blocks = int(fixture.kv_cache_config.num_blocks)
-    unverified = []
+    entries = []
     for group_id in groups:
         for layer, part, tensor in _group_layers(fixture, group_id):
-            for index, block_id in enumerate(source_ids[group_id]):
+            for index, block_id in enumerate(block_ids[group_id]):
                 if block_id == NATIVE_NULL_BLOCK_ID:
                     continue
                 block = _native_block(tensor, block_id, num_blocks)
-                if block is None:
-                    unverified.append(f"{layer}[{part}]")
-                    break
-                fill_pattern(block, "native-source", layer, part, index)
-    return sorted(set(unverified))
+                if block is not None:
+                    entries.append((group_id, layer, part, index, block))
+    return entries
+
+
+def unmappable_layers(
+    fixture: Any, block_ids: tuple[list[int], ...], groups: list[int]
+) -> list[str]:
+    """Layers whose block geometry the checker cannot address natively."""
+
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    unmappable = []
+    for group_id in groups:
+        for layer, part, tensor in _group_layers(fixture, group_id):
+            probe = next(
+                (b for b in block_ids[group_id] if b != NATIVE_NULL_BLOCK_ID), None
+            )
+            if probe is not None and _native_block(tensor, probe, num_blocks) is None:
+                unmappable.append(f"{layer}[{part}]")
+    return sorted(set(unmappable))
+
+
+def fill_native_source(
+    fixture: Any, groups: list[int], source_ids: tuple[list[int], ...]
+) -> list[str]:
+    """Fill every native byte of the source blocks; return unmappable layers."""
+
+    for group_id, layer, part, index, block in _block_table_entries(
+        fixture, source_ids, groups
+    ):
+        fill_pattern(block, "native-source", layer, part, index)
+    return unmappable_layers(fixture, source_ids, groups)
 
 
 def snapshot_native_blocks(
@@ -1910,6 +1942,87 @@ def poison_native_blocks(
                     poison(block)
                     poisoned += 1
     return poisoned
+
+
+def snapshot_all_blocks(
+    fixture: Any, block_ids: tuple[list[int], ...], groups: list[int]
+) -> dict[tuple[int, str, int, int], torch.Tensor]:
+    """Byte copies of every usable block, keyed by ``(group, layer, part, index)``."""
+
+    return {
+        (group_id, layer, part, index): snapshot_bytes(block)
+        for group_id, layer, part, index, block in _block_table_entries(
+            fixture, block_ids, groups
+        )
+    }
+
+
+def poison_all_blocks(
+    fixture: Any, block_ids: tuple[list[int], ...], groups: list[int]
+) -> int:
+    """Poison every usable block; returns how many blocks were poisoned."""
+
+    entries = _block_table_entries(fixture, block_ids, groups)
+    for _group_id, _layer, _part, _index, block in entries:
+        poison(block)
+    return len(entries)
+
+
+def compare_blackbox(
+    fixture: Any,
+    source_saved: dict[tuple[int, str, int, int], torch.Tensor],
+    target_ids: tuple[list[int], ...],
+    groups: list[int],
+) -> dict[int, tuple[int, int]]:
+    """Policy-free check: no loaded byte may hold a value UCM never stored.
+
+    Every byte of every poisoned target block must be either the source byte
+    at the same position (restored) or still ``0xff`` (not restored). Patterns
+    never contain ``0xff``, so the two cases cannot be confused and a third
+    value can only come from data placed at the wrong offset, block, layer or
+    group.
+
+    This asserts nothing about *which* blocks a group stores, so it covers
+    sliding-window, state-snapshot and any future group kind without the
+    checker having to know their storage policy. Returns
+    ``{group: (restored bytes, total bytes)}`` as a coverage report -- read it,
+    do not assert on it: a group legitimately restores only part of its blocks.
+    """
+
+    coverage: dict[int, tuple[int, int]] = {}
+    for group_id, layer, part, index, block in _block_table_entries(
+        fixture, target_ids, groups
+    ):
+        expected = source_saved.get((group_id, layer, part, index))
+        if expected is None:
+            continue
+        actual = snapshot_bytes(block)
+        if actual.shape != expected.shape:
+            raise AssertionError(
+                f"block shape changed between source and target: group={group_id}, "
+                f"layer={layer}, part={part}, index={index}"
+            )
+        flat_actual = actual.reshape(-1)
+        flat_expected = expected.reshape(-1)
+        correct = flat_actual == flat_expected
+        untouched = flat_actual == POISON_BYTE
+        bad = ~(correct | untouched)
+        if bool(bad.any()):
+            position = int(bad.nonzero()[0])
+            raise AssertionError(
+                "black-box mismatch: a loaded byte is neither the stored value "
+                "nor untouched, so data landed at the wrong place. "
+                f"group={group_id}, layer={layer}, part={part}, "
+                f"block_index={index}, target_block={target_ids[group_id][index]}, "
+                f"byte={position}, got={int(flat_actual[position])}, "
+                f"expected={int(flat_expected[position])}"
+            )
+        restored, total = coverage.get(group_id, (0, 0))
+        coverage[group_id] = (
+            restored + int(correct.sum()),
+            total + int(flat_actual.numel()),
+        )
+    return coverage
 
 
 def compare_native_blocks(
@@ -1957,7 +2070,6 @@ def _fa_plan_chunks(metadata: Any, phase: str) -> list[tuple[bytes, int]]:
 
 def check_v2_hit(
     worker: Any,
-    scheduler: Any,
     save_metadata: Any,
     load_metadata: Any,
     target_tokens: int,
@@ -1992,9 +2104,10 @@ def check_v2_hit(
     hybrid = bool(spec.state_groups) or any(
         (group.tail_tokens or 0) > 0 for group in spec.wa_groups
     )
-    lookup = getattr(getattr(scheduler, "connector", None), "_lookup", None)
-    recompute_tokens = int(getattr(lookup, "recompute_tokens", 1))
-    reachable = max(target_tokens - recompute_tokens, 0) // chunk_tokens
+    # vLLM always recomputes at least the request's last token, so the longest
+    # restorable prefix is bounded by the chunks before it. Read from the
+    # request length, not from the connector's internals.
+    reachable = max(target_tokens - 1, 0) // chunk_tokens
     expected = min(len(dumped), reachable)
     summary = f"FA hit {len(loaded)}/{len(dumped)} dumped chunks, expected={expected}"
     if hybrid:
@@ -2261,14 +2374,20 @@ def verify(
 
     v2_dump_batch = _v2_batch(worker, save_metadata, "dump")
     is_v2 = v2_dump_batch is not None
-    native_groups: list[int] = []
+    blackbox_groups: list[int] = []
+    full_attention: list[int] = []
+    whole_block_window: list[int] = []
+    strict_indices: dict[int, list[int]] = {}
+    blackbox_saved: dict = {}
     if is_v2:
         if _enabled("UCM_MODEL_CHECK_NATIVE_ORACLE") and native_oracle_supported(
             fixture
         ):
             full_attention, whole_block_window = native_oracle_groups(fixture)
-            native_groups = full_attention + whole_block_window
-            unverified = fill_native_source(fixture, native_groups, source_ids)
+            # strict side: groups whose storage policy is natively predictable
+            # Black-box side: every group vLLM gave us, whatever it stores.
+            blackbox_groups = sorted(_persistent_groups(fixture))
+            unverified = fill_native_source(fixture, blackbox_groups, source_ids)
             if unverified:
                 log(f"native oracle: unknown block geometry, unverified={unverified}")
         # The connector-derived pattern overwrites the dumped ranges; native
@@ -2339,26 +2458,24 @@ def verify(
         f"num_computed_tokens={target.num_computed_tokens}"
     )
 
-    native_saved: dict = {}
     if is_v2:
         log(
             "hit check: "
             + check_v2_hit(
                 worker,
-                dispatch.scheduler,
                 save_metadata,
                 load_metadata,
                 len(dispatch.prompt_token_ids),
                 target.num_computed_tokens,
             )
         )
-        if native_groups:
+        if blackbox_groups:
             hit_tokens = target.num_computed_tokens
             if hit_tokens is None:
                 hit_tokens = len(_fa_plan_chunks(load_metadata, "load")) * int(
                     connector.spec.tokens_per_chunk
                 )
-            indices = verified_block_indices(
+            strict_indices = verified_block_indices(
                 fixture,
                 full_attention,
                 whole_block_window,
@@ -2368,12 +2485,12 @@ def verify(
             )
             # Snapshot before any target poisoning: hybrid groups may share
             # one physical pool, so another group's target ids can alias it.
-            native_saved = snapshot_native_blocks(fixture, source_ids, indices)
-            poisoned = poison_native_blocks(fixture, target_ids, indices)
+            blackbox_saved = snapshot_all_blocks(fixture, source_ids, blackbox_groups)
+            poisoned = poison_all_blocks(fixture, target_ids, blackbox_groups)
             log(
-                f"native oracle: full_attention={full_attention}, "
-                f"whole_block_window={whole_block_window}, "
-                f"verified_blocks={indices}, poisoned_native_blocks={poisoned}"
+                f"black-box: groups={blackbox_groups}, poisoned_blocks={poisoned}; "
+                f"strict: full_attention={full_attention}, "
+                f"whole_block_window={whole_block_window}, blocks={strict_indices}"
             )
         poisoned = poison_v2_load_segments(fixture, worker, load_metadata)
         log(f"poisoned target v2 ranges: segments={poisoned}")
@@ -2433,13 +2550,27 @@ def verify(
         load_metadata,
         worker,
     )
-    native_compared = compare_native_blocks(fixture, native_saved, target_ids)
-    if native_groups and not native_compared:
-        raise AssertionError("native oracle compared no full-attention blocks")
+    coverage = compare_blackbox(fixture, blackbox_saved, target_ids, blackbox_groups)
+    if blackbox_groups and not coverage:
+        raise AssertionError("black-box check compared no blocks")
+    for group_id, (restored, total) in sorted(coverage.items()):
+        log(
+            f"black-box group {group_id}: restored {restored}/{total} bytes "
+            f"({100.0 * restored / total:.1f}%)"
+        )
+    strict_saved = {
+        key: value
+        for key, value in blackbox_saved.items()
+        if key[3] in strict_indices.get(key[0], ())
+    }
+    native_compared = compare_native_blocks(fixture, strict_saved, target_ids)
+    if strict_indices and not native_compared:
+        raise AssertionError("strict oracle compared no blocks")
     sync_workers()
     log(
         f"PASS: Scheduler->UCM dump/load, rank={os.getenv('RANK', '0')}, "
         f"compared_loaded_tensor_blocks={compared}, "
-        f"native_oracle_blocks={native_compared}, "
+        f"blackbox_groups={len(coverage)}, "
+        f"strict_oracle_blocks={native_compared}, "
         f"stray_write_check={'on' if snapshot is not None else 'off'}"
     )

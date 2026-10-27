@@ -151,9 +151,14 @@ only vLLM's tensors, specs and block tables:
 
 | check | what it asserts | scope |
 |---|---|---|
-| **native oracle** | target block *i* equals source block *i* byte-for-byte, through `kv_caches[layer]` and the scheduler's block tables | persistent full-attention groups (every block of the hit) and sliding-window groups whose window is exactly one block (the restore-boundary block). Other geometries are listed as not natively assertable instead of being guessed at |
+| **black-box** | no loaded byte holds a value UCM never stored: every byte of a poisoned target block is either the source byte at the same position (restored) or still `0xff` (not restored); a third value can only come from data placed at the wrong offset, block, layer or group | **every** persistent group, whatever it stores -- sliding-window and Mamba state groups included. Asserts nothing about *which* blocks a group stores, so a new group kind needs no adaptation. Prints restored/total bytes per group as a report; do not assert on it, a group legitimately restores only part of its blocks |
+| **strict oracle** | target block *i* equals source block *i* byte-for-byte, through `kv_caches[layer]` and the scheduler's block tables | persistent full-attention groups (every block of the hit) and sliding-window groups whose window is exactly one block (the restore-boundary block). Other geometries are listed as not natively assertable instead of being guessed at |
 | **stray writes** | the load changed no KV byte outside the ranges it was asked to fill | whole backing storage of every registered KV tensor |
 | **hit length** (v2) | the loaded FA chunks are a contiguous prefix of the dumped chunks and agree with the scheduler's external hit; for attention-only models the length is exact, for hybrid models it is an upper bound (a WA/State boundary may legitimately shorten the restore point) | connector v2 metadata |
+
+The two are complementary: the strict check is narrow but demands equality, the
+black-box check is wide but tolerates "not restored". Together they need no
+knowledge of a group's storage policy to cover it.
 
 Covered blocks are poisoned with `0xff` before the load, and the patterns are
 position-dependent bytes written through a `uint8` alias, so a swapped
@@ -212,12 +217,19 @@ with `PLATFORM` unset (`simu`), `--tokens 1024` / `--block-size 128`
 
 | case | launcher | connector | result |
 |---|---|---|---|
-| DeepSeek-V4.1-Flash, bulk | `ascend_sim` | v2 | PASS — 124 segments, 124 native blocks |
-| DeepSeek-V4.1-Flash, layerwise | `ascend_sim` | v2 | PASS — 124 segments, 124 native blocks |
+| DeepSeek-V4.1-Flash, bulk | `ascend_sim` | v2 | PASS — 124 segments; black-box 11 groups / 176 blocks; strict 124 blocks |
+| DeepSeek-V4.1-Flash, layerwise | `ascend_sim` | v2 | PASS — 124 segments; strict 124 blocks |
 | DeepSeek-V4.1-Flash, bulk | `ascend_sim` | legacy (FAWA) | PASS — 124 blocks |
 | DeepSeek-V4.1-Flash, `--layout-only` | `ascend_sim` | v2 | PASS — 12 groups: 1 MLA, 1 transient ring, 10 whole-block SWA |
-| Qwen-Flash-Next, bulk | `cpu` | v2 | PASS — 12 segments, 96 native blocks |
+| Qwen-Flash-Next, bulk | `cpu` | v2 | PASS — 12 segments; black-box 5 groups / 194 blocks, including 4 `MambaSpec` groups; strict 96 blocks |
 | DeepSeek-V4.1-Flash | `cpu` | v2 | fails in construction (see *Known limitations*) |
+
+Every persistent group restored 100% of its poisoned bytes in these runs. The
+four `MambaSpec` groups are the ones the strict oracle reports as not natively
+assertable; the black-box check covers them.
+
+Peak RSS of a full DeepSeek-V4.1-Flash run was 2.8 GB: weights stay on the
+`meta` device and the KV pool is bounded to a few MB.
 
 The device-less DeepSeek-V4.1 segment count (124) and the CPU Qwen count (12)
 match the counts recorded for the same models on a real NPU and CPU in
@@ -263,6 +275,10 @@ Re-checked on vLLM 0.30.0 / vLLM-Ascend 0.30.0rc1 unless noted.
   `get_kv_cache_groups` / `_get_kv_cache_groups_uniform_page_size`.) Use
   `ascend_sim.py` for the Ascend layout without a device, or `cuda.py` on a GPU
   for the official layout.
+- **`cpu.py` is currently the only launcher that covers Mamba state groups.**
+  `ascend_sim.py` cannot construct Qwen4Exp (`NotImplementedError: Qwen4Exp QSA
+  requires FlashAttention`, a vLLM-Ascend limitation), so do not drop the CPU
+  launcher without another path for those groups.
 - **Kimi-K3 was not registered in official vLLM 0.26** — only `ascend.py`
   supported it. Not re-checked on 0.30.
 - **CPU external load works on 0.30 + connector v2**: `cpu.py` reaches
