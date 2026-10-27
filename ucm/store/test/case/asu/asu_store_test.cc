@@ -32,6 +32,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -50,10 +51,7 @@ struct CacheKeyHasher {
     }
 };
 
-kv::MRHandle MakeTestMrHandle(std::uintptr_t value)
-{
-    return reinterpret_cast<kv::MRHandle>(value);
-}
+kv::MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<kv::MRHandle>(value); }
 
 struct FakeKvClientState {
     std::vector<UC::AsuStore::Config> initConfigs;
@@ -66,6 +64,12 @@ struct FakeKvClientState {
     bool failRegistration{false};
     bool failInit{false};
     bool omitRegisteredHandle{false};
+    kv::Status queryStatus{kv::Status::OK()};
+    kv::Status submitStatus{kv::Status::OK()};
+    kv::Status waitStatus{kv::Status::OK()};
+    kv::Status taskStatus{kv::Status::OK()};
+    std::optional<kv::QueryResult> queryResult;
+    std::chrono::milliseconds queryDelay{0};
 };
 
 class FakeKvClient final : public kv::KvClient {
@@ -98,6 +102,8 @@ public:
     kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
     {
         if (!initialized_) { return NotInitialized(); }
+        if (!state_->queryStatus.ok()) { return state_->queryStatus; }
+        if (state_->queryDelay.count() != 0) { std::this_thread::sleep_for(state_->queryDelay); }
 
         kv::TaskResult taskResult;
         taskResult.status = kv::Status::OK();
@@ -111,7 +117,7 @@ public:
             if (exists == 0) { break; }
             ++result.prefixHitKeys;
         }
-        taskResult.queryResult = std::move(result);
+        taskResult.queryResult = state_->queryResult ? *state_->queryResult : std::move(result);
         taskId = nextTaskId_++;
         taskResults_.emplace(taskId, std::move(taskResult));
         return kv::Status::OK();
@@ -173,6 +179,7 @@ public:
     {
         (void)timeoutMs;
         if (!initialized_) { return NotInitialized(); }
+        if (!state_->waitStatus.ok()) { return state_->waitStatus; }
 
         auto iter = taskResults_.find(taskId);
         if (iter == taskResults_.end()) {
@@ -180,8 +187,9 @@ public:
         }
 
         result = iter->second;
+        result.status = state_->taskStatus;
         taskResults_.erase(iter);
-        return result.status;
+        return kv::Status::OK();
     }
 
     kv::Status RegisterRegions(const std::vector<kv::MemoryRegion>& regions,
@@ -220,6 +228,7 @@ private:
     kv::Status Submit(std::size_t entryCount, kv::TaskId& taskId)
     {
         if (!initialized_) { return NotInitialized(); }
+        if (!state_->submitStatus.ok()) { return state_->submitStatus; }
 
         taskId = nextTaskId_++;
         kv::TaskResult result;
@@ -318,7 +327,234 @@ void ExpectLoadDumpSmoke(UC::StoreV1& store, const UC::Detail::BlockId& block, v
     ASSERT_TRUE(store.Wait(load.Value()).Success());
 }
 
+class AsuStoreMetricsTest : public testing::Test {
+protected:
+    void SetUp() override
+    {
+        UC::Metrics::SetUp();
+        for (const auto* name :
+             {"asu_lookup_requests_total", "asu_lookup_errors_total",
+              "asu_lookup_query_blocks_total", "asu_lookup_hit_blocks_total",
+              "asu_lookup_prefix_query_blocks_total", "asu_lookup_prefix_hit_blocks_total",
+              "asu_lookup_timeout_fallback_total", "asu_load_requests_total",
+              "asu_load_submit_errors_total", "asu_load_submitted_bytes_total",
+              "asu_dump_requests_total", "asu_dump_submit_errors_total",
+              "asu_dump_submitted_bytes_total", "asu_wait_requests_total", "asu_wait_errors_total",
+              "asu_wait_timeouts_total"}) {
+            UC::Metrics::CreateStats(name, "counter");
+        }
+        for (const auto* name : {"asu_lookup_duration_ms", "asu_load_submit_duration_ms",
+                                 "asu_dump_submit_duration_ms", "asu_wait_duration_ms"}) {
+            UC::Metrics::CreateStats(name, "histogram", {1, 10, 100, 1000, 10000});
+        }
+        state = UseFakeClient(store);
+        config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        RegisterPersistentRanges(config, {
+                                             {buffer.data(), buffer.size()}
+        });
+        ASSERT_TRUE(store.Setup(config).Success());
+        UC::Metrics::GetAllStatsAndClear();
+    }
+
+    void Read()
+    {
+        auto stats = UC::Metrics::GetAllStatsAndClear();
+        counters = std::move(std::get<0>(stats));
+        histograms = std::move(std::get<2>(stats));
+    }
+
+    double Count(const std::string& name) const
+    {
+        const auto it = counters.find(name);
+        return it == counters.end() ? 0 : it->second;
+    }
+
+    std::uint64_t Samples(const std::string& name) const
+    {
+        const auto& buckets = histograms.at(name).bucketCounts;
+        return std::accumulate(buckets.begin(), buckets.end(), std::uint64_t{0});
+    }
+
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    UC::AsuStore::AsuStore store;
+    std::shared_ptr<FakeKvClientState> state;
+    UC::Detail::Dictionary config;
+    std::array<UC::Detail::BlockId, 3> blocks{
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ac"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ad")};
+    std::unordered_map<std::string, double> counters;
+    UC::Metrics::HistogramStatsMap histograms;
+};
+
 }  // namespace
+
+TEST_F(AsuStoreMetricsTest, LookupCountsReturnedHitsAndPrefixSeparately)
+{
+    kv::QueryResult query;
+    query.exists = {1, 0, 1};
+    query.prefixHitKeys = 1;
+    state->queryResult = query;
+    state->queryDelay = std::chrono::milliseconds(6);
+    auto lookup = store.Lookup(blocks.data(), blocks.size());
+    ASSERT_TRUE(lookup.HasValue());
+    EXPECT_EQ(lookup.Value(), query.exists);
+    auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(prefix.HasValue());
+    EXPECT_EQ(prefix.Value(), 0);
+    auto reverse = store.LookupOnReverse(blocks.data(), blocks.size());
+    ASSERT_TRUE(reverse.HasValue());
+    EXPECT_EQ(reverse.Value(), 2);
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 2);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 1);
+    EXPECT_EQ(Count("asu_wait_requests_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 3U);
+    EXPECT_GE(histograms.at("asu_lookup_duration_ms").sum, 15.0);
+}
+
+TEST_F(AsuStoreMetricsTest, EmptyLookupsCountCallsWithoutInventingBlocks)
+{
+    ASSERT_TRUE(store.Lookup(nullptr, 0).HasValue());
+    ASSERT_TRUE(store.LookupOnPrefix(nullptr, 0).HasValue());
+    ASSERT_TRUE(store.LookupOnReverse(nullptr, 0).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 3U);
+}
+
+TEST_F(AsuStoreMetricsTest, QuerySubmissionAndWaitTimeoutsCountReturnedMisses)
+{
+    for (bool timeoutAtSubmission : {true, false}) {
+        state->queryStatus = timeoutAtSubmission
+                                 ? kv::Status::Error(kv::StatusCode::TIMEOUT, "query timeout")
+                                 : kv::Status::OK();
+        state->waitStatus = timeoutAtSubmission
+                                ? kv::Status::OK()
+                                : kv::Status::Error(kv::StatusCode::TIMEOUT, "wait timeout");
+        auto lookup = store.Lookup(blocks.data(), blocks.size());
+        ASSERT_TRUE(lookup.HasValue());
+        EXPECT_EQ(lookup.Value(), (std::vector<std::uint8_t>{0, 0, 0}));
+        auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
+        ASSERT_TRUE(prefix.HasValue());
+        EXPECT_EQ(prefix.Value(), -1);
+        auto reverse = store.LookupOnReverse(blocks.data(), blocks.size());
+        ASSERT_TRUE(reverse.HasValue());
+        EXPECT_EQ(reverse.Value(), -1);
+    }
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_timeout_fallback_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_wait_timeouts_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 6U);
+}
+
+TEST_F(AsuStoreMetricsTest, QueryErrorsAndMalformedResultsDoNotCountNormalMisses)
+{
+    state->queryStatus = kv::Status::Error(kv::StatusCode::NOT_INITIALIZED, "query failed");
+    EXPECT_FALSE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    state->queryStatus = kv::Status::OK();
+    kv::QueryResult malformed;
+    malformed.exists = {1};
+    malformed.prefixHitKeys = 4;
+    state->queryResult = malformed;
+    EXPECT_FALSE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_timeout_fallback_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 6U);
+}
+
+TEST_F(AsuStoreMetricsTest, SubmissionsCountAllErrorsButOnlyAcceptedBytes)
+{
+    auto task = MakeTask(blocks[0], buffer.data());
+    task.push_back(UC::Detail::Shard{blocks[1], 0, {buffer.data()}});
+    ASSERT_TRUE(store.Load(task).HasValue());
+    ASSERT_TRUE(store.Dump(task).HasValue());
+    EXPECT_FALSE(store.Load(MakeTask(blocks[0], nullptr)).HasValue());
+    EXPECT_FALSE(store.Dump(MakeTask(blocks[0], nullptr)).HasValue());
+    state->submitStatus = kv::Status::Error(kv::StatusCode::RESOURCE_BUSY, "queue full");
+    EXPECT_FALSE(store.Load(task).HasValue());
+    EXPECT_FALSE(store.Dump(task).HasValue());
+    Read();
+    for (const auto* operation : {"load", "dump"}) {
+        const auto prefix = std::string("asu_") + operation;
+        EXPECT_EQ(Count(prefix + "_requests_total"), 3);
+        EXPECT_EQ(Count(prefix + "_submit_errors_total"), 2);
+        EXPECT_EQ(Count(prefix + "_submitted_bytes_total"), 2 * kv::kAlignmentBytes);
+        EXPECT_EQ(Samples(prefix + "_submit_duration_ms"), 3U);
+    }
+    EXPECT_EQ(Count("asu_wait_requests_total"), 0);
+}
+
+TEST_F(AsuStoreMetricsTest, WaitCountsCallsTimeoutsAndTaskResultErrors)
+{
+    auto load = store.Load(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(load.HasValue());
+    state->waitStatus = kv::Status::Error(kv::StatusCode::TIMEOUT, "wait timeout");
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::Timeout());
+    state->waitStatus = kv::Status::OK();
+    EXPECT_TRUE(store.Wait(load.Value()).Success());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
+    auto dump = store.Dump(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(dump.HasValue());
+    state->taskStatus = kv::Status::Error(kv::StatusCode::PARTIAL_FAILED, "partial failure");
+    EXPECT_TRUE(store.Wait(dump.Value()).Failure());
+    Read();
+    EXPECT_EQ(Count("asu_wait_requests_total"), 4);
+    EXPECT_EQ(Count("asu_wait_errors_total"), 3);
+    EXPECT_EQ(Count("asu_wait_timeouts_total"), 1);
+    EXPECT_EQ(Samples("asu_wait_duration_ms"), 4U);
+    EXPECT_EQ(Count("asu_load_submit_errors_total"), 0);
+    EXPECT_EQ(Count("asu_dump_submit_errors_total"), 0);
+    EXPECT_EQ(Count("asu_load_submitted_bytes_total"), kv::kAlignmentBytes);
+    EXPECT_EQ(Count("asu_dump_submitted_bytes_total"), kv::kAlignmentBytes);
+}
+
+TEST_F(AsuStoreMetricsTest, DisabledStoreDoesNotEmitNativeSamplesWithActiveCollector)
+{
+    UC::AsuStore::AsuStore disabled;
+    auto disabledState = UseFakeClient(disabled);
+    config.Set("enable_metrics", false);
+    ASSERT_TRUE(disabled.Setup(config).Success());
+    disabledState->queryStatus = kv::Status::Error(kv::StatusCode::TIMEOUT, "query timeout");
+    ASSERT_TRUE(disabled.Lookup(blocks.data(), blocks.size()).HasValue());
+    ASSERT_TRUE(disabled.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    ASSERT_TRUE(disabled.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    auto load = disabled.Load(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(load.HasValue());
+    ASSERT_TRUE(disabled.Wait(load.Value()).Success());
+    EXPECT_FALSE(disabled.Dump(MakeTask(blocks[0], nullptr)).HasValue());
+    Read();
+    for (const auto& [name, value] : counters) { EXPECT_NE(name.find("asu_"), 0U) << name; }
+    for (const auto& [name, value] : histograms) { EXPECT_NE(name.find("asu_"), 0U) << name; }
+    // A different enabled instance still publishes through the same collector.
+    ASSERT_TRUE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 1);
+}
 
 TEST(UCAsuStoreTest, DumpPassesPrerequisiteEventToClient)
 {

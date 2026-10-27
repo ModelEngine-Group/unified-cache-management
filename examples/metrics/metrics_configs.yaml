@@ -18,6 +18,38 @@ consumers:
 
 # Counter metrics configuration
 counter:
+  - name: "asu_lookup_requests_total"
+    documentation: "AsuStore Lookup, prefix lookup and reverse lookup calls"
+  - name: "asu_lookup_errors_total"
+    documentation: "Failed AsuStore lookup calls; excludes timeout fallback to misses"
+  - name: "asu_lookup_query_blocks_total"
+    documentation: "Blocks queried by normally returned Lookup calls, including timeout fallback"
+  - name: "asu_lookup_hit_blocks_total"
+    documentation: "Hit blocks returned by Lookup; timeout fallback contributes zero hits"
+  - name: "asu_lookup_prefix_query_blocks_total"
+    documentation: "Blocks queried by normally returned prefix lookup calls, including timeout fallback"
+  - name: "asu_lookup_prefix_hit_blocks_total"
+    documentation: "Usable prefix blocks returned by prefix lookup; timeout fallback contributes zero hits"
+  - name: "asu_lookup_timeout_fallback_total"
+    documentation: "AsuStore lookup calls returning cache misses after query timeout"
+  - name: "asu_load_requests_total"
+    documentation: "AsuStore Load calls, including validation and submission failures"
+  - name: "asu_load_submit_errors_total"
+    documentation: "Failed AsuStore Load submissions, including buffer validation failures"
+  - name: "asu_load_submitted_bytes_total"
+    documentation: "Payload bytes accepted by AsuStore Load; not successfully completed bytes"
+  - name: "asu_dump_requests_total"
+    documentation: "AsuStore Dump calls, including validation and submission failures"
+  - name: "asu_dump_submit_errors_total"
+    documentation: "Failed AsuStore Dump submissions, including buffer validation failures"
+  - name: "asu_dump_submitted_bytes_total"
+    documentation: "Payload bytes accepted by AsuStore Dump; not successfully completed bytes"
+  - name: "asu_wait_requests_total"
+    documentation: "AsuStore Wait calls; repeated waits are counted separately"
+  - name: "asu_wait_errors_total"
+    documentation: "AsuStore Wait calls returning errors, including timeouts and task failures"
+  - name: "asu_wait_timeouts_total"
+    documentation: "AsuStore Wait calls returning timeout; a subset of wait errors"
   # BEGIN GENERATED KV counter
   - name: "kv_client_query_requests_total"
     documentation: "Total KV client query submissions"
@@ -466,6 +498,18 @@ gauge:
 
 # Histogram metrics configuration
 histogram:
+  - name: "asu_lookup_duration_ms"
+    documentation: "AsuStore lookup call duration including key conversion, query wait and result processing (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+  - name: "asu_load_submit_duration_ms"
+    documentation: "AsuStore Load submission duration including buffer conversion and failed submissions (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+  - name: "asu_dump_submit_duration_ms"
+    documentation: "AsuStore Dump submission duration including buffer conversion and failed submissions (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+  - name: "asu_wait_duration_ms"
+    documentation: "AsuStore Wait call duration including failed and timed-out waits (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
   # BEGIN GENERATED KV histogram
   - name: "kv_client_task_enqueue_duration_seconds"
     documentation: "KV client API-to-enqueue duration"

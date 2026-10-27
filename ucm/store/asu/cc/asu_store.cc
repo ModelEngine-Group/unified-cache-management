@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <any>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -38,6 +39,7 @@
 #include "kv_client.h"
 #include "kv_metrics/ucm_metrics_backend.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
@@ -48,6 +50,22 @@ namespace {
 
 using AsuStatus = kv::Status;
 using AsuStatusCode = kv::StatusCode;
+
+// Observe the Store call, including validation failures before KV submission.
+template <typename Call>
+auto ObserveStoreCall(bool enabled, Metrics::CachedMetric& requests, Metrics::CachedMetric& errors,
+                      Metrics::CachedMetric& duration, Call&& call)
+{
+    if (!enabled) { return call(); }
+    Metrics::UpdateStats(requests, 1.0);
+    const auto start = std::chrono::steady_clock::now();
+    auto result = call();
+    Metrics::UpdateStats(duration, std::chrono::duration<double, std::milli>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count());
+    if (!result) { Metrics::UpdateStats(errors, 1.0); }
+    return result;
+}
 
 struct KVCacheRegistration {
     std::uintptr_t addr{0};
@@ -312,17 +330,55 @@ public:
 
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
-        return QueryBlocks(blocks, num);
+        auto result = ObserveStoreCall(
+            config_.enableMetrics, NAME_TO_METRIC_ID("asu_lookup_requests_total"),
+            NAME_TO_METRIC_ID("asu_lookup_errors_total"),
+            NAME_TO_METRIC_ID("asu_lookup_duration_ms"), [&] { return QueryBlocks(blocks, num); });
+        if (config_.enableMetrics && result) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_lookup_query_blocks_total"),
+                                 static_cast<double>(num));
+            Metrics::UpdateStats(
+                NAME_TO_METRIC_ID("asu_lookup_hit_blocks_total"),
+                static_cast<double>(std::count(result.Value().begin(), result.Value().end(), 1)));
+        }
+        return result;
     }
 
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto result = ObserveStoreCall(
+            config_.enableMetrics, NAME_TO_METRIC_ID("asu_lookup_requests_total"),
+            NAME_TO_METRIC_ID("asu_lookup_errors_total"),
+            NAME_TO_METRIC_ID("asu_lookup_duration_ms"), [&] { return QueryPrefix(blocks, num); });
+        if (config_.enableMetrics && result) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_lookup_prefix_query_blocks_total"),
+                                 static_cast<double>(num));
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_lookup_prefix_hit_blocks_total"),
+                                 static_cast<double>(result.Value() + 1));
+        }
+        return result;
+    }
+
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        return ObserveStoreCall(
+            config_.enableMetrics, NAME_TO_METRIC_ID("asu_lookup_requests_total"),
+            NAME_TO_METRIC_ID("asu_lookup_errors_total"),
+            NAME_TO_METRIC_ID("asu_lookup_duration_ms"), [&] { return QueryReverse(blocks, num); });
+    }
+
+private:
+    Expected<ssize_t> QueryPrefix(const Detail::BlockId* blocks, size_t num)
     {
         if (num == 0) { return static_cast<ssize_t>(-1); }
 
         auto keys = BuildBlockKeys(blocks, num);
         kv::QueryResult queryResult;
         auto status = Query(keys, queryResult);
-        if (status.code == AsuStatusCode::TIMEOUT) { return static_cast<ssize_t>(-1); }
+        if (status.code == AsuStatusCode::TIMEOUT) {
+            RecordLookupTimeout();
+            return static_cast<ssize_t>(-1);
+        }
         if (!status.ok()) {
             LogAsuStatus("prefix query", status);
             return ConvertStatus(status);
@@ -335,14 +391,17 @@ public:
         return static_cast<ssize_t>(queryResult.prefixHitKeys - 1);
     }
 
-    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    Expected<ssize_t> QueryReverse(const Detail::BlockId* blocks, size_t num)
     {
         if (num == 0) { return static_cast<ssize_t>(-1); }
 
         auto keys = BuildBlockKeys(blocks, num);
         kv::QueryResult queryResult;
         auto status = Query(keys, queryResult);
-        if (status.code == AsuStatusCode::TIMEOUT) { return static_cast<ssize_t>(-1); }
+        if (status.code == AsuStatusCode::TIMEOUT) {
+            RecordLookupTimeout();
+            return static_cast<ssize_t>(-1);
+        }
         if (!status.ok()) {
             LogAsuStatus("reverse query", status);
             return ConvertStatus(status);
@@ -357,6 +416,7 @@ public:
         return static_cast<ssize_t>(-1);
     }
 
+public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         (void)blocks;
@@ -408,12 +468,18 @@ private:
 public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), false);
+        return ObserveStoreCall(config_.enableMetrics, NAME_TO_METRIC_ID("asu_load_requests_total"),
+                                NAME_TO_METRIC_ID("asu_load_submit_errors_total"),
+                                NAME_TO_METRIC_ID("asu_load_submit_duration_ms"),
+                                [&] { return Submit(std::move(task), false); });
     }
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), true);
+        return ObserveStoreCall(config_.enableMetrics, NAME_TO_METRIC_ID("asu_dump_requests_total"),
+                                NAME_TO_METRIC_ID("asu_dump_submit_errors_total"),
+                                NAME_TO_METRIC_ID("asu_dump_submit_duration_ms"),
+                                [&] { return Submit(std::move(task), true); });
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
@@ -422,6 +488,26 @@ public:
     }
 
     Status Wait(Detail::TaskHandle taskId) override
+    {
+        if (!config_.enableMetrics) { return WaitForTask(taskId); }
+        Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_wait_requests_total"), 1.0);
+        const auto start = std::chrono::steady_clock::now();
+        auto status = WaitForTask(taskId);
+        Metrics::UpdateStats(
+            NAME_TO_METRIC_ID("asu_wait_duration_ms"),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                .count());
+        if (status.Failure()) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_wait_errors_total"), 1.0);
+            if (status == Status::Timeout()) {
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_wait_timeouts_total"), 1.0);
+            }
+        }
+        return status;
+    }
+
+private:
+    Status WaitForTask(Detail::TaskHandle taskId)
     {
         kv::TaskResult result;
         auto status = client_->Wait(static_cast<kv::TaskId>(taskId), config_.waitTimeoutMs, result);
@@ -432,7 +518,13 @@ public:
         return ConvertStatus(result.status);
     }
 
-private:
+    void RecordLookupTimeout() const
+    {
+        if (config_.enableMetrics) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("asu_lookup_timeout_fallback_total"), 1.0);
+        }
+    }
+
     Expected<Detail::TaskHandle> Submit(Detail::TaskDesc task, bool store)
     {
         auto entries = BuildKvBuffers(task);
@@ -444,6 +536,13 @@ private:
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
             return ConvertStatus(status);
+        }
+        if (config_.enableMetrics) {
+            double bytes = 0;
+            for (const auto& entry : entries.Value()) { bytes += entry.buffer.region.size; }
+            Metrics::UpdateStats(store ? NAME_TO_METRIC_ID("asu_dump_submitted_bytes_total")
+                                       : NAME_TO_METRIC_ID("asu_load_submitted_bytes_total"),
+                                 bytes);
         }
         return static_cast<Detail::TaskHandle>(taskId);
     }
@@ -790,7 +889,10 @@ private:
         auto keys = BuildBlockKeys(blocks, num);
         kv::QueryResult queryResult;
         auto status = Query(keys, queryResult);
-        if (status.code == AsuStatusCode::TIMEOUT) { return result; }
+        if (status.code == AsuStatusCode::TIMEOUT) {
+            RecordLookupTimeout();
+            return result;
+        }
         if (!status.ok()) {
             LogAsuStatus("query blocks", status);
             return ConvertStatus(status);

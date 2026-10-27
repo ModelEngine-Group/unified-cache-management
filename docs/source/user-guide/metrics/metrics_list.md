@@ -2,7 +2,7 @@
 
 ## 1. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 148 Counters, 37 Gauges, and 129 Histograms.
+The tables below use the default `ucm:` prefix. The default configuration contains 164 Counters, 37 Gauges, and 133 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
@@ -223,9 +223,9 @@ The two `kv_transport_node_task_*` histograms retain `node_id` in standalone mod
 
 ASU backend installation is controlled only by the store-level `ucm_connectors[].ucm_connector_config.enable_metrics` switch (default `true`). Direct, HMA, HLA, and HLA LayerWise connectors pass the store configuration through without rewriting this switch. The top-level `enable_metrics`, effective metrics catalog, and consumer settings retain their existing UCM initialization and export behavior; they do not prevent ASU backend installation. Custom catalogs must contain the KV definitions to collect these metrics.
 
-Installing the backend does not initialize the UCM collector or start an exporter. When the collector is not initialized, UCM ignores forwarded updates. If another component has already initialized the process-wide collector and export path, these samples may still be collected and exported. The store installation switch does not provide per-store filtering.
+Installing the backend does not initialize the UCM collector or start an exporter. When the collector is not initialized, UCM ignores forwarded updates. If another component has already initialized the process-wide collector and export path, these samples may still be collected and exported. The store installation switch does not provide per-store filtering for KV metrics.
 
-To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. This setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers only have the store installation switch and must arrange UCM metric registration and draining themselves.
+To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. For KV metrics, this setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers only have the store installation switch and must arrange UCM metric registration and draining themselves.
 
 Metrics installation is best-effort: failure emits a rate-limited UCM ERROR log and Store initialization continues without installing UCM metrics. An existing backend is left unchanged. Installation failures are not cached permanently; a later Store `Setup()` can retry. After all metric writers have stopped and `kv::metrics::Shutdown()` has completed, a later setup can reinstall the retained UCM adapter. Concurrent shutdown and writes, or switching backend types with live cached bindings, remain unsupported. Incompatible cached bindings and failed updates are skipped with rate-limited ERROR logs. Installation and update exceptions are caught by the adapter; logging uses the standard UCM logger without a separate failure fallback.
 
@@ -292,6 +292,44 @@ Commit the source, generated C++ descriptor header, and generated KV blocks in `
 When adding, removing, or changing the type of a KV metric, also update its table row and count summary in both language versions of `metrics-reference.md` and this file. `--check` rejects missing, duplicate, obsolete, or incorrectly grouped KV rows and stale count summaries. The default catalog totals above are checked against all metric lists in `ucm/default_metrics_config.py`, including non-KV metrics. Descriptions and units still require manual review; `--sync-ucm` does not overwrite documentation.
 
 For custom deployment catalogs, synchronize the KV definitions and run `python kv_semantics/metrics/tools/generate_kv_metrics.py --ucm-config /etc/ucm/metrics_configs.yaml` separately (requires PyYAML). Pass the metrics catalog, not the serving configuration. Every KV definition must appear exactly once with matching type, documentation text and buckets; extra custom metrics are allowed. `--ucm-config` cannot be combined with `--check` or `--sync-ucm`. Use unquoted decimal bucket values such as `0.00001`, because YAML 1.1 may parse `1e-5` as a string.
+
+### 1.7 Native AsuStore metrics
+
+These 20 metrics (16 Counters and 4 Histograms) use native UCM `UpdateStats()` at the AsuStore interface, independently of the 37 KV metrics above. The existing store-level `enable_metrics` switch controls this instance's `asu_*` observations; its shared KV backend installation behavior is unchanged. Registration and export still use the outer UCM configuration; custom catalogs must include the desired definitions.
+
+The three lookup methods share call/error counts and duration. Ordinary lookup counts hits in the returned vector; prefix lookup counts the returned usable prefix length. Compute their hit ratios separately. Error returns do not contribute queried or hit blocks; timeout fallbacks contribute queried blocks with zero hits. Reverse lookup reports call results and duration only, without interpreting its returned position as a hit count.
+
+Load/Dump returning a handle means successful submission; payload bytes are the sum of submitted KV buffer sizes after ASU alignment. Wait counts each call separately, and timeout counts are a subset of wait errors. These are not final task counts, successfully completed bytes, or full asynchronous task durations. Durations use milliseconds and include error returns; no resource sampling thread is added.
+
+#### Counters
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:asu_lookup_requests_total` | count | AsuStore Lookup, prefix lookup and reverse lookup calls |
+| `ucm:asu_lookup_errors_total` | count | Failed AsuStore lookup calls; excludes timeout fallback to misses |
+| `ucm:asu_lookup_query_blocks_total` | blocks | Blocks queried by normally returned Lookup calls, including timeout fallback |
+| `ucm:asu_lookup_hit_blocks_total` | blocks | Hit blocks returned by Lookup; timeout fallback contributes zero hits |
+| `ucm:asu_lookup_prefix_query_blocks_total` | blocks | Blocks queried by normally returned prefix lookup calls, including timeout fallback |
+| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | Usable prefix blocks returned by prefix lookup; timeout fallback contributes zero hits |
+| `ucm:asu_lookup_timeout_fallback_total` | count | AsuStore lookup calls returning cache misses after query timeout |
+| `ucm:asu_load_requests_total` | count | AsuStore Load calls, including validation and submission failures |
+| `ucm:asu_load_submit_errors_total` | count | Failed AsuStore Load submissions, including buffer validation failures |
+| `ucm:asu_load_submitted_bytes_total` | bytes | Payload bytes accepted by AsuStore Load; not successfully completed bytes |
+| `ucm:asu_dump_requests_total` | count | AsuStore Dump calls, including validation and submission failures |
+| `ucm:asu_dump_submit_errors_total` | count | Failed AsuStore Dump submissions, including buffer validation failures |
+| `ucm:asu_dump_submitted_bytes_total` | bytes | Payload bytes accepted by AsuStore Dump; not successfully completed bytes |
+| `ucm:asu_wait_requests_total` | count | AsuStore Wait calls; repeated waits are counted separately |
+| `ucm:asu_wait_errors_total` | count | AsuStore Wait calls returning errors, including timeouts and task failures |
+| `ucm:asu_wait_timeouts_total` | count | AsuStore Wait calls returning timeout; a subset of wait errors |
+
+#### Histograms
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:asu_lookup_duration_ms` | ms | AsuStore lookup call duration including key conversion, query wait and result processing (ms) |
+| `ucm:asu_load_submit_duration_ms` | ms | AsuStore Load submission duration including buffer conversion and failed submissions (ms) |
+| `ucm:asu_dump_submit_duration_ms` | ms | AsuStore Dump submission duration including buffer conversion and failed submissions (ms) |
+| `ucm:asu_wait_duration_ms` | ms | AsuStore Wait call duration including failed and timed-out waits (ms) |
 
 ## 2. Raw Metrics Usage
 

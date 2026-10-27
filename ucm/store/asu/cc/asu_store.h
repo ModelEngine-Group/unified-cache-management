@@ -11,8 +11,8 @@
 namespace UC::AsuStore {
 
 struct Config {
-    // Configuration key: enable_metrics. Controls installation only;
-    // does not filter this store's samples or disable a process-wide backend.
+    // Controls this store's native ASU metrics and KV backend installation.
+    // Does not filter KV samples or disable a process-wide KV backend.
     bool enableMetrics{true};
     std::string mode{"client"};
     std::string configPath;
