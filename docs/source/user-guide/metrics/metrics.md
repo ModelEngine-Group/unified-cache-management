@@ -211,8 +211,11 @@ UCM provides these dashboards:
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, cache state, Store health, and probe trends |
 | `examples/metrics/grafana_connector.json` | Connector aggregate bandwidth, common interface duration, and Layerwise load duration |
 | `examples/metrics/grafana_store.json` | Cache, Mooncake, and Posix Store performance metrics grouped by Store |
+| `examples/metrics/grafana_ucm_kv_client.json` | UCM KVClient request/key rates, stage latency, and errors, with aggregate and per-Worker views |
 
-The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
+The vLLM, Connector, and Store dashboards default the `job` selector to **All**.
+For the UCM KVClient dashboard, select a single scrape job.
+UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
 In the Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.
 
 Use these aggregation rules:

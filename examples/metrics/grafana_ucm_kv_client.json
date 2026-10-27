@@ -1,0 +1,1646 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "KVClient performance exported by the UCM vLLM connector (default ucm: prefix): request/key throughput, client and transport latency, and errors. Select the intended vLLM scrape job. View switches between model-level aggregation and Engine/Worker series. Node-task histograms pool all node samples within each Worker; individual nodes cannot be selected. Durations are in seconds. Model and Worker selectors use the same UCM metric discovery as the Connector dashboard; selecting a model does not imply that KVClient metrics are available.",
+  "editable": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": [],
+      "title": "① Throughput Overview",
+      "type": "row",
+      "id": 1
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total KV client asynchronous API submission rate. With Worker set to All, aggregation includes scheduler submissions when scheduler KV series are present, as well as the selected worker submissions. These are KV operation submissions, not unique inference requests.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (label_replace(rate(ucm:kv_client_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"store\", \"\", \"\") or label_replace(rate(ucm:kv_client_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"load\", \"\", \"\") or label_replace(rate(ucm:kv_client_batch_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"batch_store\", \"\", \"\") or label_replace(rate(ucm:kv_client_batch_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"batch_load\", \"\", \"\") or label_replace(rate(ucm:kv_client_query_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"query\", \"\", \"\") or label_replace(rate(ucm:kv_client_delete_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"delete\", \"\", \"\"))",
+          "refId": "A",
+          "legendFormat": "Total Request Rate {{model_name}} {{engine}} {{worker_rank}}"
+        }
+      ],
+      "title": "Total Request Rate",
+      "type": "stat",
+      "id": 2
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Submitted entries/keys per second across KV client operations; not byte bandwidth or successful completions.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
+          "decimals": 1,
+          "unit": "suffix:keys/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (label_replace(rate(ucm:kv_client_store_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"store\", \"\", \"\") or label_replace(rate(ucm:kv_client_load_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"load\", \"\", \"\") or label_replace(rate(ucm:kv_client_batch_store_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"batch_store\", \"\", \"\") or label_replace(rate(ucm:kv_client_batch_load_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"batch_load\", \"\", \"\") or label_replace(rate(ucm:kv_client_query_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"query\", \"\", \"\") or label_replace(rate(ucm:kv_client_delete_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]), \"operation\", \"delete\", \"\", \"\"))",
+          "refId": "A",
+          "legendFormat": "Entry / Key Throughput {{model_name}} {{engine}} {{worker_rank}}"
+        }
+      ],
+      "title": "Entry / Key Throughput",
+      "type": "stat",
+      "id": 3
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P99 from Async API entry until every child completes and the client aggregates the result. Default KV histograms have a highest finite bucket of 1.0 s. If P99 falls in the +Inf bucket, the reported P99 is 1.0 s; longer tail latencies cannot be resolved. Custom bucket configurations may have a different upper bound.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "purple",
+            "mode": "fixed"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_e2e_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "Client Task End-to-End P99 {{model_name}} {{engine}} {{worker_rank}}"
+        }
+      ],
+      "title": "Client Task End-to-End P99",
+      "type": "stat",
+      "id": 4
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "KV client asynchronous API submissions per second, split by operation. These are submission rates, not completed-task rates.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "store {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "load {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "batch-store {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "batch-load {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_query_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "query {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_delete_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "delete {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "F"
+        }
+      ],
+      "title": "Request Rate by Operation",
+      "type": "timeseries",
+      "id": 5
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:keys/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_store_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "store entries {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_load_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "load entries {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_store_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "batch-store entries {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_load_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "batch-load entries {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_query_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "query keys {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_delete_entries_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval]))",
+          "legendFormat": "delete keys {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "F"
+        }
+      ],
+      "title": "Entry / Key Throughput by Operation",
+      "type": "timeseries",
+      "description": "Submitted entries/keys per second across KV client operations; not byte bandwidth or successful completions.",
+      "id": 6
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "panels": [],
+      "title": "② Request Latency Breakdown",
+      "type": "row",
+      "id": 7
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Seven transport-path stages: client enqueue/queue/process, transport queue/process/Send, then completion. Stages can overlap and use different sample populations; do not add their averages or percentiles to estimate end-to-end latency. No value is shown when the rate window has no observations.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^1 client enqueue(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^2 client queue wait(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^3 dispatch(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^4 trans queue wait(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^5 trans process(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^6 trans send(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^7 trans complete(?:\\s|$)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "cyan",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "width": 460
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_task_enqueue_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_client_task_enqueue_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "1 client enqueue {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_task_queue_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_client_task_queue_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "2 client queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_task_process_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_client_task_process_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "3 dispatch {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_queue_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_queue_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "4 trans queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_process_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_process_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "5 trans process {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_send_call_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_send_call_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "6 trans send {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "G"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_completion_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_completion_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "7 trans complete {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "H"
+        }
+      ],
+      "title": "Request Latency Breakdown - Average",
+      "type": "timeseries",
+      "id": 8
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P50 of the seven client/transport stages through transport completion. Stages can overlap and use different sample populations; do not add their averages or percentiles to estimate end-to-end latency.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_enqueue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "1 client enqueue {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_queue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "2 client queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_process_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "3 dispatch {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_queue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "4 trans queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_process_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "5 trans process {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_send_call_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "6 trans send {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "G"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_completion_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "7 trans complete {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "H"
+        }
+      ],
+      "title": "Request Latency Breakdown - P50",
+      "type": "timeseries",
+      "id": 9
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P99 of the seven client/transport stages through transport completion. Stages can overlap and use different sample populations; do not add their averages or percentiles to estimate end-to-end latency. Default KV histograms have a highest finite bucket of 1.0 s. If P99 falls in the +Inf bucket, the reported P99 is 1.0 s; longer tail latencies cannot be resolved. Custom bucket configurations may have a different upper bound.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_enqueue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "1 client enqueue {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_queue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "2 client queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_process_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "3 dispatch {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_queue_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "4 trans queue wait {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_process_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "5 trans process {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_send_call_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "6 trans send {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "G"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_completion_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "7 trans complete {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "H"
+        }
+      ],
+      "title": "Request Latency Breakdown - P99",
+      "type": "timeseries",
+      "id": 10
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Mean transport Send latency (submit → Send returned). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view. No value is shown when the rate window has no observations.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 0,
+            "y": 26
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_node_task_send_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_node_task_send_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+              "legendFormat": "Send {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Send - Average",
+          "type": "timeseries",
+          "id": 12
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "P50 transport Send latency (submit → Send returned). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 8,
+            "y": 26
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_node_task_send_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+              "legendFormat": "Send {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Send - P50",
+          "type": "timeseries",
+          "id": 13
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "P99 transport Send latency (submit → Send returned). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view. Default KV histograms have a highest finite bucket of 1.0 s. If P99 falls in the +Inf bucket, the reported P99 is 1.0 s; longer tail latencies cannot be resolved. Custom bucket configurations may have a different upper bound.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 16,
+            "y": 26
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_node_task_send_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+              "legendFormat": "Send {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Send - P99",
+          "type": "timeseries",
+          "id": 14
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Mean transport completion latency (Send returned → completed). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view. No value is shown when the rate window has no observations.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 0,
+            "y": 36
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_node_task_completion_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_node_task_completion_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+              "legendFormat": "Completion {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Completion - Average",
+          "type": "timeseries",
+          "id": 15
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "P50 transport completion latency (Send returned → completed). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 8,
+            "y": 36
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_node_task_completion_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+              "legendFormat": "Completion {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Completion - P50",
+          "type": "timeseries",
+          "id": 16
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "P99 transport completion latency (Send returned → completed). All node-task samples are pooled within each Worker; View selects model-level or Engine/Worker aggregation. This is not a per-node view. Default KV histograms have a highest finite bucket of 1.0 s. If P99 falls in the +Inf bucket, the reported P99 is 1.0 s; longer tail latencies cannot be resolved. Custom bucket configurations may have a different upper bound.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 6,
+                "gradientMode": "opacity",
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 16,
+            "y": 36
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "min",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_node_task_completion_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+              "legendFormat": "Completion {{model_name}} {{engine}} {{worker_rank}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Node-task Completion - P99",
+          "type": "timeseries",
+          "id": 17
+        }
+      ],
+      "title": "③ Transport Node-task Latency — Pooled Samples",
+      "type": "row",
+      "id": 11
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "panels": [],
+      "title": "④ End-to-End",
+      "type": "row",
+      "id": 18
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Mean end-to-end task latency. ClientTask is API to client completion; TransportTask is submit to transport completion. No value is shown when the rate window has no observations.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 6,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 27
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_e2e_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_transport_task_e2e_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "TransportTask: submit → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_task_e2e_duration_seconds_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:kv_client_task_e2e_duration_seconds_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) > 0)",
+          "legendFormat": "ClientTask: API → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        }
+      ],
+      "title": "End-to-End - Average",
+      "type": "timeseries",
+      "id": 19
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P50 end-to-end task latency.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 6,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 27
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_e2e_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "TransportTask: submit → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_e2e_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "ClientTask: API → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        }
+      ],
+      "title": "End-to-End - P50",
+      "type": "timeseries",
+      "id": 20
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "P99 end-to-end task latency. Default KV histograms have a highest finite bucket of 1.0 s. If P99 falls in the +Inf bucket, the reported P99 is 1.0 s; longer tail latencies cannot be resolved. Custom bucket configurations may have a different upper bound.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 6,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 27
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_transport_task_e2e_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "TransportTask: submit → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:kv_client_task_e2e_duration_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])))",
+          "legendFormat": "ClientTask: API → completed {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        }
+      ],
+      "title": "End-to-End - P99",
+      "type": "timeseries",
+      "id": 21
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "panels": [],
+      "title": "⑤ Error Rates",
+      "type": "row",
+      "id": 22
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Final task error ratio observed by KV client Wait(). The denominator is clamped to 1e-12 to avoid division by zero. Existing series with zero errors and zero requests in the window display zero; this does not mean requests were observed. Missing series remain absent.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.001
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 38
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_wait_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_wait_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "refId": "A",
+          "legendFormat": "Final Error Rate {{model_name}} {{engine}} {{worker_rank}}"
+        }
+      ],
+      "title": "Final Error Rate",
+      "type": "stat",
+      "id": 23
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Event counts over the dashboard time range. These are transport-side error occurrences, not error ratios. Display thresholds are yellow at >=1 and red at >=10 events per series over the selected time range, not alert rules. Prometheus increase() extrapolates counts and can return fractional values; colors use the unrounded value.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 16,
+        "x": 8,
+        "y": 38
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "titleSize": 16,
+          "valueSize": 28
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (increase(ucm:kv_transport_task_completion_timeouts_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__range]))",
+          "legendFormat": "completion deadline timeout {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (increase(ucm:kv_transport_task_io_timeouts_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__range]))",
+          "legendFormat": "CQE IO timeout {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (increase(ucm:kv_transport_task_connection_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__range]))",
+          "legendFormat": "connection error {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "title": "Transport Error Events",
+      "type": "stat",
+      "id": 24
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "min",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_store_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "store submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_load_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "load submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_store_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_store_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "batch-store submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_load_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_batch_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "batch-load submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_query_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_query_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "query submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_delete_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_delete_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "delete submit {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "F"
+        },
+        {
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:kv_client_wait_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])) / clamp_min(sum by (${perWorker:raw}) (rate(ucm:kv_client_wait_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\", worker_rank!=\"\"}[$__rate_interval])), 1e-12)",
+          "legendFormat": "wait/final result {{model_name}} {{engine}} {{worker_rank}}",
+          "refId": "G"
+        }
+      ],
+      "title": "Error Rate by Stage",
+      "type": "timeseries",
+      "id": 25,
+      "description": "Error ratios by operation: Store/Load/BatchStore/BatchLoad/Query/Delete report submission errors divided by submission requests; Wait reports final-result errors divided by Wait requests. Ratios use aggregated counter rates across the selected workers. These are separate operation ratios; do not add them to obtain an overall error rate. The denominator is clamped to 1e-12 to avoid division by zero. Existing series with zero errors and zero requests in the window display zero; this does not mean requests were observed. Missing series remain absent."
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "ucm-vllm-connector-metrics",
+    "kv-client"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\"}, job)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "job",
+        "multi": false,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\"}, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query",
+        "description": "Select one scrape job. Targets with identical model, engine and worker labels within that job are aggregated."
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\"}, model_name)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "model_name",
+        "multi": false,
+        "name": "model_name",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\"}, model_name)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "Aggregated",
+          "value": "model_name"
+        },
+        "hide": 0,
+        "label": "View",
+        "multi": false,
+        "name": "perWorker",
+        "options": [
+          {
+            "selected": true,
+            "text": "Aggregated",
+            "value": "model_name"
+          },
+          {
+            "selected": false,
+            "text": "Per Worker",
+            "value": "model_name, engine, worker_rank"
+          }
+        ],
+        "query": "Aggregated : model_name,Per Worker : model_name\\, engine\\, worker_rank",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom",
+        "description": "Aggregated combines the selected Engine/Worker series by model; Per Worker separates model, engine and worker_rank. Both views honor the filters. Worker All includes scheduler when it emits KV metrics."
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, engine)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "engine",
+        "multi": true,
+        "name": "engine",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\"}, engine)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, worker_rank)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "worker_rank",
+        "multi": true,
+        "name": "worker_rank",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", engine=~\"$engine\"}, worker_rank)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "ucm-kv-client Metrics",
+  "uid": "ucm-kv-client-metrics",
+  "version": 1,
+  "id": null,
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "Other UCM vLLM metrics dashboards",
+      "tags": [
+        "ucm-vllm-connector-metrics"
+      ],
+      "asDropdown": true,
+      "includeVars": true,
+      "keepTime": true,
+      "icon": "external link",
+      "targetBlank": false
+    }
+  ],
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "liveNow": false,
+  "weekStart": ""
+}

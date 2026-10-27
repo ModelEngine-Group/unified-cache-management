@@ -266,6 +266,7 @@ GRAFANA_VLLM_UCM_TAG = "ucm-vllm-connector-metrics"
 GRAFANA_UCM_DASHBOARDS = [
     "grafana_connector.json",
     "grafana_store.json",
+    "grafana_ucm_kv_client.json",
 ]
 CONNECTOR_INTERFACE_METHODS = {
     "get_block_size",
@@ -2052,6 +2053,315 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
         )
 
 
+def _walk_dashboard_panels(panels):
+    for panel in panels:
+        yield panel
+        yield from _walk_dashboard_panels(panel.get("panels", []))
+
+
+def test_ucm_kv_dashboard_matches_exported_series_and_node_aggregation():
+    metrics_dir = REPO_ROOT / "examples" / "metrics"
+    dashboard = json.loads(
+        (metrics_dir / "grafana_ucm_kv_client.json").read_text(encoding="utf-8")
+    )
+    standalone = json.loads(
+        (metrics_dir / "grafana_kv_client.json").read_text(encoding="utf-8")
+    )
+    assert dashboard["uid"] != standalone["uid"]
+    assert len(
+        {panel["id"] for panel in _walk_dashboard_panels(dashboard["panels"])}
+    ) == len(list(_walk_dashboard_panels(dashboard["panels"])))
+    connector = json.loads(
+        (metrics_dir / "grafana_connector.json").read_text(encoding="utf-8")
+    )
+    # Discover models before KVClient series exist, just as the Connector does.
+    variables = {item["name"]: item for item in dashboard["templating"]["list"]}
+    connector_variables = {
+        item["name"]: item for item in connector["templating"]["list"]
+    }
+    assert variables.keys() == connector_variables.keys()
+    for name, variable in variables.items():
+        assert variable["query"] == connector_variables[name]["query"]
+    # Keep discovery compatible while selecting one deployment and allowing
+    # comparisons between a subset of Engines/Workers.
+    assert not variables["job"]["includeAll"]
+    assert not variables["job"]["multi"]
+    assert "allValue" not in variables["job"]
+    assert variables["job"]["current"]["value"] == ""
+    for name in ("engine", "worker_rank"):
+        assert variables[name]["multi"]
+        assert variables[name]["current"]["value"] == ["$__all"]
+    assert dashboard["refresh"] == "30s"
+    for name in ("job", "model_name", "engine", "worker_rank"):
+        assert variables[name]["refresh"] == 2
+
+    node_metrics = set()
+    for panel in _walk_dashboard_panels(dashboard["panels"]):
+        if panel.get("targets"):
+            assert panel.get("description")
+        for target in panel.get("targets", []):
+            expr = target["expr"]
+            assert not re.search(r"(?<![\w:])kv:", expr)
+            assert not re.search(r"\b(node_id|source|worker_id)\b", expr)
+            assert 'job=~"$job"' in expr
+            # All must not also select the multiproc consumer's unlabeled series.
+            assert 'worker_rank!=""' in expr
+            assert "${perWorker:raw}" in expr
+            if "_duration_seconds" in expr:
+                assert panel["fieldConfig"]["defaults"]["unit"] == "s"
+            if "histogram_quantile(" in expr:
+                assert "sum by (le, ${perWorker:raw})" in expr
+            if "kv_transport_node_task_" in expr:
+                assert "pooled" in panel["description"]
+                node_metrics.update(
+                    re.findall(r"kv_transport_node_task_\w+_duration_seconds", expr)
+                )
+    assert node_metrics == {
+        "kv_transport_node_task_send_duration_seconds",
+        "kv_transport_node_task_completion_duration_seconds",
+    }
+
+
+def test_ucm_kv_dashboard_stage_labels_and_colors_match_rendered_legends():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples/metrics/grafana_ucm_kv_client.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    stages = [
+        panel
+        for panel in _walk_dashboard_panels(dashboard["panels"])
+        if panel["title"].startswith("Request Latency Breakdown - ")
+    ]
+    assert len(stages) == 3
+    average = next(panel for panel in stages if panel["title"].endswith("Average"))
+    assert "transport queue/process/Send" in average["description"]
+    for panel in stages:
+        process = next(
+            target
+            for target in panel["targets"]
+            if "kv_transport_task_process_duration_seconds" in target["expr"]
+        )
+        assert process["legendFormat"].startswith("5 trans process ")
+        assert all(
+            "kv_transport_task_pre_send_duration_seconds" not in target["expr"]
+            for target in panel["targets"]
+        )
+
+    overrides = average["fieldConfig"]["overrides"]
+    assert len(overrides) == len(average["targets"]) == 7
+    for index, target in enumerate(average["targets"]):
+        for engine, worker in (("", ""), ("engine-0", "0"), ("engine-1", "scheduler")):
+            legend = (
+                target["legendFormat"]
+                .replace("{{model_name}}", "Qwen3")
+                .replace("{{engine}}", engine)
+                .replace("{{worker_rank}}", worker)
+            )
+            matches = []
+            for rule_index, override in enumerate(overrides):
+                matcher = override["matcher"]
+                assert matcher["id"] == "byRegexp"
+                if re.search(matcher["options"], legend):
+                    matches.append(rule_index)
+            # Each rendered legend must receive only its own stage's color.
+            assert matches == [index]
+
+
+def test_ucm_kv_dashboard_collapsed_layout_and_field_configuration():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples/metrics/grafana_ucm_kv_client.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panels = list(_walk_dashboard_panels(dashboard["panels"]))
+    node_row = next(
+        p for p in panels if p["type"] == "row" and "Node-task" in p["title"]
+    )
+    assert node_row["collapsed"] is True
+    assert len(node_row["panels"]) == 6
+    assert all("Node-task" in p["title"] for p in node_row["panels"])
+    assert not any(p in dashboard["panels"] for p in node_row["panels"])
+    # A collapsed row must not leave its former expanded height as blank space.
+    row_index = dashboard["panels"].index(node_row)
+    assert dashboard["panels"][row_index + 1]["gridPos"]["y"] == (
+        node_row["gridPos"]["y"] + node_row["gridPos"]["h"]
+    )
+    for siblings in (dashboard["panels"], node_row["panels"]):
+        for index, panel in enumerate(siblings):
+            a = panel["gridPos"]
+            for other in siblings[index + 1 :]:
+                b = other["gridPos"]
+                assert (
+                    a["x"] + a["w"] <= b["x"]
+                    or b["x"] + b["w"] <= a["x"]
+                    or a["y"] + a["h"] <= b["y"]
+                    or b["y"] + b["h"] <= a["y"]
+                ), (panel["title"], other["title"])
+    data_panels = [p for p in panels if p.get("targets")]
+    assert len(data_panels) == 20
+    for panel in data_panels:
+        assert panel["datasource"]["type"] == "prometheus"
+        assert panel["datasource"]["uid"] == "${DS_PROMETHEUS}"
+        defaults = panel["fieldConfig"]["defaults"]
+        assert defaults["unit"]
+        if defaults["unit"] == "s":
+            assert defaults.get("decimals") is None
+        for override in panel["fieldConfig"]["overrides"]:
+            matcher = override["matcher"]
+            assert matcher["id"] in {"byName", "byRegexp"}
+            for engine, worker in (
+                ("", ""),
+                ("engine-0", "0"),
+                ("engine-1", "scheduler"),
+            ):
+                legends = [
+                    target["legendFormat"]
+                    .replace("{{model_name}}", "Qwen3")
+                    .replace("{{engine}}", engine)
+                    .replace("{{worker_rank}}", worker)
+                    for target in panel["targets"]
+                ]
+                assert any(
+                    (
+                        legend == matcher["options"]
+                        if matcher["id"] == "byName"
+                        else re.search(matcher["options"], legend)
+                    )
+                    for legend in legends
+                ), (panel["title"], matcher)
+
+
+def test_ucm_kv_dashboard_explains_quantiles_aggregation_and_idle_ratios():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples/metrics/grafana_ucm_kv_client.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panels = list(_walk_dashboard_panels(dashboard["panels"]))
+    p99_panels = [
+        p
+        for p in panels
+        if any("histogram_quantile(0.99," in t["expr"] for t in p.get("targets", []))
+    ]
+    assert len(p99_panels) == 5
+    for panel in p99_panels:
+        assert "highest finite bucket of 1.0 s" in panel["description"]
+        assert "+Inf" in panel["description"]
+        assert "Custom bucket configurations" in panel["description"]
+    total = next(p for p in panels if p["title"] == "Total Request Rate")
+    assert "scheduler submissions" in total["description"]
+    view = next(v for v in dashboard["templating"]["list"] if v["name"] == "perWorker")
+    assert "scheduler" in view["description"]
+    assert "filters" in view["description"]
+    for panel in panels:
+        if any("1e-12" in t["expr"] for t in panel.get("targets", [])):
+            assert "avoid division by zero" in panel["description"]
+            assert "does not mean requests were observed" in panel["description"]
+
+
+def test_ucm_kv_dashboard_averages_require_observations():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples/metrics/grafana_ucm_kv_client.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    averages = [
+        target["expr"]
+        for panel in _walk_dashboard_panels(dashboard["panels"])
+        for target in panel.get("targets", [])
+        if "_duration_seconds_sum" in target["expr"]
+    ]
+    assert len(averages) == 11
+    for expr in averages:
+        numerator, denominator = expr.split(" / ", 1)
+        # Filter on sample count, not on the sum: zero-duration samples are
+        # valid, but idle windows must not turn into an artificial zero latency.
+        expected_count = numerator.replace(
+            "_duration_seconds_sum", "_duration_seconds_count"
+        )
+        assert denominator == f"({expected_count} > 0)"
+
+
+def test_ucm_kv_dashboard_error_events_use_selected_range_once():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples/metrics/grafana_ucm_kv_client.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panel = next(
+        panel
+        for panel in _walk_dashboard_panels(dashboard["panels"])
+        if panel["title"] == "Transport Error Events"
+    )
+    assert panel["options"]["graphMode"] == "none"
+    assert panel["options"]["colorMode"] == "background"
+    defaults = panel["fieldConfig"]["defaults"]
+    assert defaults["color"]["mode"] == "thresholds"
+    thresholds = defaults["thresholds"]
+    assert thresholds["mode"] == "absolute"
+    for value, expected in (
+        (0, "green"),
+        (0.5, "green"),
+        (1, "yellow"),
+        (9.9, "yellow"),
+        (10, "red"),
+        (1000, "red"),
+    ):
+        color = next(
+            step["color"]
+            for step in reversed(thresholds["steps"])
+            if step["value"] is None or value >= step["value"]
+        )
+        assert color == expected
+    assert "unrounded value" in panel["description"]
+    assert len(panel["targets"]) == 3
+    for target in panel["targets"]:
+        assert target["instant"] is True
+        assert target["range"] is False
+        assert "increase(" in target["expr"]
+        assert "[$__range]" in target["expr"]
+
+
+def test_ucm_kv_dashboard_totals_select_only_submission_operations():
+    metrics_dir = REPO_ROOT / "examples" / "metrics"
+    dashboard = json.loads(
+        (metrics_dir / "grafana_ucm_kv_client.json").read_text(encoding="utf-8")
+    )
+    panels = {
+        panel["title"]: panel for panel in _walk_dashboard_panels(dashboard["panels"])
+    }
+    for title, suffix in [
+        ("Total Request Rate", "requests_total"),
+        ("Entry / Key Throughput", "entries_total"),
+    ]:
+        expr = panels[title]["targets"][0]["expr"]
+        # Union individually labeled rates, so missing operations do not erase
+        # active ones and rate's removal of metric names cannot merge operations.
+        assert expr.startswith("sum by (${perWorker:raw}) (")
+        parts = expr.removeprefix("sum by (${perWorker:raw}) (")[:-1].split(" or ")
+        assert len(parts) == 6
+        operations = set()
+        for part in parts:
+            match = re.fullmatch(
+                r"label_replace\(rate\(ucm:kv_client_(\w+)_"
+                + suffix
+                + r'\{[^}]+\}\[\$__rate_interval\]\), "operation", "(\w+)", "", ""\)',
+                part,
+            )
+            assert match is not None
+            assert match[1] == match[2]
+            operations.add(match[1])
+        assert operations == {
+            "store",
+            "load",
+            "batch_store",
+            "batch_load",
+            "query",
+            "delete",
+        }
+
+
 def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
@@ -2258,6 +2568,10 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM (UCM Metrics)",
             "ucm-vllm-overview",
         ),
+        "grafana_ucm_kv_client.json": (
+            "ucm-kv-client Metrics",
+            "ucm-kv-client-metrics",
+        ),
     }
     old_uids = {
         "ucm-connector-overview",
@@ -2404,13 +2718,13 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
 
         exprs = [
             target["expr"]
-            for panel in dashboard["panels"]
+            for panel in _walk_dashboard_panels(dashboard["panels"])
             for target in panel.get("targets", [])
             if "expr" in target
         ]
         legends = [
             target["legendFormat"]
-            for panel in dashboard["panels"]
+            for panel in _walk_dashboard_panels(dashboard["panels"])
             for target in panel.get("targets", [])
             if "legendFormat" in target and "ucm:" in target.get("expr", "")
         ]

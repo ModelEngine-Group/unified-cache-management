@@ -159,6 +159,7 @@ UCM provides these dashboards:
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, and cache state |
 | `examples/metrics/grafana_store.json` | Store lookup, load, dump, bandwidth, and cache activity |
 | `examples/metrics/grafana_connector.json` | Connector Lookup/Load/Save request counts, block counts, durations, throughput, and errors |
+| `examples/metrics/grafana_ucm_kv_client.json` | UCM KVClient request/key rates, stage latency, and errors, with aggregate and per-Worker views |
 
 ## Inspect metrics from a terminal
 

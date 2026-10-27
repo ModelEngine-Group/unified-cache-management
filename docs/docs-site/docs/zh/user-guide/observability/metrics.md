@@ -147,6 +147,7 @@ UCM 提供这些仪表板：
 | `examples/metrics/grafana_vllm.json` | vLLM 请求延迟、令牌吞吐量、调度器状态和缓存状态 |
 | `examples/metrics/grafana_store.json` | Store 查找、加载、写出、带宽和缓存活动 |
 | `examples/metrics/grafana_connector.json` | Connector 查找/加载/保存请求计数、块计数、持续时间、吞吐量和错误 |
+| `examples/metrics/grafana_ucm_kv_client.json` | UCM KVClient 请求/Key 速率、各阶段耗时和错误，支持整体及 Worker 视图 |
 
 ## 用终端查看指标
 
