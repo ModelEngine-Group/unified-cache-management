@@ -109,7 +109,7 @@ jobs:
           name: ucm-toolkit-run-${{ github.run_id }}
           path: input/toolkit
       - uses: jlumbroso/free-disk-space@v1.3.1
-        timeout-minutes: 5
+        timeout-minutes: 30
         with:
           tool-cache: true
           android: true
