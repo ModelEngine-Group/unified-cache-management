@@ -125,6 +125,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
             };
             backendTask.brief = "Backend2Cache";
+            backendTask.memoryType = Detail::TaskDesc::MemoryType::DDR;
             auto res = backend_->Load(std::move(backendTask));
             if (!res) [[unlikely]] {
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
