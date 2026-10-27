@@ -24,6 +24,7 @@ from ucm_toolkit.tools.precheck.bandwidth import (
 from ucm_toolkit.tools.precheck.checks import (
     check_accelerator_driver,
     check_aio_resources,
+    check_ascend_cann_version,
     check_kernel_version,
     check_uc_manager_version,
 )
@@ -31,7 +32,7 @@ from ucm_toolkit.tools.precheck.config import PrecheckConfig
 from ucm_toolkit.tools.precheck.parseutil import (
     compare_versions,
     normalize_vllm_ascend_version,
-    parse_ascend_driver_version_info,
+    parse_ascend_install_info,
     parse_int_list,
     parse_npu_smi_versions,
     parse_size,
@@ -143,16 +144,25 @@ class TestNpuSmi(unittest.TestCase):
         self.assertEqual(parsed["hdk"], "25.6.rc1.b999")
         self.assertEqual(parsed["source"], "version")
 
-    def test_driver_version_info(self):
+    def test_npu_smi_version_flag_output(self):
+        sample = "npu-smi version: 25.6.rc1.b999\n"
+        parsed = parse_npu_smi_versions(sample)
+        self.assertEqual(parsed["version"], "25.6.rc1.b999")
+        self.assertEqual(parsed["tool"], "25.6.rc1.b999")
+        self.assertEqual(parsed["hdk"], "25.6.rc1.b999")
+
+    def test_ascend_install_info(self):
         sample = (
-            "Version=25.6.rc1.b999\n"
-            "ascendhal_version=7.35.23\n"
-            "package_version=25.6.rc1.b999\n"
+            "package_name=Ascend-cann-toolkit\n"
+            "version=9.2.0\n"
+            "innerversion=V100R001C25B114\n"
+            "arch=aarch64\n"
         )
-        parsed = parse_ascend_driver_version_info(sample)
-        self.assertEqual(parsed["Version"], "25.6.rc1.b999")
-        self.assertEqual(parsed["ascendhal_version"], "7.35.23")
-        self.assertEqual(parsed["package_version"], "25.6.rc1.b999")
+        parsed = parse_ascend_install_info(sample)
+        self.assertEqual(parsed["package_name"], "Ascend-cann-toolkit")
+        self.assertEqual(parsed["version"], "9.2.0")
+        self.assertEqual(parsed["innerversion"], "V100R001C25B114")
+        self.assertEqual(parsed["arch"], "aarch64")
 
 
 class TestUcManagerVersion(unittest.TestCase):
@@ -361,35 +371,30 @@ class TestAcceleratorDriver(unittest.TestCase):
         cfg.ascend_min_hdk = hdk
         return cfg
 
-    def test_ascend_banner_version_pass(self):
-        # Real openEuler 25.5.2 banner (no per-card HDK/Driver label).
-        real_out = (
-            "+------------------------------------------------------+\n"
-            "| npu-smi 25.5.2                   Version: 25.5.2       |\n"
-            "+----------------------------+---------------+----------+\n"
-        )
+    def test_ascend_npu_smi_version_flag_pass(self):
+        # ``npu-smi -v`` is available across the firmware versions observed
+        # in the field and avoids parsing card-table layout differences.
+        real_out = "npu-smi version: 25.6.rc1.b999\n"
         with (
             patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
             patch.object(checks_mod, "_run", return_value=(0, real_out, "")),
-            patch.object(checks_mod, "_read_text_file", return_value=None),
-        ):
-            r = check_accelerator_driver(self._cfg())
-        self.assertEqual(r.status, STATUS_PASS)
-        self.assertIn("HDK=25.5.2", r.value)
-
-    def test_ascend_driver_version_info_pass(self):
-        # Ascend 950-style output: npu-smi works but exposes no version label.
-        real_out = "+----+\n| NPU0 | AICORE |  |  |\n+----+\n"
-        version_info = "Version=25.6.rc1.b999\n" "package_version=25.6.rc1.b999\n"
-        with (
-            patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
-            patch.object(checks_mod, "_run", return_value=(0, real_out, "")),
-            patch.object(checks_mod, "_read_text_file", return_value=version_info),
         ):
             r = check_accelerator_driver(self._cfg())
         self.assertEqual(r.status, STATUS_PASS)
         self.assertIn("HDK=25.6.rc1.b999", r.value)
-        self.assertEqual(r.raw["version_source"], "driver/version.info")
+        self.assertEqual(r.raw["command"], "npu-smi -v")
+        self.assertEqual(r.raw["version_source"], "npu-smi -v")
+
+    def test_ascend_npu_smi_compact_version_flag_pass(self):
+        # Some npu-smi builds omit the explicit ``version:`` label.
+        real_out = "npu-smi 25.6.rc1.b999\n"
+        with (
+            patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
+            patch.object(checks_mod, "_run", return_value=(0, real_out, "")),
+        ):
+            r = check_accelerator_driver(self._cfg())
+        self.assertEqual(r.status, STATUS_PASS)
+        self.assertIn("HDK=25.6.rc1.b999", r.value)
 
     def test_ascend_below_floor_warns_with_remediation(self):
         with (
@@ -411,6 +416,63 @@ class TestAcceleratorDriver(unittest.TestCase):
         self.assertEqual(r.severity, FAIL)
         self.assertEqual(r.status, STATUS_FAIL)
         self.assertTrue(r.remediation)
+
+
+class TestAscendCannVersion(unittest.TestCase):
+    def _install_info(self):
+        return (
+            "package_name=Ascend-cann-toolkit\n"
+            "version=9.2.0\n"
+            "innerversion=V100R001C25B114\n"
+            "compatible_version=[V100R001C15]\n"
+            "arch=aarch64\n"
+        )
+
+    def test_reads_install_info_for_current_arch(self):
+        with (
+            patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
+            patch.object(checks_mod.platform, "machine", return_value="aarch64"),
+            patch.object(
+                checks_mod, "_read_text_file", return_value=self._install_info()
+            ),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("ASCEND_TOOLKIT_HOME", None)
+            r = check_ascend_cann_version()
+        self.assertEqual(r.status, STATUS_INFO)
+        self.assertEqual(
+            r.value,
+            "CANN=9.2.0, package=Ascend-cann-toolkit, " "inner=V100R001C25B114",
+        )
+        self.assertIn("Ascend-cann-toolkit", r.detail)
+        self.assertIn("V100R001C25B114", r.detail)
+        self.assertEqual(r.raw["package_name"], "Ascend-cann-toolkit")
+        self.assertEqual(r.raw["version"], "9.2.0")
+        self.assertEqual(r.raw["innerversion"], "V100R001C25B114")
+        self.assertTrue(
+            r.raw["path"]
+            .replace("\\", "/")
+            .endswith("aarch64-linux/ascend_toolkit_install.info"),
+            r.raw["path"],
+        )
+
+    def test_missing_install_info_is_informational(self):
+        with (
+            patch.object(checks_mod, "_have", side_effect=lambda c: c == "npu-smi"),
+            patch.object(checks_mod.platform, "machine", return_value="aarch64"),
+            patch.object(checks_mod, "_read_text_file", return_value=None),
+        ):
+            r = check_ascend_cann_version()
+        self.assertEqual(r.severity, INFO)
+        self.assertEqual(r.status, STATUS_INFO)
+        self.assertEqual(r.value, "CANN=not found")
+        self.assertFalse(r.remediation)
+
+    def test_non_ascend_environment_is_skipped(self):
+        with patch.object(checks_mod, "_have", return_value=False):
+            r = check_ascend_cann_version()
+        self.assertEqual(r.status, STATUS_SKIP)
+        self.assertEqual(r.value, "-")
 
 
 if __name__ == "__main__":

@@ -190,7 +190,7 @@ _NPU_TOOL_RE = re.compile(rf"npu-smi[^\d]*({_NPU_ANY_RE.pattern})", re.IGNORECAS
 
 def parse_npu_smi_versions(stdout: str) -> dict:
     """Heuristically extract Ascend HDK / driver / tool versions from
-    ``npu-smi info`` output.
+    ``npu-smi`` output.
 
     The field layout varies across firmware. Resolution order for the HDK
     value (the one compared against the floor):
@@ -246,13 +246,12 @@ def parse_npu_smi_versions(stdout: str) -> dict:
     return result
 
 
-def parse_ascend_driver_version_info(text: str) -> dict:
-    """Parse ``key=value`` lines from Ascend's driver ``version.info``.
+def parse_ascend_install_info(text: str) -> dict:
+    """Parse ``key=value`` lines from Ascend installation metadata files.
 
-    Driver packages on newer Ascend products (including inference cards) may
-    expose ``Version=25.6.rc1.b999`` and ``package_version=...`` instead of an
-    HDK label in ``npu-smi info``. Keep all scalar values so callers can record
-    the exact source in precheck JSON output.
+    Both driver metadata and CANN's ``ascend_toolkit_install.info`` use simple
+    ``key=value`` lines. Keep all scalar values so callers can surface the exact
+    package fields in precheck JSON output.
     """
     values: dict = {}
     for line in text.splitlines():

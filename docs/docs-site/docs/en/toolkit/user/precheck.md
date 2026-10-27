@@ -26,7 +26,8 @@ Bandwidth checks write and read the selected path. Use a dedicated test director
 | Check | Current default | Meaning |
 | --- | --- | --- |
 | Engine and `uc-manager` versions | INFO, display only | Read package metadata from the toolkit Python, then fall back to `pip`/`pip3` on `PATH` for split-environment deployments |
-| Accelerator driver | Missing driver fails; CUDA compute capability at least 8.0; Ascend HDK above 25.2.0, otherwise warning | CUDA uses `nvidia-smi`; Ascend uses explicit `npu-smi` HDK/driver labels, then `$ASCEND_DRIVER_HOME/version.info` (default `/usr/local/Ascend/driver/version.info`), then the `npu-smi` banner version |
+| Accelerator driver | Missing driver fails; CUDA compute capability at least 8.0; Ascend HDK above 25.2.0, otherwise warning | CUDA uses `nvidia-smi`; Ascend uses `npu-smi -v` |
+| Ascend CANN version | INFO, display only | Read `ascend_toolkit_install.info` under `$ASCEND_TOOLKIT_HOME` (default `/usr/local/Ascend/ascend-toolkit/latest`) and the current architecture; surface `package_name`, `version` and `innerversion`; a missing file is informational |
 | Kernel | At least the 5.10 series | Compare major/minor versions |
 | `/dev/shm` | Warn below 512 GiB | A precheck threshold; actual UCM capacity depends on configuration and model |
 | AIO resources | INFO, display only | Read kernel limits and current usage |

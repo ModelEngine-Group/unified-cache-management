@@ -26,7 +26,8 @@ ucm-toolkit run precheck --skip-bandwidth --json
 | 检查 | 当前默认判定 | 说明 |
 | --- | --- | --- |
 | 引擎与 `uc-manager` 版本 | INFO，仅展示 | 先读取 toolkit Python 的包元数据，再回退到 `PATH` 中的 `pip`/`pip3`，识别分离安装环境 |
-| 加速器驱动 | 缺少驱动时失败；CUDA 算力至少 8.0；Ascend HDK 高于 25.2.0，较低时警告 | CUDA 使用 `nvidia-smi`；Ascend 依次读取 `npu-smi` 的 HDK/Driver 标签、`$ASCEND_DRIVER_HOME/version.info`（默认 `/usr/local/Ascend/driver/version.info`）和 `npu-smi` 横幅版本 |
+| 加速器驱动 | 缺少驱动时失败；CUDA 算力至少 8.0；Ascend HDK 高于 25.2.0，较低时警告 | CUDA 使用 `nvidia-smi`；Ascend 使用 `npu-smi -v` |
+| Ascend CANN 版本 | INFO，仅展示 | 在 `$ASCEND_TOOLKIT_HOME`（默认 `/usr/local/Ascend/ascend-toolkit/latest`）与当前架构下读取 `ascend_toolkit_install.info`，展示 `package_name`、`version` 和 `innerversion`；文件缺失仅作提示 |
 | 内核 | 版本系列至少 5.10 | 按 major.minor 比较 |
 | `/dev/shm` | 小于 512 GiB 时警告 | 工具的预检阈值，实际 UCM 容量仍按配置和模型计算 |
 | AIO 资源 | INFO，仅展示 | 读取内核 AIO 上限和占用 |

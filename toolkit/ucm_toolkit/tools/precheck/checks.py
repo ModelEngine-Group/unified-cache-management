@@ -24,7 +24,7 @@ from .parseutil import (
     compare_versions,
     extract_nvidia_compute_cap,
     normalize_vllm_ascend_version,
-    parse_ascend_driver_version_info,
+    parse_ascend_install_info,
     parse_npu_smi_versions,
     parse_nvidia_smi_csv,
     parse_version,
@@ -236,7 +236,7 @@ def check_accelerator_driver(cfg: PrecheckConfig) -> CheckResult:
     """Check NVIDIA compute capability or Ascend HDK version.
 
     Auto-detects the platform: prefers ``nvidia-smi`` when present, else falls
-    back to ``npu-smi info``. With neither present the check FAILs (UCM needs an
+    back to ``npu-smi -v``. With neither present the check FAILs (UCM needs an
     accelerator). CUDA warns if any GPU's compute capability is below the
     configured floor (default 8.0); Ascend warns if the HDK version is not
     strictly newer than the configured floor (25.2.0).
@@ -339,13 +339,6 @@ def _check_nvidia(cfg: PrecheckConfig) -> CheckResult:
     )
 
 
-def _ascend_driver_version_info_path() -> str:
-    driver_home = os.environ.get("ASCEND_DRIVER_HOME")
-    if driver_home:
-        return os.path.join(driver_home, "version.info")
-    return "/usr/local/Ascend/driver/version.info"
-
-
 def _read_text_file(path: str) -> Optional[str]:
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
@@ -354,34 +347,9 @@ def _read_text_file(path: str) -> Optional[str]:
         return None
 
 
-def _ascend_driver_version_from_info() -> Tuple[Optional[str], dict]:
-    path = _ascend_driver_version_info_path()
-    text = _read_text_file(path)
-    if text is None:
-        return None, {"path": path, "error": "not readable"}
-
-    info = parse_ascend_driver_version_info(text)
-    raw: dict = {"path": path, **info}
-    version = next(
-        (
-            info[key]
-            for key in (
-                "Version",
-                "Driver Version",
-                "driver_version",
-                "package_version",
-            )
-            if info.get(key) and parse_version(info[key])
-        ),
-        None,
-    )
-    if version is None:
-        raw["error"] = "no usable Version or package_version key"
-    return version, raw
-
-
 def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
-    rc, out, err = _run(["npu-smi", "info"])
+    command = ["npu-smi", "-v"]
+    rc, out, err = _run(command)
     if rc != 0:
         return CheckResult(
             name="accelerator_driver",
@@ -389,29 +357,29 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
             status=STATUS_WARN,
             value="-",
             threshold=f"HDK > {cfg.ascend_min_hdk}",
-            detail=f"npu-smi info failed: {err.strip() or 'rc=%d' % rc}",
+            detail=f"npu-smi -v failed: {err.strip() or 'rc=%d' % rc}",
             remediation="ensure the Ascend driver is loaded and npu-smi is on PATH",
-            raw={"platform": "ascend", "rc": rc, "stderr": err},
+            raw={
+                "platform": "ascend",
+                "command": "npu-smi -v",
+                "rc": rc,
+                "stderr": err,
+            },
         )
     parsed = parse_npu_smi_versions(out)
-    # An explicit npu-smi HDK/driver label is authoritative. If only the
-    # ambiguous banner "Version" is present, prefer the driver package's
-    # version.info and use the banner only when that file is unavailable.
-    hdk = parsed.get("hdk") if parsed.get("source") in ("hdk", "driver") else None
-    version_source = parsed.get("source")
-    driver_info: Optional[dict] = None
-    if hdk is None:
-        file_version, driver_info = _ascend_driver_version_from_info()
-        if file_version is not None:
-            hdk = file_version
-            version_source = "driver/version.info"
-        else:
-            hdk = parsed.get("hdk")
+    # ``npu-smi -v`` reports the version directly and works across the Ascend
+    # firmware layouts observed in the field. Prefer its explicit Version field;
+    # some builds print only the ``npu-smi X.Y.Z`` form.
+    hdk = parsed.get("hdk") or parsed.get("tool")
+    version_source = "npu-smi -v"
     floor = parse_version(cfg.ascend_min_hdk)
     value = f"HDK={hdk or '?'}"
-    raw = {"platform": "ascend", **parsed, "version_source": version_source}
-    if driver_info is not None:
-        raw["driver_info"] = driver_info
+    raw = {
+        "platform": "ascend",
+        "command": "npu-smi -v",
+        **parsed,
+        "version_source": version_source,
+    }
 
     if hdk is None:
         return CheckResult(
@@ -421,13 +389,12 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
             value=value,
             threshold=f"HDK > {cfg.ascend_min_hdk}",
             detail=(
-                "could not extract an HDK/driver version from npu-smi info or "
-                f"{_ascend_driver_version_info_path()}; heuristic parse found: "
-                f"{parsed['raw_versions'] or 'none'}"
+                "could not extract an HDK/driver version from npu-smi -v; "
+                f"heuristic parse found: {parsed['raw_versions'] or 'none'}"
             ),
             remediation=(
-                "ensure the Ascend driver is installed and npu-smi or "
-                f"{_ascend_driver_version_info_path()} reports a version"
+                "ensure the Ascend driver is installed and npu-smi -v reports "
+                "a version"
             ),
             raw=raw,
         )
@@ -456,6 +423,102 @@ def _check_ascend(cfg: PrecheckConfig) -> CheckResult:
         threshold=f"HDK > {cfg.ascend_min_hdk}",
         detail=f"Ascend HDK/driver version OK (source: {version_source})",
         raw=raw,
+    )
+
+
+def _ascend_toolkit_install_info_paths() -> List[str]:
+    """Return likely CANN install-info paths for the current architecture."""
+    arch = platform.machine()
+    if not arch:
+        return []
+
+    roots = []
+    toolkit_home = os.environ.get("ASCEND_TOOLKIT_HOME")
+    if toolkit_home:
+        roots.append(toolkit_home)
+    roots.append("/usr/local/Ascend/ascend-toolkit/latest")
+
+    filename = "ascend_toolkit_install.info"
+    arch_dir = f"{arch}-linux"
+    paths = []
+    for root in roots:
+        # The standard layout puts the file below ``<arch>-linux``. Some
+        # deployments set ASCEND_TOOLKIT_HOME to that arch-specific directory.
+        paths.append(os.path.join(root, arch_dir, filename))
+        paths.append(os.path.join(root, filename))
+    return list(dict.fromkeys(paths))
+
+
+def check_ascend_cann_version() -> CheckResult:
+    """Report CANN package metadata as an informational Ascend check.
+
+    CANN's ``ascend_toolkit_install.info`` contains useful diagnostics such as
+    ``package_name``, ``version`` and ``innerversion``. The file is optional
+    from precheck's perspective: if it is missing, this item remains INFO and
+    does not affect the exit code.
+    """
+    if _have("nvidia-smi") or not _have("npu-smi"):
+        return CheckResult(
+            name="ascend_cann",
+            severity=INFO,
+            status=STATUS_SKIP,
+            value="-",
+            detail="not an Ascend environment",
+            raw={"platform": "nvidia" if _have("nvidia-smi") else "none"},
+        )
+
+    arch = platform.machine() or "unknown"
+    paths = _ascend_toolkit_install_info_paths()
+    for path in paths:
+        text = _read_text_file(path)
+        if text is None:
+            continue
+
+        info = parse_ascend_install_info(text)
+        package_name = info.get("package_name", "")
+        version = info.get("version", "")
+        innerversion = info.get("innerversion", "")
+        raw = {
+            "path": path,
+            "arch": arch,
+            "package_name": package_name,
+            "version": version,
+            "innerversion": innerversion,
+        }
+        if version:
+            return CheckResult(
+                name="ascend_cann",
+                severity=INFO,
+                status=STATUS_INFO,
+                value=(
+                    f"CANN={version}, package={package_name or '-'}, "
+                    f"inner={innerversion or '-'}"
+                ),
+                detail=(
+                    f"{package_name or 'Ascend CANN toolkit'}, "
+                    f"inner version={innerversion or '-'}"
+                ),
+                raw=raw,
+            )
+        return CheckResult(
+            name="ascend_cann",
+            severity=INFO,
+            status=STATUS_INFO,
+            value=(
+                f"CANN=?, package={package_name or '-'}, "
+                f"inner={innerversion or '-'}"
+            ),
+            detail="install info is readable but has no version field",
+            raw=raw,
+        )
+
+    return CheckResult(
+        name="ascend_cann",
+        severity=INFO,
+        status=STATUS_INFO,
+        value="CANN=not found",
+        detail="CANN toolkit install info is informational and was not found",
+        raw={"arch": arch, "paths": paths},
     )
 
 
@@ -656,6 +719,7 @@ CHECK_NAMES = {
     "serving_stack": "Serving stack (vllm/vllm-ascend/sglang) version",
     "uc_manager": "uc-manager version",
     "accelerator_driver": "Accelerator driver / compute capability",
+    "ascend_cann": "Ascend CANN version",
     "kernel": "Kernel version",
     "memory_shm": "Memory & /dev/shm size",
     "aio_resources": "Kernel AIO resource pool",
