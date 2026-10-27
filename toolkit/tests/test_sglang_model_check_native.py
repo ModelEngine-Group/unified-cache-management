@@ -248,6 +248,41 @@ def _module_tree(leaves):
 
 
 class NativeAssemblyTest(unittest.TestCase):
+    def test_native_mla_host_supports_old_and_new_constructor_apis(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _host_from_device
+
+        calls = []
+
+        class LegacyHost:
+            def __init__(self, device_pool, **kwargs):
+                calls.append((device_pool, kwargs))
+
+        class ModernHost:
+            def __init__(self, buffer_info, **kwargs):
+                calls.append((buffer_info, kwargs))
+
+        pool = SimpleNamespace(size=1024, start_layer=0, end_layer=2,
+                               layer_num=2, kv_cache_dim=256)
+        modules = _module_tree({
+            "sglang.srt.mem_cache.pool_host.mha": {"get_mha_host_pool_cls": lambda info: None},
+            "sglang.srt.mem_cache.pool_host.mla": {"MLATokenToKVPoolHost": LegacyHost},
+        })
+        with patch.dict(sys.modules, modules):
+            _host_from_device(pool, 256, "page_first", is_mla=True)
+        self.assertIs(calls[-1][0], pool)
+        self.assertFalse(calls[-1][1]["pin_memory"])
+        self.assertNotIn("device_capacity_tokens", calls[-1][1])
+        modules["sglang.srt.mem_cache.pool_host.mla"].MLATokenToKVPoolHost = ModernHost
+        with patch.dict(sys.modules, modules):
+            with self.assertRaisesRegex(PoolProbeUnavailable, "no compatible device-buffer descriptor"):
+                _host_from_device(pool, 256, "page_first", is_mla=True)
+            info = object()
+            pool.get_device_pool_infos = lambda: [SimpleNamespace(buffer_info=info)]
+            _host_from_device(pool, 256, "page_first", is_mla=True)
+        self.assertIs(calls[-1][0], info)
+        self.assertEqual(calls[-1][1]["target_layer_num"], 2)
+        self.assertEqual(calls[-1][1]["device_capacity_tokens"], 1024)
+
     def test_dsa_child_allocates_only_attention_layers_and_maps_topk_flags(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa
 

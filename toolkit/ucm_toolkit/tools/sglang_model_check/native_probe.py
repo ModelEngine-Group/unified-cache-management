@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from math import prod
+import inspect
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -94,19 +95,41 @@ def _host_from_device(device_pool, page_size, layout, *, is_mla):
     from sglang.srt.mem_cache.pool_host.mha import get_mha_host_pool_cls
     from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
 
-    info = device_pool.get_device_pool_infos()[0].buffer_info
     common = dict(
-        buffer_info=info, host_to_device_ratio=1.0, host_size=0,
+        host_to_device_ratio=1.0, host_size=0,
         page_size=page_size, layout=layout, pin_memory=False, device="cpu",
-        allocator_type="default", device_capacity_tokens=device_pool.size,
-        start_layer=device_pool.start_layer, end_layer=device_pool.end_layer,
+        allocator_type="default",
     )
+    describe = getattr(device_pool, "get_device_pool_infos", None)
     if is_mla:
-        return MLATokenToKVPoolHost(
-            **common, target_layer_num=device_pool.layer_num,
-            override_kv_cache_dim=device_pool.kv_cache_dim,
+        pool_cls = MLATokenToKVPoolHost
+    else:
+        # The MHA selector changed its argument together with the constructors.
+        from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
+
+        if "device_pool" in inspect.signature(MHATokenToKVPoolHost).parameters:
+            pool_cls = get_mha_host_pool_cls(device_pool)
+        elif callable(describe):
+            pool_cls = get_mha_host_pool_cls(describe()[0].buffer_info)
+        else:
+            raise PoolProbeUnavailable("native MHA pool cannot expose buffer_info for the installed Host API")
+    parameters = inspect.signature(pool_cls).parameters
+    if "device_pool" in parameters:
+        if is_mla:
+            common["override_kv_cache_dim"] = device_pool.kv_cache_dim
+        return pool_cls(device_pool=device_pool, **common)
+    if "buffer_info" not in parameters or not callable(describe):
+        raise PoolProbeUnavailable(
+            f"{pool_cls.__name__} requires buffer_info, but "
+            f"{type(device_pool).__name__} has no compatible device-buffer descriptor API"
         )
-    return get_mha_host_pool_cls(info)(**common)
+    common.update(buffer_info=describe()[0].buffer_info,
+                  device_capacity_tokens=device_pool.size,
+                  start_layer=device_pool.start_layer, end_layer=device_pool.end_layer)
+    if is_mla:
+        common.update(target_layer_num=device_pool.layer_num,
+                      override_kv_cache_dim=device_pool.kv_cache_dim)
+    return pool_cls(**common)
 
 
 def _describe(bundle, window, primary_page_size):
