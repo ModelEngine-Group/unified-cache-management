@@ -13,11 +13,13 @@ from ...registry import ToolAdapter
 from ...runner import run_command
 from .config import (
     ADDITIONAL_CONFIG_ENV,
+    ASCEND_SOC_ENV,
     BLOCK_SIZE_ENV,
     CONNECTOR_MODULE_PATH_ENV,
     DEVICE_ENV,
     DTYPE_ENV,
     KV_CACHE_DTYPE_ENV,
+    LAYOUT_ONLY_ENV,
     LEGACY_CONNECTOR_MODULE,
     MODEL_ENV,
     STORAGE_BACKENDS_ENV,
@@ -37,6 +39,18 @@ def _json_object(value: str) -> dict[str, object]:
     if not isinstance(decoded, dict):
         raise argparse.ArgumentTypeError("value must be a JSON object")
     return decoded
+
+
+# Launcher module per platform.  ``ascend-sim`` uses vLLM-Ascend's native
+# KV-cache construction without an NPU: tensors live in host memory.
+PLATFORM_MODULES = {
+    "ascend": "ascend",
+    "ascend-sim": "ascend_sim",
+    "cuda": "cuda",
+    "cpu": "cpu",
+}
+# Platforms whose checker needs no accelerator device.
+DEVICELESS_PLATFORMS = ("cpu", "ascend-sim")
 
 
 def _detect_platform() -> str:
@@ -111,6 +125,28 @@ class ModelCheckTool(ToolAdapter):
             default=LEGACY_CONNECTOR_MODULE,
             help="module containing the UCMConnector facade",
         )
+        parser.add_argument(
+            "--platform",
+            choices=("auto", *PLATFORM_MODULES),
+            default="auto",
+            help=(
+                "checker launcher; auto detects the installed stack. "
+                "ascend-sim builds vLLM-Ascend's native KV layout in host "
+                "memory and needs no NPU"
+            ),
+        )
+        parser.add_argument(
+            "--ascend-soc",
+            help=(
+                "ascend-sim only: assert the installed vLLM-Ascend is built for "
+                "this SoC family, e.g. A2, A3, A5"
+            ),
+        )
+        parser.add_argument(
+            "--layout-only",
+            action="store_true",
+            help="stop after UCM parsed the native KV layout (no dump/load)",
+        )
 
     def _build_run_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -138,7 +174,7 @@ class ModelCheckTool(ToolAdapter):
 
         env["UCM_MODEL_CHECK_TOKEN_SALT"] = str(time.time_ns())
         env.setdefault("VLLM_DIST_IDENT", env["UCM_MODEL_CHECK_TOKEN_SALT"])
-        platform = _detect_platform()
+        platform = _detect_platform() if args.platform == "auto" else args.platform
         string_options = (
             ("model", MODEL_ENV),
             ("tokens", TOKENS_ENV),
@@ -159,15 +195,22 @@ class ModelCheckTool(ToolAdapter):
             env[USE_LAYERWISE_ENV] = str(args.layerwise).lower()
         env[DEVICE_ENV] = args.device_id
         env[CONNECTOR_MODULE_PATH_ENV] = args.connector_module_path
+        if args.layout_only:
+            env[LAYOUT_ONLY_ENV] = "true"
+        if args.ascend_soc is not None:
+            env[ASCEND_SOC_ENV] = args.ascend_soc
         if platform == "cuda":
             env["CUDA_VISIBLE_DEVICES"] = args.device_id
         elif platform == "ascend":
             env["ASCEND_RT_VISIBLE_DEVICES"] = args.device_id
-        # cpu: no device-visibility variable needed
-        module = f"{__package__}.{platform}"
+        # cpu / ascend-sim: no device-visibility variable needed
+        module = f"{__package__}.{PLATFORM_MODULES[platform]}"
         world = args.tp * args.pp * args.pcp
         if world > 1:
-            if platform != "cpu" and len(args.device_id.split(",")) < world:
+            if (
+                platform not in DEVICELESS_PLATFORMS
+                and len(args.device_id.split(",")) < world
+            ):
                 raise ToolkitError(f"Need {world} visible devices for this topology")
             return run_command(
                 [
@@ -196,4 +239,5 @@ class ModelCheckTool(ToolAdapter):
         print(f"{self.name}: cuda {common_status}")
         ascend_status = "OK" if ascend_ok else "MISSING (vllm_ascend or common stack)"
         print(f"{self.name}: ascend {ascend_status}")
+        print(f"{self.name}: ascend-sim {ascend_status} (no NPU required)")
         return 0 if cuda_ok or ascend_ok else 1

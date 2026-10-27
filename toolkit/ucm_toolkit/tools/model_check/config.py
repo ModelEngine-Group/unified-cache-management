@@ -19,6 +19,8 @@ DEVICE_ENV = "UCM_MODEL_CHECK_DEVICE_ID"
 DTYPE_ENV = "UCM_MODEL_CHECK_DTYPE"
 KV_CACHE_DTYPE_ENV = "UCM_MODEL_CHECK_KV_CACHE_DTYPE"
 CONNECTOR_MODULE_PATH_ENV = "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH"
+LAYOUT_ONLY_ENV = "UCM_MODEL_CHECK_LAYOUT_ONLY"
+ASCEND_SOC_ENV = "UCM_MODEL_CHECK_ASCEND_SOC"
 LEGACY_CONNECTOR_MODULE = "ucm.integration.vllm.ucm_connector"
 
 
@@ -73,6 +75,10 @@ class ModelCheckConfig:
     kv_cache_dtype: str
     connector_module_path: str
     tokens_per_chunk: int | None = None
+    # Stop after UCM parsed the native layout (no dump/load).
+    layout_only: bool = False
+    # ascend_sim only: Ascend SoC whose layout is simulated (e.g. A2, A3, A5).
+    ascend_soc: str | None = None
     tp: int = 1
     pp: int = 1
     pcp: int = 1
@@ -104,4 +110,6 @@ def load_config() -> ModelCheckConfig:
         connector_module_path=os.environ.get(
             CONNECTOR_MODULE_PATH_ENV, LEGACY_CONNECTOR_MODULE
         ),
+        layout_only=_bool_env(LAYOUT_ONLY_ENV, False),
+        ascend_soc=os.environ.get(ASCEND_SOC_ENV) or None,
     )

@@ -16,6 +16,14 @@ from typing import Any, Callable
 
 import torch
 
+from .oracle import (
+    StorageSnapshot,
+    fill_pattern,
+    first_mismatch,
+    poison,
+    snapshot_bytes,
+)
+
 
 class UnsupportedEnvironment(RuntimeError):
     """Describe a vLLM/UCM version or runtime that this checker cannot support."""
@@ -913,6 +921,10 @@ class ScheduledRequestFixture:
     block_ids: tuple[list[int], ...]
     scheduler_block_size: int
     hash_block_size: int
+    # Tokens vLLM treated as already computed when it scheduled the request
+    # (local prefix hits plus the connector's external hit); None when the
+    # installed NewRequestData does not expose it.
+    num_computed_tokens: int | None = None
 
 
 def get_scheduler_and_hash_block_size(
@@ -1305,6 +1317,9 @@ def _fawa_segments(
     group_metas = getattr(connector, "group_metas", {})
     fa_groups = set(getattr(connector, "fa_group_ids", ()))
     wa_groups = set(getattr(connector, "window_group_ids", ()))
+    # Transient groups (DeepSeek-V4.1's ring buffer, bounded replay) keep a
+    # metadata row as a placeholder but are never stored or loaded.
+    transient_groups = set(getattr(connector, "transient_group_ids", ()))
     hash_block_size = int(getattr(connector, "hash_block_size"))
     block_wise = phase == "dump" and bool(
         getattr(connector, "wa_dump_block_wise", False)
@@ -1332,6 +1347,8 @@ def _fawa_segments(
             )
         hash_start = int(getattr(request_meta, f"{phase}_hash_start"))
         for group, block_ids in enumerate(grouped_ids):
+            if group in transient_groups:
+                continue
             meta = group_metas.get(group)
             if meta is None:
                 raise ValueError(f"FAWA metadata refers to unknown KV group {group}.")
@@ -1529,17 +1546,19 @@ def _compare_fawa_segment(
                     "FAWA dump selected a block outside the scheduled source: "
                     f"layer={layer}, block={source_segment.block_id}."
                 )
-            target = block_view(tensor, target_segment.block_id).detach().cpu()
+            target = snapshot_bytes(block_view(tensor, target_segment.block_id))
             source_slice = _fawa_block_slice(source.data, source_segment, group_tokens)
             target_slice = _fawa_block_slice(target, target_segment, group_tokens)
-            if not torch.equal(target_slice, source_slice):
+            mismatch = first_mismatch(target_slice, source_slice)
+            if mismatch is not None:
                 raise AssertionError(
                     f"dump/load mismatch: layer={layer}, part={part}, "
                     f"source_block={source_segment.block_id}, "
                     f"target_block={target_segment.block_id}, "
                     f"source_offset={source_segment.token_offset}, "
                     f"target_offset={target_segment.token_offset}, "
-                    f"tokens={source_segment.token_count}"
+                    f"tokens={source_segment.token_count}, "
+                    f"first_mismatch_byte={mismatch}"
                 )
             compared += 1
     return compared
@@ -1583,9 +1602,15 @@ def save_source(
     synchronize: Callable[[], None],
     native_blocks: bool,
 ) -> list[SavedBlock]:
-    """Fill source blocks and retain their CPU copies for comparison."""
+    """Fill source blocks and retain their CPU byte copies for comparison.
 
-    for layer_index, (layer, cache) in enumerate(fixture.kv_caches.items()):
+    Every byte depends on (layer, component, block, byte position), so swapped
+    layers/components and shifted offsets inside a block are detectable; a
+    block-constant fill would hide both. Bytes are written through a uint8
+    alias, so low-precision dtypes do not round distinct values together.
+    """
+
+    for layer, cache in fixture.kv_caches.items():
         group = fixture.layer_to_group[layer]
         for part, tensor in enumerate(tensor_components(cache)):
             for source_id in source_ids[group]:
@@ -1596,11 +1621,11 @@ def save_source(
                     source_id,
                     None if native_blocks else fixture.kv_cache_config.num_blocks,
                 )
-                source.fill_(layer_index + part + source_id + 1)
+                fill_pattern(source, "legacy-source", layer, part, source_id)
 
     synchronize()
     saved: list[SavedBlock] = []
-    for layer_index, (layer, cache) in enumerate(fixture.kv_caches.items()):
+    for layer, cache in fixture.kv_caches.items():
         group = fixture.layer_to_group[layer]
         for part, tensor in enumerate(tensor_components(cache)):
             for source_id in source_ids[group]:
@@ -1612,13 +1637,7 @@ def save_source(
                     None if native_blocks else fixture.kv_cache_config.num_blocks,
                 )
                 saved.append(
-                    SavedBlock(
-                        layer,
-                        part,
-                        group,
-                        source_id,
-                        source.detach().cpu().clone(),
-                    )
+                    SavedBlock(layer, part, group, source_id, snapshot_bytes(source))
                 )
     synchronize()
     return saved
@@ -1664,24 +1683,399 @@ def compare_loaded_blocks(
             raise AssertionError(
                 f"load selected a null block: layer={item.layer}, block={item.block_id}"
             )
-        target_block = (
+        target_block = snapshot_bytes(
             block_view(
                 tensor_components(fixture.kv_caches[item.layer])[item.part],
                 target_id,
                 fixture.kv_cache_config.num_blocks,
             )
-            .detach()
-            .cpu()
         )
-        if not torch.equal(target_block, item.data):
+        mismatch = first_mismatch(target_block, item.data)
+        if mismatch is not None:
             raise AssertionError(
                 f"dump/load mismatch: layer={item.layer}, part={item.part}, "
-                f"source_block={item.block_id}, target_block={target_id}"
+                f"source_block={item.block_id}, target_block={target_id}, "
+                f"first_mismatch_byte={mismatch}"
             )
         compared += 1
     if not compared:
         raise AssertionError("no loaded KV blocks were compared")
     return compared
+
+
+# Connector-independent checks.
+#
+# The v2 segment fill/compare above derives every address from the
+# connector's own TransferBuilder, so an addressing error applied to both dump
+# and load cancels out and a layer the connector never transfers is never
+# looked at. The checks below use only native tensors and vLLM block tables.
+def _native_block(
+    tensor: torch.Tensor, block_id: int, num_blocks: int
+) -> torch.Tensor | None:
+    """Return one KVCacheManager block of a native tensor, or None if unknown.
+
+    The block axis must be dimension 0 and hold ``num_blocks`` blocks or an
+    integer multiple of them (kernel blocks smaller than manager blocks).
+    Other geometries are reported as unverified instead of being guessed.
+    """
+
+    if tensor.ndim == 0 or tensor.numel() == 0:
+        return None
+    if tensor.shape[0] == num_blocks or tensor.shape[0] % num_blocks == 0:
+        return block_view(tensor, block_id, num_blocks)
+    return None
+
+
+def _group_specs(group: Any) -> list[Any]:
+    spec = group.kv_cache_spec
+    nested = getattr(spec, "kv_cache_specs", None)
+    return list(nested.values()) if nested else [spec]
+
+
+def _persistent_groups(fixture: Any) -> set[int]:
+    """Group ids vLLM declares as prefix-cacheable and KV-transferable."""
+
+    config = fixture.kv_cache_config
+    groups = config.kv_cache_groups
+    cacheable = getattr(config, "prefix_cacheable_group_ids", None)
+    persistent = set(range(len(groups))) if cacheable is None else set(cacheable)
+    for group_id, group in enumerate(groups):
+        if not getattr(group, "enable_kv_transfer", True) or not all(
+            getattr(spec, "prefix_cacheable", True) for spec in _group_specs(group)
+        ):
+            persistent.discard(group_id)
+    return persistent
+
+
+def native_oracle_groups(fixture: Any) -> tuple[list[int], list[int]]:
+    """Classify persistent attention groups by what a native byte compare can
+    assert, using vLLM's own specs only.
+
+    Returns ``(full_attention, whole_block_window)``:
+
+    * full attention -- every block of the external hit holds stored bytes;
+    * whole-block window -- the group's sliding window is exactly one block, so
+      the block at the restore boundary is stored in full. Longer or partial
+      windows are skipped rather than guessed at.
+    """
+
+    try:
+        from vllm.v1.kv_cache_interface import AttentionSpec
+    except Exception:
+        log("native oracle: installed vLLM has no AttentionSpec; skipped")
+        return [], []
+
+    groups = fixture.kv_cache_config.kv_cache_groups
+    persistent = _persistent_groups(fixture)
+    full_attention: list[int] = []
+    whole_block_window: list[int] = []
+    skipped: dict[int, str] = {}
+    for group_id in sorted(persistent):
+        specs = _group_specs(groups[group_id])
+        if not all(isinstance(spec, AttentionSpec) for spec in specs):
+            skipped[group_id] = "not an attention group"
+            continue
+        windows = {getattr(spec, "sliding_window", None) for spec in specs}
+        chunks = {getattr(spec, "attention_chunk_size", None) for spec in specs}
+        tokens_per_block = _group_tokens_per_block(fixture, group_id)
+        if windows == {None} and chunks == {None}:
+            full_attention.append(group_id)
+        elif len(windows) == 1 and next(iter(windows)) == tokens_per_block:
+            whole_block_window.append(group_id)
+        else:
+            skipped[group_id] = f"windows={sorted(map(str, windows))}"
+    if skipped:
+        log(f"native oracle: groups not natively assertable: {skipped}")
+    return full_attention, whole_block_window
+
+
+def _group_tokens_per_block(fixture: Any, group_id: int) -> int:
+    return int(
+        _group_specs(fixture.kv_cache_config.kv_cache_groups[group_id])[0].block_size
+    )
+
+
+def _parallel_size(fixture: Any, name: str) -> int:
+    return int(getattr(fixture.vllm_config.parallel_config, name, 1) or 1)
+
+
+def native_oracle_supported(fixture: Any) -> bool:
+    """Token-to-block mapping is only the plain block table without CP."""
+
+    sizes = {
+        name: _parallel_size(fixture, name)
+        for name in ("prefill_context_parallel_size", "decode_context_parallel_size")
+    }
+    if any(size > 1 for size in sizes.values()):
+        log(f"native oracle: skipped for context parallelism {sizes}")
+        return False
+    return True
+
+
+def _group_layers(fixture: Any, group_id: int) -> list[tuple[str, int, torch.Tensor]]:
+    return [
+        (layer, part, tensor)
+        for layer, cache in fixture.kv_caches.items()
+        if fixture.layer_to_group[layer] == group_id
+        for part, tensor in enumerate(tensor_components(cache))
+    ]
+
+
+def verified_block_indices(
+    fixture: Any,
+    full_attention: list[int],
+    whole_block_window: list[int],
+    hit_tokens: int,
+    source_ids: tuple[list[int], ...],
+    target_ids: tuple[list[int], ...],
+) -> dict[int, list[int]]:
+    """Block indices whose bytes must survive the round trip, per group.
+
+    Full attention keeps every block of the hit prefix. A whole-block window
+    keeps the block holding the restore boundary's last token. Indices are
+    dropped when either side has no real block there.
+    """
+
+    def usable(group_id: int, indices: list[int]) -> list[int]:
+        keep = []
+        for index in indices:
+            if index >= min(len(source_ids[group_id]), len(target_ids[group_id])):
+                break
+            if NATIVE_NULL_BLOCK_ID in (
+                source_ids[group_id][index],
+                target_ids[group_id][index],
+            ):
+                break
+            keep.append(index)
+        return keep
+
+    indices: dict[int, list[int]] = {}
+    for group_id in full_attention:
+        count = hit_tokens // _group_tokens_per_block(fixture, group_id)
+        indices[group_id] = usable(group_id, list(range(count)))
+    for group_id in whole_block_window:
+        if hit_tokens <= 0:
+            continue
+        boundary = (hit_tokens - 1) // _group_tokens_per_block(fixture, group_id)
+        indices[group_id] = usable(group_id, [boundary])
+    return {group_id: keep for group_id, keep in indices.items() if keep}
+
+
+def fill_native_source(
+    fixture: Any, groups: list[int], source_ids: tuple[list[int], ...]
+) -> list[str]:
+    """Fill every native byte of the source FA blocks; return unverified layers."""
+
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    unverified = []
+    for group_id in groups:
+        for layer, part, tensor in _group_layers(fixture, group_id):
+            for index, block_id in enumerate(source_ids[group_id]):
+                if block_id == NATIVE_NULL_BLOCK_ID:
+                    continue
+                block = _native_block(tensor, block_id, num_blocks)
+                if block is None:
+                    unverified.append(f"{layer}[{part}]")
+                    break
+                fill_pattern(block, "native-source", layer, part, index)
+    return sorted(set(unverified))
+
+
+def snapshot_native_blocks(
+    fixture: Any, block_ids: tuple[list[int], ...], indices: dict[int, list[int]]
+) -> dict[tuple[int, str, int, int], torch.Tensor]:
+    """Copy the selected blocks of each covered group, keyed by block index."""
+
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    saved = {}
+    for group_id, group_indices in indices.items():
+        for layer, part, tensor in _group_layers(fixture, group_id):
+            for index in group_indices:
+                block = _native_block(tensor, block_ids[group_id][index], num_blocks)
+                if block is not None:
+                    saved[(group_id, layer, part, index)] = snapshot_bytes(block)
+    return saved
+
+
+def poison_native_blocks(
+    fixture: Any, block_ids: tuple[list[int], ...], indices: dict[int, list[int]]
+) -> int:
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    poisoned = 0
+    for group_id, group_indices in indices.items():
+        for _layer, _part, tensor in _group_layers(fixture, group_id):
+            for index in group_indices:
+                block = _native_block(tensor, block_ids[group_id][index], num_blocks)
+                if block is not None:
+                    poison(block)
+                    poisoned += 1
+    return poisoned
+
+
+def compare_native_blocks(
+    fixture: Any,
+    source_saved: dict[tuple[int, str, int, int], torch.Tensor],
+    target_ids: tuple[list[int], ...],
+) -> int:
+    """Target block i must equal source block i byte-for-byte in every layer."""
+
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    compared = 0
+    for (group_id, layer, part, index), expected in source_saved.items():
+        tensor = tensor_components(fixture.kv_caches[layer])[part]
+        target_id = target_ids[group_id][index]
+        actual = snapshot_bytes(_native_block(tensor, target_id, num_blocks))
+        mismatch = first_mismatch(actual, expected)
+        if mismatch is not None:
+            poisoned = bool((actual.reshape(-1)[mismatch] == 0xFF).item())
+            raise AssertionError(
+                "native oracle mismatch: "
+                f"group={group_id}, layer={layer}, part={part}, block_index={index}, "
+                f"target_block={target_id}, first_mismatch_byte={mismatch}"
+                + (", byte still poisoned (never loaded)" if poisoned else "")
+            )
+        compared += 1
+    return compared
+
+
+def _fa_plan_chunks(metadata: Any, phase: str) -> list[tuple[bytes, int]]:
+    """(common chunk id, first token) of every FA chunk in v2 metadata."""
+
+    chunks = []
+    for request_meta in getattr(metadata, "requests", {}).values():
+        for plan in getattr(request_meta, f"{phase}_plans"):
+            if getattr(plan.attention_type, "name", None) != "FA":
+                continue
+            chunks.extend(
+                zip(
+                    plan.common_ucm_chunk_ids,
+                    (int(start) for start in plan.token_starts),
+                )
+            )
+    return chunks
+
+
+def check_v2_hit(
+    worker: Any,
+    scheduler: Any,
+    save_metadata: Any,
+    load_metadata: Any,
+    target_tokens: int,
+    hit_tokens: int | None,
+) -> str:
+    """Require the loaded FA chunks to be the expected prefix of the dump."""
+
+    connector = getattr(worker, "connector", worker)
+    spec = getattr(connector, "spec", None)
+    if spec is None:
+        return "hit check skipped: connector has no v2 spec"
+    chunk_tokens = int(spec.tokens_per_chunk)
+    dumped = _fa_plan_chunks(save_metadata, "dump")
+    loaded = _fa_plan_chunks(load_metadata, "load")
+    if not dumped:
+        return "hit check skipped: no FA chunks"
+    if [chunk_id for chunk_id, _ in loaded] != [
+        chunk_id for chunk_id, _ in dumped[: len(loaded)]
+    ]:
+        raise AssertionError("loaded FA chunks are not a prefix of the dumped chunks")
+    starts = [start for _, start in loaded]
+    if starts != [index * chunk_tokens for index in range(len(loaded))]:
+        raise AssertionError(
+            f"loaded FA chunk token starts are not contiguous: {starts}"
+        )
+    if hit_tokens is not None and hit_tokens != len(loaded) * chunk_tokens:
+        raise AssertionError(
+            "scheduler external hit disagrees with the FA load plan: "
+            f"hit_tokens={hit_tokens}, loaded_chunks={len(loaded)}, "
+            f"tokens_per_chunk={chunk_tokens}"
+        )
+    hybrid = bool(spec.state_groups) or any(
+        (group.tail_tokens or 0) > 0 for group in spec.wa_groups
+    )
+    lookup = getattr(getattr(scheduler, "connector", None), "_lookup", None)
+    recompute_tokens = int(getattr(lookup, "recompute_tokens", 1))
+    reachable = max(target_tokens - recompute_tokens, 0) // chunk_tokens
+    expected = min(len(dumped), reachable)
+    summary = f"FA hit {len(loaded)}/{len(dumped)} dumped chunks, expected={expected}"
+    if hybrid:
+        # WA/State boundaries may legitimately shorten the restore point.
+        if len(loaded) > expected:
+            raise AssertionError(f"hit beyond reachable prefix: {summary}")
+        return summary + " (hybrid: upper bound only)"
+    if len(loaded) != expected:
+        raise AssertionError(f"unexpected external hit length: {summary}")
+    return summary
+
+
+def make_storage_snapshot(fixture: Any) -> StorageSnapshot:
+    return StorageSnapshot(
+        tensor
+        for cache in fixture.kv_caches.values()
+        for tensor in tensor_components(cache)
+    )
+
+
+def allow_native_target_blocks(
+    snapshot: StorageSnapshot,
+    fixture: Any,
+    target_ids: tuple[list[int], ...],
+    native_blocks: bool,
+) -> bool:
+    """Allow the target's native blocks; False when a geometry is unknown."""
+
+    num_blocks = int(fixture.kv_cache_config.num_blocks)
+    for layer, cache in fixture.kv_caches.items():
+        group = fixture.layer_to_group[layer]
+        for tensor in tensor_components(cache):
+            for block_id in target_ids[group]:
+                if block_id == NATIVE_NULL_BLOCK_ID:
+                    continue
+                if native_blocks:
+                    block = block_view(tensor, block_id)
+                else:
+                    block = _native_block(tensor, block_id, num_blocks)
+                if block is None:
+                    return False
+                snapshot.allow_tensor(block)
+    return True
+
+
+def settle_after_dump(is_v2: bool) -> None:
+    """Wait for asynchronous store publication before the target lookup.
+
+    The v2 facade uses a synchronous proxy, so it needs no fixed delay. The
+    legacy stores publish asynchronously; keep their historical default.
+    """
+
+    default = "0" if is_v2 else "10"
+    seconds = float(os.getenv("UCM_MODEL_CHECK_DUMP_SETTLE_SECONDS", default))
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def describe_ucm_layout(worker: Any) -> None:
+    """Log how UCM classified the native groups (layout-only mode output)."""
+
+    connector = getattr(worker, "connector", worker)
+    spec = getattr(connector, "spec", None)
+    log(f"UCM connector: {type(connector).__module__}.{type(connector).__name__}")
+    if spec is None:
+        for name in ("fa_group_ids", "window_group_ids", "transient_group_ids"):
+            if hasattr(connector, name):
+                log(f"UCM {name}={sorted(getattr(connector, name))}")
+        return
+    log(
+        f"UCM spec: scheduler_block_size={spec.scheduler_block_size}, "
+        f"tokens_per_chunk={spec.tokens_per_chunk}, device_type={spec.device_type}"
+    )
+    for group in spec.groups:
+        log(
+            f"UCM group {group.group_id}: "
+            f"kinds={sorted(kind.name for kind in group.kinds)}, "
+            f"tokens_per_block={group.tokens_per_block}, "
+            f"tail_tokens={group.tail_tokens}, persistent={group.is_persistent}, "
+            f"blocks_per_chunk={spec.blocks_per_chunk[group.group_id]}"
+        )
 
 
 # Schedule the synthetic dump and load requests.
@@ -1777,6 +2171,11 @@ def schedule_target(
         block_ids=new_request.block_ids,
         scheduler_block_size=scheduler_block_size,
         hash_block_size=hash_block_size,
+        num_computed_tokens=(
+            None
+            if getattr(new_request, "num_computed_tokens", None) is None
+            else int(new_request.num_computed_tokens)
+        ),
     )
 
 
@@ -1824,6 +2223,10 @@ def schedule(
     )
 
 
+def _enabled(name: str) -> bool:
+    return os.getenv(name, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 # End-to-end UCM persistence validation.
 def verify(
     fixture: Any,
@@ -1831,8 +2234,21 @@ def verify(
     worker: Any,
     synchronize: Callable[[], None],
 ) -> None:
-    """Use only UCM calls to validate Scheduler-produced dump/load metadata."""
+    """Use only UCM calls to validate Scheduler-produced dump/load metadata.
 
+    Besides the connector-derived segment checks, three checks are
+    independent of the connector's address computation:
+
+    * native oracle (v2): every byte of every persistent full-attention block
+      inside the external hit must equal the source block at the same block
+      index, compared through vLLM's tensors and block tables;
+    * stray writes: the load must not change any KV byte outside the regions
+      it was asked to fill;
+    * hit length (v2): the loaded FA chunks must be the reachable prefix of
+      the dumped chunks and agree with the scheduler's external hit.
+    """
+
+    connector = getattr(worker, "connector", worker)
     source_ids = dispatch.block_ids
     save_metadata = dispatch.scheduler_output.kv_connector_metadata
     assert_shared_dispatch(save_metadata)
@@ -1844,19 +2260,33 @@ def verify(
         )
 
     v2_dump_batch = _v2_batch(worker, save_metadata, "dump")
-    if v2_dump_batch is not None:
+    is_v2 = v2_dump_batch is not None
+    native_groups: list[int] = []
+    if is_v2:
+        if _enabled("UCM_MODEL_CHECK_NATIVE_ORACLE") and native_oracle_supported(
+            fixture
+        ):
+            full_attention, whole_block_window = native_oracle_groups(fixture)
+            native_groups = full_attention + whole_block_window
+            unverified = fill_native_source(fixture, native_groups, source_ids)
+            if unverified:
+                log(f"native oracle: unknown block geometry, unverified={unverified}")
+        # The connector-derived pattern overwrites the dumped ranges; native
+        # bytes outside them (e.g. a forgotten layer) keep the native pattern.
         filled = fill_v2_dump_segments(fixture, worker, save_metadata)
         if not filled:
             raise UnsupportedEnvironment(
                 "Scheduler/UCM v2 metadata selected no dump byte ranges."
             )
         saved = []
+        native_blocks = False
     else:
         native_blocks = (
             _fawa_segments(save_metadata, "dump", getattr(worker, "connector", None))
             is not None
         )
         saved = save_source(fixture, source_ids, synchronize, native_blocks)
+    synchronize()
     worker.bind_connector_metadata(save_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
     call_worker_layer_hooks(worker, fixture, save=True)
@@ -1866,13 +2296,19 @@ def verify(
     synchronize()
     log(f"dump completed: request_id={dispatch.request_id}, dump_keys={dump_count}")
     sync_workers()
-    time.sleep(10)
+    settle_after_dump(is_v2)
 
     # Keep source blocks allocated, but remove their local prefix hashes so
     # the target must use external lookup and receive distinct native blocks.
-    if v2_dump_batch is not None:
-        dispatch.scheduler.kv_cache_manager.evict_blocks(
+    evict_blocks = getattr(dispatch.scheduler.kv_cache_manager, "evict_blocks", None)
+    if evict_blocks is not None:
+        evict_blocks(
             {block for group in source_ids for block in group} - {NATIVE_NULL_BLOCK_ID}
+        )
+    else:
+        log(
+            "KVCacheManager has no evict_blocks(); the target may hit the local "
+            "prefix cache instead of UCM"
         )
     target = schedule_target(
         fixture,
@@ -1898,9 +2334,79 @@ def verify(
             "Scheduler-side UCM lookup did not hit: target "
             "kv_connector_metadata has no load_block_ids."
         )
-    if v2_dump_batch is not None:
+    log(
+        f"target scheduled: load_keys={load_count}/{dump_count} dumped, "
+        f"num_computed_tokens={target.num_computed_tokens}"
+    )
+
+    native_saved: dict = {}
+    if is_v2:
+        log(
+            "hit check: "
+            + check_v2_hit(
+                worker,
+                dispatch.scheduler,
+                save_metadata,
+                load_metadata,
+                len(dispatch.prompt_token_ids),
+                target.num_computed_tokens,
+            )
+        )
+        if native_groups:
+            hit_tokens = target.num_computed_tokens
+            if hit_tokens is None:
+                hit_tokens = len(_fa_plan_chunks(load_metadata, "load")) * int(
+                    connector.spec.tokens_per_chunk
+                )
+            indices = verified_block_indices(
+                fixture,
+                full_attention,
+                whole_block_window,
+                hit_tokens,
+                source_ids,
+                target_ids,
+            )
+            # Snapshot before any target poisoning: hybrid groups may share
+            # one physical pool, so another group's target ids can alias it.
+            native_saved = snapshot_native_blocks(fixture, source_ids, indices)
+            poisoned = poison_native_blocks(fixture, target_ids, indices)
+            log(
+                f"native oracle: full_attention={full_attention}, "
+                f"whole_block_window={whole_block_window}, "
+                f"verified_blocks={indices}, poisoned_native_blocks={poisoned}"
+            )
         poisoned = poison_v2_load_segments(fixture, worker, load_metadata)
         log(f"poisoned target v2 ranges: segments={poisoned}")
+    else:
+        num_blocks = int(fixture.kv_cache_config.num_blocks)
+        for layer, cache in fixture.kv_caches.items():
+            group = fixture.layer_to_group[layer]
+            for tensor in tensor_components(cache):
+                for block_id in target_ids[group]:
+                    if block_id == NATIVE_NULL_BLOCK_ID:
+                        continue
+                    block = (
+                        block_view(tensor, block_id)
+                        if native_blocks
+                        else _native_block(tensor, block_id, num_blocks)
+                    )
+                    if block is not None:
+                        poison(block)
+
+    snapshot = None
+    if _enabled("UCM_MODEL_CHECK_STRAY_CHECK"):
+        synchronize()
+        snapshot = make_storage_snapshot(fixture)
+        if is_v2:
+            load_batch = _v2_batch(worker, load_metadata, "load")
+            for ptr, size in zip(load_batch.ptrs, load_batch.sizes, strict=True):
+                snapshot.allow_range(ptr, size)
+        elif not allow_native_target_blocks(
+            snapshot, fixture, target_ids, native_blocks
+        ):
+            log("stray-write check: skipped, unknown native block geometry")
+            snapshot = None
+
     worker.bind_connector_metadata(load_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
     call_worker_layer_hooks(worker, fixture, save=False)
@@ -1908,6 +2414,16 @@ def verify(
     worker.clear_connector_metadata()
     synchronize()
 
+    if snapshot is not None:
+        stray = snapshot.stray_writes()
+        if stray:
+            raise AssertionError(
+                "load changed KV bytes outside its target regions: "
+                + ", ".join(
+                    f"storage={base:#x} first_offset={offset} bytes={count}"
+                    for base, offset, count in stray
+                )
+            )
     compared = compare_loaded_blocks(
         fixture,
         saved,
@@ -1917,7 +2433,13 @@ def verify(
         load_metadata,
         worker,
     )
+    native_compared = compare_native_blocks(fixture, native_saved, target_ids)
+    if native_groups and not native_compared:
+        raise AssertionError("native oracle compared no full-attention blocks")
     sync_workers()
     log(
-        f"PASS: Scheduler->UCM dump/load, rank={os.getenv('RANK', '0')}, compared_loaded_tensor_blocks={compared}"
+        f"PASS: Scheduler->UCM dump/load, rank={os.getenv('RANK', '0')}, "
+        f"compared_loaded_tensor_blocks={compared}, "
+        f"native_oracle_blocks={native_compared}, "
+        f"stray_write_check={'on' if snapshot is not None else 'off'}"
     )

@@ -213,6 +213,74 @@ class ModelCheckToolkitTest(unittest.TestCase):
         self.assertIn("torch.distributed.run", argv)
         self.assertEqual(run.call_args.kwargs["env"]["UCM_MODEL_CHECK_DCP"], "2")
 
+    def test_ascend_sim_runs_without_a_device_and_forwards_new_flags(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter._detect_platform",
+                return_value="ascend",
+            ) as detect,
+            patch(
+                "ucm_toolkit.tools.model_check.adapter.run_command", return_value=0
+            ) as run,
+        ):
+            result = ModelCheckTool().run(
+                [
+                    "--platform",
+                    "ascend-sim",
+                    "--ascend-soc",
+                    "A2",
+                    "--layout-only",
+                    "--model",
+                    "/models/example",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        detect.assert_not_called()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[-1], "ucm_toolkit.tools.model_check.ascend_sim")
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["UCM_MODEL_CHECK_ASCEND_SOC"], "A2")
+        self.assertEqual(env["UCM_MODEL_CHECK_LAYOUT_ONLY"], "true")
+        self.assertNotIn("ASCEND_RT_VISIBLE_DEVICES", env)
+
+    def test_ascend_sim_multi_rank_does_not_require_visible_devices(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter.run_command", return_value=0
+            ) as run,
+        ):
+            result = ModelCheckTool().run(
+                ["--platform", "ascend-sim", "--tp", "2", "--device-id", "0"]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn("--nproc-per-node=2", run.call_args.args[0])
+
+    def test_defaults_keep_the_new_switches_unset(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter._detect_platform",
+                return_value="cpu",
+            ),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter.run_command", return_value=0
+            ) as run,
+        ):
+            ModelCheckTool().run(["--model", "/models/example"])
+
+        env = run.call_args.kwargs["env"]
+        self.assertNotIn("UCM_MODEL_CHECK_LAYOUT_ONLY", env)
+        self.assertNotIn("UCM_MODEL_CHECK_ASCEND_SOC", env)
+        config_env = dict(env)
+        with patch.dict(os.environ, config_env, clear=True):
+            config = load_config()
+        self.assertFalse(config.layout_only)
+        self.assertIsNone(config.ascend_soc)
+
     def test_invalid_topology_and_insufficient_devices_do_not_launch(self):
         from ucm_toolkit.errors import ToolkitError
 
