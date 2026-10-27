@@ -43,8 +43,11 @@ a real SGLang host pool through v1. Native sparse/DSV4 providers also create
 small CPU versions of the device buffer descriptions to derive physical formats;
 they never load weights or execute device transfer kernels.
 
-Hybrid roundtrip supports physical MHA KV anchors with conventional SWA and/or
-Mamba side pools when the installed SGLang exposes a complete layer partition.
+Hybrid roundtrip supports MHA anchors with conventional SWA and/or Mamba pools,
+and ordinary MLA anchors with Mamba state, when SGLang exposes a complete layer
+partition. MLA uses latent width (`kv_lora_rank + qk_rope_head_dim`), not MHA K/V
+head geometry. Existing pool types reuse the same registration and roundtrip;
+new physical formats still require an explicit descriptor.
 It reuses `get_num_kv_heads`, `get_swa_num_kv_heads`, `sliding_window_size`, and
 `mambaish_config(...).mamba2_cache_params`; no model-name whitelist is needed.
 SWA uses the actual MHA Host Pool with its own layers/head geometry and a

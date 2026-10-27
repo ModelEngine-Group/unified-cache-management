@@ -54,6 +54,19 @@ def linear_config():
 
 
 class PoolPlanTest(unittest.TestCase):
+    def test_mla_state_plan_uses_latent_width_not_mha_head_geometry(self):
+        model = model_config()
+        model.attention_arch = SimpleNamespace(name="MLA")
+        model.kv_lora_rank, model.qk_rope_head_dim = 192, 64
+        model.head_dim, model.v_head_dim = 72, 128
+        del model.get_num_kv_heads
+        kv, state = build_pool_specs(model, ("kv", "mamba"), 64, "cuda",
+                                     linear_config=linear_config())
+        self.assertEqual((kv.kind, kv.layers, kv.kv_cache_dim), ("mla", (0, 2), 256))
+        self.assertEqual(kv.bytes_per_slot(DTYPE, 64), 2 * 64 * 256 * 2)
+        self.assertEqual(kv.report()["kv_cache_dim"], 256)
+        self.assertEqual((state.kind, state.layers), ("mamba", (1, 3)))
+
     def test_mla_external_attention_plan_keeps_disjoint_state_layers(self):
         model = model_config()
         model.attention_arch = SimpleNamespace(name="MLA")
@@ -340,17 +353,21 @@ class HybridTransferTest(unittest.TestCase):
         self.assertEqual(result["persisted_pages"]["indexer"], [0, 1, 2, 3, 4])
         self.assertEqual(result["pages_written"], 0)
 
-    def test_dsa_and_state_joint_lookup_and_roundtrip(self):
-        result = self.exercise(indexer=True, dsa_state=True)
-        self.assertEqual(set(result["pool_names"]), {"kv", "indexer", "mamba"})
-        self.assertEqual(result["restorable_prefix_pages"], [2, 5])
-        self.assertEqual(result["persisted_pages"]["indexer"], list(range(5)))
-        self.assertEqual(result["persisted_pages"]["mamba"], [1, 4])
-        for options, code in (({"corrupt": True}, "ROUNDTRIP_MISMATCH"),
-                              ({"bad_lookup": True}, "LOOKUP_CONTRACT_MISMATCH")):
-            with self.assertRaises(CheckFailure) as raised:
-                self.exercise(indexer=True, dsa_state=True, **options)
-            self.assertEqual(raised.exception.code, code)
+    def test_mla_state_joint_lookup_with_and_without_indexer(self):
+        for indexer in (False, True):
+            with self.subTest(indexer=indexer):
+                result = self.exercise(indexer=indexer, dsa_state=True)
+                names = {"kv", "mamba"} | ({"indexer"} if indexer else set())
+                self.assertEqual(set(result["pool_names"]), names)
+                self.assertEqual(result["restorable_prefix_pages"], [2, 5])
+                self.assertEqual(result["persisted_pages"]["mamba"], [1, 4])
+                if indexer:
+                    self.assertEqual(result["persisted_pages"]["indexer"], list(range(5)))
+                for options, code in (({"corrupt": True}, "ROUNDTRIP_MISMATCH"),
+                                      ({"bad_lookup": True}, "LOOKUP_CONTRACT_MISMATCH")):
+                    with self.assertRaises(CheckFailure) as raised:
+                        self.exercise(indexer=indexer, dsa_state=True, **options)
+                    self.assertEqual(raised.exception.code, code)
 
 
 @unittest.skipUnless(

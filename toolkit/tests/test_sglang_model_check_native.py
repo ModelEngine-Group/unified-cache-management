@@ -303,6 +303,7 @@ class NativeAssemblyTest(unittest.TestCase):
 
     def test_legacy_hosts_receive_native_cpu_pools(self):
         from ucm_toolkit.tools.sglang_model_check.runner import _make_host_pool
+        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolSpec
 
         allocations = []
 
@@ -338,8 +339,9 @@ class NativeAssemblyTest(unittest.TestCase):
             for arch in ("MHA", "MLA"):
                 for layout in ("page_first", "page_first_direct"):
                     with self.subTest(arch=arch, layout=layout):
+                        spec = PoolSpec("kv", "mla", (3, 7), kv_cache_dim=256) if arch == "MLA" else None
                         host = _make_host_pool(model, requirements_from_facts({"attention_arch": arch}),
-                            CheckConfig(model="test", page_size=64, layout=layout))
+                            CheckConfig(model="test", page_size=64, layout=layout), spec)
                         self.assertIsInstance(host.device_pool, DevicePool)
                         if arch == "MHA":
                             self.assertEqual(host.head_num, 2)
@@ -347,7 +349,7 @@ class NativeAssemblyTest(unittest.TestCase):
                         else:
                             self.assertIs(host.kv_buffer, host.device_pool.kv_buffer)
                             self.assertEqual(allocations[-1]["kv_lora_rank"], 192)
-                        self.assertEqual(allocations[-1]["layer_num"], 62)
+                        self.assertEqual(allocations[-1]["layer_num"], 2 if spec else 62)
                         self.assertEqual(allocations[-1]["device"], "cpu")
 
     def test_native_mla_host_supports_old_and_new_constructor_apis(self):

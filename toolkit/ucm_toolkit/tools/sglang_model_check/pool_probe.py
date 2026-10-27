@@ -20,6 +20,7 @@ class PoolSpec:
     head_num: int = 0
     head_dim: int = 0
     v_head_dim: int = 0
+    kv_cache_dim: int = 0
     temporal_shape: tuple[int, ...] = ()
     conv_shapes: tuple[tuple[int, ...], ...] = ()
     temporal_dtype: Any = None
@@ -38,7 +39,9 @@ class PoolSpec:
         if self.kind in {"native", "logical"}:
             result.update(page_size=self.storage_page_size, page_bytes=self.page_bytes)
             return result
-        if self.kind == "mamba":
+        if self.kind == "mla":
+            result.update(kv_cache_dim=self.kv_cache_dim, page_size=self.storage_page_size)
+        elif self.kind == "mamba":
             result.update(
                 temporal_shape=list(self.temporal_shape),
                 conv_shapes=[list(shape) for shape in self.conv_shapes],
@@ -54,6 +57,8 @@ class PoolSpec:
     def bytes_per_slot(self, model_dtype: Any, page_size: int) -> int:
         if self.kind in {"native", "logical"}:
             return self.page_bytes
+        if self.kind == "mla":
+            return len(self.layers) * page_size * self.kv_cache_dim * model_dtype.itemsize
         if self.kind == "mamba":
             per_layer = prod(self.temporal_shape) * self.temporal_dtype.itemsize
             per_layer += sum(prod(s) for s in self.conv_shapes) * self.conv_dtype.itemsize
@@ -84,7 +89,7 @@ def build_pool_specs(
 ) -> list[PoolSpec]:
     """Reuse SGLang's layer lists, head geometry and mamba2_cache_params.
 
-    Scope: physical MHA anchor + SWA and/or standard persistent linear state,
+    Scope: physical MHA/MLA anchor and standard persistent linear state; MHA SWA,
     one rank, no speculative/replay side state, unquantized model-dtype KV.
     ``linear_config`` is injectable for dependency-free plan regression tests.
     """
@@ -94,8 +99,10 @@ def build_pool_specs(
             f"physical descriptors are not implemented for pools {sorted(unsupported or set(pool_names))}"
         )
     arch = getattr(model_config.attention_arch, "name", str(model_config.attention_arch))
-    if arch.upper() != "MHA" and not (external_attention and arch.upper() == "MLA"):
-        raise PoolProbeUnavailable("hybrid probe currently requires a physical MHA anchor")
+    if arch.upper() not in {"MHA", "MLA"}:
+        raise PoolProbeUnavailable(f"unsupported hybrid attention architecture: {arch}")
+    if arch.upper() == "MLA" and "swa" in pool_names:
+        raise PoolProbeUnavailable("MLA SWA requires specialized physical pool descriptors")
     if getattr(model_config, "is_hybrid_swa_compress", False):
         raise PoolProbeUnavailable("compressed/heterogeneous SWA requires runtime buffer descriptors")
 
@@ -139,6 +146,13 @@ def build_pool_specs(
             # Geometry is supplied by the real DSA child constructor, not by
             # MHA head arithmetic. Keep only its verified global layer IDs.
             specs.append(PoolSpec(name, "native", layers, storage_page_size=page_size))
+            continue
+        if arch.upper() == "MLA":
+            width = int(model_config.kv_lora_rank) + int(model_config.qk_rope_head_dim)
+            if width <= 0:
+                raise PoolProbeUnavailable("invalid MLA latent cache dimension")
+            specs.append(PoolSpec(name, "mla", layers, kv_cache_dim=width,
+                                  storage_page_size=page_size))
             continue
         is_swa = name == "swa"
         head_getter = (
