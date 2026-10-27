@@ -149,6 +149,11 @@ class SglangModelCheckTool(ToolAdapter):
         # generation settings such as top_p are irrelevant to this offline check.
         env["TRANSFORMERS_VERBOSITY"] = "error"
         env["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+        if not args.verbose:
+            # Child-only settings: retain warnings/errors and leave the caller's
+            # environment and production logger configuration untouched.
+            env["UCM_LOG_LEVEL"] = "warning"
+            env["UC_LOGGER_LEVEL"] = "warning"
         platform = args.platform
         if platform == "auto":
             ascend_env = env.get("ASCEND_RT_VISIBLE_DEVICES") or env.get(

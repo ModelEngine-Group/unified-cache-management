@@ -361,9 +361,9 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         }
         result.roundtrip = {}
         summary = result.to_dict()
-        self.assertEqual(summary["detail_level"], "summary")
-        self.assertEqual(summary["reason"], "ImportError: missing helper")
-        self.assertNotIn("detection_sources", summary["model_info"])
+        self.assertEqual(set(summary), {"model", "mode", "status", "summary", "code", "suggestion"})
+        self.assertEqual(summary["summary"], "ImportError: missing helper")
+        self.assertNotIn("model_info", summary)
         self.assertNotIn("roundtrip", summary)
 
         verbose = result.to_dict(verbose=True)
@@ -400,15 +400,33 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
                             "native_provider": native, "pages_written": 0,
                             "persisted_pages": {"swa": [1]},
                             "checks": ["component_data_compare"]}
+        result.succeed("roundtrip", "passed")
         summary = result.to_dict()
-        self.assertEqual(summary["roundtrip"], {"bytes_compared": 1000,
-                         "storage_api": "v2", "logical_anchor": True})
-        self.assertNotIn("pool_specs", summary["cache_requirements"])
-        self.assertNotIn("native_provider", summary["cache_requirements"])
+        self.assertEqual(set(summary), {"model", "mode", "status", "summary"})
+        self.assertIn("model structure not validated", summary["summary"])
+        result.validation["meta_model"] = "passed"
+        self.assertIn("Model structure and", result.to_dict()["summary"])
         verbose = result.to_dict(verbose=True)
         self.assertEqual(verbose["roundtrip"], result.roundtrip)
         self.assertEqual(verbose["cache_requirements"], result.cache_requirements)
         self.assertEqual(result.roundtrip["pool_specs"], specs)
+
+    @patch("ucm_toolkit.tools.sglang_model_check.adapter.run_command", return_value=0)
+    @patch("ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec", return_value=object())
+    def test_default_logs_are_quiet_only_in_child(self, find_spec, run_command):
+        from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
+
+        with patch.dict(os.environ, {"UCM_LOG_LEVEL": "debug", "UC_LOGGER_LEVEL": "info"}):
+            for flags, expected in (([], "warning"), (["--verbose"], "debug")):
+                SglangModelCheckTool().run(["--model", "model"] + flags)
+                env = run_command.call_args.kwargs["env"]
+                self.assertEqual(env["UCM_LOG_LEVEL"], expected)
+                self.assertEqual(os.environ["UCM_LOG_LEVEL"], "debug")
+
+    def test_summary_memory_failure_has_actionable_suggestion(self):
+        result = CheckResult(model="model", mode="roundtrip")
+        result.fail("CHECKER_MEMORY_LIMIT", "native_pool_construction", "budget exceeded")
+        self.assertIn("--max-host-mib", result.to_dict()["suggestion"])
 
 
 if __name__ == "__main__":

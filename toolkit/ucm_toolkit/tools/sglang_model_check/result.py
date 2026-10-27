@@ -60,59 +60,32 @@ class CheckResult:
             data["detail_level"] = "verbose"
             return data
 
-        model_keys = (
-            "architectures",
-            "model_type",
-            "attention_arch",
-            "dtype",
-            "quantization",
-            "supported_platforms",
-        )
-        requirement_keys = (
-            "pool_names",
-            "storage_api",
-            "host_layout",
-            "probe_fidelity",
-        )
-        capability_keys = ("api_versions", "detection")
-        environment_keys = ("sglang_version", "platform", "requested_platform",
-                            "probe_page_size", "requested_kv_cache_dtype")
-
-        data["model_info"] = {
-            key: self.model_info[key]
-            for key in model_keys
-            if key in self.model_info and self.model_info[key] is not None
+        summary = {
+            "model": self.model,
+            "mode": self.mode,
+            "status": self.status,
+            "summary": (
+                ("Model structure and Host/UCM storage roundtrip passed; "
+                 if self.validation.get("meta_model") == "passed"
+                 else "Host/UCM storage roundtrip passed (model structure not validated); ") +
+                "inference, device transfers and multi-rank execution are not validated."
+                if self.supported and self.mode == "roundtrip"
+                else "Model structural checks passed; storage IO and inference are not validated."
+                if self.supported
+                else self.reason.splitlines()[0] if self.reason else "Check did not pass."
+            ),
         }
-        data["cache_requirements"] = {
-            key: self.cache_requirements[key]
-            for key in requirement_keys
-            if key in self.cache_requirements
-        }
-        data["ucm_capabilities"] = {
-            key: self.ucm_capabilities[key]
-            for key in capability_keys
-            if key in self.ucm_capabilities
-        }
-        data["environment"] = {
-            key: self.environment[key]
-            for key in environment_keys
-            if key in self.environment and self.environment[key] is not None
-        }
-        # Keep the default report bounded: per-layer geometry, native producer
-        # settings and checkpoint positions can be very large for hybrid models.
-        # Full original data remains available through --verbose.
-        data["roundtrip"] = {
-            key: self.roundtrip[key]
-            for key in ("storage_api", "logical_anchor", "bytes_compared")
-            if key in self.roundtrip
-        }
-        if "\n" in data["reason"]:
-            data["reason"] = data["reason"].splitlines()[0]
-        data["detail_level"] = "summary"
-        for key in ("model_info", "cache_requirements", "ucm_capabilities", "environment", "roundtrip"):
-            if not data[key]:
-                data.pop(key)
-        return data
+        if not self.supported:
+            summary["code"] = self.code
+            suggestions = {
+                "CHECKER_MEMORY_LIMIT": "Increase --max-host-mib and retry; use --verbose for details.",
+                "CHECKER_STORAGE_PROBE_REQUIRED": "Run --mode roundtrip with a dedicated --storage-backends directory.",
+                "CHECKER_CONFIG_ONLY": "Retry without --skip-meta-model to validate model construction.",
+            }
+            summary["suggestion"] = suggestions.get(
+                self.code, "Use --verbose to inspect the failed stage and diagnostics."
+            )
+        return summary
 
 
 def emit_result(

@@ -129,7 +129,9 @@ result in that mode does not prove that the SGLang model class can be built.
 In inspect mode this weaker result is `CHECKER_CONFIG_ONLY` / `inconclusive`.
 Hybrid inspect uses `CHECKER_STORAGE_PROBE_REQUIRED` until storage is exercised.
 
-Output is a compact JSON summary by default. Add `--verbose` when debugging to
+Default JSON contains only model, mode, status and a scope-aware summary;
+non-passing results also include code and suggestion. UCM INFO logs are suppressed
+in the child process by default; warnings/errors remain visible. Add `--verbose` when debugging to
 include detection sources, detection errors, full tracebacks, and roundtrip
 details. `--output` writes the same summary or verbose representation shown on
 standard output.
