@@ -48,7 +48,7 @@
 |---|---|---|
 | 高性能传输 | 异步作业模型 + 块级批量接口 + `prerequisiteHandle` 流序前置，传输与计算重叠 | [5.1](#51-基础接口) |
 | 稳定可靠 | 恰好一次完成语义、两阶段准入与原子性保证、同堆创建/销毁、`RTLD_LOCAL` 符号隔离 | [3.3](#33-全局语义保证) / [5.5](#55-插件加载契约) |
-| 存储介质可插拔 | Store 插件以独立 `.so` 形态 dlopen 动态加载，能力（facet）按需声明 | [5](#5-store-接口) |
+| 存储介质可插拔 | Store 插件以独立 `.so` 形态 dlopen 动态加载；可退化能力经基类默认实现提供，行为变更能力经 facet 按需声明 | [5](#5-store-接口) |
 | 拓扑可编排 | 单存储（Entry）、分级（Pipe）、分流（Peer）由配置字典递归组装 | [6](#6-proxy-接口) |
 | 策略可注册 | 淘汰策略、路由策略走编译期注册表，新增策略零侵入 | [7](#7-决策规则) / [10](#10-扩展指南) |
 | 控制面 / 数据面分离 | Scheduler（查询、窗口协议）与 Worker（作业提交、完成回收）解耦，契合推理引擎主循环 | [3](#3-分层语义) |
@@ -58,7 +58,7 @@
 
 接口契约 + 参考实现 + 完整单测：
 
-- **接口契约**：Store 基础接口、TokenAddressed / Prefetchable 两个能力 facet、Proxy 侧 Scheduler / Worker 接口；
+- **接口契约**：Store 基础接口（含编址与两阶段准入协议）、Prefetchable 能力 facet、Proxy 侧 Scheduler / Worker 接口；
 - **参考实现**：CacheBuffer（块级业务层）与 ReplacementPolicy（LRU / Clock / FIFO 淘汰引擎）为引擎级完整实现；PosixStore / CacheStore 为接口打桩（stub）；
 - **预留位**：transfer/file、transfer/memory 为传输引擎预留目录。
 
@@ -117,10 +117,10 @@ flowchart TB
 | 层 | 目录 | 职责 |
 |---|---|---|
 | 公共类型层 | `v2/common` | 跨层共享的纯数据类型与错误模型，零行为依赖 |
-| 存储接口层 | `v2/store` | 存储侧契约（Store 基础接口 + 能力 facet）与参考实现 |
+| 存储接口层 | `v2/store` | 存储侧契约（Store 基础接口 + Prefetchable facet）与参考实现 |
 | 编排层 | `v2/proxy` | 请求生命周期、窗口协议、能力分发、路由分流、拓扑组装、插件加载、Python 绑定 |
 | 传输层（预留） | `v2/transfer` | file / memory 传输引擎占位 |
-| 测试层 | `v2/test` | 153 个 GoogleTest 用例 |
+| 测试层 | `v2/test` | 157 个 GoogleTest 用例 |
 
 ### 2.3 控制面与数据面
 
@@ -141,8 +141,7 @@ v2/
 │   └── type/                  #   BlockId / BlockPayload / AddressedToken
 │                              #   RequestContext / Dictionary
 ├── store/                     # 存储接口层
-│   ├── store.h                #   Store 基础接口 + 插件工厂契约
-│   ├── token_addressed.h      #   能力 facet:编址与两阶段准入
+│   ├── store.h                #   Store 基础接口(含编址与两阶段准入) + 插件工厂契约
 │   ├── prefetchable.h         #   能力 facet:预取
 │   ├── factory.cc.in          #   插件工厂生成模板(CMake configure)
 │   ├── posix/posix_store.h    #   PosixStore(stub)
@@ -161,7 +160,7 @@ v2/
 ├── transfer/                  # 传输层(预留)
 │   ├── file/                  #   本地文件传输(占位)
 │   └── memory/                #   内存传输(占位)
-├── test/                      # GoogleTest(153 用例)
+├── test/                      # GoogleTest(157 用例)
 └── vendor/                    # fmt / pybind11 / googletest 依赖拉取
 ```
 
@@ -173,7 +172,7 @@ v2/
 |---|---|---|
 | 接入面极简 | 推理引擎只面向 Scheduler / Worker 双接口与窗口协议编程，无需感知存储介质与拓扑细节 | [2.3](#23-控制面与数据面) |
 | 数据面无状态 | Worker 只认 jobId 与 token，分流路由随 token 自携带，无需请求表即可正确分发 | [3.4](#34-层间契约与信息传递) |
-| 异构介质统一抽象 | 能力 facet 按需组合，远端纯存储与本地分层缓存共用同一接口模型 | [5.2](#52-能力查询facet-模型) |
+| 异构介质统一抽象 | 准入协议含退化默认实现，远端纯存储与本地分层缓存共用同一接口模型 | [5.2](#52-能力查询facet-模型) |
 | 传输与计算重叠 | 异步作业模型 + 块级批量接口 + `prerequisiteHandle` 流序前置，搬运与推理流水线并行 | [4.5](#45-jobdescriptor--传输作业描述) |
 | 数据安全契约 | 两阶段准入、恰好一次完成、原子性保证，杜绝在途传输污染槽位新占用者 | [3.3](#33-全局语义保证) |
 | 插件故障隔离 | 实例同堆创建/销毁 + `RTLD_LOCAL` 符号隔离，插件不污染宿主进程符号空间 | [5.5](#55-插件加载契约) |
@@ -236,7 +235,7 @@ stateDiagram-v2
 
 **（4） 请求（Request）**：Registered →（任意次窗口开合与查询）→ Finished。注册时快照事实（`RequestContext`），全周期所有窗口看到相同值；Finished 要求窗口全关、在途作业全排空，未关窗口被兜底收尾（`v2/proxy/store_entry.cc` `OnRequestFinished`）。
 
-**（5） 准入（Admission）**：Alloc（预约，不可见）→ Commit（提交可见 / 释放）。并发对同一块的 Alloc 共享一个预约，各持一个引用，最后一个 Commit 到达时才定论（`v2/store/token_addressed.h` `Alloc` 共享预约注释）。
+**（5） 准入（Admission）**：Alloc（预约，不可见）→ Commit（提交可见 / 释放）。并发对同一块的 Alloc 共享一个预约，各持一个引用，最后一个 Commit 到达时才定论（`v2/store/store.h` `Alloc` 共享预约注释）。
 
 **（6） 令牌（Token）**：mint（Pin / Alloc / PreparePrefetch）→ 持有（pin 或预约持续有效）→ 结论（Unpin / Commit / CompletePrefetch）。
 
@@ -246,12 +245,12 @@ stateDiagram-v2
 
 | 保证 | 语义 | 出处 |
 |---|---|---|
-| 原子性 | Pin / Alloc 失败时，列表中不得残留任何 pin / 预约 | `v2/store/token_addressed.h` `Pin`/`Alloc` 原子性注释 |
-| 可见性 | 卸载预约在 Commit 之前对 Lookup 不可见 | `v2/store/token_addressed.h` `Alloc` 可见性注释 |
-| 幂等 | Unpin / Commit 作用于非持有块为 no-op | `v2/store/token_addressed.h` `Unpin` 幂等注释 |
+| 原子性 | Pin / Alloc 失败时，列表中不得残留任何 pin / 预约 | `v2/store/store.h` `Pin`/`Alloc` 原子性注释 |
+| 可见性 | 卸载预约在 Commit 之前对 Lookup 不可见 | `v2/store/store.h` `Alloc` 可见性注释 |
+| 幂等 | Unpin / Commit 作用于非持有块为 no-op | `v2/store/store.h` `Unpin` 幂等注释 |
 | 恰好一次 | 作业完成事件在 GetFinished 与 Wait 之间不重复、不丢失 | `v2/store/store.h` `GetFinished`/`Wait` 恰好一次注释 |
-| 时序约束 | CompleteX / Commit（false） 必须晚于相关作业完成事件被消费——提前释放 pin / 预约可能污染槽位的下一位占用者 | `v2/proxy/store_scheduler.h` 窗口协议注释（时序约束）；`v2/store/token_addressed.h` `Commit` 时序约束注释 |
-| 并发冲突 | 同块并发准入由存储串行化，数据冲突 last-writer-wins（与窗口协议的 re-put 规则一致） | `v2/store/token_addressed.h` `Commit` 并发冲突注释 |
+| 时序约束 | CompleteX / Commit（false） 必须晚于相关作业完成事件被消费——提前释放 pin / 预约可能污染槽位的下一位占用者 | `v2/proxy/store_scheduler.h` 窗口协议注释（时序约束）；`v2/store/store.h` `Commit` 时序约束注释 |
+| 并发冲突 | 同块并发准入由存储串行化，数据冲突 last-writer-wins（与窗口协议的 re-put 规则一致） | `v2/store/store.h` `Commit` 并发冲突注释 |
 | 批次序无关 | Reserve 批内安置结果与 blockIds 顺序无关；批成员不会被自己的批次逐出 | `v2/store/cache/cache_buffer.h` `Reserve` 批次序无关注释 |
 
 ### 3.4 层间契约与信息传递
@@ -377,9 +376,13 @@ Load 方向 `payloads[i]` 是目的地（推理侧），Dump 方向 `payloads[i]
 | `Lookup(blockIds)` | 存在性探测 | hits 与输入等长；`hits[i] != 0` 即命中 |
 | `LookupOnPrefix(blockIds)` | 前缀命中长度 | 返回最左连续命中的末下标，全不命中为 -1；默认由 Lookup 派生，有序介质可覆写以只查元数据（`v2/store/store.h` `LookupOnPrefix`） |
 | `LookupOnReverse(blockIds)` | 最右命中位置 | 不要求连续；默认派生（`v2/store/store.h` `LookupOnReverse`） |
-| `Touch(ids, ctx)` | 刷新热度、延长保留 | TTL 事实只延不缩；无 LRU/TTL 语义的实现为 no-op（`v2/store/store.h` `Touch`） |
-| `Load(jobId, job)` | 重载：Store → 推理侧 | 异步；Status 仅表示受理 |
-| `Dump(jobId, job)` | 卸载：推理侧 → Store | 异步；数据在 Commit 前不可见 |
+| `Touch(ids, ctx)` | 刷新热度、延长保留 | TTL 事实只延不缩；默认 no-op，无 LRU/TTL 语义的实现不必覆写（`v2/store/store.h` `Touch`） |
+| `Pin(blockIds)` | pin 住块并铸造读端 token | 失败全量回滚；默认实现铸造 keys-only token 且永不失败（退化寻址，`v2/store/store.h` `Pin`） |
+| `Unpin(blockIds)` | 释放 pin | 幂等；默认 no-op（`v2/store/store.h` `Unpin`） |
+| `Alloc(blockIds, ctx)` | 预约容量并铸造写端 token | 预约对 Lookup 不可见；失败全量回滚；默认实现铸造 keys-only token、不预约（`v2/store/store.h` `Alloc`） |
+| `Commit(blockIds, success)` | 结论预约（提交 / 释放） | 恰好一次；默认 no-op——退化寻址 store 的数据可见性由传输完成决定（`v2/store/store.h` `Commit`） |
+| `Load(jobId, job, token)` | 重载：Store → 推理侧 | 异步；token 为匹配 Pin 铸造的读端凭据；Status 仅表示受理 |
+| `Dump(jobId, job, token)` | 卸载：推理侧 → Store | 异步；token 为匹配 Alloc 铸造的写端凭据；真实准入 store 的数据在 Commit 前不可见 |
 | `GetFinished()` | 取走自上次调用以来的完成事件 | 恰好一次；消费即清除 |
 | `Wait(jobIds)` | 阻塞等待指定作业 | 未知 / 已消费的 id 被忽略 |
 
@@ -390,28 +393,31 @@ Load 方向 `payloads[i]` 是目的地（推理侧），Dump 方向 `payloads[i]
 - **线程契约**：控制面方法须单线程调用或外部串行；完成事件的恰好一次语义隐含单消费者（`v2/store/store.h` `Store` 线程契约注释）；
 - **析构契约**：销毁 Store 前必须 Wait 所有在途作业，否则行为未定义（`v2/store/store.h` `Store` 析构契约注释）。
 
+**退化寻址（default addressing）**：准入协议的四个方法均带退化默认实现——keys-only token（payload 为空，表示 store 自行解析 blockIds）与 no-op 结论。纯存储（如远端对象存储、Posix）只需实现探测与传输入口、忽略 token 参数；分层缓存覆写准入四方法获得真实语义。这是**单一 token 协议覆盖异构介质**的机制：接口形态与协议本质（AddressedToken 作为自寻址凭据贯穿全栈）对齐，跨进程部署（store 服务化、层级分离）无需能力协商（`v2/store/store.h` `Store` 类注释）。
+
 ### 5.2 能力查询（facet 模型）
 
 ```cpp
-virtual Prefetchable*   AsPrefetchable()   { return nullptr; }
-virtual TokenAddressed* AsTokenAddressed() { return nullptr; }
+virtual Prefetchable* AsPrefetchable() { return nullptr; }
 ```
 
-两个能力 facet 均为可选：不实现则返回 `nullptr`，返回指针的生命周期与 Store 对象一致。Proxy 侧据此做能力分发（见 [7.1](#71-能力分发storeentry)）。能力可自由组合——例如远端对象存储可能两者都不实现（纯基础 Store），分层缓存则两者都实现。
+Prefetchable 为可选 facet：不实现则返回 `nullptr`，返回指针的生命周期与 Store 对象一致。Proxy 侧据此做能力分发（见 [7.1](#71-能力分发storeentry)）。
 
-### 5.3 TokenAddressed —— 编址与两阶段准入
+**能力扩展的边界规则**：可退化为无操作的能力（如准入、热度刷新）以基类默认实现提供，所有 store 以统一签名参与；**改变调用语义**的能力（如 Prefetchable 的 nullopt 双通道 Lookup）走 facet，经 `AsXxx` 按需查询。
+
+### 5.3 编址与两阶段准入（基础能力）
 
 **读端**：
 
-- `Pin(blockIds)`：pin 住块使其不可被逐出，并铸造读端 token；失败时全量回滚（原子性）。`payload` 为空表示该 store 自行解析 blockIds（`v2/store/token_addressed.h` `Pin`）；
-- `Unpin(blockIds)`：幂等释放（`v2/store/token_addressed.h` `Unpin`）。
+- `Pin(blockIds)`：pin 住块使其不可被逐出，并铸造读端 token；失败时全量回滚（原子性）。`payload` 为空表示该 store 自行解析 blockIds（`v2/store/store.h` `Pin`）；
+- `Unpin(blockIds)`：幂等释放（`v2/store/store.h` `Unpin`）。
 
 **写端（两阶段准入）**：
 
-- `Alloc(blockIds, context)`：预约容量，铸造写端 token。预约**对 Lookup 不可见**；失败全量回滚；每个成功 Alloc 必须被恰好一次 Commit 结论；并发 Alloc 同一块共享一个预约，各持一引用，最后一个 Commit 定论（`v2/store/token_addressed.h` `Alloc`）；
-- `Commit(blockIds, success)`：true 提交使数据可见，false 释放预约。数据冲突 last-writer-wins；**Commit（false） 只能在匹配的 Dump 作业完成事件被消费之后发出**——释放的槽位可能立即交给新准入，仍在飞的 Dump 会写坏新主的数据（`v2/store/token_addressed.h` `Commit`）。
+- `Alloc(blockIds, context)`：预约容量，铸造写端 token。预约**对 Lookup 不可见**；失败全量回滚；每个成功 Alloc 必须被恰好一次 Commit 结论；并发 Alloc 同一块共享一个预约，各持一引用，最后一个 Commit 定论（`v2/store/store.h` `Alloc`）；
+- `Commit(blockIds, success)`：true 提交使数据可见，false 释放预约。数据冲突 last-writer-wins；**Commit（false） 只能在匹配的 Dump 作业完成事件被消费之后发出**——释放的槽位可能立即交给新准入，仍在飞的 Dump 会写坏新主的数据（`v2/store/store.h` `Commit`）。
 
-**token 承载的传输**：`Load/Dump(jobId, job, token)` 与基础版的差别仅在携带 token；完成事件仍走基础 `GetFinished/Wait`（`v2/store/token_addressed.h` token 版 `Load`/`Dump`）。
+以上强不变量对**覆写了准入方法的 store** 生效；继承默认实现（退化寻址）的 store 中它们为空集——数据可见性由传输完成决定（`v2/store/store.h` 退化寻址注释）。
 
 ### 5.4 Prefetchable —— 预取信号协议
 
@@ -434,7 +440,7 @@ Lookup(requestId, keys)  ──nullopt──▶  PreparePrefetch(requestId, ctx)
 
 - `PreparePrefetch(requestId, context)`：内部 Alloc 以 context 准入目的块，预取块继承当前窗口的 TTL 事实（`v2/store/prefetchable.h` `PreparePrefetch`）；
 - `CompletePrefetch(plan, success)`：成功则目的预约提交、keys 变为 HIT；失败回滚（`v2/store/prefetchable.h` `CompletePrefetch`）；
-- `Prefetch(jobId, plan)`：worker 侧作业，逐字消费 plan 的自寻址 payload（约定内含下层 Pin 铸造的源元数据与本层目的元数据），驱动下层 Load——下层是 tokened 则用其 token 版，否则用基础版（`v2/store/prefetchable.h` `Prefetch`）。
+- `Prefetch(jobId, plan)`：worker 侧作业，逐字消费 plan 的自寻址 payload（约定内含下层 Pin 铸造的源元数据与本层目的元数据），恒调下层 `Load` 并透传其 Pin 铸造的读端 token（下层为默认寻址时即 keys-only token，`v2/store/prefetchable.h` `Prefetch`）。
 
 ### 5.5 插件加载契约
 
@@ -485,12 +491,11 @@ struct IoResult {
 
 职责：把 Scheduler / Worker 两个接口适配到**一个** LoadedStore 上。
 
-- **能力探测**：构造时查询 `AsPrefetchable/AsTokenAddressed` 并缓存（`v2/proxy/store_entry.cc` `StoreEntry` 构造函数）；
-- **能力分发**：Lookup 族走 prefetchable facet 或基础接口（`v2/proxy/store_entry.cc` `Lookup` 族）；Submit 族走 token 版或基础版（`v2/proxy/store_entry.cc` `SubmitGet`/`SubmitPut`）；分发规则全表见 [7.1](#71-能力分发storeentry)；
-- **非 tokened 兜底**：`PrepareGet/PreparePut` 在非 tokened store 上不调存储，直接铸造 keys-only token（payload 为空），统一上层编程模型（`v2/proxy/store_entry.cc` `PrepareGet`/`PreparePut` 非 tokened 分支）；
+- **能力探测**：构造时查询 `AsPrefetchable` 并缓存（`v2/proxy/store_entry.cc` `StoreEntry` 构造函数）；
+- **能力分发**：Lookup 族走 prefetchable facet 或基础接口（`v2/proxy/store_entry.cc` `Lookup` 族）；Get/Put 窗口与 Submit 族恒走统一 token 协议，无分发分支；分发规则全表见 [7.1](#71-能力分发storeentry)；
 - **合成完成**：`SubmitPrefetch` 在非 prefetchable store 上不调存储，直接登记 jobId 并合成成功完成事件——上层无需感知“该层不可预取”（`v2/proxy/store_entry.cc` `SubmitPrefetch` 合成完成分支）；
 - **请求状态**：每请求记录 prefetch token、pinned 块、reserved 块，支撑窗口互斥与兜底收尾（`v2/proxy/store_entry.h` `RequestState`）；
-- **输入校验**（`v2/proxy/store_entry.cc` `ValidateTransfer`）：jobId 不得在途重复；payloads 数须等于 token.keys 数；非 tokened store 收到携带 payload 的 token 直接拒绝。
+- **输入校验**（`v2/proxy/store_entry.cc` `ValidateTransfer`）：jobId 不得在途重复；payloads 数须等于 token.keys 数。
 
 ### 6.4 StorePipe —— 分级
 
@@ -561,12 +566,9 @@ branch   := store 节点 | pipe 节点
 |---|---|---|
 | store 实现 Prefetchable，收到 Lookup 族 | 走 facet 版 `Lookup(requestId, keys)` | `v2/proxy/store_entry.cc` `Lookup` |
 | 否则 | 走基础 `Store::Lookup(keys)` | `v2/proxy/store_entry.cc` `Lookup` |
-| 非 tokened，收到 PrepareGet | 不调存储，铸造 keys-only token | `v2/proxy/store_entry.cc` `PrepareGet` 非 tokened 分支 |
-| tokened，收到 PrepareGet | `Pin(keys)` 铸读端 token | `v2/proxy/store_entry.cc` `PrepareGet` Pin 分支 |
-| 非 tokened，收到 PreparePut | 不调存储，铸造 keys-only token | `v2/proxy/store_entry.cc` `PreparePut` 非 tokened 分支 |
-| tokened，收到 PreparePut | `Alloc(keys, ctx)` 铸写端 token | `v2/proxy/store_entry.cc` `PreparePut` Alloc 分支 |
-| tokened，收到 SubmitGet/SubmitPut | 走 token 版 Load/Dump | `v2/proxy/store_entry.cc` `SubmitGet`/`SubmitPut` token 分发 |
-| 否则 | 走基础 Load/Dump | 同上 |
+| 收到 PrepareGet | `Pin(keys)` 铸读端 token（默认寻址 store 由基类默认实现铸 keys-only） | `v2/proxy/store_entry.cc` `PrepareGet` |
+| 收到 PreparePut | `Alloc(keys, ctx)` 铸写端 token（同上） | `v2/proxy/store_entry.cc` `PreparePut` |
+| 收到 SubmitGet/SubmitPut | 恒走带 token 的 Load/Dump（退化寻址 store 忽略 token） | `v2/proxy/store_entry.cc` `SubmitGet`/`SubmitPut` |
 | 非 prefetchable，收到 SubmitPrefetch | 不调存储，合成成功完成事件 | `v2/proxy/store_entry.cc` `SubmitPrefetch` 合成完成分支 |
 
 ### 7.2 路由（StorePeer / RoutingStrategy）
@@ -611,7 +613,7 @@ branch   := store 节点 | pipe 节点
 | 失败不开窗 | Prepare 失败不改变请求状态（成功后才记录），可重试 | `v2/proxy/store_entry.cc` `PreparePrefetch`/`PrepareGet` 失败不开窗 |
 | 关窗时机 | CompleteX 须在所提交作业完成事件被消费之后 | `v2/proxy/store_scheduler.h` 窗口协议注释（时序约束） |
 | 作业唯一 | jobId 在途不可重复提交（Entry 内、Peer 跨分支） | `v2/proxy/store_entry.cc` `ValidateTransfer` jobId 查重；`v2/proxy/store_peer.cc` `SubmitPrefetch` jobId 查重 |
-| 输入校验 | payloads 数 = token.keys 数；非 tokened store 拒绝带 payload 的 token | `v2/proxy/store_entry.cc` `ValidateTransfer` |
+| 输入校验 | payloads 数 = token.keys 数 | `v2/proxy/store_entry.cc` `ValidateTransfer` |
 | 完成合并 | GetFinished 聚合各分支与合成事件；Wait 按分支分组、未知 id 忽略 | `v2/proxy/store_peer.cc` `GetFinished`/`Wait`；`v2/proxy/store_entry.cc` `GetFinished`/`Wait` |
 | 兜底收尾 | OnRequestFinished 对未关窗口：Unpin / Commit（false） / CompletePrefetch（false） | `v2/proxy/store_entry.cc` `OnRequestFinished` |
 
@@ -655,7 +657,7 @@ branch   := store 节点 | pipe 节点
 
 ### 8.2 CacheBuffer —— 块级业务层
 
-CacheBuffer 把 TokenAddressed 协议映射到槽位引擎：`Reserve↔Alloc`、`Commit↔Commit`、`Pin↔Pin`、`Lookup/Touch` 为探测（`v2/store/cache/cache_buffer.h` `CacheBuffer` 类注释）。核心数据结构：
+CacheBuffer 把 Store 准入协议映射到槽位引擎：`Reserve↔Alloc`、`Commit↔Commit`、`Pin↔Pin`、`Lookup/Touch` 为探测（`v2/store/cache/cache_buffer.h` `CacheBuffer` 类注释）。核心数据结构：
 
 | 结构 | 类型 | 用途 |
 |---|---|---|
@@ -687,7 +689,7 @@ CacheBuffer 把 TokenAddressed 协议映射到槽位引擎：`Reserve↔Alloc`�
 |---|---|---|
 | `CacheBuffer` | 完整 | 引擎级实现：纯内存元数据管理，不含实际搬运 |
 | `ReplacementPolicy`（lru/clock/fifo） | 完整 | 可被具体 Store 直接组装复用 |
-| `CacheStore` | stub | 骨架：声明 Store + TokenAddressed + Prefetchable 三 facet 组合，方法返回 Unsupported（`v2/store/cache/cache_store.h` `CacheStore`） |
+| `CacheStore` | stub | 骨架：声明 Store + Prefetchable 组合，方法返回 Unsupported（`v2/store/cache/cache_store.h` `CacheStore`） |
 | `PosixStore` | stub | 接口打桩，方法返回 Unsupported（`v2/store/posix/posix_store.h` `PosixStore`） |
 | `transfer/file`、`transfer/memory` | 预留 | 空 CMake 占位 |
 
@@ -706,7 +708,7 @@ sequenceDiagram
     participant S as StoreScheduler
     participant W as StoreWorker
     participant N as StoreEntry
-    participant T as Store(TokenAddressed)
+    participant T as Store
 
     E->>S: OnNewRequest(RequestContext)
     S->>N: OnNewRequest(转发)
@@ -740,7 +742,7 @@ sequenceDiagram
     participant S as StoreScheduler
     participant W as StoreWorker
     participant N as StoreEntry
-    participant T as Store(TokenAddressed)
+    participant T as Store
 
     E->>S: OnNewRequest(RequestContext 含 TTL/长度事实)
     S->>N: OnNewRequest(转发)
@@ -845,7 +847,7 @@ sequenceDiagram
 # 配置(仓库根 CMakeLists.txt)
 cmake -B build -DUCM_MAJOR_VERSION=2 -DUCM_BUILD_UNIT_TESTS=ON
 cmake --build build -j$(nproc)
-ctest --test-dir build        # 153 个用例
+ctest --test-dir build        # 157 个用例
 ```
 
 - `UCM_MAJOR_VERSION=2`：仅构建 v2（为空走 legacy 流程）；
@@ -857,7 +859,7 @@ ctest --test-dir build        # 153 个用例
 | # | 扩展点 | 机制 | 注册 / 接入方式 | 是否侵入既有代码 |
 |---|---|---|---|---|
 | 1 | 存储插件 | dlopen + 工厂入口 | 树内 `ucm_add_store()`；树外按路径加载 | 否 |
-| 2 | 能力 facet | AsPrefetchable / AsTokenAddressed 可选实现 | 插件内 override | 否 |
+| 2 | 能力扩展 | 可退化能力：覆写基类默认实现（Pin/Alloc/Commit/Touch）；行为变更能力：AsPrefetchable facet | 插件内 override | 否 |
 | 3 | 淘汰策略 | 编译期注册表 | `UC_STORE_REGISTER_REPLACEMENT_POLICY` 宏 | 否 |
 | 4 | 路由策略 | 编译期注册表 | `UC_PROXY_REGISTER_ROUTING_STRATEGY` 宏 | 否 |
 | 5 | 拓扑组合 | Dictionary 配置 | type=store/pipe/peer 递归 | 否（纯配置） |
@@ -880,25 +882,30 @@ add_subdirectory(myengine)
 
 ```cpp
 // v2/store/myengine/my_store.h
+#include "prefetchable.h"
 #include "store.h"
-#include "token_addressed.h"
 
-class MyStore : public UC::Store::Store, public UC::Store::TokenAddressed {
+class MyStore : public UC::Store::Store {
 public:
     UC::Status Setup(const UC::Dictionary& config) override;   // 校验配置、初始化资源
     UC::Expected<std::vector<std::uint8_t>> Lookup(
         const std::vector<UC::BlockId>& ids) override;
-    UC::Status Load(std::size_t jobId, const UC::JobDescriptor& job) override;
-    UC::Status Dump(std::size_t jobId, const UC::JobDescriptor& job) override;
+    UC::Status Load(std::size_t jobId, const UC::JobDescriptor& job,
+                    UC::AddressedToken token) override;        // 退化寻址:忽略 token
+    UC::Status Dump(std::size_t jobId, const UC::JobDescriptor& job,
+                    UC::AddressedToken token) override;
     std::vector<std::pair<std::size_t, bool>> GetFinished() override;
     std::vector<std::pair<std::size_t, bool>> Wait(
         const std::vector<std::size_t>& ids) override;
 
-    // 可选能力:按需 override(默认返回 nullptr)
-    UC::Store::TokenAddressed* AsTokenAddressed() override { return this; }
+    // 可选能力:按需 override(基类提供退化默认实现)
+    UC::Expected<UC::AddressedToken> Pin(const std::vector<UC::BlockId>& ids) override;
+    void Unpin(const std::vector<UC::BlockId>& ids) override;
+    UC::Expected<UC::AddressedToken> Alloc(const std::vector<UC::BlockId>& ids,
+                                           const UC::RequestContext& ctx) override;
+    void Commit(const std::vector<UC::BlockId>& ids, bool success) override;
+    // 行为变更能力:经 facet 按需声明(默认返回 nullptr)
     UC::Store::Prefetchable* AsPrefetchable() override { return nullptr; }
-
-    /* TokenAddressed: Pin/Unpin/Alloc/Commit/token 版 Load/Dump ... */
 };
 ```
 
@@ -1037,11 +1044,11 @@ scheduler.on_request_finished("req-1")
 | 预取（Prefetch） | 下层 → 本层的提前搬运，完成后对上层表现为 HIT |
 | 窗口（Window） | 一次 PrepareX 与 CompleteX 之间的传输上下文，每请求每类至多一个 |
 | 准入（Admission） | Alloc（预约）→ Commit（提交 / 释放）的两阶段写入协议 |
-| Token（AddressedToken） | 自寻址不透明凭据：读端（Pin 铸造）/ 写端（Alloc 铸造）/ 预取计划 |
+| Token（AddressedToken） | 自寻址不透明凭据：读端（Pin 铸造）/ 写端（Alloc 铸造）/ 预取计划；payload 为空即默认寻址 |
 | 分级（Pipe） | 多级存储串联，容量与速度递阶 |
 | 分流（Peer） | 按请求事实将整个请求路由到某分支 |
 | 槽位（Slot） | 淘汰引擎固定池的管理单元，三态生命周期 |
 | S / W | Scheduler（控制面）/ Worker（数据面） |
-| facet | 可选能力接口（TokenAddressed / Prefetchable），经 AsXxx 查询 |
+| facet | 可选能力接口（Prefetchable），经 AsXxx 查询；可退化能力经基类默认实现提供 |
 | UCP1 | Peer 加帧的 magic 前缀，标记 payload 经过本 Peer 路由封装 |
 | rev / revive | 重纳入块过期后经成功结论以新截止复活 |

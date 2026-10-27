@@ -30,7 +30,7 @@ namespace UC::Proxy {
 namespace {
 
 Status ValidateTransfer(std::size_t jobId, const std::vector<BlockPayload>& payloads,
-                        const AddressedToken& token, bool tokened,
+                        const AddressedToken& token,
                         const std::unordered_set<std::size_t>& inFlightJobs)
 {
     if (inFlightJobs.count(jobId) != 0) {
@@ -40,10 +40,6 @@ Status ValidateTransfer(std::size_t jobId, const std::vector<BlockPayload>& payl
         return Status::InvalidParam("job '{}' pairs {} payloads with {} keys", jobId,
                                     payloads.size(), token.keys.size());
     }
-    if (!tokened && !token.payload.empty()) {
-        return Status::InvalidParam("job '{}' carries a token but the store is not token-addressed",
-                                    jobId);
-    }
     return Status::Ok();
 }
 
@@ -52,7 +48,6 @@ Status ValidateTransfer(std::size_t jobId, const std::vector<BlockPayload>& payl
 StoreEntry::StoreEntry(std::unique_ptr<LoadedStore> loaded) : loaded_(std::move(loaded))
 {
     prefetchable_ = loaded_->Store()->AsPrefetchable();
-    tokened_ = loaded_->Store()->AsTokenAddressed();
 }
 
 Status StoreEntry::OnNewRequest(const RequestContext& request)
@@ -78,10 +73,8 @@ void StoreEntry::OnRequestFinished(const RequestId& requestId)
     if (prefetchable_ && (!prefetchToken.keys.empty() || !prefetchToken.payload.empty())) {
         prefetchable_->CompletePrefetch(prefetchToken, false);
     }
-    if (tokened_) {
-        if (!state.pinnedBlocks.empty()) { tokened_->Unpin(state.pinnedBlocks); }
-        if (!state.reservedBlocks.empty()) { tokened_->Commit(state.reservedBlocks, false); }
-    }
+    if (!state.pinnedBlocks.empty()) { loaded_->Store()->Unpin(state.pinnedBlocks); }
+    if (!state.reservedBlocks.empty()) { loaded_->Store()->Commit(state.reservedBlocks, false); }
     requests_.erase(it);
 }
 
@@ -156,12 +149,7 @@ Expected<AddressedToken> StoreEntry::PrepareGet(const RequestId& requestId,
     if (!guard.Value()->pinnedBlocks.empty()) {
         return Status::InvalidParam("request '{}' has an unconcluded Get window", requestId);
     }
-    if (!tokened_) {
-        AddressedToken token;
-        token.keys = keys;
-        return token;
-    }
-    auto res = tokened_->Pin(keys);
+    auto res = loaded_->Store()->Pin(keys);
     if (!res) { return res.Error(); }
     guard.Value()->pinnedBlocks = keys;
     return res;
@@ -171,7 +159,7 @@ void StoreEntry::CompleteGet(const RequestId& requestId)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    if (tokened_) { tokened_->Unpin(guard.Value()->pinnedBlocks); }
+    loaded_->Store()->Unpin(guard.Value()->pinnedBlocks);
     guard.Value()->pinnedBlocks.clear();
 }
 
@@ -183,12 +171,7 @@ Expected<AddressedToken> StoreEntry::PreparePut(const RequestId& requestId,
     if (!guard.Value()->reservedBlocks.empty()) {
         return Status::InvalidParam("request '{}' has an unconcluded Put window", requestId);
     }
-    if (!tokened_) {
-        AddressedToken token;
-        token.keys = keys;
-        return token;
-    }
-    auto res = tokened_->Alloc(keys, guard.Value()->request);
+    auto res = loaded_->Store()->Alloc(keys, guard.Value()->request);
     if (!res) { return res.Error(); }
     guard.Value()->reservedBlocks = keys;
     return res;
@@ -198,7 +181,7 @@ void StoreEntry::CompletePut(const RequestId& requestId, bool success)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    if (tokened_) { tokened_->Commit(guard.Value()->reservedBlocks, success); }
+    loaded_->Store()->Commit(guard.Value()->reservedBlocks, success);
     guard.Value()->reservedBlocks.clear();
 }
 
@@ -220,14 +203,13 @@ Status StoreEntry::SubmitPrefetch(std::size_t jobId, AddressedToken token)
 Status StoreEntry::SubmitGet(std::size_t jobId, std::vector<BlockPayload> payloads,
                              AddressedToken token, const IoContext& ctx)
 {
-    auto check = ValidateTransfer(jobId, payloads, token, tokened_ != nullptr, inFlightJobs_);
+    auto check = ValidateTransfer(jobId, payloads, token, inFlightJobs_);
     if (check.Failure()) { return check; }
     Store::JobDescriptor job;
     job.blockIds = std::move(token.keys);
     job.payloads = std::move(payloads);
     job.prerequisiteHandle = ctx.prerequisiteHandle;
-    auto status = tokened_ != nullptr ? tokened_->Load(jobId, std::move(job), std::move(token))
-                                      : loaded_->Store()->Load(jobId, std::move(job));
+    auto status = loaded_->Store()->Load(jobId, std::move(job), std::move(token));
     if (status.Success()) { inFlightJobs_.insert(jobId); }
     return status;
 }
@@ -235,14 +217,13 @@ Status StoreEntry::SubmitGet(std::size_t jobId, std::vector<BlockPayload> payloa
 Status StoreEntry::SubmitPut(std::size_t jobId, std::vector<BlockPayload> payloads,
                              AddressedToken token, const IoContext& ctx)
 {
-    auto check = ValidateTransfer(jobId, payloads, token, tokened_ != nullptr, inFlightJobs_);
+    auto check = ValidateTransfer(jobId, payloads, token, inFlightJobs_);
     if (check.Failure()) { return check; }
     Store::JobDescriptor job;
     job.blockIds = std::move(token.keys);
     job.payloads = std::move(payloads);
     job.prerequisiteHandle = ctx.prerequisiteHandle;
-    auto status = tokened_ != nullptr ? tokened_->Dump(jobId, std::move(job), std::move(token))
-                                      : loaded_->Store()->Dump(jobId, std::move(job));
+    auto status = loaded_->Store()->Dump(jobId, std::move(job), std::move(token));
     if (status.Success()) { inFlightJobs_.insert(jobId); }
     return status;
 }

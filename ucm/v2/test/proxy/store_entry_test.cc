@@ -128,7 +128,7 @@ TEST(StoreEntryTest, PrepareGetPinsAndUnpinsTokenedBlocks)
     EXPECT_TRUE(handle.fake->unpins[1].empty());
 }
 
-TEST(StoreEntryTest, PrepareGetOnNonTokenedStoreMintsKeysOnlyToken)
+TEST(StoreEntryTest, PrepareGetOnDefaultAddressingStoreMintsKeysOnlyToken)
 {
     auto handle = MakeEntry(true, false);
     const std::vector<BlockId> keys = MakeKeys(1, 2);
@@ -137,9 +137,11 @@ TEST(StoreEntryTest, PrepareGetOnNonTokenedStoreMintsKeysOnlyToken)
     ASSERT_TRUE(token);
     EXPECT_EQ(token.Value().keys, keys);
     EXPECT_TRUE(token.Value().payload.empty());
-    EXPECT_TRUE(handle.fake->pins.empty());
+    ASSERT_EQ(handle.fake->pins.size(), 1);
+    EXPECT_EQ(handle.fake->pins[0], keys);
     handle.entry->CompleteGet("r");
-    EXPECT_TRUE(handle.fake->unpins.empty());
+    ASSERT_EQ(handle.fake->unpins.size(), 1);
+    EXPECT_EQ(handle.fake->unpins[0], keys);
 }
 
 TEST(StoreEntryTest, PrepareGetPropagatesPinFailure)
@@ -189,7 +191,7 @@ TEST(StoreEntryTest, CompletePutForwardsSuccessFlag)
     EXPECT_FALSE(handle.fake->commits[0].second);
 }
 
-TEST(StoreEntryTest, PreparePutOnNonTokenedStoreMintsKeysOnlyToken)
+TEST(StoreEntryTest, PreparePutOnDefaultAddressingStoreMintsKeysOnlyToken)
 {
     auto handle = MakeEntry(true, false);
     const std::vector<BlockId> keys = MakeKeys(1, 2);
@@ -198,9 +200,12 @@ TEST(StoreEntryTest, PreparePutOnNonTokenedStoreMintsKeysOnlyToken)
     ASSERT_TRUE(token);
     EXPECT_EQ(token.Value().keys, keys);
     EXPECT_TRUE(token.Value().payload.empty());
-    EXPECT_TRUE(handle.fake->allocs.empty());
+    ASSERT_EQ(handle.fake->allocs.size(), 1);
+    EXPECT_EQ(handle.fake->allocs[0].first, keys);
     handle.entry->CompletePut("r", true);
-    EXPECT_TRUE(handle.fake->commits.empty());
+    ASSERT_EQ(handle.fake->commits.size(), 1);
+    EXPECT_EQ(handle.fake->commits[0].first, keys);
+    EXPECT_TRUE(handle.fake->commits[0].second);
 }
 
 TEST(StoreEntryTest, PreparePutPropagatesAllocFailure)
@@ -315,7 +320,7 @@ TEST(StoreEntryTest, WaitCombinesSyntheticAndStoreCompletions)
     EXPECT_TRUE(handle.entry->GetFinished().empty());
 }
 
-TEST(StoreEntryTest, SubmitGetUsesTokenBearingLoadOnTokenedStore)
+TEST(StoreEntryTest, SubmitGetForwardsTokenBearingLoad)
 {
     auto handle = MakeEntry(true, true);
     const std::vector<BlockId> keys = MakeKeys(1, 2);
@@ -325,19 +330,18 @@ TEST(StoreEntryTest, SubmitGetUsesTokenBearingLoadOnTokenedStore)
     const std::vector<BlockPayload> payloads = {MakePayload(16), MakePayload(32)};
     const IoContext context{0xABCD};
     EXPECT_TRUE(handle.entry->SubmitGet(9, payloads, token.Value(), context).Success());
-    ASSERT_EQ(handle.fake->tokenedLoads.size(), 1);
-    EXPECT_EQ(handle.fake->tokenedLoads[0].jobId, 9);
-    EXPECT_EQ(handle.fake->tokenedLoads[0].job.blockIds, keys);
-    ASSERT_EQ(handle.fake->tokenedLoads[0].job.payloads.size(), 2);
-    EXPECT_EQ(handle.fake->tokenedLoads[0].job.payloads[0].sizes, payloads[0].sizes);
-    EXPECT_EQ(handle.fake->tokenedLoads[0].job.payloads[1].sizes, payloads[1].sizes);
-    EXPECT_EQ(handle.fake->tokenedLoads[0].job.prerequisiteHandle, 0xABCD);
-    EXPECT_TRUE(handle.fake->tokenedLoads[0].token.keys.empty());
-    EXPECT_EQ(handle.fake->tokenedLoads[0].token.payload, MakeAddressedToken(2).payload);
-    EXPECT_TRUE(handle.fake->baseLoads.empty());
+    ASSERT_EQ(handle.fake->loads.size(), 1);
+    EXPECT_EQ(handle.fake->loads[0].jobId, 9);
+    EXPECT_EQ(handle.fake->loads[0].job.blockIds, keys);
+    ASSERT_EQ(handle.fake->loads[0].job.payloads.size(), 2);
+    EXPECT_EQ(handle.fake->loads[0].job.payloads[0].sizes, payloads[0].sizes);
+    EXPECT_EQ(handle.fake->loads[0].job.payloads[1].sizes, payloads[1].sizes);
+    EXPECT_EQ(handle.fake->loads[0].job.prerequisiteHandle, 0xABCD);
+    EXPECT_TRUE(handle.fake->loads[0].token.keys.empty());
+    EXPECT_EQ(handle.fake->loads[0].token.payload, MakeAddressedToken(2).payload);
 }
 
-TEST(StoreEntryTest, SubmitGetUsesPlainLoadOnNonTokenedStore)
+TEST(StoreEntryTest, SubmitGetPassesKeysOnlyTokenToDefaultAddressingStore)
 {
     auto handle = MakeEntry(true, false);
     const std::vector<BlockId> keys = MakeKeys(1, 2);
@@ -347,13 +351,13 @@ TEST(StoreEntryTest, SubmitGetUsesPlainLoadOnNonTokenedStore)
     const std::vector<BlockPayload> payloads = {MakePayload(16), MakePayload(32)};
     const IoContext context{0xABCD};
     EXPECT_TRUE(handle.entry->SubmitGet(9, payloads, token.Value(), context).Success());
-    ASSERT_EQ(handle.fake->baseLoads.size(), 1);
-    EXPECT_EQ(handle.fake->baseLoads[0].jobId, 9);
-    EXPECT_EQ(handle.fake->baseLoads[0].job.blockIds, keys);
-    ASSERT_EQ(handle.fake->baseLoads[0].job.payloads.size(), 2);
-    EXPECT_EQ(handle.fake->baseLoads[0].job.payloads[1].sizes, payloads[1].sizes);
-    EXPECT_EQ(handle.fake->baseLoads[0].job.prerequisiteHandle, 0xABCD);
-    EXPECT_TRUE(handle.fake->tokenedLoads.empty());
+    ASSERT_EQ(handle.fake->loads.size(), 1);
+    EXPECT_EQ(handle.fake->loads[0].jobId, 9);
+    EXPECT_EQ(handle.fake->loads[0].job.blockIds, keys);
+    ASSERT_EQ(handle.fake->loads[0].job.payloads.size(), 2);
+    EXPECT_EQ(handle.fake->loads[0].job.payloads[1].sizes, payloads[1].sizes);
+    EXPECT_EQ(handle.fake->loads[0].job.prerequisiteHandle, 0xABCD);
+    EXPECT_TRUE(handle.fake->loads[0].token.payload.empty());
 }
 
 TEST(StoreEntryTest, SubmitGetRejectsMismatchedInputs)
@@ -367,19 +371,7 @@ TEST(StoreEntryTest, SubmitGetRejectsMismatchedInputs)
         handle.entry->SubmitGet(9, {MakePayload(16)}, token.Value(), IoContext{0});
     ASSERT_TRUE(payloadMismatch.Failure());
     EXPECT_EQ(payloadMismatch, Status::InvalidParam());
-    EXPECT_TRUE(handle.fake->tokenedLoads.empty());
-
-    auto plain = MakeEntry(true, false);
-    plain.entry->OnNewRequest(MakeContext("r"));
-    auto plainToken = plain.entry->PrepareGet("r", keys);
-    ASSERT_TRUE(plainToken);
-    AddressedToken stray = MakeAddressedToken(1);
-    stray.keys = keys;
-    auto strayRejected =
-        plain.entry->SubmitGet(9, {MakePayload(16), MakePayload(16)}, stray, IoContext{0});
-    ASSERT_TRUE(strayRejected.Failure());
-    EXPECT_EQ(strayRejected, Status::InvalidParam());
-    EXPECT_TRUE(plain.fake->baseLoads.empty());
+    EXPECT_TRUE(handle.fake->loads.empty());
 }
 
 TEST(StoreEntryTest, SubmitGetPropagatesStoreFailure)
@@ -397,7 +389,7 @@ TEST(StoreEntryTest, SubmitGetPropagatesStoreFailure)
         handle.entry->SubmitGet(9, {MakePayload(16)}, token.Value(), IoContext{0}).Success());
 }
 
-TEST(StoreEntryTest, SubmitPutUsesTokenBearingDumpOnTokenedStore)
+TEST(StoreEntryTest, SubmitPutForwardsTokenBearingDump)
 {
     auto handle = MakeEntry(true, true);
     const std::vector<BlockId> keys = MakeKeys(1, 2);
@@ -407,19 +399,18 @@ TEST(StoreEntryTest, SubmitPutUsesTokenBearingDumpOnTokenedStore)
     const std::vector<BlockPayload> payloads = {MakePayload(16), MakePayload(32)};
     const IoContext context{0xABCD};
     EXPECT_TRUE(handle.entry->SubmitPut(4, payloads, token.Value(), context).Success());
-    ASSERT_EQ(handle.fake->tokenedDumps.size(), 1);
-    EXPECT_EQ(handle.fake->tokenedDumps[0].jobId, 4);
-    EXPECT_EQ(handle.fake->tokenedDumps[0].job.blockIds, keys);
-    EXPECT_EQ(handle.fake->tokenedDumps[0].job.prerequisiteHandle, 0xABCD);
-    EXPECT_TRUE(handle.fake->tokenedDumps[0].token.keys.empty());
-    EXPECT_EQ(handle.fake->tokenedDumps[0].token.payload, MakeAddressedToken(2).payload);
-    EXPECT_TRUE(handle.fake->baseDumps.empty());
+    ASSERT_EQ(handle.fake->dumps.size(), 1);
+    EXPECT_EQ(handle.fake->dumps[0].jobId, 4);
+    EXPECT_EQ(handle.fake->dumps[0].job.blockIds, keys);
+    EXPECT_EQ(handle.fake->dumps[0].job.prerequisiteHandle, 0xABCD);
+    EXPECT_TRUE(handle.fake->dumps[0].token.keys.empty());
+    EXPECT_EQ(handle.fake->dumps[0].token.payload, MakeAddressedToken(2).payload);
     auto duplicate = handle.entry->SubmitPut(4, payloads, token.Value(), context);
     ASSERT_TRUE(duplicate.Failure());
     EXPECT_EQ(duplicate, Status::InvalidParam());
 }
 
-TEST(StoreEntryTest, SubmitPutUsesPlainDumpOnNonTokenedStore)
+TEST(StoreEntryTest, SubmitPutPassesKeysOnlyTokenToDefaultAddressingStore)
 {
     auto handle = MakeEntry(true, false);
     const std::vector<BlockId> keys = MakeKeys(1, 1);
@@ -428,10 +419,10 @@ TEST(StoreEntryTest, SubmitPutUsesPlainDumpOnNonTokenedStore)
     ASSERT_TRUE(token);
     EXPECT_TRUE(
         handle.entry->SubmitPut(4, {MakePayload(16)}, token.Value(), IoContext{0}).Success());
-    ASSERT_EQ(handle.fake->baseDumps.size(), 1);
-    EXPECT_EQ(handle.fake->baseDumps[0].jobId, 4);
-    EXPECT_EQ(handle.fake->baseDumps[0].job.blockIds, keys);
-    EXPECT_TRUE(handle.fake->tokenedDumps.empty());
+    ASSERT_EQ(handle.fake->dumps.size(), 1);
+    EXPECT_EQ(handle.fake->dumps[0].jobId, 4);
+    EXPECT_EQ(handle.fake->dumps[0].job.blockIds, keys);
+    EXPECT_TRUE(handle.fake->dumps[0].token.payload.empty());
 }
 
 TEST(StoreEntryTest, SubmitPutPropagatesStoreFailure)

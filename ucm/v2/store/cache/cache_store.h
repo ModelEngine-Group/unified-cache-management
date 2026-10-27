@@ -25,11 +25,10 @@
 
 #include "prefetchable.h"
 #include "store.h"
-#include "token_addressed.h"
 
 namespace UC::Store {
 
-class CacheStore : public Store, public TokenAddressed, public Prefetchable {
+class CacheStore : public Store, public Prefetchable {
 public:
     Status Setup(const Dictionary& /*config*/) override
     {
@@ -49,14 +48,14 @@ public:
     {
     }
 
-    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/) override
+    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
     {
-        return Status::Unsupported("CacheStore::Load is token-bearing only (TokenAddressed::Load)");
+        return Status::Unsupported("CacheStore::Load is not implemented");
     }
 
-    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/) override
+    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
     {
-        return Status::Unsupported("CacheStore::Dump is token-bearing only (TokenAddressed::Dump)");
+        return Status::Unsupported("CacheStore::Dump is not implemented");
     }
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
@@ -69,9 +68,7 @@ public:
 
     Prefetchable* AsPrefetchable() override { return this; }
 
-    TokenAddressed* AsTokenAddressed() override { return this; }
-
-    /*== TokenAddressed extension ==*/
+    /*== Addressing & admission ==*/
 
     Expected<AddressedToken> Pin(const std::vector<BlockId>& /*blockIds*/) override
     {
@@ -87,16 +84,6 @@ public:
     }
 
     void Commit(const std::vector<BlockId>& /*blockIds*/, bool /*success*/) override {}
-
-    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
-    {
-        return Status::Unsupported("CacheStore::Load is not implemented");
-    }
-
-    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
-    {
-        return Status::Unsupported("CacheStore::Dump is not implemented");
-    }
 
     /*== Prefetchable extension ==*/
 

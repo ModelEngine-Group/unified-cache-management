@@ -29,11 +29,11 @@
 #include "type/block.h"
 #include "type/dictionary.h"
 #include "type/request.h"
+#include "type/token.h"
 
 namespace UC::Store {
 
 class Prefetchable;
-class TokenAddressed;
 
 struct JobDescriptor {
     /** BlockIds of the blocks to transfer in this job. */
@@ -52,6 +52,16 @@ struct JobDescriptor {
 /**
  * @brief Base interface of a KV cache storage tier.
  *
+ * @note The interface doubles as the addressing and admission protocol of
+ *       the transfer pipeline: Pin/Alloc mint opaque AddressedToken
+ *       credentials that the matching Load/Dump jobs consume, and Commit
+ *       concludes the two-phase admissions opened by Alloc. Methods whose
+ *       semantics presuppose capacity management (Pin/Unpin/Alloc/Commit)
+ *       ship with degenerate defaults — a keys-only token (empty payload,
+ *       meaning the store resolves blockIds on its own) and no-op
+ *       conclusions. Plain stores therefore implement only the probe and
+ *       transfer entry points, ignore the token argument, and expose their
+ *       data upon transfer completion instead of upon Commit.
  * @note Threading contract: control-plane methods must be called from a
  *       single thread or be externally serialized. The exactly-once
  *       completion semantics of GetFinished()/Wait() implies a single
@@ -128,7 +138,7 @@ public:
      * @param blockIds  Blocks ordered by their position within the request.
      *
      * @return Expected index of the rightmost present block; -1 when none
-     *         is present (empty input yields -1 as well). Error status
+     *         is present (empty input yields -1 as well); error status
      *         otherwise. Contiguity is neither required nor checked:
      *         blocks before the returned index may be absent.
      *
@@ -159,38 +169,141 @@ public:
     virtual void Touch(const std::vector<BlockId>& /*blockIds*/, const RequestContext& /*context*/)
     {
     }
+    /**
+     * @brief Pins the given blocks so they cannot be evicted, and mints
+     *        their read-end token.
+     *
+     * @param blockIds Blocks to pin; each must be present.
+     *
+     * @return Expected the read-end token on success: keys echoes blockIds,
+     *         payload packs the transfer-end addressing the worker side
+     *         needs — empty when it resolves blockIds on its own — and
+     *         stays valid while the pin is held. Error status (e.g.
+     *         NotFound) otherwise.
+     *
+     * @note Implementations must guarantee atomicity: if Pin fails, none of
+     *       the listed blocks remain pinned.
+     * @note Stores without eviction need not override this: the base
+     *       implementation mints a keys-only token (default addressing)
+     *       and never fails.
+     */
+    virtual Expected<AddressedToken> Pin(const std::vector<BlockId>& blockIds)
+    {
+        AddressedToken token;
+        token.keys = blockIds;
+        return token;
+    }
+    /**
+     * @brief Releases pins previously taken via Pin.
+     *
+     * @param blockIds Blocks to unpin.
+     *
+     * @note Must be idempotent: unpinning blocks that are not pinned is a
+     *       no-op, hence there is no Status return.
+     * @note The base implementation is a no-op: stores without eviction
+     *       need not override this.
+     */
+    virtual void Unpin(const std::vector<BlockId>& /*blockIds*/) {}
+    /**
+     * @brief Reserves capacity for blocks that are about to enter this Store.
+     *
+     * @param blockIds Blocks to reserve space for.
+     * @param context  Request facts of the requesting context (see
+     *                 RequestContext): retention-governing stores consume
+     *                 the fields they understand and ignore the rest.
+     *                 Write-through demotions of an already-concluded window
+     *                 admit with a default context (no TTL fact).
+     *
+     * @return Expected the write-end token on success: keys echoes blockIds,
+     *         payload packs the write-end addressing consumed by the
+     *         matching Dump job — empty when the worker side resolves
+     *         blockIds on its own. Error status (e.g. NoSpace) otherwise.
+     *
+     * @note Offload reservations are NOT visible to Lookup until the
+     *       matching Commit. Implementations must guarantee atomicity: if
+     *       Alloc fails, none of the listed blocks remain reserved.
+     *       Every successful Alloc must be concluded by exactly one
+     *       Commit of the same blocks (true admits the data, false
+     *       releases the reservation); until then the reserved slots
+     *       are immune to eviction. Concurrent Allocs of the same block
+     *       may share one reservation: each holds one reference and is
+     *       concluded by its own Commit of the same blocks, and the
+     *       reservation concludes -- becoming visible or released --
+     *       when the last reference arrives.
+     * @note Stores without capacity management need not override this: the
+     *       base implementation mints a keys-only token (default
+     *       addressing) and never reserves.
+     */
+    virtual Expected<AddressedToken> Alloc(const std::vector<BlockId>& blockIds,
+                                           const RequestContext& /*context*/)
+    {
+        AddressedToken token;
+        token.keys = blockIds;
+        return token;
+    }
+    /**
+     * @brief Finalizes or releases the reservation.
+     *
+     * @param blockIds Blocks of the admission being concluded.
+     * @param success  true commits the blocks behind the admission and
+     *                 makes them visible to Lookup; false releases the
+     *                 reservation.
+     *
+     * @note Commit addresses this store's live admission of exactly these
+     *       blocks. Concurrent admissions of the same block (different
+     *       requests) are serialized by the store; on data conflicts
+     *       last-writer-wins, matching the window protocol's re-put rule.
+     *       Commit(blockIds, false) may only be issued once the matching
+     *       Dump jobs have finished and their completions have been consumed
+     *       via GetFinished()/Wait(): a released reservation's slots may be
+     *       handed to a new admission immediately, and a still-flying Dump
+     *       would corrupt the new occupant's data.
+     * @note The base implementation is a no-op: stores using default
+     *       addressing need not override this — their data visibility is
+     *       governed by transfer completion.
+     */
+    virtual void Commit(const std::vector<BlockId>& /*blockIds*/, bool /*success*/) {}
 
     /**
      * @brief Copies blocks from this Store to the inference side, as an
-     * asynchronous job (reload path).
+     *        asynchronous job (reload path).
      *
      * @param jobId Caller-allocated handle of the asynchronous job; must be
      *              unique among in-flight jobs.
-     * @param job   Store transfer job descriptor: job.blockIds[i] resolves
-     *              to its read source on this store's worker side;
-     *              job.payloads[i] is the destination.
+     * @param job   Transfer job descriptor: job.blockIds[i] with the token
+     *              resolves to the read source of blockIds[i] on this
+     *              store's worker side; job.payloads[i] is the destination.
+     * @param token Read end minted by the matching Pin; its payload is
+     *              empty when this store resolves blockIds on its own
+     *              (such implementations ignore the token).
      *
      * @return Status indicating whether the job was accepted (and started);
-     *         error status otherwise, with nothing started.
+     *         error status otherwise, with nothing started. Completion
+     *         arrives via GetFinished()/Wait().
      */
-    virtual Status Load(std::size_t jobId, JobDescriptor job) = 0;
+    virtual Status Load(std::size_t jobId, JobDescriptor job, AddressedToken token) = 0;
     /**
      * @brief Copies blocks from the inference side into this Store, as an
-     * asynchronous job (offload path).
+     *        asynchronous job (offload path).
      *
      * @param jobId Caller-allocated handle of the asynchronous job; must be
      *              unique among in-flight jobs.
-     * @param job   Store transfer job descriptor: job.blockIds[i] resolves
-     *              to its write destination on this store's worker side;
-     *              job.payloads[i] is the source.
+     * @param job   Transfer job descriptor: job.blockIds[i] with the token
+     *              resolves to the write destination of blockIds[i] on
+     *              this store's worker side; job.payloads[i] is the
+     *              source. The data becomes visible to Lookup only after
+     *              the matching Commit on stores with real admission.
+     * @param token Write end minted by the matching Alloc(...); its payload
+     *              is empty when this store resolves blockIds on its own.
      *
      * @return Status indicating whether the job was accepted (and started);
-     *         error status otherwise, with nothing started.
+     *         error status otherwise, with nothing started. Completion
+     *         arrives via GetFinished()/Wait().
      */
-    virtual Status Dump(std::size_t jobId, JobDescriptor job) = 0;
+    virtual Status Dump(std::size_t jobId, JobDescriptor job, AddressedToken token) = 0;
     /**
      * @brief Returns the jobs finished since the last call and consumes their
-     * completion events.
+     *        completion events.
      *
      * @return (jobId, success) pairs, where success tells whether the job's
      *         transfer completed successfully.
@@ -201,7 +314,7 @@ public:
     virtual std::vector<std::pair<std::size_t, bool>> GetFinished() = 0;
     /**
      * @brief Blocks until every listed job has finished, then returns their
-     * (consumed) completion events.
+     *        (consumed) completion events.
      *
      * @param jobIds Jobs to wait for; ids that are unknown or whose completion
      *               has already been consumed are ignored.
@@ -222,14 +335,6 @@ public:
      *         has the lifetime of this Store object.
      */
     virtual Prefetchable* AsPrefetchable() { return nullptr; }
-    /**
-     * @brief Queries the TokenAddressed capability of this Store.
-     *
-     * @return Pointer to the TokenAddressed facet of this object, or nullptr
-     *         when this Store does not implement it. The returned pointer
-     *         has the lifetime of this Store object.
-     */
-    virtual TokenAddressed* AsTokenAddressed() { return nullptr; }
 };
 
 /**
