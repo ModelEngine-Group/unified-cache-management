@@ -26,7 +26,6 @@
 #include <unordered_map>
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "posix_file.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
@@ -291,7 +290,7 @@ void ShardGarbageCollector::OnTaskTimeout(const ShardTaskContext& ctx, ssize_t t
 {
     UC_WARN(
         "GC {} task on shard({}) exceeded {}ms (tid={}); storage may be unresponsive. "
-        "This round keeps waiting; a replacement worker is started.",
+        "Giving up this shard for this round; a replacement worker is started.",
         ctx.type == ShardTaskContext::Type::SAMPLE ? "sample" : "recycle", ctx.shard,
         config_.posixGcTaskTimeoutMs, tid);
     std::optional<BackendManager::BackendAttempt> attempt;
@@ -304,20 +303,11 @@ void ShardGarbageCollector::OnTaskTimeout(const ShardTaskContext& ctx, ssize_t t
 }
 
 void ShardGarbageCollector::RemoveFiles(const std::vector<Detail::BlockId>& blocks,
-                                        const BackendManager::BackendAttempt& attempt,
-                                        const ShardTaskResult& result)
+                                        const std::string& backend, const ShardTaskResult& result)
 {
-    const auto& backend = backendMgr_->Backends()[attempt.index];
     for (const auto& blockId : blocks) {
         if (result.finished.load()) { break; }
-        const auto path = layout_->ArchivedFilePath(backend, blockId);
-        auto s = PosixFile{path}.Remove();
-        backendMgr_->RecordResult(attempt, s);
-        if (s.Failure()) {
-            UC_WARN("Failed({}) to remove GC victim({}); the next round removes the rest.", s,
-                    path);
-            break;
-        }
+        layout_->RemoveFile(backend, blockId);
     }
 }
 
@@ -351,13 +341,13 @@ void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
             break;
         }
         case ShardTaskContext::Type::DELETE: {
-            RemoveFiles(*ctx.victims, attempt.Value(), *ctx.result);
+            RemoveFiles(*ctx.victims, backend, *ctx.result);
             break;
         }
         case ShardTaskContext::Type::GC: {
             oldest = layout_->GetOldestFiles(backend, ctx.shard, config_.posixGcRecyclePercent,
                                              maxRecycle);
-            RemoveFiles(oldest, attempt.Value(), *ctx.result);
+            RemoveFiles(oldest, backend, *ctx.result);
             break;
         }
     }

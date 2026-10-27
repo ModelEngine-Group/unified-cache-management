@@ -143,15 +143,7 @@ void HotnessTracker::TouchBatch(const Batch& batch)
     const auto& backend = backendMgr_->Backends()[batch.attempt.index];
     for (const auto& block : batch.blocks) {
         const auto path = layout_->ArchivedFilePath(backend, block);
-        const auto ret = utime(path.c_str(), nullptr);
-        const auto error = errno;
-        if (ret == 0) {
-            backendMgr_->RecordResult(batch.attempt, Status::OK());
-        } else if (error == ENOENT) {
-            backendMgr_->RecordResult(batch.attempt, Status::NotFound());
-        } else {
-            backendMgr_->RecordResult(batch.attempt, Status::OsApiError(std::to_string(error)));
-        }
+        utime(path.c_str(), nullptr);
     }
     pendingBlocks_.fetch_sub(batch.blocks.size(), std::memory_order_relaxed);
 }

@@ -81,8 +81,8 @@ private:
     std::vector<std::shared_ptr<ShardTaskResult>> RunShardTasks(
         std::vector<ShardTaskContext> tasks);
     void ProcessTask(ShardTaskContext& ctx);
-    void RemoveFiles(const std::vector<Detail::BlockId>& blocks,
-                     const BackendManager::BackendAttempt& attempt, const ShardTaskResult& result);
+    void RemoveFiles(const std::vector<Detail::BlockId>& blocks, const std::string& backend,
+                     const ShardTaskResult& result);
     void OnTaskTimeout(const ShardTaskContext& ctx, ssize_t tid);
     void GCCheckLoop();
     void StopBackgroundCheck();
