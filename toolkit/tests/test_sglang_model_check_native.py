@@ -23,6 +23,28 @@ from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import server_
 
 
 class NativeRoutingTest(unittest.TestCase):
+    def test_low_ratio_discovery_compatibility(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_low_ratio_regions_compat
+        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable
+
+        old = SimpleNamespace()
+        pool = SimpleNamespace()
+        self.assertEqual(_dsv4_low_ratio_regions_compat(old, pool, 256, [0, 4, 128]), [])
+        for ratios, physical in (([1, 4], pool), ([2], pool),
+                                 ([4], SimpleNamespace(sources_by_ratio={1: [0]})),
+                                 ([4], SimpleNamespace(kv_pools={2: object()})),
+                                 ([4], SimpleNamespace(index_pools={1: object()}))):
+            with self.assertRaisesRegex(PoolProbeUnavailable, "active C1/C2 payloads"):
+                _dsv4_low_ratio_regions_compat(old, physical, 256, ratios)
+        discover = unittest.mock.Mock(return_value=["native region"])
+        self.assertEqual(_dsv4_low_ratio_regions_compat(
+            SimpleNamespace(_dsv4_low_ratio_regions=discover), pool, 256, [1]), ["native region"])
+        discover.assert_called_once_with(pool, 256)
+        discover.side_effect = RuntimeError("native discovery failed")
+        with self.assertRaisesRegex(RuntimeError, "native discovery failed"):
+            _dsv4_low_ratio_regions_compat(
+                SimpleNamespace(_dsv4_low_ratio_regions=discover), pool, 256, [1])
+
     def test_dsv4_ratios_select_only_main_layers(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_main_layer_ratios
         from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable

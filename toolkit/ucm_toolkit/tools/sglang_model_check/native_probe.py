@@ -249,6 +249,28 @@ def _dsv4_main_layer_ratios(model):
     return ratios[:num_layers]
 
 
+def _dsv4_low_ratio_regions_compat(assembler, device_pool, page_size, ratios):
+    """Older V4 assemblers lack the V4.1 C1/C2 region-discovery helper.
+
+    Only omit discovery when neither active layer descriptions nor physical
+    pools indicate low-ratio payloads. Do not silently certify untested pools.
+    """
+    discover = getattr(assembler, "_dsv4_low_ratio_regions", None)
+    if callable(discover):
+        return discover(device_pool, page_size)
+    active = set(ratios) & {1, 2}
+    for field in ("sources_by_ratio", "kv_pools", "index_pools"):
+        pools = getattr(device_pool, field, {}) or {}
+        active.update(ratio for ratio in (1, 2) if pools.get(ratio))
+    if active:
+        raise PoolProbeUnavailable(
+            "installed SGLang lacks _dsv4_low_ratio_regions, but active "
+            f"C1/C2 payloads require discovery (ratios={sorted(active)}); "
+            "this checker cannot validate those pools on this SGLang version"
+        )
+    return []
+
+
 def _build_dsv4(bundle, model, config, platform, dtype):
     from sglang.srt.mem_cache import deepseek_v4_memory_pool as native
     from sglang.srt.mem_cache.hybrid_cache import hybrid_pool_assembler as assembler
@@ -336,7 +358,9 @@ def _build_dsv4(bundle, model, config, platform, dtype):
                     num_host_pages=pages, swa_page_size=device_pool.swa_page_size,
                     layout=config.layout, pin_memory=False, device="cpu", allocator_type="default",
                 )
-    for name, source_pool, buffers, _ in assembler._dsv4_low_ratio_regions(device_pool, config.page_size):
+    for name, source_pool, buffers, _ in _dsv4_low_ratio_regions_compat(
+        assembler, device_pool, config.page_size, ratios
+    ):
         paged(name, buffers, buffers[0][0].nbytes, config.page_size, True)
     bundle.report.update(compress_ratios=ratios, unified_kv=device_pool._unified_kv)
 
