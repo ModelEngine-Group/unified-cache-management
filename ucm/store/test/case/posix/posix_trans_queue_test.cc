@@ -84,7 +84,8 @@ TEST_F(UCPosixTransQueueTest, LateQueuedUnitsGiveUpWhenPicked)
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
     config.dataTransConcurrency = 1;
-    config.timeoutMs = 5;
+    // Long enough for the only worker to pick up the first load before it times out in queue.
+    config.timeoutMs = 200;
     config.ioDirect = false;
     config.storageBackends.push_back(Path());
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
@@ -120,10 +121,16 @@ TEST_F(UCPosixTransQueueTest, LateQueuedUnitsGiveUpWhenPicked)
         waiters.push_back(std::make_shared<UC::Latch>());
         queue.Push(tasks.back(), waiters.back());
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2 * config.timeoutMs));
 
-    // Open the write end so the stuck worker returns and picks up the late loads.
-    const auto writer = ::open(fifo.c_str(), O_WRONLY);
+    // Open the write end so the stuck worker returns and picks up the late loads. A non-blocking
+    // open fails while the FIFO has no reader, so the test fails instead of hanging if the worker
+    // never opened it.
+    auto writer = -1;
+    for (size_t i = 0; i < 100 && writer < 0; ++i) {
+        writer = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK);
+        if (writer < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+    }
     ASSERT_GE(writer, 0);
     ::close(writer);
     stuckWaiter->Wait();
