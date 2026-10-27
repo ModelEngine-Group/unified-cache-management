@@ -45,7 +45,7 @@ namespace UC::Store {
  *        block-to-slot mapping, the two-phase admission visibility and
  *        the per-block TTL bookkeeping.
  *
- * The buffer maps the TokenAddressed protocol onto the slot-level
+ * The buffer maps the Store admission protocol onto the slot-level
  * engine: Reserve() backs Alloc(), Commit() concludes reservations,
  * Pin() resolves and guards read sources, and Lookup()/Touch() are
  * the presence and use probes. Reservations are invisible to Lookup
@@ -127,7 +127,7 @@ public:
     }
     /**
      * @brief Reserves slots for blocks about to enter the buffer:
-     *        backs TokenAddressed::Alloc.
+     *        backs Store::Alloc.
      *
      * Already-committed blocks keep their slot; the re-admission is
      * concluded by Commit, which revives a block expired by then
@@ -181,7 +181,7 @@ public:
         return batch.slots;
     }
     /**
-     * @brief Concludes reservations: backs TokenAddressed::Commit.
+     * @brief Concludes reservations: backs Store::Commit.
      *
      * Every Commit occurrence drops one reference of the matching
      * reservation; concurrent admissions of the same block share it,
@@ -233,7 +233,7 @@ public:
     }
     /**
      * @brief Pins the given blocks and resolves their slots: backs
-     *        TokenAddressed::Pin.
+     *        Store::Pin.
      *
      * @return Expected per-block slot vector on success, parallel to
      *         blockIds: the read sources of the matching Load jobs.
@@ -265,7 +265,7 @@ public:
     }
     /**
      * @brief Releases pins previously taken via Pin; idempotent --
-     *        backs TokenAddressed::Unpin.
+     *        backs Store::Unpin.
      *
      * Unpinning blocks that are not pinned this way -- absent, or only
      * pinned by an in-flight re-admission -- is a no-op.

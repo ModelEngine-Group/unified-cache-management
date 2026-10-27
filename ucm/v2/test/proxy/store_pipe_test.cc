@@ -48,9 +48,15 @@ public:
         return std::vector<std::uint8_t>{};
     }
 
-    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/) override { return Status::Ok(); }
+    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
+    {
+        return Status::Ok();
+    }
 
-    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/) override { return Status::Ok(); }
+    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
+    {
+        return Status::Ok();
+    }
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
 

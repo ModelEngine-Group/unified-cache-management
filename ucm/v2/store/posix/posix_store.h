@@ -43,12 +43,12 @@ public:
     {
     }
 
-    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/) override
+    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
     {
         return Status::Unsupported("PosixStore::Load is not implemented");
     }
 
-    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/) override
+    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
     {
         return Status::Unsupported("PosixStore::Dump is not implemented");
     }

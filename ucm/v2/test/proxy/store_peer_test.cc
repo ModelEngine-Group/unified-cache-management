@@ -228,16 +228,16 @@ TEST(StorePeerTest, PrepareGetWrapsTokenForRouting)
     auto duplicate = handle.peer->SubmitGet(9, payloads, token.Value(), context);
     ASSERT_TRUE(duplicate.Failure());
     EXPECT_EQ(duplicate, Status::InvalidParam());
-    ASSERT_EQ(handle.fakes[0]->tokenedLoads.size(), 1);
-    EXPECT_EQ(handle.fakes[0]->tokenedLoads[0].jobId, 9);
-    EXPECT_EQ(handle.fakes[0]->tokenedLoads[0].job.blockIds, keys);
-    EXPECT_EQ(handle.fakes[0]->tokenedLoads[0].job.payloads[1].sizes, payloads[1].sizes);
-    EXPECT_EQ(handle.fakes[0]->tokenedLoads[0].job.prerequisiteHandle, 0xABCD);
-    EXPECT_TRUE(handle.fakes[0]->tokenedLoads[0].token.keys.empty());
-    EXPECT_EQ(handle.fakes[0]->tokenedLoads[0].token.payload, MakeAddressedToken(2).payload);
+    ASSERT_EQ(handle.fakes[0]->loads.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->loads[0].jobId, 9);
+    EXPECT_EQ(handle.fakes[0]->loads[0].job.blockIds, keys);
+    EXPECT_EQ(handle.fakes[0]->loads[0].job.payloads[1].sizes, payloads[1].sizes);
+    EXPECT_EQ(handle.fakes[0]->loads[0].job.prerequisiteHandle, 0xABCD);
+    EXPECT_TRUE(handle.fakes[0]->loads[0].token.keys.empty());
+    EXPECT_EQ(handle.fakes[0]->loads[0].token.payload, MakeAddressedToken(2).payload);
 }
 
-TEST(StorePeerTest, NonTokenedBranchRoutesThroughEmptyPayload)
+TEST(StorePeerTest, DefaultAddressingBranchRoutesThroughEmptyPayload)
 {
     auto handle = MakePeer({
         {true, false}
@@ -251,10 +251,10 @@ TEST(StorePeerTest, NonTokenedBranchRoutesThroughEmptyPayload)
     EXPECT_TRUE(
         handle.peer->SubmitGet(9, {MakePayload(16), MakePayload(32)}, token.Value(), IoContext{0})
             .Success());
-    ASSERT_EQ(handle.fakes[0]->baseLoads.size(), 1);
-    EXPECT_EQ(handle.fakes[0]->baseLoads[0].jobId, 9);
-    EXPECT_EQ(handle.fakes[0]->baseLoads[0].job.blockIds, keys);
-    EXPECT_TRUE(handle.fakes[0]->tokenedLoads.empty());
+    ASSERT_EQ(handle.fakes[0]->loads.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->loads[0].jobId, 9);
+    EXPECT_EQ(handle.fakes[0]->loads[0].job.blockIds, keys);
+    EXPECT_TRUE(handle.fakes[0]->loads[0].token.payload.empty());
 
     auto putToken = handle.peer->PreparePut("r", keys);
     ASSERT_TRUE(putToken);
@@ -263,9 +263,9 @@ TEST(StorePeerTest, NonTokenedBranchRoutesThroughEmptyPayload)
         handle.peer
             ->SubmitPut(4, {MakePayload(16), MakePayload(32)}, putToken.Value(), IoContext{0})
             .Success());
-    ASSERT_EQ(handle.fakes[0]->baseDumps.size(), 1);
-    EXPECT_EQ(handle.fakes[0]->baseDumps[0].jobId, 4);
-    EXPECT_TRUE(handle.fakes[0]->tokenedDumps.empty());
+    ASSERT_EQ(handle.fakes[0]->dumps.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->dumps[0].jobId, 4);
+    EXPECT_TRUE(handle.fakes[0]->dumps[0].token.payload.empty());
 }
 
 TEST(StorePeerTest, NonPrefetchableBranchSynthesizesThroughPeer)
@@ -462,9 +462,8 @@ TEST(StorePeerTest, SubmitRejectsMalformedRoutingTokens)
     ASSERT_TRUE(farRejected.Failure());
     EXPECT_EQ(farRejected, Status::InvalidParam());
 
-    EXPECT_TRUE(handle.fakes[0]->tokenedLoads.empty());
-    EXPECT_TRUE(handle.fakes[0]->baseLoads.empty());
-    EXPECT_TRUE(handle.fakes[0]->baseDumps.empty());
+    EXPECT_TRUE(handle.fakes[0]->loads.empty());
+    EXPECT_TRUE(handle.fakes[0]->dumps.empty());
     EXPECT_TRUE(handle.fakes[0]->prefetches.empty());
 }
 
@@ -501,8 +500,6 @@ TEST(StorePeerTest, SubmitRejectsStoreNativePayloadResemblingBranchPrefix)
     auto rejected = handle.peer->SubmitGet(9, {MakePayload(16)}, native, IoContext{0});
     ASSERT_TRUE(rejected.Failure());
     EXPECT_EQ(rejected, Status::InvalidParam());
-    EXPECT_TRUE(handle.fakes[0]->tokenedLoads.empty());
-    EXPECT_TRUE(handle.fakes[0]->baseLoads.empty());
 }
 
 TEST(StorePeerTest, SubmitRejectsForeignMagic)
@@ -520,8 +517,7 @@ TEST(StorePeerTest, SubmitRejectsForeignMagic)
     auto rejected = handle.peer->SubmitPut(9, {MakePayload(16)}, foreign, IoContext{0});
     ASSERT_TRUE(rejected.Failure());
     EXPECT_EQ(rejected, Status::InvalidParam());
-    EXPECT_TRUE(handle.fakes[0]->tokenedDumps.empty());
-    EXPECT_TRUE(handle.fakes[0]->baseDumps.empty());
+    EXPECT_TRUE(handle.fakes[0]->dumps.empty());
 }
 
 TEST(StorePeerTest, SubmitRejectsTruncatedFrame)
