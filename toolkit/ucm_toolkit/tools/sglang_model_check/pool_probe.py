@@ -80,6 +80,7 @@ def build_pool_specs(
     platform: str,
     *,
     linear_config: Any = None,
+    external_attention: bool = False,
 ) -> list[PoolSpec]:
     """Reuse SGLang's layer lists, head geometry and mamba2_cache_params.
 
@@ -93,7 +94,7 @@ def build_pool_specs(
             f"physical descriptors are not implemented for pools {sorted(unsupported or set(pool_names))}"
         )
     arch = getattr(model_config.attention_arch, "name", str(model_config.attention_arch))
-    if arch.upper() != "MHA":
+    if arch.upper() != "MHA" and not (external_attention and arch.upper() == "MLA"):
         raise PoolProbeUnavailable("hybrid probe currently requires a physical MHA anchor")
     if getattr(model_config, "is_hybrid_swa_compress", False):
         raise PoolProbeUnavailable("compressed/heterogeneous SWA requires runtime buffer descriptors")
@@ -132,6 +133,13 @@ def build_pool_specs(
                 specs.append(PoolSpec("kv", "logical", (), storage_page_size=page_size))
                 continue
             raise PoolProbeUnavailable(f"{name} has no physical layers")
+        if external_attention:
+            if name != "kv" or arch.upper() != "MLA":
+                raise PoolProbeUnavailable("external attention descriptors require a single MLA anchor")
+            # Geometry is supplied by the real DSA child constructor, not by
+            # MHA head arithmetic. Keep only its verified global layer IDs.
+            specs.append(PoolSpec(name, "native", layers, storage_page_size=page_size))
+            continue
         is_swa = name == "swa"
         head_getter = (
             model_config.get_swa_num_kv_heads if is_swa

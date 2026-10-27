@@ -27,6 +27,7 @@ class NativePools:
     specs: list[PoolSpec] = field(default_factory=list)
     keepalive: list[Any] = field(default_factory=list)
     report: dict[str, Any] = field(default_factory=dict)
+    layer_ids: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def close(self):
         try:
@@ -113,6 +114,8 @@ def _describe(bundle, window, primary_page_size):
     from ucm.integration.sglang.ucm_connector import SglangUcmConnector
 
     for name, pool in bundle.pools.items():
+        if any(spec.name == name for spec in bundle.specs):
+            continue
         if name == "kv" and getattr(pool, "kv_buffer", None) is None:
             bundle.specs.append(PoolSpec(name, "logical", (),
                 storage_page_size=pool.page_size, source="sglang_native"))
@@ -125,13 +128,13 @@ def _describe(bundle, window, primary_page_size):
         elif name.endswith("_state"):
             trailing = 1
         bundle.specs.append(PoolSpec(
-            name, "native", tuple(range(pool.layer_num)), window_pages=trailing,
+            name, "native", bundle.layer_ids.get(name, tuple(range(pool.layer_num))), window_pages=trailing,
             storage_page_size=pool.page_size, page_bytes=sum(normalized[0]),
             source="sglang_native",
         ))
 
 
-def _build_dsa(bundle, model, config, platform, dtype):
+def _build_dsa(bundle, model, config, platform, dtype, *, full_layers=None):
     from sglang.srt.configs.model_config import (
         get_dsa_index_head_dim, get_dsa_index_kpool, get_dsa_index_kpool_compress,
         dsa_layer_skips_topk,
@@ -140,12 +143,13 @@ def _build_dsa(bundle, model, config, platform, dtype):
     from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
     from sglang.srt.mem_cache.pool_host.dsa import DSAIndexerPoolHost
 
+    layers = tuple(range(model.num_hidden_layers)) if full_layers is None else tuple(full_layers)
     size = config.page_size * (config.pages * 2 + 2)
     kwargs = dict(
         size=size, page_size=config.page_size, dtype=dtype,
         kv_lora_rank=model.kv_lora_rank, qk_rope_head_dim=model.qk_rope_head_dim,
-        layer_num=model.num_hidden_layers, device="cpu", enable_memory_saver=False,
-        start_layer=0, end_layer=model.num_hidden_layers,
+        layer_num=len(layers), device="cpu", enable_memory_saver=False,
+        start_layer=0, end_layer=len(layers),
         index_head_dim=get_dsa_index_head_dim(model.hf_config),
         kv_cache_dim=calculate_mla_kv_cache_dim(model_config=model, kv_cache_dtype=dtype),
     )
@@ -163,7 +167,7 @@ def _build_dsa(bundle, model, config, platform, dtype):
             index_kpool_compress=get_dsa_index_kpool_compress(model.hf_config),
             max_running_requests=1,
             skip_topk_layers=[dsa_layer_skips_topk(model.hf_config, i)
-                              for i in range(model.num_hidden_layers)],
+                              for i in layers],
         )
         device_pool = pool_cls(**kwargs)
     bundle.keepalive.append(device_pool)
@@ -195,6 +199,34 @@ def _build_dsa(bundle, model, config, platform, dtype):
         if getattr(host, "index_k_buffer", None) is None:
             raise PoolProbeUnavailable("DSA native host declarations did not expose indexer payload")
         bundle.report["integrated_payloads"] = {"kv": ["kv", "indexer"]}
+    for name in bundle.pools:
+        bundle.layer_ids[name] = layers
+
+
+def _build_dsa_recurrent(bundle, model, config, platform, dtype):
+    """Mirror HybridLinearKVPool's compact DSA child plus persistent state.
+
+    No engine wrapper or request allocator is needed for Host-storage IO; the
+    global-to-compact layer map is retained in the report instead of executing
+    model-forward/transfer dispatch through that wrapper.
+    """
+    from .pool_probe import build_pool_specs
+    from .runner import _make_mamba_host_pool
+
+    specs = build_pool_specs(model, ("kv", "mamba"), config.page_size,
+                             platform, external_attention=True)
+    primary, state = specs
+    if primary.kind == "logical" or not primary.layers:
+        raise PoolProbeUnavailable("sparse recurrent model has no physical attention layers")
+    _build_dsa(bundle, model, config, platform, dtype, full_layers=primary.layers)
+    bundle.pools["mamba"] = _make_mamba_host_pool(state, config)
+    bundle.specs.append(state)
+    bundle.layer_ids["mamba"] = state.layers
+    bundle.report["hybrid_layer_mapping"] = {
+        "attention_model_layers": list(primary.layers),
+        "state_model_layers": list(state.layers),
+        "scope": "config partition and native child pools; engine wrapper dispatch not executed",
+    }
 
 
 def _build_minimax(bundle, model, config, platform, dtype):
@@ -369,13 +401,16 @@ def build_native_pools(model, requirements, config, platform, dtype):
     import torch
 
     family = native_family(requirements)
-    if "mamba" in requirements.pool_names:
+    combined = "mamba" in requirements.pool_names
+    if combined and family != "dsa":
         raise PoolProbeUnavailable("combined sparse-indexer + recurrent-state assembly needs a unified native provider")
     bundle = NativePools(report={"family": family, "kv_cache_dtype": str(dtype)})
     try:
         with cpu_allocation_budget(torch, config.max_host_mib * 1024 * 1024 // 8) as used:
-            {"deepseek_v4": _build_dsv4, "dsa": _build_dsa,
-             "minimax_sparse": _build_minimax}[family](bundle, model, config, platform, dtype)
+            builder = (_build_dsa_recurrent if combined else
+                       {"deepseek_v4": _build_dsv4, "dsa": _build_dsa,
+                        "minimax_sparse": _build_minimax}[family])
+            builder(bundle, model, config, platform, dtype)
             _describe(bundle, int(getattr(model, "window_size", 1)), config.page_size)
         bundle.report["constructor_factory_bytes"] = used[0]
         bundle.report["dsv4_attn_backend"] = config.dsv4_attn_backend if family == "deepseek_v4" else None

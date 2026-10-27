@@ -54,6 +54,13 @@ NPU conv axes follow the standard persistent NPU layout. Replay/speculative
 side states and CPU AMX-specific state layouts are outside this probe's scope.
 
 Each side pool has its own page unit (Mamba checkpoint page_size=1).
+Combined MLA/DSA + recurrent-state models also probe the native DSA child
+(KV and separate or integrated indexer) alongside the production Mamba Host
+pool. Complete disjoint attention/state layer lists come from SGLang's
+`mambaish_config`; DSA buffers use only the compact attention-layer count and
+top-k flags for those original layer IDs. The verbose report retains this map.
+This covers Host storage, not HybridLinearKVPool forward/transfer dispatch,
+request-state allocation, or speculative/replay state.
 The probe writes sparse checkpoint windows and validates both actual and
 placeholder lookup keys, shorter requests and complete restorable-prefix sets.
 Every persisted component is read into a separate location and compared.

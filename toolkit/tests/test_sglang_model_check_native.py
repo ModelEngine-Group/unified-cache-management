@@ -23,6 +23,27 @@ from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import server_
 
 
 class NativeRoutingTest(unittest.TestCase):
+    def test_combined_dsa_state_uses_compact_attention_and_state_descriptors(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa_recurrent
+        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolSpec
+
+        bundle = NativePools()
+        model = object()
+        config = CheckConfig(model="hybrid", page_size=256)
+        plan = [PoolSpec("kv", "native", (0, 3)),
+                PoolSpec("mamba", "mamba", (1, 2), window_pages=1)]
+        state_host = object()
+        with patch("ucm_toolkit.tools.sglang_model_check.pool_probe.build_pool_specs", return_value=plan) as planner, patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._build_dsa"
+        ) as dsa, patch("ucm_toolkit.tools.sglang_model_check.runner._make_mamba_host_pool", return_value=state_host) as state:
+            _build_dsa_recurrent(bundle, model, config, "cuda", "bf16")
+        planner.assert_called_once_with(model, ("kv", "mamba"), 256, "cuda", external_attention=True)
+        dsa.assert_called_once_with(bundle, model, config, "cuda", "bf16", full_layers=(0, 3))
+        state.assert_called_once_with(plan[1], config)
+        self.assertIs(bundle.pools["mamba"], state_host)
+        self.assertEqual(bundle.specs, [plan[1]])
+        self.assertEqual(bundle.layer_ids["mamba"], (1, 2))
+
     def test_low_ratio_discovery_compatibility(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_low_ratio_regions_compat
         from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable
@@ -227,6 +248,44 @@ def _module_tree(leaves):
 
 
 class NativeAssemblyTest(unittest.TestCase):
+    def test_dsa_child_allocates_only_attention_layers_and_maps_topk_flags(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa
+
+        calls, queried_layers = [], []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(host_pool_decls=lambda: [])
+
+        modules = _module_tree({
+            "sglang.srt.configs.model_config": {
+                "get_dsa_index_head_dim": lambda config: 64,
+                "get_dsa_index_kpool": lambda config: 4,
+                "get_dsa_index_kpool_compress": lambda config: False,
+                "dsa_layer_skips_topk": lambda config, layer: queried_layers.append(layer) or layer == 3,
+            },
+            "sglang.srt.mem_cache.kv_cache_configurator": {
+                "calculate_mla_kv_cache_dim": lambda **kwargs: 256,
+            },
+            "sglang.srt.mem_cache.memory_pool": {"DSATokenToKVPool": create},
+            "sglang.srt.mem_cache.pool_host.dsa": {"DSAIndexerPoolHost": type("Host", (), {})},
+            "sglang.srt.platforms": {"current_platform": SimpleNamespace(get_kv_pool_cls=lambda **kwargs: create)},
+        })
+        model = SimpleNamespace(num_hidden_layers=4, hf_config=object(),
+                                kv_lora_rank=192, qk_rope_head_dim=64)
+        host = SimpleNamespace(index_k_buffer=object())
+        bundle = NativePools()
+        with patch.dict(sys.modules, modules), patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device", return_value=host
+        ):
+            _build_dsa(bundle, model, CheckConfig(model="test", page_size=256),
+                       "cuda", "bf16", full_layers=(0, 3))
+        self.assertEqual(calls[0]["layer_num"], 2)
+        self.assertEqual(calls[0]["end_layer"], 2)
+        self.assertEqual(queried_layers, [0, 3])
+        self.assertEqual(calls[0]["skip_topk_layers"], [False, True])
+        self.assertEqual(bundle.layer_ids["kv"], (0, 3))
+
     """Check provider orchestration, not native kernel/allocator execution."""
 
     def test_dsv4_discovers_active_regions_and_preserves_native_page_units(self):

@@ -56,6 +56,21 @@ def linear_config():
 
 
 class PoolPlanTest(unittest.TestCase):
+    def test_mla_external_attention_plan_keeps_disjoint_state_layers(self):
+        model = model_config()
+        model.attention_arch = SimpleNamespace(name="MLA")
+        # No MHA geometry should be read for a native MLA child.
+        del model.get_num_kv_heads
+        kv, state = build_pool_specs(model, ("kv", "mamba"), 256, "cuda",
+                                     linear_config=linear_config(), external_attention=True)
+        self.assertEqual((kv.kind, kv.layers), ("native", (0, 2)))
+        self.assertEqual((state.kind, state.layers, state.window_pages), ("mamba", (1, 3), 1))
+        invalid = linear_config()
+        invalid.full_attention_layer_ids = [0, 1]
+        with self.assertRaisesRegex(PoolProbeUnavailable, "complete disjoint"):
+            build_pool_specs(model, ("kv", "mamba"), 256, "cuda",
+                             linear_config=invalid, external_attention=True)
+
     def test_swa_reuses_separate_layer_and_head_geometry(self):
         kv, swa = build_pool_specs(model_config(), ("kv", "swa"), 2, "cuda")
         self.assertEqual(kv.layers, (0, 2))
@@ -250,7 +265,7 @@ class HybridTransferTest(unittest.TestCase):
     not a replacement for running native SGLang pools and PosixStore on target.
     """
 
-    def exercise(self, corrupt=False, bad_lookup=False, logical=False, indexer=False):
+    def exercise(self, corrupt=False, bad_lookup=False, logical=False, indexer=False, dsa_state=False):
         pages = 5
         specs = [PoolSpec("kv", "logical" if logical else "mha", (0,)),
                  PoolSpec("swa", "mha", (1,), window_pages=2),
@@ -260,6 +275,9 @@ class HybridTransferTest(unittest.TestCase):
         if indexer:
             specs.append(PoolSpec("indexer", "native", (0,), storage_page_size=3))
             pools["indexer"] = SimpleNamespace(page_size=3)
+        if dsa_state:
+            specs = [spec for spec in specs if spec.name != "swa"]
+            del pools["swa"]
         memory = {(name, page): [_Tensor(), _Tensor()] for name in pools
                   for page in range(pages * 2)}
         objects = {}
@@ -317,7 +335,7 @@ class HybridTransferTest(unittest.TestCase):
             side_effect=lambda tensor, seed: tensor.values.__setitem__(slice(None), [seed, seed + 1]),
         ):
             return _roundtrip_v2(Storage(), pools, [f"key-{i}" for i in range(pages)],
-                                 SimpleNamespace(pages=pages, page_size=4), False, specs)
+                                 SimpleNamespace(pages=pages, page_size=4), dsa_state, specs)
 
     def test_sparse_windows_and_checkpoint_index_units(self):
         result = self.exercise()
@@ -341,6 +359,18 @@ class HybridTransferTest(unittest.TestCase):
         with self.assertRaises(CheckFailure) as raised:
             self.exercise(bad_lookup=True)
         self.assertEqual(raised.exception.code, "LOOKUP_CONTRACT_MISMATCH")
+
+    def test_dsa_and_state_joint_lookup_and_roundtrip(self):
+        result = self.exercise(indexer=True, dsa_state=True)
+        self.assertEqual(set(result["pool_names"]), {"kv", "indexer", "mamba"})
+        self.assertEqual(result["restorable_prefix_pages"], [2, 5])
+        self.assertEqual(result["persisted_pages"]["indexer"], list(range(5)))
+        self.assertEqual(result["persisted_pages"]["mamba"], [1, 4])
+        for options, code in (({"corrupt": True}, "ROUNDTRIP_MISMATCH"),
+                              ({"bad_lookup": True}, "LOOKUP_CONTRACT_MISMATCH")):
+            with self.assertRaises(CheckFailure) as raised:
+                self.exercise(indexer=True, dsa_state=True, **options)
+            self.assertEqual(raised.exception.code, code)
 
 
 @unittest.skipUnless(
