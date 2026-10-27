@@ -323,35 +323,6 @@ def _make_host_pool(
         ) from exc
 
 
-def _page_view(host_pool: Any, start: int, stop: int, is_mla: bool) -> Any:
-    layout = host_pool.layout
-    if layout == "page_first":
-        return (
-            host_pool.kv_buffer[start:stop]
-            if is_mla
-            else host_pool.kv_buffer[:, start:stop]
-        )
-    if layout == "layer_first":
-        return (
-            host_pool.kv_buffer[:, start:stop]
-            if is_mla
-            else host_pool.kv_buffer[:, :, start:stop]
-        )
-    if layout == "page_first_direct":
-        first_page = start // host_pool.page_size
-        last_page = stop // host_pool.page_size
-        return (
-            host_pool.kv_buffer[first_page:last_page]
-            if is_mla
-            else host_pool.kv_buffer[:, first_page:last_page]
-        )
-    raise CheckFailure(
-        "CHECKER_LAYOUT_UNSUPPORTED",
-        "roundtrip_prepare",
-        f"checker has no data comparison strategy for layout {layout!r}",
-    )
-
-
 def _fill_pattern(tensor: Any, seed: int = 20260909) -> None:
     import torch
 
@@ -833,7 +804,6 @@ def run(config: CheckConfig) -> CheckResult:
                                "UCM v1 primary K/V components require equal head dimensions")
 
         supported_platforms = facts.get("supported_platforms")
-        detected_platform = result.environment.get("platform")
         if supported_platforms and detected_platform not in supported_platforms:
             result.model_info = facts
             result.fail(

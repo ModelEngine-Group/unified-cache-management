@@ -168,8 +168,11 @@ The probe covers one rank, configured KV dtype and SGLang-configured Mamba state
 dtypes. Quantized payloads/scales are covered only where discovered by native
 providers. Model-weight quantization support is distinct from KV-cache format.
 Config-derived hybrid memory is estimated across all pools before allocation;
-native constructors have a cumulative common-factory CPU allocation budget,
-reserving additional room for staging and snapshots. Explicit accelerator
+native constructors have a cumulative common-factory CPU allocation budget
+equal to half of `--max-host-mib`, reserving the other half for staging and
+snapshots. This is a conservative allowance, not peak-memory accounting or a
+process RSS limit. On budget failure, increase `--max-host-mib` or reduce
+`--pages` while retaining the intended boundary-test coverage. Explicit accelerator
 requests through those factories are rejected rather than silently redirected.
 This is not a complete allocation sandbox. Actual device transfers and
 control-plane scheduling are not tested.

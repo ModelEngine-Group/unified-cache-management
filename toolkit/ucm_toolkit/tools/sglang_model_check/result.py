@@ -55,25 +55,24 @@ class CheckResult:
         self.reason = reason
 
     def to_dict(self, verbose: bool = False) -> dict[str, Any]:
-        data = asdict(self)
         if verbose:
+            data = asdict(self)
             data["detail_level"] = "verbose"
             return data
 
+        message = self.reason.splitlines()[0] if self.reason else "Check did not pass."
+        if self.supported:
+            message = "Model structural checks passed; storage IO and inference are not validated."
+            if self.mode == "roundtrip":
+                message = "Host/UCM storage roundtrip passed (model structure not validated); "
+                if self.validation.get("meta_model") == "passed":
+                    message = "Model structure and Host/UCM storage roundtrip passed; "
+                message += "inference, device transfers and multi-rank execution are not validated."
         summary = {
             "model": self.model,
             "mode": self.mode,
             "status": self.status,
-            "summary": (
-                ("Model structure and Host/UCM storage roundtrip passed; "
-                 if self.validation.get("meta_model") == "passed"
-                 else "Host/UCM storage roundtrip passed (model structure not validated); ") +
-                "inference, device transfers and multi-rank execution are not validated."
-                if self.supported and self.mode == "roundtrip"
-                else "Model structural checks passed; storage IO and inference are not validated."
-                if self.supported
-                else self.reason.splitlines()[0] if self.reason else "Check did not pass."
-            ),
+            "summary": message,
         }
         if not self.supported:
             summary["code"] = self.code

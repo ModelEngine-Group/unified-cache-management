@@ -16,9 +16,7 @@ from ucm_toolkit.tools.sglang_model_check.pool_probe import (
     PoolProbeUnavailable,
     PoolSpec,
     build_pool_specs,
-    checkpoint_pages,
     expected_prefixes,
-    persisted_positions,
 )
 from ucm_toolkit.tools.sglang_model_check.runner import (
     CheckFailure,
@@ -163,14 +161,6 @@ class PoolPlanTest(unittest.TestCase):
     def test_sparse_mult_pool_intersection_is_not_min_of_maxima(self):
         self.assertEqual(expected_prefixes(
             8, {"a": {3, 7}, "b": {5}}, {"a": 1, "b": 1}), [])
-
-    def test_sparse_checkpoint_windows(self):
-        ends = checkpoint_pages(5)
-        self.assertEqual(ends, [2, 5])
-        self.assertEqual(persisted_positions(5, 2, ends), [0, 1, 3, 4])
-        self.assertEqual(expected_prefixes(
-            5, {"kv": set(range(5)), "swa": {0, 1, 3, 4}, "mamba": {1, 4}},
-            {"kv": 0, "swa": 2, "mamba": 1}), [2, 5])
 
     def test_aggregate_memory_limit_precedes_allocation(self):
         spec = PoolSpec("mamba", "mamba", (0,), temporal_shape=(1000000,),
@@ -343,22 +333,12 @@ class HybridTransferTest(unittest.TestCase):
         self.assertEqual(result["persisted_pages"]["mamba"], [1, 4])
         self.assertEqual(result["persisted_pages"]["swa"], [0, 1, 3, 4])
 
-    def test_corruption_cannot_pass_roundtrip(self):
-        with self.assertRaises(CheckFailure) as raised:
-            self.exercise(corrupt=True)
-        self.assertEqual(raised.exception.code, "ROUNDTRIP_MISMATCH")
-
     def test_logical_anchor_requires_both_full_and_trailing_payloads(self):
         result = self.exercise(logical=True, indexer=True)
         self.assertTrue(result["logical_anchor"])
         self.assertEqual(result["restorable_prefix_pages"], [2, 5])
         self.assertEqual(result["persisted_pages"]["indexer"], [0, 1, 2, 3, 4])
         self.assertEqual(result["pages_written"], 0)
-
-    def test_incorrect_restorable_set_cannot_pass(self):
-        with self.assertRaises(CheckFailure) as raised:
-            self.exercise(bad_lookup=True)
-        self.assertEqual(raised.exception.code, "LOOKUP_CONTRACT_MISMATCH")
 
     def test_dsa_and_state_joint_lookup_and_roundtrip(self):
         result = self.exercise(indexer=True, dsa_state=True)

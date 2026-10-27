@@ -80,34 +80,28 @@ class SglangModelCheckTool(ToolAdapter):
             help="include detection sources, full environment details and traceback",
         )
 
-    def _parser(self) -> argparse.ArgumentParser:
+    def _parser(self, show_all: bool = False) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
             prog="ucm-toolkit run sglang-model-check",
             description=self.description,
         )
         self.add_run_args(parser)
         common = {"model", "mode", "storage_backends", "output", "verbose", "help"}
-        advanced = parser.add_argument_group("advanced options (see --help-all)")
-        for action in list(parser._actions):
-            if action.dest not in common:
-                for group in parser._action_groups:
-                    if action in group._group_actions:
-                        group._group_actions.remove(action)
-                advanced._group_actions.append(action)
+        if not show_all:
+            for action in parser._actions:
+                if action.dest not in common:
+                    action.help = argparse.SUPPRESS
         parser.add_argument("--help-all", action="store_true",
                             help="show all advanced and model-specific options")
         return parser
 
     def run(self, tool_args: list[str]) -> int:
         try:
-            parser = self._parser()
-            if "--help-all" in tool_args:
+            show_all = "--help-all" in tool_args
+            parser = self._parser(show_all=show_all)
+            if show_all:
                 parser.print_help()
                 return 0
-            for group in parser._action_groups:
-                if group.title.startswith("advanced options"):
-                    for action in group._group_actions:
-                        action.help = argparse.SUPPRESS
             args = parser.parse_args(tool_args)
         except SystemExit as exc:
             return exc.code if isinstance(exc.code, int) else 1
@@ -121,28 +115,8 @@ class SglangModelCheckTool(ToolAdapter):
         if importlib.util.find_spec("sglang") is None:
             raise ToolkitError("sglang-model-check cannot find the sglang package")
 
-        config = CheckConfig(
-            model=args.model,
-            mode=args.mode,
-            device_id=args.device_id,
-            platform=args.platform,
-            page_size=args.page_size or 0,
-            pages=args.pages,
-            max_host_mib=args.max_host_mib,
-            layout=args.layout,
-            dtype=args.dtype,
-            kv_cache_dtype=args.kv_cache_dtype,
-            dsv4_attn_backend=args.dsv4_attn_backend,
-            fp4_indexer=args.fp4_indexer,
-            c128_page_size=args.c128_page_size,
-            trust_remote_code=args.trust_remote_code,
-            skip_meta_model=args.skip_meta_model,
-            storage_backends=args.storage_backends,
-            connector_name=args.connector_name,
-            connector_module_path=args.connector_module_path,
-            output=args.output,
-            verbose=args.verbose,
-        )
+        args.page_size = args.page_size or 0
+        config = CheckConfig.from_mapping(vars(args))
         env = os.environ.copy()
         env[CONFIG_ENV] = config.to_json()
         # Keep stdout/stderr suitable for machine-readable checker output. Model

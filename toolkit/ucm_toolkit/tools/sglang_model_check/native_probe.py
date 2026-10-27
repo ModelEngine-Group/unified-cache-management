@@ -11,7 +11,6 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from math import prod
 import inspect
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -429,7 +428,9 @@ def build_native_pools(model, requirements, config, platform, dtype):
         raise PoolProbeUnavailable("combined sparse-indexer + recurrent-state assembly needs a unified native provider")
     bundle = NativePools(report={"family": family, "kv_cache_dtype": str(dtype)})
     try:
-        with cpu_allocation_budget(torch, config.max_host_mib * 1024 * 1024 // 8) as used:
+        # Reserve half for staging/snapshots. This cumulative factory guard is
+        # a conservative probe allowance, not an enforced process RSS limit.
+        with cpu_allocation_budget(torch, config.max_host_mib * 1024 * 1024 // 2) as used:
             builder = (_build_dsa_recurrent if combined else
                        {"deepseek_v4": _build_dsv4, "dsa": _build_dsa,
                         "minimax_sparse": _build_minimax}[family])

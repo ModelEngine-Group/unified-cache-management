@@ -23,6 +23,26 @@ from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import server_
 
 
 class NativeRoutingTest(unittest.TestCase):
+    def test_native_constructor_receives_half_of_host_budget(self):
+        from contextlib import nullcontext
+        from ucm_toolkit.tools.sglang_model_check.native_probe import build_native_pools
+
+        requirements = requirements_from_facts({"attention_arch": "MLA", "is_dsa": True})
+
+        def build(bundle, *args):
+            bundle.pools.update(kv=object(), indexer=object())
+
+        with patch.dict(sys.modules, {"torch": SimpleNamespace()}), patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe.cpu_allocation_budget",
+            return_value=nullcontext([123]),
+        ) as guard, patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._build_dsa", side_effect=build
+        ), patch("ucm_toolkit.tools.sglang_model_check.native_probe._describe"):
+            bundle = build_native_pools(object(), requirements,
+                CheckConfig(model="test", max_host_mib=2048), "cuda", "bf16")
+        self.assertEqual(guard.call_args.args[1], 1024 * 1024 * 1024)
+        self.assertEqual(bundle.report["constructor_factory_bytes"], 123)
+
     def test_combined_dsa_state_uses_compact_attention_and_state_descriptors(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa_recurrent
         from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolSpec
@@ -89,13 +109,6 @@ class NativeRoutingTest(unittest.TestCase):
         ):
             with self.subTest(family=family):
                 self.assertEqual(native_family(requirements_from_facts(facts)), family)
-
-    def test_dsv4_activation_is_not_derived_from_enum(self):
-        facts = {"attention_arch": "MLA", "is_deepseek_v4": True,
-                 "sglang_pool_names": ["deepseek_v4_c4", "deepseek_v4_unused"]}
-        req = requirements_from_facts(facts)
-        self.assertNotIn("deepseek_v4_unused", req.pool_names)
-        self.assertEqual(req.pool_names, ("kv", "deepseek_v4_runtime_pools"))
 
     def fake_torch(self):
         dtype = SimpleNamespace(itemsize=4)

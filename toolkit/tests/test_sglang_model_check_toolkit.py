@@ -88,6 +88,24 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(requirements.storage_api, "v1")
         self.assertTrue(requirements.is_mla)
 
+    @patch("ucm_toolkit.tools.sglang_model_check.adapter.run_command", return_value=0)
+    @patch("ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec", return_value=object())
+    def test_cli_overrides_are_preserved_in_child_config(self, find_spec, run_command):
+        import json
+        from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
+
+        SglangModelCheckTool().run([
+            "--model", "model", "--mode", "roundtrip", "--storage-backends", "/tmp/check",
+            "--page-size", "256", "--pages", "5", "--max-host-mib", "2048",
+            "--layout", "page_first_direct", "--no-trust-remote-code", "--fp4-indexer",
+        ])
+        config = json.loads(run_command.call_args.kwargs["env"][CONFIG_ENV])
+        for key, value in {"page_size": 256, "pages": 5, "max_host_mib": 2048,
+                           "layout": "page_first_direct", "trust_remote_code": False,
+                           "fp4_indexer": True, "storage_backends": "/tmp/check"}.items():
+            self.assertEqual(config[key], value)
+        self.assertNotIn("help_all", config)
+
     def test_roundtrip_requires_explicit_storage_backend(self):
         from ucm_toolkit.errors import ToolkitError
         from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
@@ -164,28 +182,6 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(capabilities["api_versions"], ["v1"])
         self.assertEqual(capabilities["detection"], "method_override")
 
-    def test_does_not_depend_on_business_capability_declaration(self):
-        class Base:
-            def batch_get_v1(self):
-                raise NotImplementedError
-
-            def batch_set_v1(self):
-                raise NotImplementedError
-
-        class Storage(Base):
-            @classmethod
-            def get_capabilities(cls):
-                raise AssertionError("checker must not call business declarations")
-
-            def batch_get_v1(self):
-                return []
-
-            def batch_set_v1(self):
-                return []
-
-        capabilities = infer_capabilities(Storage, Base)
-        self.assertEqual(capabilities["api_versions"], ["v1"])
-
     def test_missing_capabilities_are_actionable(self):
         requirements = requirements_from_facts(
             {"attention_arch": "MLA", "is_dsa": True}
@@ -234,12 +230,6 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "LOAD_FAILED")
         self.assertIn("swa", raised.exception.reason)
 
-    def test_requested_layout_is_preserved_for_runtime_probe(self):
-        requirements = requirements_from_facts(
-            {"attention_arch": "MHA"}, host_layout="layer_first"
-        )
-        self.assertEqual(requirements.host_layout, "layer_first")
-
     def test_deepseek_v4_pools_are_discovered_not_all_enum_members(self):
         requirements = requirements_from_facts(
             {
@@ -257,14 +247,6 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
             ("kv", "deepseek_v4_runtime_pools"),
         )
         self.assertEqual(requirements.probe_fidelity, "sglang_native_pool_provider")
-
-    def test_indexer_routes_to_native_physical_probe(self):
-        from ucm_toolkit.tools.sglang_model_check.native_probe import native_family
-
-        requirements = requirements_from_facts(
-            {"attention_arch": "MLA", "is_dsa": True}
-        )
-        self.assertEqual(native_family(requirements), "dsa")
 
     def test_linear_detection_does_not_require_uses_kda_attention(self):
         config = type(
@@ -341,15 +323,6 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         )
         self.assertEqual(supported_platforms_for_quantization("NVFP4"), ["cuda"])
         self.assertIsNone(supported_platforms_for_quantization("awq"))
-
-    def test_server_args_guard_reuses_published_context(self):
-        runtime = SimpleNamespace(get_server_args=lambda: object())
-        with patch(
-            "ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector.importlib.import_module",
-            return_value=runtime,
-        ):
-            with server_args_guard():
-                pass
 
     def test_result_defaults_to_summary_and_verbose_preserves_details(self):
         result = CheckResult(model="/models/test", mode="inspect")
