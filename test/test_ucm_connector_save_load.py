@@ -188,10 +188,10 @@ def build_vllm_config(
                 {
                     "ucm_connector_name": connector_name,
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
                         "storage_backends": storage_backends,
-                        "use_direct": use_direct,
-                        "stream_number": transfer_stream_number,
-                        "local_rank_size": 1,
+                        "io_direct": use_direct,
+                        "cache_stream_number": transfer_stream_number,
                     },
                 }
             ]
@@ -449,9 +449,10 @@ def main():
     device_id = 0
     repeat = 3
     num_tokens_list = [2048, 4096, 8192, 16384, 32768]
-    ucm_connector_name = "UcmNfsStore"
+    ucm_connector_name = "UcmPipelineStore"
     model_path = "/home/models/QwQ-32B"
-    transfer_stream_numbers = [32, 64, 128]
+    # cache_stream_number must stay within the Cache store's 1-32 range.
+    transfer_stream_numbers = [4, 16, 32]
     os.environ["UC_LOGGER_LEVEL"] = "debug"
 
     print("1. Model Selection:")

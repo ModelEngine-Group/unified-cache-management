@@ -9,12 +9,11 @@ A backend determines where KV blocks live, how they are read and which services 
 | Backend | Use case | Prerequisites |
 | --- | --- | --- |
 | [Filesystem pipeline](pipeline.md) | `Cache|Posix` combines host cache with local or mounted storage | Writable paths, host memory and a compatible Pipeline build |
-| [NFS connector](nfs.md) | Keep direct filesystem access through `UcmNfsStore` | Local/NFS paths and compatible equal-sized tensors |
 | [3FS](ds3fs.md) | Access 3FS through `Cache|Ds3fs` | Running 3FS client with matching headers and libraries |
 | [Mooncake](mooncake.md) | Shared memory pool, optionally persisted through Posix | Compatible Mooncake services, client and network settings |
 | [KV compression](compress.md) | Reduce stored payload with `Cache|Compress|Posix` | Supported codec and dtype, with quality evaluation |
 
-An NFS mount can serve either Posix or the direct NFS connector. The mount and the UCM backend are separate choices. For a new deployment requiring host caching, capacity reclamation and health checks, start with the [filesystem pipeline](pipeline.md).
+An NFS mount can serve as a Posix `storage_backends` path. For a new deployment requiring host caching, capacity reclamation and health checks, start with the [filesystem pipeline](pipeline.md).
 
 ## Before configuring
 

@@ -48,15 +48,3 @@ def test_ucm_owned_metrics_library_has_wheel_relative_install_rpaths() -> None:
     }
     for relative_path, contract in expected.items():
         assert contract in (ROOT / relative_path).read_text(encoding="utf-8")
-
-
-def test_cuda_nfsstore_propagates_its_runtime_dependency() -> None:
-    cmake = (
-        ROOT / "ucm" / "store" / "nfsstore" / "device" / "cuda" / "CMakeLists.txt"
-    ).read_text(encoding="utf-8")
-
-    assert "target_link_directories(storedevice PUBLIC ${CUDA_ROOT}/lib64)" in cmake
-    assert (
-        "target_link_libraries(storedevice PUBLIC infra_status infra_logger cudart)"
-        in cmake
-    )
