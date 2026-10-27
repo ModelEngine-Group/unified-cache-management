@@ -171,45 +171,6 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     }
 }
 
-TEST_F(UCPosixSpaceManagerTest, BatchSkipsFailedBackend)
-{
-    using namespace UC::PosixStore;
-    Config config;
-    config.dataDirShardBytes = 0;
-    config.storageBackends = {Path(), Path() + "./"};
-    // Keep the backend healthy, so only the batch skip keeps the retries away from it.
-    config.backendHealth.passiveFailureThreshold = 1000;
-    SpaceLayout layout;
-    ASSERT_TRUE(layout.Setup(config).Success());
-    BackendManager backendMgr;
-    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
-    const auto& backends = backendMgr.Backends();
-    ASSERT_EQ(backends.size(), 2);
-
-    // Every block prefers the second backend, which always fails.
-    std::vector<UC::Detail::BlockId> blocks;
-    while (blocks.size() < 8) {
-        auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-        if (backendMgr.GetBackendForBlock(block).Value() == backends[1]) {
-            blocks.push_back(block);
-        }
-    }
-    std::vector<size_t> calls(backends.size(), 0);
-    std::vector<std::string> failedBackendsInBatch;
-    for (const auto& block : blocks) {
-        auto status = backendMgr.RunOnAvailableBackend(
-            block,
-            [&](size_t index) {
-                ++calls[index];
-                return index == 1 ? UC::Status::Error() : UC::Status::OK();
-            },
-            failedBackendsInBatch);
-        EXPECT_EQ(status, UC::Status::OK());
-    }
-    EXPECT_EQ(calls[1], 1);
-    EXPECT_EQ(calls[0], blocks.size());
-}
-
 TEST_F(UCPosixSpaceManagerTest, PrimaryBackendFailsWhenUnhealthy)
 {
     using namespace UC::PosixStore;

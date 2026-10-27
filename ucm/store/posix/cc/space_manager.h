@@ -28,7 +28,6 @@
 #include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
-#include "lookup_manager.h"
 #include "shard_gc.h"
 #include "space_layout.h"
 #include "thread/latch.h"
@@ -65,7 +64,6 @@ private:
     ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
-    LookupManager lookupManager_;
     ThreadPool<LookupContext> lookupSrv_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
@@ -79,7 +77,7 @@ public:
     const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block, std::vector<std::string>& failedBackendsInBatch);
+    uint8_t Lookup(const Detail::BlockId* block);
     void OnLookup(LookupContext& ctx);
     void OnLookupTimeout(LookupContext& ctx);
     void OnLookupPrefix(PrefixLookupContext& ctx);

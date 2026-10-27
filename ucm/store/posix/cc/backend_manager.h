@@ -54,11 +54,6 @@ public:
     size_t BackendCount() const { return storageBackends_.size(); }
     const std::vector<std::string>& Backends() const { return storageBackends_; }
     size_t IoTimeoutMs() const { return ioTimeoutMs_; }
-    // Skips backends that already failed in the same batch, and adds the ones that fail here, so
-    // a batch waits on a bad backend only once.
-    Status RunOnAvailableBackend(const Detail::BlockId& blockId,
-                                 const std::function<Status(size_t)>& operation,
-                                 std::vector<std::string>& failedBackendsInBatch) const;
     Status RunGcOp(std::function<Status()> op) const;
     void RecordResult(const BackendAttempt& attempt, const Status& status) const;
     bool ShouldRetry(const BackendAttempt& attempt, const Status& status) const;

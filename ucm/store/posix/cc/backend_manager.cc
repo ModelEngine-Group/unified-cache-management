@@ -184,23 +184,6 @@ Expected<BackendManager::BackendAttempt> BackendManager::SelectNextBackend(
     return BackendAttempt{index, backendHealth_[index].Generation()};
 }
 
-Status BackendManager::RunOnAvailableBackend(const Detail::BlockId& blockId,
-                                             const std::function<Status(size_t)>& operation,
-                                             std::vector<std::string>& failedBackendsInBatch) const
-{
-    auto attempted = failedBackendsInBatch;
-    auto status = Status::StoreUnhealthy();
-    while (auto attempt = SelectNextBackend(blockId, attempted)) {
-        status = operation(attempt.Value().index);
-        if (ShouldRetry(attempt.Value(), status)) {
-            failedBackendsInBatch.push_back(attempted.back());
-        } else {
-            break;
-        }
-    }
-    return status;
-}
-
 Status BackendManager::CheckHealth() const
 {
     for (const auto& health : backendHealth_) {

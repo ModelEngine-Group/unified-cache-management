@@ -26,6 +26,7 @@
 #include <atomic>
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "posix_file.h"
 
 namespace UC::PosixStore {
 
@@ -50,10 +51,6 @@ Status SpaceManager::Setup(const Config& config)
         s = gcMgr_.Setup(&layout_, &backendMgr_, config);
         if (s.Failure()) [[unlikely]] { return s; }
     }
-    auto lookupConfig = config;
-    lookupConfig.timeoutMs = backendMgr_.IoTimeoutMs();
-    s = lookupManager_.Setup(lookupConfig, &layout_, &backendMgr_.Backends());
-    if (s.Failure()) { return s; }
     auto prefixSuccess =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
@@ -154,9 +151,8 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
 Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
 {
     if (num == 0) { return static_cast<ssize_t>(-1); }
-    std::vector<std::string> failedBackendsInBatch;
     for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
-        if (Lookup(blocks + i, failedBackendsInBatch)) {
+        if (Lookup(blocks + i)) {
             if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(blocks + i)); }
             return i;
         }
@@ -164,13 +160,19 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
     return static_cast<ssize_t>(-1);
 }
 
-uint8_t SpaceManager::Lookup(const Detail::BlockId* block,
-                             std::vector<std::string>& failedBackendsInBatch)
+// Lookup always uses the first backend for now.
+uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
-    const auto status = backendMgr_.RunOnAvailableBackend(
-        *block, [&](size_t backendIndex) { return lookupManager_.Lookup(*block, backendIndex); },
-        failedBackendsInBatch);
-    return status.Success();
+    const auto& path = layout_.ArchivedFilePath(backendMgr_.Backends().front(), *block);
+    PosixFile file{path};
+    constexpr auto mode =
+        PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
+    auto s = file.Access(mode);
+    if (s.Failure()) {
+        if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
+        return false;
+    }
+    return true;
 }
 
 void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
@@ -182,12 +184,11 @@ void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
 
 void SpaceManager::OnLookup(LookupContext& ctx)
 {
-    std::vector<std::string> failedBackendsInBatch;
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
         if (ctx.status->load() != Status::OK().Underlying()) { break; }
 
         const auto& block = (*ctx.blocks)[i];
-        auto hit = Lookup(&block, failedBackendsInBatch);
+        auto hit = Lookup(&block);
         (*ctx.results)[i] = hit;
         if (hit && hotnessTrackerEnable_) { hotnessTracker_.Touch(block); }
     }
@@ -204,7 +205,6 @@ void SpaceManager::OnLookupTimeout(LookupContext& ctx)
 
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
-    std::vector<std::string> failedBackendsInBatch;
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
         if (ctx.status->load() != Status::OK().Underlying()) { break; }
 
@@ -212,7 +212,7 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
         if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
 
         const auto& block = (*ctx.blocks)[i];
-        if (!Lookup(&block, failedBackendsInBatch)) {
+        if (!Lookup(&block)) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
                 if (ctx.firstFail->compare_exchange_weak(cur, static_cast<ssize_t>(i),
