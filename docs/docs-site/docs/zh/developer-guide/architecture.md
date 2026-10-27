@@ -26,7 +26,7 @@
 
 ## Store 与 Pipeline 的关系
 
-`UcmKVStoreBaseV1` 是 Python 集成面对的 Store 接口。当前 V1 工厂的内置入口包括 `UcmPipelineStore` 和公开名称为 `UcmNfsStore` 的 `UcmPcStoreV1` 包装器。Pipeline 是一种 Store 实现，并不是所有 Store 都必须经过的独立层。
+`UcmKVStoreBaseV1` 是 Python 集成面对的 Store 接口。当前 V1 工厂的内置入口为 `UcmPipelineStore`。Pipeline 是一种 Store 实现，并不是所有 Store 都必须经过的独立层。
 
 在 `Cache|Posix` 中，Cache 管理主机缓冲以及设备与主机之间的传输，Posix 管理主机与文件系统之间的 I/O。Pipeline 根据已注册名称加载阶段，不支持任意拼接名称。其他组合可以接入 3FS、压缩或共享内存存储。阶段组成和配置由[缓存指南](cache-configuration/index.md)说明。
 

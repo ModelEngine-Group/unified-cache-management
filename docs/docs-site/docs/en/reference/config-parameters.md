@@ -33,7 +33,7 @@ These fields belong at the YAML root. Descriptions identify model- or engine-spe
 
 ## Store selection and tasks
 
-Select `ucm_connector_name` in `ucm_connectors[]`; the following fields belong inside its `ucm_connector_config`. `store_pipeline` applies only to `UcmPipelineStore`. See the [NFS connector](../developer-guide/cache-configuration/nfs.md) for its separate task settings.
+Select `ucm_connector_name` in `ucm_connectors[]`; the following fields belong inside its `ucm_connector_config`. `store_pipeline` applies only to `UcmPipelineStore`.
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ Select `ucm_connector_name` in `ucm_connectors[]`; the following fields belong i
 
 ## Posix filesystem stage
 
-These options configure Posix in a Pipeline. Provide `storage_backends` when Posix is used. The direct NFS connector accepts some names with different defaults; do not apply this table to it.
+These options configure Posix in a Pipeline. Provide `storage_backends` when Posix is used.
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
@@ -113,6 +113,6 @@ Check that the build contains the selected stages. Empty/Fake and their combinat
 | `Cache|Ds3fs` | I/O through the 3FS client |
 | `Cache|Compress|Posix` | Compress payloads before filesystem storage |
 
-Other backend options are in the [3FS](../developer-guide/cache-configuration/ds3fs.md), [Mooncake](../developer-guide/cache-configuration/mooncake.md), [compression](../developer-guide/cache-configuration/compress.md) and [NFS connector](../developer-guide/cache-configuration/nfs.md) guides.
+Other backend options are in the [3FS](../developer-guide/cache-configuration/ds3fs.md), [Mooncake](../developer-guide/cache-configuration/mooncake.md), [compression](../developer-guide/cache-configuration/compress.md) guides.
 
 Defaults come from engine integration, stage `global_config.h` files and `store_health_config.h`. See [how caching works](../developer-guide/capability-principles.md) for ownership and [filesystem configuration](../developer-guide/cache-configuration/pipeline.md) for operation.

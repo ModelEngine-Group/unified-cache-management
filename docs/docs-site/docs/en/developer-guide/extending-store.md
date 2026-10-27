@@ -6,9 +6,9 @@ Choose whether the change implements the full Store interface or adds a stage to
 
 | Path | Implementation | Current references |
 | --- | --- | --- |
-| Python V1 Store | Implement `UcmKVStoreBaseV1` and construct it through the V1 factory | `ucm/store/pcstore/pcstore_connector_v1.py`, `ucm/store/pipeline/connector.py` |
+| Python V1 Store | Implement `UcmKVStoreBaseV1` and construct it through the V1 factory | `ucm/store/pipeline/connector.py` |
 | Native Pipeline stage | Implement `UC::StoreV1`, export its factory and register a stage combination | `ucm/store/empty/` for interface shape, `ucm/store/posix/` for real I/O |
-| Python wrapper of a native library | Satisfy Python V1 and native resource-lifetime contracts | PcStore and Pipeline wrappers/bindings |
+| Python wrapper of a native library | Satisfy Python V1 and native resource-lifetime contracts | Pipeline wrapper and binding |
 
 Choose based on existing libraries, data paths and resource control. Python wrappers can invoke native I/O; language alone does not establish throughput. `Empty` illustrates interfaces without persistence.
 
@@ -182,18 +182,26 @@ ucm_connectors:
 
 ### Wrap a native library with Python
 
-For the hybrid route, keep the binding and wrapper contracts together. The existing `ucm/store/pcstore/cpy/pcstore.py.cc` binds `PcStorePy`, converts Python configuration in `SetupPy`, and exposes these methods (excerpt from its module definition):
+For the hybrid route, keep the binding and wrapper contracts together. The existing `ucm/store/pipeline/cpy/pipeline_store.py.cc` builds the `ucmpipelinestore` module, binds `PipelineStore`, and exposes these methods (excerpt from its module definition):
 
 ```cpp
-auto store = py::class_<UC::PcStorePy>(module, "PcStore");
-store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
-store.def("Setup", &UC::PcStorePy::SetupPy);
-store.def("LookupBatch", &UC::PcStorePy::LookupBatch);
-store.def("LoadToDevice", &UC::PcStorePy::LoadToDevice);
-store.def("DumpFromDevice", &UC::PcStorePy::DumpFromDevice);
+auto s = py::class_<PipelineStore, std::unique_ptr<PipelineStore>>(m, "PipelineStore");
+s.def(py::init<>());
+s.def("Stack", &PipelineStore::Stack);
+s.def("Self", &PipelineStore::Self);
+s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());
+s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
+s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());
+s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
+s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+      py::arg("addrs").noconvert());
+s.def("Dump", &PipelineStore::Dump, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+      py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
+s.def("Check", &PipelineStore::Check);
+s.def("Wait", &PipelineStore::Wait);
 ```
 
-Follow `UcmPcStoreV1` in `pcstore_connector_v1.py`: construct `PcStore.Config` from the engine-provided geometry, call `Setup` and check its status, map tensor/address inputs to native operations, and wrap native handles as `Task` objects. Register the completed `UcmKVStoreBaseV1` subclass through `UcmConnectorFactoryV1` as above. Preserve errors and buffer lifetimes; a lookup miss does not justify adding an automatic retry wrapper. The binding excerpt is not a standalone module.
+Follow `UcmPipelineStore` in `ucm/store/pipeline/connector.py`: create the native `PipelineStore`, let the registered builder `Stack` the configured stages, return `Self()` from `cc_store`, flatten block IDs and tensor/address inputs into buffers for `Lookup`/`Load`/`Dump`, and wrap returned task IDs as `Task` objects. Register the completed `UcmKVStoreBaseV1` subclass through `UcmConnectorFactoryV1` as above. Preserve errors and buffer lifetimes; a lookup miss does not justify adding an automatic retry wrapper. The binding excerpt is not a standalone module.
 
 ## Tasks, buffers and errors
 
@@ -212,7 +220,7 @@ Use relevant cases in `ucm/store/test/`. A stub that always returns success does
 
 ## Existing backend entry points {#backend-entrypoints}
 
-The V1 factory maps `UcmNfsStore` to `UcmPcStoreV1`; the older `ucm.store.nfsstore` is a separate interface. Pipeline loads registered builders and native libraries by name.
+The V1 factory registers `UcmPipelineStore`. Pipeline loads registered builders and native libraries by name.
 
 ### pipeline
 
@@ -220,12 +228,6 @@ The V1 factory maps `UcmNfsStore` to `UcmPcStoreV1`; the older `ucm.store.nfssto
 - `ucm/store/cache/cc/cache_store.cc` owns buffer defaults and minimum-size checks.
 - `ucm/store/posix/cc/posix_store.cc` owns filesystem configuration and health probes.
 - `ucm/integration/vllm/ucm_connector.py` supplies layout, shared-buffer defaults, and GC ownership.
-
-### nfs
-
-- `ucm/store/factory_v1.py` maps the public connector name to `UcmPcStoreV1`.
-- `ucm/store/pcstore/pcstore_connector_v1.py` defines the accepted key mapping and tensor-size constraint.
-- `ucm/store/pcstore/cc/api/pcstore.h` defines native transfer defaults.
 
 ### ds3fs
 
