@@ -261,7 +261,7 @@ def _module_tree(leaves):
 
 
 class NativeAssemblyTest(unittest.TestCase):
-    def test_legacy_mha_host_receives_native_cpu_pool(self):
+    def test_legacy_hosts_receive_native_cpu_pools(self):
         from ucm_toolkit.tools.sglang_model_check.runner import _make_host_pool
 
         allocations = []
@@ -269,8 +269,9 @@ class NativeAssemblyTest(unittest.TestCase):
         class DevicePool:
             def __init__(self, **kwargs):
                 allocations.append(kwargs)
-                self.row_dim = kwargs["head_num"] * kwargs["head_dim"]
+                self.row_dim = kwargs.get("head_num", 0) * kwargs.get("head_dim", 0)
                 self.k_data_ptrs, self.v_data_ptrs = object(), object()
+                self.kv_buffer = object()
 
         class Host:
             def __init__(self, device_pool, **kwargs):
@@ -278,23 +279,36 @@ class NativeAssemblyTest(unittest.TestCase):
                 self.head_num = device_pool.row_dim // 128
                 self.pointers = (device_pool.k_data_ptrs, device_pool.v_data_ptrs)
 
+        class MLAHost:
+            def __init__(self, device_pool, **kwargs):
+                self.device_pool = device_pool
+                self.kv_buffer = device_pool.kv_buffer
+
         modules = _module_tree({
             "torch": {},
-            "sglang.srt.mem_cache.memory_pool": {"MHATokenToKVPool": DevicePool},
+            "sglang.srt.mem_cache.memory_pool": {"MHATokenToKVPool": DevicePool,
+                                                 "MLATokenToKVPool": DevicePool},
             "sglang.srt.mem_cache.pool_host.mha": {"MHATokenToKVPoolHost": Host},
+            "sglang.srt.mem_cache.pool_host.mla": {"MLATokenToKVPoolHost": MLAHost},
         })
         model = SimpleNamespace(num_hidden_layers=62, num_key_value_heads=2,
-                                head_dim=128, dtype=SimpleNamespace(itemsize=2))
-        requirements = requirements_from_facts({"attention_arch": "MHA"})
+                                head_dim=128, dtype=SimpleNamespace(itemsize=2),
+                                kv_lora_rank=192, qk_rope_head_dim=64)
         with patch.dict(sys.modules, modules):
-            for layout in ("page_first", "page_first_direct"):
-                host = _make_host_pool(model, requirements,
-                    CheckConfig(model="test", page_size=64, layout=layout))
-                self.assertIsInstance(host.device_pool, DevicePool)
-                self.assertEqual(host.head_num, 2)
-        self.assertEqual(allocations[-1]["layer_num"], 62)
-        self.assertEqual(allocations[-1]["device"], "cpu")
-        self.assertFalse(allocations[-1]["enable_alt_stream"])
+            for arch in ("MHA", "MLA"):
+                for layout in ("page_first", "page_first_direct"):
+                    with self.subTest(arch=arch, layout=layout):
+                        host = _make_host_pool(model, requirements_from_facts({"attention_arch": arch}),
+                            CheckConfig(model="test", page_size=64, layout=layout))
+                        self.assertIsInstance(host.device_pool, DevicePool)
+                        if arch == "MHA":
+                            self.assertEqual(host.head_num, 2)
+                            self.assertFalse(allocations[-1]["enable_alt_stream"])
+                        else:
+                            self.assertIs(host.kv_buffer, host.device_pool.kv_buffer)
+                            self.assertEqual(allocations[-1]["kv_lora_rank"], 192)
+                        self.assertEqual(allocations[-1]["layer_num"], 62)
+                        self.assertEqual(allocations[-1]["device"], "cpu")
 
     def test_native_mla_host_supports_old_and_new_constructor_apis(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _host_from_device

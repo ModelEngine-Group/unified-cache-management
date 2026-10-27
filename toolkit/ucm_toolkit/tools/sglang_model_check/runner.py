@@ -275,7 +275,17 @@ def _make_host_pool(
         )
         parameters = inspect.signature(pool_cls).parameters
         if "device_pool" in parameters:
-            if not requirements.is_mla:
+            if requirements.is_mla:
+                from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
+
+                device_pool = MLATokenToKVPool(
+                    size=device_pool.size, page_size=config.page_size,
+                    dtype=model_config.dtype, kv_lora_rank=device_pool.kv_lora_rank,
+                    qk_rope_head_dim=device_pool.qk_rope_head_dim, layer_num=layer_num,
+                    device="cpu", enable_memory_saver=False,
+                    start_layer=0, end_layer=layer_num,
+                )
+            else:
                 # Legacy Host constructors read native row geometry and pointer
                 # tables. Use the real CPU pool, not a partial attribute mock.
                 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
