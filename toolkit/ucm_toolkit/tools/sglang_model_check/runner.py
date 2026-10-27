@@ -275,6 +275,18 @@ def _make_host_pool(
         )
         parameters = inspect.signature(pool_cls).parameters
         if "device_pool" in parameters:
+            if not requirements.is_mla:
+                # Legacy Host constructors read native row geometry and pointer
+                # tables. Use the real CPU pool, not a partial attribute mock.
+                from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+
+                device_pool = MHATokenToKVPool(
+                    size=device_pool.size, page_size=config.page_size,
+                    dtype=model_config.dtype, head_num=device_pool.head_num,
+                    head_dim=device_pool.head_dim, layer_num=layer_num,
+                    device="cpu", enable_memory_saver=False,
+                    start_layer=0, end_layer=layer_num, enable_alt_stream=False,
+                )
             return pool_cls(device_pool=device_pool, **kwargs)
         if "buffer_info" not in parameters:
             raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "host_pool",
