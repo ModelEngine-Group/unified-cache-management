@@ -3543,6 +3543,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         from ucm.integration.vllm.hla_connector import (
             UCMHybridLinearAttentionConnector,
             UCMHybridLinearAttentionLayerWiseConnector,
+            reject_flash_next_layerwise,
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
@@ -3563,6 +3564,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
+
+        if use_layerwise:
+            reject_flash_next_layerwise(vllm_config, kv_cache_config)
 
         if is_fawa:
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
