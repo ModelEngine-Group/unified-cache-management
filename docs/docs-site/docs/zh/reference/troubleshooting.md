@@ -70,7 +70,7 @@ invalid param ... InvalidParam(...)
 **处理方法**：
 
 1. 用 `python -c "import yaml; yaml.safe_load(open('your_config.yaml'))"` 检查 YAML 语法。
-2. 根据 [Pipeline Store](../developer-guide/cache-configuration/pipeline.md)或 [NFS Store](../developer-guide/cache-configuration/nfs.md)核对参数名。
+2. 根据 [Pipeline Store](../developer-guide/cache-configuration/pipeline.md) 核对参数名。
 3. 确保 `storage_backends` 是有效且非空的路径字符串。
 
 #### 找不到 `UCM_CONFIG_FILE`
@@ -95,7 +95,7 @@ Unsupported connector type: <name>
 
 **原因**：`ucm_connector_name` 未注册。
 
-**处理方法**：使用受支持的 connector 名称，如 `UcmPipelineStore` 或 `UcmNfsStore`。
+**处理方法**：使用受支持的 connector 名称 `UcmPipelineStore`。
 
 #### 未知 Store 管线
 

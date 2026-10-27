@@ -22,7 +22,7 @@ Beyond built-in Stores, UCM supports three extension patterns:
 |        Method         | Implementation |  Performance  |                   Use Case                    |    Rating     |   Reference Implementation   |
 | --------------------- | -------------- | ------------- | --------------------------------------------- | ------------- | ---------------------------- |
 | **Pure Python**       | Python only    | ⭐⭐⭐☆☆   | Prototyping, algorithm validation             | ⭐⭐         | `UcmMooncakeStore`           |
-| **Python/C++ Hybrid** | Python + C++   | ⭐⭐⭐⭐☆  | Complex logic with performance-critical paths | ⭐⭐⭐       | `UcmPCStore`                 |
+| **Python/C++ Hybrid** | Python + C++   | ⭐⭐⭐⭐☆  | Complex logic with performance-critical paths | ⭐⭐⭐       | `UcmPipelineStore`           |
 | **Pure C++**          | C++ only       | ⭐⭐⭐⭐⭐ | Production, high-performance scenarios        | ⭐⭐⭐⭐⭐ | `UC::CacheStore::CacheStore` |
 
 ---
