@@ -201,6 +201,7 @@ void ShareLoadQueue::HandleLoadTask(BlockTask& task, Trans::Stream& stream)
 
         Detail::TaskDesc backendTask;
         backendTask.brief = "Backend2ShareBuf";
+        backendTask.memoryType = Detail::TaskDesc::MemoryType::DDR;
         backendTask.push_back(
             Detail::Shard{task.shard.owner, task.shard.index, {task.reader->GetData()}});
 
