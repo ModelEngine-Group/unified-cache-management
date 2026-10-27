@@ -145,7 +145,7 @@ def _check_meta_model(model_config: Any) -> Any:
     old_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(model_config.dtype)
-        with server_args_guard():
+        with server_args_guard(model_path=model_config.model_path, revision=model_config.revision):
             quant_config = _get_quantization_config(model_config, load_config)
             with _single_rank_model_parallel():
                 with torch.device("meta"), _meta_device_guard(torch):
@@ -894,6 +894,7 @@ def run(config: CheckConfig) -> CheckResult:
 
         if config.mode == "roundtrip":
             cache_context = dict(
+                model_path=model_config.model_path, revision=model_config.revision,
                 page_size=config.page_size, hicache_mem_layout=config.layout,
                 hicache_ratio=1.0, hicache_size=0,
                 kv_cache_dtype=config.kv_cache_dtype,
@@ -921,7 +922,8 @@ def run(config: CheckConfig) -> CheckResult:
                     result.validation["pool_description"] = "native_provider_available"
                     result.cache_requirements["native_provider"] = family
                 else:
-                    with server_args_guard(), _single_rank_model_parallel():
+                    with server_args_guard(model_path=model_config.model_path,
+                                           revision=model_config.revision), _single_rank_model_parallel():
                         specs = _hybrid_specs(model_config, requirements, config)
                     result.cache_requirements["pool_specs"] = {
                         spec.name: spec.report() for spec in specs

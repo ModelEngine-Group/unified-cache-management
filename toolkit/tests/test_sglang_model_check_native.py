@@ -261,6 +261,46 @@ def _module_tree(leaves):
 
 
 class NativeAssemblyTest(unittest.TestCase):
+    def test_meta_constructor_reads_real_model_path_and_revision(self):
+        from contextlib import contextmanager, nullcontext
+        from ucm_toolkit.tools.sglang_model_check.runner import _check_meta_model
+
+        current = {"model_path": "dummy", "revision": None}
+        model_config = SimpleNamespace(model_path="/models/qwen", revision="local-rev", dtype="bf16")
+
+        @contextmanager
+        def guard(**fields):
+            saved = current.copy()
+            current.update(fields)
+            try:
+                yield
+            finally:
+                current.clear()
+                current.update(saved)
+
+        def initialize(*args):
+            self.assertEqual(current["model_path"], model_config.model_path)
+            self.assertEqual(current["revision"], model_config.revision)
+            return "meta-model"
+
+        modules = _module_tree({
+            "torch": {"get_default_dtype": lambda: "fp32", "set_default_dtype": lambda value: None,
+                      "device": lambda value: nullcontext()},
+            "sglang.srt.configs.load_config": {"LoadConfig": lambda: object()},
+            "sglang.srt.model_loader.loader": {
+                "_get_quantization_config": lambda *args: None, "_initialize_model": initialize},
+            "sglang.srt.model_executor.model_runner_components.layer_setup": {
+                "resolve_layer_indices": lambda model, model_config, is_draft_worker: None},
+            "sglang.srt.speculative.spec_info": {"SpeculativeAlgorithm": SimpleNamespace(NONE=None)},
+        })
+        with patch.dict(sys.modules, modules), patch(
+            "ucm_toolkit.tools.sglang_model_check.sglang_compat.server_args_guard", side_effect=guard
+        ), patch("ucm_toolkit.tools.sglang_model_check.runner._single_rank_model_parallel", side_effect=nullcontext), patch(
+            "ucm_toolkit.tools.sglang_model_check.runner._meta_device_guard", side_effect=lambda torch: nullcontext()
+        ):
+            self.assertEqual(_check_meta_model(model_config), "meta-model")
+        self.assertEqual(current, {"model_path": "dummy", "revision": None})
+
     def test_legacy_hosts_receive_native_cpu_pools(self):
         from ucm_toolkit.tools.sglang_model_check.runner import _make_host_pool
 
