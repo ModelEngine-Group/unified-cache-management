@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
+#include <functional>
 #include "backend_manager.h"
 #include "gc_config_guard.h"
 #include "global_config.h"
@@ -44,6 +45,7 @@ class SpaceManager {
         std::shared_ptr<std::vector<uint8_t>> results;
         std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
+        size_t backendIndex;
     };
 
     struct PrefixLookupContext {
@@ -54,6 +56,7 @@ class SpaceManager {
         std::shared_ptr<std::atomic<ssize_t>> firstFail;
         std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
+        size_t backendIndex;
     };
 
 private:
@@ -77,7 +80,8 @@ public:
     const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
+    Status LookupOnBackends(const std::function<Status(size_t backendIndex)>& runRound);
+    uint8_t LookupBlock(const Detail::BlockId* block, size_t backendIndex);
     void OnLookup(LookupContext& ctx);
     void OnLookupTimeout(LookupContext& ctx);
     void OnLookupPrefix(PrefixLookupContext& ctx);
