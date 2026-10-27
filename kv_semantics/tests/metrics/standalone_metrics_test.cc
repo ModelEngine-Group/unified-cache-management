@@ -168,6 +168,37 @@ TEST_F(StandaloneMetricsTest, ExposesCounterGaugeAndHistogramInPrometheusFormat)
     Shutdown();
 }
 
+TEST_F(StandaloneMetricsTest, SkipsForeignCachedBindingsAndKeepsValidUpdates)
+{
+    const auto config = MakeConfig();
+    std::string error;
+    ASSERT_TRUE(SetUpStandaloneMetrics(config, &error)) << error;
+
+    struct ForeignBinding : CachedMetric::Binding {
+        explicit ForeignBinding(Kind kind) : CachedMetric::Binding(kind) {}
+    };
+    CachedMetric unknown{"test_counter"};
+    CachedMetric foreign{"test_counter"};
+    CachedMetric valid{"test_counter"};
+    unknown.Resolve(
+        [] { return std::make_unique<ForeignBinding>(CachedMetric::Binding::Kind::Unknown); });
+    foreign.Resolve(
+        [] { return std::make_unique<ForeignBinding>(CachedMetric::Binding::Kind::Ucm); });
+    UpdateStats(unknown, 100.0);
+    UpdateStats(foreign, 100.0);
+    const MetricUpdate updates[] = {
+        {unknown, 100.0},
+        {foreign, 100.0},
+        {valid,   3.0  }
+    };
+    UpdateStats(updates, 3);
+    UpdateStats(valid, 2.0);
+    Flush();
+
+    const auto response = HttpGet(config.port, config.metricsPath);
+    EXPECT_NE(response.find("kv:test_counter 5\n"), std::string::npos);
+}
+
 TEST_F(StandaloneMetricsTest, AggregatesMetricsWrittenByMultipleThreads)
 {
     auto config = MakeConfig();

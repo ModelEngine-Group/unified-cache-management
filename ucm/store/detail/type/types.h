@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_STORE_DETAIL_TYPE_TYPES_H
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -61,9 +62,13 @@ struct Shard {
  */
 struct TaskDesc : std::vector<Shard> {
     using vector::vector; /* Inherit all ctors */
-    std::string brief;    /* Description of Task */
+    /** Memory type of the shard addresses (Shard::addrs). */
+    enum class MemoryType : std::uint8_t { HBM = 0, DDR = 1 };
+    std::string brief; /* Description of Task */
     /** Optional: prerequisite handle for dump. Cache stream waits before D2H. */
     uintptr_t prerequisiteHandle{0};
+    /** Optional: memory type of the shard addresses, defaults to HBM. */
+    MemoryType memoryType{MemoryType::HBM};
 };
 
 }  // namespace UC::Detail

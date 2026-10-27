@@ -129,6 +129,7 @@ Status DumpQueue::PrepareBackendDump(CopyStream& stream, TaskPtr task, DumpCtx& 
                                      Detail::TaskDesc& backendTaskDesc)
 {
     backendTaskDesc.brief = "HostBuf2Backend";
+    backendTaskDesc.memoryType = Detail::TaskDesc::MemoryType::DDR;
     dumpCtx.taskHandle = task->id;
     for (auto& shard : task->shards) {
         auto buf = bufPool_->AcquireWithTimeout(std::chrono::milliseconds(3000));

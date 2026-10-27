@@ -66,7 +66,7 @@ python kv_semantics/metrics/tools/generate_kv_metrics.py --ucm-config /etc/ucm/m
 
 Pass the metrics catalog, not the top-level serving configuration. This read-only check requires every KV definition exactly once, with matching type, documentation text and histogram buckets. Additional custom metrics are allowed. Documentation changes must therefore also be copied into deployment catalogs. `--ucm-config` cannot be combined with `--check` or `--sync-ucm`; run separate commands. Write buckets as unquoted decimal numbers such as `0.00001`: YAML 1.1 may parse `1e-5` as a string.
 
-KV duration histograms use **seconds**. Preserve that unit in observations and buckets; multiply a displayed mean or quantile by `1000` to show milliseconds. The standalone node-task histograms retain `node_id`. Registering definitions in the UCM catalog does not by itself forward KVClient observations to UCM; this requires runtime backend integration.
+KV duration histograms use **seconds**. Preserve that unit in observations and buckets; multiply a displayed mean or quantile by `1000` to show milliseconds. The standalone node-task histograms retain `node_id`; the UCM adapter aggregates these observations across nodes. See [ASU / KV metrics](../user-guide/observability/metrics-reference.md#16-asu--kv-metrics) for the catalog, store-level backend installation switch, and independent UCM initialization/export controls.
 
 ## Update at the operation boundary
 
