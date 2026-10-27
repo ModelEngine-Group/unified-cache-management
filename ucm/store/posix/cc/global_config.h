@@ -42,6 +42,8 @@ struct Config {
     size_t lookupConcurrency{16};
     size_t openConcurrency{32};
     size_t commitConcurrency{4};
+    size_t aioChunkSizeBytes{0};
+    size_t aioChunkConcurrency{1};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
     bool posixGcEnable{true};

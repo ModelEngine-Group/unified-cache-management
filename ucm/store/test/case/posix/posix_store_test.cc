@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <sys/syscall.h>
 #include <thread>
 #include <vector>
 #include "detail/data_generator.h"
@@ -74,11 +75,11 @@ UC::Detail::Dictionary MakePsyncConfig(const std::string& path)
     return config;
 }
 
-BufferPtr MakeAlignedBuffer(size_t marker)
+BufferPtr MakeAlignedBuffer(size_t marker, size_t size = AIO_TEST_DATA_SIZE)
 {
     void* buffer = nullptr;
-    if (posix_memalign(&buffer, 4096, AIO_TEST_DATA_SIZE) != 0) { return {nullptr, &std::free}; }
-    std::memset(buffer, 0, AIO_TEST_DATA_SIZE);
+    if (posix_memalign(&buffer, 4096, size) != 0) { return {nullptr, &std::free}; }
+    std::memset(buffer, 0, size);
     *reinterpret_cast<size_t*>(buffer) = marker;
     return {buffer, &std::free};
 }
@@ -169,6 +170,106 @@ class ScopedAioHooks {
 public:
     ~ScopedAioHooks() { UC::PosixStore::TestHooks::ClearAioHooks(); }
 };
+
+// Keep selected requests out of the kernel until the test releases them. Other
+// requests use real AIO, so their completion can overtake a held request.
+class DeferredAioSubmitHook {
+public:
+    struct Submission {
+        uint64_t offset;
+        size_t length;
+        uintptr_t buffer;
+        int32_t fd;
+    };
+    explicit DeferredAioSubmitHook(size_t holdCount = 0, size_t failOrdinal = 0)
+        : holdCount_{holdCount}, failOrdinal_{failOrdinal}
+    {
+        UC::PosixStore::TestHooks::SetAioSubmitHook(
+            [this](aio_context_t ctx, int64_t nr, iocb** ios) {
+                std::unique_lock<std::mutex> lock{mutex_};
+                if (nr != 1) {
+                    return static_cast<int32_t>(::syscall(SYS_io_submit, ctx, nr, ios));
+                }
+                auto* io = ios[0];
+                submissions_.push_back(
+                    {static_cast<uint64_t>(io->aio_offset), static_cast<size_t>(io->aio_nbytes),
+                     static_cast<uintptr_t>(io->aio_buf), static_cast<int32_t>(io->aio_fildes)});
+                const auto ordinal = submissions_.size();
+                if (ordinal <= holdCount_) {
+                    held_.push_back({ctx, io});
+                    cv_.notify_all();
+                    return int32_t{1};
+                }
+                cv_.notify_all();
+                if (ordinal == failOrdinal_) {
+                    errno = EIO;
+                    return int32_t{-1};
+                }
+                lock.unlock();
+                return static_cast<int32_t>(::syscall(SYS_io_submit, ctx, nr, ios));
+            });
+    }
+    ~DeferredAioSubmitHook()
+    {
+        ReleaseHeld();
+        UC::PosixStore::TestHooks::ClearAioHooks();
+    }
+    bool WaitForSubmissions(size_t count)
+    {
+        std::unique_lock<std::mutex> lock{mutex_};
+        return cv_.wait_for(lock, std::chrono::seconds(2),
+                            [this, count] { return submissions_.size() >= count; });
+    }
+    std::vector<Submission> Submissions()
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        return submissions_;
+    }
+    bool ReleaseHeld()
+    {
+        std::vector<std::pair<aio_context_t, iocb*>> held;
+        {
+            std::lock_guard<std::mutex> lock{mutex_};
+            held.swap(held_);
+        }
+        bool success = true;
+        for (auto& [ctx, io] : held) {
+            success = (::syscall(SYS_io_submit, ctx, 1, &io) == 1) && success;
+        }
+        return success;
+    }
+
+private:
+    size_t holdCount_;
+    size_t failOrdinal_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<Submission> submissions_;
+    std::vector<std::pair<aio_context_t, iocb*>> held_;
+};
+
+UC::Detail::Dictionary MakeChunkedAioConfig(const std::string& path, size_t shardSize,
+                                            size_t chunkSize, size_t concurrency = 1,
+                                            size_t shardsPerBlock = 1)
+{
+    auto config = MakeAioConfig(path, 10000, 1, shardsPerBlock);
+    config.SetNumber("tensor_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("shard_size", shardSize);
+    config.SetNumber("block_size", shardSize * shardsPerBlock);
+    config.SetNumber("posix_aio_chunk_size_bytes", chunkSize);
+    config.SetNumber("posix_aio_chunk_concurrency", concurrency);
+    return config;
+}
+
+bool WaitForFile(const std::string& path)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (std::filesystem::exists(path)) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
 }  // namespace
 
 TEST_F(UCPosixStoreTest, SetupWithInvalidParam)
@@ -518,6 +619,7 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    ASSERT_TRUE(WaitForFile(layout.DataFilePath(block, false)));
     std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
@@ -697,4 +799,230 @@ TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)
         ASSERT_EQ(founds.Value(), std::vector<uint8_t>{false});
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+}
+
+TEST_F(UCPosixStoreTest, AioDefaultKeepsWholeShardIo)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t shardSize = 2 * 65536 + 4096;
+    auto source = MakeAlignedBuffer(11, shardSize);
+    auto target = MakeAlignedBuffer(0, shardSize);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    PosixStore store;
+    auto config = MakeAioConfig(Path(), 10000);
+    config.SetNumber("shard_size", shardSize);
+    config.SetNumber("block_size", shardSize);
+    ASSERT_EQ(store.Setup(config), UC::Status::OK());
+    DeferredAioSubmitHook hook;
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dump = store.Dump(MakeDumpDesc("UnsplitDump", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    ASSERT_TRUE(WaitForFile(layout.DataFilePath(block, false)));
+    auto load = store.Load(MakeDumpDesc("UnsplitLoad", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    ASSERT_EQ(store.Wait(load.Value()), UC::Status::OK());
+    ASSERT_EQ(std::memcmp(source.get(), target.get(), shardSize), 0);
+    const auto submissions = hook.Submissions();
+    ASSERT_EQ(submissions.size(), 2);
+    EXPECT_EQ(submissions[0].length, shardSize);
+    EXPECT_EQ(submissions[1].length, shardSize);
+}
+
+TEST_F(UCPosixStoreTest, AioChunkConfigRejectsInvalidSizeConcurrencyAndEngine)
+{
+    using namespace UC::PosixStore;
+    {
+        PosixStore store;
+        EXPECT_EQ(store.Setup(MakeChunkedAioConfig(Path(), 131072, 65535)),
+                  UC::Status::InvalidParam());
+    }
+    {
+        PosixStore store;
+        EXPECT_EQ(store.Setup(MakeChunkedAioConfig(Path(), 131072, 65536, 0)),
+                  UC::Status::InvalidParam());
+    }
+    {
+        auto config = MakeChunkedAioConfig(Path(), 131072, 65536);
+        config.Set("posix_io_engine", std::string("psync"));
+        PosixStore store;
+        EXPECT_EQ(store.Setup(config), UC::Status::InvalidParam());
+    }
+}
+
+TEST_F(UCPosixStoreTest, AioChunkedRoundTripPreservesTailAndShardOffsets)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t chunkSize = 65536;
+    constexpr size_t shardSize = 2 * chunkSize + 4096;
+    constexpr size_t nShards = 2;
+    auto source = MakeAlignedBuffer(0, shardSize * nShards);
+    auto target = MakeAlignedBuffer(0, shardSize * nShards);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    for (size_t i = 0; i < shardSize * nShards; ++i) {
+        static_cast<unsigned char*>(source.get())[i] =
+            static_cast<unsigned char>((i * 37 + i / 4096) % 251);
+    }
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeChunkedAioConfig(Path(), shardSize, chunkSize, 3, nShards)),
+              UC::Status::OK());
+    DeferredAioSubmitHook hook;
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Detail::TaskDesc dumpDesc;
+    for (size_t i = 0; i < nShards; ++i) {
+        dumpDesc.push_back({block, i, {static_cast<char*>(source.get()) + i * shardSize}});
+    }
+    auto dump = store.Dump(std::move(dumpDesc));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    ASSERT_TRUE(WaitForFile(layout.DataFilePath(block, false)));
+    EXPECT_EQ(std::filesystem::file_size(layout.DataFilePath(block, false)), shardSize * nShards);
+    UC::Detail::TaskDesc loadDesc;
+    for (size_t i = 0; i < nShards; ++i) {
+        loadDesc.push_back({block, i, {static_cast<char*>(target.get()) + i * shardSize}});
+    }
+    auto load = store.Load(std::move(loadDesc));
+    ASSERT_TRUE(load.HasValue());
+    ASSERT_EQ(store.Wait(load.Value()), UC::Status::OK());
+    ASSERT_EQ(std::memcmp(source.get(), target.get(), shardSize * nShards), 0);
+    const auto submissions = hook.Submissions();
+    ASSERT_EQ(submissions.size(), 12);
+    for (size_t direction = 0; direction < 2; ++direction) {
+        for (size_t i = 0; i < nShards; ++i) {
+            for (size_t chunk = 0; chunk < 3; ++chunk) {
+                const auto& io = submissions[direction * 6 + i * 3 + chunk];
+                EXPECT_EQ(io.offset, i * shardSize + chunk * chunkSize);
+                EXPECT_EQ(io.length, chunk == 2 ? 4096 : chunkSize);
+            }
+        }
+    }
+}
+
+TEST_F(UCPosixStoreTest, AioChunkedLimitsOutstandingRequestsPerShard)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t chunkSize = 65536;
+    constexpr size_t shardSize = 5 * chunkSize;
+    auto buffer = MakeAlignedBuffer(12, shardSize);
+    ASSERT_NE(buffer, nullptr);
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeChunkedAioConfig(Path(), shardSize, chunkSize, 2)), UC::Status::OK());
+    DeferredAioSubmitHook hook{2};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dump = store.Dump(MakeDumpDesc("BoundedChunkDump", block, buffer.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_TRUE(hook.WaitForSubmissions(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_EQ(hook.Submissions().size(), 2);
+    auto check = store.Check(dump.Value());
+    ASSERT_TRUE(check.HasValue());
+    EXPECT_FALSE(check.Value());
+    ASSERT_TRUE(hook.ReleaseHeld());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    EXPECT_EQ(hook.Submissions().size(), 5);
+}
+
+TEST_F(UCPosixStoreTest, AioChunkedWaitsForEarlierCompletionBeforeCommit)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t chunkSize = 65536;
+    constexpr size_t shardSize = 3 * chunkSize;
+    auto buffer = MakeAlignedBuffer(13, shardSize);
+    ASSERT_NE(buffer, nullptr);
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeChunkedAioConfig(Path(), shardSize, chunkSize, 3)), UC::Status::OK());
+    DeferredAioSubmitHook hook{1};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dump = store.Dump(MakeDumpDesc("ReorderedChunkDump", block, buffer.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_TRUE(hook.WaitForSubmissions(3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto check = store.Check(dump.Value());
+    ASSERT_TRUE(check.HasValue());
+    EXPECT_FALSE(check.Value());
+    const auto heldFd = hook.Submissions().front().fd;
+    EXPECT_NE(::fcntl(heldFd, F_GETFD), -1);
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    EXPECT_FALSE(std::filesystem::exists(layout.DataFilePath(block, false)));
+    ASSERT_TRUE(hook.ReleaseHeld());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    ASSERT_TRUE(WaitForFile(layout.DataFilePath(block, false)));
+}
+
+TEST_F(UCPosixStoreTest, AioChunkedSubmitFailureDrainsSubmittedRequests)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t chunkSize = 65536;
+    constexpr size_t shardSize = 3 * chunkSize;
+    auto buffer = MakeAlignedBuffer(14, shardSize);
+    ASSERT_NE(buffer, nullptr);
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeChunkedAioConfig(Path(), shardSize, chunkSize, 3)), UC::Status::OK());
+    DeferredAioSubmitHook hook{1, 2};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dump = store.Dump(MakeDumpDesc("PartialChunkFailure", block, buffer.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_TRUE(hook.WaitForSubmissions(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto check = store.Check(dump.Value());
+    ASSERT_TRUE(check.HasValue());
+    EXPECT_FALSE(check.Value());
+    EXPECT_NE(::fcntl(hook.Submissions().front().fd, F_GETFD), -1);
+    ASSERT_TRUE(hook.ReleaseHeld());
+    EXPECT_TRUE(store.Wait(dump.Value()).Failure());
+    EXPECT_EQ(hook.Submissions().size(), 2);
+    auto lookup = store.Lookup(&block, 1);
+    ASSERT_TRUE(lookup.HasValue());
+    EXPECT_EQ(lookup.Value(), std::vector<uint8_t>{false});
+}
+
+TEST_F(UCPosixStoreTest, AioChunkedShortReadDrainsSubmittedRequests)
+{
+    using namespace UC::PosixStore;
+    constexpr size_t chunkSize = 65536;
+    constexpr size_t shardSize = 2 * chunkSize + 4096;
+    auto source = MakeAlignedBuffer(15, shardSize);
+    auto target = MakeAlignedBuffer(0, shardSize);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeChunkedAioConfig(Path(), shardSize, chunkSize, 3)), UC::Status::OK());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto dump = store.Dump(MakeDumpDesc("ChunkShortReadSeed", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    ASSERT_TRUE(WaitForFile(layout.DataFilePath(block, false)));
+    std::filesystem::resize_file(layout.DataFilePath(block, false), chunkSize + 4096);
+    DeferredAioSubmitHook hook{1};
+    auto load = store.Load(MakeDumpDesc("ChunkShortRead", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    ASSERT_TRUE(hook.WaitForSubmissions(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto check = store.Check(load.Value());
+    ASSERT_TRUE(check.HasValue());
+    EXPECT_FALSE(check.Value());
+    EXPECT_NE(::fcntl(hook.Submissions().front().fd, F_GETFD), -1);
+    ASSERT_TRUE(hook.ReleaseHeld());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
 }

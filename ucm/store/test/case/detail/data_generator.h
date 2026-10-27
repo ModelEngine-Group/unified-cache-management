@@ -24,10 +24,10 @@
 #ifndef UNIFIEDCACHE_TEST_DETAIL_DATA_GENERATOR_H
 #define UNIFIEDCACHE_TEST_DETAIL_DATA_GENERATOR_H
 
-#include <cassert>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace UC::Test::Detail {
 
@@ -46,8 +46,14 @@ public:
     }
     void Generate()
     {
-        this->data_ = malloc(this->Size());
-        assert(this->data_ != nullptr);
+        // Posix tests also use O_DIRECT, which requires an aligned buffer.
+        void* fresh = nullptr;
+        const auto bytes = this->Size();
+        if (posix_memalign(&fresh, 4096, bytes == 0 ? 1 : bytes) != 0) {
+            throw std::bad_alloc();
+        }
+        free(this->data_);
+        this->data_ = fresh;
     }
     void GenerateRandom()
     {
