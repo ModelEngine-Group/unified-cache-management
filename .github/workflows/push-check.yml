@@ -3,6 +3,24 @@ name: 'Push Commit Checks'
 on:
   push:
     branches: [ "**" ] # ** matches all branches, while * matches only top-level branches without '/'
+    paths-ignore:
+      # Documentation and repository housekeeping cannot change lint or unit
+      # test outcomes, so pushing them must not spend CI capacity.
+      - 'docs/**'
+      - 'docs-next/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.editorconfig'
+      - '.readthedocs.yaml'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
+
+concurrency:
+  group: push-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Push checks only read the repository; do not inherit the default token scope.
 permissions:

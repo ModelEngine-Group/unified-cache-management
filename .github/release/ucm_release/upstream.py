@@ -237,18 +237,65 @@ def _preferred_runtime_tags(
     ]
 
 
+def _validated_raw_selector(
+    product_id: str,
+    index: int,
+    raw_selector: object,
+) -> tuple[Mapping[str, object], str]:
+    """Validate the shape and version of one raw Runtime selector.
+
+    ``_select_runtime_tags`` compares selector versions before its main loop when
+    ``latest_only`` is set, so this helper shares the loop's contextual
+    ``ValueError``: reading ``raw_selector["version"]`` directly would surface a
+    bare ``KeyError``/``TypeError``/``InvalidVersion`` for a malformed selector.
+    """
+
+    context = f"{product_id} runtime selector[{index}]"
+    if not isinstance(raw_selector, Mapping) or set(raw_selector) != {
+        "raw",
+        "version",
+        "tag",
+    }:
+        raise ValueError(f"{context}: malformed selector")
+    return raw_selector, version_config.runtime_selector_version(
+        raw_selector.get("version"), f"{context} version"
+    )
+
+
 def _select_runtime_tags(
     product: Mapping[str, object],
     tags: Sequence[str],
     *,
     excluded_variants: Sequence[str] = (),
+    latest_only: bool = False,
 ) -> list[dict[str, str]]:
-    """Resolve version.ini ranges to one published Runtime version per selector."""
+    """Resolve version.ini ranges to one published Runtime version per selector.
+
+    ``latest_only`` narrows the product to its single newest selector so a
+    caller can smoke one version without changing the configured support range.
+    """
 
     product_id = _string(product, "id", "release product")
     raw_selectors = product.get("runtime_selectors")
     if not isinstance(raw_selectors, list) or not raw_selectors:
         raise ValueError(f"{product_id}: version.ini has no Runtime selectors")
+    if latest_only and len(raw_selectors) > 1:
+        selector_versions = [
+            Version(_validated_raw_selector(product_id, index, raw_selector)[1])
+            for index, raw_selector in enumerate(raw_selectors)
+        ]
+        newest_version = max(selector_versions)
+        newest_indexes = [
+            index
+            for index, version in enumerate(selector_versions)
+            if version == newest_version
+        ]
+        if len(newest_indexes) > 1:
+            raise ValueError(
+                f"{product_id}: runtime selectors {newest_indexes} share the "
+                f"newest version {newest_version}; the latest selector is ambiguous"
+            )
+        raw_selectors = [raw_selectors[newest_indexes[0]]]
     available_tags = sorted(set(str(tag) for tag in tags))
     parsed_by_tag = {
         tag: parsed
@@ -258,16 +305,10 @@ def _select_runtime_tags(
     selected: list[dict[str, str]] = []
     selected_tags: set[str] = set()
     for index, raw_selector in enumerate(raw_selectors):
-        context = f"{product_id} runtime selector[{index}]"
-        if not isinstance(raw_selector, Mapping) or set(raw_selector) != {
-            "raw",
-            "version",
-            "tag",
-        }:
-            raise ValueError(f"{context}: malformed selector")
-        selector_text = version_config.runtime_selector_version(
-            raw_selector.get("version"), f"{context} version"
+        raw_selector, selector_text = _validated_raw_selector(
+            product_id, index, raw_selector
         )
+        context = f"{product_id} runtime selector[{index}]"
         selector_version = Version(selector_text)
         explicit_tag = raw_selector.get("tag")
         expected_raw = (
@@ -342,8 +383,14 @@ def resolve_runtime_candidates(
     tag_fixture: Mapping[str, object] | None = None,
     tag_loader: Callable[[str], Sequence[str]] | None = None,
     pr_default: bool = False,
+    latest_per_product: Sequence[str] = (),
 ) -> dict[str, object]:
-    """Select formal Runtime references strictly from published Registry tags."""
+    """Select formal Runtime references strictly from published Registry tags.
+
+    ``latest_per_product`` keeps only the newest selector for the named products,
+    so a caller can smoke one version of a product without changing the product's
+    configured support range.
+    """
 
     products = release.get("products")
     if not isinstance(products, list) or not products:
@@ -352,6 +399,16 @@ def resolve_runtime_candidates(
     excluded_by_product = _mapping(
         release.get("excluded_upstream_variants"), "excluded upstream variants"
     )
+    latest_products = {str(item) for item in latest_per_product}
+    known_products = {
+        _string(_mapping(raw, "release product"), "id", "release product")
+        for raw in products
+    }
+    unknown_products = sorted(latest_products - known_products)
+    if unknown_products:
+        raise ValueError(
+            f"latest-per-product names unknown products: {unknown_products}"
+        )
     runtimes: list[dict[str, str]] = []
     problems: list[dict[str, object]] = []
     for index, raw_product in enumerate(products):
@@ -385,6 +442,7 @@ def resolve_runtime_candidates(
                 product,
                 repository_tags,
                 excluded_variants=excluded,
+                latest_only=product_id in latest_products,
             )
             selected = _without_sglang_runtime_tags(product_id, selected)
         if not selected:

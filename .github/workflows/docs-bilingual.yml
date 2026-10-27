@@ -1,6 +1,9 @@
 name: UCM Documentation · Check bilingual files
 
 on:
+  # Runs on every PR without a path filter: it is a documented required status
+  # check, and a workflow skipped by path filtering would leave that check
+  # Pending. The check itself only reads the docs tree, so it is cheap.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
