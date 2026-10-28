@@ -123,7 +123,7 @@ plugins:
             Error Codes: 错误码
             Benchmark: 基准测试
             AISBench: AISBench
-            PD Disaggregation Benchmark: PD 分离性能测试
+            GLM-5.3 on A2-8 with PD Disaggregation: GLM5.3 + A2-8机PD分离
             Toolkit: 工具集
             Precheck: 环境预检
             POSIX AIO: 存储读写测试
@@ -231,7 +231,7 @@ nav:
       - Error Codes: reference/error-codes.md
   - Benchmark:
       - AISBench: benchmark/aisbench.md
-      - PD Disaggregation Benchmark: benchmark/pd-disaggregation.md
+      - GLM-5.3 on A2-8 with PD Disaggregation: benchmark/pd-disaggregation.md
   - Toolkit:
       - toolkit/index.md
       - Precheck: toolkit/user/precheck.md
