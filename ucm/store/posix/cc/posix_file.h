@@ -55,6 +55,7 @@ public:
     explicit PosixFile(std::string path) : path_{std::move(path)} {}
     ~PosixFile();
     const std::string& Path() const { return path_; }
+    int32_t Handle() const { return handle_; }
     Status MkDir();
     Status RmDir();
     Status Rename(const std::string& newName);
