@@ -266,7 +266,7 @@ ASU backend installation is controlled only by the store-level `ucm_connectors[]
 
 Installing the backend does not initialize the UCM collector or start an exporter. When the collector is not initialized, UCM ignores forwarded updates. If another component has already initialized the process-wide collector and export path, these samples may still be collected and exported. The store installation switch does not provide per-store filtering for KV metrics.
 
-To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. For KV metrics, this setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers only have the store installation switch and must arrange UCM metric registration and draining themselves.
+To opt out of installation for an ASU store, add `enable_metrics: false` beside `store_pipeline: "ASU"` in its existing `ucm_connector_config`. For KV metrics, this setting controls installation, not per-store filtering or shutdown: the backend is process-wide, and setting it to `false` does not uninstall a backend already installed by another store. Direct C++ callers must arrange UCM metric registration and draining themselves.
 
 Metrics installation is best-effort: failure emits a rate-limited UCM ERROR log and Store initialization continues without installing UCM metrics. An existing backend is left unchanged. Installation failures are not cached permanently; a later Store `Setup()` can retry. After all metric writers have stopped and `kv::metrics::Shutdown()` has completed, a later setup can reinstall the retained UCM adapter. Concurrent shutdown and writes, or switching backend types with live cached bindings, remain unsupported. Incompatible cached bindings and failed updates are skipped with rate-limited ERROR logs. Installation and update exceptions are caught by the adapter; logging uses the standard UCM logger without a separate failure fallback.
 
@@ -325,7 +325,7 @@ For definition synchronization and custom catalog validation, see [metrics devel
 
 These 20 metrics (16 Counters and 4 Histograms) use native UCM `UpdateStats()` at the AsuStore interface, independently of the 37 KV metrics above. The existing store-level `enable_metrics` switch controls this instance's `asu_*` observations; its shared KV backend installation behavior is unchanged. Registration and export still use the outer UCM configuration; custom catalogs must include the desired definitions.
 
-The three lookup methods share call/error counts and duration. Ordinary lookup counts hits in the returned vector; prefix lookup counts the returned usable prefix length. Compute their hit ratios separately. Error returns do not contribute queried or hit blocks; timeout fallbacks contribute queried blocks with zero hits. Reverse lookup reports call results and duration only, without interpreting its returned position as a hit count.
+The three lookup methods share call/error counts and duration. Ordinary lookup counts hits in the returned vector; prefix lookup counts the number of contiguous hit blocks (returned index + 1). Compute their hit ratios separately. Error returns do not contribute queried or hit blocks; timeout fallbacks contribute queried blocks with zero hits. Reverse lookup reports call results and duration only, without interpreting its returned position as a hit count.
 
 Load/Dump returning a handle means successful submission; payload bytes are the sum of submitted KV buffer sizes after ASU alignment. Wait counts each call separately, and timeout counts are a subset of wait errors. These are not final task counts, successfully completed bytes, or full asynchronous task durations. Durations use milliseconds and include error returns; no resource sampling thread is added.
 
@@ -338,7 +338,7 @@ Load/Dump returning a handle means successful submission; payload bytes are the 
 | `ucm:asu_lookup_query_blocks_total` | blocks | Blocks queried by normally returned Lookup calls, including timeout fallback |
 | `ucm:asu_lookup_hit_blocks_total` | blocks | Hit blocks returned by Lookup; timeout fallback contributes zero hits |
 | `ucm:asu_lookup_prefix_query_blocks_total` | blocks | Blocks queried by normally returned prefix lookup calls, including timeout fallback |
-| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | Usable prefix blocks returned by prefix lookup; timeout fallback contributes zero hits |
+| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | Contiguous prefix hit blocks, computed as returned index + 1; timeout fallback contributes zero hits |
 | `ucm:asu_lookup_timeout_fallback_total` | count | AsuStore lookup calls returning cache misses after query timeout |
 | `ucm:asu_load_requests_total` | count | AsuStore Load calls, including validation and submission failures |
 | `ucm:asu_load_submit_errors_total` | count | Failed AsuStore Load submissions, including buffer validation failures |

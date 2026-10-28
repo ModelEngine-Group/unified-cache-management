@@ -325,7 +325,7 @@ KV 定义同步与自定义目录校验见[指标开发](../../developer-guide/a
 
 这 20 项指标（16 个 Counter、4 个 Histogram）在 AsuStore 接口层通过 UCM 原生 `UpdateStats()` 采集，独立于上面的 37 项 KV 指标。现有 Store 级 `enable_metrics` 开关控制本实例的 `asu_*` 埋点；它对共享 KV backend 的安装语义保持不变。指标注册和导出仍由上层 UCM 配置控制，自定义配置需要显式包含所需指标。
 
-三种查询共用调用次数、错误和耗时。普通查询按返回向量统计命中，前缀查询按返回的可用前缀长度统计；两种命中率分别计算。查询返回错误时不累计查询 block 或命中 block，超时回退则累计查询 block、命中为零。反向查询只统计调用结果和耗时，不将返回的位置换算成命中数量。
+三种查询共用调用次数、错误和耗时。普通查询按返回向量统计命中，前缀查询统计连续命中的块数，即接口返回下标加 1；两种命中率分别计算。查询返回错误时不累计查询 block 或命中 block，超时回退则累计查询 block、命中为零。反向查询只统计调用结果和耗时，不将返回的位置换算成命中数量。
 
 Load/Dump 成功返回句柄只表示提交成功，字节数为经过 ASU 对齐后提交给 KV 的 buffer 大小之和。Wait 指标按每次调用统计；等待超时是等待错误的子集，不能相加。这些指标不表示任务最终完成数、成功完成字节或完整异步任务耗时。所有耗时单位为毫秒，包含正常返回的错误路径；不新增资源采样线程。
 
@@ -338,7 +338,7 @@ Load/Dump 成功返回句柄只表示提交成功，字节数为经过 ASU 对�
 | `ucm:asu_lookup_query_blocks_total` | blocks | 普通 Lookup 正常返回时查询的 block 数；包含超时回退 |
 | `ucm:asu_lookup_hit_blocks_total` | blocks | 普通 Lookup 返回的命中 block 数；超时回退为零 |
 | `ucm:asu_lookup_prefix_query_blocks_total` | blocks | 前缀查询正常返回时查询的 block 数；包含超时回退 |
-| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | 前缀查询返回的连续可用 block 数；超时回退为零 |
+| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | 连续前缀命中块数，按返回下标加 1 计算；超时回退为零 |
 | `ucm:asu_lookup_timeout_fallback_total` | count | 三种查询因超时回退为未命中的调用次数 |
 | `ucm:asu_load_requests_total` | count | Load 调用次数，包含校验失败及提交失败 |
 | `ucm:asu_load_submit_errors_total` | count | Load 提交失败次数，包含 buffer 校验失败 |
