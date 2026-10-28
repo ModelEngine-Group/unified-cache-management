@@ -31,16 +31,29 @@ def _load_geometry_symbols():
         for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "UCMFAWAConnector"
     )
-    method = next(
-        node
-        for node in connector_cls.body
-        if getattr(node, "name", None) == "ascend_block_geometry"
-    )
     # Keep only the method under test and drop the vLLM base classes.
     stripped_cls = copy.copy(connector_cls)
     stripped_cls.bases = []
     stripped_cls.keywords = []
-    stripped_cls.body = [method]
+    stripped_cls.body = [
+        node
+        for node in connector_cls.body
+        if getattr(node, "name", None)
+        in {
+            "ascend_block_geometry",
+            "ascend_compression_ratio",
+            "_get_ascend_base_block_size",
+            "_specs_for_group",
+        }
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                getattr(target, "id", None)
+                in {"ASCEND_SUPPORTED_VLLM_BLOCK_SIZES", "ASCEND_C4_COMPRESS_RATIO"}
+                for target in node.targets
+            )
+        )
+    ]
     selected_nodes.append(stripped_cls)
     module = ast.Module(body=selected_nodes, type_ignores=[])
     ast.fix_missing_locations(module)
@@ -100,6 +113,35 @@ def test_nested_consistent_geometry():
         }
     )
     assert geometry(group, block_size_is_logical=True) == BlockGeometry(512, 128)
+
+
+def test_runtime_tokens_per_state_specs_find_c4_base_block_size(detection):
+    """v0.30 main uses tokens_per_state in the captured DSV4 worker config."""
+    detection(True)
+    c4_specs = {
+        "model.layers.2.indexer": SimpleNamespace(
+            block_size=512, tokens_per_state=4, sliding_window=None
+        ),
+        "model.layers.2.attn": SimpleNamespace(
+            block_size=512, tokens_per_state=4, sliding_window=None
+        ),
+    }
+    c4 = SimpleNamespace(
+        layer_names=list(c4_specs),
+        kv_cache_spec=SimpleNamespace(block_size=512, kv_cache_specs=c4_specs),
+    )
+    config = SimpleNamespace(kv_cache_groups=[c4])
+    connector = SYMBOLS["UCMFAWAConnector"]
+    assert connector._get_ascend_base_block_size(config) == 128
+    assert geometry(c4.kv_cache_spec) == BlockGeometry(512, 128)
+
+
+@pytest.mark.parametrize("ratio", [4, 128])
+def test_tokens_per_state_geometry_matches_compress_ratio(ratio):
+    runtime_spec = SimpleNamespace(block_size=128 * ratio, tokens_per_state=ratio)
+    assert geometry(runtime_spec, block_size_is_logical=True) == BlockGeometry(
+        128 * ratio, 128
+    )
 
 
 def test_nested_mixed_geometry_reports_layers():
