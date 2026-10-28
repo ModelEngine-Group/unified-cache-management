@@ -84,9 +84,9 @@ Ranges and fixed Tags can be mixed in one comma-separated list without spaces.
 Overlapping ranges such as `0.30,0.30.0`, repeated fixed Tags, and a range plus a
 pin that resolve to the same Tag are errors. A configured range with no match,
 a missing explicit Tag, or selectors that produce no publishable Runtime also
-fail the release. All four Release Profiles consume the same selectors. After
-a winning version is chosen, 310P is filtered and A5 is reported as blocked;
-neither condition causes fallback. Explicit Tags retain these platform limits.
+fail the release. All four Release Profiles consume the same selectors.
+Configured variant exclusions and blocked backends still apply after version
+selection and do not cause fallback. Explicit Tags retain these platform limits.
 
 These selector rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
 `UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`, and `UCM_SUPPORTED_SGLANG_VERSIONS`.
