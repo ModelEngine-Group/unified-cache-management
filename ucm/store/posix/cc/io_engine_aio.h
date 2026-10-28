@@ -24,13 +24,8 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_AIO_H
 
-#include <algorithm>
-#include <atomic>
 #include <cerrno>
-#include <chrono>
-#include <condition_variable>
 #include <limits>
-#include <memory>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
@@ -53,24 +48,8 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
         size_t shardCount{0};
         bool aborted{false};
     };
-    struct ChunkedShard {
-        TaskPtr task;
-        WaiterPtr waiter;
-        Detail::BlockId id;
-        int32_t fd{-1};
-        bool last{false};
-        std::mutex mutex;
-        std::condition_variable cv;
-        size_t inflight{0};
-        // The submitter holds the shard open even if an early chunk completes
-        // before the next one is submitted.
-        bool submitting{true};
-    };
     size_t shardSize_;
     size_t nShardPerBlock_;
-    size_t chunkSize_{0};
-    size_t chunkConcurrency_{1};
-    std::atomic_bool closing_{false};
     const SpaceLayout* layout_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
@@ -78,40 +57,18 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     AioImpl aio_;
 
 public:
-    ~IoEngineAio()
-    {
-        // Open workers may be waiting for chunk completions. Stop them while
-        // aio_ and the completion callbacks they depend on are still alive.
-        closing_ = true;
-        blockOperator_.Stop();
-    }
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
-        if (config.aioChunkConcurrency == 0 || config.aioChunkConcurrency > 4096) {
-            return Status::InvalidParam("invalid aio chunk concurrency({})",
-                                        config.aioChunkConcurrency);
-        }
-        if (config.aioChunkSizeBytes != 0 &&
-            (config.aioChunkSizeBytes % 4096 != 0 ||
-             config.aioChunkSizeBytes > std::numeric_limits<uint32_t>::max() ||
-             config.shardSize % 4096 != 0)) {
-            return Status::InvalidParam("invalid aio chunk/shard size({},{})",
-                                        config.aioChunkSizeBytes, config.shardSize);
-        }
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        chunkSize_ = config.aioChunkSizeBytes;
-        chunkConcurrency_ = config.aioChunkConcurrency;
         layout_ = layout;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
             "AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
-            "openConcurrency={}, commitConcurrency={}, chunkSizeBytes={}, "
-            "chunkConcurrencyPerShard={}.",
-            timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency,
-            chunkSize_, chunkConcurrency_);
+            "openConcurrency={}, commitConcurrency={}.",
+            timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(timeoutMs_);
     }
 
@@ -145,112 +102,23 @@ private:
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
     }
     template <bool dump>
-    void RecordIoResult(const TaskPtr& task, const Detail::BlockId& id,
-                        const AioImpl::Result& result, size_t expectedBytes)
+    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
+                      const Detail::BlockId& id, const AioImpl::Result& result)
     {
         const auto tid = task->id;
-        const auto shortIo =
-            result.error == 0 && result.nBytes != static_cast<ssize_t>(expectedBytes);
+        const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(shardSize_);
         if (result.error != 0 || shortIo) {
             UC_ERROR("Failed(error={}, bytes={}/{}) to do io on block({}).", result.error,
-                     result.nBytes, expectedBytes, id);
+                     result.nBytes, shardSize_, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
         }
-    }
-    template <bool dump>
-    void CompleteShard(const TaskPtr& task, const WaiterPtr& w, int32_t fd, bool last,
-                       const Detail::BlockId& id)
-    {
         ::close(fd);
         if constexpr (dump) {
-            if (last) { CommitBlock(id, !failureSet_.Contains(task->id)); }
+            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
         }
         w->Done();
-    }
-    template <bool dump>
-    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
-                      const Detail::BlockId& id, const AioImpl::Result& result)
-    {
-        RecordIoResult<dump>(task, id, result, shardSize_);
-        CompleteShard<dump>(task, w, fd, last, id);
-    }
-    template <bool dump>
-    void FinishChunk(const std::shared_ptr<ChunkedShard>& state, bool submissionFinished = false)
-    {
-        bool complete;
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            if (submissionFinished) {
-                state->submitting = false;
-            } else {
-                --state->inflight;
-            }
-            complete = !state->submitting && state->inflight == 0;
-        }
-        state->cv.notify_all();
-        if (complete) {
-            CompleteShard<dump>(state->task, state->waiter, state->fd, state->last, state->id);
-        }
-    }
-    template <bool dump>
-    void SubmitChunkedShard(const TaskPtr& task, WaiterPtr w, const Detail::Shard& shard,
-                            int32_t fd)
-    {
-        auto state = std::make_shared<ChunkedShard>();
-        state->task = task;
-        state->waiter = std::move(w);
-        state->id = shard.owner;
-        state->fd = fd;
-        state->last = shard.index + 1 == nShardPerBlock_;
-        // Submission runs on an open worker, never on the completion thread:
-        // io_submit may retry EAGAIN and must not prevent completions draining.
-        for (size_t offset = 0; offset < shardSize_;) {
-            {
-                std::unique_lock<std::mutex> lock(state->mutex);
-                while (state->inflight >= chunkConcurrency_ && !closing_ &&
-                       !failureSet_.Contains(task->id)) {
-                    // ForceComplete may time out an I/O that the kernel cannot
-                    // cancel yet. Poll its failure flag as well as callbacks.
-                    state->cv.wait_for(lock, std::chrono::milliseconds(10));
-                }
-                if (closing_) {
-                    task->Fail(Status::Error("AIO engine is closing"));
-                    failureSet_.Insert(task->id);
-                    break;
-                }
-                if (failureSet_.Contains(task->id)) { break; }
-                ++state->inflight;
-            }
-            const auto length = std::min(chunkSize_, shardSize_ - offset);
-            AioImpl::Io io;
-            io.fd = fd;
-            io.offset = shard.index * shardSize_ + offset;
-            io.length = static_cast<uint32_t>(length);
-            io.buffer = static_cast<char*>(shard.addrs.front()) + offset;
-            io.tag = task->id;
-            io.callback = [this, state, length](AioImpl::Result result) {
-                RecordIoResult<dump>(state->task, state->id, result, length);
-                FinishChunk<dump>(state);
-            };
-            auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
-            if (status.Failure()) {
-                if (status == Status::Timeout()) {
-                    IncrementAioTimeoutMetric();
-                } else {
-                    IncrementIoErrorMetric();
-                }
-                task->Fail(status);
-                failureSet_.Insert(task->id);
-                FinishChunk<dump>(state);
-                break;
-            }
-            offset += length;
-        }
-        // Keep the fd and logical shard pending until every submitted chunk
-        // has returned, including when a later submission or completion fails.
-        FinishChunk<dump>(state, true);
     }
     template <bool dump>
     void OnOpenCallback(const TaskPtr& task, WaiterPtr w, const Detail::Shard& shard,
@@ -281,10 +149,6 @@ private:
                 if (last) { CommitBlock(id, false); }
             }
             w->Done();
-            return;
-        }
-        if (chunkSize_ != 0 && chunkSize_ < shardSize_) {
-            SubmitChunkedShard<dump>(task, std::move(w), shard, result.fd);
             return;
         }
         AioImpl::Io io;

@@ -25,7 +25,6 @@
 #include <array>
 #include <cstdint>
 #include <fmt/ranges.h>
-#include <limits>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "posix_file.h"
@@ -195,8 +194,6 @@ private:
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
         inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
-        inConfig.GetNumber("posix_aio_chunk_size_bytes", config.aioChunkSizeBytes);
-        inConfig.GetNumber("posix_aio_chunk_concurrency", config.aioChunkConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
@@ -238,30 +235,6 @@ private:
         }
         if (config.lookupConcurrency == 0) {
             return Status::InvalidParam("invalid lookup concurrency({})", config.lookupConcurrency);
-        }
-        constexpr size_t kAioAlignment = 4096;
-        constexpr size_t kMaxAioChunkConcurrency = 4096;
-        if (config.aioChunkConcurrency == 0 ||
-            config.aioChunkConcurrency > kMaxAioChunkConcurrency) {
-            return Status::InvalidParam("posix_aio_chunk_concurrency must be between 1 and {}",
-                                        kMaxAioChunkConcurrency);
-        }
-        if (config.aioChunkSizeBytes != 0) {
-            if (config.ioEngine != "aio") {
-                return Status::InvalidParam(
-                    "posix_aio_chunk_size_bytes requires posix_io_engine=aio");
-            }
-            if (config.aioChunkSizeBytes % kAioAlignment != 0 ||
-                config.aioChunkSizeBytes > std::numeric_limits<uint32_t>::max()) {
-                return Status::InvalidParam(
-                    "posix_aio_chunk_size_bytes must be 0 or a multiple of {} below 2^32",
-                    kAioAlignment);
-            }
-            if (config.deviceId >= 0 && config.shardSize % kAioAlignment != 0) {
-                return Status::InvalidParam(
-                    "AIO chunking requires shard_size({}) to be a multiple of {}", config.shardSize,
-                    kAioAlignment);
-            }
         }
         if (config.dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", config.dataDirShardBytes);
@@ -365,8 +338,6 @@ private:
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, config.lookupConcurrency);
         UC_INFO("Set {}::OpenConcurrency to {}.", ns, config.openConcurrency);
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
-        UC_INFO("Set {}::AioChunkSizeBytes to {}.", ns, config.aioChunkSizeBytes);
-        UC_INFO("Set {}::AioChunkConcurrency to {} (per shard).", ns, config.aioChunkConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
         if (config.posixGcEnable) {

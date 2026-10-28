@@ -307,16 +307,7 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 {
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
-        // An eventfd wakeup can be stale: a previous harvest may already have
-        // consumed the completion that produced it. Never wait here, or the
-        // completion thread (and its destructor) can stall with no I/O left.
-        timespec timeout{};
-        auto num = AioGetEvents(ctx_, 0, batchSize, events.data(), &timeout);
-        if (num < 0) {
-            if (errno == EINTR) { continue; }
-            UC_WARN("Failed({}) to harvest AIO completions.", errno);
-            break;
-        }
+        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
         for (auto i = 0; i < num; i++) {
             auto* iocbPtr = reinterpret_cast<struct iocb*>(events[i].obj);
             auto cb = (Callback*)(void*)events[i].data;

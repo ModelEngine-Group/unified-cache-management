@@ -134,35 +134,6 @@ Parameters inside `ucm_connector_config`:
 * **posix_io_engine** *(optional, default: "psync")*  
   I/O engine type for the Posix Store. Supported values: `"psync"` (pread/pwrite), `"aio"` (libaio).
 
-* **posix_aio_chunk_size_bytes** *(optional, default: 0)*
-  Maximum bytes per AIO read or write. `0` preserves one I/O per KV shard.
-  A positive value splits each shard into consecutive file ranges without changing KV keys,
-  shard layout, or the stored file format. It must be a multiple of 4096 and less than 2^32.
-  Chunking requires `posix_io_engine: "aio"` and a shard size aligned to 4096 bytes.
-  The final chunk may be smaller than the configured maximum; a shard completes only after
-  all its chunks complete. This setting does not change H2D transfer granularity.
-
-* **posix_aio_chunk_concurrency** *(optional, default: 1)*
-  Maximum number of outstanding chunk I/Os per shard, from 1 to 4096. It applies when AIO
-  chunking is enabled. `1` submits chunks sequentially within each shard; different shards
-  can still run concurrently. Open workers submit chunks and wait when this window is full,
-  so `posix_open_concurrency` also limits how many shards can submit chunks simultaneously.
-  This is not a global I/O queue depth. Increasing it can increase storage queueing and
-  should be evaluated together with the chunk size.
-
-For example, add these entries under `ucm_connector_config` to use 64 KiB AIO chunks:
-
-```yaml
-posix_io_engine: "aio"
-posix_aio_chunk_size_bytes: 65536
-posix_aio_chunk_concurrency: 1
-```
-
-Use `262144` for 256 KiB or `1048576` for 1 MiB, and use `0` to restore whole-shard I/O.
-Compare full-shard completion time and end-to-end TTFT/TPS, not only per-chunk latency.
-Keep the workload and cache-hit conditions consistent and record actual I/O concurrency.
-`posix_data_trans_concurrency` controls the `psync` worker pool; it does not cap AIO in-flight I/O.
-
 * **use_gdr** *(optional, default: false)*  
   Enable GPUDirect RDMA transfers for Cache Store/Pc Store H2D and D2H copies.  
   This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,  
