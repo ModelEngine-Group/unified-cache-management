@@ -233,7 +233,10 @@ def _probe(config, result):
 
             phase("prepare_data", prepare)
             query_consensus(keys, 0)
-            writer = storage_config.is_storage_writer
+            # Older SGLang keeps this rule in the controller, not the config.
+            # This probe disables DCP: MLA writes on TP0, MHA on every TP rank.
+            writer = getattr(storage_config, "is_storage_writer",
+                             not storage_config.is_mla_model or storage_config.tp_rank == 0)
             phase("dump", lambda: require_results(storage.batch_set_v1(keys, source_indices)) if writer else None)
             query_consensus(keys, config.pages)
             query_consensus([f"missing-{salt[0]}", *keys], 0)
