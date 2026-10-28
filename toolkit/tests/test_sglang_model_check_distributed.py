@@ -32,14 +32,14 @@ class DistributedCheckTest(unittest.TestCase):
             with self.subTest(ranges=ranges), self.assertRaises(ValueError):
                 validate_partitions(ranges, 5, 2, 2)
 
-    def test_known_hybrid_is_allowed_but_specialized_or_unknown_is_not(self):
+    def test_known_cache_families_are_allowed_but_unknown_is_not(self):
         facts = dict(attention_arch="MLA", has_linear_attention=False, is_dsa=False,
                      is_deepseek_v4=False, is_minimax_sparse=False, is_hybrid_swa=False)
         require_supported_model(facts)
         require_supported_model({**facts, "has_linear_attention": True})
         require_supported_model({**facts, "attention_arch": "MHA", "is_hybrid_swa": True})
         for field in ("is_dsa", "is_deepseek_v4", "is_minimax_sparse"):
-            with self.subTest(field=field), self.assertRaises(CheckFailure):
+            with self.subTest(field=field):
                 require_supported_model({**facts, field: True})
         with self.assertRaises(CheckFailure):
             require_supported_model({"attention_arch": "MHA"})

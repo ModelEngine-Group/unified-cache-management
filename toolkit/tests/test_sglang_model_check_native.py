@@ -63,6 +63,18 @@ class NativeRoutingTest(unittest.TestCase):
         self.assertIs(bundle.pools["mamba"], state_host)
         self.assertEqual(bundle.specs, [plan[1]])
         self.assertEqual(bundle.layer_ids["mamba"], (1, 2))
+        # A PP stage can have no recurrent layers. Reuse the same DSA child
+        # rather than requiring an artificial state pool on every stage.
+        with patch("ucm_toolkit.tools.sglang_model_check.pool_probe.build_pool_specs",
+                   return_value=[plan[0]]) as planner, patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._build_dsa"
+        ) as dsa, patch("ucm_toolkit.tools.sglang_model_check.runner._make_mamba_host_pool") as state:
+            stage = NativePools()
+            _build_dsa_recurrent(stage, model, config, "cuda", "bf16", layer_range=(0, 4), tp_size=2)
+        planner.assert_called_once_with(model, ("kv", "mamba"), 256, "cuda",
+                                        external_attention=True, layer_range=(0, 4), tp_size=2)
+        state.assert_not_called()
+        self.assertEqual(stage.report["hybrid_layer_mapping"]["state_model_layers"], [])
 
     def test_low_ratio_discovery_compatibility(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_low_ratio_regions_compat
@@ -394,7 +406,7 @@ class NativeAssemblyTest(unittest.TestCase):
 
         def create(**kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(host_pool_decls=lambda: [])
+            return SimpleNamespace(host_pool_decls=lambda: [], skip_topk_layers=kwargs["skip_topk_layers"])
 
         modules = _module_tree({
             "sglang.srt.configs.model_config": {
@@ -424,6 +436,23 @@ class NativeAssemblyTest(unittest.TestCase):
         self.assertEqual(queried_layers, [0, 3])
         self.assertEqual(calls[0]["skip_topk_layers"], [False, True])
         self.assertEqual(bundle.layer_ids["kv"], (0, 3))
+        calls.clear()
+        queried_layers.clear()
+        with patch.dict(sys.modules, modules), patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device", return_value=host
+        ):
+            _build_dsa(NativePools(), model, CheckConfig(model="test", page_size=256),
+                       "cuda", "bf16", layer_range=(2, 4), tp_size=2)
+        self.assertEqual((calls[0]["start_layer"], calls[0]["end_layer"]), (2, 4))
+        self.assertEqual(calls[0]["layer_num"], 2)
+        self.assertEqual(queried_layers, [2, 3])
+        with patch.dict(sys.modules, modules), patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device", return_value=host
+        ):
+            elided = NativePools()
+            _build_dsa(elided, model, CheckConfig(model="test", page_size=256),
+                       "cuda", "bf16", layer_range=(3, 4), tp_size=2)
+        self.assertEqual(elided.report["elided_payloads"], ["indexer"])
 
     """Check provider orchestration, not native kernel/allocator execution."""
 
@@ -491,6 +520,21 @@ class NativeAssemblyTest(unittest.TestCase):
         self.assertTrue(all(not kwargs["pin_memory"] for kwargs in calls if "pin_memory" in kwargs))
         self.assertEqual(constructor_calls[0]["device"], "cpu")
         self.assertEqual(constructor_calls[0]["compression_ratios"], [4, 128])
+        calls.clear()
+        constructor_calls.clear()
+        # Use the same native mapping stub for a second PP stage. Global
+        # compression configuration is retained; allocation range is local.
+        mapping.c4, mapping.c128, mapping.c4_state_global_layers = {}, {0: 0}, []
+        stage = NativePools()
+        with patch.dict(sys.modules, modules):
+            _build_dsv4(stage, model, CheckConfig(model="test", page_size=256),
+                         "cuda", "fp8", layer_range=(1, 2), tp_size=2)
+        self.assertEqual(constructor_calls[0]["compression_ratios"], [4, 128])
+        self.assertEqual((constructor_calls[0]["start_layer"], constructor_calls[0]["end_layer"]), (1, 2))
+        self.assertEqual(constructor_calls[0]["layer_num"], 1)
+        self.assertNotIn("deepseek_v4_c4", stage.pools)
+        self.assertNotIn("deepseek_v4_c4_state", stage.pools)
+        self.assertEqual(stage.layer_ids["deepseek_v4_c128"], (1,))
 
 
 if __name__ == "__main__":

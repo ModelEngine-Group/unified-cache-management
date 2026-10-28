@@ -11,16 +11,18 @@ import os
 import signal
 import traceback
 import uuid
+from dataclasses import replace
 from datetime import timedelta
 
 from .config import CheckConfig
 from .result import CheckResult, emit_result
 from .runner import (
     CheckFailure, _check_meta_model, _fill_pattern, _make_host_pool,
-    _make_storage_config, _model_facts, _pool_page_views, _make_mamba_host_pool, _pool_name,
+    _make_storage_config, _model_facts, _pool_page_views, _make_mamba_host_pool, _pool_name, _native_cache_dtype,
 )
 from .compatibility import requirements_from_facts
 from .pool_probe import PoolSpec, build_pool_specs, checkpoint_pages, persisted_positions, expected_prefixes
+from .native_probe import native_family, build_native_pools
 
 
 def rank_coordinates(rank, tp_size, pp_size):
@@ -46,11 +48,11 @@ def validate_partitions(ranges, total, tp_size, pp_size):
 
 def require_supported_model(facts):
     if facts.get("attention_arch") not in {"MHA", "MLA"} or any(
-        facts.get(name) is not False for name in
+        facts.get(name) not in (True, False) for name in
         ("is_dsa", "is_deepseek_v4", "is_minimax_sparse")
     ) or any(facts.get(name) not in (True, False) for name in ("has_linear_attention", "is_hybrid_swa")):
         raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "distributed_scope",
-                           "TP/PP probe supports MHA/MLA with SWA/Mamba; specialized sparse/compressed/unknown layouts are not validated")
+                           "SGLang could not identify a supported attention/cache family for TP/PP probing")
 
 
 def _phase(dist, control, world_size, name, action):
@@ -104,7 +106,7 @@ def _communication(torch, groups, device):
 def _probe(config, result):
     import torch
     import torch.distributed as dist
-    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.configs.model_config import ModelConfig, is_deepseek_v4, is_deepseek_dsa, get_dsa_index_kpool
     from sglang.srt.distributed import parallel_state
     from sglang.srt.model_executor.model_runner_components.layer_setup import resolve_layer_indices
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -131,14 +133,28 @@ def _probe(config, result):
         device, backend = f"cuda:{local_rank}", "nccl"
     else:
         raise ValueError("TP/PP device probe requires CUDA/ROCm/Ascend")
+    model_config = ModelConfig(model_path=config.model, dtype=config.dtype,
+                               trust_remote_code=config.trust_remote_code)
+    dsv4 = is_deepseek_v4(model_config.hf_config)
+    if config.page_size == 0:
+        page_size = 256 if dsv4 else 64
+        if is_deepseek_dsa(model_config.hf_config):
+            page_size = (1 if platform == "rocm" else 64) * get_dsa_index_kpool(model_config.hf_config)
+        config = replace(config, page_size=page_size)
+    cache_fields = dict(kv_cache_dtype=config.kv_cache_dtype)
+    if dsv4:
+        cache_fields.update(dsv4_attn_backend=config.dsv4_attn_backend,
+                            enable_deepseek_v4_fp4_indexer=config.fp4_indexer,
+                            c128_page_size=config.c128_page_size)
     host, storage = None, None
+    native_bundle = None
     pools = {}
     with server_args_guard(single_rank=False, model_path=config.model,
                            tp_size=config.tp_size, pp_size=config.pp_size,
                            dp_size=1, attn_dp_size=1, attn_cp_size=1, dcp_size=1,
                            moe_dp_size=1, ep_size=1,
                            disable_custom_all_reduce=True, page_size=config.page_size or 64,
-                           hicache_mem_layout=config.layout):
+                           hicache_mem_layout=config.layout, **cache_fields):
         try:
             # Publish launcher placement as SGLang does, including gpu_id and
             # derived ranks that individual model constructors may consult.
@@ -157,8 +173,6 @@ def _probe(config, result):
             result.validation["device_communication"] = "passed"
 
             def describe():
-                model_config = ModelConfig(model_path=config.model, dtype=config.dtype,
-                                           trust_remote_code=config.trust_remote_code)
                 facts = _model_facts(model_config)
                 require_supported_model(facts)
                 model = _check_meta_model(model_config, use_current_context=True)
@@ -187,13 +201,20 @@ def _probe(config, result):
                 ranges, model_config.num_hidden_layers, config.tp_size, config.pp_size))
             result.validation["meta_model"] = "passed"
             requirements = requirements_from_facts(facts, config.layout)
+            family = native_family(requirements)
             result.cache_requirements = requirements.to_dict()
 
             def allocate():
-                nonlocal host, storage
-                if config.layout not in {"page_first", "page_first_direct"} or config.kv_cache_dtype != "auto":
-                    raise ValueError("TP/PP requires page_first/page_first_direct and automatic KV dtype")
-                if requirements.is_hybrid:
+                nonlocal host, storage, native_bundle, pools
+                if config.layout not in {"page_first", "page_first_direct"} or (not family and config.kv_cache_dtype != "auto"):
+                    raise ValueError("TP/PP requires page-first layouts; explicit KV dtype requires a native provider")
+                if family:
+                    native_bundle = build_native_pools(model_config, requirements, config, platform,
+                        _native_cache_dtype(model_config, config, family, platform),
+                        layer_range=owned, tp_size=config.tp_size)
+                    pools = native_bundle.pools
+                    specs = native_bundle.specs
+                elif requirements.is_hybrid:
                     specs = build_pool_specs(model_config, requirements.pool_names, config.page_size,
                                              platform, tp_size=config.tp_size, layer_range=owned)
                 elif requirements.is_mla:
@@ -207,9 +228,11 @@ def _probe(config, result):
                     specs = [spec]
                 estimate = sum(spec.bytes_per_slot(model_config.dtype, config.page_size)
                                for spec in specs) * (config.pages * 2 + 2) * 8
-                if requirements.is_hybrid and estimate > config.max_host_mib * 1024 * 1024:
+                if not family and requirements.is_hybrid and estimate > config.max_host_mib * 1024 * 1024:
                     raise CheckFailure("CHECKER_MEMORY_LIMIT", "pool_registration", "per-rank hybrid pool budget exceeded")
                 for spec in specs:
+                    if family:
+                        continue  # Native producer already built the physical Host pools.
                     if spec.kind == "logical":
                         from sglang.srt.mem_cache.memory_pool_host import LogicalHostPool
                         pool = LogicalHostPool((config.pages * 2 + 2) * config.page_size,
@@ -224,6 +247,9 @@ def _probe(config, result):
                 cfg = _make_storage_config(config, requirements)
                 cfg.tp_rank, cfg.tp_size = tp_rank, config.tp_size
                 cfg.pp_rank, cfg.pp_size = pp_rank, config.pp_size
+                # SGLang treats DeepSeek V4's logical KV and side pools as
+                # rank-replicated MLA, regardless of ModelConfig's MHA label.
+                cfg.is_mla_model = requirements.is_mla or family == "deepseek_v4"
                 storage = UnifiedCacheStore(cfg)
                 storage.register_mem_pool_host(host)
                 for spec in specs:
@@ -231,9 +257,6 @@ def _probe(config, result):
                         storage.register_mem_host_pool_v2(pools[spec.name], _pool_name(spec.name))
                 return cfg, {spec.name: spec for spec in specs}
 
-            # Auto page size for ordinary MHA/MLA remains 64.
-            from dataclasses import replace
-            config = replace(config, page_size=config.page_size or 64)
             storage_config, specs = phase("pool_registration", allocate)
             token_count = config.pages * host.page_size
             source_indices = torch.arange(token_count, dtype=torch.int64)
@@ -275,7 +298,7 @@ def _probe(config, result):
                         source = _pool_page_views(pools[name], name, page, requirements.is_mla)
                         target = _pool_page_views(pools[name], name, config.pages + page, requirements.is_mla)
                         for component, (src, dst) in enumerate(zip(source, target)):
-                            replicated = requirements.is_mla and name != "mamba"
+                            replicated = storage_config.is_mla_model and name != "mamba"
                             owner = pp_rank * config.tp_size + (0 if replicated else tp_rank)
                             seed = owner * 1000003 + pool_number * 100003 + page * 101 + component
                             _fill_pattern(src, seed=seed)
@@ -310,11 +333,14 @@ def _probe(config, result):
                              not storage_config.is_mla_model or storage_config.tp_rank == 0)
             def dump():
                 selected = transfers()
-                if requirements.is_mla and not writer and selected:
-                    from types import SimpleNamespace
-                    from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import HybridCacheController
-                    policy = SimpleNamespace(backup_skip=True, storage_backend_type="unifiedcache")
-                    selected = [t for t in selected if HybridCacheController.should_backup(policy, t)]
+                if storage_config.is_mla_model and not writer and selected:
+                    if "mamba" not in specs:
+                        selected = []  # These supported MLA/DSV4 sidecars are replicated.
+                    else:
+                        from types import SimpleNamespace
+                        from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import HybridCacheController
+                        policy = SimpleNamespace(backup_skip=True, storage_backend_type="unifiedcache")
+                        selected = [t for t in selected if HybridCacheController.should_backup(policy, t)]
                 if selected:
                     from .runner import _require_page_results
                     results = storage.batch_set_v2(selected)
@@ -354,14 +380,19 @@ def _probe(config, result):
                              for name in specs if name != "kv"},
                 bytes_compared=sum(x.numel() * x.element_size() for x in snapshots.values())), group=control)
             result.roundtrip = {"ranks": details}
+            if native_bundle is not None:
+                result.roundtrip["native_provider"] = native_bundle.report
             result.validation.update(storage_io="passed", distributed_consistency="passed",
                                      runtime_pools="per_rank_host_pools")
             result.succeed("roundtrip", "TP/PP model structure, communication and UCM storage passed")
         finally:
             if storage is not None:
                 storage.close()
-            for pool in pools.values():
-                pool.destroy()
+            if native_bundle is not None:
+                native_bundle.close()
+            else:
+                for pool in pools.values():
+                    pool.destroy()
             if dist.is_initialized():
                 parallel_state.cleanup_dist_env_and_memory()
 

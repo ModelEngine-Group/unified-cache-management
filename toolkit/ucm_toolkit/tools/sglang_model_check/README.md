@@ -219,8 +219,9 @@ Hybrid layer plans are filtered by each PP stage; local attention head counts
 and recurrent-state shapes follow the actual TP context. Side pools absent on
 a stage are omitted, and a state-only stage uses a logical KV anchor. SWA and
 state pools persist sparse checkpoint windows, not every prefix position.
-Sidecar writes use SGLang's `HybridCacheController.should_backup` policy when
-MLA primary writes are skipped; a version lacking that API is inconclusive.
+When MLA primary writes are skipped, replicated sidecars also skip writes.
+Sharded state writes use SGLang's `HybridCacheController.should_backup` policy;
+a version lacking that state-writer API is inconclusive.
 For example, replicated MLA KV and TP-sharded Mamba state are tested with
 different ownership/payload rules. Verbose results include per-pool writes.
 The rank-reduced hit boundary must also be locally restorable on every rank;
@@ -228,8 +229,16 @@ the checker does not change SGLang's MIN reduction into set-intersection schedul
 
 Only `--mode roundtrip`, automatic KV dtype and the two
 supported page-first layouts are covered. Meta construction cannot be skipped.
-DP/CP/DCP are fixed to 1. DSA, DeepSeek V4 compression pools, MLA SWA and other
-specialized/unknown multi-rank layouts remain inconclusive, not silently accepted.
+DP/CP/DCP are fixed to 1. Native DSA/indexer, DSA + Mamba, DeepSeek V4 and
+supported MiniMax sparse layouts reuse the existing native producers with the
+actual PP range and TP context. DSA top-k flags retain original model layer IDs;
+V4 retains its full compression configuration but allocates only the PP stage.
+Each stage's active compressed/indexer/state/scale/RoPE regions are discovered
+by SGLang, not selected from enum membership. V4 uses SGLang's replicated-MLA
+writer/key semantics even when ModelConfig labels its attention as MHA.
+Explicit KV dtype and native backend options follow the single-rank providers.
+Unsupported native APIs, out-of-stage shared sources, mismatched PP buffers and
+MLA SWA still return inconclusive rather than silently testing full-model pools.
 No weights, inference pipeline or device-cache transfer kernels are tested.
 The memory budget is **per worker**, so total host use scales with TP*PP.
 
