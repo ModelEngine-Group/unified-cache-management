@@ -37,6 +37,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
     timeoutMs_ = config.timeoutMs;
+    tracker_.Setup(nShardPerBlock_);
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
             .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
@@ -127,8 +128,15 @@ void TransQueue::DumpWorker(IoUnit& ios)
         return;
     }
     auto s = H2S(ios);
-    if (ios.shard.index + 1 == nShardPerBlock_) {
-        layout_->CommitFile(ios.shard.owner, s.Success());
+    if (s.Success()) {
+        if (tracker_.MarkDone(ios.shard.owner, ios.shard.index, ios.ino)) {
+            const auto path = layout_->DataFilePath(ios.shard.owner, true);
+            if (ios.ino != 0 && InoOf(path) == ios.ino) {
+                layout_->CommitFile(ios.shard.owner, true);
+            }
+        }
+    } else if (ios.shard.index + 1 == nShardPerBlock_) {
+        layout_->CommitFile(ios.shard.owner, false);
     }
     if (s.Failure()) [[unlikely]] {
         ios.task->Fail(s);
@@ -149,6 +157,7 @@ Status TransQueue::H2S(IoUnit& ios)
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
+    ios.ino = InoOf(file.Handle());
     auto offset = shardSize_ * ios.shard.index;
     for (const auto& addr : ios.shard.addrs) {
         s = file.Write(addr, ioSize_, offset);

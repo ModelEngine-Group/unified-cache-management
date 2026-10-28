@@ -32,6 +32,7 @@
 #include <vector>
 #include "aio_impl.h"
 #include "block_operator.h"
+#include "block_tracker.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "template/task_wrapper.h"
@@ -51,6 +52,7 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
+    BlockCommitTracker tracker_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     BlockOperator blockOperator_;
@@ -66,6 +68,7 @@ public:
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
+        tracker_.Setup(nShardPerBlock_);
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
@@ -105,7 +108,7 @@ private:
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
     }
     template <bool dump>
-    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
+    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, size_t shardIndex, uint64_t ino,
                       const Detail::BlockId& id, const AioImpl::Result& result)
     {
         const auto tid = task->id;
@@ -119,7 +122,13 @@ private:
         }
         ::close(fd);
         if constexpr (dump) {
-            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
+            const auto ok = result.error == 0 && !shortIo && !failureSet_.Contains(tid);
+            if (ok && tracker_.MarkDone(id, shardIndex, ino)) {
+                const auto path = layout_->DataFilePath(id, true);
+                if (ino != 0 && InoOf(path) == ino) { CommitBlock(id, true); }
+            } else if (!ok && shardIndex + 1 == nShardPerBlock_) {
+                CommitBlock(id, false);
+            }
         }
         w->Done();
     }
@@ -128,7 +137,9 @@ private:
                         const BlockOperator::OpenResult& result)
     {
         const auto tid = task->id;
-        const auto last = shard.index + 1 == nShardPerBlock_;
+        const auto shardIndex = shard.index;
+        const auto last = shardIndex + 1 == nShardPerBlock_;
+        const auto ino = dump ? InoOf(result.fd) : 0;
         const auto& id = shard.owner;
         auto handleFailure = [this, task, tid, w, last, id](int32_t fd, Status status) {
             task->Fail(status);
@@ -160,8 +171,9 @@ private:
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
         io.tag = tid;
-        io.callback = [this, task, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
-            OnIoCallback<dump>(task, w, fd, last, id, ioResult);
+        io.callback = [this, task, w, fd = result.fd, shardIndex, ino,
+                       id](AioImpl::Result ioResult) {
+            OnIoCallback<dump>(task, w, fd, shardIndex, ino, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {
