@@ -9,6 +9,7 @@ on:
       - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
+      - version.ini
       - requirements-build.txt
       - .github/workflows/release*.yml
       - .github/workflows/nightly-cleanup.yml
@@ -33,6 +34,7 @@ on:
       - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
+      - version.ini
       - requirements-build.txt
       - .github/workflows/release*.yml
       - .github/workflows/nightly-cleanup.yml

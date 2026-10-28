@@ -62,8 +62,9 @@ The human-maintained release authorities are:
 The release plan reads runtime dependencies directly from `project.dependencies`.
 The built Wheel metadata must match those declarations before publication.
 
-Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
-Patch range. Every range is resolved independently from parsed Registry tags:
+Each product selector is a canonical `X.Y` Minor range, an exact `X.Y.Z`
+Patch range, or a fixed `@Tag`. Every range is resolved independently from
+parsed Registry tags:
 vLLM and SGLang choose `stable` before `rc`; vLLM-Ascend also allows a
 `nightly` fallback. The selector then chooses the highest complete version in
 that channel and expands every legal variant of only that version and channel.
@@ -71,30 +72,43 @@ A newer RC never displaces a stable version in the same range, and missing
 variants are never backfilled from another version or channel. SGLang
 `main-cann*` and `nightly-*` tags are not automatic release candidates.
 
-An explicit `version@tag` binding such as
-`0.25@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag. The
-Tag must satisfy the product grammar and its parsed version must be inside the
-declared Minor or Patch range. The candidate records the Tag's complete version
-and actual channel; the pin is not expanded. Overlapping selectors such as
-`0.26,0.26.0`, missing ranges, missing explicit Tags, and selector sets that
-produce no publishable Runtime fail the release. All four Release Profiles
-consume the same selectors. After a winning version is chosen, 310P is filtered
-and A5 is reported as blocked; neither condition causes fallback.
+An explicit `@Tag` such as `@v0.30.0-a3` selects only that exact published Tag
+from the product's configured upstream repository. Write only the Tag after
+`@`, not a repository address or digest. The Tag must satisfy the product's
+existing grammar; the candidate's complete version, channel and variant are
+derived from it. The pin is not expanded to other Tags, but its supported CPU
+architectures are still built. The old `version@Tag` syntax is rejected; for
+example, replace `0.30@v0.30.0-a3` with `@v0.30.0-a3`.
 
-These range rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
+Ranges and fixed Tags can be mixed in one comma-separated list without spaces.
+Overlapping ranges such as `0.30,0.30.0`, repeated fixed Tags, and a range plus a
+pin that resolve to the same Tag are errors. A configured range with no match,
+a missing explicit Tag, or selectors that produce no publishable Runtime also
+fail the release. All four Release Profiles consume the same selectors. After
+a winning version is chosen, 310P is filtered and A5 is reported as blocked;
+neither condition causes fallback. Explicit Tags retain these platform limits.
+
+These selector rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
 `UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`, and `UCM_SUPPORTED_SGLANG_VERSIONS`.
+Deleting, commenting out, or assigning an empty value to one of these variables
+disables that product's automatic Runtime selection and build tasks. Disabled
+products are skipped before querying their Runtime Registry. Shared Wheels and
+Builders required by another enabled product are retained. At least one product
+must have valid selectors; disabling all three fails configuration parsing.
+Canonical output and version materialization omit disabled product assignments.
+
 Upstream candidate channels are independent of UCM's Stable, Prerelease, Draft,
 and Nightly Profiles: the Profile controls which artifacts are built and
 published, without widening the candidate set. `UCM_VERSION` remains a canonical
 PEP 440 `X.Y.Z` package version because it drives Wheel, Chart, and Release
 coordinates.
 
-For example:
+For example (fixed Tags must already exist in the configured repositories):
 
 ```ini
-UCM_SUPPORTED_VLLM_VERSIONS=0.26,0.27,0.28
-UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.23,0.24,0.25,0.26
-UCM_SUPPORTED_SGLANG_VERSIONS=0.5.18,0.5.19,0.5.20
+UCM_SUPPORTED_VLLM_VERSIONS=0.30,@v0.31.0
+UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=@v0.30.0-a3
+UCM_SUPPORTED_SGLANG_VERSIONS=
 ```
 
 ## Registry-only flow
@@ -485,8 +499,8 @@ Fork's GitHub identity and do not depend on the external credentials above.
 
 ### 3. Validate Profile decisions with a Fork Draft
 
-First update and commit `version.ini`, including `UCM_VERSION` and both
-supported Runtime selector lists. Use a fresh Draft sequence because published
+First update and commit `version.ini`, including `UCM_VERSION` and at least one
+supported Runtime selector list. Use a fresh Draft sequence because published
 Tag, Release, and OCI coordinates are immutable:
 
 ```bash

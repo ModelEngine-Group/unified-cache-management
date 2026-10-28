@@ -18,6 +18,7 @@ TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 builders = importlib.import_module("ucm_release.builders")
+chart = importlib.import_module("ucm_release.chart")
 cleanup_records = importlib.import_module("ucm_release.cleanup_records")
 wheel_ops = importlib.import_module("ucm_release.wheel")
 planner = importlib.import_module("ucm_release.plan")
@@ -307,6 +308,107 @@ def test_plan_projects_only_runtime_referenced_wheel_union() -> None:
     assert all(
         item["builder"]["digest"].startswith("sha256:") for item in plan["wheels"]
     )
+
+
+def test_disabling_vllm_preserves_wheels_shared_with_sglang() -> None:
+    formal = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override="0.7.60rc1",
+        release_type="prerelease",
+        dockerhub_namespace="docker.io/release-test",
+    )
+    selectors = {
+        product: [{"raw": version, "version": version, "tag": None}]
+        for product, version in (
+            ("vllm", "0.22.1"),
+            ("vllm-ascend", "0.22.1"),
+            ("sglang", "0.5.19"),
+        )
+    }
+    formal["runtime_selectors"] = selectors
+    products = {product["id"]: product for product in formal["products"]}
+    for product_id, product in products.items():
+        product["runtime_selectors"] = selectors[product_id]
+
+    fixture = serialization.load_json(TAG_FIXTURE)
+    source = products["sglang"]["runtime_repository"]
+    tag = "v0.5.19-cu129"
+    fixture["repositories"][source] = {"pages": [{"tags": [tag]}]}
+    shared_probes = copy.deepcopy(
+        [
+            probe
+            for probe in fixture["runtime_probe"]["probes"]
+            if probe["backend"] == "cuda"
+        ]
+    )
+    for probe in shared_probes:
+        probe.update(
+            probe_id=f"runtime-sglang-{probe['cpu_arch']}",
+            request_id="runtime-sglang",
+            product_id="sglang",
+            repository=source,
+            tag=tag,
+            runtime_ref=f"{source}:{tag}",
+            target_repository=products["sglang"]["target_repository"],
+            image_reference=f"{source}@{probe['image_reference'].split('@')[1]}",
+        )
+    fixture["runtime_probe"]["probes"].extend(shared_probes)
+    complete_selection = upstream.resolve_upstreams(formal, tag_fixture=fixture)
+    complete_catalog = _builder_catalog(formal, complete_selection)
+
+    selectors["vllm"] = []
+    products["vllm"]["runtime_selectors"] = []
+    fixture["repositories"].pop(products["vllm"]["runtime_repository"])
+    fixture["runtime_probe"]["probes"] = [
+        probe
+        for probe in fixture["runtime_probe"]["probes"]
+        if probe["product_id"] != "vllm"
+    ]
+    candidates = upstream.resolve_runtime_candidates(formal, tag_fixture=fixture)
+    selection = upstream.resolve_upstreams(
+        formal, candidates=candidates, tag_fixture=fixture
+    )
+    catalog = _builder_catalog(formal, selection)
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=catalog,
+        route="release",
+    )
+
+    assert {runtime["product_id"] for runtime in candidates["runtimes"]} == {
+        "vllm-ascend",
+        "sglang",
+    }
+    assert {family["product_id"] for family in plan["families"]} == {
+        "vllm-ascend",
+        "sglang",
+    }
+    assert {wheel["id"] for wheel in plan["wheels"]} == {
+        build["id"] for build in complete_selection["wheel_builds"]
+    }
+    assert {builder["id"] for builder in catalog["builders"]} == {
+        builder["id"] for builder in complete_catalog["builders"]
+    }
+    assert plan["version_authority"]["runtime_selectors"]["vllm"] == []
+
+    rendered = chart.render_values(
+        plan, (ROOT / plan["chart"]["source"] / "values.yaml").read_text()
+    )
+    assert '  image: ""' in rendered
+    assert "/vllm-ascend:" in rendered
+    assert "/vllm-openai:" not in rendered
+    assert "/sglang:" not in rendered
+
+    record = cleanup_records.record_from_plan(
+        cleanup_records.record_for_tag(
+            formal["repository"], plan["git_tag"], "a" * 40, 12345, 1
+        ),
+        plan,
+    )
+    references = {item["reference"] for item in record["resources"]}
+    assert any("/sglang:" in reference for reference in references)
+    assert not any("/vllm-openai:" in reference for reference in references)
 
 
 def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -> None:

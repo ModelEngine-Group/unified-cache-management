@@ -84,61 +84,67 @@ def _assignments(text: str, source: str) -> dict[str, str]:
             raise ValueError(f"{source}:{line_number}: unsupported version key {key!r}")
         if key in values:
             raise ValueError(f"{source}:{line_number}: duplicate version key {key!r}")
-        if not raw_value:
+        if key == UCM_VERSION_KEY and not raw_value:
             raise ValueError(f"{source}:{line_number}: {key} must not be empty")
         values[key] = raw_value
-    missing = sorted(set(VERSION_KEYS) - set(values))
-    if missing:
-        raise ValueError(f"{source}: missing version keys: {missing}")
+    if UCM_VERSION_KEY not in values:
+        raise ValueError(f"{source}: missing version key: {UCM_VERSION_KEY}")
     return values
 
 
 def _selectors(value: str, product_id: str) -> list[dict[str, str | None]]:
     result: list[dict[str, str | None]] = []
     selected_ranges: list[Version] = []
+    selected_tags: set[str] = set()
+    if not value:
+        return result
     for index, token in enumerate(value.split(","), start=1):
         context = f"{SUPPORTED_VERSION_KEYS[product_id]}[{index}]"
         if not token or token.strip() != token:
             raise ValueError(f"{context} must be a non-empty selector without spaces")
-        raw_version, separator, raw_tag = token.partition("@")
-        version = runtime_selector_version(raw_version, f"{context} version")
+        version: str | None = None
         tag: str | None = None
-        if separator:
-            if (
-                not raw_tag
-                or "@" in raw_tag
-                or OCI_TAG_PATTERN.fullmatch(raw_tag) is None
-            ):
+        if token.startswith("@"):
+            tag = token[1:]
+            if OCI_TAG_PATTERN.fullmatch(tag) is None:
                 raise ValueError(f"{context} has an invalid OCI tag")
-            tag = raw_tag
-        parsed_version = Version(version)
-        if any(
-            _selector_ranges_overlap(parsed_version, earlier)
-            for earlier in selected_ranges
-        ):
-            raise ValueError(f"{context} overlaps an earlier selector")
-        selected_ranges.append(parsed_version)
+            if tag in selected_tags:
+                raise ValueError(f"{context} duplicates an earlier OCI tag")
+            selected_tags.add(tag)
+        else:
+            if "@" in token:
+                raise ValueError(
+                    f"{context}: version@Tag is no longer supported; use @Tag instead"
+                )
+            version = runtime_selector_version(token, f"{context} version")
+            parsed_version = Version(version)
+            if any(
+                _selector_ranges_overlap(parsed_version, earlier)
+                for earlier in selected_ranges
+            ):
+                raise ValueError(f"{context} overlaps an earlier selector")
+            selected_ranges.append(parsed_version)
         result.append(
             {
-                "raw": version if tag is None else f"{version}@{tag}",
+                "raw": token,
                 "version": version,
                 "tag": tag,
             }
         )
-    if not result:
-        raise ValueError(f"{SUPPORTED_VERSION_KEYS[product_id]} must not be empty")
     return result
 
 
 def parse(text: str, *, source: str = "version.ini") -> dict[str, Any]:
-    """Parse and normalize one complete version authority document."""
+    """Parse version authority; absent or empty Runtime keys disable that product."""
 
     assignments = _assignments(text, source)
     ucm_version = _canonical_version(assignments[UCM_VERSION_KEY], UCM_VERSION_KEY)
     supported = {
-        product_id: _selectors(assignments[key], product_id)
+        product_id: _selectors(assignments.get(key, ""), product_id)
         for product_id, key in SUPPORTED_VERSION_KEYS.items()
     }
+    if not any(supported.values()):
+        raise ValueError(f"{source}: at least one Runtime product must be enabled")
     authority = {
         "ucm_base_version": Version(ucm_version).base_version,
         "supported_runtimes": supported,
@@ -178,10 +184,16 @@ def render(config: dict[str, Any], *, ucm_version: str | None = None) -> str:
         raise ValueError("version authority has no supported runtime selectors")
     for product_id, key in SUPPORTED_VERSION_KEYS.items():
         selectors = supported.get(product_id)
-        if not isinstance(selectors, list) or not selectors:
+        if not isinstance(selectors, list):
             raise ValueError(f"version authority has no selectors for {product_id}")
+        if not selectors:
+            continue
         values = [str(selector["raw"]) for selector in selectors]
         lines.append(f"{key}={','.join(values)}")
+    if len(lines) == 1:
+        raise ValueError(
+            "version authority: at least one Runtime product must be enabled"
+        )
     return "\n".join(lines) + "\n"
 
 

@@ -242,12 +242,11 @@ def _validated_raw_selector(
     index: int,
     raw_selector: object,
 ) -> tuple[Mapping[str, object], str]:
-    """Validate the shape and version of one raw Runtime selector.
+    """Validate a Runtime selector and return its version for ordering.
 
     ``_select_runtime_tags`` compares selector versions before its main loop when
-    ``latest_only`` is set, so this helper shares the loop's contextual
-    ``ValueError``: reading ``raw_selector["version"]`` directly would surface a
-    bare ``KeyError``/``TypeError``/``InvalidVersion`` for a malformed selector.
+    ``latest_only`` is set. A Tag pin uses the version parsed from its Tag;
+    a range uses its declared version. Both paths retain contextual errors.
     """
 
     context = f"{product_id} runtime selector[{index}]"
@@ -257,9 +256,32 @@ def _validated_raw_selector(
         "tag",
     }:
         raise ValueError(f"{context}: malformed selector")
-    return raw_selector, version_config.runtime_selector_version(
-        raw_selector.get("version"), f"{context} version"
-    )
+    explicit_tag = raw_selector.get("tag")
+    if explicit_tag is None:
+        version = version_config.runtime_selector_version(
+            raw_selector.get("version"), f"{context} version"
+        )
+        expected_raw = version
+    else:
+        if raw_selector.get("version") is not None:
+            raise ValueError(
+                f"{context}: explicit Runtime tag must use @tag without a version range"
+            )
+        if (
+            not isinstance(explicit_tag, str)
+            or version_config.OCI_TAG_PATTERN.fullmatch(explicit_tag) is None
+        ):
+            raise ValueError(f"{context}: explicit Runtime tag is not a valid OCI tag")
+        parsed = _parsed_runtime_tag(product_id, explicit_tag)
+        if parsed is None:
+            raise ValueError(
+                f"{context}: explicit Runtime tag does not match product grammar"
+            )
+        version = str(parsed["version_text"])
+        expected_raw = f"@{explicit_tag}"
+    if raw_selector.get("raw") != expected_raw:
+        raise ValueError(f"{context}: raw selector is inconsistent")
+    return raw_selector, version
 
 
 def _select_runtime_tags(
@@ -269,7 +291,7 @@ def _select_runtime_tags(
     excluded_variants: Sequence[str] = (),
     latest_only: bool = False,
 ) -> list[dict[str, str]]:
-    """Resolve version.ini ranges to one published Runtime version per selector.
+    """Resolve version.ini ranges and exact Tag pins to published Runtimes.
 
     ``latest_only`` narrows the product to its single newest selector so a
     caller can smoke one version without changing the configured support range.
@@ -311,11 +333,6 @@ def _select_runtime_tags(
         context = f"{product_id} runtime selector[{index}]"
         selector_version = Version(selector_text)
         explicit_tag = raw_selector.get("tag")
-        expected_raw = (
-            selector_text if explicit_tag is None else f"{selector_text}@{explicit_tag}"
-        )
-        if raw_selector.get("raw") != expected_raw:
-            raise ValueError(f"{context}: raw selector is inconsistent")
         if explicit_tag is not None:
             if not isinstance(explicit_tag, str) or explicit_tag not in available_tags:
                 raise ValueError(f"{context}: explicit Runtime tag is not published")
@@ -323,10 +340,6 @@ def _select_runtime_tags(
             if parsed is None:
                 raise ValueError(
                     f"{context}: explicit Runtime tag does not match product grammar"
-                )
-            if not _version_is_in_selector(parsed["version"], selector_version):
-                raise ValueError(
-                    f"{context}: explicit Runtime tag is outside its version range"
                 )
             if parsed["variant"] in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
@@ -415,6 +428,8 @@ def resolve_runtime_candidates(
         product = _mapping(raw_product, f"release products[{index}]")
         product_id = _string(product, "id", f"release products[{index}]")
         if pr_default and product_id != "vllm-ascend":
+            continue
+        if not pr_default and product.get("runtime_selectors") == []:
             continue
         repository = _string(product, "runtime_repository", product_id)
         excluded = excluded_by_product.get(product_id, [])

@@ -221,6 +221,50 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     assert "namespace" not in resolved["publish"]["dockerhub"]
 
 
+@pytest.mark.parametrize("release_type", ("stable", "prerelease", "draft", "nightly"))
+def test_policy_preserves_disabled_products_without_runtime_selectors(
+    tmp_path: Path, release_type: str
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    version_config = importlib.import_module("ucm_release.version_config")
+    for filename in ("pyproject.toml", "requirements-build.txt"):
+        shutil.copy2(REPO_ROOT / filename, tmp_path / filename)
+    chart_source = Path(_release_policy()["chart"]["source"])
+    (tmp_path / chart_source).mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / chart_source / "Chart.yaml",
+        tmp_path / chart_source / "Chart.yaml",
+    )
+    version_path = tmp_path / "version.ini"
+    version_path.write_text(
+        "UCM_VERSION=0.9.3\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.30\n"
+        "UCM_SUPPORTED_SGLANG_VERSIONS=\n",
+        encoding="utf-8",
+    )
+
+    resolved = policy.resolve(
+        repository_root=tmp_path,
+        repository="release-org/ucm",
+        release_type=release_type,
+    )
+
+    products = {product["id"]: product for product in resolved["products"]}
+    assert set(products) == {"vllm", "vllm-ascend", "sglang"}
+    assert resolved["runtime_selectors"] == {
+        "vllm": [],
+        "vllm-ascend": [{"raw": "0.30", "version": "0.30", "tag": None}],
+        "sglang": [],
+    }
+    for product_id, product in products.items():
+        assert product["runtime_selectors"] == resolved["runtime_selectors"][product_id]
+        assert product["runtime_repository"]
+    assert (
+        resolved["version_authority_sha256"]
+        == version_config.load(version_path)["authority_sha256"]
+    )
+
+
 def test_policy_resolve_uses_only_the_selected_profile_switches(
     tmp_path: Path,
 ) -> None:
