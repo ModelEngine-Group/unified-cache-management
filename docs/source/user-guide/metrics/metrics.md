@@ -210,7 +210,7 @@ UCM provides these dashboards:
 | --- | --- |
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, cache state, Store health, and probe trends |
 | `examples/metrics/grafana_connector.json` | Connector aggregate bandwidth, common interface duration, and Layerwise load duration |
-| `examples/metrics/grafana_store.json` | Cache, Mooncake, Posix, and AsuStore metrics grouped by Store; AsuStore includes request/error rates, hit ratios, submitted bytes, and interface durations |
+| `examples/metrics/grafana_store.json` | Store lookup, load, dump, bandwidth, and cache activity |
 
 The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
 In the Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.

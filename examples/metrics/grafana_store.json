@@ -7711,14 +7711,14 @@
       "panels": [],
       "title": "AsuStore",
       "type": "row",
-      "description": "AsuStore 原生接口指标：请求、错误、命中、提交字节和调用耗时。"
+      "description": "按查找、加载、写出、带宽和缓存活动组织；加载/写出共用 Wait 面板。"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Lookup 含普通、前缀和反向查询；Load/Dump 包含提交失败；Wait 按每次调用计数，不代表最终完成任务数。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "查找请求与错误调用速率。包含普通、前缀和反向查询；超时回退返回 miss，不计入错误。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7802,7 +7802,7 @@
           "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "legendFormat": "requests {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -7812,10 +7812,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "load {{engine}} {{worker_rank}}",
+          "legendFormat": "errors {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -7825,28 +7825,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_timeout_fallback_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "dump {{engine}} {{worker_rank}}",
+          "legendFormat": "timeout fallback {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "wait {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "D"
         }
       ],
-      "title": "AsuStore Request Rate",
+      "title": "AsuStore Lookup Request / Error Rate",
       "type": "timeseries"
     },
     {
@@ -7854,7 +7841,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Lookup 错误不含超时回退；Load/Dump 为校验或提交错误；Wait 错误包含超时及任务结果错误。不同阶段错误不可相加计算任务失败率。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "查找接口平均耗时和 P99（毫秒），包含错误返回；不是异步任务端到端耗时。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7903,7 +7890,7 @@
               }
             ]
           },
-          "unit": "suffix: errors/s",
+          "unit": "ms",
           "min": 0
         },
         "overrides": []
@@ -7935,10 +7922,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -7948,41 +7935,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
           "hide": false,
           "instant": false,
-          "legendFormat": "load submit {{engine}} {{worker_rank}}",
+          "legendFormat": "P99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "dump submit {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "wait {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "D"
         }
       ],
-      "title": "AsuStore Error Rate",
+      "title": "AsuStore Lookup Duration",
       "type": "timeseries"
     },
     {
@@ -7990,7 +7951,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "普通查询与前缀查询分别统计正常返回的查询块数；超时回退计入，错误返回和反向查询不计入。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "加载请求与错误调用速率。错误包含校验和提交失败；成功返回仅表示提交被接受，不表示任务完成。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8039,7 +8000,7 @@
               }
             ]
           },
-          "unit": "suffix: blocks/s",
+          "unit": "suffix: calls/s",
           "min": 0
         },
         "overrides": []
@@ -8071,10 +8032,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "legendFormat": "requests {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -8084,15 +8045,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "prefix {{engine}} {{worker_rank}}",
+          "legendFormat": "submit errors {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "AsuStore Queried Block Rate",
+      "title": "AsuStore Load Request / Error Rate",
       "type": "timeseries"
     },
     {
@@ -8100,7 +8061,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "普通查询为命中块/查询块；前缀查询为可用前缀块/查询块，分别计算。超时回退贡献零命中；反向查询不计入。无查询时不显示命中率。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "加载提交接口平均耗时和 P99（毫秒），包含错误返回；不是异步任务端到端耗时。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8149,9 +8110,8 @@
               }
             ]
           },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
+          "unit": "ms",
+          "min": 0
         },
         "overrides": []
       },
@@ -8182,10 +8142,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -8195,15 +8155,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
           "hide": false,
           "instant": false,
-          "legendFormat": "prefix {{engine}} {{worker_rank}}",
+          "legendFormat": "P99 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "AsuStore Hit Ratio",
+      "title": "AsuStore Load Submit Duration",
       "type": "timeseries"
     },
     {
@@ -8211,7 +8171,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "查询超时后返回 miss 的调用速率，包含普通、前缀和反向查询；不属于 Lookup 错误返回。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "写出请求与错误调用速率。错误包含校验和提交失败；成功返回仅表示提交被接受，不表示任务完成。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8292,107 +8252,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_timeout_fallback_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup timeout fallback {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "AsuStore Lookup Timeout Fallback Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Load/Dump 成功提交时接受的 ASU 对齐后 buffer 字节数/秒；不是成功完成吞吐量，也不是未对齐的逻辑字节数。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "Bps",
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 230
-      },
-      "id": 77,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "load submitted {{engine}} {{worker_rank}}",
+          "legendFormat": "requests {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -8402,15 +8265,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "dump submitted {{engine}} {{worker_rank}}",
+          "legendFormat": "submit errors {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "AsuStore Submitted Byte Rate",
+      "title": "AsuStore Dump Request / Error Rate",
       "type": "timeseries"
     },
     {
@@ -8418,7 +8281,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Lookup 接口、Load/Dump 提交接口、Wait 单次调用的平均值及 P99（毫秒），包含错误返回。不是异步任务端到端耗时。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "写出提交接口平均耗时和 P99（毫秒），包含错误返回；不是异步任务端到端耗时。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8475,6 +8338,116 @@
       "gridPos": {
         "h": 8,
         "w": 12,
+        "x": 12,
+        "y": 230
+      },
+      "id": 77,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "P99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AsuStore Dump Submit Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "带宽分类：Load/Dump 成功提交时接受的 ASU 对齐后 buffer 字节数/秒；这是提交吞吐量，不是实际完成带宽或未对齐的逻辑字节速率。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
         "x": 0,
         "y": 238
       },
@@ -8499,10 +8472,10 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup avg {{engine}} {{worker_rank}}",
+          "legendFormat": "load submitted {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -8512,93 +8485,15 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "lookup P99 {{engine}} {{worker_rank}}",
+          "legendFormat": "dump submitted {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "load submit avg {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_load_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "load submit P99 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "dump submit avg {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_dump_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "dump submit P99 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "wait avg {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "G"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "hide": false,
-          "instant": false,
-          "legendFormat": "wait P99 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "H"
         }
       ],
-      "title": "AsuStore Interface Duration",
+      "title": "AsuStore Bandwidth - Submitted Throughput",
       "type": "timeseries"
     },
     {
@@ -8606,7 +8501,228 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Wait 返回超时的调用速率，是 Wait 错误的子集；重复 Wait 分别计数，不应与 Wait 错误相加。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "description": "缓存活动：普通查询与前缀查询分别统计正常返回的查询块数；超时回退计入，错误返回和反向查询不计入。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: blocks/s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 246
+      },
+      "id": 79,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "prefix {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AsuStore Cache Activity - Queried Block Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "缓存活动：普通查询为命中块/查询块；前缀查询为可用前缀块/查询块，分别计算。超时回退贡献零命中；反向查询不计入。无查询时不显示命中率。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 246
+      },
+      "id": 80,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "lookup {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "prefix {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AsuStore Cache Activity - Hit Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "加载/写出公共等待：Wait 按每次调用计数，无法区分 Load/Dump；错误包含超时及任务结果错误。超时是错误的子集，不应相加；重复 Wait 不代表不同任务。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8663,10 +8779,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 238
+        "x": 0,
+        "y": 254
       },
-      "id": 79,
+      "id": 81,
       "options": {
         "legend": {
           "calcs": [],
@@ -8687,15 +8803,151 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "wait calls {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "wait errors {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
           "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_timeouts_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
-          "legendFormat": "wait timeout {{engine}} {{worker_rank}}",
+          "legendFormat": "wait timeouts {{engine}} {{worker_rank}}",
           "range": true,
-          "refId": "A"
+          "refId": "C"
         }
       ],
-      "title": "AsuStore Wait Timeout Rate",
+      "title": "AsuStore Load / Dump Wait Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "加载/写出公共等待：Wait 单次调用的平均耗时和 P99（毫秒），包含错误和超时；不区分 Load/Dump，不是完整异步任务耗时。 代码位置：`ucm/store/asu/cc/asu_store.cc`。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 254
+      },
+      "id": 82,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "wait avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:asu_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "wait P99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AsuStore Load / Dump Wait Duration",
       "type": "timeseries"
     }
   ]
