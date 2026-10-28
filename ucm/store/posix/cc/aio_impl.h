@@ -64,7 +64,7 @@ public:
     using SweepFn = std::function<void()>;
 
     ~AioImpl();
-    Status Setup(size_t timeoutMs);
+    Status Setup(size_t timeoutMs, size_t queueDepth = 1024);
     Status ReadAsync(Io&& io);
     Status WriteAsync(Io&& io);
     void SetSweepFn(SweepFn fn) { sweepFn_ = std::move(fn); }
@@ -78,7 +78,7 @@ private:
     void Track(uint64_t tag, struct iocb* cb);
     void Untrack(struct iocb* cb);
 
-    size_t queueDepth_{4096};
+    size_t queueDepth_{1024};
     size_t epollTimeoutMs_{10};
     size_t sweepIntervalMs_{100};
     size_t submitTimeoutMs_{0};

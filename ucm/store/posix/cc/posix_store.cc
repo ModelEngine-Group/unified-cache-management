@@ -189,6 +189,8 @@ private:
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.Get("posix_io_engine", config.ioEngine);
         inConfig.Get("io_direct", config.ioDirect);
+        inConfig.GetNumber("posix_aio_queue_depth", config.aioQueueDepth);
+        inConfig.GetNumber("posix_load_handle_cache_size", config.loadHandleCacheSize);
         inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);

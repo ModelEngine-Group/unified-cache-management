@@ -61,6 +61,10 @@ class Device(ABC):
         """
         pass
 
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """Return real device affinity, or None; never guess from rank/CPU ids."""
+        return None
+
     def split_cores(self, local_rank: int) -> Tuple[List[int], List[int]]:
         """
         Shared split logic for both CUDA and NPU.
@@ -140,6 +144,30 @@ class CudaDevice(Device):
 
     def destroy_event_handle(self, event_handle: int):
         self.events.pop(event_handle, None)
+
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """
+        CUDA path: GPU -> PCI -> NUMA node. Returns None when sysfs does not
+        expose an affinity, which is not the same as node 0.
+        """
+        try:
+            prop = torch.cuda.get_device_properties(device_ordinal)
+            pci_bus_id = (
+                f"{prop.pci_domain_id:04x}:"
+                f"{prop.pci_bus_id:02x}:"
+                f"{prop.pci_device_id:02x}.0"
+            )
+            numa_path = f"/sys/bus/pci/devices/{pci_bus_id}/numa_node"
+            if not os.path.exists(numa_path):
+                return None
+            with open(numa_path) as f:
+                numa_id = int(f.read().strip())
+            return numa_id if numa_id >= 0 else None
+        except Exception as e:
+            logger.warning(
+                f"[NUMA] failed to read CUDA NUMA node for device {device_ordinal}: {e}"
+            )
+            return None
 
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
@@ -607,6 +635,32 @@ class NpuDevice(Device):
         """
         parts = [p.strip() for p in cpulist_parts if p and p.strip()]
         return ",".join(parts) if parts else None
+
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """
+        NPU path: NPU -> PCIe -> NUMA node.
+
+        Only a real sysfs/lspci mapping counts. `_get_numa_info_v2` spreads
+        nodes evenly by device index, which is a synthetic mapping and must not
+        be reported as device affinity.
+        """
+        try:
+            device_map_info = self._get_device_map_info()
+            if not device_map_info:
+                return None
+            self._get_pcie_info(device_map_info)
+            self._get_numa_info(device_map_info)
+            # The map is keyed by the logic device id, so a process-local ordinal
+            # has to go through the visible-device list first.
+            topo = device_map_info.get(self._get_device_id(device_ordinal))
+            if topo is None or topo.numa_id is None:
+                return None
+            return topo.numa_id
+        except Exception as e:
+            logger.warning(
+                f"[NUMA] failed to read NPU NUMA node for device {device_ordinal}: {e}"
+            )
+            return None
 
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
