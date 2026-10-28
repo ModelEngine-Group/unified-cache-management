@@ -73,11 +73,9 @@
 
 | 参数                        | 值                                         | 说明                            |
 | --------------------------- | ------------------------------------------ | ------------------------------- |
-| `shmSize`                   | `800Gi`                                    | 共享内存                        |
-| `dataParallelMode`          | `standard`                                 | 数据并行模式                    |
-| `recoveryPolicy`            | `None`                                     | 不自动恢复                      |
-| `restartGracePeriodSeconds` | `60`                                       | 重启宽限期                      |
-| `containerPort`             | `8000`                                     | 引擎服务端口                    |
+| `modelSpec.name`            | `glm-53`                                   | K8s 资源名片段，小写字母/数字/- |
+| `modelPath`                 | `/mnt/model/GLM-5.3-w8a8c8`                | 模型权重路径                    |
+| `modelName`                 | `glm-53`                                   | 服务内模型名                    |
 | `quantization`              | `ascend`                                   | Ascend 量化                     |
 | `max-model-len`             | `262144`                                   | 最大上下文 256K                 |
 | `gpu-memory-utilization`    | `0.92`                                     | 显存利用率                      |
