@@ -32,6 +32,9 @@ class CheckConfig:
     connector_module_path: str | None = None
     output: str | None = None
     verbose: bool = False
+    tp_size: int = 1
+    pp_size: int = 1
+    distributed_timeout: int = 300
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "CheckConfig":

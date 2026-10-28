@@ -128,7 +128,7 @@ def _meta_device_guard(torch: Any) -> Iterator[None]:
             setattr(torch, name, original)
 
 
-def _check_meta_model(model_config: Any) -> Any:
+def _check_meta_model(model_config: Any, *, use_current_context: bool = False) -> Any:
     import torch
     from sglang.srt.configs.load_config import LoadConfig
     from sglang.srt.model_loader.loader import (
@@ -145,7 +145,9 @@ def _check_meta_model(model_config: Any) -> Any:
     old_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(model_config.dtype)
-        with server_args_guard(model_path=model_config.model_path, revision=model_config.revision):
+        context = (contextlib.nullcontext() if use_current_context else
+                   server_args_guard(model_path=model_config.model_path, revision=model_config.revision))
+        with context:
             quant_config = _get_quantization_config(model_config, load_config)
             with _single_rank_model_parallel():
                 with torch.device("meta"), _meta_device_guard(torch):
@@ -197,7 +199,8 @@ def _make_storage_config(config: CheckConfig, requirements: Any) -> Any:
 
 
 def _make_host_pool(
-    model_config: Any, requirements: Any, config: CheckConfig, pool_spec: Any = None
+    model_config: Any, requirements: Any, config: CheckConfig, pool_spec: Any = None,
+    *, layer_start: int = 0,
 ) -> Any:
     import torch
 
@@ -215,8 +218,8 @@ def _make_host_pool(
     device_pool = SimpleNamespace(
         store_dtype=model_config.dtype,
         size=config.page_size * (config.pages * 2 + 1),
-        start_layer=0,
-        end_layer=layer_num,
+        start_layer=layer_start,
+        end_layer=layer_start + layer_num,
         layer_num=layer_num,
         device="cpu",
         layer_shard_enabled=False,
@@ -283,7 +286,7 @@ def _make_host_pool(
                     dtype=model_config.dtype, kv_lora_rank=device_pool.kv_lora_rank,
                     qk_rope_head_dim=device_pool.qk_rope_head_dim, layer_num=layer_num,
                     device="cpu", enable_memory_saver=False,
-                    start_layer=0, end_layer=layer_num,
+                    start_layer=layer_start, end_layer=layer_start + layer_num,
                 )
             else:
                 # Legacy Host constructors read native row geometry and pointer
@@ -295,7 +298,7 @@ def _make_host_pool(
                     dtype=model_config.dtype, head_num=device_pool.head_num,
                     head_dim=device_pool.head_dim, layer_num=layer_num,
                     device="cpu", enable_memory_saver=False,
-                    start_layer=0, end_layer=layer_num, enable_alt_stream=False,
+                    start_layer=layer_start, end_layer=layer_start + layer_num, enable_alt_stream=False,
                 )
             return pool_cls(device_pool=device_pool, **kwargs)
         if "buffer_info" not in parameters:
@@ -304,7 +307,7 @@ def _make_host_pool(
         # New SGLang separates physical buffer descriptions from pool capacity.
         # These CPU buffers describe geometry only; no device transfer is tested.
         common = dict(device_capacity_tokens=device_pool.size,
-                      start_layer=0, end_layer=layer_num)
+                      start_layer=layer_start, end_layer=layer_start + layer_num)
         if requirements.is_mla:
             from sglang.srt.mem_cache.pool_host.mla import MLAHostAllocation
 

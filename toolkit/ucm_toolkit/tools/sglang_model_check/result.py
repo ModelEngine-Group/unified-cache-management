@@ -68,6 +68,10 @@ class CheckResult:
                 if self.validation.get("meta_model") == "passed":
                     message = "Model structure and Host/UCM storage roundtrip passed; "
                 message += "inference, device transfers and multi-rank execution are not validated."
+                if self.validation.get("scope") == "tp_pp_host_storage_contract":
+                    message = (f"TP={self.validation['tp_size']} PP={self.validation['pp_size']}: "
+                               "model structure, device communication and Host/UCM storage passed; "
+                               "inference and device-cache transfers are not validated.")
         summary = {
             "model": self.model,
             "mode": self.mode,

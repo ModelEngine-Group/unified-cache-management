@@ -191,6 +191,53 @@ and are not deleted; use a dedicated test backend directory.
 See [需求与可行性分析](requirements_analysis_zh.md) for evidence, scope and the
 hybrid-pool acceptance matrix.
 
+## Single-node TP/PP validation
+
+On Linux, ordinary MHA/MLA models can additionally validate their actual TP/PP
+meta structure, small CPU host pools, device communication and UCM storage:
+
+```bash
+ucm-toolkit run sglang-model-check --model /models/model --mode roundtrip \
+  --tp-size 2 --pp-size 2 --storage-backends /mnt/ucm-tp-pp-test
+```
+
+The adapter launches `torchrun` with TP*PP workers. By default it uses the first
+TP*PP devices from the inherited visibility setting, or devices 0..TP*PP-1.
+Use `--device-id 0,2,4,6` to select explicit visible device IDs. Every worker
+binds its `LOCAL_RANK`; it does not reset visibility to device 0. CUDA/ROCm use
+NCCL and Ascend uses HCCL, with a Gloo group for control/results. Both backends
+must be available. TP and PP collectives plus PP point-to-point links are tested.
+
+The model's actual PP ownership must cover all layers once, with agreement
+within each TP group. MHA host geometry uses SGLang's local KV-head calculation;
+MLA keeps its replicated latent cache. Production `is_storage_writer` selects
+writers (MLA TP0 per PP stage); **all ranks read back and compare**. Identical
+logical keys with stage/rank-distinct test payloads detect TP/PP key collisions.
+Cold/missing queries and full hits use MIN consensus across the ranks.
+
+Only ordinary MHA/MLA, `--mode roundtrip`, automatic KV dtype and the two
+supported page-first layouts are covered. Meta construction cannot be skipped.
+DP/CP/DCP are fixed to 1; hybrid/sparse/unknown layouts return inconclusive.
+No weights, inference pipeline or device-cache transfer kernels are tested.
+The memory budget is **per worker**, so total host use scales with TP*PP.
+
+`--distributed-timeout` (default 300 seconds) bounds each worker as well as
+collectives. Torchrun does not restart failures and terminates peers when a
+worker exits. Rank 0 emits the aggregate report/output file; fatal startup or
+collective failures may instead surface as torchrun errors with nonzero exit.
+`--verbose` includes each rank's PP layer range, writer/reader result and bytes.
+
+Real-device integration tests (four visible devices, dedicated test storage):
+
+```bash
+export UCM_SGLANG_TP_PP_TEST_MODEL=/models/plain-mha-or-mla
+export UCM_SGLANG_TP_PP_TEST_BACKENDS=/mnt/ucm-tp-pp-test
+python -m unittest discover -s toolkit/tests -p 'test_sglang_model_check_distributed.py' -v
+```
+
+This runs TP=2/PP=1, TP=1/PP=2 and TP=2/PP=2. Run it separately with MHA
+and MLA models; dependency-free tests are not a substitute for these runs.
+
 Run dependency-free planning, sparse-window and transfer-orchestration tests:
 
 ```bash

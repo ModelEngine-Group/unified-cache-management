@@ -30,7 +30,11 @@ class SglangModelCheckTool(ToolAdapter):
             default="inspect",
             help="inspect configuration/structure (default), or explicitly select roundtrip for host-cache IO",
         )
-        parser.add_argument("--device-id", default="0")
+        parser.add_argument("--device-id", help="visible device IDs; defaults to 0, or the first TP*PP visible devices")
+        parser.add_argument("--tp-size", type=int, default=1)
+        parser.add_argument("--pp-size", type=int, default=1)
+        parser.add_argument("--distributed-timeout", type=int, default=300,
+                            help="multi-rank worker/collective timeout in seconds")
         parser.add_argument(
             "--platform",
             choices=("auto", "cuda", "rocm", "ascend", "xpu", "cpu"),
@@ -86,7 +90,7 @@ class SglangModelCheckTool(ToolAdapter):
             description=self.description,
         )
         self.add_run_args(parser)
-        common = {"model", "mode", "storage_backends", "output", "verbose", "help"}
+        common = {"model", "mode", "storage_backends", "output", "verbose", "help", "tp_size", "pp_size"}
         if not show_all:
             for action in parser._actions:
                 if action.dest not in common:
@@ -112,13 +116,16 @@ class SglangModelCheckTool(ToolAdapter):
             raise ToolkitError("--storage-backends is required in roundtrip mode")
         if args.c128_page_size <= 0 or args.c128_page_size % 16:
             raise ToolkitError("--c128-page-size must be a positive multiple of 16")
+        if min(args.tp_size, args.pp_size, args.distributed_timeout) <= 0:
+            raise ToolkitError("--tp-size, --pp-size and --distributed-timeout must be positive")
+        world_size = args.tp_size * args.pp_size
+        if world_size > 1 and (args.mode != "roundtrip" or args.skip_meta_model):
+            raise ToolkitError("TP/PP validation requires --mode roundtrip and meta-model construction")
         if importlib.util.find_spec("sglang") is None:
             raise ToolkitError("sglang-model-check cannot find the sglang package")
 
         args.page_size = args.page_size or 0
-        config = CheckConfig.from_mapping(vars(args))
         env = os.environ.copy()
-        env[CONFIG_ENV] = config.to_json()
         # Keep stdout/stderr suitable for machine-readable checker output. Model
         # generation settings such as top_p are irrelevant to this offline check.
         env["TRANSFORMERS_VERBOSITY"] = "error"
@@ -138,6 +145,17 @@ class SglangModelCheckTool(ToolAdapter):
                 if ascend_env or importlib.util.find_spec("torch_npu") is not None
                 else "cuda"
             )
+        if world_size > 1 and platform not in {"cuda", "rocm", "ascend"}:
+            raise ToolkitError("TP/PP validation supports CUDA/ROCm/Ascend only")
+        visibility = "ASCEND_RT_VISIBLE_DEVICES" if platform == "ascend" else "CUDA_VISIBLE_DEVICES"
+        if args.device_id is None:
+            visible = env.get(visibility, env.get("ASCEND_VISIBLE_DEVICES", "") if platform == "ascend" else "")
+            args.device_id = (",".join(visible.split(",")[:world_size]) if visible else
+                              ",".join(str(i) for i in range(world_size))) if world_size > 1 else "0"
+        devices = [device.strip() for device in args.device_id.split(",")]
+        args.device_id = ",".join(devices)
+        if world_size > 1 and (not all(devices) or len(devices) != world_size or len(set(devices)) != world_size):
+            raise ToolkitError("TP*PP distinct visible devices are required")
         if platform in {"cuda", "rocm"}:
             env["CUDA_VISIBLE_DEVICES"] = args.device_id
             env.pop("ASCEND_RT_VISIBLE_DEVICES", None)
@@ -146,6 +164,15 @@ class SglangModelCheckTool(ToolAdapter):
             env.pop("CUDA_VISIBLE_DEVICES", None)
         elif platform == "xpu":
             env["ZE_AFFINITY_MASK"] = args.device_id
+        config = CheckConfig.from_mapping(vars(args))
+        env[CONFIG_ENV] = config.to_json()
+        if world_size > 1:
+            env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+            return run_command([
+                sys.executable, "-m", "torch.distributed.run", "--standalone",
+                "--nnodes=1", f"--nproc-per-node={world_size}", "--max-restarts=0",
+                "--module", f"{__package__}.distributed",
+            ], env=env)
         module = f"{__package__}.runner"
         return run_command([sys.executable, "-m", module], env=env)
 

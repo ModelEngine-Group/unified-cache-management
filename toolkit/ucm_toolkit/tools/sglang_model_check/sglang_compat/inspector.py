@@ -19,7 +19,7 @@ def _optional_callable(module_name: str, name: str):
 
 
 @contextmanager
-def server_args_guard(**fields):
+def server_args_guard(*, single_rank=True, **fields):
     """Publish SGLang's minimal scoped test context when no Engine did so.
 
     Newer SGLang model constructors read process-wide ServerArgs even during
@@ -30,6 +30,9 @@ def server_args_guard(**fields):
 
     @contextmanager
     def single_rank_parallel():
+        if not single_rank:
+            yield
+            return
         get_parallel = getattr(runtime, "get_parallel", None)
         parallel = get_parallel() if callable(get_parallel) else None
         override = getattr(parallel, "override", None)
