@@ -29,18 +29,21 @@ class UcmSparseFactory:
 
     @classmethod
     def create_sparse_method(
-        cls, config: "VllmConfig", role: UcmSparseRole
+        cls,
+        config: "VllmConfig",
+        ucm_config: dict,
+        role: UcmSparseRole,
     ) -> UcmSparseBase:
-        ucm_config = Config(config.kv_transfer_config)
-        ucm_cfg = ucm_config.get_config().get("ucm_sparse_config")
+        # ucm_config = Config(config.kv_transfer_config)
+        # ucm_cfg = ucm_config.get_config().get("ucm_sparse_config")
 
-        sparse_method_name, _ = next(iter(ucm_cfg.items()))
+        sparse_method_name, _ = next(iter(ucm_config.items()))
         if sparse_method_name in cls._registry:
             sparse_method_cls = cls._registry[sparse_method_name]()
         else:
             raise ValueError(f"Unsupported sparse method type: {sparse_method_name}")
         assert issubclass(sparse_method_cls, UcmSparseBase)
-        logger.info(f"Creating sparse method with name: {sparse_method_name}")
+        logger.info("Creating sparse method with name: %s", sparse_method_name)
         return sparse_method_cls(config, role)
 
 
@@ -49,7 +52,10 @@ UcmSparseFactory.register_sparse_method("ESA", "ucm.sparse.esa.esa", "ESA")
 UcmSparseFactory.register_sparse_method(
     "GSAOnDevice", "ucm.sparse.gsa_on_device.gsa_on_device", "GSAOnDevice"
 )
-# UcmSparseFactory.register_sparse_method("GSA", "ucm.sparse.gsa.gsa", "GSA")
+UcmSparseFactory.register_sparse_method("GSA", "ucm.sandbox.sparse.gsav2.gsa", "GSA")
+UcmSparseFactory.register_sparse_method(
+    "GSAPD", "ucm.sandbox.sparse.gsav2.gsa_for_pd", "GSAforPD"
+)
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.sparse.kvstar.multistep", "KVStarMultiStep"
 )

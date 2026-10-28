@@ -53,77 +53,6 @@ class UcmSparseMetadata(ABC):  # noqa: B024
     pass
 
 
-class UcmSparseCpuGpuBuffer:
-    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM."""
-
-    def __init__(
-        self,
-        *size: Union[int, torch.SymInt],
-        dtype: torch.dtype,
-        device: torch.device,
-        pin_memory: bool = True,
-        with_numpy: bool = True,
-    ) -> None:
-        self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)
-        self.gpu = self.cpu.to(device)
-        self.np: np.ndarray
-        self.n = 0
-
-        if with_numpy:
-            if dtype == torch.bfloat16:
-                raise ValueError(
-                    "Bfloat16 torch tensors cannot be directly cast to a "
-                    "numpy array, so call UcmSparseCpuGpuBuffer with with_numpy=False"
-                )
-            self.np = self.cpu.numpy()
-
-    def copy_to_gpu(self, n: Optional[int] = None) -> None:
-        # TODO: replace with esa_copy
-        if n is None:
-            n = self.n
-        if n <= 0:
-            return
-        self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)
-
-    def copy_to_cpu(self, n: Optional[int] = None) -> None:
-        # TODO: replace with esa_copy
-        """NOTE: Because this method is non-blocking, explicit synchronization
-        is needed to ensure the data is copied to CPU."""
-        if n is None:
-            n = self.n
-        if n <= 0:
-            return
-        self.cpu[:n].copy_(self.gpu[:n], non_blocking=True)
-
-    def append_numpy(self, data: List[Any]) -> None:
-        size = len(data)
-        assert (
-            self.np is not None
-        ), "append_numpy meed to be initialized by with_numpy=True."
-        assert self.n + size < self.cpu.shape[0], "append_numpy data out of range."
-        self.np[self.n : self.n + size] = data
-        self.n += size
-
-    def clear(self) -> None:
-        self.n = 0
-
-    @property
-    def size(self) -> int:
-        return self.n
-
-    @property
-    def valid_np(self) -> np.ndarray:
-        return self.np[: self.n]
-
-    @property
-    def valid_cpu(self) -> torch.Tensor:
-        return self.cpu[: self.n]
-
-    @property
-    def valid_gpu(self) -> torch.Tensor:
-        return self.gpu[: self.n]
-
-
 class UcmSparseBase(ABC):
     """
     An general interface for impl sparse attention algorithm in vLLM
@@ -182,17 +111,29 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_begin(self, scheduler_output: SchedulerOutput):
+    def execute_begin(self, scheduler_output: SchedulerOutput, attn_metadata=None):
         """
         This is called at the beginning of "ModelRunner->execute_model" function.
         """
         pass
 
-    def execute_finished(self, logits_indices: torch.Tensor) -> torch.Tensor:
+    def init_dsa_data(self, model_runner):
+        """
+        This is called at the init of sparse for dsa.
+        """
+        pass
+
+    def execute_finished(self, rec_result=None):
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """
-        return logits_indices
+        pass
+
+    def warmup(self):
+        """
+        This is called at the end of "ModelRunner->execute_model" function.
+        """
+        pass
 
     def attention_begin(
         self,
@@ -201,6 +142,10 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        indexer_cache: Optional[torch.Tensor] = None,
+        indexer_scale: Optional[torch.Tensor] = None,
+        vllm_indexer_cache: Optional[torch.Tensor] = None,
+        vllm_indexer_scale: Optional[torch.Tensor] = None,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
         k_hash: Optional[torch.Tensor] = None,
@@ -229,10 +174,14 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def update_states(self, scheduler_output: SchedulerOutput) -> None:
+    def set_sparse_topk(
+        self,
+        layer_name: str,
+        kv_cache: List[torch.tensor],
+        attn_metadata,
+    ) -> None:
         """
-        This is called at the beginning of "ModelRunner->execute_model" function.
-        Update the cached states with the scheduler output.
+        This is called at the end of "indexer_select" for native sparsity attention.
         """
         pass
 
@@ -319,4 +268,10 @@ class UcmSparseBase(ABC):
         pass
 
     def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def print_log(self, msg):
         pass

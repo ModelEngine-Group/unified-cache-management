@@ -6,7 +6,7 @@ similar to KV connector pattern. It allows the scheduler and worker to access
 the same UCM sparse agent across different processes.
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import torch
 from vllm.config import VllmConfig
@@ -15,7 +15,11 @@ from vllm.forward_context import ForwardContext
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
+from ucm.sparse.utils import IS_OPEN_GSA
 from ucm.utils import Config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
@@ -33,29 +37,43 @@ def ensure_ucm_sparse_initialized(
         vllm_config: vLLM configuration
         role: UCM sparse role (SCHEDULER or WORKER)
     """
+    if not IS_OPEN_GSA:
+        return
     global _UCM_SPARSE_AGENT
 
-    if vllm_config.kv_transfer_config is None:
-        return
-
-    # Check if UCM sparse is enabled
-    ucm_config = Config(vllm_config.kv_transfer_config)
-    ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
-    if not ucm_sparse_config:
-        return
-
+    is_pd_mix = vllm_config.kv_transfer_config is None or (
+        vllm_config.kv_transfer_config.is_kv_consumer
+        and vllm_config.kv_transfer_config.is_kv_producer
+    )
+    ucm_sparse_config = {}
+    if not is_pd_mix:
+        if vllm_config.kv_transfer_config.is_kv_producer:
+            return
+        ucm_sparse_config["GSAPD"] = {}
+    else:
+        ucm_sparse_config["GSA"] = {}
     sparse_method_name = ucm_sparse_config
 
     if _UCM_SPARSE_AGENT is None:
-        logger.info(f"Initializing UCM sparse agent with method: {sparse_method_name}")
+        logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)
         _UCM_SPARSE_AGENT = UcmSparseFactory.create_sparse_method(
-            vllm_config, role=role
+            vllm_config,
+            ucm_sparse_config,
+            role=role,
         )
     else:
         # Update role if needed (for debugging/logging purposes)
         logger.debug(
-            f"UCM sparse agent already initialized, current role: {_UCM_SPARSE_AGENT._role}"
+            "UCM sparse agent already initialized, current role: %s",
+            _UCM_SPARSE_AGENT._role,
         )
+
+
+def ensure_ucm_sparse_shutdown(role: UcmSparseRole = UcmSparseRole.WORKER) -> None:
+    if not has_ucm_sparse():
+        return
+    ucm_spare = get_ucm_sparse()
+    ucm_spare.shutdown()
 
 
 def get_ucm_sparse() -> UcmSparseBase:
