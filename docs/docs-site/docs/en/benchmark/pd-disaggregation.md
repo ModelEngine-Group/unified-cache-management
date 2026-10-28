@@ -91,23 +91,15 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 
 ## KV-transfer Configuration
 
-| Parameter | Prefill Node | Decode Node |
-|---|---|---|
-| `kv_connector` (top-level) | `MultiConnector` | `MooncakeConnectorV1` |
-| `kv_role` (top-level) | `kv_producer` | `kv_consumer` |
-| `engine_id` | `0` | — |
-| `kv_port` (top-level) | — | `37100` |
-| `kv_connector_extra_config.connectors` | Contains two connectors: MooncakeConnectorV1 + UCMConnector | — |
-| **connector 1** | `MooncakeConnectorV1` | — |
-| └ `kv_role` | `kv_producer` | — |
-| └ `kv_port` | `37000` | — |
-| └ `use_ascend_direct` | `true` | `true` |
-| └ `prefill.dp_size` / `tp_size` | `4` / `8` | `4` / `8` |
-| └ `decode.dp_size` / `tp_size` | `4` / `8` | `4` / `8` |
-| **connector 2** | `UCMConnector` | — |
-| └ `kv_role` | `kv_both` | — |
-| └ `kv_connector_module_path` | `ucm.integration.vllm.ucm_connector` | — |
-| └ `UCM_CONFIG_FILE` | `/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml` | — |
+1. **Prefill Nodes:**
+```
+--kv-transfer-config '{"kv_connector": "MultiConnector", "kv_role": "kv_producer", "engine_id": "0", "kv_connector_extra_config": {"connectors": [{"kv_connector": "MooncakeConnectorV1", "kv_role": "kv_producer", "kv_port": "37000", "kv_connector_extra_config": {"use_ascend_direct": true, "prefill": {"dp_size": 4, "tp_size": 8}, "decode": {"dp_size": 4, "tp_size": 8}}}, {"kv_connector": "UCMConnector", "kv_role": "kv_both", "kv_connector_module_path": "ucm.integration.vllm.ucm_connector", "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml"}}]}}'
+```
+
+2. **Decode Nodes:**
+```
+--kv-transfer-config '{"kv_connector":"MooncakeConnectorV1", "kv_role":"kv_consumer", "kv_port":"37100", "kv_connector_extra_config":{"use_ascend_direct": true, "prefill":{"dp_size":4,"tp_size":8}, "decode":{"dp_size":4,"tp_size":8}}}'
+```
 
 ## Prefill Nodes & Decode Nodes
 

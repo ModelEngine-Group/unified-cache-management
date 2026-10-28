@@ -60,7 +60,7 @@
 | -------- | ------------------------------------------------------------- |
 | 模型     | GLM-5.3（`GLM-5.3-w8a8c8`，Ascend 量化）                      |
 | 硬件平台 | 8×Ascend910B，共 8 节点                        |
-| 部署架构 | PD 分离                                                       |
+| 部署架构 | PD 分离                                                       |1
 | 并行策略 | TP=8、DP=4、DP-local=1、EP 开启                               |
 | KV 传输  | `MooncakeConnectorV1` + `mooncake` router，`kvPortBase=36000` |
 | UCM      | 启用（`UcmPipelineStore` + `Cache\|Posix`，双 hostPath 盘）   |
@@ -91,23 +91,16 @@
 
 
 ## KV-transfer 配置
-| 参数 | Prefill 节点 | Decode 节点 |
-|---|---|---|
-| `kv_connector`（顶层） | `MultiConnector` | `MooncakeConnectorV1` |
-| `kv_role`（顶层） | `kv_producer` | `kv_consumer` |
-| `engine_id` | `0` | — |
-| `kv_port`（顶层） | — | `37100` |
-| `kv_connector_extra_config.connectors` | 包含两个 connector：MooncakeConnectorV1 + UCMConnector | — |
-| **connector 1** | `MooncakeConnectorV1` | — |
-| └ `kv_role` | `kv_producer` | — |
-| └ `kv_port` | `37000` | — |
-| └ `use_ascend_direct` | `true` | `true` |
-| └ `prefill.dp_size` / `tp_size` | `4` / `8` | `4` / `8` |
-| └ `decode.dp_size` / `tp_size` | `4` / `8` | `4` / `8` |
-| **connector 2** | `UCMConnector` | — |
-| └ `kv_role` | `kv_both` | — |
-| └ `kv_connector_module_path` | `ucm.integration.vllm.ucm_connector` | — |
-| └ `UCM_CONFIG_FILE` | `/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml` | — |
+
+1. **Prefill节点：**
+```
+--kv-transfer-config '{"kv_connector": "MultiConnector", "kv_role": "kv_producer", "engine_id": "0", "kv_connector_extra_config": {"connectors": [{"kv_connector": "MooncakeConnectorV1", "kv_role": "kv_producer", "kv_port": "37000", "kv_connector_extra_config": {"use_ascend_direct": true, "prefill": {"dp_size": 4, "tp_size": 8}, "decode": {"dp_size": 4, "tp_size": 8}}}, {"kv_connector": "UCMConnector", "kv_role": "kv_both", "kv_connector_module_path": "ucm.integration.vllm.ucm_connector", "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml"}}]}}'
+```
+
+2. **Decode节点：**
+```
+--kv-transfer-config '{"kv_connector":"MooncakeConnectorV1", "kv_role":"kv_consumer", "kv_port":"37100", "kv_connector_extra_config":{"use_ascend_direct": true, "prefill":{"dp_size":4,"tp_size":8}, "decode":{"dp_size":4,"tp_size":8}}}'
+```
 
 ## Prefill节点 & Decode节点
 具体参数详见 [vLLM Ascend 官网 Getting Started —— GLM-5.2 & GLM-5.3 板块](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/GLM5.2.html)
