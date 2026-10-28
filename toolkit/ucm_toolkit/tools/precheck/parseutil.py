@@ -173,16 +173,24 @@ def extract_nvidia_compute_cap(rows: List[dict], cap_index: int) -> Optional[flo
     return None
 
 
-_NPU_ANY_RE = re.compile(r"(\d+\.\d+\.\d+)")
-_NPU_HDK_RE = re.compile(r"hdk[^0-9]*(\d+\.\d+\.\d+)", re.IGNORECASE)
-_NPU_DRIVER_RE = re.compile(r"driver[^0-9]*(\d+\.\d+\.\d+)", re.IGNORECASE)
-_NPU_VERSION_RE = re.compile(r"version[^0-9]*(\d+\.\d+\.\d+)", re.IGNORECASE)
-_NPU_TOOL_RE = re.compile(r"npu-smi[^0-9]*(\d+\.\d+\.\d+)", re.IGNORECASE)
+_NPU_ANY_RE = re.compile(r"\d+(?:\.(?:\d+|rc\d+|b\d+))+", re.IGNORECASE)
+_NPU_HDK_RE = re.compile(
+    rf"hdk(?:[_ -]?version)?\s*[:=]?\s*({_NPU_ANY_RE.pattern})",
+    re.IGNORECASE,
+)
+_NPU_DRIVER_RE = re.compile(
+    rf"driver(?:[_ -]?version)?\s*[:=]?\s*({_NPU_ANY_RE.pattern})",
+    re.IGNORECASE,
+)
+_NPU_VERSION_RE = re.compile(
+    rf"version\s*[:=]?\s*({_NPU_ANY_RE.pattern})", re.IGNORECASE
+)
+_NPU_TOOL_RE = re.compile(rf"npu-smi[^\d]*({_NPU_ANY_RE.pattern})", re.IGNORECASE)
 
 
 def parse_npu_smi_versions(stdout: str) -> dict:
     """Heuristically extract Ascend HDK / driver / tool versions from
-    ``npu-smi info`` output.
+    ``npu-smi`` output.
 
     The field layout varies across firmware. Resolution order for the HDK
     value (the one compared against the floor):
@@ -195,34 +203,39 @@ def parse_npu_smi_versions(stdout: str) -> dict:
 
     The ``npu-smi X.Y.Z`` banner *prefix* is captured separately as ``tool``
     (the SMI tool build version) and is deliberately NOT used as the HDK on its
-    own, since on some firmware it differs from the driver. Returns a dict with
-    keys ``hdk``, ``driver``, ``version`` (banner label), ``tool`` (each
-    possibly None) and ``raw_versions`` (all ``\\d+.\\d+.\\d+`` tokens, order).
+    own, since on some firmware it differs from the driver. Version tokens may
+    contain Ascend release/build suffixes such as ``25.6.rc1.b999``. Returns a
+    dict with keys ``hdk``, ``driver``, ``version`` (banner label), ``tool``,
+    ``source`` (where ``hdk`` came from), and ``raw_versions`` (all version-like
+    tokens, in order).
     """
     result = {
         "hdk": None,
         "driver": None,
         "version": None,
         "tool": None,
+        "source": None,
         "raw_versions": [],
     }
     if not stdout:
         return result
 
-    for line in stdout.splitlines():
-        m = _NPU_ANY_RE.search(line)
-        if m:
-            result["raw_versions"].append(m.group(1))
+    result["raw_versions"] = _NPU_ANY_RE.findall(stdout)
 
     m = _NPU_HDK_RE.search(stdout)
     if m:
         result["hdk"] = m.group(1)
+        result["source"] = "hdk"
     m = _NPU_DRIVER_RE.search(stdout)
     if m:
         result["driver"] = m.group(1)
+        if result["hdk"] is None:
+            result["source"] = "driver"
     m = _NPU_VERSION_RE.search(stdout)
     if m:
         result["version"] = m.group(1)
+        if result["hdk"] is None and result["driver"] is None:
+            result["source"] = "version"
     m = _NPU_TOOL_RE.search(stdout)
     if m:
         result["tool"] = m.group(1)
@@ -231,3 +244,22 @@ def parse_npu_smi_versions(stdout: str) -> dict:
     if result["hdk"] is None:
         result["hdk"] = result["driver"] or result["version"]
     return result
+
+
+def parse_ascend_install_info(text: str) -> dict:
+    """Parse ``key=value`` lines from Ascend installation metadata files.
+
+    Both driver metadata and CANN's ``ascend_toolkit_install.info`` use simple
+    ``key=value`` lines. Keep all scalar values so callers can surface the exact
+    package fields in precheck JSON output.
+    """
+    values: dict = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
