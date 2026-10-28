@@ -73,9 +73,6 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 
 | Parameter | Value | Description |
 |---|---|---|
-| `modelSpec.name` | `glm-53` | K8s resource name fragment, lowercase letters/digits/- |
-| `modelPath` | `/mnt/model/GLM-5.3-w8a8c8` | Model weight path |
-| `modelName` | `glm-53` | In-service model name |
 | `shmSize` | `800Gi` | Shared memory |
 | `dataParallelMode` | `standard` | Data parallel mode |
 | `recoveryPolicy` | `None` | No automatic recovery |
@@ -84,10 +81,6 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 | `quantization` | `ascend` | Ascend quantization |
 | `max-model-len` | `262144` | Maximum context 256K |
 | `gpu-memory-utilization` | `0.92` | GPU memory utilization |
-| `safetensors-load-strategy` | `prefetch` | Weight loading strategy |
-| `seed` | `1024` | Random seed |
-| Speculative inference | `deepseek_mtp`, `num_speculative_tokens=1` | MTP speculative decoding |
-| Tool / reasoning parser | `glm47` / `glm47` | tool-call and reasoning parser |
 
 ## KV-transfer Configuration
 

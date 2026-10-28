@@ -73,9 +73,6 @@
 
 | 参数                        | 值                                         | 说明                            |
 | --------------------------- | ------------------------------------------ | ------------------------------- |
-| `modelSpec.name`            | `glm-53`                                   | K8s 资源名片段，小写字母/数字/- |
-| `modelPath`                 | `/mnt/model/GLM-5.3-w8a8c8`                | 模型权重路径                    |
-| `modelName`                 | `glm-53`                                   | 服务内模型名                    |
 | `shmSize`                   | `800Gi`                                    | 共享内存                        |
 | `dataParallelMode`          | `standard`                                 | 数据并行模式                    |
 | `recoveryPolicy`            | `None`                                     | 不自动恢复                      |
@@ -84,10 +81,6 @@
 | `quantization`              | `ascend`                                   | Ascend 量化                     |
 | `max-model-len`             | `262144`                                   | 最大上下文 256K                 |
 | `gpu-memory-utilization`    | `0.92`                                     | 显存利用率                      |
-| `safetensors-load-strategy` | `prefetch`                                 | 权重加载策略                    |
-| `seed`                      | `1024`                                     | 随机种子                        |
-| 投机推理                    | `deepseek_mtp`，`num_speculative_tokens=1` | MTP 投机解码                    |
-| 工具/推理解析器             | `glm47` / `glm47`                          | tool-call 与 reasoning parser   |
 
 
 ## KV-transfer 配置
