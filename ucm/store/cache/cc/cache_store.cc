@@ -283,4 +283,5 @@ private:
 
 }  // namespace UC::CacheStore
 
+extern "C" uint32_t UcmCacheCoreVersion() { return 1; }
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::CacheStore::CacheStore(); }
