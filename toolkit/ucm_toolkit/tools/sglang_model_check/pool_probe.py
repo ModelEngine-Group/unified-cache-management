@@ -86,6 +86,8 @@ def build_pool_specs(
     *,
     linear_config: Any = None,
     external_attention: bool = False,
+    tp_size: int = 1,
+    layer_range: tuple[int, int] | None = None,
 ) -> list[PoolSpec]:
     """Reuse SGLang's layer lists, head geometry and mamba2_cache_params.
 
@@ -131,6 +133,13 @@ def build_pool_specs(
     combined = (*full, *swa, *linear_layers)
     if len(combined) != len(set(combined)) or set(combined) != set(range(total)):
         raise PoolProbeUnavailable("SGLang layer lists are not a complete disjoint KV/SWA/state partition")
+    if layer_range is not None:
+        start, end = layer_range
+        if not 0 <= start < end <= total:
+            raise PoolProbeUnavailable("invalid PP layer range")
+        full = tuple(i for i in full if start <= i < end)
+        swa = tuple(i for i in swa if start <= i < end)
+        linear_layers = tuple(i for i in linear_layers if start <= i < end)
     specs = []
     for name, layers in (("kv", full), ("swa", swa)):
         if name not in pool_names:
@@ -139,7 +148,9 @@ def build_pool_specs(
             if name == "kv":
                 specs.append(PoolSpec("kv", "logical", (), storage_page_size=page_size))
                 continue
-            raise PoolProbeUnavailable(f"{name} has no physical layers")
+            if layer_range is None:
+                raise PoolProbeUnavailable(f"{name} has no physical layers")
+            continue  # This PP stage may contain no layers of this side pool.
         if external_attention:
             if name != "kv" or arch.upper() != "MLA":
                 raise PoolProbeUnavailable("external attention descriptors require a single MLA anchor")
@@ -173,10 +184,10 @@ def build_pool_specs(
             window_pages = (window + page_size - 1) // page_size
         specs.append(PoolSpec(
             name, "mha", layers, window_pages=window_pages,
-            head_num=int(head_getter(1)), head_dim=head_dim, v_head_dim=v_dim,
+            head_num=int(head_getter(tp_size)), head_dim=head_dim, v_head_dim=v_dim,
         ))
 
-    if params is not None:
+    if params is not None and linear_layers:
         temporal = tuple(int(dim) for dim in params.shape.temporal)
         conv = tuple(tuple(int(dim) for dim in shape) for shape in params.shape.conv)
         if not linear_layers or not conv or any(dim < 0 for dim in temporal):

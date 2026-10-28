@@ -17,10 +17,10 @@ from .config import CheckConfig
 from .result import CheckResult, emit_result
 from .runner import (
     CheckFailure, _check_meta_model, _fill_pattern, _make_host_pool,
-    _make_storage_config, _model_facts, _pool_page_views,
+    _make_storage_config, _model_facts, _pool_page_views, _make_mamba_host_pool, _pool_name,
 )
 from .compatibility import requirements_from_facts
-from .pool_probe import PoolSpec
+from .pool_probe import PoolSpec, build_pool_specs, checkpoint_pages, persisted_positions, expected_prefixes
 
 
 def rank_coordinates(rank, tp_size, pp_size):
@@ -44,13 +44,13 @@ def validate_partitions(ranges, total, tp_size, pp_size):
         raise ValueError(f"PP covers {end} layers, expected {total}")
 
 
-def require_plain_model(facts):
+def require_supported_model(facts):
     if facts.get("attention_arch") not in {"MHA", "MLA"} or any(
         facts.get(name) is not False for name in
-        ("has_linear_attention", "is_dsa", "is_deepseek_v4", "is_minimax_sparse", "is_hybrid_swa")
-    ):
+        ("is_dsa", "is_deepseek_v4", "is_minimax_sparse")
+    ) or any(facts.get(name) not in (True, False) for name in ("has_linear_attention", "is_hybrid_swa")):
         raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "distributed_scope",
-                           "TP/PP probe supports ordinary MHA/MLA only; hybrid/unknown layouts are not validated")
+                           "TP/PP probe supports MHA/MLA with SWA/Mamba; specialized sparse/compressed/unknown layouts are not validated")
 
 
 def _phase(dist, control, world_size, name, action):
@@ -132,6 +132,7 @@ def _probe(config, result):
     else:
         raise ValueError("TP/PP device probe requires CUDA/ROCm/Ascend")
     host, storage = None, None
+    pools = {}
     with server_args_guard(single_rank=False, model_path=config.model,
                            tp_size=config.tp_size, pp_size=config.pp_size,
                            dp_size=1, attn_dp_size=1, attn_cp_size=1, dcp_size=1,
@@ -159,10 +160,19 @@ def _probe(config, result):
                 model_config = ModelConfig(model_path=config.model, dtype=config.dtype,
                                            trust_remote_code=config.trust_remote_code)
                 facts = _model_facts(model_config)
-                require_plain_model(facts)
+                require_supported_model(facts)
                 model = _check_meta_model(model_config, use_current_context=True)
                 facts = refine_facts_from_model(facts, model)
-                require_plain_model(facts)
+                require_supported_model(facts)
+                if facts.get("is_hybrid_swa"):
+                    try:
+                        from sglang.srt.model_executor.model_runner_components.load_model_utils import resolve_sliding_window_size
+                    except ImportError:
+                        resolver = getattr(model, "get_attention_sliding_window_size", None)
+                        if callable(resolver):
+                            model_config.sliding_window_size = resolver()
+                    else:
+                        model_config.sliding_window_size = resolve_sliding_window_size(model, model_config)
                 args = dict(model=model, model_config=model_config, is_draft_worker=False,
                             spec_algorithm=SpeculativeAlgorithm.NONE)
                 params = inspect.signature(resolve_layer_indices).parameters
@@ -183,25 +193,48 @@ def _probe(config, result):
                 nonlocal host, storage
                 if config.layout not in {"page_first", "page_first_direct"} or config.kv_cache_dtype != "auto":
                     raise ValueError("TP/PP requires page_first/page_first_direct and automatic KV dtype")
-                if requirements.is_mla:
+                if requirements.is_hybrid:
+                    specs = build_pool_specs(model_config, requirements.pool_names, config.page_size,
+                                             platform, tp_size=config.tp_size, layer_range=owned)
+                elif requirements.is_mla:
                     spec = PoolSpec("kv", "mla", tuple(range(*owned)),
                                     kv_cache_dim=model_config.kv_lora_rank + model_config.qk_rope_head_dim)
+                    specs = [spec]
                 else:
                     spec = PoolSpec("kv", "mha", tuple(range(*owned)),
                         head_num=model_config.get_num_kv_heads(config.tp_size),
                         head_dim=model_config.head_dim, v_head_dim=model_config.v_head_dim)
-                host = _make_host_pool(model_config, requirements, config, spec, layer_start=owned[0])
+                    specs = [spec]
+                estimate = sum(spec.bytes_per_slot(model_config.dtype, config.page_size)
+                               for spec in specs) * (config.pages * 2 + 2) * 8
+                if requirements.is_hybrid and estimate > config.max_host_mib * 1024 * 1024:
+                    raise CheckFailure("CHECKER_MEMORY_LIMIT", "pool_registration", "per-rank hybrid pool budget exceeded")
+                for spec in specs:
+                    if spec.kind == "logical":
+                        from sglang.srt.mem_cache.memory_pool_host import LogicalHostPool
+                        pool = LogicalHostPool((config.pages * 2 + 2) * config.page_size,
+                                               config.page_size, layout=config.layout)
+                    elif spec.kind == "mamba":
+                        pool = _make_mamba_host_pool(spec, config)
+                    else:
+                        pool = _make_host_pool(model_config, requirements, config, spec,
+                                              layer_start=0 if requirements.is_hybrid else owned[0])
+                    pools[spec.name] = pool
+                host = pools["kv"]
                 cfg = _make_storage_config(config, requirements)
                 cfg.tp_rank, cfg.tp_size = tp_rank, config.tp_size
                 cfg.pp_rank, cfg.pp_size = pp_rank, config.pp_size
                 storage = UnifiedCacheStore(cfg)
                 storage.register_mem_pool_host(host)
-                return cfg
+                for spec in specs:
+                    if spec.name != "kv":
+                        storage.register_mem_host_pool_v2(pools[spec.name], _pool_name(spec.name))
+                return cfg, {spec.name: spec for spec in specs}
 
             # Auto page size for ordinary MHA/MLA remains 64.
             from dataclasses import replace
             config = replace(config, page_size=config.page_size or 64)
-            storage_config = phase("pool_registration", allocate)
+            storage_config, specs = phase("pool_registration", allocate)
             token_count = config.pages * host.page_size
             source_indices = torch.arange(token_count, dtype=torch.int64)
             target_indices = source_indices + token_count
@@ -209,51 +242,117 @@ def _probe(config, result):
             dist.broadcast_object_list(salt, src=0, group=control)
             keys = [f"sglang-tp-pp-check-{salt[0]}-{page}" for page in range(config.pages)]
             snapshots = {}
+            written_side_pools = set()
+            windows = {name: spec.window_pages for name, spec in specs.items()}
+            positions = {name: set(persisted_positions(config.pages, windows[name], checkpoint_pages(config.pages)))
+                         for name in specs}
+            from sglang.srt.mem_cache.hicache_storage import PoolTransfer, PoolHitPolicy
+
+            def transfers(target=False, query=None, placeholders=False):
+                result = []
+                for name in specs:
+                    if name == "kv":
+                        continue
+                    if query is not None:
+                        tail = query[-windows[name]:] if windows[name] else query
+                        values = ["__placeholder__"] * len(tail) if placeholders and windows[name] else tail
+                        indices = None
+                    else:
+                        pages = sorted(positions[name])
+                        values = [keys[page] for page in pages]
+                        size = pools[name].page_size
+                        indices = torch.tensor([i + (config.pages * size if target else 0)
+                            for page in pages for i in range(page * size, (page + 1) * size)], dtype=torch.int64)
+                    result.append(PoolTransfer(name=_pool_name(name), keys=values, host_indices=indices,
+                        hit_policy=PoolHitPolicy.TRAILING_PAGES if windows[name] else PoolHitPolicy.ALL_PAGES))
+                return result
 
             def prepare():
-                for page in range(config.pages):
-                    source = _pool_page_views(host, "kv", page, requirements.is_mla)
-                    target = _pool_page_views(host, "kv", config.pages + page, requirements.is_mla)
-                    for component, (src, dst) in enumerate(zip(source, target)):
-                        seed = 10000 * pp_rank + (0 if requirements.is_mla else 100 * tp_rank) + page * 7 + component
-                        _fill_pattern(src, seed=seed)
-                        snapshots[page, component] = src.clone()
-                        dst.zero_()
+                for pool_number, (name, spec) in enumerate(specs.items()):
+                    if spec.kind == "logical":
+                        continue
+                    for page in positions[name]:
+                        source = _pool_page_views(pools[name], name, page, requirements.is_mla)
+                        target = _pool_page_views(pools[name], name, config.pages + page, requirements.is_mla)
+                        for component, (src, dst) in enumerate(zip(source, target)):
+                            replicated = requirements.is_mla and name != "mamba"
+                            owner = pp_rank * config.tp_size + (0 if replicated else tp_rank)
+                            seed = owner * 1000003 + pool_number * 100003 + page * 101 + component
+                            _fill_pattern(src, seed=seed)
+                            snapshots[name, page, component] = src.clone()
+                            dst.zero_()
 
             def require_results(values):
                 if len(values) != config.pages or not all(values):
                     raise CheckFailure("STORAGE_IO_FAILED", "storage_io", f"storage returned {values!r}")
 
             def query_consensus(query, expected):
-                local_hits = phase("lookup", lambda: storage.batch_exists(query))
+                def lookup():
+                    return (storage.batch_exists_v2(query, transfers(query=query, placeholders=True)).kv_hit_pages
+                            if requirements.is_hybrid else storage.batch_exists(query))
+                local_hits = phase("lookup", lookup)
                 hit_tensor = torch.tensor(local_hits, dtype=torch.int64)
                 dist.all_reduce(hit_tensor, op=dist.ReduceOp.MIN, group=control)
-                phase("lookup_consensus", lambda: require_results(
-                    [hit_tensor.item() == expected] * config.pages))
+                expected_tensor = torch.tensor(max(expected) if expected else 0, dtype=torch.int64)
+                dist.all_reduce(expected_tensor, op=dist.ReduceOp.MIN, group=control)
+                def check():
+                    actual = hit_tensor.item()
+                    if actual != expected_tensor.item() or (actual and actual not in expected):
+                        raise CheckFailure("LOOKUP_CONTRACT_MISMATCH", "lookup_consensus",
+                            f"MIN hit={actual}, expected MIN={expected_tensor.item()}, local candidates={expected}")
+                phase("lookup_consensus", check)
 
             phase("prepare_data", prepare)
-            query_consensus(keys, 0)
+            query_consensus(keys, [])
             # Older SGLang keeps this rule in the controller, not the config.
             # This probe disables DCP: MLA writes on TP0, MHA on every TP rank.
             writer = getattr(storage_config, "is_storage_writer",
                              not storage_config.is_mla_model or storage_config.tp_rank == 0)
-            phase("dump", lambda: require_results(storage.batch_set_v1(keys, source_indices)) if writer else None)
-            query_consensus(keys, config.pages)
-            query_consensus([f"missing-{salt[0]}", *keys], 0)
+            def dump():
+                selected = transfers()
+                if requirements.is_mla and not writer and selected:
+                    from types import SimpleNamespace
+                    from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import HybridCacheController
+                    policy = SimpleNamespace(backup_skip=True, storage_backend_type="unifiedcache")
+                    selected = [t for t in selected if HybridCacheController.should_backup(policy, t)]
+                if selected:
+                    from .runner import _require_page_results
+                    results = storage.batch_set_v2(selected)
+                    for transfer in selected:
+                        _require_page_results(results, [transfer.name], len(transfer.keys), "DUMP_FAILED", "dump")
+                        written_side_pools.add(getattr(transfer.name, "value", transfer.name))
+                if writer:
+                    require_results(storage.batch_set_v1(keys, source_indices))
+
+            phase("dump", dump)
+            candidates = expected_prefixes(config.pages, positions, windows)
+            query_consensus(keys, candidates)
+            query_consensus([f"missing-{key}" for key in keys], [])
+            if config.pages > 1:
+                query_consensus(keys[:-1], expected_prefixes(config.pages - 1, positions, windows))
 
             def load_compare():
                 require_results(storage.batch_get_v1(keys, target_indices))
-                for page in range(config.pages):
-                    for component, actual in enumerate(_pool_page_views(host, "kv", config.pages + page, requirements.is_mla)):
-                        if not torch.equal(snapshots[page, component], actual):
-                            raise CheckFailure("ROUNDTRIP_MISMATCH", "load_compare",
-                                               f"rank data mismatch: page={page}, component={component}")
+                if requirements.is_hybrid:
+                    from .runner import _require_page_results
+                    selected = transfers(target=True)
+                    results = storage.batch_get_v2(selected)
+                    for transfer in selected:
+                        _require_page_results(results, [transfer.name], len(transfer.keys), "LOAD_FAILED", "load_compare")
+                for (name, page, component), expected in snapshots.items():
+                    actual = _pool_page_views(pools[name], name, config.pages + page, requirements.is_mla)[component]
+                    if not torch.equal(expected, actual):
+                        raise CheckFailure("ROUNDTRIP_MISMATCH", "load_compare",
+                                           f"rank data mismatch: pool={name}, page={page}, component={component}")
 
             phase("load_compare", load_compare)
             details = [None] * world_size
             dist.all_gather_object(details, dict(rank=rank, tp_rank=tp_rank, pp_rank=pp_rank,
                 layer_range=owned, write="passed" if writer else "skipped_by_policy",
-                read="passed", bytes_compared=sum(x.numel() * x.element_size() for x in snapshots.values())), group=control)
+                read="passed", pool_specs={name: spec.report() for name, spec in specs.items()},
+                side_writes={name: "passed" if name in written_side_pools else "skipped_by_policy"
+                             for name in specs if name != "kv"},
+                bytes_compared=sum(x.numel() * x.element_size() for x in snapshots.values())), group=control)
             result.roundtrip = {"ranks": details}
             result.validation.update(storage_io="passed", distributed_consistency="passed",
                                      runtime_pools="per_rank_host_pools")
@@ -261,8 +360,8 @@ def _probe(config, result):
         finally:
             if storage is not None:
                 storage.close()
-            if host is not None:
-                host.destroy()
+            for pool in pools.values():
+                pool.destroy()
             if dist.is_initialized():
                 parallel_state.cleanup_dist_env_and_memory()
 

@@ -16,7 +16,7 @@ from ucm_toolkit.errors import ToolkitError
 from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
 from ucm_toolkit.tools.sglang_model_check.config import CONFIG_ENV
 from ucm_toolkit.tools.sglang_model_check.distributed import (
-    _phase, rank_coordinates, require_plain_model, validate_partitions,
+    _phase, rank_coordinates, require_supported_model, validate_partitions,
 )
 from ucm_toolkit.tools.sglang_model_check.runner import CheckFailure
 from ucm_toolkit.tools.sglang_model_check.result import CheckResult
@@ -32,15 +32,17 @@ class DistributedCheckTest(unittest.TestCase):
             with self.subTest(ranges=ranges), self.assertRaises(ValueError):
                 validate_partitions(ranges, 5, 2, 2)
 
-    def test_hybrid_or_unknown_cannot_pass_as_plain_model(self):
+    def test_known_hybrid_is_allowed_but_specialized_or_unknown_is_not(self):
         facts = dict(attention_arch="MLA", has_linear_attention=False, is_dsa=False,
                      is_deepseek_v4=False, is_minimax_sparse=False, is_hybrid_swa=False)
-        require_plain_model(facts)
-        for field in ("has_linear_attention", "is_dsa", "is_hybrid_swa"):
+        require_supported_model(facts)
+        require_supported_model({**facts, "has_linear_attention": True})
+        require_supported_model({**facts, "attention_arch": "MHA", "is_hybrid_swa": True})
+        for field in ("is_dsa", "is_deepseek_v4", "is_minimax_sparse"):
             with self.subTest(field=field), self.assertRaises(CheckFailure):
-                require_plain_model({**facts, field: True})
+                require_supported_model({**facts, field: True})
         with self.assertRaises(CheckFailure):
-            require_plain_model({"attention_arch": "MHA"})
+            require_supported_model({"attention_arch": "MHA"})
 
     def test_phase_propagates_remote_failure_before_next_phase(self):
         def gather(output, local, group):
@@ -106,7 +108,7 @@ class DistributedCheckTest(unittest.TestCase):
         result.succeed("roundtrip")
         summary = result.to_dict()["summary"]
         self.assertIn("TP=2 PP=2", summary)
-        self.assertIn("inference and device-cache transfers are not validated", summary)
+        self.assertEqual(summary, "TP=2 PP=2: structure, communication and UCM storage checks passed.")
 
 
 @unittest.skipUnless(os.environ.get("UCM_SGLANG_TP_PP_TEST_MODEL") and

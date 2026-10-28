@@ -54,6 +54,22 @@ def linear_config():
 
 
 class PoolPlanTest(unittest.TestCase):
+    def test_tp_pp_filters_layers_and_uses_local_attention_heads(self):
+        model = model_config()
+        model.get_num_kv_heads = lambda tp: 4 // tp
+        for start, end in ((0, 2), (2, 4)):
+            kv, state = build_pool_specs(model, ("kv", "mamba"), 64, "cuda",
+                linear_config=linear_config(), tp_size=2, layer_range=(start, end))
+            self.assertEqual(kv.layers, (start,))
+            self.assertEqual(kv.head_num, 2)
+            self.assertEqual(state.layers, (start + 1,))
+        only_state = build_pool_specs(model, ("kv", "mamba"), 64, "cuda",
+            linear_config=linear_config(), tp_size=2, layer_range=(1, 2))
+        self.assertEqual([s.kind for s in only_state], ["logical", "mamba"])
+        only_kv = build_pool_specs(model, ("kv", "mamba"), 64, "cuda",
+            linear_config=linear_config(), tp_size=2, layer_range=(0, 1))
+        self.assertEqual([s.name for s in only_kv], ["kv"])
+
     def test_mla_state_plan_uses_latent_width_not_mha_head_geometry(self):
         model = model_config()
         model.attention_arch = SimpleNamespace(name="MLA")

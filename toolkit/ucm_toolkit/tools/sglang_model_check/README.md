@@ -193,7 +193,7 @@ hybrid-pool acceptance matrix.
 
 ## Single-node TP/PP validation
 
-On Linux, ordinary MHA/MLA models can additionally validate their actual TP/PP
+On Linux, MHA/MLA models (including conventional SWA/Mamba hybrids) can validate their actual TP/PP
 meta structure, small CPU host pools, device communication and UCM storage:
 
 ```bash
@@ -215,9 +215,21 @@ writers (MLA TP0 per PP stage); **all ranks read back and compare**. Identical
 logical keys with stage/rank-distinct test payloads detect TP/PP key collisions.
 Cold/missing queries and full hits use MIN consensus across the ranks.
 
-Only ordinary MHA/MLA, `--mode roundtrip`, automatic KV dtype and the two
+Hybrid layer plans are filtered by each PP stage; local attention head counts
+and recurrent-state shapes follow the actual TP context. Side pools absent on
+a stage are omitted, and a state-only stage uses a logical KV anchor. SWA and
+state pools persist sparse checkpoint windows, not every prefix position.
+Sidecar writes use SGLang's `HybridCacheController.should_backup` policy when
+MLA primary writes are skipped; a version lacking that API is inconclusive.
+For example, replicated MLA KV and TP-sharded Mamba state are tested with
+different ownership/payload rules. Verbose results include per-pool writes.
+The rank-reduced hit boundary must also be locally restorable on every rank;
+the checker does not change SGLang's MIN reduction into set-intersection scheduling.
+
+Only `--mode roundtrip`, automatic KV dtype and the two
 supported page-first layouts are covered. Meta construction cannot be skipped.
-DP/CP/DCP are fixed to 1; hybrid/sparse/unknown layouts return inconclusive.
+DP/CP/DCP are fixed to 1. DSA, DeepSeek V4 compression pools, MLA SWA and other
+specialized/unknown multi-rank layouts remain inconclusive, not silently accepted.
 No weights, inference pipeline or device-cache transfer kernels are tested.
 The memory budget is **per worker**, so total host use scales with TP*PP.
 
