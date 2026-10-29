@@ -12,7 +12,7 @@ on:
         type: string
         required: true
       version:
-        description: Canonical Wheel and image version
+        description: Canonical Python package version
         type: string
         required: true
       chart_version:
@@ -145,14 +145,11 @@ jobs:
              .image_version == $image_version and
              .is_prerelease == $prerelease' \
             <<<"${classification}" >/dev/null
-          python - "${RELEASE_VERSION}" <<'PY'
+          PYTHONPATH=.github/release python - "${RELEASE_VERSION}" <<'PY'
           import sys
-          from packaging.version import Version
+          from ucm_release.version_config import release_version
 
-          raw_version = sys.argv[1]
-          version = Version(raw_version)
-          if str(version) != raw_version or version.local is not None:
-              raise SystemExit("the public package model requires a canonical non-local version")
+          release_version(sys.argv[1])
           PY
           fork_test_pypi=false
           if [ "${PUBLICATION_SCOPE}" = fork ]; then
@@ -161,8 +158,8 @@ jobs:
             fi
           fi
           resolved="$(PYTHONPATH=.github/release python -c \
-            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1], fork_test_pypi=sys.argv[2] == "true", dockerhub_namespace=sys.argv[3] or None)))' \
-            "${RELEASE_TYPE}" "${fork_test_pypi}" "${DOCKERHUB_NAMESPACE}")"
+            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1], fork_test_pypi=sys.argv[2] == "true", dockerhub_namespace=sys.argv[3] or None, version_override=sys.argv[4])))' \
+            "${RELEASE_TYPE}" "${fork_test_pypi}" "${DOCKERHUB_NAMESPACE}" "${RELEASE_VERSION}")"
           jq -e --arg scope "${PUBLICATION_SCOPE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             '.publication_scope == $scope and
@@ -610,7 +607,6 @@ jobs:
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
-          test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"
           python scripts/materialize_version.py \
             --version "${RELEASE_VERSION}" >/dev/null
           mkdir -p out/plan
@@ -633,6 +629,7 @@ jobs:
             --arg type "${RELEASE_TYPE}" \
             --arg kind "${RELEASE_KIND}" \
             --arg version "${RELEASE_VERSION}" \
+            --arg image_version "${IMAGE_VERSION}" \
             --arg chart_version "${CHART_VERSION}" \
             --arg scope "${PUBLICATION_SCOPE}" \
             --arg repository "${REPOSITORY}" \
@@ -640,7 +637,7 @@ jobs:
              (.repository | ascii_downcase) == ($repository | ascii_downcase) and
              .route == "release" and .git_tag == $tag and .release_type == $type and
              .release_kind == $kind and .version == $version and
-             .image_version == $version and .chart.app_version == $version and
+             .image_version == $image_version and .chart.app_version == $version and
              .chart.version == $chart_version and
              ([.wheels[].wheel_version] | all(. == $version))' \
             out/plan/release-plan.json >/dev/null

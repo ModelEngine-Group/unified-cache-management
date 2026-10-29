@@ -403,7 +403,8 @@ class ECConfigTest(unittest.TestCase):
         ids, _, _ = worker.store.dump_data.call_args.args
         self.assertEqual(ids, list(state.chunk_ids))
 
-        def load(block_ids, shard_indices, destinations):
+        def load(block_ids, shard_indices, destinations, prerequisite_handle=0):
+            self.assertEqual(prerequisite_handle, 11)
             self.assertEqual(block_ids, ids)
             for block_id, (address,) in zip(block_ids, destinations):
                 cpu_chunk(address, worker.layout).copy_(stored[block_id])
@@ -549,6 +550,12 @@ class ECConnectorLoadTest(unittest.TestCase):
     def setUp(self):
         self.connector = ec.UCMECConnector.__new__(ec.UCMECConnector)
         self.connector.device = torch.device("cpu")
+        self.connector.enable_event_sync = True
+        self.connector._save_device = Mock()
+        self.recorded_events = []
+        self.load_events = {}
+        self.connector._save_device.get_event_handle.side_effect = self.record_event
+        self.expected_event = 0
         self.connector.layout = ec.EncoderCacheLayout(
             width=2, dtype=torch.float32, rows_per_chunk=3, chunk_bytes=24
         )
@@ -569,8 +576,16 @@ class ECConnectorLoadTest(unittest.TestCase):
         self.connector.store.load_data.side_effect = self.load
         self.connector.store.wait.side_effect = self.wait
 
-    def load(self, chunk_ids, shard_indices, destinations):
+    def record_event(self):
+        handle = 71 + len(self.recorded_events)
+        self.recorded_events.append(handle)
+        self.expected_event = handle
+        return handle
+
+    def load(self, chunk_ids, shard_indices, destinations, prerequisite_handle=0):
+        self.assertEqual(prerequisite_handle, self.expected_event)
         identifier = chr(chunk_ids[0][0])
+        self.load_events[identifier] = prerequisite_handle
         self.events.append(("load", identifier))
         self.assertEqual(shard_indices, [0] * len(chunk_ids))
         self.assertEqual(destinations.dtype, np.dtype(np.uint64))
@@ -589,6 +604,12 @@ class ECConnectorLoadTest(unittest.TestCase):
         self.events.append(("wait", identifier))
         # A destination must not be exposed before its transfer completes.
         self.assertNotIn(identifier, self.cache)
+        handle = self.load_events[identifier]
+        if handle:
+            self.assertNotIn(
+                unittest.mock.call(handle),
+                self.connector._save_device.destroy_event_handle.call_args_list,
+            )
         if identifier in self.wait_failures:
             raise self.failure
         for index, (address,) in enumerate(self.destinations[identifier]):
@@ -627,8 +648,12 @@ class ECConnectorLoadTest(unittest.TestCase):
 
                 allocate = torch.empty
 
+                allocations = 0
+
                 def allocate_or_fail(shape, **kwargs):
-                    if failure_kind == "allocation" and self.destinations:
+                    nonlocal allocations
+                    allocations += 1
+                    if failure_kind == "allocation" and allocations == 2:
                         raise MemoryError("injected allocation failure")
                     return allocate(shape, **kwargs)
 
@@ -643,6 +668,13 @@ class ECConnectorLoadTest(unittest.TestCase):
                 self.assertNotIn("B", self.cache)
                 self.assertNotIn("C", self.cache)
                 self.assertEqual("A" in self.cache, not self.wait_failures)
+                expected_destroyed = (
+                    [72, 71] if failure_kind in {"submit", "submit_and_wait"} else [71]
+                )
+                self.assertEqual(
+                    self.connector._save_device.destroy_event_handle.call_args_list,
+                    [unittest.mock.call(handle) for handle in expected_destroyed],
+                )
                 if expected_type is ec.UCMEncoderCacheError:
                     self.assertEqual(caught.exception.identifier, "B")
                     self.assertIs(caught.exception.__cause__, self.failure)
@@ -659,6 +691,88 @@ class ECConnectorLoadTest(unittest.TestCase):
         self.assertIs(caught.exception.__cause__, self.failure)
         self.assertEqual(set(self.cache), {"C"})
         torch.testing.assert_close(self.cache["C"], torch.full((2, 2), 67.0))
+        self.assertEqual(
+            self.connector._save_device.destroy_event_handle.call_args_list,
+            [unittest.mock.call(handle) for handle in (71, 72, 73)],
+        )
+
+    def test_each_allocation_records_and_submits_its_own_event(self):
+        timeline = []
+        allocate = torch.empty
+
+        def allocate_and_record(*args, **kwargs):
+            timeline.append("allocate")
+            return allocate(*args, **kwargs)
+
+        def record():
+            timeline.append("record")
+            return self.record_event()
+
+        def submit(*args, **kwargs):
+            timeline.append("submit")
+            return self.load(*args, **kwargs)
+
+        def wait(task):
+            timeline.append("wait")
+            return self.wait(task)
+
+        self.connector._save_device.get_event_handle.side_effect = record
+        self.connector._save_device.destroy_event_handle.side_effect = (
+            lambda handle: timeline.append("destroy")
+        )
+        self.connector.store.load_data.side_effect = submit
+        self.connector.store.wait.side_effect = wait
+        with patch.object(ec.torch, "empty", side_effect=allocate_and_record):
+            self.connector.start_load_caches(self.cache)
+        self.assertEqual(
+            timeline,
+            ["allocate", "record", "submit"] * 3 + ["wait", "destroy"] * 3,
+        )
+        self.connector._save_device.synchronize.assert_not_called()
+
+    def test_event_record_error_drains_prior_submissions(self):
+        def record_or_fail():
+            if self.recorded_events:
+                raise self.failure
+            return self.record_event()
+
+        self.connector._save_device.get_event_handle.side_effect = record_or_fail
+        with self.assertRaises(RuntimeError) as caught:
+            self.connector.start_load_caches(self.cache)
+        self.assertIs(caught.exception, self.failure)
+        self.assertEqual(self.events, [("load", "A"), ("wait", "A")])
+        self.connector._save_device.destroy_event_handle.assert_called_once_with(71)
+
+    def test_event_failure_or_disabled_mode_synchronizes_before_submission(self):
+        for disabled in (False, True):
+            with self.subTest(disabled=disabled):
+                self.setUp()
+                self.expected_event = 0
+                self.connector.enable_event_sync = not disabled
+                self.connector._save_device.get_event_handle.side_effect = None
+                self.connector._save_device.get_event_handle.return_value = 0
+                submit = self.load
+
+                def load_after_sync(*args, **kwargs):
+                    self.assertEqual(
+                        self.connector._save_device.synchronize.call_count,
+                        len(self.destinations) + 1,
+                    )
+                    return submit(*args, **kwargs)
+
+                self.connector.store.load_data.side_effect = load_after_sync
+                self.connector.start_load_caches(self.cache)
+                self.connector._save_device.destroy_event_handle.assert_not_called()
+                if disabled:
+                    self.connector._save_device.get_event_handle.assert_not_called()
+
+    def test_resident_items_do_not_create_or_synchronize_event(self):
+        self.cache.update({key: torch.ones(1, 2) for key in "ABC"})
+        self.connector.start_load_caches(self.cache)
+        self.connector.store.load_data.assert_not_called()
+        self.connector._save_device.get_event_handle.assert_not_called()
+        self.connector._save_device.synchronize.assert_not_called()
+        self.connector._save_device.destroy_event_handle.assert_not_called()
 
     def test_load_debug_logs_item_and_step_summaries(self):
         self.cache["B"] = torch.ones(1, 2)

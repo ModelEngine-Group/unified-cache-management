@@ -221,6 +221,90 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     assert "namespace" not in resolved["publish"]["dockerhub"]
 
 
+def test_custom_draft_policy_keeps_full_version_and_restores_its_tag() -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    version = "0.9.0.dev0+draft.runtime.test.1"
+
+    resolved = policy.resolve(
+        repository="release-org/ucm", release_type="draft", version_override=version
+    )
+
+    assert resolved["ucm_version"] == version
+    assert resolved["release_tag"] == "draft/v0.9.0-runtime-test-1"
+    assert resolved["chart"]["version"] == "0.9.0-draft.runtime.test.1"
+    assert resolved["chart"]["app_version"] == version
+
+
+@pytest.mark.parametrize(
+    ("repository", "fork_test_pypi"),
+    [
+        ("ModelEngine-Group/unified-cache-management", False),
+        ("release-org/ucm", False),
+        ("release-org/ucm", True),
+    ],
+)
+def test_custom_draft_rejects_requested_python_index_publication(
+    tmp_path: Path, repository: str, fork_test_pypi: bool
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["draft"]["publish"]["pypi"] = True
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="custom Draft.*PyPI/TestPyPI"):
+        policy.resolve(
+            path,
+            repository=repository,
+            release_type="draft",
+            version_override="0.9.0.dev0+draft.runtime.test",
+            fork_test_pypi=fork_test_pypi,
+        )
+
+
+def test_default_builder_policy_accepts_a_materialized_custom_draft(
+    tmp_path: Path,
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    for filename in ("pyproject.toml", "requirements-build.txt"):
+        shutil.copy2(REPO_ROOT / filename, tmp_path / filename)
+    chart_source = Path(_release_policy()["chart"]["source"])
+    (tmp_path / chart_source).mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / chart_source / "Chart.yaml",
+        tmp_path / chart_source / "Chart.yaml",
+    )
+    version = "0.9.0.dev0+draft.builder.test"
+    (tmp_path / "version.ini").write_text(
+        f"UCM_VERSION={version}\n"
+        "UCM_SUPPORTED_VLLM_VERSIONS=0.30\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=\n",
+        encoding="utf-8",
+    )
+
+    resolved = policy.resolve(repository_root=tmp_path, repository="release-org/ucm")
+
+    assert resolved["release_type"] == "stable"
+    assert resolved["publish"]["pypi"]["requested"] is True
+    assert resolved["ucm_version"] == version
+    assert resolved["release_tag"] == "draft/v0.9.0-builder-test"
+    for product in resolved["products"]:
+        if product["id"] != "vllm":
+            assert product["runtime_selectors"] == []
+            assert resolved["runtime_selectors"][product["id"]] == []
+
+
+def test_policy_rejects_local_overrides_outside_the_draft_namespace() -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    with pytest.raises(ValueError):
+        policy.resolve(
+            repository="release-org/ucm",
+            release_type="draft",
+            version_override="0.9.0.dev0+other.runtime.test",
+        )
+
+
 def test_policy_resolve_uses_only_the_selected_profile_switches(
     tmp_path: Path,
 ) -> None:

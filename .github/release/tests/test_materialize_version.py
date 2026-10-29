@@ -127,6 +127,96 @@ def test_classify_tag(tag: str, expected: dict[str, object]) -> None:
     assert materialize.classify_tag(tag) == expected
 
 
+@pytest.mark.parametrize("suffix,label", [("test", "test"), ("1-test", "1.test")])
+def test_named_draft_coordinates_round_trip_without_losing_identity(
+    suffix: str, label: str
+) -> None:
+    tag = f"draft/v0.9.0-{suffix}"
+    version = f"0.9.0.dev0+draft.{label}"
+    classified = materialize.classify_tag(tag)
+
+    assert classified["version"] == version
+    assert classified["chart_version"] == f"0.9.0-draft.{label}"
+    assert classified["image_version"] == f"0.9.0.dev0.draft.{label}"
+    assert materialize.custom_draft_tag(version) == tag
+    assert materialize.derive_chart_version(version) == classified["chart_version"]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        "01",
+        "Test",
+        "test.gpu",
+        "test_gpu",
+        "test--gpu",
+        "test-01",
+        "test gpu",
+    ],
+)
+def test_draft_labels_reject_normalization_and_empty_segments(suffix: str) -> None:
+    with pytest.raises(ValueError):
+        materialize.classify_tag(f"draft/v0.9.0-{suffix}")
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.9.0+draft.test",
+        "0.9.0.dev1+draft.test",
+        "0.9.0rc1.dev0+draft.test",
+        "0.9.0.dev0+gabcdef",
+        "0.9.0.dev0+draft.1",
+        "0.9.0.dev0+draft.test.01",
+    ],
+)
+def test_new_release_versions_only_allow_canonical_named_draft_locals(
+    version: str,
+) -> None:
+    with pytest.raises(ValueError):
+        materialize.materialize_bytes(VERSION_CONFIG, version)
+
+
+def test_named_draft_cli_materializes_the_complete_version(tmp_path: Path) -> None:
+    output = tmp_path / "version.ini"
+    output.write_text(VERSION_CONFIG, encoding="utf-8")
+    tag = "draft/v0.7.62-1-test"
+    version = "0.7.62.dev0+draft.1.test"
+
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tag", tag, "--output", str(output)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert completed.stdout.strip() == version
+    parsed = materialize.load(output)
+    assert parsed["ucm_version"] == version
+    assert parsed["ucm_base_version"] == "0.7.62"
+    assert (
+        parsed["authority_sha256"]
+        == materialize.parse(VERSION_CONFIG)["authority_sha256"]
+    )
+    assert materialize.validate_tag_against_config(tag, output)["version"] == version
+    with pytest.raises(ValueError, match="base version differs"):
+        materialize.validate_tag_against_config("draft/v0.7.63-1-test", output)
+
+
+def test_named_draft_rejects_an_overlong_final_image_tag() -> None:
+    runtime = importlib.import_module("ucm_release.runtime")
+    long_version = materialize.classify_tag("draft/v0.9.0-" + "a" * 110)[
+        "image_version"
+    ]
+    with pytest.raises(ValueError, match="128-character limit"):
+        runtime.project_runtime_image_tag(
+            f"my-runtime-ucm-{long_version}",
+            tag_prefix="fork-owner-",
+            architectures=["amd64", "arm64"],
+        )
+
+
 def test_classify_cli_does_not_materialize_version(tmp_path: Path) -> None:
     output = tmp_path / "version.ini"
     completed = subprocess.run(
@@ -237,8 +327,8 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
     parsed = materialize.parse(
         "UCM_VERSION=0.9.3\n"
         "UCM_SUPPORTED_VLLM_VERSIONS=0.27,0.28.1\n"
-        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25@nightly-releases-v0.25.1rc\n"
-        "UCM_SUPPORTED_SGLANG_VERSIONS=0.5.19@v0.5.19-cu129\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=@nightly-releases-v0.25.1rc\n"
+        "UCM_SUPPORTED_SGLANG_VERSIONS=@v0.5.19-cu129\n"
     )
 
     assert parsed["supported_runtimes"]["vllm"] == [
@@ -247,15 +337,15 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
     ]
     assert parsed["supported_runtimes"]["vllm-ascend"] == [
         {
-            "raw": "0.25@nightly-releases-v0.25.1rc",
-            "version": "0.25",
+            "raw": "@nightly-releases-v0.25.1rc",
+            "version": None,
             "tag": "nightly-releases-v0.25.1rc",
         }
     ]
     assert parsed["supported_runtimes"]["sglang"] == [
         {
-            "raw": "0.5.19@v0.5.19-cu129",
-            "version": "0.5.19",
+            "raw": "@v0.5.19-cu129",
+            "version": None,
             "tag": "v0.5.19-cu129",
         }
     ]
@@ -264,14 +354,84 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
 @pytest.mark.parametrize(
     "text",
     [
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
+        "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=latest\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
     ],
 )
-def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
+def test_version_config_rejects_missing_ucm_version_or_invalid_selectors(
     text: str,
 ) -> None:
     with pytest.raises(ValueError):
+        materialize.parse(text)
+
+
+@pytest.mark.parametrize("mode", ["missing", "empty"])
+def test_disabled_product_survives_render_and_materialize(mode: str) -> None:
+    key = "UCM_SUPPORTED_VLLM_VERSIONS"
+    line = next(line for line in VERSION_CONFIG.splitlines() if line.startswith(key))
+    text = VERSION_CONFIG.replace(f"{line}\n", f"{key}=\n" if mode == "empty" else "")
+    parsed = materialize.parse(text)
+    rendered = materialize.render(parsed)
+
+    updated = materialize.parse(
+        materialize.materialize_bytes(text, "0.7.62.dev1").decode()
+    )
+    assert parsed["supported_runtimes"]["vllm"] == []
+    assert key not in rendered
+    assert updated["ucm_version"] == "0.7.62.dev1"
+    assert updated["supported_runtimes"] == parsed["supported_runtimes"]
+    assert (
+        updated["authority_sha256"] == materialize.parse(rendered)["authority_sha256"]
+    )
+
+
+def test_single_enabled_product_with_mixed_selectors_round_trips() -> None:
+    text = "UCM_VERSION=0.9.0\nUCM_SUPPORTED_VLLM_VERSIONS=0.29,@custom-build\n"
+    parsed = materialize.parse(text)
+
+    assert materialize.render(parsed) == text
+    updated = materialize.materialize_bytes(text, "0.9.0.dev1").decode()
+    assert updated == text.replace("UCM_VERSION=0.9.0", "UCM_VERSION=0.9.0.dev1")
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["", "".join(f"{key}=\n" for key in materialize.SUPPORTED_VERSION_KEYS.values())],
+)
+def test_all_products_disabled_is_rejected(suffix: str) -> None:
+    with pytest.raises(ValueError, match="at least one Runtime product"):
+        materialize.parse(f"UCM_VERSION=0.9.0\n{suffix}")
+
+
+@pytest.mark.parametrize(
+    "selector,message",
+    [
+        ("0.30@v0.30.0", "use @Tag instead"),
+        ("@", "invalid OCI tag"),
+        ("@repo/image:v0.30.0", "invalid OCI tag"),
+        ("@v0.30.0,@v0.30.0", "duplicates an earlier OCI tag"),
+        ("0.30,", "non-empty selector"),
+    ],
+)
+def test_invalid_selectors_have_actionable_errors(selector: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        materialize.parse(
+            f"UCM_VERSION=0.9.0\nUCM_SUPPORTED_VLLM_VERSIONS={selector}\n"
+        )
+
+
+@pytest.mark.parametrize(
+    "text,message",
+    [
+        ("UCM_VERSION=\nUCM_SUPPORTED_VLLM_VERSIONS=0.30\n", "must not be empty"),
+        (VERSION_CONFIG + "UCM_SUPPORTED_VLLM_VERSIONS=\n", "duplicate version key"),
+        (VERSION_CONFIG + "UNKNOWN_VERSION=\n", "unsupported version key"),
+    ],
+)
+def test_required_and_unique_version_assignments_remain_strict(
+    text: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
         materialize.parse(text)
