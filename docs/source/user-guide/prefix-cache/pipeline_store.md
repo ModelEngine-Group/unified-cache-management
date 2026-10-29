@@ -135,7 +135,7 @@ Parameters inside `ucm_connector_config`:
   I/O engine type for the Posix Store. Supported values: `"psync"` (pread/pwrite), `"aio"` (libaio).
 
 * **use_gdr** *(optional, default: false)*  
-  Enable GPUDirect RDMA transfers for Cache Store/Pc Store H2D and D2H copies.  
+  Enable GPUDirect RDMA transfers for Cache Store H2D and D2H copies.  
   This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,  
   and building UCM with `ENABLE_GDR=1`.
 
@@ -152,7 +152,6 @@ Top-level parameters (outside `ucm_connector_config`):
 
 * **enable_event_sync** *(optional, default: true)*  
   Whether to enable event synchronization.  
-  When using `UcmNfsStore`, this should be set to `false`.
 
 * **use_layerwise** *(optional, default: true)*  
   Whether to use layerwise loading/saving of KV cache blocks.  

@@ -39,6 +39,14 @@
 
 class UCPosixStoreTest : public UC::Test::Detail::PathBase {};
 
+TEST(UCPosixConfigTest, KeepsPsyncAsDefaultWithOptionalAioSettings)
+{
+    const UC::PosixStore::Config config;
+    EXPECT_EQ(config.ioEngine, "psync");
+    EXPECT_EQ(config.aioQueueDepth, 1024);
+    EXPECT_EQ(config.loadHandleCacheSize, 8192);
+}
+
 namespace {
 constexpr size_t AIO_TEST_DATA_SIZE = 4096;
 using BufferPtr = std::unique_ptr<void, decltype(&std::free)>;
@@ -262,6 +270,68 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     ASSERT_EQ(store.Wait(missingHandle.Value()), UC::Status::NotFound());
 }
 
+TEST_F(UCPosixStoreTest, OutOfOrderShardsCommitTogetherAndSupportCachedLoads)
+{
+    using namespace UC::PosixStore;
+    for (const std::string engine : {"psync", "aio"}) {
+        SCOPED_TRACE(engine);
+        const auto path = (std::filesystem::path{Path()} / engine).string();
+        std::filesystem::create_directories(path);
+        auto config = MakeAioConfig(path, 2000, 1, 3);
+        config.Set("posix_io_engine", engine);
+        config.Set("io_direct", engine == "aio");
+        PosixStore store;
+        ASSERT_EQ(store.Setup(config), UC::Status::OK());
+
+        auto source0 = MakeAlignedBuffer(11);
+        auto source1 = MakeAlignedBuffer(22);
+        auto source2 = MakeAlignedBuffer(33);
+        ASSERT_NE(source0.get(), nullptr);
+        ASSERT_NE(source1.get(), nullptr);
+        ASSERT_NE(source2.get(), nullptr);
+        void* sources[] = {source0.get(), source1.get(), source2.get()};
+        const auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+
+        for (size_t index : {size_t{2}, size_t{0}, size_t{1}}) {
+            UC::Detail::TaskDesc desc;
+            desc.brief = "OutOfOrderDump";
+            desc.push_back(UC::Detail::Shard{block, index, {sources[index]}});
+            auto task = store.Dump(std::move(desc));
+            ASSERT_TRUE(task.HasValue());
+            ASSERT_EQ(store.Wait(task.Value()), UC::Status::OK());
+
+            const bool complete = index == 1;
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(complete ? 2000 : 100);
+            bool visible = false;
+            do {
+                auto found = store.Lookup(&block, 1);
+                ASSERT_TRUE(found.HasValue());
+                visible = found.Value().front();
+                if (complete && visible) { break; }
+                ASSERT_FALSE(visible);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            } while (std::chrono::steady_clock::now() < deadline);
+            ASSERT_EQ(visible, complete);
+        }
+
+        auto target = MakeAlignedBuffer(0);
+        ASSERT_NE(target.get(), nullptr);
+        for (size_t repeat = 0; repeat < 2; ++repeat) {
+            for (size_t index = 0; index < 3; ++index) {
+                std::memset(target.get(), 0, AIO_TEST_DATA_SIZE);
+                UC::Detail::TaskDesc desc;
+                desc.brief = "CachedShardLoad";
+                desc.push_back(UC::Detail::Shard{block, index, {target.get()}});
+                auto task = store.Load(std::move(desc));
+                ASSERT_TRUE(task.HasValue());
+                ASSERT_EQ(store.Wait(task.Value()), UC::Status::OK());
+                EXPECT_EQ(std::memcmp(target.get(), sources[index], AIO_TEST_DATA_SIZE), 0);
+            }
+        }
+    }
+}
+
 TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
 {
     using namespace UC::PosixStore;
@@ -281,6 +351,7 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
     config.SetNumber("shard_size", dataSize);
     config.SetNumber("block_size", dataSize);
     config.Set("io_direct", false);
+    config.Set("posix_io_engine", std::string("psync"));
     PosixStore store;
 
     ASSERT_EQ(store.Setup(config), UC::Status::OK());
@@ -651,6 +722,69 @@ TEST(UCAioImplTest, SubmitEagainHonorsDeadline)
     ASSERT_EQ(status, UC::Status::Timeout());
     ASSERT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 20);
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST(UCAioImplTest, TeardownReturnsLoadHandlesToTheirOwner)
+{
+    using namespace UC::PosixStore;
+    ScopedAioHooks hooks;
+    TestHooks::SetAioSubmitHook(
+        [](aio_context_t, int64_t nr, iocb**) { return static_cast<int32_t>(nr); });
+    for (size_t capacity : {size_t{0}, size_t{1}}) {
+        SCOPED_TRACE(capacity);
+        LoadHandleCache cache;
+        ASSERT_EQ(cache.Setup(capacity, false), UC::Status::OK());
+        auto borrowed = cache.GetOrOpen({}, "/dev/null");
+        ASSERT_TRUE(borrowed.Valid());
+        auto fd = borrowed.Fd();
+        auto buffer = MakeAlignedBuffer(8);
+        ASSERT_NE(buffer.get(), nullptr);
+        {
+            AioImpl aio;
+            ASSERT_EQ(aio.Setup(0), UC::Status::OK());
+            AioImpl::Io io;
+            io.fd = fd;
+            io.offset = 0;
+            io.length = AIO_TEST_DATA_SIZE;
+            io.buffer = buffer.get();
+            io.tag = 1;
+            auto pin = std::make_shared<LoadHandleCache::BorrowedFd>(std::move(borrowed));
+            io.callback = [pin](AioImpl::Result) { FAIL() << "No completion was submitted"; };
+            ASSERT_EQ(aio.ReadAsync(std::move(io)), UC::Status::OK());
+        }
+        EXPECT_EQ(::fcntl(fd, F_GETFD) >= 0, capacity != 0);
+        if (capacity != 0) {
+            auto hit = cache.GetOrOpen({}, "/dev/null");
+            EXPECT_TRUE(hit.Cached());
+            EXPECT_EQ(hit.Fd(), fd);
+        }
+    }
+}
+
+TEST(UCAioImplTest, TeardownClosesRawDumpHandles)
+{
+    using namespace UC::PosixStore;
+    ScopedAioHooks hooks;
+    TestHooks::SetAioSubmitHook(
+        [](aio_context_t, int64_t nr, iocb**) { return static_cast<int32_t>(nr); });
+    auto buffer = MakeAlignedBuffer(9);
+    ASSERT_NE(buffer.get(), nullptr);
+    auto fd = ::open("/dev/null", O_WRONLY);
+    ASSERT_GE(fd, 0);
+    {
+        AioImpl aio;
+        ASSERT_EQ(aio.Setup(0), UC::Status::OK());
+        AioImpl::Io io;
+        io.fd = fd;
+        io.offset = 0;
+        io.length = AIO_TEST_DATA_SIZE;
+        io.buffer = buffer.get();
+        io.tag = 1;
+        io.callback = [](AioImpl::Result) { FAIL() << "No completion was submitted"; };
+        ASSERT_EQ(aio.WriteAsync(std::move(io)), UC::Status::OK());
+    }
+    EXPECT_EQ(::fcntl(fd, F_GETFD), -1);
+    EXPECT_EQ(errno, EBADF);
 }
 
 TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)

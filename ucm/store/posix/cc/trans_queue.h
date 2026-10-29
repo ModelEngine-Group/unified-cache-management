@@ -24,7 +24,9 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_TRANS_QUEUE_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_QUEUE_H
 
+#include "block_tracker.h"
 #include "global_config.h"
+#include "handle_cache.h"
 #include "space_layout.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -44,10 +46,13 @@ private:
         Detail::Shard shard;
         std::shared_ptr<Latch> waiter;
         bool firstIo{false};
+        uint64_t ino{0};
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
     const std::vector<std::string>* backends_{nullptr};
+    BlockCommitTracker tracker_;
+    std::deque<LoadHandleCache> loadHandles_;
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;

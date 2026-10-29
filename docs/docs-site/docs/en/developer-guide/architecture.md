@@ -26,7 +26,7 @@ The engine computes the unmatched portion and the Connector submits complete blo
 
 ## Store and Pipeline
 
-`UcmKVStoreBaseV1` is the Python interface used by engine integration. The V1 factory currently registers `UcmPipelineStore` and the public name `UcmNfsStore`, which resolves to the `UcmPcStoreV1` wrapper. Pipeline is a Store implementation, not a mandatory extra layer for every backend.
+`UcmKVStoreBaseV1` is the Python interface used by engine integration. The V1 factory currently registers `UcmPipelineStore`. Pipeline is a Store implementation, not a mandatory extra layer for every backend.
 
 In `Cache|Posix`, Cache owns host buffers and device/host transfers, while Posix owns host/filesystem I/O. Pipeline loads a registered stage combination; names cannot be assembled arbitrarily. Other combinations support 3FS, compression or shared-memory storage. The [cache guide](cache-configuration/index.md) covers selection and configuration.
 

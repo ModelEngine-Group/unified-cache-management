@@ -26,13 +26,17 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <deque>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
 #include "aio_impl.h"
 #include "block_operator.h"
+#include "block_tracker.h"
+#include "handle_cache.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "template/task_wrapper.h"
@@ -50,6 +54,8 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     };
     size_t shardSize_;
     size_t nShardPerBlock_;
+    BlockCommitTracker tracker_;
+    std::deque<LoadHandleCache> loadHandles_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     const std::vector<std::string>* backends_{nullptr};
@@ -67,18 +73,22 @@ public:
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         backends_ = backends;
+        tracker_.Setup(nShardPerBlock_);
+        auto s = SetupLoadHandles(loadHandles_, backends_->size(), config.loadHandleCacheSize,
+                                  config.ioDirect);
+        if (s.Failure()) { return s; }
         // A stuck open is already past its task deadline. Sweep before the new worker starts,
         // so the stuck backend trips and queued tasks retry first.
-        auto s =
-            blockOperator_.Setup(layout, backends, config.openConcurrency, config.commitConcurrency,
-                                 timeoutMs_, [this] { SweepDeadlines(); });
+        s = blockOperator_.Setup(
+            layout, backends, config.openConcurrency, config.commitConcurrency, timeoutMs_,
+            [this] { SweepDeadlines(); }, &loadHandles_);
         if (s.Failure()) { return s; }
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
             "AIO engine setup: backends={}, timeoutMs={}, "
             "openConcurrency={}, commitConcurrency={}.",
             backends_->size(), timeoutMs_, config.openConcurrency, config.commitConcurrency);
-        return aio_.Setup(timeoutMs_);
+        return aio_.Setup(timeoutMs_, config.aioQueueDepth);
     }
 
 private:
@@ -110,13 +120,16 @@ private:
     {
         return fmt::format("{}:{}", task.backendIndex, (*backends_)[task.backendIndex]);
     }
-    void CommitBlock(const TransTask& task, Detail::BlockId id, bool success)
+    void CommitBlock(const TransTask& task, Detail::BlockId id, bool success, uint64_t ino = 0)
     {
-        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success, task.backendIndex});
+        blockOperator_.Submit(
+            BlockOperator::CommitTask{std::move(id), success, task.backendIndex, ino});
     }
     template <bool dump>
-    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
-                      const Detail::BlockId& id, const AioImpl::Result& result)
+    void OnIoCallback(const TaskPtr& task, WaiterPtr w,
+                      std::shared_ptr<LoadHandleCache::BorrowedFd> borrowed, int32_t fd,
+                      size_t shardIndex, uint64_t ino, const Detail::BlockId& id,
+                      const AioImpl::Result& result)
     {
         const auto tid = task->id;
         const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(shardSize_);
@@ -127,24 +140,31 @@ private:
             task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
         }
-        ::close(fd);
         if constexpr (dump) {
-            if (last) { CommitBlock(*task, id, !failureSet_.Contains(tid)); }
+            if (fd >= 0) { ::close(fd); }
+            const auto ok = result.error == 0 && !shortIo && !failureSet_.Contains(tid);
+            if (ok && tracker_.MarkDone(id, shardIndex, ino)) {
+                CommitBlock(*task, id, true, ino);
+            } else if (!ok && shardIndex + 1 == nShardPerBlock_) {
+                CommitBlock(*task, id, false);
+            }
         }
         w->Done();
     }
     template <bool dump>
     void OnOpenCallback(const TaskPtr& task, WaiterPtr w, const Detail::Shard& shard,
-                        const BlockOperator::OpenResult& result)
+                        BlockOperator::OpenResult result)
     {
         const auto tid = task->id;
-        const auto last = shard.index + 1 == nShardPerBlock_;
+        const auto shardIndex = shard.index;
+        const auto last = shardIndex + 1 == nShardPerBlock_;
+        const auto ino = dump ? InoOf(result.fd) : 0;
         const auto& id = shard.owner;
         auto handleFailure = [this, task, tid, w, last, id](int32_t fd, Status status) {
             task->Fail(status);
             failureSet_.Insert(tid);
-            if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
+                if (fd >= 0) { ::close(fd); }
                 if (last) { CommitBlock(*task, id, false); }
             }
             w->Done();
@@ -158,21 +178,23 @@ private:
             return;
         }
         if (failureSet_.Contains(tid)) {
-            if (result.fd >= 0) { ::close(result.fd); }
             if constexpr (dump) {
+                if (result.fd >= 0) { ::close(result.fd); }
                 if (last) { CommitBlock(*task, id, false); }
             }
             w->Done();
             return;
         }
+        auto fd = result.fd;
+        auto borrowed = std::make_shared<LoadHandleCache::BorrowedFd>(std::move(result.borrowed));
         AioImpl::Io io;
-        io.fd = result.fd;
+        io.fd = fd;
         io.offset = shard.index * shardSize_;
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
         io.tag = tid;
-        io.callback = [this, task, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
-            OnIoCallback<dump>(task, w, fd, last, id, ioResult);
+        io.callback = [this, task, w, borrowed, fd, shardIndex, ino, id](AioImpl::Result ioResult) {
+            OnIoCallback<dump>(task, w, borrowed, fd, shardIndex, ino, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {
@@ -183,7 +205,13 @@ private:
             } else {
                 IncrementIoErrorMetric();
             }
-            handleFailure(result.fd, status);
+            task->Fail(status);
+            failureSet_.Insert(tid);
+            if constexpr (dump) {
+                if (fd >= 0) { ::close(fd); }
+                if (last) { CommitBlock(*task, id, false); }
+            }
+            w->Done();
         }
     }
     template <bool dump>
@@ -200,9 +228,10 @@ private:
             task.activated = dump;
             task.flags = flags;
             task.tag = t->id;
+            task.useHandleCache = !dump;
             task.backendIndex = t->backendIndex;
             task.callback = [this, t, w, i](BlockOperator::OpenResult result) {
-                OnOpenCallback<dump>(t, w, t->desc[i], result);
+                OnOpenCallback<dump>(t, w, t->desc[i], std::move(result));
             };
             // A task taken after its deadline gives up without opening the file.
             task.onStart = [t, deadline] {

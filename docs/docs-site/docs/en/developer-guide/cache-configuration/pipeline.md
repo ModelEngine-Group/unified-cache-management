@@ -88,7 +88,6 @@ health; only request-level hits and completed loads establish KV reuse. See
 
 | Requirement | Selection |
 | --- | --- |
-| Existing vLLM NFS connector configuration | [NFS Store](nfs.md) |
 | 3FS client I/O | [`Cache|Ds3fs`](ds3fs.md) |
 | Smaller stored BF16 payload, with a quality tradeoff | [`Cache|Compress|Posix`](compress.md) |
 | Shared Mooncake memory, optionally backed by files | [`Mooncake` or `Mooncake|Posix`](mooncake.md) |

@@ -20,6 +20,7 @@ try:
 except ImportError:  # Older vLLM versions do not expose this helper.
     resolve_kv_cache_block_sizes = None
 
+from ucm.integration.vllm.cache_config import configure_cache_capacity
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
@@ -34,6 +35,7 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
+from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -45,6 +47,40 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+
+def select_transfer_views(tensors):
+    """Replace the A5 (K, scale, full) alias triple with its full-page view.
+
+    Do not change the original runner tensors. The full view reinterprets the
+    page's planar K/scale bytes, so it is only valid for complete-page
+    transfers; callers must not request sub-page segments for groups whose
+    views were packed this way.
+    """
+    tensors = tuple(tensors)
+    if len(tensors) != 3:
+        return tensors
+    key, scale, full = tensors
+    if key.dim() != 4 or scale.dim() != 4 or full.dim() != 4:
+        return tensors
+    if key.data_ptr() != full.data_ptr():
+        return tensors
+    page_bytes = [t[0].numel() * t.element_size() for t in tensors]
+    strides = [t.stride(0) * t.element_size() for t in tensors]
+    same_storage = (
+        len({(str(t.device), t.untyped_storage().data_ptr()) for t in tensors}) == 1
+    )
+    if not (
+        same_storage
+        and key.shape[:3] == scale.shape[:3] == full.shape[:3]
+        and all(t[0].is_contiguous() for t in tensors)
+        and len(set(strides)) == 1
+        and strides[0] >= page_bytes[2]
+        and scale.data_ptr() == key.data_ptr() + page_bytes[0]
+        and page_bytes[0] + page_bytes[1] == page_bytes[2]
+    ):
+        raise ValueError("Invalid overlapping Ascend K/scale/full cache views.")
+    return (full,)
 
 
 def _build_v41_hash_meta(
@@ -425,7 +461,12 @@ class KVCacheGroupLayout:
             if isinstance(kv_layer, torch.Tensor):
                 handle_kv_layer_tensor(kv_layer, layer_name)
             elif isinstance(kv_layer, Tuple):
-                for tensor in kv_layer:
+                selected = (
+                    select_transfer_views(kv_layer)
+                    if self.is_ascend_layout
+                    else kv_layer
+                )
+                for tensor in selected:
                     handle_kv_layer_tensor(tensor, layer_name)
             else:
                 raise TypeError(
@@ -811,6 +852,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def get_block_size(self) -> int:
         return self.hash_block_size
 
+    @staticmethod
+    def ascend_compression_ratio(spec) -> int:
+        """Read the MLA ratio from the current or legacy Ascend spec API."""
+        ratio = getattr(spec, "tokens_per_state", None)
+        if ratio is None:
+            ratio = getattr(spec, "compress_ratio", 1)
+        return int(ratio)
+
     @classmethod
     def ascend_block_geometry(
         cls, spec, *, block_size_is_logical: bool | None = None
@@ -850,7 +899,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return next(iter(layers_by_geometry))
 
         size = int(spec.block_size)
-        ratio = int(getattr(spec, "compress_ratio", 1))
+        ratio = cls.ascend_compression_ratio(spec)
         if min(size, ratio) <= 0:
             raise ValueError("Ascend block size and compress ratio must be positive.")
         if block_size_is_logical:
@@ -917,7 +966,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             for spec in cls._specs_for_group(group):
                 if (
                     getattr(spec, "sliding_window", None) is None
-                    and getattr(spec, "compress_ratio", 1)
+                    and cls.ascend_compression_ratio(spec)
                     == cls.ASCEND_C4_COMPRESS_RATIO
                 ):
                     c4_block_sizes.add(
@@ -1349,7 +1398,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
-        # MLA ranks share one logical store buffer; non-MLA stores are per rank.
+        # This selects shared MLA keys versus rank-specific GQA keys in Cache2.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
             config["storage_backends"] = [
@@ -1366,6 +1415,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return name, module_path, config
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
+        if uses_partitioned_cache() or cache_core_version() == 1:
+            configure_cache_capacity(
+                config, self._vllm_config.parallel_config, stores_per_dp=2
+            )
+            if not uses_partitioned_cache() and config.get(
+                "share_buffer_enable", False
+            ):
+                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]) * 2)
+            return
         if not bool(config.get("share_buffer_enable", False)):
             return
 
@@ -1416,6 +1474,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
+        if uses_partitioned_cache():
+            config["local_rank_size"] = self._get_world_size()
+            self._configure_numa_placement(config)
+        if label == "WA" and (uses_partitioned_cache() or cache_core_version() == 1):
+            # WA loads one boundary snapshot per request.
+            config.setdefault("cache_load_exclusive_buffer_number", 512)
         self._set_default_shm_buffer_capacity(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)
@@ -1456,7 +1520,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self.file_size[label] = gc_size
             self._publish_block_size(gc_size, store_suffix=store_suffix)
             # MLA stores aggregate TP shards under one logical rank group.
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            if not uses_partitioned_cache():
+                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -1526,7 +1591,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     group_caches[layer_name] = kv_caches[layer_name]
                 else:
                     group_caches[layer_name] = tuple(kv_caches[layer_name])
-            standardized_layout = not self.is_ascend_v41_layout and any(
+            # Ascend DSV4 keeps native [B, N, H, C] views (including separate
+            # indexer value/scale views), even with descriptor.layers present.
+            # GPU unified views use the standardized [B, H, N, C] path below.
+            standardized_layout = not self.is_ascend_layout and any(
                 layer_name in standardized_layers
                 for layer_name in group_spec.layer_names
             )
@@ -2065,7 +2133,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             event_handle=event_handle,
         )
 
-    def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
+    def _extract_fa_ptr(
+        self,
+        store_keys,
+        hash_start,
+        hash_end,
+        candidate_vllm_ids,
+        *,
+        hash_positions=None,
+    ):
         """Build store pointer rows for full-attention cache segments."""
 
         all_ptrs = []
@@ -2081,7 +2157,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if self.hash_block_size == meta.token_block_size:
                 group_ptrs = layout.extract_addrs(block_ids)
             else:
-                token_start = np.arange(hash_start, hash_end) * self.hash_block_size
+                positions = (
+                    np.arange(hash_start, hash_end)
+                    if hash_positions is None
+                    else np.asarray(hash_positions)
+                )
+                token_start = positions * self.hash_block_size
                 token_offsets = token_start % meta.token_block_size
                 group_ptrs = layout.extract_addrs_with_offsets(
                     block_ids, meta.token_block_size, token_offsets
@@ -2241,15 +2322,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if not request.dump_keys:
                     continue
                 dump_request_ids += (request_id,)
-                num_keys = len(request.dump_keys)
-                tp_block_start = num_keys * self.tp_rank // self.tp_size
-                tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
-                tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
+                key_slice = self._get_mla_dump_slice(request.dump_hash_start)
+                tp_dump_keys = request.dump_keys[key_slice]
                 if tp_dump_keys:
                     fa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
                     fa_dump_vllm_block_ids = tuple(
                         (
-                            group_block_ids[tp_block_start:tp_block_end]
+                            group_block_ids[key_slice]
                             if group_id in self.fa_group_ids
                             else group_block_ids
                         )
@@ -2262,9 +2341,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     fa_ptr_rows.append(
                         self._extract_fa_ptr(
                             tp_dump_keys,
-                            request.dump_hash_start + tp_block_start,
-                            request.dump_hash_start + tp_block_end,
+                            request.dump_hash_start,
+                            request.dump_hash_end,
                             fa_dump_vllm_block_ids,
+                            hash_positions=np.arange(
+                                request.dump_hash_start, request.dump_hash_end
+                            )[key_slice],
                         )
                     )
                 if not self.window_group_ids:
@@ -2274,13 +2356,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         wa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
                         wa_dump_vllm_block_ids = tuple(
                             (
-                                group_block_ids[
-                                    tp_block_start
-                                    * self.group_metas[
-                                        group_id
-                                    ].tail_blocks : tp_block_end
-                                    * self.group_metas[group_id].tail_blocks
+                                np.asarray(group_block_ids)
+                                .reshape(-1, self.group_metas[group_id].tail_blocks)[
+                                    key_slice
                                 ]
+                                .reshape(-1)
+                                .tolist()
                                 if group_id in self.window_group_ids
                                 else group_block_ids
                             )
@@ -2591,7 +2672,7 @@ class UCMFAWALiteConnector(UCMLiteConnector):
             nested = getattr(spec, "kv_cache_specs", None)
             inner = next(iter(nested.values())) if nested else spec
             window = getattr(inner, "sliding_window", None)
-            cr = getattr(inner, "compress_ratio", 1) or 1
+            cr = UCMFAWAConnector.ascend_compression_ratio(inner) or 1
             cr = max(cr, 1)
             bs_g = spec.block_size
             block_sizes_for_gcd.append(bs_g)

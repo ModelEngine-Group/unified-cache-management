@@ -145,9 +145,9 @@ public:
      *
      * @param requestId Correlation id of the query to prefetch.
      * @param context   Request facts for the destination admission: the
-     *                  internal Alloc admits plan.keys with this context,
-     *                  e.g. carrying the current window's request TTL so
-     *                  prefetched blocks inherit it (see
+     *                  internal Store::Alloc admits plan.keys with this
+     *                  context, e.g. carrying the current window's request
+     *                  TTL so prefetched blocks inherit it (see
      *                  RequestContext::ttl).
      *
      * @return The prefetch plan, or an error Status.
@@ -170,9 +170,9 @@ public:
      * the plan's self-addressed payload verbatim: implementations unpack
      * what they packed in PreparePrefetch (conventionally the source metas
      * minted by the lower tier's Pin and their own destination metas) and
-     * drive the lower tier's Load — its token-bearing variant when the
-     * lower tier is tokened, its base one otherwise — with the resolved
-     * destinations as payloads.
+     * drive the lower tier's Load with the resolved destinations as
+     * payloads, passing the lower tier's read-end token along — keys-only
+     * when the lower tier uses default addressing.
      *
      * @return Status indicating acceptance only; transfer failures are
      *         reported via GetFinished()/Wait(), like every other job.

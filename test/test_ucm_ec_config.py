@@ -102,9 +102,7 @@ class ECConfigTest(unittest.TestCase):
                         Config.load_ec_config(transfer)
 
     def test_existing_kv_config_entrypoints_are_preserved(self):
-        self.assertEqual(
-            Config(None).get_config(), {"ucm_connector_name": "UcmNfsStore"}
-        )
+        self.assertEqual(Config(None).get_config(), {})
         inline = {"ucm_connectors": [{"ucm_connector_name": "ExistingStore"}]}
         self.assertEqual(
             Config(SimpleNamespace(kv_connector_extra_config=inline)).get_config(),
@@ -269,7 +267,6 @@ class ECConfigTest(unittest.TestCase):
             ("UcmPipelineStore", "Posix", False),
             ("UcmPipelineStore", "Fake", False),
             ("UcmPipelineStore", "Custom", False),
-            ("UcmNfsStore", "", False),
             ("CustomRegisteredStore", "Cache|Posix", False),
         ):
             for producer in (True, False):

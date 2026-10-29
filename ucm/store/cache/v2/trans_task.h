@@ -1,0 +1,78 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include "status/status.h"
+#include "template/hashset.h"
+#include "thread/latch.h"
+#include "type/types.h"
+
+namespace UC::Cache2 {
+
+struct Task {
+    enum class Type : uint8_t { LOAD, DUMP };
+
+    Task(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    Task(Task&& other) noexcept
+        : id{other.id},
+          type{other.type},
+          desc{std::move(other.desc)},
+          failureStatus{other.failureStatus.load()}
+    {
+    }
+
+    Detail::TaskHandle id{};
+    Type type{Type::DUMP};
+    Detail::TaskDesc desc;
+    std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+
+    void Fail(const Status& status)
+    {
+        auto expected = Status::OK().Underlying();
+        failureStatus.compare_exchange_strong(expected, status.Underlying());
+    }
+    Status FailureStatus() const
+    {
+        const auto status = failureStatus.load();
+        return status == Status::OK().Underlying() ? Status::Error() : Status{status, {}};
+    }
+
+private:
+    static Detail::TaskHandle NextId() noexcept
+    {
+        static std::atomic<Detail::TaskHandle> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+using TaskPtr = std::shared_ptr<Task>;
+using WaiterPtr = std::shared_ptr<Latch>;
+using TaskIdSet = HashSet<Detail::TaskHandle>;
+
+}  // namespace UC::Cache2

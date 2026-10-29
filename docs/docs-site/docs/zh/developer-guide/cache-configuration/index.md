@@ -9,12 +9,11 @@ UCM 在引擎的设备 KV Cache 之外保存可复用块。配置时需要确定
 | 后端 | 适用场景 | 需要准备 |
 | --- | --- | --- |
 | [文件系统流水线](pipeline.md) | 使用 `Cache|Posix` 组合主机缓存与本地或挂载文件系统 | 可写目录、主机内存和可用的 Pipeline 构建 |
-| [NFS Connector](nfs.md) | 沿用 `UcmNfsStore` 的直接文件系统配置 | 本地或 NFS 路径、兼容的等大小张量布局 |
 | [3FS](ds3fs.md) | 使用 `Cache|Ds3fs` 访问 3FS | 已运行的 3FS 客户端、匹配的头文件和库 |
 | [Mooncake](mooncake.md) | 共享内存池，可组合 Posix 持久化 | 匹配的 Mooncake 服务、客户端和网络配置 |
 | [KV 压缩](compress.md) | 通过 `Cache|Compress|Posix` 减少存储载荷 | 支持的编解码器、数据类型及质量评测 |
 
-NFS 挂载可以同时作为 Posix 或直接 NFS Connector 的存储路径。挂载方式和 UCM 后端是两个选择，新部署需要主机缓存、容量回收和健康检查时，从[文件系统流水线](pipeline.md)开始。
+NFS 挂载可以作为 Posix 的 `storage_backends` 路径。新部署需要主机缓存、容量回收和健康检查时，从[文件系统流水线](pipeline.md)开始。
 
 ## 配置前准备
 

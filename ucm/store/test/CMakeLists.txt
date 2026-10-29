@@ -13,6 +13,12 @@ if(BUILD_UNIT_TESTS)
     if(NOT TARGET yuanrongstore)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*/yuanrong/.*\\.cc$")
     endif()
+    get_target_property(CACHE_CORE cachestore UCM_CACHE_CORE)
+    if(CACHE_CORE STREQUAL "cc")
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\]v2[/\\\\].*")
+    else()
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\][^/\\\\]*\\.cc$")
+    endif()
     add_executable(ucmstore.test ${UCMSTORE_TEST_SOURCE_FILES})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13")
         set_source_files_properties(case/dram/kv_protocol_test.cc
@@ -20,7 +26,7 @@ if(BUILD_UNIT_TESTS)
     endif()
     target_include_directories(ucmstore.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmstore.test PRIVATE
-        posixstore cachestore fakestore pcstore healthbreakerstore
+        posixstore cachestore fakestore healthbreakerstore
         gtest_main gtest gmock
     )
     if(TARGET dramstore AND TARGET drampool_core)

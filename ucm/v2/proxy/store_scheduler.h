@@ -46,7 +46,7 @@ namespace UC::Proxy {
  *       against it have been consumed via GetFinished()/Wait():
  *       concluding earlier is undefined, since releasing a pin or
  *       reservation while its transfer job still flies can corrupt the
- *       slot's next occupant (see TokenAddressed::Commit and Pin).
+ *       slot's next occupant (see Store::Commit and Pin).
  * @note OnRequestFinished() requires every window concluded and every
  *       in-flight job drained (the Store destruction contract applies);
  *       windows left open are concluded best-effort as a safety net

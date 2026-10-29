@@ -33,7 +33,6 @@
 #include "store_loader.h"
 #include "store_scheduler.h"
 #include "store_worker.h"
-#include "token_addressed.h"
 #include "type/block.h"
 #include "type/request.h"
 #include "type/token.h"
@@ -84,7 +83,6 @@ private:
 
     std::unique_ptr<LoadedStore> loaded_;
     Store::Prefetchable* prefetchable_ = nullptr;
-    Store::TokenAddressed* tokened_ = nullptr;
     std::unordered_map<RequestId, RequestState> requests_;
     std::unordered_set<std::size_t> inFlightJobs_;
     std::vector<IoResult> completedJobs_;

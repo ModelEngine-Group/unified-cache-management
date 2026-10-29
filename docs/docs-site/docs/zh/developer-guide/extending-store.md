@@ -6,9 +6,9 @@
 
 | 扩展路径 | 要实现的部分 | 当前参考 |
 | --- | --- | --- |
-| Python V1 Store | 实现 `UcmKVStoreBaseV1`，通过 V1 工厂创建 | `ucm/store/pcstore/pcstore_connector_v1.py`、`ucm/store/pipeline/connector.py` |
+| Python V1 Store | 实现 `UcmKVStoreBaseV1`，通过 V1 工厂创建 | `ucm/store/pipeline/connector.py` |
 | 原生 Pipeline 阶段 | 实现 `UC::StoreV1`，导出创建函数并注册阶段组合 | `ucm/store/empty/` 的接口形状、`ucm/store/posix/` 的实际 I/O |
-| Python 包装已有原生库 | 同时满足 Python V1 接口和原生库的生命周期要求 | PcStore 与 Pipeline 的包装和绑定 |
+| Python 包装已有原生库 | 同时满足 Python V1 接口和原生库的生命周期要求 | Pipeline 的包装和绑定 |
 
 扩展方式取决于已有库、数据路径和资源控制需求。Python 包装器可以调用原生 I/O；仅凭实现语言不能判断吞吐。`Empty` 只适合参考接口，不提供持久化行为。
 
@@ -182,18 +182,26 @@ ucm_connectors:
 
 ### 用 Python 包装原生库
 
-混合扩展需要让绑定与包装层保持一致。现有 `ucm/store/pcstore/cpy/pcstore.py.cc` 绑定 `PcStorePy`，通过 `SetupPy` 转换 Python 配置，并导出以下方法（模块定义中的片段）：
+混合扩展需要让绑定与包装层保持一致。现有 `ucm/store/pipeline/cpy/pipeline_store.py.cc` 构建 `ucmpipelinestore` 模块，绑定 `PipelineStore`，并导出以下方法（模块定义中的片段）：
 
 ```cpp
-auto store = py::class_<UC::PcStorePy>(module, "PcStore");
-store.def("CCStoreImpl", &UC::PcStorePy::CCStoreImpl);
-store.def("Setup", &UC::PcStorePy::SetupPy);
-store.def("LookupBatch", &UC::PcStorePy::LookupBatch);
-store.def("LoadToDevice", &UC::PcStorePy::LoadToDevice);
-store.def("DumpFromDevice", &UC::PcStorePy::DumpFromDevice);
+auto s = py::class_<PipelineStore, std::unique_ptr<PipelineStore>>(m, "PipelineStore");
+s.def(py::init<>());
+s.def("Stack", &PipelineStore::Stack);
+s.def("Self", &PipelineStore::Self);
+s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());
+s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
+s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());
+s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
+s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+      py::arg("addrs").noconvert());
+s.def("Dump", &PipelineStore::Dump, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
+      py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
+s.def("Check", &PipelineStore::Check);
+s.def("Wait", &PipelineStore::Wait);
 ```
 
-参照 `pcstore_connector_v1.py` 中的 `UcmPcStoreV1`：根据引擎提供的布局构造 `PcStore.Config`，调用 `Setup` 并检查状态，将张量／地址映射到原生操作，再将原生句柄包装为 `Task`。完成的 `UcmKVStoreBaseV1` 子类通过上面的 `UcmConnectorFactoryV1` 注册。保持错误语义和缓冲生命周期，不因为一次 lookup 未命中就增加自动重试包装。上面的绑定片段不是独立模块。
+参照 `ucm/store/pipeline/connector.py` 中的 `UcmPipelineStore`：创建原生 `PipelineStore`，由已注册的 builder 通过 `Stack` 叠加配置的阶段，`cc_store` 返回 `Self()`，将块 ID 和张量／地址输入展平为缓冲后传给 `Lookup`／`Load`／`Dump`，再将返回的任务 ID 包装为 `Task`。完成的 `UcmKVStoreBaseV1` 子类通过上面的 `UcmConnectorFactoryV1` 注册。保持错误语义和缓冲生命周期，不因为一次 lookup 未命中就增加自动重试包装。上面的绑定片段不是独立模块。
 
 ## 任务、缓冲区与错误
 
@@ -212,7 +220,7 @@ store.def("DumpFromDevice", &UC::PcStorePy::DumpFromDevice);
 
 ## 现有后端入口 {#backend-entrypoints}
 
-当前 V1 工厂将 `UcmNfsStore` 映射到 `UcmPcStoreV1`；旧的 `ucm.store.nfsstore` 是另一套接口。Pipeline 通过名称加载已注册的 builder 和原生库，具体入口如下。
+当前 V1 工厂注册 `UcmPipelineStore`。Pipeline 通过名称加载已注册的 builder 和原生库，具体入口如下。
 
 ### pipeline
 
@@ -220,12 +228,6 @@ store.def("DumpFromDevice", &UC::PcStorePy::DumpFromDevice);
 - `ucm/store/cache/cc/cache_store.cc` 管理缓冲默认值和最小容量检查。
 - `ucm/store/posix/cc/posix_store.cc` 管理文件系统配置与健康探针。
 - `ucm/integration/vllm/ucm_connector.py` 提供布局、共享缓冲默认值和 GC 归属。
-
-### nfs
-
-- `ucm/store/factory_v1.py` 将公开 connector 名映射到 `UcmPcStoreV1`。
-- `ucm/store/pcstore/pcstore_connector_v1.py` 定义接受的 key 映射和张量大小约束。
-- `ucm/store/pcstore/cc/api/pcstore.h` 定义原生传输默认值。
 
 ### ds3fs
 

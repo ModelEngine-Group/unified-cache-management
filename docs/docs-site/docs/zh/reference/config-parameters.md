@@ -33,7 +33,7 @@ enable_metrics: true
 
 ## Store 选择与任务设置
 
-在 `ucm_connectors[]` 中用 `ucm_connector_name` 选择 Store，以下字段放在其 `ucm_connector_config` 内。`store_pipeline` 仅适用于 `UcmPipelineStore`；NFS Connector 的独立任务设置见[对应指南](../developer-guide/cache-configuration/nfs.md)。
+在 `ucm_connectors[]` 中用 `ucm_connector_name` 选择 Store，以下字段放在其 `ucm_connector_config` 内。`store_pipeline` 仅适用于 `UcmPipelineStore`。
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ enable_metrics: true
 
 ## Posix 文件系统阶段
 
-以下为 Pipeline 中 Posix 阶段的参数；包含 Posix 时需提供 `storage_backends`。直接 NFS Connector 接受部分同名选项，但默认值不同，不套用本表。
+以下为 Pipeline 中 Posix 阶段的参数；包含 Posix 时需提供 `storage_backends`。
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
@@ -113,6 +113,6 @@ enable_metrics: true
 | `Cache|Ds3fs` | 3FS 客户端读写 |
 | `Cache|Compress|Posix` | 压缩后写入文件系统 |
 
-其他后端设置见 [3FS](../developer-guide/cache-configuration/ds3fs.md)、[Mooncake](../developer-guide/cache-configuration/mooncake.md)、[压缩](../developer-guide/cache-configuration/compress.md)和 [NFS Connector](../developer-guide/cache-configuration/nfs.md)。
+其他后端设置见 [3FS](../developer-guide/cache-configuration/ds3fs.md)、[Mooncake](../developer-guide/cache-configuration/mooncake.md)和[压缩](../developer-guide/cache-configuration/compress.md)。
 
 默认值分别来自引擎 Connector、各阶段 `global_config.h` 和 `store_health_config.h`。容量覆盖与配置归属见[缓存工作原理](../developer-guide/capability-principles.md)；最小配置与操作步骤见[文件系统流水线](../developer-guide/cache-configuration/pipeline.md)。

@@ -55,7 +55,6 @@ vLLM Connector 根据模型是否使用 MLA 决定 `share_buffer_enable` 的默�
 
 | 需求 | 选择 |
 | --- | --- |
-| 保留已有 vLLM NFS Connector 配置 | [NFS Store](nfs.md) |
 | 使用 3FS 客户端 I/O | [`Cache|Ds3fs`](ds3fs.md) |
 | 缩小 BF16 存储载荷，并接受精度权衡 | [`Cache|Compress|Posix`](compress.md) |
 | 使用共享 Mooncake 内存，可选文件后端 | [`Mooncake` 或 `Mooncake|Posix`](mooncake.md) |
