@@ -155,6 +155,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             Queue()
         )
         self._offload_results: Queue[bool] = Queue()
+        self._offload_submitted_queue: Queue[_PendingOffload | None] = Queue()
         self._lookup_progress: OrderedDict[str, _LookupProgress] = OrderedDict()
         self._lookup_progress_lock = threading.Lock()
 
@@ -204,8 +205,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
             daemon=True,
             name=f"ucm-offload-tp{self._tp_rank}",
         )
+        self._offload_submit_thread = threading.Thread(
+            target=self._offload_submit_worker,
+            daemon=True,
+            name=f"ucm-dump-submit-tp{self._tp_rank}",
+        )
         self._load_thread.start()
         self._offload_thread.start()
+        self._offload_submit_thread.start()
 
     def _select_lookup_owner(self, tp_group: Any, attn_cp_size: int) -> None:
         """Elect one reader per shared Cache within this attention-TP group."""
@@ -787,16 +794,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._offload_queue.put((expanded, ready_events))
         return True
 
-    def _offload_worker(self) -> None:
-        # Submit nodes without waiting for earlier Store tasks. Reap completed
-        # tasks independently, then publish results in SGLang's node order.
-        in_flight: deque[_PendingOffload] = deque()
-        no_task = object()
-        next_poll_at = 0.0
+    def _offload_submit_worker(self) -> None:
+        # Preparation may wait for GPU indices or build large address arrays.
+        # Keep it independent from polling and publishing completed dumps.
         sequence = 0
-
-        def submit(task: tuple[list[PoolTransfer], list[object]]) -> None:
-            nonlocal sequence
+        while True:
+            task = self._offload_queue.get()
+            if task is None:
+                self._offload_submitted_queue.put(None)
+                self._offload_queue.task_done()
+                return
             sequence += 1
             expanded, ready_events = task
             transfers: list[UcmLayerTransfer] = []
@@ -827,7 +834,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     self._tp_rank,
                     sequence,
                 )
-                in_flight.append(
+                self._offload_submitted_queue.put(
                     _PendingOffload(
                         sequence=sequence,
                         tasks=[],
@@ -836,10 +843,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         result=False,
                     )
                 )
-                return
+                continue
 
             # Keep address arrays alive until every native task is reaped.
-            in_flight.append(
+            self._offload_submitted_queue.put(
                 _PendingOffload(
                     sequence=sequence,
                     tasks=tasks,
@@ -848,24 +855,30 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 )
             )
 
+    def _offload_worker(self) -> None:
+        # Submission is FIFO, but native tasks may finish in any order. Reap
+        # every completed node and publish only the completed FIFO prefix.
+        in_flight: deque[_PendingOffload] = deque()
+        no_task = object()
+        next_poll_at = 0.0
         while True:
             try:
                 task = (
-                    self._offload_queue.get(
+                    self._offload_submitted_queue.get(
                         timeout=max(0.0, next_poll_at - time.perf_counter())
                     )
                     if in_flight
-                    else self._offload_queue.get()
+                    else self._offload_submitted_queue.get()
                 )
             except Empty:
                 task = no_task
             if task is None:
-                # close() enqueues the sentinel after reset() drains work.
-                self._offload_queue.task_done()
+                # The submitter forwards this after close() drains all work.
+                self._offload_submitted_queue.task_done()
                 return
 
             if task is not no_task:
-                submit(task)
+                in_flight.append(task)
 
             now = time.perf_counter()
             if in_flight and now >= next_poll_at:
@@ -907,6 +920,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             while in_flight and in_flight[0].result is not None:
                 pending = in_flight.popleft()
                 self._offload_results.put(pending.result)
+                self._offload_submitted_queue.task_done()
                 self._offload_queue.task_done()
             if not in_flight:
                 next_poll_at = 0.0
@@ -933,6 +947,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_queue.join()
         self._load_results.clear()
         self._offload_queue.join()
+        self._offload_submitted_queue.join()
         self._drain(self._completed_loads)
         self._drain(self._offload_results)
         self.layer_done_counter.reset()
@@ -945,5 +960,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_queue.put(None)
         self._offload_queue.put(None)
         self._load_thread.join()
+        self._offload_submit_thread.join()
         self._offload_thread.join()
         self.adapter.close()
