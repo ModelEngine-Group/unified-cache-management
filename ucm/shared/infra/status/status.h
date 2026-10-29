@@ -52,6 +52,7 @@ class Status {
     static constexpr int32_t ENOSPACE_ = __MakeStatusCode<9>();
     static constexpr int32_t ETIMEOUT_ = __MakeStatusCode<10>();
     static constexpr int32_t ESTOREUNHEALTHY_ = __MakeStatusCode<11>();
+    static constexpr int32_t ETIMEOUTINQUEUE_ = __MakeStatusCode<12>();
     int32_t code_;
     std::string message_;
     explicit Status(int32_t code) : code_(code) {}
@@ -92,6 +93,7 @@ public:
     static Status Unsupported() { return Status{EUNSUPPORTED_}; }
     static Status NoSpace() { return Status{ENOSPACE_}; }
     static Status Timeout() { return Status{ETIMEOUT_}; }
+    static Status TimeoutInQueue() { return Status{ETIMEOUTINQUEUE_}; }
     static Status StoreUnhealthy() { return Status{ESTOREUNHEALTHY_}; }
     static Status StoreUnhealthy(std::string message)
     {
