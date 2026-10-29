@@ -127,6 +127,132 @@ def test_classify_tag(tag: str, expected: dict[str, object]) -> None:
     assert materialize.classify_tag(tag) == expected
 
 
+@pytest.mark.parametrize(
+    "suffix", ["test", "1-test", "test-gpu2", "amd64", "arm64", "foo-0", "01test"]
+)
+def test_named_draft_coordinates_round_trip_without_losing_identity(
+    suffix: str,
+) -> None:
+    tag = f"draft/v0.9.0-{suffix}"
+    label = suffix.replace("-", ".")
+    version = f"0.9.0.dev0+draft.{label}"
+
+    assert materialize.classify_tag(tag) == {
+        "git_tag": tag,
+        "release_type": "draft",
+        "release_kind": "draft",
+        "version": version,
+        "chart_version": f"0.9.0-draft.{label}",
+        "image_version": f"0.9.0.dev0.draft.{label}",
+        "is_prerelease": True,
+    }
+    assert materialize.release_version(version) == version
+    assert materialize.custom_draft_tag(version) == tag
+    assert materialize.derive_chart_version(version) == f"0.9.0-draft.{label}"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        "0",
+        "01",
+        "Test",
+        "test.GPU",
+        "test_gpu",
+        "test--gpu",
+        "-test",
+        "test-",
+        "test-01",
+        "01-test",
+        "test-000",
+        "test gpu",
+    ],
+)
+def test_draft_labels_reject_normalization_and_empty_segments(suffix: str) -> None:
+    with pytest.raises(ValueError):
+        materialize.classify_tag(f"draft/v0.9.0-{suffix}")
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.9.0+draft.test",
+        "0.9.0.dev1+draft.test",
+        "0.9.0rc1.dev0+draft.test",
+        "0.9.0.post1.dev0+draft.test",
+        "0.9.0.dev0+gabcdef",
+        "0.9.0.dev0+draft.1",
+        "0.9.0.dev0+draft.Test",
+        "0.9.0.dev0+draft.test_foo",
+        "0.9.0.dev0+draft.test-foo",
+        "0.9.0.dev0+draft.test.01",
+    ],
+)
+def test_new_release_versions_only_allow_canonical_named_draft_locals(
+    version: str,
+) -> None:
+    with pytest.raises(ValueError):
+        materialize.release_version(version)
+    with pytest.raises(ValueError):
+        materialize.materialize_bytes(VERSION_CONFIG, version)
+
+
+@pytest.mark.parametrize(
+    "version", ["0.9.0", "0.9.0rc1", "0.9.0.dev0", "0.9.0.dev1", "0.9.0.dev20261029001"]
+)
+def test_ordinary_versions_have_no_named_draft_tag(version: str) -> None:
+    assert materialize.release_version(version) == version
+    assert materialize.custom_draft_tag(version) is None
+
+
+def test_named_draft_cli_materializes_the_complete_version(tmp_path: Path) -> None:
+    output = tmp_path / "version.ini"
+    output.write_text(VERSION_CONFIG, encoding="utf-8")
+    tag = "draft/v0.7.62-1-test"
+    version = "0.7.62.dev0+draft.1.test"
+    classification = materialize.validate_tag_against_config(tag, output)
+    assert classification["version"] == version
+
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tag", tag, "--output", str(output)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert completed.stdout.strip() == version
+    parsed = materialize.load(output)
+    assert parsed["ucm_version"] == version
+    assert parsed["ucm_base_version"] == "0.7.62"
+    assert (
+        parsed["authority_sha256"]
+        == materialize.parse(VERSION_CONFIG)["authority_sha256"]
+    )
+    assert materialize.validate_tag_against_config(tag, output) == classification
+    with pytest.raises(ValueError, match="base version differs"):
+        materialize.validate_tag_against_config("draft/v0.7.63-1-test", output)
+
+
+def test_named_draft_coordinates_are_distinct_and_respect_image_tag_limits() -> None:
+    runtime = importlib.import_module("ucm_release.runtime")
+    labels = ["test", "1-test", "amd64", "test-amd64"]
+    records = [materialize.classify_tag(f"draft/v0.9.0-{label}") for label in labels]
+    for field in ("version", "chart_version", "image_version"):
+        assert len({record[field] for record in records}) == len(labels)
+    assert "-amd64" not in records[2]["image_version"]
+
+    long_version = materialize.classify_tag("draft/v0.9.0-" + "a" * 110)[
+        "image_version"
+    ]
+    with pytest.raises(ValueError, match="128-character limit"):
+        runtime.project_runtime_image_tag(
+            f"my-runtime-ucm-{long_version}",
+            tag_prefix="fork-owner-",
+            architectures=["amd64", "arm64"],
+        )
+
+
 def test_classify_cli_does_not_materialize_version(tmp_path: Path) -> None:
     output = tmp_path / "version.ini"
     completed = subprocess.run(

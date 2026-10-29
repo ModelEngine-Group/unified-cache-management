@@ -24,9 +24,15 @@ CHART = ROOT / "charts/unified-cache-chart"
 
 
 def _family(
-    product, version, accelerator, *, suffix="", architectures=("amd64", "arm64")
+    product,
+    version,
+    accelerator,
+    *,
+    suffix="",
+    architectures=("amd64", "arm64"),
+    channel=None,
 ):
-    upstream_tag = f"v{version}{suffix}"
+    upstream_tag = version if channel == "pinned" else f"v{version}{suffix}"
     repository = f"ghcr.io/test-fork/{'vllm-openai' if product == 'vllm' else product}"
     reference = f"{repository}:test-fork-{upstream_tag}-ucm-0.7.0rc1"
     return {
@@ -36,7 +42,7 @@ def _family(
         "runtime": {
             "version": version,
             "tag": upstream_tag,
-            "channel": "rc" if "rc" in version else "stable",
+            "channel": channel or ("rc" if "rc" in version else "stable"),
             "accelerator_runtime": accelerator,
             "os_version": "22.04",
         },
@@ -149,6 +155,47 @@ def test_no_stable_cuda_keeps_alternatives_without_default(plan):
     assert yaml.safe_load(rendered)["images"]["image"] == ""
     assert "没有稳定 CUDA" in rendered
     assert "# image:" in rendered
+
+
+@pytest.mark.parametrize("stable_default", [True, False])
+def test_pinned_tags_are_ordered_alternatives_without_changing_default(
+    plan, stable_default
+):
+    source = (CHART / "values.yaml").read_text()
+    expected_default = (
+        yaml.safe_load(chart.render_values(plan, source))["images"]["image"]
+        if stable_default
+        else ""
+    )
+    if not stable_default:
+        plan["families"] = []
+    pins = [
+        _family("vllm", tag, "cuda-13.0", channel="pinned")
+        for tag in ("z-build", "aaaaa-cc", "v99.0.0")
+    ]
+    pins.append(_family("vllm-ascend", "custom-ascend", "cann-9.0.1", channel="pinned"))
+    plan["families"].extend(pins)
+
+    rendered = chart.render_values(plan, source)
+
+    assert yaml.safe_load(rendered)["images"]["image"] == expected_default
+    assert (
+        rendered.index("aaaaa-cc")
+        < rendered.index("v99.0.0")
+        < rendered.index("z-build")
+    )
+    alternatives = set(re.findall(r'^  # image: "([^"]+)"$', rendered, re.M))
+    for family in pins:
+        for reference in (
+            family["published_reference"],
+            *(member["reference"] for member in family["members"]),
+        ):
+            assert (
+                runtime.image_publication_targets(plan, reference)["dockerhub"]
+                in alternatives
+            )
+    plan["families"].reverse()
+    assert chart.render_values(plan, source) == rendered
 
 
 @pytest.mark.parametrize("case", ["pr", "images-disabled"])

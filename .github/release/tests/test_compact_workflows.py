@@ -370,6 +370,35 @@ def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> 
     assert "modelengine-group/unified-cache-management" in cleanup.lower()
 
 
+def test_release_preflight_uses_the_full_version_and_shared_validator() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    run = next(
+        step["run"]
+        for step in jobs["release-preflight"]["steps"]
+        if step.get("id") == "profile"
+    )
+
+    assert "from ucm_release.version_config import release_version" in run
+    assert "release_version(sys.argv[1])" in run
+    assert "version.local is not None" not in run
+    assert "version_override=sys.argv[4]" in run
+    assert '"${DOCKERHUB_NAMESPACE}" "${RELEASE_VERSION}"' in run
+    assert ".image_version == $image_version" in run
+
+
+def test_release_plan_checks_package_and_image_versions_separately() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    run = next(
+        step["run"] for step in jobs["plan"]["steps"] if step.get("id") == "plan"
+    )
+
+    assert 'test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"' not in run
+    assert '--arg image_version "${IMAGE_VERSION}"' in run
+    assert ".image_version == $image_version" in run
+    assert ".chart.app_version == $version" in run
+    assert "[.wheels[].wheel_version] | all(. == $version)" in run
+
+
 def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     validation = jobs["validate-wheel-runtimes"]

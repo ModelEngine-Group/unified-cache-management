@@ -81,6 +81,24 @@ def _fork_plan() -> dict[str, object]:
     return plan
 
 
+def _named_draft_plan(version: str, git_tag: str) -> dict[str, object]:
+    plan = _fork_plan()
+    plan.update(version=version, git_tag=git_tag, release_type="draft")
+    plan["meta_package"]["version"] = version
+    plan["meta_package"]["extras"] = {
+        extra: f"{requirement.partition('==')[0]}=={version}"
+        for extra, requirement in plan["meta_package"]["extras"].items()
+    }
+    for wheel in plan["wheels"]:
+        wheel["wheel_version"] = version
+    plan["toolkit_package"] = {
+        "distribution": "supermarioyl-ucm-toolkit",
+        "version": version,
+    }
+    plan["meta_package"]["extras"]["toolkit"] = f"supermarioyl-ucm-toolkit=={version}"
+    return plan
+
+
 def _record(members: dict[str, bytes], record_name: str) -> bytes:
     rows: list[list[str]] = []
     for name in sorted(members):
@@ -229,6 +247,50 @@ def test_materialized_source_build_is_reproducible(tmp_path: Path) -> None:
     assert wheels[0].read_bytes() == wheels[1].read_bytes()
 
 
+@pytest.mark.parametrize(
+    ("version", "git_tag"),
+    [
+        ("0.9.0.dev0+draft.test", "draft/v0.9.0-test"),
+        ("0.9.0.dev0+draft.1.test", "draft/v0.9.0-1-test"),
+    ],
+)
+def test_named_draft_builds_meta_wheel_with_full_local_identity(
+    tmp_path: Path, version: str, git_tag: str
+) -> None:
+    plan = _named_draft_plan(version, git_tag)
+    source = tmp_path / "meta-source"
+    meta.materialize_meta_source(plan, source)
+    wheelhouse = tmp_path / "named-draft-meta-wheelhouse"
+    wheelhouse.mkdir()
+
+    wheel = _build_wheel(source, wheelhouse)
+    result = meta.record_meta_wheel(plan, wheel)
+
+    assert wheel.name == f"supermarioyl_uc_manager-{version}-py3-none-any.whl"
+    assert result["version"] == version
+    assert result["extras"] == plan["meta_package"]["extras"]
+    assert result["requires_dist"] == sorted(
+        f'{requirement}; extra == "{extra}"'
+        for extra, requirement in plan["meta_package"]["extras"].items()
+    )
+
+
+@pytest.mark.parametrize("version", ["0.9.0.dev0", "0.9.0.dev0+draft.other"])
+def test_named_draft_meta_rejects_a_lost_or_foreign_package_label(version: str) -> None:
+    plan = _named_draft_plan(version, "draft/v0.9.0-test")
+    with pytest.raises(ValueError, match="custom Draft package version differs"):
+        meta.validate_meta_package(plan)
+
+
+def test_named_draft_meta_requires_the_full_backend_dependency_version() -> None:
+    plan = _named_draft_plan("0.9.0.dev0+draft.test", "draft/v0.9.0-test")
+    plan["meta_package"]["extras"][
+        "cu130"
+    ] = "supermarioyl-uc-manager-cuda-cu130==0.9.0.dev0"
+    with pytest.raises(ValueError, match="must pin"):
+        meta.validate_meta_package(plan)
+
+
 def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> None:
     plan = _fork_plan()
     source = tmp_path / "source"
@@ -254,8 +316,14 @@ def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> N
     )
 
 
-def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> None:
-    plan = _fork_plan()
+@pytest.mark.parametrize(
+    ("version", "git_tag"),
+    [(VERSION, None), ("0.9.0.dev0+draft.test", "draft/v0.9.0-test")],
+)
+def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(
+    tmp_path: Path, version: str, git_tag: str | None
+) -> None:
+    plan = _fork_plan() if git_tag is None else _named_draft_plan(version, git_tag)
     meta_source = tmp_path / "meta-source"
     meta_wheelhouse = tmp_path / "meta-wheelhouse"
     meta_wheelhouse.mkdir()
@@ -273,7 +341,7 @@ def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> N
                 "",
                 "[project]",
                 'name = "supermarioyl-uc-manager-cuda-cu130"',
-                f'version = "{VERSION}"',
+                f'version = "{version}"',
                 "",
                 "[tool.setuptools]",
                 "packages = []",
@@ -317,8 +385,8 @@ def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> N
         for distribution in importlib.metadata.distributions(path=[str(target)])
     }
     assert installed == {
-        "supermarioyl-uc-manager": VERSION,
-        "supermarioyl-uc-manager-cuda-cu130": VERSION,
+        "supermarioyl-uc-manager": version,
+        "supermarioyl-uc-manager-cuda-cu130": version,
     }
 
 

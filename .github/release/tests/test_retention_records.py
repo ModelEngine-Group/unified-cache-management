@@ -729,6 +729,115 @@ def test_plan_projection_rejects_repository_and_tag_mismatch():
             resources_module.plan_resources(_plan(), repository=repository, tag=tag)
 
 
+@pytest.fixture
+def custom_draft_plan():
+    plan = _plan(multi_arch=True)
+    plan.update(
+        git_tag="draft/v0.8.0-test",
+        version="0.8.0.dev0+draft.test",
+        image_version="0.8.0.dev0.draft.test",
+    )
+    plan["chart"]["version"] = "0.8.0-draft.test"
+    family = plan["families"][0]
+    family["published_reference"] = family["published_reference"].replace(
+        "0.8.0.dev1", plan["image_version"]
+    )
+    for member in family["members"]:
+        member["reference"] = member["reference"].replace(
+            "0.8.0.dev1", plan["image_version"]
+        )
+    return plan
+
+
+def test_custom_draft_cleanup_preserves_full_version_and_resource_coordinates(
+    custom_draft_plan,
+):
+    plan = custom_draft_plan
+    snapshot = resources_module.new_record(
+        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1, plan=plan
+    )
+    assert snapshot["schema_version"] == 1
+    assert snapshot["version"] == "0.8.0.dev0+draft.test"
+    record = resources_module.decode_snapshot(
+        snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
+    )
+    assert record["versions"] == ["0.8.0.dev0+draft.test"]
+    assert record["resources"][0] == {
+        "kind": "chart-oci",
+        "reference": "ghcr.io/release-org/charts/unified-cache-chart:0.8.0-draft.test",
+    }
+    assert record["resources"][1:] == [
+        {
+            "kind": kind,
+            "reference": "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev0.draft.test"
+            + suffix,
+        }
+        for kind, suffix in (
+            ("ghcr-index", ""),
+            ("ghcr-member", "-amd64"),
+            ("ghcr-member", "-arm64"),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["0.8.0.dev0", "0.8.0.dev0+draft.other", "0.8.0.dev0+draft.test.extra"],
+)
+def test_custom_draft_cleanup_rejects_incomplete_or_foreign_versions(
+    custom_draft_plan, version
+):
+    plan = custom_draft_plan
+    binding = resources_module.record_for_tag(
+        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1
+    )
+    snapshot = resources_module.new_record(
+        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1, plan=plan
+    )
+    wrong_plan = {
+        **plan,
+        "version": version,
+        "image_version": version.replace("+", "."),
+    }
+    with pytest.raises(resources_module.CleanupRecordError, match="identity differs"):
+        resources_module.record_from_plan(binding, wrong_plan)
+    snapshot["version"] = version
+    with pytest.raises(resources_module.CleanupRecordError, match="version differs"):
+        resources_module.decode_snapshot(
+            snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
+        )
+    binding["versions"] = [version]
+    with pytest.raises(resources_module.CleanupRecordError, match="version differs"):
+        resources_module.validate_record(binding, REPOSITORY)
+
+
+@pytest.mark.parametrize("resource_index", [0, 1])
+def test_custom_draft_cleanup_record_cannot_claim_another_labels_resources(
+    custom_draft_plan, resource_index
+):
+    plan = custom_draft_plan
+    record = resources_module.record_from_plan(
+        resources_module.record_for_tag(
+            REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1
+        ),
+        plan,
+    )
+    resource = record["resources"][resource_index]
+    resource["reference"] = resource["reference"].replace("draft.test", "draft.other")
+    with pytest.raises(resources_module.CleanupRecordError, match="not owned"):
+        resources_module.validate_record(record, REPOSITORY)
+
+
+def test_custom_draft_retention_uses_release_creation_order():
+    tags = ["draft/v0.8.0-z-last-name", "draft/v0.8.0-a-first-name"]
+    records = [
+        resources_module.record_for_tag(REPOSITORY, tag, SOURCE_SHA, index, 1, index)
+        for index, tag in enumerate(tags, 1)
+    ]
+    selection = resources_module.select_retention(records, 1, release_type="draft")
+    assert [record["tag"] for record in selection.candidates] == tags[:1]
+
+
 def test_retention_defers_active_oldest_without_deleting_a_retained_newer_tag():
     remote = FakeRemote()
     remote.releases = [
