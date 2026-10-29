@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_TASK_H
 
 #include <atomic>
+#include <functional>
 #include "status/status.h"
 #include "type/types.h"
 
@@ -36,7 +37,13 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    size_t backendIndex{0};
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    // Set when a worker starts on the task. A timeout before that is queueing, not a backend
+    // failure.
+    std::atomic<bool> started{false};
+    // When set, the engine reclaims the handle before invoking this callback.
+    std::function<void(Status)> onComplete;
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
@@ -44,7 +51,10 @@ public:
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
-          failureStatus{other.failureStatus.load()}
+          backendIndex{other.backendIndex},
+          failureStatus{other.failureStatus.load()},
+          started{other.started.load()},
+          onComplete{std::move(other.onComplete)}
     {
     }
     void Fail(const Status& status)
