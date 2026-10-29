@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
     from vllm.config import VllmConfig
 
+import numpy as np
 import torch
 from vllm.forward_context import ForwardContext
 
@@ -54,7 +55,12 @@ class UcmSparseMetadata(ABC):  # noqa: B024
 
 
 class UcmSparseCpuGpuBuffer:
-    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM."""
+    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM.
+
+    Kept for backward compatibility: ``ucm/sparse/gsa_on_device/gsa_on_device.py``
+    still imports this class. New implementations (e.g. GSA v2) may use their own
+    buffer helpers instead.
+    """
 
     def __init__(
         self,
@@ -182,17 +188,33 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_begin(self, scheduler_output: SchedulerOutput):
+    def execute_begin(self, scheduler_output: SchedulerOutput, attn_metadata=None):
         """
         This is called at the beginning of "ModelRunner->execute_model" function.
         """
         pass
 
-    def execute_finished(self, logits_indices: torch.Tensor) -> torch.Tensor:
+    def init_dsa_data(self, model_runner):
+        """
+        This is called at the init of sparse for dsa.
+        """
+        pass
+
+    def execute_finished(self, rec_result=None):
+        """
+        This is called at the end of "ModelRunner->execute_model" function.
+
+        Kept for backward compatibility: returns ``rec_result`` unchanged so that
+        existing callers that rely on ``return ucm_sparse.execute_finished(...)``
+        (e.g. the v0110 integration patches) keep receiving the value back.
+        """
+        return rec_result
+
+    def warmup(self):
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """
-        return logits_indices
+        pass
 
     def attention_begin(
         self,
@@ -201,6 +223,10 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        indexer_cache: Optional[torch.Tensor] = None,
+        indexer_scale: Optional[torch.Tensor] = None,
+        vllm_indexer_cache: Optional[torch.Tensor] = None,
+        vllm_indexer_scale: Optional[torch.Tensor] = None,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
         k_hash: Optional[torch.Tensor] = None,
@@ -233,6 +259,19 @@ class UcmSparseBase(ABC):
         """
         This is called at the beginning of "ModelRunner->execute_model" function.
         Update the cached states with the scheduler output.
+
+        Kept for backward compatibility with the v0110 integration patches.
+        """
+        pass
+
+    def set_sparse_topk(
+        self,
+        layer_name: str,
+        kv_cache: List[torch.Tensor],
+        attn_metadata,
+    ) -> None:
+        """
+        This is called at the end of "indexer_select" for native sparsity attention.
         """
         pass
 
@@ -319,4 +358,10 @@ class UcmSparseBase(ABC):
         pass
 
     def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def print_log(self, msg):
         pass
