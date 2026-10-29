@@ -29,7 +29,7 @@ counter:
   - name: "asu_lookup_prefix_query_blocks_total"
     documentation: "Blocks queried by normally returned prefix lookup calls, including timeout fallback"
   - name: "asu_lookup_prefix_hit_blocks_total"
-    documentation: "Usable prefix blocks returned by prefix lookup; timeout fallback contributes zero hits"
+    documentation: "Contiguous prefix hit blocks, computed as returned index + 1; timeout fallback contributes zero hits"
   - name: "asu_lookup_timeout_fallback_total"
     documentation: "AsuStore lookup calls returning cache misses after query timeout"
   - name: "asu_load_requests_total"
@@ -500,16 +500,16 @@ gauge:
 histogram:
   - name: "asu_lookup_duration_ms"
     documentation: "AsuStore lookup call duration including key conversion, query wait and result processing (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]
   - name: "asu_load_submit_duration_ms"
     documentation: "AsuStore Load submission duration including buffer conversion and failed submissions (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]
   - name: "asu_dump_submit_duration_ms"
     documentation: "AsuStore Dump submission duration including buffer conversion and failed submissions (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]
   - name: "asu_wait_duration_ms"
     documentation: "AsuStore Wait call duration including failed and timed-out waits (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]
   # BEGIN GENERATED KV histogram
   - name: "kv_client_task_enqueue_duration_seconds"
     documentation: "KV client API-to-enqueue duration"

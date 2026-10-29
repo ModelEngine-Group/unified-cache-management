@@ -213,7 +213,7 @@ UCM provides these dashboards:
 | `examples/metrics/grafana_store.json` | Cache, Mooncake, Posix Store and ASUStore performance metrics grouped by Store |
 
 The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
-In the Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.
+In the Store dashboard, Cache, Posix, and AsuStore are expanded by default, while Mooncake is collapsed.
 
 Use these aggregation rules:
 

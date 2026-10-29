@@ -51,7 +51,10 @@ struct CacheKeyHasher {
     }
 };
 
-kv::MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<kv::MRHandle>(value); }
+kv::MRHandle MakeTestMrHandle(std::uintptr_t value)
+{
+    return reinterpret_cast<kv::MRHandle>(value);
+}
 
 struct FakeKvClientState {
     std::vector<UC::AsuStore::Config> initConfigs;
