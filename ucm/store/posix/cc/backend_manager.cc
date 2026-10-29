@@ -127,9 +127,13 @@ Status BackendManager::Setup(const Config& config, const SpaceLayout* layout)
     // The thread pool checks for stuck workers once a second, so it may take up to 1s more to
     // notice a timed-out worker and finish its task. Leave that 1s out of each backend's share,
     // so a retry on the next backend still fits in timeout_ms. A share under 2s keeps at least
-    // half of it.
-    const auto perBackendMs = config.timeoutMs / BackendCount();
-    ioTimeoutMs_ = std::max<size_t>(1, perBackendMs - std::min<size_t>(1000, perBackendMs / 2));
+    // half of it. One backend has no retry, so it keeps timeout_ms as before.
+    if (BackendCount() == 1) {
+        ioTimeoutMs_ = config.timeoutMs;
+    } else {
+        const auto perBackendMs = config.timeoutMs / BackendCount();
+        ioTimeoutMs_ = std::max<size_t>(1, perBackendMs - std::min<size_t>(1000, perBackendMs / 2));
+    }
     if (config.posixGcEnable) {
         status = gcExecutor_.Setup(BackendCount(), ioTimeoutMs_);
         if (status.Failure()) { return status; }
