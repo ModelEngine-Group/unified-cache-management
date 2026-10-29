@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <cstddef>
 #include <gtest/gtest.h>
 #include "cache/cc/load_queue.h"
 #include "detail/data_generator.h"
@@ -272,4 +273,52 @@ TEST_F(UCCacheLoadQueueTest, PrefetchToCacheFillsShardsAndDropsHandles)
         EXPECT_TRUE(handle.Ready());
         EXPECT_TRUE(handle.Owner());
     }
+}
+
+TEST_F(UCCacheLoadQueueTest, DdrLoadForwardsCallerAddressAndSkipsCache)
+{
+    using namespace UC::CacheStore;
+    alignas(64) std::byte ddr0[32];
+    alignas(64) std::byte ddr1[32];
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load)
+        .Times(2)
+        .WillRepeatedly(testing::Invoke([&](UC::Detail::TaskDesc task) {
+            EXPECT_EQ(task.memoryType, UC::Detail::TaskDesc::MemoryType::DDR);
+            EXPECT_EQ(task.size(), 1U);
+            EXPECT_EQ(task.front().addrs.size(), 1U);
+            const auto* addr = task.front().addrs.front();
+            EXPECT_TRUE(addr == ddr0 || addr == ddr1);
+            return NextId();
+        }));
+    EXPECT_CALL(backend, Wait).Times(2).WillRepeatedly(testing::Return(UC::Status::OK()));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 4096;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = tensorSize * 2;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("b1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back(UC::Detail::Shard{blockId, 0, {ddr0}});
+    desc.push_back(UC::Detail::Shard{blockId, 1, {ddr1}});
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_FALSE(failureSet.Contains(task->id));
+    EXPECT_FALSE(buffer.Exist(blockId, 0));
+    EXPECT_FALSE(buffer.Exist(blockId, 1));
 }

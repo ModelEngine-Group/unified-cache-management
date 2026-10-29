@@ -116,14 +116,20 @@ public:
             }
         }
         auto res = transMgr_.Submit({TransTask::Type::PREFETCH, std::move(desc)});
-        if (!res) [[unlikely]] {
-            UC_ERROR("Failed({}) to submit prefetch task.", res.Error());
-        }
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to submit prefetch task.", res.Error()); }
         return res;
     }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        if (task.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+            for (const auto& shard : task) {
+                if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) {
+                    return Status::InvalidParam("ddr load shard({}) requires one host address",
+                                                shard.index);
+                }
+            }
+        }
         auto res = transMgr_.Submit({TransTask::Type::LOAD, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);

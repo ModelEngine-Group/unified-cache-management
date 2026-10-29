@@ -113,27 +113,36 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     size_t backendSubmitCount = 0;
     size_t waitShardCount = 0;
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
+    const auto ddrLoad = task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[indexes[i]];
         ShardTask shardTask;
-        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         shardTask.backendTaskHandle = 0;
-        shardTask.fromPosix = !shardTask.bufferHandle.Ready();
-        if (shardTask.fromPosix) { waitShardCount++; }
-        if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+        if (ddrLoad) {
+            if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) [[unlikely]] {
+                UC_ERROR("DDR load shard({}) requires one host address.", shard.index);
+                RecordLoadSourceShards(i + 1, waitShardCount);
+                RecordFailedShards(nShard - i);
+                task->Fail(Status::InvalidParam());
+                failureSet_->Insert(task->id);
+                waiter->Done();
+                return;
+            }
+            shardTask.fromPosix = true;
+            waitShardCount++;
             Detail::TaskDesc backendTask{
-                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
+                Detail::Shard{shard.owner, shard.index, shard.addrs}
             };
-            backendTask.brief = "Backend2Cache";
+            backendTask.brief = "DdrLoad";
             backendTask.memoryType = Detail::TaskDesc::MemoryType::DDR;
             auto res = backend_->Load(std::move(backendTask));
             if (!res) [[unlikely]] {
-                UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
+                UC_ERROR("Failed({}) to submit ddr load task({}) to backend.", res.Error(),
+                         task->id);
                 UC::Metrics::UpdateStats(
                     NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
                 RecordLoadSourceShards(i + 1, waitShardCount);
                 RecordFailedShards(nShard - i);
-                shardTask.bufferHandle.MarkFailed(res.Error());
                 task->Fail(res.Error());
                 failureSet_->Insert(task->id);
                 waiter->Done();
@@ -141,6 +150,33 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
             }
             shardTask.backendTaskHandle = res.Value();
             backendSubmitCount++;
+        } else {
+            shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
+            shardTask.fromPosix = !shardTask.bufferHandle.Ready();
+            if (shardTask.fromPosix) { waitShardCount++; }
+            if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+                Detail::TaskDesc backendTask{
+                    Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
+                };
+                backendTask.brief = "Backend2Cache";
+                backendTask.memoryType = Detail::TaskDesc::MemoryType::DDR;
+                auto res = backend_->Load(std::move(backendTask));
+                if (!res) [[unlikely]] {
+                    UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(),
+                             task->id);
+                    UC::Metrics::UpdateStats(
+                        NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                    RecordLoadSourceShards(i + 1, waitShardCount);
+                    RecordFailedShards(nShard - i);
+                    shardTask.bufferHandle.MarkFailed(res.Error());
+                    task->Fail(res.Error());
+                    failureSet_->Insert(task->id);
+                    waiter->Done();
+                    return;
+                }
+                shardTask.backendTaskHandle = res.Value();
+                backendSubmitCount++;
+            }
         }
         shardTask.task = task;
         shardTask.shard = std::move(shard);
@@ -148,10 +184,12 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         running_.Push(std::move(shardTask));
     }
     auto tpDispatch = NowTime::Now();
-    for (size_t i = 0; i < nShard; i++) {
-        auto& shard = task->desc[indexes[i]];
-        if (shard.index + 1 != nShardPerBlock_) {
-            buffer_->Prealloc(shard.owner, shard.index + 1, true);
+    if (!ddrLoad) {
+        for (size_t i = 0; i < nShard; i++) {
+            auto& shard = task->desc[indexes[i]];
+            if (shard.index + 1 != nShardPerBlock_) {
+                buffer_->Prealloc(shard.owner, shard.index + 1, true);
+            }
         }
     }
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
@@ -211,10 +249,41 @@ void LoadQueue::TransferCacheFill(ShardTask&& task)
     if (waiter) { waiter->Done(); }
 }
 
+void LoadQueue::TransferDdrLoad(ShardTask&& task)
+{
+    auto parentTask = task.task;
+    const auto taskHandle = parentTask->id;
+    auto waiter = std::move(task.waiter);
+    if (failureSet_->Contains(taskHandle)) {
+        RecordFailedShards(1);
+        if (waiter) { waiter->Done(); }
+        return;
+    }
+    auto tpBackendWait = NowTime::Now();
+    auto s = backend_->Wait(task.backendTaskHandle);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
+                             (NowTime::Now() - tpBackendWait) * 1e3);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to wait backend({}) for ddr load task({}).", s, task.backendTaskHandle,
+                 taskHandle);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"), 1.0);
+        RecordShardResults({}, &task, false);
+        parentTask->Fail(s);
+        failureSet_->Insert(taskHandle);
+    } else {
+        RecordShardResults({}, &task, true);
+    }
+    if (waiter) { waiter->Done(); }
+}
+
 void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
     if (task.task->type == TransTask::Type::PREFETCH) {
         TransferCacheFill(std::move(task));
+        return;
+    }
+    if (task.task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+        TransferDdrLoad(std::move(task));
         return;
     }
     auto parentTask = task.task;
