@@ -1,4 +1,4 @@
-"""Build and inspect the empty ``uc-manager`` public PyPI meta package."""
+"""Build and inspect the empty ``uc-manager`` backend-selector meta package."""
 
 from __future__ import annotations
 
@@ -17,10 +17,9 @@ from packaging.utils import (
     canonicalize_name,
     parse_wheel_filename,
 )
-from packaging.version import InvalidVersion, Version
 
 from . import policy as release_policy
-from . import toolkit
+from . import toolkit, version_config
 
 META_BASE_DISTRIBUTION = "uc-manager"
 META_TAG = "py3-none-any"
@@ -34,23 +33,6 @@ def _mapping(value: object, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{context} must be a mapping")
     return value
-
-
-def _canonical_version(value: object, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{context} must be a non-empty PEP 440 version")
-    try:
-        parsed = Version(value)
-    except InvalidVersion as error:
-        raise ValueError(f"{context} must be a valid PEP 440 version") from error
-    if parsed.local is not None:
-        raise ValueError(f"{context} must not contain a local version")
-    normalized = str(parsed)
-    if value != normalized:
-        raise ValueError(
-            f"{context} must use canonical PEP 440 spelling {normalized!r}"
-        )
-    return normalized
 
 
 def _distribution_family(plan: Mapping[str, Any]) -> tuple[str, str]:
@@ -104,7 +86,9 @@ def _canonical_exact_requirement(
         or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", suffix) is None
     ):
         raise ValueError(f"{context} must reference a planned UCM backend family")
-    version = _canonical_version(specifiers[0].version, f"{context} version")
+    version = version_config.release_version(
+        specifiers[0].version, f"{context} version"
+    )
     canonical = f"{name}=={version}"
     if value != canonical:
         raise ValueError(f"{context} must use canonical requirement {canonical!r}")
@@ -117,14 +101,24 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
     if plan.get("kind") != "ucm-release-plan":
         raise ValueError("meta package requires a ucm-release-plan")
     expected_distribution, backend_prefix = _distribution_family(plan)
-    plan_version = _canonical_version(plan.get("version"), "release plan version")
+    plan_version = version_config.release_version(
+        plan.get("version"), "release plan version"
+    )
+    version_config.validate_custom_draft_identity(
+        plan_version,
+        plan.get("git_tag"),
+        plan.get("release_type"),
+        context="release plan",
+    )
     meta = _mapping(plan.get("meta_package"), "release plan meta_package")
     expected_fields = {"distribution", "version", "extras"}
     if set(meta) != expected_fields:
         raise ValueError("release plan meta_package fields must be exact")
     if meta.get("distribution") != expected_distribution:
         raise ValueError(f"meta package distribution must be {expected_distribution!r}")
-    version = _canonical_version(meta.get("version"), "meta package version")
+    version = version_config.release_version(
+        meta.get("version"), "meta package version"
+    )
     if version != plan_version:
         raise ValueError("meta package version must match release plan version")
 
@@ -179,7 +173,7 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
             is None
         ):
             raise ValueError(f"release plan wheels[{index}].dist_name is invalid")
-        wheel_version = _canonical_version(
+        wheel_version = version_config.release_version(
             wheel.get("wheel_version"), f"release plan wheels[{index}].wheel_version"
         )
         if wheel_version != version:

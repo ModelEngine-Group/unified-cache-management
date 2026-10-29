@@ -14,7 +14,7 @@ from packaging.version import Version
 from . import builders
 from . import policy as release_policy
 from . import runtime as runtime_ops
-from . import toolkit, upstream, wheel_audit
+from . import toolkit, upstream, version_config, wheel_audit
 
 ROUTES = frozenset({"pr", "release"})
 WHEEL_ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
@@ -518,7 +518,8 @@ def resolve_plan(
     resolved_release_type = catalog.get("release_type")
     if resolved_release_type not in {"stable", "prerelease", "draft", "nightly"}:
         raise ValueError(f"unsupported release type: {resolved_release_type!r}")
-    resolved_version = str(catalog["ucm_version"])
+    resolved_version = version_config.release_version(catalog["ucm_version"])
+    resolved_image_version = runtime_ops.oci_tag_version(resolved_version)
     meta_package = _meta_package(
         wheels,
         resolved_version,
@@ -549,9 +550,12 @@ def resolve_plan(
             for wheel in wheels
         ]
     }
-    resolved_git_tag = git_tag or str(catalog["release_tag"])
+    custom_tag = version_config.custom_draft_tag(resolved_version)
+    resolved_git_tag = git_tag or custom_tag or str(catalog["release_tag"])
     resolved_release_kind = release_kind or (
-        "publish" if route == "release" else "none"
+        ("draft" if custom_tag is not None else "publish")
+        if route == "release"
+        else "none"
     )
     if resolved_release_kind not in {"none", "publish", "draft"}:
         raise ValueError(f"unsupported release kind: {resolved_release_kind}")
@@ -565,6 +569,25 @@ def resolve_plan(
         if not chart_version:
             raise ValueError("Chart version override must not be empty")
         chart["version"] = chart_version
+    coordinates = version_config.validate_custom_draft_identity(
+        resolved_version,
+        resolved_git_tag,
+        resolved_release_type,
+        context="release plan",
+    )
+    if coordinates is not None and (
+        chart["version"] != coordinates["chart_version"]
+        or chart["app_version"] != resolved_version
+        or resolved_image_version != coordinates["image_version"]
+        or (
+            route == "release"
+            and (
+                resolved_release_kind != coordinates["release_kind"]
+                or resolved_prerelease != coordinates["is_prerelease"]
+            )
+        )
+    ):
+        raise ValueError("custom Draft Tag coordinates differ from release plan")
     return {
         "kind": "ucm-release-plan",
         "repository": repository,
@@ -573,7 +596,7 @@ def resolve_plan(
         "route": route,
         "release_type": resolved_release_type,
         "version": resolved_version,
-        "image_version": resolved_version,
+        "image_version": resolved_image_version,
         "git_tag": resolved_git_tag,
         "release_kind": resolved_release_kind,
         "is_prerelease": resolved_prerelease,

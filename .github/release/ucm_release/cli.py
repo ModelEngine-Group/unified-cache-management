@@ -176,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="PRODUCT",
-        help="Keep only the newest selector for this product id (repeatable)",
+        help="Keep the newest numeric range and all explicit Tags for this product (repeatable)",
     )
     upstreams_candidates.add_argument("--output", type=Path, required=True)
 

@@ -736,6 +736,12 @@ def test_bilingual_check_runs_without_a_path_filter() -> None:
     assert "paths" not in trigger and "paths-ignore" not in trigger
 
 
+def test_version_config_changes_trigger_docs_check_on_push_and_pr() -> None:
+    workflow = _load("docs-check.yml")
+    for event in ("push", "pull_request"):
+        assert "version.ini" in workflow["on"][event]["paths"]
+
+
 def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     workflow = _load("_native-wheel-gate.yml")
     assert set(workflow["on"]) == {"workflow_call"}

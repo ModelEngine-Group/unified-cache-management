@@ -9,6 +9,7 @@ on:
       - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
+      - version.ini
       - requirements-build.txt
       - .github/workflows/release*.yml
       - .github/workflows/nightly-cleanup.yml
@@ -33,6 +34,7 @@ on:
       - .pre-commit-config.yaml
       - pyproject.toml
       - setup.py
+      - version.ini
       - requirements-build.txt
       - .github/workflows/release*.yml
       - .github/workflows/nightly-cleanup.yml
@@ -73,7 +75,21 @@ jobs:
       - name: Install release test dependencies
         run: python -m pip install -r .github/release/requirements-dev.txt
       - name: Test release behavior
-        run: python -m pytest -q .github/release/tests
+        run: |
+          mkdir -p out
+          python -m pytest -q .github/release/tests \
+            --junitxml=out/release-tests.xml \
+            --basetemp=out/release-test-tmp
+      - name: Upload release contract evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-release-contracts-run-${{ github.run_id }}
+          path: |
+            out/release-tests.xml
+            out/release-test-tmp/**/named-draft-meta-wheelhouse/*.whl
+          if-no-files-found: warn
+          retention-days: 7
   check:
     name: Docs · Build and contracts
     runs-on: ubuntu-24.04
