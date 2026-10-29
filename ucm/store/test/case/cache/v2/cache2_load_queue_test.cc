@@ -555,6 +555,137 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)
     EXPECT_EQ(counters.at("cache_load_failed_shards_total"), 1);
 }
 
+TEST_F(UCCache2LoadQueueTest, PartialSubmitFailureWaitsForEarlierBackendRead)
+{
+    std::atomic<bool> readEntered{false};
+    std::atomic<bool> readFinished{false};
+    UC::Latch releaseRead;
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load)
+        .WillOnce(testing::Invoke(NextBackendHandle))
+        .WillOnce(testing::Invoke([&] {
+            EXPECT_TRUE(AwaitTrue([&] { return readEntered.load(); }));
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Status::NotFound());
+        }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&] {
+        readEntered.store(true);
+        EXPECT_TRUE(releaseRead.WaitForDuration(kWaitMs));
+        EXPECT_GE(buffer_.LiveHandles(), 1);
+        readFinished.store(true);
+        return UC::Status::OK();
+    }));
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return failureSet_.Contains(task->id); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    EXPECT_FALSE(readFinished.load());
+    releaseRead.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_TRUE(readFinished.load());
+    EXPECT_EQ(task->FailureStatus(), UC::Status::NotFound());
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, PartialSubmitFailureWaitsForEarlierH2d)
+{
+    const auto cached = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(cached);
+    std::atomic<bool> copySubmitted{false};
+    std::atomic<bool> syncEntered{false};
+    UC::Latch releaseSync;
+    releaseSync.Up();
+    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
+        copySubmitted.store(true);
+        return UC::Status::OK();
+    };
+    FakeStream::onSync = [&] {
+        EXPECT_GE(buffer_.LiveHandles(), 1);
+        syncEntered.store(true);
+        EXPECT_TRUE(releaseSync.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    };
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&] {
+        EXPECT_TRUE(AwaitTrue([&] { return copySubmitted.load(); }));
+        return UC::Expected<UC::Detail::TaskHandle>(UC::Status::NotFound());
+    }));
+    auto desc = MakeDesc(cached);
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return syncEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseSync.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::NotFound());
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, CancelledLoadDrainsQueuedBackendRead)
+{
+    const auto cached = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(cached);
+    std::atomic<bool> readSubmitted{false};
+    std::atomic<bool> readEntered{false};
+    UC::Latch releaseRead;
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&] {
+        readSubmitted.store(true);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
+        EXPECT_TRUE(AwaitTrue([&] { return readSubmitted.load(); }));
+        return UC::Status::InvalidParam("scatter failure");
+    };
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&] {
+        readEntered.store(true);
+        EXPECT_TRUE(releaseRead.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    }));
+    auto desc = MakeDesc(cached);
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return readEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseRead.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, FailedScatterKeepsSourceUntilSync)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    std::atomic<bool> syncEntered{false};
+    UC::Latch releaseSync;
+    releaseSync.Up();
+    FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
+        return UC::Status::InvalidParam("partial scatter failure");
+    };
+    FakeStream::onSync = [&] {
+        EXPECT_EQ(buffer_.LiveHandles(), 1);
+        syncEntered.store(true);
+        EXPECT_TRUE(releaseSync.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    };
+    auto [task, waiter] = SubmitOne(MakeDesc(block));
+    EXPECT_TRUE(AwaitTrue([&] { return syncEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseSync.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenScatterFails)
 {
     FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
@@ -573,7 +704,7 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenScatterFails)
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(buffer_.MarkedReady(), 1);
     EXPECT_EQ(FakeStream::scatters.size(), 1);
-    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
     auto stats = UC::Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
     EXPECT_EQ(counters.at("cache_h2d_errors_total"), 1);

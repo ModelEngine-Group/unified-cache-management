@@ -54,8 +54,9 @@ namespace UC::Cache2 {
  *    rank-interleaved order -> prealloc follow-up shard slots.
  *  - transfer_: per shard, wait until the slot is ready (backend wait for
  *    owned slots, state polling for others) -> H2D scatter. Only the last
- *    shard of a task carries the waiter and performs the single stream
- *    synchronize covering all pending H2D copies of the task.
+ *    shard (or a completion marker after partial dispatch) carries the waiter.
+ *    Completion drains backend reads and synchronizes all pending device work
+ *    before releasing buffers and notifying the caller, including on failure.
  */
 template <typename BufferT = Buffer, typename StreamT = CopyStream>
 class LoadQ {
@@ -69,6 +70,7 @@ class LoadQ {
         Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
         bool fromCache{false};
+        bool completionOnly{false};
     };
 
     alignas(64) std::atomic_bool stop_{false};
@@ -186,7 +188,17 @@ private:
                     RecordLoadSourceShards(i + 1, waitShardCount);
                     RecordFailedShards(nShard - i);
                     task->Fail(res.Error());
-                    FailTask(task, waiter);
+                    failureSet_->Insert(task->id);
+                    if (i == 0) {
+                        waiter->Done();
+                    } else {
+                        // Retire earlier backend reads and copies in FIFO order.
+                        ShardTask completion;
+                        completion.task = task;
+                        completion.waiter = waiter;
+                        completion.completionOnly = true;
+                        running_.Push(std::move(completion));
+                    }
                     return;
                 }
                 shardTask.backendTaskHandle = res.Value();
@@ -277,31 +289,24 @@ private:
     }
     void TransferOneTask(StreamT& stream, ShardTask&& task)
     {
-        if (failureSet_->Contains(task.task->id)) {
-            DiscardFailedShard(task);
-            FinishShard(stream, std::move(task), Status::Error());
+        if (task.completionOnly) {
+            FinishTask(stream, task.task, task.waiter);
             return;
         }
+        // An owned backend read must finish before its slot can be released,
+        // even if a later submission or an earlier shard has failed.
         auto s = WaitShardReady(task);
-        if (s.Success()) { s = ScatterShard(stream, task); }
+        const auto cancelled = failureSet_->Contains(task.task->id);
+        if (s.Success() && !cancelled) { s = ScatterShard(stream, task); }
         if (s.Failure()) [[unlikely]] {
-            RecordShardResults(holder_, &task, false);
-            FinishShard(stream, std::move(task), s);
-            return;
+            task.task->Fail(s);
+            failureSet_->Insert(task.task->id);
         }
-        if (!task.waiter) {
-            holder_.push_back(std::move(task));
-            return;
-        }
-        s = SynchronizeH2d(stream, task);
-        RecordShardResults(holder_, &task, s.Success());
-        holder_.clear();
-        FinishShard(stream, std::move(task), s);
-    }
-    void DiscardFailedShard(ShardTask& task)
-    {
-        if (task.bufferHandle->GetState() != SlotState::Ready) { task.bufferHandle->MarkFailed(); }
-        RecordFailedShards(1);
+        auto parentTask = task.task;
+        auto waiter = task.waiter;
+        // Retain even a failed scatter: it may have submitted a partial copy.
+        holder_.push_back(std::move(task));
+        if (waiter) { FinishTask(stream, parentTask, waiter); }
     }
     Status WaitShardReady(ShardTask& task)
     {
@@ -349,32 +354,30 @@ private:
         }
         return s;
     }
-    Status SynchronizeH2d(StreamT& stream, const ShardTask& task)
+    Status SynchronizeH2d(StreamT& stream, const TaskPtr& task)
     {
         const auto startTp = NowTime::Now();
         auto s = stream.Synchronize();
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_sync_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to sync stream for load task({}).", s, task.task->id);
+            UC_ERROR("Failed({}) to sync stream for load task({}).", s, task->id);
             Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
         }
         return s;
     }
-    void FinishShard(StreamT& stream, ShardTask&& task, const Status& s)
+    void FinishTask(StreamT& stream, const TaskPtr& task, const WaiterPtr& waiter)
     {
+        // Waiter completion returns ownership of destinations/events to Python.
+        // Drain every queued wait/copy before releasing source slots or Done().
+        auto s = SynchronizeH2d(stream, task);
         if (s.Failure()) [[unlikely]] {
-            task.task->Fail(s);
-            failureSet_->Insert(task.task->id);
-            ReleaseHolder(stream);
+            task->Fail(s);
+            failureSet_->Insert(task->id);
         }
-        if (task.waiter) { task.waiter->Done(); }
-    }
-    void ReleaseHolder(StreamT& stream)
-    {
-        if (holder_.empty()) { return; }
-        stream.Synchronize();
+        RecordShardResults(holder_, nullptr, !failureSet_->Contains(task->id));
         holder_.clear();
+        waiter->Done();
     }
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
                             bool success) const
@@ -403,11 +406,6 @@ private:
     {
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_failed_shards_total"),
                              static_cast<double>(count));
-    }
-    void FailTask(const TaskPtr& task, const WaiterPtr& waiter)
-    {
-        failureSet_->Insert(task->id);
-        waiter->Done();
     }
     void DrainWaiting()
     {
