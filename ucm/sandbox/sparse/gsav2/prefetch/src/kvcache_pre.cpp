@@ -424,8 +424,7 @@ void GSAPrefetchEngineC::InitAclRuntime()
     mContext = (void*)malloc(sizeof(aclrtContext));
     mStream = (void*)malloc(sizeof(aclrtStream));
     if (mContext == nullptr || mStream == nullptr) {
-        mLogger.log(LogLevel::ERROR,
-                    "|KVCache Prefetch| InitAclRuntime malloc failed\n");
+        mLogger.log(LogLevel::ERROR, "|KVCache Prefetch| InitAclRuntime malloc failed\n");
         throw std::runtime_error("InitAclRuntime: malloc failed");
     }
 
@@ -537,9 +536,8 @@ void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
         mLogger.log(LogLevel::ERROR,
                     "Decode step: %u, |KVCache Prefetch| index error! index: %u, maxLen: %u\n",
                     mDecodeStep, index, maxLen);
-        throw std::out_of_range(
-            "KVCache Prefetch: index " + std::to_string(index) +
-            " out of range [0, " + std::to_string(maxLen) + ")");
+        throw std::out_of_range("KVCache Prefetch: index " + std::to_string(index) +
+                                " out of range [0, " + std::to_string(maxLen) + ")");
     }
 }
 
@@ -1107,8 +1105,7 @@ bool GSAPrefetchEngineC::LoadLastChunkSources(int layerID, const std::string& re
 {
     if (task.empty()) { return true; }
     if (!mStoreV1_) {
-        mLogger.log(LogLevel::ERROR,
-                    "|LastChunkMove| mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
+        mLogger.log(LogLevel::ERROR, "|LastChunkMove| mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
                     reqID.c_str(), layerID);
         return false;
     }

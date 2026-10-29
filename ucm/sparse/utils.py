@@ -241,7 +241,9 @@ def rm_shared_memory(dp_rank):
             shm.close()
             logger.info("Successfully cleaned shared memory: %s", name)
         except FileNotFoundError:
-            logger.info("Shared memory '%s' does not exist or was already cleaned.", name)
+            logger.info(
+                "Shared memory '%s' does not exist or was already cleaned.", name
+            )
         except PermissionError:
             logger.warning(
                 "Permission denied while cleaning shared memory '%s'; on Linux run "

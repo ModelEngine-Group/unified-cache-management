@@ -45,12 +45,6 @@ else:
 # 新增类的import
 from ucm.integration.vllm.ucm_connector import RequestHasher
 from ucm.logger import init_logger
-from ucm.sparse.base import (
-    INVALID_SLOT,
-    UcmSparseBase,
-    UcmSparseMetadata,
-    UcmSparseRole,
-)
 from ucm.sandbox.sparse.gsav2.gsa import GSAMetaData, GSASharedCPUPool
 from ucm.sandbox.sparse.gsav2.gsa_log import GSALogger, Logger
 from ucm.sandbox.sparse.gsav2.gsa_shared_memory import (
@@ -59,8 +53,17 @@ from ucm.sandbox.sparse.gsav2.gsa_shared_memory import (
     SharedTensorPool,
     SharedTensorVersion,
 )
-from ucm.sandbox.sparse.gsav2.prefetch.prefetch_engine import GSAPrefetchBase, SequenceStage
+from ucm.sandbox.sparse.gsav2.prefetch.prefetch_engine import (
+    GSAPrefetchBase,
+    SequenceStage,
+)
 from ucm.sandbox.sparse.gsav2.time_cal import time_us
+from ucm.sparse.base import (
+    INVALID_SLOT,
+    UcmSparseBase,
+    UcmSparseMetadata,
+    UcmSparseRole,
+)
 from ucm.sparse.utils import (
     GSA_SPARSE_LEN,
     INDEXER_OFFLOAD_BLOCKS,
@@ -90,9 +93,7 @@ from ucm.sparse.utils import (
 
 # GSA v2-specific threshold, kept in the sandbox instead of ucm.sparse.utils
 # (whose legacy default is 8400). Configurable via env var.
-SEG_PREFILL_THRESHOLD = int(
-    os.environ.get("UCM_GSA_SEG_PREFILL_THRESHOLD", "32768")
-)
+SEG_PREFILL_THRESHOLD = int(os.environ.get("UCM_GSA_SEG_PREFILL_THRESHOLD", "32768"))
 
 ReqType = Union[str, int]
 

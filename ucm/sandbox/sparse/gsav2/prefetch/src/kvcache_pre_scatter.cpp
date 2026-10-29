@@ -1199,8 +1199,8 @@ void GSAPrefetchEngineC::SubmitTask(std::vector<int>& topkLensInput, std::vector
 }
 
 void GSAPrefetchEngineC::SubmitTaskIndexer(std::vector<int>& topkLensInput,
-                                          std::vector<std::string>& reqIDList,
-                                          std::vector<torch::Tensor>& topkLists, uint32_t stepTime)
+                                           std::vector<std::string>& reqIDList,
+                                           std::vector<torch::Tensor>& topkLists, uint32_t stepTime)
 {
     if (!mOpenIndexerOffload) { return; }
     mLogger.log(LogLevel::INFO,

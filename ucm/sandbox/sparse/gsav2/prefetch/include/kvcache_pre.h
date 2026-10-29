@@ -200,7 +200,7 @@ public:
     void UCMIndexerLoadAsync(void* context, void* stream);
 
     void SubmitTaskIndexer(std::vector<int>& topkLensInput, std::vector<std::string>& reqIDList,
-                          std::vector<torch::Tensor>& topkLists, uint32_t stepTime);
+                           std::vector<torch::Tensor>& topkLists, uint32_t stepTime);
 
     void IndexerInitLoad(std::vector<std::vector<int>>& blockTable,
                          std::vector<std::vector<int>>& slabIdx, std::string reqID);

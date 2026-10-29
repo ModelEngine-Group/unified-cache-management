@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "kvcache_pre.h"
 #include <exception>
 #include <iostream>
+#include "kvcache_pre.h"
 
 namespace {
 
@@ -101,8 +101,8 @@ void TaskManager::ExecuteTask(std::shared_ptr<TaskWrapper>& task, ThreadInfo& lo
         task->inputTaskFunc(*task->inputTaskInfo, local_thread_info);
         task->status.store(TaskStatus::COMPLETED, std::memory_order_release);
     } catch (const std::exception& e) {
-        std::cerr << "[GSA] Task: " << task->inputTaskInfo->taskID
-                  << " failed: " << e.what() << std::endl;
+        std::cerr << "[GSA] Task: " << task->inputTaskInfo->taskID << " failed: " << e.what()
+                  << std::endl;
         task->status.store(TaskStatus::FAILED, std::memory_order_release);
     } catch (...) {
         std::cerr << "[GSA] Task: " << task->inputTaskInfo->taskID
