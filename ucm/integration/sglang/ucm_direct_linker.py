@@ -75,6 +75,9 @@ class _PoolBundle:
     source_pool: PoolName
     layers: tuple[int, ...]
     entries: tuple[DevicePoolEntry, ...]
+    fragments: tuple[tuple[int, int], ...]
+    tensor_size_list: tuple[int, ...]
+    shard_size: int
 
 
 @dataclass(frozen=True)
@@ -356,7 +359,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         f"UCM pool group {source_pool} has no fragments at layer {layer}."
                     )
                 by_schema.setdefault(schema, []).append(layer)
-            for index, (_, schema_layers) in enumerate(sorted(by_schema.items())):
+            for index, (tensor_sizes, schema_layers) in enumerate(
+                sorted(by_schema.items())
+            ):
                 bundles.append(
                     _PoolBundle(
                         _pool_group_name(
@@ -368,6 +373,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         source_pool,
                         tuple(schema_layers),
                         ordered,
+                        tuple(
+                            fragment
+                            for layer in schema_layers
+                            for entry in ordered
+                            for fragment in self._entry_layer_schema(entry, layer)
+                        ),
+                        tensor_sizes,
+                        sum(tensor_sizes),
                     )
                 )
         return tuple(bundles)
@@ -385,20 +398,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self.pool_group.rank_replicated,
         )
         for bundle in self._bundles:
-            schema = tuple(
-                size
-                for layer in bundle.layers
-                for entry in bundle.entries
-                for size, _ in self._entry_layer_schema(entry, layer)
-            )
             logger.info(
                 "UCM pool bundle=%s source=%s pools=%s "
                 "page_block_tensors=%d page_block_bytes=%d.",
                 bundle.name,
                 bundle.source_pool,
                 [str(entry.name) for entry in bundle.entries],
-                len(schema),
-                sum(schema),
+                len(bundle.fragments),
+                bundle.shard_size * len(bundle.layers),
             )
 
     @staticmethod
@@ -499,32 +506,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     f"UCM store bundle {bundle.name} has inconsistent source transfer metadata."
                 )
 
-            fragments = tuple(
-                fragment
-                for layer in bundle.layers
-                for entry, _ in members
-                for fragment in self._entry_layer_schema(entry, layer)
-            )
-            if not fragments:
-                continue
-            layer_sizes = tuple(
-                sum(
-                    size
-                    for entry, _ in members
-                    for size, _ in self._entry_layer_schema(entry, layer)
-                )
-                for layer in bundle.layers
-            )
-            if not layer_sizes or len(set(layer_sizes)) != 1:
-                raise ValueError(
-                    f"UCM bundle {bundle.name} has inconsistent layer sizes: "
-                    f"{layer_sizes}."
-                )
-            layer_tensor_size_list = tuple(
-                size
-                for entry, _ in members
-                for size, _ in self._entry_layer_schema(entry, bundle.layers[0])
-            )
+            fragments = bundle.fragments
+            layer_tensor_size_list = bundle.tensor_size_list
             if for_io:
                 prepared_locations = []
                 for entry, transfer in members:
@@ -580,7 +563,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     source_pool=str(bundle.source_pool),
                     pools=tuple(str(entry.name) for entry in bundle.entries),
                     layers=bundle.layers,
-                    shard_size=layer_sizes[0],
+                    shard_size=bundle.shard_size,
                     tensor_size_list=layer_tensor_size_list,
                     page_keys=page_keys,
                     addresses=addresses,

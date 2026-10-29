@@ -64,6 +64,14 @@ class _PreparedStoreTransfer:
     shards_by_layer: dict[int, tuple[int, ...]]
 
 
+@dataclass(frozen=True)
+class _TransferLayout:
+    signature: tuple[object, ...]
+    store: UcmKVStoreBaseV1
+    tensor_count: int
+    shards_by_layer: dict[int, tuple[int, ...]]
+
+
 def _safe_name(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value))
 
@@ -108,6 +116,7 @@ class UcmDirectStoreAdapter:
         self._stores: dict[str, UcmKVStoreBaseV1] = {}
         self._lookup_store_signatures: dict[str, tuple[str, tuple[str, ...]]] = {}
         self._schemas: dict[str, tuple[tuple[int, int], ...]] = {}
+        self._transfer_layouts: dict[str, _TransferLayout] = {}
         self._pool_metadata: dict[str, UcmPoolMetadata] = {}
         self._gc_capacity_by_group: dict[str, int] = {}
         self._store_lock = threading.Lock()
@@ -688,13 +697,62 @@ class UcmDirectStoreAdapter:
                 raise
         return candidates
 
+    def _transfer_layout(self, transfer: UcmLayerTransfer) -> _TransferLayout:
+        signature = (
+            transfer.layers,
+            transfer.fragments,
+            transfer.tensor_size_list,
+            transfer.shard_size,
+        )
+        with self._store_lock:
+            cached = self._transfer_layouts.get(transfer.store_group)
+        if cached is not None:
+            if cached.signature != signature:
+                raise ValueError(f"UCM group {transfer.store_group} changed its layout.")
+            return cached
+
+        schema = self._schema(transfer)
+        tensor_count = len(transfer.tensor_size_list)
+        if not tensor_count or len(schema) != len(transfer.layers) * tensor_count:
+            raise ValueError("layer count/address schema mismatch")
+        if transfer.shard_size != sum(transfer.tensor_size_list):
+            raise ValueError("tensor sizes do not match shard size")
+        shard_indices: dict[int, list[int]] = {}
+        for index, layer in enumerate(transfer.layers):
+            start = index * tensor_count
+            sizes = tuple(size for size, _ in schema[start:start + tensor_count])
+            if sizes != transfer.tensor_size_list:
+                raise ValueError(
+                    f"UCM group {transfer.store_group} layer={layer} "
+                    "does not match the Store shard schema."
+                )
+            shard_indices.setdefault(layer, []).append(index)
+        layout = _TransferLayout(
+            signature=signature,
+            store=self._ensure_store_schema(
+                transfer.store_group,
+                schema,
+                shard_size=transfer.shard_size,
+                tensor_size_list=transfer.tensor_size_list,
+            ),
+            tensor_count=tensor_count,
+            shards_by_layer={
+                layer: tuple(indices) for layer, indices in shard_indices.items()
+            },
+        )
+        with self._store_lock:
+            cached = self._transfer_layouts.setdefault(transfer.store_group, layout)
+        if cached.signature != signature:
+            raise ValueError(f"UCM group {transfer.store_group} changed its layout.")
+        return cached
+
     def _prepare_transfers(
         self, transfers: list[UcmLayerTransfer], *, is_offload: bool
     ) -> list[_PreparedStoreTransfer]:
         prepared: list[_PreparedStoreTransfer] = []
         for transfer in transfers:
             try:
-                schema = self._schema(transfer)
+                layout = self._transfer_layout(transfer)
                 if isinstance(transfer.addresses, np.ndarray):
                     if (
                         transfer.addresses.shape
@@ -710,42 +768,18 @@ class UcmDirectStoreAdapter:
                 else:
                     if len(transfer.page_keys) != len(transfer.addresses):
                         raise ValueError("mismatched page keys and addresses")
-                    if any(len(row) != len(schema) for row in transfer.addresses):
+                    if any(
+                        len(row) != len(transfer.layers) * layout.tensor_count
+                        for row in transfer.addresses
+                    ):
                         raise ValueError("address/schema mismatch")
-                tensor_count = len(transfer.tensor_size_list)
-                if (
-                    not tensor_count
-                    or len(schema) != len(transfer.layers) * tensor_count
-                ):
-                    raise ValueError("layer count/address schema mismatch")
-                if transfer.shard_size != sum(transfer.tensor_size_list):
-                    raise ValueError("tensor sizes do not match shard size")
-                shard_indices: dict[int, list[int]] = {}
-                for shard_index, layer in enumerate(transfer.layers):
-                    start = shard_index * tensor_count
-                    stop = start + tensor_count
-                    sizes = tuple(size for size, _ in schema[start:stop])
-                    if sizes != transfer.tensor_size_list:
-                        raise ValueError(
-                            f"UCM group {transfer.store_group} layer={layer} "
-                            "does not match the Store shard schema."
-                        )
-                    shard_indices.setdefault(layer, []).append(shard_index)
                 prepared.append(
                     _PreparedStoreTransfer(
                         transfer=transfer,
-                        store=self._ensure_store_schema(
-                            transfer.store_group,
-                            schema,
-                            shard_size=transfer.shard_size,
-                            tensor_size_list=transfer.tensor_size_list,
-                        ),
+                        store=layout.store,
                         block_ids=tuple(self._block_ids(transfer)),
-                        tensor_count=tensor_count,
-                        shards_by_layer={
-                            layer: tuple(indices)
-                            for layer, indices in shard_indices.items()
-                        },
+                        tensor_count=layout.tensor_count,
+                        shards_by_layer=layout.shards_by_layer,
                     )
                 )
             except Exception:
@@ -867,6 +901,7 @@ class UcmDirectStoreAdapter:
         with self._store_lock:
             stores = tuple(self._stores.values())
             self._stores.clear()
+            self._transfer_layouts.clear()
             self._lookup_store_signatures.clear()
         for store in stores:
             close = getattr(store, "close", None)
