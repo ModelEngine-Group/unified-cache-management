@@ -709,7 +709,9 @@ class UcmDirectStoreAdapter:
             cached = self._transfer_layouts.get(transfer.store_group)
         if cached is not None:
             if cached.signature != signature:
-                raise ValueError(f"UCM group {transfer.store_group} changed its layout.")
+                raise ValueError(
+                    f"UCM group {transfer.store_group} changed its layout."
+                )
             return cached
 
         schema = self._schema(transfer)
@@ -721,7 +723,7 @@ class UcmDirectStoreAdapter:
         shard_indices: dict[int, list[int]] = {}
         for index, layer in enumerate(transfer.layers):
             start = index * tensor_count
-            sizes = tuple(size for size, _ in schema[start:start + tensor_count])
+            sizes = tuple(size for size, _ in schema[start : start + tensor_count])
             if sizes != transfer.tensor_size_list:
                 raise ValueError(
                     f"UCM group {transfer.store_group} layer={layer} "
