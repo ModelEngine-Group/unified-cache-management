@@ -15,7 +15,6 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import torch_npu
 import yaml
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import get_kv_transfer_group
@@ -27,33 +26,48 @@ from vllm.utils.torch_utils import make_tensor_with_pad
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
-from vllm_ascend.attention.utils import get_sfa_qsfa_packed_head_dim
-from vllm_ascend.cpu_binding import CpuAlloc
-from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
+
+if hasattr(torch, "npu") and torch.npu.is_available():
+    # Ascend-only imports are delayed so that importing this module on
+    # CUDA/CPU hosts does not raise ModuleNotFoundError.
+    import torch_npu
+    from vllm_ascend.attention.utils import get_sfa_qsfa_packed_head_dim
+    from vllm_ascend.cpu_binding import CpuAlloc
+    from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
+else:
+    # Non-Ascend platform: GSA is Ascend-only and must not be selected.
+    torch_npu = None
+    get_sfa_qsfa_packed_head_dim = None
+    CpuAlloc = None
+    AscendDeviceType = None
+    get_ascend_device_type = None
 
 # 新增类的import
 from ucm.integration.vllm.ucm_connector import RequestHasher
 from ucm.logger import init_logger
+from ucm.sandbox.sparse.gsav2.gsa_log import GSALogger, Logger
+from ucm.sandbox.sparse.gsav2.gsa_shared_memory import (
+    SharedBlockTable,
+    SharedTensorManager,
+    SharedTensorPool,
+    SharedTensorVersion,
+)
+from ucm.sandbox.sparse.gsav2.prefetch.prefetch_engine import (
+    GSAPrefetchBase,
+    SequenceStage,
+)
+from ucm.sandbox.sparse.gsav2.time_cal import time_us
 from ucm.sparse.base import (
     INVALID_SLOT,
     UcmSparseBase,
     UcmSparseMetadata,
     UcmSparseRole,
 )
-from ucm.sparse.gsa.gsa_log import GSALogger, Logger
-from ucm.sparse.gsa.gsa_shared_memory import (
-    SharedBlockTable,
-    SharedTensorManager,
-    SharedTensorPool,
-    SharedTensorVersion,
-)
-from ucm.sparse.gsa.prefetch.prefetch_engine import GSAPrefetchBase, SequenceStage
-from ucm.sparse.gsa.time_cal import time_us
 from ucm.sparse.utils import (
     GSA_SPARSE_LEN,
     INDEXER_OFFLOAD_BLOCKS,
     INDEXER_PREFETCH_RATIO,
-    INDEXER_PRWEFETCH_TOKENS,
+    INDEXER_PREFETCH_TOKENS,
     INDEXER_SPARSE_RATE,
     INIT_LOCAL_WINDOWS,
     IS_INDEXER_OFFLOAD,
@@ -66,7 +80,6 @@ from ucm.sparse.utils import (
     PREFETCH_SPACE,
     PREFETCH_THREAD_NUM,
     PTOPK_PREFETCH_ENABLE,
-    SEG_PREFILL_THRESHOLD,
     SPA_TOKENS_LEN,
     STREAM_NUM,
     VLLM_ASCEND_VERSION,
@@ -76,6 +89,10 @@ from ucm.sparse.utils import (
     bind_thread_memory_policy,
     init_indexer_layer_map,
 )
+
+# GSA v2-specific threshold, kept in the sandbox instead of ucm.sparse.utils
+# (whose legacy default is 8400). Configurable via env var.
+SEG_PREFILL_THRESHOLD = int(os.environ.get("UCM_GSA_SEG_PREFILL_THRESHOLD", "32768"))
 
 logger = init_logger(__name__)
 
@@ -248,7 +265,7 @@ class GSAReqStat:
 
     def is_indexer_sparse(self) -> bool:
         return (
-            self.num_prompt_tokens > INDEXER_PRWEFETCH_TOKENS
+            self.num_prompt_tokens > INDEXER_PREFETCH_TOKENS
             and self.stage() != SequenceStage.PREFILL
         )
 
@@ -325,7 +342,7 @@ class GSAReqStat:
             )
             self.init_mask()
 
-    def updata_req_state(
+    def update_req_state(
         self,
         num_scheduled_tokens,
         add_req_state,
@@ -345,7 +362,7 @@ class GSAReqStat:
         self.blocks = [x for x in add_req_state.block_ids[0]]
 
     def init_mask(self):
-        if self.num_prompt_tokens <= INDEXER_PRWEFETCH_TOKENS:
+        if self.num_prompt_tokens <= INDEXER_PREFETCH_TOKENS:
             return
         self.include_mask = [False] * self.prompt_block_len
         self.include_mask[0] = True
@@ -354,13 +371,13 @@ class GSAReqStat:
         self.exclude_mask = [False] * self.prompt_block_len
 
     def get_indexer_sparse_len(self):
-        if self.num_prompt_tokens <= INDEXER_PRWEFETCH_TOKENS:
+        if self.num_prompt_tokens <= INDEXER_PREFETCH_TOKENS:
             return self.get_seq_len()
         sparse_len = (self.prompt_block_len - self.prompt_sparse_len) * self.block_size
         return self.get_seq_len() - sparse_len
 
     def get_indexer_remain_len(self):
-        if self.num_prompt_tokens <= INDEXER_PRWEFETCH_TOKENS:
+        if self.num_prompt_tokens <= INDEXER_PREFETCH_TOKENS:
             return self.get_seq_len()
         sparse_len = (
             self.prompt_block_len
@@ -408,7 +425,7 @@ class GSAMetaData(UcmSparseMetadata):
                 )
             else:
                 # assert req_id in self.gsa_stats
-                self.gsa_stats[req_id].updata_req_state(
+                self.gsa_stats[req_id].update_req_state(
                     scheduler_output.num_scheduled_tokens[req_id],
                     requests[req_id],
                     input_batch.req_id_to_index[req_id],
@@ -520,6 +537,8 @@ class GSA(UcmSparseBase):
         self.num_padding_reqs = 0
         self.alloc_block_sch = 0
         self._store_injected = False
+        self._store_inject_retries = 0
+        self._store_inject_max_retries = 5
         self._block_hash_injected_reqs = set()
 
     def _init_speculative_config(self, vllm_config: VllmConfig):
@@ -836,37 +855,67 @@ class GSA(UcmSparseBase):
             hex(cpp_self_ptr),
         )
 
+    def _log_store_inject_retry(self, reason: str) -> None:
+        """Log a store-injection retry and escalate to an error after
+        ``_store_inject_max_retries`` consecutive attempts."""
+        if self._store_inject_retries >= self._store_inject_max_retries:
+            logger.error(
+                "[GSA Store Inject] FAILED after %d attempts (%s); "
+                "GSA merge path is not usable without the store pointer.",
+                self._store_inject_retries,
+                reason,
+            )
+            raise RuntimeError(
+                f"[GSA Store Inject] store injection failed after "
+                f"{self._store_inject_retries} attempts: {reason}"
+            )
+        logger.info(
+            "[GSA Store Inject] %s (attempt %d/%d), will retry later",
+            reason,
+            self._store_inject_retries,
+            self._store_inject_max_retries,
+        )
+
     def _ensure_store_injected(self):
         if self._store_injected:
             return
+        self._store_inject_retries += 1
         try:
             connector = self._resolve_store_connector()
             if connector is None:
-                logger.info("[GSA Store Inject] connector is None, will retry later")
+                self._log_store_inject_retry("connector is None")
                 return
             if not hasattr(connector, "store"):
-                logger.info(
-                    "[GSA Store Inject] connector type=%s has no 'store' attribute, will retry later",
-                    type(connector).__name__,
+                self._log_store_inject_retry(
+                    f"connector type={type(connector).__name__} has no 'store' attribute"
                 )
                 return
             if connector.store is None:
-                logger.info(
-                    "[GSA Store Inject] connector.store is None "
-                    "(Worker role before register_kv_caches?), will retry later"
+                self._log_store_inject_retry(
+                    "connector.store is None (Worker role before register_kv_caches?)"
                 )
                 return
             store_ptr = connector.store.cc_store()
             if store_ptr == 0:
-                logger.info(
-                    "[GSA Store Inject] cc_store() returned 0 (null pointer), "
-                    "C++ backend not ready, will retry later"
+                self._log_store_inject_retry(
+                    "cc_store() returned 0 (null pointer), C++ backend not ready"
                 )
                 return
             self._inject_and_verify_store(store_ptr)
         except Exception as e:
+            if self._store_inject_retries >= self._store_inject_max_retries:
+                logger.error(
+                    "[GSA Store Inject] FAILED with exception after %d attempts: %s",
+                    self._store_inject_retries,
+                    e,
+                )
+                raise
             logger.info(
-                "[GSA Store Inject] FAILED with exception: %s, will retry later", e
+                "[GSA Store Inject] FAILED with exception (attempt %d/%d): %s, "
+                "will retry later",
+                self._store_inject_retries,
+                self._store_inject_max_retries,
+                e,
             )
 
     def _inject_block_hashes(
@@ -1274,7 +1323,7 @@ class GSA(UcmSparseBase):
             for req_id in self.req_ids_bs:
                 req_meta = self.gsa_metadata.gsa_stats[req_id]
                 if (
-                    req_meta.num_prompt_tokens > INDEXER_PRWEFETCH_TOKENS
+                    req_meta.num_prompt_tokens > INDEXER_PREFETCH_TOKENS
                     and req_meta.is_last_chunk()
                 ):
                     self.is_prefetch_indexer = True
@@ -1298,7 +1347,7 @@ class GSA(UcmSparseBase):
             query_local = self.model_input["query_locals"]
             if (
                 IS_INDEXER_OFFLOAD
-                and req_meta.num_prompt_tokens > INDEXER_PRWEFETCH_TOKENS
+                and req_meta.num_prompt_tokens > INDEXER_PREFETCH_TOKENS
             ):
                 self._collect_indexer_meta(
                     req_id, req_meta, index_in_batch, query_local
@@ -1330,7 +1379,7 @@ class GSA(UcmSparseBase):
 
     def _collect_indexer_meta(self, req_id, req_meta, index_in_batch, query_local):
         if not (
-            IS_INDEXER_OFFLOAD and req_meta.num_prompt_tokens > INDEXER_PRWEFETCH_TOKENS
+            IS_INDEXER_OFFLOAD and req_meta.num_prompt_tokens > INDEXER_PREFETCH_TOKENS
         ):
             return
         self.need_cal_k_mean.append(req_id)
@@ -2062,7 +2111,7 @@ class GSA(UcmSparseBase):
                 req_id,
                 non_ucm_block_idxs,
                 req_meta.req_dump_blocks,
-                inject_indexer=(req_meta.num_prompt_tokens > INDEXER_PRWEFETCH_TOKENS),
+                inject_indexer=(req_meta.num_prompt_tokens > INDEXER_PREFETCH_TOKENS),
             )
         if IS_PERFORMANCE_LOG:
             return (time.perf_counter() - start) * 1_000_000
