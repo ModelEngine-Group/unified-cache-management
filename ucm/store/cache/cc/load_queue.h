@@ -81,6 +81,7 @@ private:
     void DispatchOneTask(TaskPair&& pair);
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
+    void TransferCacheFill(ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,

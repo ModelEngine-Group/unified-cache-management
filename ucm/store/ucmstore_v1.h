@@ -130,6 +130,24 @@ public:
     virtual void Prefetch(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Load blocks from the backend into this store's cache and return a task.
+     *
+     * The task finishes when the cache buffers are ready. It does not copy data
+     * to a caller-supplied device address. Stores that have no such cache return
+     * Status::Unsupported().
+     *
+     * @param blocks Array of block identifiers to fill into the cache.
+     * @param num Number of block identifiers.
+     * @return Expected<TaskHandle> that can be passed to Wait() or Check().
+     */
+    virtual Expected<Detail::TaskHandle> PrefetchToCache(const Detail::BlockId* blocks, size_t num)
+    {
+        (void)blocks;
+        (void)num;
+        return Status::Unsupported();
+    }
+
+    /**
      * @brief Check whether this store's own read/write path is healthy.
      *
      * Overrides must use bounded I/O and clean up any temporary data they create.

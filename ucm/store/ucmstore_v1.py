@@ -127,6 +127,18 @@ class UcmKVStoreBaseV1(ABC):
         """
         pass
 
+    def prefetch_to_cache(self, block_ids: List[bytes]) -> Task:
+        """Load blocks into the cache and return a task.
+
+        The task completes when the cache holds the blocks. It does not copy
+        them to a caller device buffer. Stores without this cache raise
+        NotImplementedError.
+
+        Args:
+            block_ids: List of vLLM block hashes to fill into the cache.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def load(
         self,

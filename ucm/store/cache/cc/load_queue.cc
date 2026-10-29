@@ -187,8 +187,36 @@ void LoadQueue::TransferStage(std::promise<Status>& started)
     running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream);
 }
 
+void LoadQueue::TransferCacheFill(ShardTask&& task)
+{
+    auto parentTask = task.task;
+    const auto taskHandle = parentTask->id;
+    auto waiter = std::move(task.waiter);
+    auto release = [&task] { task.bufferHandle = TransBuffer::Handle{}; };
+    if (failureSet_->Contains(taskHandle)) {
+        RecordFailedShards(1);
+        release();
+        if (waiter) { waiter->Done(); }
+        return;
+    }
+    auto s = WaitBackendTaskReady(task);
+    if (s.Failure()) [[unlikely]] {
+        RecordShardResults({}, &task, false);
+        parentTask->Fail(s);
+        failureSet_->Insert(taskHandle);
+    } else {
+        RecordShardResults({}, &task, true);
+    }
+    release();
+    if (waiter) { waiter->Done(); }
+}
+
 void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
+    if (task.task->type == TransTask::Type::PREFETCH) {
+        TransferCacheFill(std::move(task));
+        return;
+    }
     auto parentTask = task.task;
     const auto taskHandle = parentTask->id;
     if (failureSet_->Contains(taskHandle)) {

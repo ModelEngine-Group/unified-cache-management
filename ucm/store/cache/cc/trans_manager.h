@@ -58,13 +58,15 @@ protected:
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
         const auto isLoad = t->type == TransTask::Type::LOAD;
+        const auto isPrefetch = t->type == TransTask::Type::PREFETCH;
         UC_DEBUG("Cache task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isLoad] {
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isLoad, isPrefetch] {
             auto cost = NowTime::Now() - tp;
             auto costMs = cost * 1e3;
             auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
             UC_DEBUG("Cache task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      costMs);
+            if (isPrefetch) { return; }
             if (isLoad) {
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_duration_ms"), costMs);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
@@ -79,10 +81,10 @@ protected:
                                          static_cast<double>(size));
             }
         });
-        if (t->type == TransTask::Type::LOAD) {
-            loadQ_.Submit(t, w);
-        } else {
+        if (t->type == TransTask::Type::DUMP) {
             dumpQ_.Submit(t, w);
+        } else {
+            loadQ_.Submit(t, w);
         }
     }
 };

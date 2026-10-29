@@ -55,6 +55,8 @@ public:
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
     Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;
+    Expected<Detail::TaskHandle> PrefetchToCache(const Detail::BlockId* blocks,
+                                                 size_t num) override;
     Status CheckHealth() override;
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;

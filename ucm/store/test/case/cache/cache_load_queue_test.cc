@@ -226,3 +226,50 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
     ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
 }
+
+TEST_F(UCCacheLoadQueueTest, PrefetchToCacheFillsShardsAndDropsHandles)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load)
+        .Times(2)
+        .WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc task) {
+            EXPECT_EQ(task.memoryType, UC::Detail::TaskDesc::MemoryType::DDR);
+            EXPECT_EQ(task.size(), 1U);
+            EXPECT_EQ(task.front().addrs.size(), 1U);
+            EXPECT_NE(task.front().addrs.front(), nullptr);
+            return NextId();
+        }));
+    EXPECT_CALL(backend, Wait).Times(2).WillRepeatedly(testing::Return(UC::Status::OK()));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 4096;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = tensorSize * 2;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc desc;
+    desc.push_back(UC::Detail::Shard{blockId, 0, {}});
+    desc.push_back(UC::Detail::Shard{blockId, 1, {}});
+    auto task = std::make_shared<TransTask>(TransTask::Type::PREFETCH, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_FALSE(failureSet.Contains(task->id));
+    for (size_t shard = 0; shard < 2; ++shard) {
+        auto handle = buffer.Get(blockId, shard, true, true);
+        EXPECT_TRUE(handle.Ready());
+        EXPECT_TRUE(handle.Owner());
+    }
+}
