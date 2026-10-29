@@ -90,7 +90,6 @@ plugins:
             Quickstart: 快速开始
             Cache Configuration: 缓存配置
             Filesystem Pipeline: 文件系统流水线
-            NFS Connector: NFS Connector
             KV Compression: KV 压缩
             Deployment: 部署
             Helm Deployment: Helm 部署
@@ -215,7 +214,6 @@ nav:
       - Cache Configuration:
           - developer-guide/cache-configuration/index.md
           - Filesystem Pipeline: developer-guide/cache-configuration/pipeline.md
-          - NFS Connector: developer-guide/cache-configuration/nfs.md
           - 3FS: developer-guide/cache-configuration/ds3fs.md
           - Mooncake: developer-guide/cache-configuration/mooncake.md
           - KV Compression: developer-guide/cache-configuration/compress.md

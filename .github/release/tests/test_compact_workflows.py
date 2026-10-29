@@ -668,9 +668,11 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert "PRE_CHECK_RESULT" in gate_text
     assert "BUILD_REQUIRED" in gate_text
     assert "BUILD_RESULT" in gate_text
-    assert jobs["test-e2e-pc-a2"]["if"] == (
-        "github.repository == 'ModelEngine-Group/unified-cache-management'"
+    pc_e2e_if = jobs["test-e2e-pc-a2"]["if"]
+    assert "github.repository == 'ModelEngine-Group/unified-cache-management'" in (
+        pc_e2e_if
     )
+    assert "github.event.pull_request.draft == false" in pc_e2e_if
     sglang_e2e = jobs["test-e2e-sglang-a2"]
     assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
     assert set(sglang_e2e["needs"]) == {"lint-and-unit-tests", "test-e2e-pc-a2"}
@@ -699,6 +701,39 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
 
     text = (WORKFLOWS / "pull-request.yml").read_text(encoding="utf-8")
     assert "./.github/workflows/release-ucm.yml" not in text
+
+
+def test_pr_gate_skips_work_per_job_instead_of_filtering_the_workflow() -> None:
+    workflow = _load("pull-request.yml")
+    trigger = workflow["on"]["pull_request"]
+    # Workflow-level path filtering would leave required checks Pending on a
+    # skipped run, so irrelevant work is skipped per job via `if:` instead.
+    assert "paths" not in trigger and "paths-ignore" not in trigger
+    assert "ready_for_review" in trigger["types"]
+
+    jobs = workflow["jobs"]
+    assert jobs["pre-check"]["outputs"]["code_changed"] == (
+        "${{ steps.build-impact.outputs.code_changed }}"
+    )
+    impact = next(
+        step for step in jobs["pre-check"]["steps"] if step.get("id") == "build-impact"
+    )
+    assert "code_changed=${code_changed}" in impact["run"]
+
+    assert jobs["lint-and-unit-tests"]["if"] == (
+        "needs.pre-check.outputs.code_changed == 'true'"
+    )
+    for name in (
+        "native-wheel-build",
+        "test-e2e-pc-a2",
+        "test-e2e-sglang-a2",
+    ):
+        assert "github.event.pull_request.draft == false" in jobs[name]["if"], name
+
+
+def test_bilingual_check_runs_without_a_path_filter() -> None:
+    trigger = _load("docs-bilingual.yml")["on"]["pull_request"]
+    assert "paths" not in trigger and "paths-ignore" not in trigger
 
 
 def test_native_wheel_gate_uses_source_builders_without_publication() -> None:

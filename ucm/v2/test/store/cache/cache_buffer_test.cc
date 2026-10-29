@@ -31,7 +31,6 @@
 #include <vector>
 #include "cache/policy/replacement_policy_registry.h"
 #include "status/status.h"
-#include "token_addressed.h"
 #include "type/block.h"
 
 namespace UC::Store {

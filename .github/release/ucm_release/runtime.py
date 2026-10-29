@@ -541,13 +541,27 @@ def inspect_runtime_references(
     manifest_loader: JsonLoader,
     config_loader: JsonLoader,
     digest_loader: Callable[[str], str] | None = None,
+    architectures: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Inspect immutable member configs and schedule native fallback only when needed."""
+    """Inspect immutable member configs and schedule native fallback only when needed.
+
+    ``architectures`` optionally restricts the inspected members to a subset of
+    the supported CPU architectures, so a caller can compile one architecture
+    without changing which Runtime versions are exercised.
+    """
 
     if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
         raise ValueError("runtime references must be a sequence")
     if not references:
         raise ValueError("runtime references must not be empty")
+    selected_architectures: set[str] | None = None
+    if architectures is not None:
+        selected_architectures = {str(value) for value in architectures}
+        if not selected_architectures:
+            raise ValueError("requested runtime architectures must not be empty")
+        invalid = sorted(selected_architectures - set(SUPPORTED_ARCHITECTURES))
+        if invalid:
+            raise ValueError(f"unsupported requested architectures: {invalid}")
     policy_by_repository = _policy_by_repository(products, runners)
     runner_values = dict(runners)
     seen_references: set[str] = set()
@@ -583,6 +597,17 @@ def inspect_runtime_references(
             config_loader=config_loader,
             digest_loader=None,
         )
+        if selected_architectures is not None:
+            image_members = [
+                member
+                for member in image_members
+                if str(member["cpu_arch"]) in selected_architectures
+            ]
+            if not image_members:
+                raise ValueError(
+                    f"runtime {reference} has no member for architectures "
+                    f"{sorted(selected_architectures)}"
+                )
         request_id = f"runtime-{index:03d}"
         probe_ids: list[str] = []
         for member in image_members:

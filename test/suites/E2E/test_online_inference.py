@@ -60,7 +60,6 @@ class TestBasicOnlineInference:
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
                         "cache_buffer_capacity_gb": cache_buffer_capacity_gb,
                     },
                 }
@@ -92,7 +91,7 @@ class TestBasicOnlineInference:
     @pytest.mark.parametrize("model_name", ["Qwen2.5-1.5B-Instruct"])
     @pytest.mark.parametrize("max_tokens", [200])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])
-    @pytest.mark.parametrize("ucm_connector_name", ["UcmNfsStore", "UcmPipelineStore"])
+    @pytest.mark.parametrize("ucm_connector_name", ["UcmPipelineStore"])
     @pytest.mark.parametrize("use_layerwise", [True, False])
     @pytest.mark.parametrize("max_num_batched_tokens", [2047])
     def test_online_accuracy_hbm_ssd_mixed(
@@ -120,9 +119,6 @@ class TestBasicOnlineInference:
             use_layerwise: Whether to use layerwise mode.
             max_num_batched_tokens: Maximum number of batched tokens.
         """
-        if use_layerwise is True and ucm_connector_name == "UcmNfsStore":
-            pytest.skip("Skipping: UcmNfsStore does NOT support use_layerwise=True")
-
         # Load configuration
         config_file = get_path_relative_to_test_root("config.yaml")
         with open(config_file, "r", encoding="utf-8") as f:
@@ -135,25 +131,17 @@ class TestBasicOnlineInference:
 
         # Build UCM config
         ucm_config = {
-            "use_layerwise": (
-                use_layerwise if ucm_connector_name != "UcmNfsStore" else False
-            ),
+            "use_layerwise": use_layerwise,
             "ucm_connectors": [
                 {
                     "ucm_connector_name": ucm_connector_name,
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
                         "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
-            **(
-                {"enable_event_sync": False}
-                if ucm_connector_name == "UcmNfsStore"
-                else {}
-            ),
         }
 
         # Build vllm_server_startup_args
@@ -222,25 +210,17 @@ class TestBasicOnlineInference:
 
         # Build UCM config
         ucm_config = {
-            "use_layerwise": (
-                use_layerwise if ucm_connector_name != "UcmNfsStore" else False
-            ),
+            "use_layerwise": use_layerwise,
             "ucm_connectors": [
                 {
                     "ucm_connector_name": ucm_connector_name,
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
                         "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
-            **(
-                {"enable_event_sync": False}
-                if ucm_connector_name == "UcmNfsStore"
-                else {}
-            ),
         }
 
         # Build vllm_server_startup_args with pipeline parallel size
@@ -295,25 +275,17 @@ class TestBasicOnlineInference:
 
         # Build UCM config
         ucm_config = {
-            "use_layerwise": (
-                use_layerwise if ucm_connector_name != "UcmNfsStore" else False
-            ),
+            "use_layerwise": use_layerwise,
             "ucm_connectors": [
                 {
                     "ucm_connector_name": ucm_connector_name,
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
                         "cache_buffer_capacity_gb": 32,
                     },
                 }
             ],
-            **(
-                {"enable_event_sync": False}
-                if ucm_connector_name == "UcmNfsStore"
-                else {}
-            ),
         }
 
         # Build vllm_server_startup_args with tensor parallel size

@@ -64,7 +64,7 @@ invalid param ... InvalidParam(...)
 
 **Solution**:
 1. Check YAML syntax: validate with `python -c "import yaml; yaml.safe_load(open('your_config.yaml'))"`
-2. Verify parameter names match the [Pipeline Store](../developer-guide/cache-configuration/pipeline.md) or [NFS Store](../developer-guide/cache-configuration/nfs.md) documentation
+2. Verify parameter names match the [Pipeline Store](../developer-guide/cache-configuration/pipeline.md) documentation
 3. Ensure `storage_backends` path is a valid string, not empty
 
 #### `UCM_CONFIG_FILE` not found
@@ -87,7 +87,7 @@ Unsupported connector type: <name>
 
 **Cause**: The `ucm_connector_name` in the config is not a registered connector.
 
-**Solution**: Use one of the supported connector names: `UcmPipelineStore` or `UcmNfsStore`.
+**Solution**: Use the supported connector name: `UcmPipelineStore`.
 
 #### Unknown store pipeline
 

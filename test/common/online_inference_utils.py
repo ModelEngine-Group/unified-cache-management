@@ -17,8 +17,11 @@ USAGE EXAMPLE:
         ucm_config={
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
-                    "ucm_connector_config": {"storage_backends": ["/tmp/ucm_cache"]}
+                    "ucm_connector_name": "UcmPipelineStore",
+                    "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
+                        "storage_backends": ["/tmp/ucm_cache"],
+                    },
                 }
             ]
         },
@@ -68,8 +71,11 @@ class VLLMServerManager:
             ucm_config={
                 "ucm_connectors": [
                     {
-                        "ucm_connector_name": "UcmNfsStore",
-                        "ucm_connector_config": {"storage_backends": ["/tmp/ucm_cache"]}
+                        "ucm_connector_name": "UcmPipelineStore",
+                        "ucm_connector_config": {
+                            "store_pipeline": "Cache|Posix",
+                            "storage_backends": ["/tmp/ucm_cache"],
+                        },
                     }
                 ]
             },
@@ -105,8 +111,9 @@ class VLLMServerManager:
             host: Host address to bind to
             ucm_config: UCM connector configuration dict. Should include:
                 - ucm_connectors: List of connector configurations
-                  Example: [{"ucm_connector_name": "UcmNfsStore",
-                             "ucm_connector_config": {"storage_backends": ["/tmp/ucm_cache"]}}]
+                  Example: [{"ucm_connector_name": "UcmPipelineStore",
+                             "ucm_connector_config": {"store_pipeline": "Cache|Posix",
+                                                      "storage_backends": ["/tmp/ucm_cache"]}}]
             enable_prefix_caching: Whether to enable vLLM prefix caching (HBM cache)
             max_model_len: Maximum model context length
             max_num_batched_tokens: Maximum number of batched tokens (default: 2047)

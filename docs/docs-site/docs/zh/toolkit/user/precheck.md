@@ -25,12 +25,15 @@ ucm-toolkit run precheck --skip-bandwidth --json
 
 | 检查 | 当前默认判定 | 说明 |
 | --- | --- | --- |
-| 引擎与 `uc-manager` 版本 | INFO，仅展示 | 记录实际安装环境 |
-| 加速器驱动 | 缺少驱动时失败；CUDA 算力至少 8.0；Ascend HDK 高于 25.2.0，较低时警告 | 使用设备查询命令读取 |
+| 引擎与 `uc-manager` 版本 | INFO，仅展示 | 先读取 toolkit Python 的包元数据，再回退到 `PATH` 中的 `pip`/`pip3`，识别分离安装环境 |
+| 加速器驱动 | 缺少驱动时失败；CUDA 算力至少 8.0；Ascend HDK 高于 25.2.0，较低时警告 | CUDA 使用 `nvidia-smi`；Ascend 使用 `npu-smi -v` |
+| Ascend CANN 版本 | INFO，仅展示 | 在 `$ASCEND_TOOLKIT_HOME`（默认 `/usr/local/Ascend/ascend-toolkit/latest`）与当前架构下读取 `ascend_toolkit_install.info`，展示 `package_name`、`version` 和 `innerversion`；文件缺失仅作提示 |
 | 内核 | 版本系列至少 5.10 | 按 major.minor 比较 |
 | `/dev/shm` | 小于 512 GiB 时警告 | 工具的预检阈值，实际 UCM 容量仍按配置和模型计算 |
 | AIO 资源 | INFO，仅展示 | 读取内核 AIO 上限和占用 |
 | 存储带宽 | 最佳组合聚合带宽低于 8 GB/s 时警告 | 阈值可调整，结果受缓存与负载影响 |
+
+Ascend 的 `25.6.rc1.b999` 等发布/构建后缀会保留展示，并按前导数字版本序列比较。
 
 `INFO` 不改变退出码。默认允许警告；`--strict` 将警告视为失败。退出码为 `0`（通过）、`1`（失败，或 strict 下的警告）、`2`（CLI 用法错误）。检查通过后仍需执行引擎启动和[外部缓存验证](../../user-guide/observability/verify-cache.md)。
 

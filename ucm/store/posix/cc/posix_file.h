@@ -55,12 +55,13 @@ public:
     explicit PosixFile(std::string path) : path_{std::move(path)} {}
     ~PosixFile();
     const std::string& Path() const { return path_; }
+    int32_t Handle() const { return handle_; }
     Status MkDir();
     Status RmDir();
     Status Rename(const std::string& newName);
     Status Access(const int32_t mode);
     Status Open(const uint32_t flags);
-    void Close();
+    Status Close();
     Status Remove();
     Status Read(void* buffer, size_t size, off64_t offset);
     Status Write(const void* buffer, size_t size, off64_t offset);

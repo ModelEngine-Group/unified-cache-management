@@ -252,13 +252,25 @@ Mooncake 指标用于判断**数据是否由 Mooncake 提供、是否下探后�
 
 ### 1.6 ASU / KV 指标
 
-共享 KV 目录定义了 37 个 KV 指标（23 个 Counter、14 个 Histogram）。下表使用默认的 `ucm:` 前缀。
-
-这些条目描述已注册的指标定义。通过 UCM 导出 KVClient 观测值还需要运行时后端接入。
+ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 采集器。表中名称使用默认 `ucm:` 前缀。提交计数反映 KV API 调用及条目数量，不代表去重后的推理请求数，也不代表异步任务成功完成数。
 
 生成器的 `--check` 会校验英文、中文和旧版参考文档中 KV 表格的名称、类型分组、重复、遗漏和数量。说明文字与单位仍由人工维护；`--sync-ucm` 不会重写这些表格。
 
 **单位：**所有 `kv_*_duration_seconds` 的观测值和桶边界均使用秒；已有的 `*_duration_ms`、`save_duration` 和 `save_completion_wait_duration` 使用毫秒。看板显示 KV 耗时的毫秒值时，将均值或分位数乘以 `1000`，不要直接混合秒与毫秒数据。
+
+两个 `kv_transport_node_task_*` 直方图在 standalone 模式下保留 `node_id`。UCM adapter 将其观测值跨节点聚合，不暴露该节点标签；其他导出标签仍按各自路径生效。
+
+#### 安装开关
+
+ASU backend 安装仅由 store 级 `ucm_connectors[].ucm_connector_config.enable_metrics` 开关控制（默认 `true`）。Direct、HMA、HLA 和 HLA LayerWise connector 原样传递 store 配置，不再重写该开关。顶层 `enable_metrics`、有效指标目录及 consumer 配置仍按 UCM 原有逻辑控制初始化与导出，不阻止 ASU backend 安装。自定义指标目录需包含 KV 定义，才能采集这些指标。
+
+安装 backend 不会初始化 UCM 采集器，也不会启动导出器。采集器未初始化时，UCM 会忽略转发的更新。如果其他组件已初始化进程级采集器和导出链路，这些样本仍可能被采集和导出。store 安装开关不提供逐 store 的数据过滤。
+
+若要让某个 ASU store 不触发安装，在其已有的 `ucm_connector_config` 中、与 `store_pipeline: "ASU"` 同级添加 `enable_metrics: false`。该键控制安装，不是逐 store 的数据过滤或关闭开关：backend 是进程级的，设为 `false` 不会卸载其他 store 已安装的 backend。直接调用 C++ 的使用者只有 store 安装开关，需自行安排 UCM 指标注册和数据读取。
+
+指标安装失败时记录限速的 UCM ERROR 日志，Store 继续初始化，但不安装 UCM 指标后端；已有 backend 保持不变。安装失败不会被永久缓存，后续 Store `Setup()` 可以重试。所有指标写入线程停止且 `kv::metrics::Shutdown()` 完成后，后续 setup 可以重新安装保留的 UCM adapter。仍不支持并发执行 shutdown 与指标写入，也不支持在存在活跃缓存绑定时切换 backend 类型。不兼容的缓存绑定和失败的指标更新会被跳过，并持续通过限速 ERROR 日志报告。adapter 捕获安装和更新异常；日志直接使用 UCM 日志框架，不再提供独立的日志失败兜底。
+
+adapter 使用现有 UCM `UpdateStats()` 接口。采集器尚未初始化或指标尚未注册时，采样会被静默跳过。后续完成初始化和注册后，同一个缓存指标可以恢复采样；此前跳过的样本不会补发。请使用 `--ucm-config` 校验自定义目录的完整性。
 
 #### Counters
 

@@ -1,6 +1,9 @@
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
+    # The adapter fixture owns the process-wide KV backend; keep it separate from
+    # AsuStore tests, whose shared backend persists across store destruction.
+    list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX "/ucm_metrics_backend_test\\.cc$")
     if(NOT BUILD_UCM_ASU)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
     endif()
@@ -10,6 +13,12 @@ if(BUILD_UNIT_TESTS)
     if(NOT TARGET yuanrongstore)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*/yuanrong/.*\\.cc$")
     endif()
+    get_target_property(CACHE_CORE cachestore UCM_CACHE_CORE)
+    if(CACHE_CORE STREQUAL "cc")
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\]v2[/\\\\].*")
+    else()
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]cache[/\\\\][^/\\\\]*\\.cc$")
+    endif()
     add_executable(ucmstore.test ${UCMSTORE_TEST_SOURCE_FILES})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13")
         set_source_files_properties(case/dram/kv_protocol_test.cc
@@ -17,7 +26,7 @@ if(BUILD_UNIT_TESTS)
     endif()
     target_include_directories(ucmstore.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmstore.test PRIVATE
-        posixstore cachestore fakestore pcstore healthbreakerstore
+        posixstore cachestore fakestore healthbreakerstore
         gtest_main gtest gmock
     )
     if(TARGET dramstore AND TARGET drampool_core)
@@ -31,7 +40,13 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE yuanrongstore)
     endif()
     if(BUILD_UCM_ASU)
+        add_executable(ucm_metrics_adapter.test case/asu/ucm_metrics_backend_test.cc)
+        target_link_libraries(ucm_metrics_adapter.test PRIVATE
+            kv_metrics_ucm_adapter metrics infra_logger gtest_main gtest)
+        gtest_discover_tests(ucm_metrics_adapter.test)
         target_link_libraries(ucmstore.test PRIVATE
+            kv_metrics_ucm_adapter
+            metrics
             kv_client
             buffer_pool
             trans

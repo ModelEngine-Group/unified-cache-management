@@ -45,11 +45,6 @@ using UC::Store::JobDescriptor;
 struct RecordedJob {
     std::size_t jobId;
     JobDescriptor job;
-};
-
-struct RecordedTokenedJob {
-    std::size_t jobId;
-    JobDescriptor job;
     AddressedToken token;
 };
 
@@ -60,8 +55,11 @@ inline AddressedToken MakeAddressedToken(std::size_t tag)
     return token;
 }
 
-class FakeStore : public Store::Store, public Store::TokenAddressed, public Store::Prefetchable {
+class FakeStore : public Store::Store, public Store::Prefetchable {
 public:
+    /* tokened_: true mints payload-bearing tokens (real addressing); false
+     * mints keys-only tokens, emulating the base Store's default addressing
+     * while still recording every call. */
     explicit FakeStore(bool prefetchable, bool tokened)
         : prefetchable_(prefetchable), tokened_(tokened)
     {
@@ -84,15 +82,15 @@ public:
         touches.push_back({blockIds, context});
     }
 
-    Status Load(std::size_t jobId, JobDescriptor job) override
+    Status Load(std::size_t jobId, JobDescriptor job, AddressedToken token) override
     {
-        baseLoads.push_back({jobId, std::move(job)});
+        loads.push_back({jobId, std::move(job), std::move(token)});
         return loadStatus;
     }
 
-    Status Dump(std::size_t jobId, JobDescriptor job) override
+    Status Dump(std::size_t jobId, JobDescriptor job, AddressedToken token) override
     {
-        baseDumps.push_back({jobId, std::move(job)});
+        dumps.push_back({jobId, std::move(job), std::move(token)});
         return dumpStatus;
     }
 
@@ -122,15 +120,13 @@ public:
 
     Prefetchable* AsPrefetchable() override { return prefetchable_ ? this : nullptr; }
 
-    TokenAddressed* AsTokenAddressed() override { return tokened_ ? this : nullptr; }
-
-    /*== TokenAddressed ==*/
+    /*== Addressing & admission ==*/
 
     Expected<AddressedToken> Pin(const std::vector<BlockId>& blockIds) override
     {
         pins.push_back(blockIds);
         if (pinFails) { return Status::NotFound("pin failed"); }
-        AddressedToken token = MakeAddressedToken(blockIds.size());
+        AddressedToken token = tokened_ ? MakeAddressedToken(blockIds.size()) : AddressedToken{};
         token.keys = blockIds;
         return token;
     }
@@ -142,7 +138,7 @@ public:
     {
         allocs.push_back({blockIds, context});
         if (allocFails) { return Status::NoSpace("alloc failed"); }
-        AddressedToken token = MakeAddressedToken(blockIds.size());
+        AddressedToken token = tokened_ ? MakeAddressedToken(blockIds.size()) : AddressedToken{};
         token.keys = blockIds;
         return token;
     }
@@ -150,18 +146,6 @@ public:
     void Commit(const std::vector<BlockId>& blockIds, bool success) override
     {
         commits.push_back({blockIds, success});
-    }
-
-    Status Load(std::size_t jobId, JobDescriptor job, AddressedToken token) override
-    {
-        tokenedLoads.push_back({jobId, std::move(job), std::move(token)});
-        return loadStatus;
-    }
-
-    Status Dump(std::size_t jobId, JobDescriptor job, AddressedToken token) override
-    {
-        tokenedDumps.push_back({jobId, std::move(job), std::move(token)});
-        return dumpStatus;
     }
 
     /*== Prefetchable ==*/
@@ -216,15 +200,13 @@ public:
 
     std::vector<std::vector<BlockId>> plainLookups;
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> touches;
-    std::vector<RecordedJob> baseLoads;
-    std::vector<RecordedJob> baseDumps;
+    std::vector<RecordedJob> loads;
+    std::vector<RecordedJob> dumps;
     std::vector<std::vector<std::size_t>> waits;
     std::vector<std::vector<BlockId>> pins;
     std::vector<std::vector<BlockId>> unpins;
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> allocs;
     std::vector<std::pair<std::vector<BlockId>, bool>> commits;
-    std::vector<RecordedTokenedJob> tokenedLoads;
-    std::vector<RecordedTokenedJob> tokenedDumps;
     std::vector<std::pair<RequestId, std::vector<BlockId>>> prefetchLookups;
     std::vector<std::pair<RequestId, RequestContext>> preparedPrefetches;
     std::vector<std::pair<AddressedToken, bool>> completedPrefetches;
