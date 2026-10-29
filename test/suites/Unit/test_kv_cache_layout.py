@@ -601,6 +601,39 @@ class KVCacheLayoutTest(unittest.TestCase):
         self.assertTrue(np.all(layout.block_stride_lists[3:, 2] == 32768))
         self.assertTrue(np.all(layout.buffer_sizes[3:, 2] == 65536))
 
+    def test_minimax_m3_1_cuda_layout_handles_four_dimensional_index_cache(self):
+        # M3.1: every layer is sparse and the Indexer keeps a head axis,
+        # e.g. [num_blocks, 1, 128, 128].
+        next_ptr = 0x100000
+        kvcaches = {}
+        for layer_id in range(60):
+            attention_name = f"model.layers.{layer_id}.self_attn.attn"
+            kvcaches[attention_name] = FakeTensor(next_ptr, 65536)
+            next_ptr += 0x200000
+            kvcaches[f"{attention_name}.index_cache"] = FakeTensor(
+                next_ptr, 0, shape=(2, 1, 128, 128), element_size=2
+            )
+            next_ptr += 0x100000
+        layout = _create_minimax_layout(kvcaches, num_blocks=2, platform="cuda")
+
+        self.assertEqual(layout.base_ptrs.shape, (60, 2))
+        self.assertTrue(np.all(layout.base_ptrs[:, 1] != 0))
+        self.assertTrue(np.all(layout.block_stride_lists[:, 1] == 128 * 128 * 2))
+        self.assertTrue(np.all(layout.buffer_sizes[:, 1] == 2 * 128 * 128 * 2))
+
+    def test_minimax_m3_indexer_rejects_five_dimensional_cache(self):
+        with self.assertRaisesRegex(ValueError, r"block-first 3D or 4D"):
+            _create_minimax_layout(
+                {
+                    "model.layers.0.self_attn.attn": FakeTensor(0x100000, 32768),
+                    "model.layers.0.self_attn.attn.index_cache": FakeTensor(
+                        0x400000, 0, shape=(2, 1, 1, 128, 128)
+                    ),
+                },
+                num_blocks=2,
+                platform="cuda",
+            )
+
     def test_minimax_m3_ascend_layout_requires_separate_k_and_v(self):
         with self.assertRaisesRegex(ValueError, r"separate K and V tensors"):
             _create_minimax_layout(
