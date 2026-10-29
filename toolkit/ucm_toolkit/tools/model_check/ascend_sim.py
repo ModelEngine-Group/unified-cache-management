@@ -8,6 +8,9 @@ the KV tensors live changes: they are allocated in host memory, and UCM must
 be built with the ``simu`` runtime (``PLATFORM`` unset) so its transfers are
 host memcpy.
 
+``cuda_sim.py`` is the same idea for vLLM's official (CUDA) layout; the
+substitutions both launchers share live in ``sim_runtime.py``.
+
 What is substituted, and why it does not change the layout:
 
 * device selection, streams, events and synchronization are host no-ops --
@@ -41,7 +44,6 @@ from __future__ import annotations
 import gc
 import importlib
 import os
-import sys
 from typing import Any
 
 import torch
@@ -50,10 +52,16 @@ from .common import CacheFixture, UnsupportedEnvironment, describe_ucm_layout, l
 from .common import make_cache as make_common_cache
 from .common import make_worker, schedule, verify
 from .config import load_config
+from .sim_runtime import (
+    HOST,
+    disable_pin_memory,
+    patch_execution_ordering,
+    patch_ucm_device,
+    rebind,
+    require_platform,
+)
 
 config = load_config()
-
-HOST = torch.device("cpu")
 
 
 def _pin_triton_arch() -> None:
@@ -87,83 +95,11 @@ def _pin_triton_arch() -> None:
     log(f"ascend-sim: TRITON_ASCEND_ARCH={arch} (from SOC_VERSION={soc_version})")
 
 
-def _rebind(module_name: str, attribute: str, replacement: Any) -> None:
-    """Replace a function and every ``from x import f`` binding of it."""
-
-    module = importlib.import_module(module_name)
-    original = getattr(module, attribute)
-    setattr(module, attribute, replacement)
-    for loaded in list(sys.modules.values()):
-        namespace = getattr(loaded, "__dict__", None)
-        if not namespace:
-            continue
-        for name, value in list(namespace.items()):
-            if value is original:
-                setattr(loaded, name, replacement)
-
-
-class _HostStream:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def __enter__(self) -> "_HostStream":
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        return None
-
-    def wait_stream(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def wait_event(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def record_event(self, *args: Any, **kwargs: Any) -> "_HostEvent":
-        return _HostEvent()
-
-    def synchronize(self) -> None:
-        pass
-
-    def query(self) -> bool:
-        return True
-
-
-class _HostEvent:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def record(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def wait(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def synchronize(self) -> None:
-        pass
-
-    def query(self) -> bool:
-        return True
-
-    def elapsed_time(self, *args: Any) -> float:
-        return 0.0
-
-
 def _patch_npu_runtime() -> None:
     """Make torch.npu's execution-ordering API host no-ops."""
 
     importlib.import_module("torch_npu")
-    npu = torch.npu
-    npu.set_device = lambda *args, **kwargs: None
-    npu.synchronize = lambda *args, **kwargs: None
-    npu.empty_cache = lambda *args, **kwargs: None
-    npu.current_device = lambda: 0
-    npu.device_count = lambda: 1
-    npu.Stream = _HostStream
-    npu.Event = _HostEvent
-    npu.current_stream = lambda *args, **kwargs: _HostStream()
-    npu.default_stream = lambda *args, **kwargs: _HostStream()
-    npu.stream = lambda *args, **kwargs: _HostStream()
-    npu.mem_get_info = lambda *args, **kwargs: (1 << 40, 1 << 40)
+    patch_execution_ordering(torch.npu, "ascend-sim")
 
 
 def _check_ascend_soc() -> None:
@@ -214,33 +150,6 @@ def _disable_custom_ops() -> None:
     utils = importlib.import_module("vllm_ascend.utils")
     utils._CUSTOM_OP_ENABLED = False
     log("ascend-sim: custom ops reported unavailable (no kernel is executed)")
-
-
-def _disable_pin_memory() -> None:
-    """Report pinned host memory as unavailable.
-
-    Allocating a page-locked CPU tensor goes through torch_npu's pinned
-    allocator, which calls ``aclInit`` and therefore needs a driver. Pinning
-    only speeds up host/device DMA: it changes no shape, stride or dtype, and
-    vLLM already supports platforms where it is unavailable.
-    """
-
-    torch_utils = importlib.import_module("vllm.utils.torch_utils")
-    probe = getattr(torch_utils.is_pin_memory_available, "cache_clear", None)
-    if probe is not None:
-        probe()
-    _rebind("vllm.utils.torch_utils", "is_pin_memory_available", lambda: False)
-    # ``PIN_MEMORY`` is a module-level snapshot of that probe. Replace it by
-    # name in every module that imported it: a bool cannot be matched by
-    # identity without hitting unrelated True values.
-    snapshots = [
-        module.__name__
-        for module in list(sys.modules.values())
-        if getattr(module, "PIN_MEMORY", None) is True
-    ]
-    for module_name in snapshots:
-        sys.modules[module_name].PIN_MEMORY = False
-    log(f"ascend-sim: pinned host memory disabled ({len(snapshots)} snapshots)")
 
 
 class _MetaUvaBuffer:
@@ -321,39 +230,23 @@ def _stub_device_property_queries() -> None:
     wrapt.when_imported("vllm_ascend.ops.triton.compressor.compressor_triton")(patch)
 
 
-def _patch_ucm_device() -> None:
-    """UCM worker side uses the host device; its store is the simu runtime."""
-
-    device = importlib.import_module("ucm.integration.vllm.device")
-    _rebind("ucm.integration.vllm.device", "create_device", device.CpuDevice)
-    _rebind("ucm.integration.vllm.device", "get_current_device_id", lambda: 0)
-    _rebind(
-        "ucm.integration.vllm.device",
-        "get_ucm_worker_torch_device",
-        lambda local_rank: HOST,
-    )
-
-
-def _require_npu_platform() -> None:
-    from vllm.platforms import current_platform
-
-    if getattr(current_platform, "device_type", None) != "npu":
-        raise UnsupportedEnvironment(
-            "ascend-sim needs vLLM-Ascend as the active vLLM platform, got "
-            f"{type(current_platform).__name__}. Check VLLM_PLUGINS."
-        )
-
-
 def install_host_runtime() -> None:
+    """Apply every substitution, in the order the import chain needs them."""
+
     _pin_triton_arch()
     _patch_npu_runtime()
-    _require_npu_platform()
+    require_platform(
+        "npu",
+        "ascend-sim",
+        "Check that vLLM-Ascend is installed and that VLLM_PLUGINS does not "
+        "disable its platform plugin.",
+    )
     _check_ascend_soc()
     _disable_custom_ops()
-    _disable_pin_memory()
+    disable_pin_memory("ascend-sim")
     _stub_engram_weight_buffers()
     _stub_device_property_queries()
-    _patch_ucm_device()
+    patch_ucm_device("ascend-sim")
 
 
 def make_cache(vllm_config: Any) -> CacheFixture:

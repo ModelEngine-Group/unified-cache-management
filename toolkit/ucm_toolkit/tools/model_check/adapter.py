@@ -16,6 +16,7 @@ from .config import (
     ASCEND_SOC_ENV,
     BLOCK_SIZE_ENV,
     CONNECTOR_MODULE_PATH_ENV,
+    CUDA_CAPABILITY_ENV,
     DEVICE_ENV,
     DTYPE_ENV,
     KV_CACHE_DTYPE_ENV,
@@ -47,10 +48,11 @@ PLATFORM_MODULES = {
     "ascend": "ascend",
     "ascend-sim": "ascend_sim",
     "cuda": "cuda",
+    "cuda-sim": "cuda_sim",
     "cpu": "cpu",
 }
 # Platforms whose checker needs no accelerator device.
-DEVICELESS_PLATFORMS = ("cpu", "ascend-sim")
+DEVICELESS_PLATFORMS = ("cpu", "ascend-sim", "cuda-sim")
 
 
 def _detect_platform() -> str:
@@ -131,8 +133,8 @@ class ModelCheckTool(ToolAdapter):
             default="auto",
             help=(
                 "checker launcher; auto detects the installed stack. "
-                "ascend-sim builds vLLM-Ascend's native KV layout in host "
-                "memory and needs no NPU"
+                "ascend-sim and cuda-sim build the native KV layout of their "
+                "platform in host memory and need no accelerator"
             ),
         )
         parser.add_argument(
@@ -140,6 +142,13 @@ class ModelCheckTool(ToolAdapter):
             help=(
                 "ascend-sim only: assert the installed vLLM-Ascend is built for "
                 "this SoC family, e.g. A2, A3, A5"
+            ),
+        )
+        parser.add_argument(
+            "--cuda-capability",
+            help=(
+                "cuda-sim only: compute capability whose layout is simulated, "
+                "e.g. 9.0 (required there; it cannot be read without a GPU)"
             ),
         )
         parser.add_argument(
@@ -199,11 +208,13 @@ class ModelCheckTool(ToolAdapter):
             env[LAYOUT_ONLY_ENV] = "true"
         if args.ascend_soc is not None:
             env[ASCEND_SOC_ENV] = args.ascend_soc
+        if args.cuda_capability is not None:
+            env[CUDA_CAPABILITY_ENV] = args.cuda_capability
         if platform == "cuda":
             env["CUDA_VISIBLE_DEVICES"] = args.device_id
         elif platform == "ascend":
             env["ASCEND_RT_VISIBLE_DEVICES"] = args.device_id
-        # cpu / ascend-sim: no device-visibility variable needed
+        # cpu / ascend-sim / cuda-sim: no device-visibility variable needed
         module = f"{__package__}.{PLATFORM_MODULES[platform]}"
         world = args.tp * args.pp * args.pcp
         if world > 1:

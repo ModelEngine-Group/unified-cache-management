@@ -245,6 +245,42 @@ class ModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(env["UCM_MODEL_CHECK_LAYOUT_ONLY"], "true")
         self.assertNotIn("ASCEND_RT_VISIBLE_DEVICES", env)
 
+    def test_cuda_sim_runs_without_a_device_and_forwards_capability(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ucm_toolkit.tools.model_check.adapter._detect_platform",
+                return_value="cpu",
+            ) as detect,
+            patch(
+                "ucm_toolkit.tools.model_check.adapter.run_command", return_value=0
+            ) as run,
+        ):
+            result = ModelCheckTool().run(
+                [
+                    "--platform",
+                    "cuda-sim",
+                    "--cuda-capability",
+                    "9.0",
+                    "--model",
+                    "/models/example",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        detect.assert_not_called()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[-1], "ucm_toolkit.tools.model_check.cuda_sim")
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["UCM_MODEL_CHECK_CUDA_CAPABILITY"], "9.0")
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", env)
+
+    def test_capability_reaches_the_child_configuration(self):
+        with patch.dict(
+            os.environ, {"UCM_MODEL_CHECK_CUDA_CAPABILITY": "10.0"}, clear=True
+        ):
+            self.assertEqual(load_config().cuda_capability, "10.0")
+
     def test_ascend_sim_multi_rank_does_not_require_visible_devices(self):
         with (
             patch.dict(os.environ, {}, clear=True),
@@ -275,11 +311,13 @@ class ModelCheckToolkitTest(unittest.TestCase):
         env = run.call_args.kwargs["env"]
         self.assertNotIn("UCM_MODEL_CHECK_LAYOUT_ONLY", env)
         self.assertNotIn("UCM_MODEL_CHECK_ASCEND_SOC", env)
+        self.assertNotIn("UCM_MODEL_CHECK_CUDA_CAPABILITY", env)
         config_env = dict(env)
         with patch.dict(os.environ, config_env, clear=True):
             config = load_config()
         self.assertFalse(config.layout_only)
         self.assertIsNone(config.ascend_soc)
+        self.assertIsNone(config.cuda_capability)
 
     def test_invalid_topology_and_insufficient_devices_do_not_launch(self):
         from ucm_toolkit.errors import ToolkitError

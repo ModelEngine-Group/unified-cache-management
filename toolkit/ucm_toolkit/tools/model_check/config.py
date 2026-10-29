@@ -21,6 +21,7 @@ KV_CACHE_DTYPE_ENV = "UCM_MODEL_CHECK_KV_CACHE_DTYPE"
 CONNECTOR_MODULE_PATH_ENV = "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH"
 LAYOUT_ONLY_ENV = "UCM_MODEL_CHECK_LAYOUT_ONLY"
 ASCEND_SOC_ENV = "UCM_MODEL_CHECK_ASCEND_SOC"
+CUDA_CAPABILITY_ENV = "UCM_MODEL_CHECK_CUDA_CAPABILITY"
 LEGACY_CONNECTOR_MODULE = "ucm.integration.vllm.ucm_connector"
 
 
@@ -79,6 +80,9 @@ class ModelCheckConfig:
     layout_only: bool = False
     # ascend_sim only: Ascend SoC whose layout is simulated (e.g. A2, A3, A5).
     ascend_soc: str | None = None
+    # cuda_sim only: compute capability whose layout is simulated (e.g. 9.0).
+    # Declared, never measured: there is no device to read it from.
+    cuda_capability: str | None = None
     tp: int = 1
     pp: int = 1
     pcp: int = 1
@@ -112,4 +116,5 @@ def load_config() -> ModelCheckConfig:
         ),
         layout_only=_bool_env(LAYOUT_ONLY_ENV, False),
         ascend_soc=os.environ.get(ASCEND_SOC_ENV) or None,
+        cuda_capability=os.environ.get(CUDA_CAPABILITY_ENV) or None,
     )

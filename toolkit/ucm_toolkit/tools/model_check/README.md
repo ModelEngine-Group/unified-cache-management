@@ -32,6 +32,7 @@ The checker ships one launcher per serving stack in this directory
 | `cuda.py` | official vLLM (CUDA build) | `cuda` | **Official vLLM layout** |
 | `cpu.py` | official vLLM (CPU build) | `cpu` | **CUDA layout simulation through the native GPUModelRunner allocator** |
 | `ascend_sim.py` | vLLM + vLLM-Ascend, **no NPU** | `npu` platform, host memory | **Ascend layout from vLLM-Ascend's own spec/grouping/allocator**, with KV tensors in host memory |
+| `cuda_sim.py` | CUDA build of vLLM, **no GPU** | `cuda` platform, host memory | **Official vLLM layout from the real CUDA attention backends**, with KV tensors in host memory |
 
 **Layout-identity notes**
 
@@ -66,6 +67,25 @@ The checker ships one launcher per serving stack in this directory
   match: checking another family's layout needs a vLLM-Ascend built for it.
   A PASS here does not cover NPU copy kernels, ACL event ordering or
   performance.
+- `cuda_sim.py` is the same idea for the official layout, and needs a **CUDA
+  build** of vLLM (the one shipping `vllm.vllm_flash_attn`): vLLM's attention
+  backends import their kernel entry points at module level behind
+  `if current_platform.is_cuda()`, so the real backend classes -- the ones that
+  compute the KV shapes and layouts -- are only importable there. The launcher
+  refuses a CPU or `+empty` build with that explanation instead of failing deep
+  inside vLLM. Two substitutions are specific to it:
+  | substitution | reason |
+  |---|---|
+  | the CUDA platform probe is replaced by a declaration | vLLM picks its platform by asking NVML for a device count; with no GPU the CPU platform would win. This answers "is this hardware present", not "what does the layout look like", and it must run before anything touches `current_platform`, which resolves once and caches |
+  | the compute capability is **declared** with `--cuda-capability` | it cannot be read without a device, and vLLM branches on it (FlashAttention version, fp8 support, MLA backend choice). The launcher refuses to guess -- the same rule `ascend_sim.py` applies to the SoC family. A PASS is therefore a statement about the layout vLLM produces *for that capability*, and the value appears in the log |
+
+  Its kernel-availability probes are answered from that declaration rather than
+  skipped, so backend **selection** stays native and the chosen backend shows
+  up in the layout log. A PASS does not cover CUDA copy kernels, stream/event
+  ordering or performance.
+- The substitutions both device-less launchers share (host streams and events,
+  pinned memory, UCM's host device) live in `sim_runtime.py`, so the two stay
+  identical where they should be.
 - The **Ascend layout is a different design**: page sizes/dtypes/shared-tensor
   structure differ (e.g. GLM-5.2: Ascend int8 packed 656 B/token vs official
   bf16 1,152 B/token; DSV4: Ascend bf16 non-packed tuples vs official
@@ -113,6 +133,21 @@ ucm-toolkit run model-check --model /path/to/model --tokens 1024 --block-size 12
 # CPU (official vLLM CPU build + PLATFORM=simu UCM; no accelerator needed)
 ucm-toolkit run model-check --model /path/to/model --tokens 1024 --block-size 128 \
     --storage-backends /path/to/ucm_storage
+
+# Ascend layout with no NPU (vLLM-Ascend installed, CANN driver libraries
+# mounted read-only, no /dev/davinci*; UCM built with PLATFORM unset)
+ucm-toolkit run model-check --platform ascend-sim --ascend-soc A2 \
+    --model /path/to/model --tokens 1024 --block-size 128 \
+    --storage-backends /path/to/ucm_storage
+
+# Official layout with no GPU (CUDA build of vLLM; UCM built with PLATFORM unset)
+ucm-toolkit run model-check --platform cuda-sim --cuda-capability 9.0 \
+    --model /path/to/model --tokens 1024 --block-size 128 \
+    --storage-backends /path/to/ucm_storage
+
+# Either device-less launcher can stop right after UCM parses the layout
+ucm-toolkit run model-check --platform ascend-sim --layout-only \
+    --model /path/to/model --storage-backends /path/to/ucm_storage
 
 # Explicit connector-v2 validation (the legacy module remains the default)
 ucm-toolkit run model-check \
@@ -223,6 +258,7 @@ with `PLATFORM` unset (`simu`), `--tokens 1024` / `--block-size 128`
 | DeepSeek-V4.1-Flash, `--layout-only` | `ascend_sim` | v2 | PASS — 12 groups: 1 MLA, 1 transient ring, 10 whole-block SWA |
 | Qwen-Flash-Next, bulk | `cpu` | v2 | PASS — 12 segments; black-box 5 groups / 194 blocks, including 4 `MambaSpec` groups; strict 96 blocks |
 | DeepSeek-V4.1-Flash | `cpu` | v2 | fails in construction (see *Known limitations*) |
+| any | `cuda_sim` | — | **not yet run**: the available host is aarch64 with no CUDA vLLM wheel installed |
 
 Every persistent group restored 100% of its poisoned bytes in these runs. The
 four `MambaSpec` groups are the ones the strict oracle reports as not natively
@@ -275,6 +311,13 @@ Re-checked on vLLM 0.30.0 / vLLM-Ascend 0.30.0rc1 unless noted.
   `get_kv_cache_groups` / `_get_kv_cache_groups_uniform_page_size`.) Use
   `ascend_sim.py` for the Ascend layout without a device, or `cuda.py` on a GPU
   for the official layout.
+- **`cuda_sim.py` has not been run yet.** It is written against the vLLM 0.30
+  source read on the host (platform resolution in
+  `vllm/platforms/__init__.py`, the module-level kernel import in
+  `vllm/v1/attention/backends/fa_utils.py`), but no CUDA build of vLLM was
+  available to execute it. Expect the same iterate-on-the-first-error work that
+  `ascend_sim.py` needed: its substitutions are the set that source predicts is
+  required, not a verified one.
 - **`cpu.py` is currently the only launcher that covers Mamba state groups.**
   `ascend_sim.py` cannot construct Qwen4Exp (`NotImplementedError: Qwen4Exp QSA
   requires FlashAttention`, a vLLM-Ascend limitation), so do not drop the CPU
