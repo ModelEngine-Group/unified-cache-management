@@ -34,6 +34,12 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
+BUILD_UCM_SANDBOX = os.getenv("BUILD_UCM_SANDBOX", "0") not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
 BUILD_UCM_ASU = os.getenv("BUILD_UCM_ASU", "0") not in ("", "0", "false", "False")
 BUILD_KV_CLIENT_PROVIDER_AIV = os.getenv("BUILD_KV_CLIENT_PROVIDER_AIV", "0") not in (
     "",
@@ -197,6 +203,8 @@ class CMakeBuild(build_ext):
 
         if enable_sparse():
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
+        if BUILD_UCM_SANDBOX:
+            cmake_args += ["-DBUILD_UCM_SANDBOX=ON"]
 
         if BUILD_UCM_ASU:
             cmake_args += ["-DBUILD_UCM_ASU=ON"]
