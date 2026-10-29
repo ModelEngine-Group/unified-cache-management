@@ -49,7 +49,6 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
         bool aborted{false};
     };
     size_t shardSize_;
-    size_t ioSize_{0};
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
     std::mutex regMutex_;
@@ -65,7 +64,6 @@ public:
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        ioSize_ = config.tensorSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
         blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
@@ -108,13 +106,13 @@ private:
     }
     template <bool dump>
     void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
-                      const Detail::BlockId& id, size_t expect, const AioImpl::Result& result)
+                      const Detail::BlockId& id, const AioImpl::Result& result)
     {
         const auto tid = task->id;
-        const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(expect);
+        const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(shardSize_);
         if (result.error != 0 || shortIo) {
             UC_ERROR("Failed(error={}, bytes={}/{}) to do io on block({}).", result.error,
-                     result.nBytes, expect, id);
+                     result.nBytes, shardSize_, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
@@ -156,22 +154,14 @@ private:
             w->Done();
             return;
         }
-        const auto ddrLoad = !dump && task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR;
-        if (ddrLoad &&
-            (shard.addrs.size() != 1 || shard.addrs.front() == nullptr || ioSize_ == 0)) {
-            handleFailure(result.fd,
-                          Status::InvalidParam("ddr load shard requires one host address"));
-            return;
-        }
-        const auto length = ddrLoad ? ioSize_ : shardSize_;
         AioImpl::Io io;
         io.fd = result.fd;
         io.offset = shard.index * shardSize_;
-        io.length = length;
+        io.length = shardSize_;
         io.buffer = shard.addrs.front();
         io.tag = tid;
-        io.callback = [this, task, w, fd = result.fd, last, id, length](AioImpl::Result ioResult) {
-            OnIoCallback<dump>(task, w, fd, last, id, length, ioResult);
+        io.callback = [this, task, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
+            OnIoCallback<dump>(task, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {

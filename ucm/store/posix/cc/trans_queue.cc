@@ -175,16 +175,6 @@ Status TransQueue::S2H(IoUnit& ios)
         return s;
     }
     auto offset = shardSize_ * ios.shard.index;
-    if (ios.task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR) {
-        auto* addr = ios.shard.addrs.front();
-        s = file.Read(addr, ioSize_, offset);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to read file({}:{}) into ddr.", s, path, offset);
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
-            return s;
-        }
-        return Status::OK();
-    }
     for (const auto& addr : ios.shard.addrs) {
         s = file.Read(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {

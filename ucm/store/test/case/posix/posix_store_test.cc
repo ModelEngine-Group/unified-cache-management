@@ -394,41 +394,6 @@ TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
     EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
 }
 
-TEST_F(UCPosixStoreTest, PsyncDdrLoadReadsIntoCallerBuffer)
-{
-    using namespace UC::PosixStore;
-    PosixStore store;
-    ASSERT_EQ(store.Setup(MakePsyncConfig(Path())), UC::Status::OK());
-
-    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
-    UC::Test::Detail::DataGenerator source{1, AIO_TEST_DATA_SIZE};
-    source.GenerateRandom();
-    UC::Detail::TaskDesc dump;
-    dump.brief = "Dump";
-    dump.push_back(UC::Detail::Shard{block, 0, {source.Buffer()}});
-    auto dumpHandle = store.Dump(std::move(dump));
-    ASSERT_TRUE(dumpHandle.HasValue());
-    ASSERT_EQ(store.Wait(dumpHandle.Value()), UC::Status::OK());
-
-    UC::Test::Detail::DataGenerator target{1, AIO_TEST_DATA_SIZE};
-    target.Generate();
-    UC::Detail::TaskDesc load;
-    load.brief = "DdrLoad";
-    load.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
-    load.push_back(UC::Detail::Shard{block, 0, {target.Buffer()}});
-    auto loadHandle = store.Load(std::move(load));
-    ASSERT_TRUE(loadHandle.HasValue());
-    ASSERT_EQ(store.Wait(loadHandle.Value()), UC::Status::OK());
-    ASSERT_EQ(source.Compare(target), 0);
-
-    UC::Detail::TaskDesc missingAddr;
-    missingAddr.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
-    missingAddr.push_back(UC::Detail::Shard{block, 0, {}});
-    auto rejected = store.Load(std::move(missingAddr));
-    ASSERT_FALSE(rejected.HasValue());
-    EXPECT_EQ(rejected.Error(), UC::Status::InvalidParam());
-}
-
 TEST_F(UCPosixStoreTest, PsyncDispatchQueueServesManySingleShardLoads)
 {
     using namespace UC::PosixStore;
