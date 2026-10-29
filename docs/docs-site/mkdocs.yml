@@ -123,7 +123,7 @@ plugins:
             Error Codes: 错误码
             Benchmark: 基准测试
             AISBench: AISBench
-            GLM-5.3 on A2-8 with PD Disaggregation: GLM5.3 + A2-8机PD分离
+            GLM-5.3 on A2-8 with PD Disaggregation: GLM-5.3 + A2-8机PD分离
             Toolkit: 工具集
             Precheck: 环境预检
             POSIX AIO: 存储读写测试

@@ -4,9 +4,9 @@ This document records the complete process and results of accuracy and performan
 
 The test side uses AISBench: accuracy testing is evaluated on standard datasets (e.g., ARC-c, ARC-e, GPQA_diamond, C-Eval, GSM8K), while performance testing follows a "prefill → formal test → before/after hit-rate comparison" workflow, focusing on TTFT, TPOT, and throughput changes brought by prefix caching and UCM hits.
 
-# Benchmark Results
+## Benchmark Results
 
-## Accuracy Testing
+### Accuracy Testing
 
 Accuracy testing verifies whether model outputs remain consistent with native vLLM-Ascend after UCM is enabled. The test covers five datasets: AI2 Reasoning Challenge – Challenge Set (ARC-C), AI2 Reasoning Challenge – Easy Set (ARC-E), Graduate-Level Google-Proof Q&A Benchmark (GPQA), C-Eval, and Grade School Math 8K (GSM8K), recording two rounds each for native and UCM configurations. As shown in the comparison chart, UCM accuracy is essentially on par with native across all datasets, with differences within normal fluctuation ranges and no systematic degradation, indicating that enabling UCM has no substantive impact on inference correctness.
 
@@ -14,11 +14,11 @@ Accuracy testing verifies whether model outputs remain consistent with native vL
   <img src="../../assets/images/doc_glm53_fig_acc_grouped.png" width="90%" />
 </p>
 
-## Performance Testing
+### Performance Testing
 
 This performance test, under the conditions of input length 65536, output length 512, prefill rate 90%, and maximum concurrency 76, compares HBM PC and PC+UCM configurations on TTFT, TPOT, and per-card throughput at two request counts, in order to observe the performance gains from UCM. The two request counts correspond respectively to the case where HBM is not overwhelmed, and the case where HBM is completely ineffective and only the UCM external storage layer provides hits.
 
-1. **Basis for selecting 20 requests**: In this task, GLM-5.3 is deployed in a 1P4D manner (4 machines for Prefill, 4 machines for Decode). The available GPU KV Cache size per node is 336,384 tokens, which accommodates 5 requests per node based on per-request KV Cache occupancy; with Prefill and Decode each occupying 4 machines, a total of 20 requests can be accommodated. Therefore, 20 is selected as the request-count baseline for this case.
+1. **Basis for selecting 20 requests**: In this task, GLM-5.3 is deployed in a 1p4-1d4 manner (4 machines for Prefill, 4 machines for Decode). The available GPU KV Cache size per node is 336,384 tokens, which accommodates 5 requests per node based on per-request KV Cache occupancy; with Prefill and Decode each occupying 4 machines, a total of 20 requests can be accommodated. Therefore, 20 is selected as the request-count baseline for this case.
 
 2. **Basis for selecting 200 requests**: The request scale significantly exceeds the HBM capacity limit of 20 requests, causing the HBM prefix cache to be completely overwhelmed and the prefix hit rate to drop to zero, thereby allowing separate observation of performance when only the UCM external storage layer provides hits.
 
@@ -54,7 +54,7 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 | 20 | 46751.2 | 30052.0 | 40.8 | 42.5 | 208.54 | 318.82 | 14 | 6.64% | 16 | 20.59% | 69.23% |
 | 200 | 219718.7 | 125638.9 | 41.2 | 42.5 | 265.63 | 449.98 | 62 | 0.00% | 64 | 0.00% | 89.82% |
 
-# Test Environment Overview
+## Test Environment Overview
 
 | Item | Configuration / Parameter |
 |---|---|
@@ -63,24 +63,26 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 | Deployment Architecture | PD disaggregation |
 | Parallel Strategy | TP=8, DP=4, DP-local=1, EP enabled |
 | KV Transfer | `MooncakeConnectorV1` + `mooncake` router, `kvPortBase=36000` |
-| UCM | Enabled (`UcmPipelineStore` + `Cache\|Posix`, dual hostPath disks) |
+| UCM | Enabled (`UcmPipelineStore` + `Cache\|Posix`) |
 | Inference Engine | vLLM (V1 engine, `VLLM_USE_V1=1`) |
 | Benchmark | AISBench |
+| vllm-ascend version | v0.26.0rc2 |
+| UCM version | 0.8.0 |
+| Image architecture | arm64 |
 
-# Deployment Guide
+## Deployment Guide
 
-## Model Parameters
+### Model Parameters
 
 | Parameter | Value | Description |
 |---|---|---|
-| `modelSpec.name` | `glm-53` | K8s resource name fragment, lowercase letters/digits/- |
 | `modelPath` | `/mnt/model/GLM-5.3-w8a8c8` | Model weight path |
 | `modelName` | `glm-53` | In-service model name |
 | `quantization` | `ascend` | Ascend quantization |
 | `max-model-len` | `262144` | Maximum context 256K |
 | `gpu-memory-utilization` | `0.92` | GPU memory utilization |
 
-## KV-transfer Configuration
+### KV-transfer Configuration
 
 1. **Prefill Nodes:**
 ```
@@ -92,6 +94,6 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 --kv-transfer-config '{"kv_connector":"MooncakeConnectorV1", "kv_role":"kv_consumer", "kv_port":"37100", "kv_connector_extra_config":{"use_ascend_direct": true, "prefill":{"dp_size":4,"tp_size":8}, "decode":{"dp_size":4,"tp_size":8}}}'
 ```
 
-## Prefill Nodes & Decode Nodes
+### Prefill Nodes & Decode Nodes
 
 For detailed parameters, see [vLLM Ascend Official Documentation — Getting Started — GLM-5.2 & GLM-5.3](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/GLM5.2.html).

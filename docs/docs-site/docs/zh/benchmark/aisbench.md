@@ -11,10 +11,10 @@
 |---|---|
 | `temperature` | 模型生成随机性的采样参数，值越低输出越确定保守，为保证可复现性取极小值 0.01 |
 | `ignore_eos` | 忽略 EOS 提前结束，强制生成到 `max_out_len`，保证输出长度可控；性能测试为 `true`，精度测试为 `false` |
-| `CUSTOM_TEST_IMAGE` | GLM5.3 等模型使用镜像 `<私有registry>/aisbench_benchmark:v3.1_x86_64_py_310-transformersv5`；<br/>其他情况使用 `<私有registry>/aisbench_benchmark:v3.1_x86_64_py_310` |
+| `CUSTOM_TEST_IMAGE` | GLM-5.3 等模型使用镜像 `<私有registry>/aisbench_benchmark:v3.1_x86_64_py_310-transformersv5`；<br/>其他情况使用 `<私有registry>/aisbench_benchmark:v3.1_x86_64_py_310` |
 
-# 性能测试
-## 数据集构建
+## 性能测试
+### 数据集构建
 
 本轮性能测试的数据集基于 AISBench 的 Prefix Cache 测试场景构造，核心目标是生成总输入长度可控、预埋比例可控、内容可复现的请求集合，以便在 PD 分离 + UCM 部署下观测前缀缓存命中带来的性能收益。
 
@@ -49,7 +49,7 @@
 
 其中，`input_len`、`num_requests`、`hit_rate`、`seed` 直接作用于数据集构造，决定输入规模、请求条数、前缀/后缀拆分与内容复现；`output_len` 与 `concurrency` 不参与造数，由 AISBench 压测配置承接，分别控制生成长度与并发调度。
 
-## 预埋与正式测试
+### 预埋与正式测试
 
 数据集使用遵循“先预埋、后正式”的两阶段流程：
 
@@ -74,6 +74,7 @@
 ```
 
 每一轮AISBench均会输出如下指标。
+
 | 指标 （该表给出每个指标的 **Average / Min / Max / Median / P75 / P90 / P99 / N** 统计）| 含义 |
 |---|---|
 | `E2EL` | 端到端时延（End-to-End Latency）|
@@ -111,8 +112,9 @@
 | `ext(hit/query)` | 外部存储命中次数 / 查询次数 |
 | `TOTAL` | 所有 endpoint 的汇总行 |
 
-# 精度测试
-## 数据集
+## 精度测试
+
+### 数据集
 
 精度测试必须**显式选定标准数据集**，不能像性能测试那样随意使用自定义 JSONL。AISBench 为常见数据集提供配置模板，模板通常包含：
 
@@ -123,11 +125,11 @@
 
 例如配置名 `gsm8k_gen_4_shot_cot_chat_prompt` 表示：GSM8K 数据集、生成式模式、4-shot、CoT 提示、chat 格式。
 
-## 评测模式
+### 评测模式
 
 常见模式为 `gen`（生成式）：模型自由生成答案，再由评测器按指标判分。不同数据集可能适配不同模式，具体以数据集配置为准。
 
-## 评测指标
+### 评测指标
 
 | 指标 | 含义 |
 |---|---|
@@ -137,7 +139,8 @@
 | `weighted_average` | 加权平均，按子集样本量加权 |
 
 单数据集通常只输出 `accuracy` 或 `exact_match`；多科目数据集（如 C-Eval）会在汇总阶段额外输出分组和总体的平均值指标，用于横向比较。
-## 执行流程
+
+### 执行流程
 ```
 ① 加载模型配置 + 数据集配置 + summarizer
         ↓

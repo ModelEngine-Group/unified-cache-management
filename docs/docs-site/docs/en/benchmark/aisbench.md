@@ -12,11 +12,11 @@ All of our large-model testing is based on AISBench, and we have adapted it for 
 |---|---|
 | `temperature` | Sampling parameter controlling model generation randomness; lower values yield more deterministic and conservative outputs. A very small value of 0.01 is used to ensure reproducibility. |
 | `ignore_eos` | Ignores early termination by EOS, forcing generation up to `max_out_len` to ensure controllable output length; set to `true` for performance testing and `false` for accuracy testing. |
-| `CUSTOM_TEST_IMAGE` | For models such as GLM5.3, use the image `<private-registry>/aisbench_benchmark:v3.1_x86_64_py_310-transformersv5`;<br/>otherwise use `<private-registry>/aisbench_benchmark:v3.1_x86_64_py_310`. |
+| `CUSTOM_TEST_IMAGE` | For models such as GLM-5.3, use the image `<private-registry>/aisbench_benchmark:v3.1_x86_64_py_310-transformersv5`;<br/>otherwise use `<private-registry>/aisbench_benchmark:v3.1_x86_64_py_310`. |
 
-# Performance Testing
+## Performance Testing
 
-## Dataset Construction
+### Dataset Construction
 
 The dataset for this round of performance testing is built on AISBench's Prefix Cache test scenario. The core objective is to generate a request set with controllable total input length, controllable prefill ratio, and reproducible content, so as to observe the performance gains from prefix cache hits under PD-disaggregated + UCM deployment.
 
@@ -51,7 +51,7 @@ The meaning of each parameter is as follows:
 
 Among these, `input_len`, `num_requests`, `hit_rate`, and `seed` directly affect dataset construction, determining input scale, number of requests, prefix/suffix split, and content reproducibility; `output_len` and `concurrency` do not participate in dataset generation and are handled by the AISBench load-testing configuration, controlling generation length and concurrency scheduling respectively.
 
-## Prefill and Formal Testing
+### Prefill and Formal Testing
 
 Dataset usage follows a two-stage “prefill first, formal test later” workflow:
 
@@ -114,9 +114,9 @@ A snapshot is saved before and after formal testing (`hit_rate_before.json` / `h
 | `ext(hit/query)` | External storage hit count / query count |
 | `TOTAL` | Summary row across all endpoints |
 
-# Accuracy Testing
+## Accuracy Testing
 
-## Datasets
+### Datasets
 
 Accuracy testing requires **explicit selection of a standard dataset**; custom JSONL cannot be used arbitrarily as in performance testing. AISBench provides configuration templates for common datasets, typically including:
 
@@ -127,11 +127,11 @@ Accuracy testing requires **explicit selection of a standard dataset**; custom J
 
 For example, the configuration name `gsm8k_gen_4_shot_cot_chat_prompt` means: GSM8K dataset, generative mode, 4-shot, CoT prompt, chat format.
 
-## Evaluation Modes
+### Evaluation Modes
 
 The common mode is `gen` (generative): the model freely generates answers, and the evaluator scores them according to the metric. Different datasets may be suited to different modes; refer to the dataset configuration for details.
 
-## Evaluation Metrics
+### Evaluation Metrics
 
 | Metric | Meaning |
 |---|---|
@@ -142,7 +142,7 @@ The common mode is `gen` (generative): the model freely generates answers, and t
 
 Single datasets typically output only `accuracy` or `exact_match`; multi-subject datasets (such as C-Eval) additionally output grouped and overall average metrics in the summary stage for cross-comparison.
 
-## Execution Workflow
+### Execution Workflow
 
 ```text
 ① Load model config + dataset config + summarizer
