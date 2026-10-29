@@ -687,10 +687,30 @@ class KVCacheLayout:
             else self.tensor_size_lists[0].sum()
         )
 
+    def _num_mtp_layers(self) -> int:
+        """Return the MTP layers indexed after the target decoder layers.
+
+        ``SpeculativeConfig.hf_config_override`` normalizes every MTP family to
+        ``n_predict`` on the draft config, and each MTP module builds one layer
+        from that count. Families whose MTP layers share the target KV cache
+        (e.g. Gemma4) only make this an upper bound, which is safe here because
+        an oversized store block only wastes space.
+        """
+        speculative_config = getattr(self.vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return 0
+        if getattr(speculative_config, "method", None) != "mtp":
+            return 0
+        draft_config = getattr(speculative_config, "draft_model_config", None)
+        draft_hf_config = getattr(draft_config, "hf_config", None)
+        num_layers = getattr(draft_hf_config, "n_predict", None)
+        return num_layers if isinstance(num_layers, int) and num_layers > 0 else 1
+
     @property
     def block_size(self) -> int:
         if self.pp_size > 1:
-            return int(self.tensor_size_lists[0].sum() * self.num_hidden_layers)
+            num_layers = self.num_hidden_layers + self._num_mtp_layers()
+            return int(self.tensor_size_lists[0].sum()) * num_layers
         return int(self.tensor_size_lists.sum())
 
 
