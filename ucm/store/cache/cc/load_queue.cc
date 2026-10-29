@@ -135,7 +135,17 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 shardTask.bufferHandle.MarkFailed(res.Error());
                 task->Fail(res.Error());
                 failureSet_->Insert(task->id);
-                waiter->Done();
+                if (i == 0) {
+                    waiter->Done();
+                } else {
+                    // Earlier shards may own backend reads and queued H2D.
+                    // Finish in FIFO order on the transfer thread, not here.
+                    ShardTask completion{};
+                    completion.task = task;
+                    completion.waiter = waiter;
+                    completion.completionOnly = true;
+                    running_.Push(std::move(completion));
+                }
                 return;
             }
             shardTask.backendTaskHandle = res.Value();
@@ -191,12 +201,8 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
     auto parentTask = task.task;
     const auto taskHandle = parentTask->id;
-    if (failureSet_->Contains(taskHandle)) {
-        RecordFailedShards(1);
-        if (task.waiter) {
-            holder_.clear();
-            task.waiter->Done();
-        }
+    if (task.completionOnly) {
+        FinishTask(stream, parentTask, task.waiter);
         return;
     }
 
@@ -205,14 +211,14 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
     do {
         auto tpBackendWait = NowTime::Now();
         s = WaitBackendTaskReady(task);
-        if (s.Failure()) [[unlikely]] {
-            RecordShardResults(holder_, &task, false);
-            break;
-        }
+        if (s.Failure()) [[unlikely]] { break; }
         auto tpBackendReady = NowTime::Now();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
                                  (tpBackendReady - tpBackendWait) * 1e3);
 
+        // Even cancelled tasks must drain backend reads before releasing their
+        // shared host buffers. Only device copies may be skipped after failure.
+        if (failureSet_->Contains(taskHandle)) { break; }
         if (task.firstShard && parentTask->desc.prerequisiteHandle != 0) {
             s = stream.WaitEvent(Trans::Event{parentTask->desc.prerequisiteHandle});
             if (s.Failure()) [[unlikely]] {
@@ -228,32 +234,37 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
-            RecordShardResults(holder_, &task, false);
             break;
         }
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
                                  (tpH2dSubmitted - tpBackendReady) * 1e3);
-        if (!waiter) {
-            holder_.push_back(std::move(task));
-            return;
-        }
-        auto tpH2dSyncStart = NowTime::Now();
-        s = stream.Synchronize();
-        auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
-        RecordH2dSyncMetrics(h2dSyncMs);
-        RecordShardResults(holder_, &task, s.Success());
-        holder_.clear();
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
-            break;
-        }
     } while (0);
     if (s.Failure()) [[unlikely]] {
         parentTask->Fail(s);
         failureSet_->Insert(taskHandle);
     }
-    if (waiter) { waiter->Done(); }
+    // Retain the current shard too: a failed vector copy may already have
+    // enqueued work on one of the copy streams.
+    holder_.push_back(std::move(task));
+    if (waiter) { FinishTask(stream, parentTask, waiter); }
+}
+
+void LoadQueue::FinishTask(CopyStream& stream, const TaskPtr& task, const WaiterPtr& waiter)
+{
+    // Completion (including failure) transfers ownership back to Python. Drain
+    // every queued wait/copy before dropping handles or allowing event release.
+    const auto tp = NowTime::Now();
+    auto s = stream.Synchronize();
+    RecordH2dSyncMetrics((NowTime::Now() - tp) * 1e3);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
+        task->Fail(s);
+        failureSet_->Insert(task->id);
+    }
+    RecordShardResults(holder_, nullptr, !failureSet_->Contains(task->id));
+    holder_.clear();
+    waiter->Done();
 }
 
 Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
