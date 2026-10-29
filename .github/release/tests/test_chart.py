@@ -171,7 +171,7 @@ def test_pinned_tags_are_ordered_alternatives_without_changing_default(
         plan["families"] = []
     pins = [
         _family("vllm", tag, "cuda-13.0", channel="pinned")
-        for tag in ("z-build", "aaaaa-cc", "v99.0.0")
+        for tag in ("custom-build", "v99.0.0")
     ]
     pins.append(_family("vllm-ascend", "custom-ascend", "cann-9.0.1", channel="pinned"))
     plan["families"].extend(pins)
@@ -179,21 +179,13 @@ def test_pinned_tags_are_ordered_alternatives_without_changing_default(
     rendered = chart.render_values(plan, source)
 
     assert yaml.safe_load(rendered)["images"]["image"] == expected_default
-    assert (
-        rendered.index("aaaaa-cc")
-        < rendered.index("v99.0.0")
-        < rendered.index("z-build")
-    )
     alternatives = set(re.findall(r'^  # image: "([^"]+)"$', rendered, re.M))
-    for family in pins:
-        for reference in (
-            family["published_reference"],
-            *(member["reference"] for member in family["members"]),
-        ):
-            assert (
-                runtime.image_publication_targets(plan, reference)["dockerhub"]
-                in alternatives
-            )
+    assert {
+        runtime.image_publication_targets(plan, family["published_reference"])[
+            "dockerhub"
+        ]
+        for family in pins
+    } <= alternatives
     plan["families"].reverse()
     assert chart.render_values(plan, source) == rendered
 

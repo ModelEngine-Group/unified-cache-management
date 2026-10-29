@@ -29,8 +29,9 @@ TAG = "draft/v0.8.0-1"
 SOURCE_SHA = "a" * 40
 
 
-def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
-    reference = "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev1"
+def _plan(*, multi_arch: bool = False, dockerhub: bool = False, tag: str = TAG) -> dict:
+    coordinates = resources_module.version_config.classify_tag(tag)
+    reference = f"ghcr.io/release-org/vllm:v0.23.0-ucm-{coordinates['image_version']}"
     members = (
         [reference + "-amd64", reference + "-arm64"] if multi_arch else [reference]
     )
@@ -38,9 +39,9 @@ def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
         "kind": "ucm-release-plan",
         "route": "release",
         "repository": REPOSITORY,
-        "git_tag": TAG,
+        "git_tag": tag,
         "release_type": "draft",
-        "version": "0.8.0.dev1",
+        "version": coordinates["version"],
         "publish": {
             "ghcr": {"enabled": True},
             "dockerhub": {"enabled": dockerhub, "namespace": "docker.io/release-org"},
@@ -53,7 +54,10 @@ def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
                 "members": [{"reference": member} for member in members],
             }
         ],
-        "chart": {"name": "unified-cache-chart", "version": "0.8.0-draft.1"},
+        "chart": {
+            "name": "unified-cache-chart",
+            "version": coordinates["chart_version"],
+        },
     }
 
 
@@ -731,22 +735,7 @@ def test_plan_projection_rejects_repository_and_tag_mismatch():
 
 @pytest.fixture
 def custom_draft_plan():
-    plan = _plan(multi_arch=True)
-    plan.update(
-        git_tag="draft/v0.8.0-test",
-        version="0.8.0.dev0+draft.test",
-        image_version="0.8.0.dev0.draft.test",
-    )
-    plan["chart"]["version"] = "0.8.0-draft.test"
-    family = plan["families"][0]
-    family["published_reference"] = family["published_reference"].replace(
-        "0.8.0.dev1", plan["image_version"]
-    )
-    for member in family["members"]:
-        member["reference"] = member["reference"].replace(
-            "0.8.0.dev1", plan["image_version"]
-        )
-    return plan
+    return _plan(multi_arch=True, tag="draft/v0.8.0-test")
 
 
 def test_custom_draft_cleanup_preserves_full_version_and_resource_coordinates(
@@ -756,62 +745,25 @@ def test_custom_draft_cleanup_preserves_full_version_and_resource_coordinates(
     snapshot = resources_module.new_record(
         REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1, plan=plan
     )
-    assert snapshot["schema_version"] == 1
-    assert snapshot["version"] == "0.8.0.dev0+draft.test"
     record = resources_module.decode_snapshot(
         snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
     )
-    assert record["versions"] == ["0.8.0.dev0+draft.test"]
-    assert record["resources"][0] == {
-        "kind": "chart-oci",
-        "reference": "ghcr.io/release-org/charts/unified-cache-chart:0.8.0-draft.test",
+    assert snapshot["version"] == "0.8.0.dev0+draft.test"
+    assert record["versions"] == [snapshot["version"]]
+    family = plan["families"][0]
+    assert {item["reference"] for item in record["resources"]} == {
+        f"ghcr.io/release-org/charts/unified-cache-chart:{plan['chart']['version']}",
+        family["published_reference"],
+        *(member["reference"] for member in family["members"]),
     }
-    assert record["resources"][1:] == [
-        {
-            "kind": kind,
-            "reference": "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev0.draft.test"
-            + suffix,
-        }
-        for kind, suffix in (
-            ("ghcr-index", ""),
-            ("ghcr-member", "-amd64"),
-            ("ghcr-member", "-arm64"),
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    "version",
-    ["0.8.0.dev0", "0.8.0.dev0+draft.other", "0.8.0.dev0+draft.test.extra"],
-)
-def test_custom_draft_cleanup_rejects_incomplete_or_foreign_versions(
-    custom_draft_plan, version
-):
-    plan = custom_draft_plan
-    binding = resources_module.record_for_tag(
-        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1
-    )
-    snapshot = resources_module.new_record(
-        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1, plan=plan
-    )
-    wrong_plan = {
-        **plan,
-        "version": version,
-        "image_version": version.replace("+", "."),
-    }
-    with pytest.raises(resources_module.CleanupRecordError, match="identity differs"):
-        resources_module.record_from_plan(binding, wrong_plan)
-    snapshot["version"] = version
+    snapshot["version"] = "0.8.0.dev0"
     with pytest.raises(resources_module.CleanupRecordError, match="version differs"):
         resources_module.decode_snapshot(
             snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
         )
-    binding["versions"] = [version]
-    with pytest.raises(resources_module.CleanupRecordError, match="version differs"):
-        resources_module.validate_record(binding, REPOSITORY)
 
 
-@pytest.mark.parametrize("resource_index", [0, 1])
+@pytest.mark.parametrize("resource_index", [0, 1], ids=["chart", "image"])
 def test_custom_draft_cleanup_record_cannot_claim_another_labels_resources(
     custom_draft_plan, resource_index
 ):

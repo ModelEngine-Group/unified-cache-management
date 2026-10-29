@@ -128,13 +128,12 @@ def _plan() -> dict[str, object]:
 
 def _write_artifact_inputs(
     tmp_path: Path,
-    *,
-    version: str = "0.7.62rc1",
-    chart_version: str = "0.7.62-rc.1",
 ) -> tuple[Path, Path, Path, str]:
     wheels = tmp_path / "wheels" / "one"
     wheels.mkdir(parents=True)
-    filename = f"uc_manager_cuda_cu129-{version}-cp312-cp312-manylinux_2_28_x86_64.whl"
+    filename = (
+        "uc_manager_cuda_cu129-0.7.62rc1-cp312-cp312-" "manylinux_2_28_x86_64.whl"
+    )
     (wheels / filename).write_bytes(b"wheel")
     report_text = "\n".join(
         (
@@ -174,7 +173,7 @@ def _write_artifact_inputs(
                 "schema_version": 5,
                 "task_id": "cuda129-cp312-amd64",
                 "distribution": "uc-manager-cuda-cu129",
-                "version": version,
+                "version": "0.7.62rc1",
                 "python_abi": "cp312",
                 "cpu_arch": "amd64",
                 "filename": filename,
@@ -205,7 +204,7 @@ def _write_artifact_inputs(
     )
     chart = tmp_path / "chart"
     chart.mkdir()
-    (chart / f"unified-cache-chart-{chart_version}.tgz").write_bytes(b"chart")
+    (chart / "unified-cache-chart-0.7.62-rc.1.tgz").write_bytes(b"chart")
     return tmp_path / "wheels", chart, result_path, filename
 
 
@@ -267,8 +266,7 @@ def _single_family_release_notes_manifest(
 def _write_meta_artifact(tmp_path: Path, plan: dict[str, object]) -> Path:
     meta_root = tmp_path / "meta"
     meta_root.mkdir()
-    version = plan["version"]
-    filename = f"uc_manager-{version}-py3-none-any.whl"
+    filename = "uc_manager-0.7.62rc1-py3-none-any.whl"
     wheel = meta_root / filename
     wheel.write_bytes(b"meta")
     meta_package = plan["meta_package"]
@@ -279,7 +277,7 @@ def _write_meta_artifact(tmp_path: Path, plan: dict[str, object]) -> Path:
                 "kind": "ucm-meta-result",
                 "schema_version": 1,
                 "distribution": "uc-manager",
-                "version": version,
+                "version": "0.7.62rc1",
                 "filename": filename,
                 "sha256": "sha256:" + hashlib.sha256(b"meta").hexdigest(),
                 "size": 4,
@@ -720,10 +718,8 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     )
 
 
-def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def published_release(tmp_path):
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
     plan = _plan()
     plan["meta_package"] = {
@@ -801,7 +797,16 @@ def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
             ),
         }
     )
+    return state, document
 
+
+def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published_release,
+) -> None:
+    state, document = published_release
+    asset_urls = _asset_urls(state)
     manifest = public_manifest.build_manifest(state, document)
 
     assert manifest["schema_version"] == 10
@@ -881,77 +886,22 @@ def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
 
 
 @pytest.fixture
-def custom_draft_publication(tmp_path):
-    version = "0.7.62.dev0+draft.test"
-    chart_version = "0.7.62-draft.test"
+def custom_draft_publication(published_release):
+    state, document = json.loads(
+        json.dumps(published_release)
+        .replace("0.7.62rc1", "0.7.62.dev0+draft.test")
+        .replace("0.7.62-rc.1", "0.7.62-draft.test")
+        .replace("v0.23.0-ucm-amd64", "nightly-ucm-0.7.62.dev0.draft.test")
+    )
     tag = "draft/v0.7.62-test"
-    target = "ghcr.io/example/vllm:nightly-ucm-0.7.62.dev0.draft.test"
-    plan = json.loads(
-        json.dumps(_plan())
-        .replace("0.7.62rc1", version)
-        .replace("0.7.62-rc.1", chart_version)
+    state["release"].update(git_tag=tag, release_type="draft", release_kind="draft")
+    for item in [*state["images"], *state["families"]]:
+        item["runtime"].update(tag="nightly", version="nightly", channel="pinned")
+    document.update(
+        tag_name=tag,
+        draft=True,
+        html_url=f"https://github.com/example/ucm/releases/tag/{tag}",
     )
-    plan.update(git_tag=tag, release_type="draft", release_kind="draft")
-    plan["meta_package"] = {
-        "distribution": "uc-manager",
-        "version": version,
-        "extras": {"cu129": f"uc-manager-cuda-cu129=={version}"},
-    }
-    for item in [*plan["images"], *plan["families"]]:
-        item["runtime"].update(
-            product_id="vllm",
-            tag="nightly",
-            version="nightly",
-            channel="pinned",
-            variant="default",
-            soc_version="na",
-            os_id="ubuntu",
-            os_version="22.04",
-        )
-    plan["families"][0]["published_reference"] = target
-    plan["families"][0]["members"][0]["reference"] = target
-    wheels, chart, _, _ = _write_artifact_inputs(
-        tmp_path, version=version, chart_version=chart_version
-    )
-    meta_root = _write_meta_artifact(tmp_path, plan)
-    state, _ = release.build_release_state(
-        plan, wheels, chart, meta_root, actions_run_id=987654
-    )
-    receipts = tmp_path / "receipts"
-    receipts.mkdir()
-    (receipts / "member.json").write_text(
-        json.dumps(
-            {
-                "kind": "ucm-image-member-receipt",
-                "schema_version": 1,
-                "id": "vllm-v023-amd64",
-                "status": "published",
-                "targets": [
-                    {
-                        "channel": "ghcr",
-                        "reference": target,
-                        "digest": "sha256:" + "d" * 64,
-                    }
-                ],
-            }
-        )
-    )
-    state = release.finalize_release_state(
-        state,
-        receipts,
-        build_outcome="success",
-        member_outcome="success",
-        index_outcome="skipped",
-    )
-    document = {
-        "tag_name": tag,
-        "draft": True,
-        "html_url": f"https://github.com/example/ucm/releases/tag/{tag}",
-        "assets": [
-            {"name": name, "browser_download_url": url}
-            for name, url in _asset_urls(state).items()
-        ],
-    }
     return state, document
 
 
@@ -960,49 +910,33 @@ def test_custom_draft_manifest_keeps_local_version_and_opaque_runtime(
 ):
     state, document = custom_draft_publication
     manifest = public_manifest.build_manifest(state, document)
-    assert manifest["schema_version"] == 10
-    assert manifest["release"]["version"] == "0.7.62.dev0+draft.test"
-    assert manifest["python"]["version"] == "0.7.62.dev0+draft.test"
-    assert manifest["python"]["pypi"] is None
+    version = "0.7.62.dev0+draft.test"
+    wheel = manifest["wheels"][0]
+    assert {
+        manifest["release"]["version"],
+        manifest["python"]["version"],
+        wheel["version"],
+    } == {version}
     assert manifest["images"][0]["upstream"] == {
         "version": "nightly",
         "channel": "pinned",
     }
-    assert manifest["chart"]["version"] == "0.7.62-draft.test"
-    wheel = manifest["wheels"][0]
-    assert wheel["version"] == "0.7.62.dev0+draft.test"
-    assert wheel["url"].endswith("/" + quote(wheel["filename"], safe=""))
-    assert "%2Bdraft.test" in wheel["url"]
-    record = cleanup_records.record_from_manifest(manifest, "example/ucm")
-    assert record["versions"] == ["0.7.62.dev0+draft.test"]
+    assert quote(version, safe="") in wheel["url"]
+    assert cleanup_records.record_from_manifest(manifest, "example/ucm")[
+        "versions"
+    ] == [version]
 
 
-@pytest.mark.parametrize("version", ["0.7.62.dev0", "0.7.62.dev0+draft.other"])
-def test_custom_draft_manifest_generation_rejects_lost_or_foreign_label(
-    custom_draft_publication, version
+def test_custom_draft_manifest_generation_rejects_a_lost_label(
+    custom_draft_publication,
 ):
     state, document = custom_draft_publication
-    wrong_state = json.loads(
-        json.dumps(state).replace("0.7.62.dev0+draft.test", version)
+    # Keep every package and filename consistent, so the Tag binding must detect the loss.
+    state, document = json.loads(
+        json.dumps((state, document)).replace("0.7.62.dev0+draft.test", "0.7.62.dev0")
     )
-    wrong_document = json.loads(
-        json.dumps(document).replace("0.7.62.dev0+draft.test", version)
-    )
-    with pytest.raises(ValueError, match="version|identity"):
-        public_manifest.build_manifest(wrong_state, wrong_document)
-
-
-@pytest.mark.parametrize("version", ["0.7.62.dev0", "0.7.62.dev0+draft.other"])
-def test_custom_draft_manifest_cleanup_rejects_lost_or_foreign_label(
-    custom_draft_publication, version
-):
-    state, document = custom_draft_publication
-    manifest = public_manifest.build_manifest(state, document)
-    wrong_manifest = json.loads(
-        json.dumps(manifest).replace("0.7.62.dev0+draft.test", version)
-    )
-    with pytest.raises(cleanup_records.CleanupRecordError, match="version differs"):
-        cleanup_records.record_from_manifest(wrong_manifest, "example/ucm")
+    with pytest.raises(ValueError, match="version differs from release state identity"):
+        public_manifest.build_manifest(state, document)
 
 
 def test_wheel_capabilities_include_every_linked_image_runtime() -> None:

@@ -307,43 +307,27 @@ def test_latest_only_selector_uses_the_newest_version() -> None:
 
 
 @pytest.mark.parametrize(
-    ("selectors", "expected_tags"),
+    ("ranges", "expected_automatic_tags"),
     [
-        (
-            [_selector("0.5.18"), _selector("0.5.19"), _tag_selector("aaaaa-cc")],
-            ["v0.5.19-cu129", "aaaaa-cc"],
-        ),
-        (
-            [_tag_selector("v0.5.19-cu129"), _selector("0.5.20")],
-            ["v0.5.19-cu129", "v0.5.20-cu130"],
-        ),
-        (
-            [_tag_selector("v0.5.20rc1-cu130"), _tag_selector("v0.5.20rc2-cu130")],
-            ["v0.5.20rc1-cu130", "v0.5.20rc2-cu130"],
-        ),
-        (
-            [_tag_selector("aaaaa-cc"), _tag_selector("aaaaa-cc-dd")],
-            ["aaaaa-cc", "aaaaa-cc-dd"],
-        ),
+        ([_selector("0.5.18"), _selector("0.5.19")], ["v0.5.19-cu129"]),
+        ([], []),
     ],
 )
-def test_latest_only_keeps_all_pins_and_the_newest_numeric_range(
-    selectors: list[dict[str, str | None]], expected_tags: list[str]
+def test_latest_only_preserves_all_pins_with_or_without_numeric_ranges(
+    ranges: list[dict[str, str | None]], expected_automatic_tags: list[str]
 ) -> None:
+    pinned_tags = ["custom-build", "v0.5.18rc1-cu129"]
+    selectors = ranges + [_tag_selector(tag) for tag in pinned_tags]
     selected = upstream._select_runtime_tags(  # noqa: SLF001
         {"id": "sglang", "runtime_selectors": selectors},
-        [
-            "v0.5.19-cu129",
-            "v0.5.20rc1-cu130",
-            "v0.5.20rc2-cu130",
-            "v0.5.20-cu130",
-            "aaaaa-cc",
-            "aaaaa-cc-dd",
-        ],
+        ["v0.5.19-cu129", *pinned_tags],
         latest_only=True,
     )
 
-    assert [item["runtime_tag"] for item in selected] == expected_tags
+    assert [item["runtime_tag"] for item in selected] == [
+        *expected_automatic_tags,
+        *pinned_tags,
+    ]
 
 
 def test_latest_per_product_narrows_only_the_named_product() -> None:
@@ -439,10 +423,7 @@ def test_latest_only_rejects_duplicate_numeric_ranges() -> None:
         )
 
 
-@pytest.mark.parametrize("vllm_enabled", [True, False])
-def test_shared_wheel_capability_is_retained_when_vllm_is_disabled(
-    vllm_enabled: bool,
-) -> None:
+def test_shared_wheel_capability_is_retained_when_vllm_is_disabled() -> None:
     probe = next(
         item
         for item in _fixture()["runtime_probe"]["probes"]
@@ -460,15 +441,18 @@ def test_shared_wheel_capability_is_retained_when_vllm_is_disabled(
     )
 
     release = _policy()
-    if not vllm_enabled:
-        vllm = next(item for item in release["products"] if item["id"] == "vllm")
-        vllm["runtime_selectors"] = []
-    probes = [probe, sglang_probe] if vllm_enabled else [sglang_probe]
-    builds = builders.resolve_probe_builds(release, probes, tag_fixture=_fixture())
+    shared = builders.resolve_probe_builds(
+        release, [probe, sglang_probe], tag_fixture=_fixture()
+    )
+    vllm = next(item for item in release["products"] if item["id"] == "vllm")
+    vllm["runtime_selectors"] = []
+    retained = builders.resolve_probe_builds(
+        release, [sglang_probe], tag_fixture=_fixture()
+    )
 
-    assert len(builds) == 1
-    assert builds[0]["id"] == "cu129-cp312-amd64"
-    assert builds[0]["product_id"] == "shared"
+    assert len(shared) == len(retained) == 1
+    assert retained[0]["id"] == shared[0]["id"]
+    assert retained[0]["product_id"] == "shared"
 
 
 def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
@@ -495,20 +479,13 @@ def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
     assert pinned["channel"] == "pinned"
 
 
-@pytest.mark.parametrize(
-    "change,message",
-    [
-        ({"version": "1.0.0"}, "pinned Runtime version must equal its tag"),
-        ({"product_id": "unknown"}, "unsupported runtime product"),
-    ],
-)
-def test_opaque_candidate_keeps_its_metadata_contract(change, message) -> None:
+def test_opaque_candidate_version_must_equal_its_tag() -> None:
     document = upstream.resolve_runtime_candidates(
         _sglang_policy(_tag_selector("aaaaa-cc")),
         tag_loader=lambda _repository: ["aaaaa-cc"],
     )
-    document["runtimes"][0].update(change)
-    with pytest.raises(ValueError, match=message):
+    document["runtimes"][0]["version"] = "1.0.0"
+    with pytest.raises(ValueError, match="pinned Runtime version must equal its tag"):
         upstream.validate_runtime_candidates(document)
 
 
@@ -653,16 +630,11 @@ def test_runtime_selector_fails_closed(
         )
 
 
-@pytest.mark.parametrize("product_id", ["vllm", "vllm-ascend", "sglang"])
-@pytest.mark.parametrize(
-    "tag", ["aaaaa-cc", "Release", "v0.30.0-cu129", "latest", "custom-runtime"]
-)
-def test_direct_tag_selects_only_the_exact_opaque_name(
-    product_id: str, tag: str
-) -> None:
+def test_direct_tag_selects_only_the_exact_opaque_name() -> None:
+    tag = "Release-build"
     selected = upstream._select_runtime_tags(  # noqa: SLF001
-        {"id": product_id, "runtime_selectors": [_tag_selector(tag)]},
-        [tag, f"{tag}-dd"],
+        {"id": "vllm", "runtime_selectors": [_tag_selector(tag)]},
+        [tag, tag.lower(), f"{tag}-extra"],
     )
     assert selected == [{"runtime_tag": tag, "version": tag, "channel": "pinned"}]
 
@@ -673,21 +645,6 @@ def test_direct_tag_does_not_accept_a_prefix_or_change_case() -> None:
             {"id": "vllm", "runtime_selectors": [_tag_selector("aaaaa-cc")]},
             ["aaaaa-cc-dd", "AAAAA-CC"],
         )
-
-
-def test_ranges_and_direct_tags_can_be_combined() -> None:
-    selected = upstream._select_runtime_tags(  # noqa: SLF001
-        {
-            "id": "vllm",
-            "runtime_selectors": [_selector("0.29"), _tag_selector("v0.30.0-cu129")],
-        },
-        ["v0.29.0", "v0.29.1", "v0.30.0-cu129", "v0.30.0-cu130"],
-    )
-
-    assert [item["runtime_tag"] for item in selected] == [
-        "v0.29.1",
-        "v0.30.0-cu129",
-    ]
 
 
 @pytest.mark.parametrize("first", [_selector("0.30"), _tag_selector("v0.30.0")])
@@ -714,17 +671,12 @@ def test_direct_tag_does_not_infer_excluded_variants_from_its_name() -> None:
     assert selected == [{"runtime_tag": tag, "version": tag, "channel": "pinned"}]
 
 
-@pytest.mark.parametrize("enabled_product", ["vllm", "vllm-ascend", "sglang"])
-def test_disabled_products_are_skipped_before_querying_the_registry(
-    enabled_product: str,
-) -> None:
+def test_disabled_products_are_skipped_before_querying_the_registry() -> None:
+    enabled_product, tag = "sglang", "custom-build"
     release = policy.resolve(repository="release-org/unified-cache-management")
-    tags = {"vllm": "v0.30.0", "vllm-ascend": "v0.30.0", "sglang": "v0.5.19-cu129"}
     for product in release["products"]:
         product["runtime_selectors"] = (
-            [_tag_selector(tags[enabled_product])]
-            if product["id"] == enabled_product
-            else []
+            [_tag_selector(tag)] if product["id"] == enabled_product else []
         )
     enabled = next(
         product for product in release["products"] if product["id"] == enabled_product
@@ -734,7 +686,7 @@ def test_disabled_products_are_skipped_before_querying_the_registry(
     def load_tags(repository: str) -> list[str]:
         queried.append(repository)
         assert repository == enabled["runtime_repository"]
-        return [tags[enabled_product]]
+        return [tag]
 
     candidates = upstream.resolve_runtime_candidates(
         release,

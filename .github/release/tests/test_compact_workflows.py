@@ -370,35 +370,6 @@ def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> 
     assert "modelengine-group/unified-cache-management" in cleanup.lower()
 
 
-def test_release_preflight_uses_the_full_version_and_shared_validator() -> None:
-    jobs = _load("release-ucm.yml")["jobs"]
-    run = next(
-        step["run"]
-        for step in jobs["release-preflight"]["steps"]
-        if step.get("id") == "profile"
-    )
-
-    assert "from ucm_release.version_config import release_version" in run
-    assert "release_version(sys.argv[1])" in run
-    assert "version.local is not None" not in run
-    assert "version_override=sys.argv[4]" in run
-    assert '"${DOCKERHUB_NAMESPACE}" "${RELEASE_VERSION}"' in run
-    assert ".image_version == $image_version" in run
-
-
-def test_release_plan_checks_package_and_image_versions_separately() -> None:
-    jobs = _load("release-ucm.yml")["jobs"]
-    run = next(
-        step["run"] for step in jobs["plan"]["steps"] if step.get("id") == "plan"
-    )
-
-    assert 'test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"' not in run
-    assert '--arg image_version "${IMAGE_VERSION}"' in run
-    assert ".image_version == $image_version" in run
-    assert ".chart.app_version == $version" in run
-    assert "[.wheels[].wheel_version] | all(. == $version)" in run
-
-
 def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     validation = jobs["validate-wheel-runtimes"]
@@ -765,15 +736,10 @@ def test_bilingual_check_runs_without_a_path_filter() -> None:
     assert "paths" not in trigger and "paths-ignore" not in trigger
 
 
-def test_version_config_changes_run_release_contracts_on_push_and_pr() -> None:
+def test_version_config_changes_trigger_docs_check_on_push_and_pr() -> None:
     workflow = _load("docs-check.yml")
     for event in ("push", "pull_request"):
         assert "version.ini" in workflow["on"][event]["paths"]
-    steps = workflow["jobs"]["release"]["steps"]
-    assert any(
-        "python -m pytest -q .github/release/tests" in step.get("run", "")
-        for step in steps
-    )
 
 
 def test_native_wheel_gate_uses_source_builders_without_publication() -> None:

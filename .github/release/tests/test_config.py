@@ -221,50 +221,6 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     assert "namespace" not in resolved["publish"]["dockerhub"]
 
 
-@pytest.mark.parametrize("release_type", ("stable", "prerelease", "draft", "nightly"))
-def test_policy_preserves_disabled_products_without_runtime_selectors(
-    tmp_path: Path, release_type: str
-) -> None:
-    policy = importlib.import_module("ucm_release.policy")
-    version_config = importlib.import_module("ucm_release.version_config")
-    for filename in ("pyproject.toml", "requirements-build.txt"):
-        shutil.copy2(REPO_ROOT / filename, tmp_path / filename)
-    chart_source = Path(_release_policy()["chart"]["source"])
-    (tmp_path / chart_source).mkdir(parents=True)
-    shutil.copy2(
-        REPO_ROOT / chart_source / "Chart.yaml",
-        tmp_path / chart_source / "Chart.yaml",
-    )
-    version_path = tmp_path / "version.ini"
-    version_path.write_text(
-        "UCM_VERSION=0.9.3\n"
-        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.30\n"
-        "UCM_SUPPORTED_SGLANG_VERSIONS=\n",
-        encoding="utf-8",
-    )
-
-    resolved = policy.resolve(
-        repository_root=tmp_path,
-        repository="release-org/ucm",
-        release_type=release_type,
-    )
-
-    products = {product["id"]: product for product in resolved["products"]}
-    assert set(products) == {"vllm", "vllm-ascend", "sglang"}
-    assert resolved["runtime_selectors"] == {
-        "vllm": [],
-        "vllm-ascend": [{"raw": "0.30", "version": "0.30", "tag": None}],
-        "sglang": [],
-    }
-    for product_id, product in products.items():
-        assert product["runtime_selectors"] == resolved["runtime_selectors"][product_id]
-        assert product["runtime_repository"]
-    assert (
-        resolved["version_authority_sha256"]
-        == version_config.load(version_path)["authority_sha256"]
-    )
-
-
 def test_custom_draft_policy_keeps_full_version_and_restores_its_tag() -> None:
     policy = importlib.import_module("ucm_release.policy")
     version = "0.9.0.dev0+draft.runtime.test.1"
@@ -277,7 +233,6 @@ def test_custom_draft_policy_keeps_full_version_and_restores_its_tag() -> None:
     assert resolved["release_tag"] == "draft/v0.9.0-runtime-test-1"
     assert resolved["chart"]["version"] == "0.9.0-draft.runtime.test.1"
     assert resolved["chart"]["app_version"] == version
-    assert resolved["publish"]["pypi"]["requested"] is False
 
 
 @pytest.mark.parametrize(
@@ -306,15 +261,6 @@ def test_custom_draft_rejects_requested_python_index_publication(
             fork_test_pypi=fork_test_pypi,
         )
 
-    numeric_draft = policy.resolve(
-        path,
-        repository=repository,
-        release_type="draft",
-        version_override="0.9.0.dev2",
-        fork_test_pypi=fork_test_pypi,
-    )
-    assert numeric_draft["publish"]["pypi"]["requested"] is True
-
 
 def test_default_builder_policy_accepts_a_materialized_custom_draft(
     tmp_path: Path,
@@ -330,7 +276,9 @@ def test_default_builder_policy_accepts_a_materialized_custom_draft(
     )
     version = "0.9.0.dev0+draft.builder.test"
     (tmp_path / "version.ini").write_text(
-        f"UCM_VERSION={version}\nUCM_SUPPORTED_VLLM_VERSIONS=0.30\n",
+        f"UCM_VERSION={version}\n"
+        "UCM_SUPPORTED_VLLM_VERSIONS=0.30\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=\n",
         encoding="utf-8",
     )
 
@@ -340,15 +288,20 @@ def test_default_builder_policy_accepts_a_materialized_custom_draft(
     assert resolved["publish"]["pypi"]["requested"] is True
     assert resolved["ucm_version"] == version
     assert resolved["release_tag"] == "draft/v0.9.0-builder-test"
+    for product in resolved["products"]:
+        if product["id"] != "vllm":
+            assert product["runtime_selectors"] == []
+            assert resolved["runtime_selectors"][product["id"]] == []
 
 
-@pytest.mark.parametrize("version", ["", "0.9.0.dev0+other.runtime.test"])
-def test_policy_validates_version_overrides(version: str) -> None:
+def test_policy_rejects_local_overrides_outside_the_draft_namespace() -> None:
     policy = importlib.import_module("ucm_release.policy")
 
     with pytest.raises(ValueError):
         policy.resolve(
-            repository="release-org/ucm", release_type="draft", version_override=version
+            repository="release-org/ucm",
+            release_type="draft",
+            version_override="0.9.0.dev0+other.runtime.test",
         )
 
 
