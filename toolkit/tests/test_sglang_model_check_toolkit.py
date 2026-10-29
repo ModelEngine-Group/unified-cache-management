@@ -48,9 +48,12 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
     def test_help_is_lazy(self):
         registry.init_builtin_tools()
         output = io.StringIO()
-        with patch(
-            "ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec"
-        ) as find_spec, redirect_stdout(output):
+        with (
+            patch(
+                "ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec"
+            ) as find_spec,
+            redirect_stdout(output),
+        ):
             result = main(["run", "sglang-model-check", "--help"])
         self.assertEqual(result, 0)
         self.assertIn("without starting a service", output.getvalue())
@@ -81,20 +84,45 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(env["UCM_LOG_LEVEL"], "warning")
 
     @patch("ucm_toolkit.tools.sglang_model_check.adapter.run_command", return_value=0)
-    @patch("ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec", return_value=object())
+    @patch(
+        "ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec",
+        return_value=object(),
+    )
     def test_cli_overrides_are_preserved_in_child_config(self, find_spec, run_command):
         import json
+
         from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
 
-        SglangModelCheckTool().run([
-            "--model", "model", "--mode", "roundtrip", "--storage-backends", "/tmp/check",
-            "--page-size", "256", "--pages", "5", "--max-host-mib", "2048",
-            "--layout", "page_first_direct", "--no-trust-remote-code", "--fp4-indexer",
-        ])
+        SglangModelCheckTool().run(
+            [
+                "--model",
+                "model",
+                "--mode",
+                "roundtrip",
+                "--storage-backends",
+                "/tmp/check",
+                "--page-size",
+                "256",
+                "--pages",
+                "5",
+                "--max-host-mib",
+                "2048",
+                "--layout",
+                "page_first_direct",
+                "--no-trust-remote-code",
+                "--fp4-indexer",
+            ]
+        )
         config = json.loads(run_command.call_args.kwargs["env"][CONFIG_ENV])
-        for key, value in {"page_size": 256, "pages": 5, "max_host_mib": 2048,
-                           "layout": "page_first_direct", "trust_remote_code": False,
-                           "fp4_indexer": True, "storage_backends": "/tmp/check"}.items():
+        for key, value in {
+            "page_size": 256,
+            "pages": 5,
+            "max_host_mib": 2048,
+            "layout": "page_first_direct",
+            "trust_remote_code": False,
+            "fp4_indexer": True,
+            "storage_backends": "/tmp/check",
+        }.items():
             self.assertEqual(config[key], value)
         self.assertNotIn("help_all", config)
 
@@ -115,16 +143,24 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
             self.assertEqual("--c128-page-size" in output.getvalue(), visible)
 
     @patch("ucm_toolkit.tools.sglang_model_check.adapter.run_command", return_value=0)
-    @patch("ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec", return_value=object())
+    @patch(
+        "ucm_toolkit.tools.sglang_model_check.adapter.importlib.util.find_spec",
+        return_value=object(),
+    )
     def test_default_inspect_and_explicit_roundtrip(self, find_spec, run_command):
         import json
+
         from ucm_toolkit.tools.sglang_model_check.adapter import SglangModelCheckTool
 
-        for options, expected in (([], "inspect"),
-                                  (["--storage-backends", "/tmp/ucm"], "inspect"),
-                                  (["--storage-backends", "/tmp/ucm", "--mode", "roundtrip"], "roundtrip"),
-                                  (["--storage-backends", "/tmp/ucm", "--mode", "inspect"], "inspect")):
-            self.assertEqual(SglangModelCheckTool().run(["--model", "model"] + options), 0)
+        for options, expected in (
+            ([], "inspect"),
+            (["--storage-backends", "/tmp/ucm"], "inspect"),
+            (["--storage-backends", "/tmp/ucm", "--mode", "roundtrip"], "roundtrip"),
+            (["--storage-backends", "/tmp/ucm", "--mode", "inspect"], "inspect"),
+        ):
+            self.assertEqual(
+                SglangModelCheckTool().run(["--model", "model"] + options), 0
+            )
             config = json.loads(run_command.call_args.kwargs["env"][CONFIG_ENV])
             self.assertEqual(config["mode"], expected)
             self.assertEqual(config["page_size"], 0)
@@ -162,22 +198,41 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
     def test_model_requirements_select_primary_and_side_pools(self):
         for facts, pools, api in (
             ({"attention_arch": "MLA"}, ("kv",), "v1"),
-            ({"attention_arch": "MHA", "has_linear_attention": True}, ("kv", "mamba"), "v2"),
-            ({"attention_arch": "MHA", "has_linear_attention": True, "is_hybrid_swa": True},
-             ("kv", "mamba", "swa"), "v2"),
+            (
+                {"attention_arch": "MHA", "has_linear_attention": True},
+                ("kv", "mamba"),
+                "v2",
+            ),
+            (
+                {
+                    "attention_arch": "MHA",
+                    "has_linear_attention": True,
+                    "is_hybrid_swa": True,
+                },
+                ("kv", "mamba", "swa"),
+                "v2",
+            ),
         ):
             with self.subTest(facts=facts):
                 requirements = requirements_from_facts(facts)
-                self.assertEqual((requirements.pool_names, requirements.storage_api), (pools, api))
+                self.assertEqual(
+                    (requirements.pool_names, requirements.storage_api), (pools, api)
+                )
                 self.assertEqual(requirements.is_mla, facts["attention_arch"] == "MLA")
 
     def test_hybrid_contract_requires_v1_anchor_and_v2_side_pools(self):
         requirements = requirements_from_facts(
             {"attention_arch": "MHA", "has_linear_attention": True}
         )
-        for available, missing in ((["v2"], ["storage API v1"]),
-                                   (["v1"], ["storage API v2"]), (["v1", "v2"], [])):
-            self.assertEqual(find_missing_capabilities(requirements, {"api_versions": available}), missing)
+        for available, missing in (
+            (["v2"], ["storage API v1"]),
+            (["v1"], ["storage API v2"]),
+            (["v1", "v2"], []),
+        ):
+            self.assertEqual(
+                find_missing_capabilities(requirements, {"api_versions": available}),
+                missing,
+            )
 
     def test_v2_results_accept_enum_like_and_string_pool_keys(self):
         class Pool(str):
@@ -187,9 +242,7 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
                 return self.value
 
         pool = Pool("mamba")
-        _require_page_results(
-            {"mamba": [True, True]}, [pool], 2, "LOAD_FAILED", "load"
-        )
+        _require_page_results({"mamba": [True, True]}, [pool], 2, "LOAD_FAILED", "load")
 
     def test_v2_page_failure_reports_pool_name(self):
         with self.assertRaises(CheckFailure) as raised:
@@ -248,7 +301,9 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertTrue(any("host layout" in item for item in missing))
 
     def test_meta_module_detection_keeps_shortconv_and_does_not_mutate_facts(self):
-        from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import refine_facts_from_model
+        from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import (
+            refine_facts_from_model,
+        )
 
         shortconv = type("ShortConv", (), {})()
         model = SimpleNamespace(named_modules=lambda: [("state", shortconv)])
@@ -259,9 +314,7 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(facts["detection_sources"], {})
 
     def test_nvfp4_is_reported_as_cuda_specific(self):
-        self.assertEqual(
-            supported_platforms_for_quantization("modelopt_fp4"), ["cuda"]
-        )
+        self.assertEqual(supported_platforms_for_quantization("modelopt_fp4"), ["cuda"])
         self.assertEqual(supported_platforms_for_quantization("NVFP4"), ["cuda"])
         self.assertIsNone(supported_platforms_for_quantization("awq"))
 
@@ -275,7 +328,9 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         }
         result.roundtrip = {}
         summary = result.to_dict()
-        self.assertEqual(set(summary), {"model", "mode", "status", "summary", "code", "suggestion"})
+        self.assertEqual(
+            set(summary), {"model", "mode", "status", "summary", "code", "suggestion"}
+        )
         self.assertEqual(summary["summary"], "ImportError: missing helper")
         self.assertNotIn("model_info", summary)
         self.assertNotIn("roundtrip", summary)
@@ -307,7 +362,11 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertFalse(result.supported)
         self.assertEqual(result.status, "inconclusive")
 
-        for code in ("ENVIRONMENT_UNSUPPORTED", "META_MODEL_INIT_UNSUPPORTED", "CHECKER_MEMORY_LIMIT"):
+        for code in (
+            "ENVIRONMENT_UNSUPPORTED",
+            "META_MODEL_INIT_UNSUPPORTED",
+            "CHECKER_MEMORY_LIMIT",
+        ):
             result.fail(code, "probe", "unable to validate")
             self.assertEqual(result.status, "inconclusive")
 

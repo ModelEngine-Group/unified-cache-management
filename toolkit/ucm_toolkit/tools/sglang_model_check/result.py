@@ -37,7 +37,8 @@ class CheckResult:
         self.supported = False
         self.status = (
             "inconclusive"
-            if code in {
+            if code
+            in {
                 "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
                 "CHECKER_STORAGE_PROBE_REQUIRED",
                 "CHECKER_HOST_POOL_API_UNSUPPORTED",
@@ -68,8 +69,10 @@ class CheckResult:
                 if self.validation.get("meta_model") == "passed":
                     message = "Model structure and UCM storage checks passed."
                 if self.validation.get("scope") == "tp_pp_host_storage_contract":
-                    message = (f"TP={self.validation['tp_size']} PP={self.validation['pp_size']}: "
-                               "structure, communication and UCM storage checks passed.")
+                    message = (
+                        f"TP={self.validation['tp_size']} PP={self.validation['pp_size']}: "
+                        "structure, communication and UCM storage checks passed."
+                    )
         summary = {
             "model": self.model,
             "mode": self.mode,

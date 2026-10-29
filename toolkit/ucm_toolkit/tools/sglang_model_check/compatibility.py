@@ -57,10 +57,13 @@ def requirements_from_facts(
         is_mla=attention_arch == "MLA",
         is_hybrid=is_hybrid,
         probe_fidelity=(
-            "sglang_native_pool_provider" if "indexer" in pools or facts.get("is_deepseek_v4") else
-            "config_derived_host_pools"
-            if is_hybrid and set(pools) <= {"kv", "swa", "mamba"}
-            else "runtime_pool_required" if is_hybrid else "real_host_pool"
+            "sglang_native_pool_provider"
+            if "indexer" in pools or facts.get("is_deepseek_v4")
+            else (
+                "config_derived_host_pools"
+                if is_hybrid and set(pools) <= {"kv", "swa", "mamba"}
+                else "runtime_pool_required" if is_hybrid else "real_host_pool"
+            )
         ),
     )
 
@@ -89,9 +92,13 @@ def find_missing_capabilities(
     caps = normalize_capabilities(capabilities)
     missing: list[str] = []
     if requirements.host_layout not in {"page_first", "page_first_direct"}:
-        missing.append(f"UCM host layout {requirements.host_layout!r}; expected page_first or page_first_direct")
+        missing.append(
+            f"UCM host layout {requirements.host_layout!r}; expected page_first or page_first_direct"
+        )
     if requirements.attention_arch not in {"MHA", "MLA"}:
-        missing.append(f"unrecognized attention architecture {requirements.attention_arch!r}")
+        missing.append(
+            f"unrecognized attention architecture {requirements.attention_arch!r}"
+        )
     # SGLang's hybrid path stores the anchor pool through v1 and side pools
     # through v2, so a v2 model requires both contracts.
     required_apis = ("v1", "v2") if requirements.storage_api == "v2" else ("v1",)
@@ -112,8 +119,7 @@ def infer_capabilities(storage_cls: type[Any], base_cls: type[Any]) -> dict[str,
     if overridden("batch_get_v1") and overridden("batch_set_v1"):
         versions.append("v1")
     if all(
-        overridden(name)
-        for name in ("batch_exists_v2", "batch_get_v2", "batch_set_v2")
+        overridden(name) for name in ("batch_exists_v2", "batch_get_v2", "batch_set_v2")
     ):
         versions.append("v2")
     return normalize_capabilities(

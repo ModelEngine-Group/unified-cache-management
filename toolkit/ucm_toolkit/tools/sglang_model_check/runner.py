@@ -130,35 +130,47 @@ def _meta_device_guard(torch: Any) -> Iterator[None]:
 def _check_meta_model(model_config: Any, *, use_current_context: bool = False) -> Any:
     import torch
     from sglang.srt.configs.load_config import LoadConfig
+    from sglang.srt.model_executor.model_runner_components.layer_setup import (
+        resolve_layer_indices,
+    )
     from sglang.srt.model_loader.loader import (
         _get_quantization_config,
         _initialize_model,
     )
-    from sglang.srt.model_executor.model_runner_components.layer_setup import (
-        resolve_layer_indices,
-    )
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
     from .sglang_compat import server_args_guard
 
     load_config = LoadConfig()
     old_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(model_config.dtype)
-        context = (contextlib.nullcontext() if use_current_context else
-                   server_args_guard(model_path=model_config.model_path, revision=model_config.revision))
+        context = (
+            contextlib.nullcontext()
+            if use_current_context
+            else server_args_guard(
+                model_path=model_config.model_path, revision=model_config.revision
+            )
+        )
         with context:
             quant_config = _get_quantization_config(model_config, load_config)
             with _single_rank_model_parallel():
                 with torch.device("meta"), _meta_device_guard(torch):
                     model = _initialize_model(model_config, load_config, quant_config)
                 layer_args = dict(
-                    model=model, model_config=model_config,
-                    is_draft_worker=False, spec_algorithm=SpeculativeAlgorithm.NONE,
+                    model=model,
+                    model_config=model_config,
+                    is_draft_worker=False,
+                    spec_algorithm=SpeculativeAlgorithm.NONE,
                 )
                 parameters = inspect.signature(resolve_layer_indices).parameters
-                resolve_layer_indices(**{
-                    key: value for key, value in layer_args.items() if key in parameters
-                })
+                resolve_layer_indices(
+                    **{
+                        key: value
+                        for key, value in layer_args.items()
+                        if key in parameters
+                    }
+                )
                 return model
     except Exception as exc:
         raise CheckFailure(
@@ -198,8 +210,12 @@ def _make_storage_config(config: CheckConfig, requirements: Any) -> Any:
 
 
 def _make_host_pool(
-    model_config: Any, requirements: Any, config: CheckConfig, pool_spec: Any = None,
-    *, layer_start: int = 0,
+    model_config: Any,
+    requirements: Any,
+    config: CheckConfig,
+    pool_spec: Any = None,
+    *,
+    layer_start: int = 0,
 ) -> Any:
     layer_num = int(
         max(
@@ -223,14 +239,17 @@ def _make_host_pool(
             or model_config.num_attention_heads
         )
         head_dim = int(model_config.head_dim)
-        v_head_dim = int(getattr(model_config, "v_head_dim", None) or model_config.head_dim)
+        v_head_dim = int(
+            getattr(model_config, "v_head_dim", None) or model_config.head_dim
+        )
         if pool_spec is not None:
             head_num = pool_spec.head_num
             head_dim = pool_spec.head_dim
             v_head_dim = pool_spec.v_head_dim
         if head_dim != v_head_dim:
             raise CheckFailure(
-                "UCM_POOL_GEOMETRY_UNSUPPORTED", "host_pool",
+                "UCM_POOL_GEOMETRY_UNSUPPORTED",
+                "host_pool",
                 "UCM primary v1 stores equal-size K/V components; asymmetric K/V requires a production adapter change",
             )
 
@@ -240,7 +259,8 @@ def _make_host_pool(
     estimated = size * layer_num * width * model_config.dtype.itemsize * 8
     if estimated > config.max_host_mib * 1024 * 1024:
         raise CheckFailure(
-            "CHECKER_MEMORY_LIMIT", "host_pool",
+            "CHECKER_MEMORY_LIMIT",
+            "host_pool",
             f"estimated probe memory {estimated} bytes exceeds --max-host-mib={config.max_host_mib}; reduce --pages/--page-size",
         )
 
@@ -253,23 +273,36 @@ def _make_host_pool(
             from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
             native = MLATokenToKVPool(
-                size=size, page_size=config.page_size,
-                dtype=model_config.dtype, kv_lora_rank=kv_lora_rank,
-                qk_rope_head_dim=qk_rope_head_dim, layer_num=layer_num,
-                device="cpu", enable_memory_saver=False,
-                start_layer=layer_start, end_layer=layer_start + layer_num,
+                size=size,
+                page_size=config.page_size,
+                dtype=model_config.dtype,
+                kv_lora_rank=kv_lora_rank,
+                qk_rope_head_dim=qk_rope_head_dim,
+                layer_num=layer_num,
+                device="cpu",
+                enable_memory_saver=False,
+                start_layer=layer_start,
+                end_layer=layer_start + layer_num,
             )
         else:
             from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 
             native = MHATokenToKVPool(
-                size=size, page_size=config.page_size,
-                dtype=model_config.dtype, head_num=head_num,
-                head_dim=head_dim, layer_num=layer_num,
-                device="cpu", enable_memory_saver=False,
-                start_layer=layer_start, end_layer=layer_start + layer_num, enable_alt_stream=False,
+                size=size,
+                page_size=config.page_size,
+                dtype=model_config.dtype,
+                head_num=head_num,
+                head_dim=head_dim,
+                layer_num=layer_num,
+                device="cpu",
+                enable_memory_saver=False,
+                start_layer=layer_start,
+                end_layer=layer_start + layer_num,
+                enable_alt_stream=False,
             )
-        return _host_from_device(native, config.page_size, config.layout, is_mla=requirements.is_mla)
+        return _host_from_device(
+            native, config.page_size, config.layout, is_mla=requirements.is_mla
+        )
     except CheckFailure:
         raise
     except Exception as exc:
@@ -370,8 +403,11 @@ def _roundtrip_v1(
     for probe, expected_hits in (([miss, *keys], 0), ([*keys, miss], config.pages)):
         actual = storage.batch_exists(probe)
         if actual != expected_hits:
-            raise CheckFailure("LOOKUP_CONTRACT_MISMATCH", "roundtrip_exists",
-                               f"expected prefix {expected_hits}, got {actual}")
+            raise CheckFailure(
+                "LOOKUP_CONTRACT_MISMATCH",
+                "roundtrip_exists",
+                f"expected prefix {expected_hits}, got {actual}",
+            )
     loaded = storage.batch_get_v1(keys, target_indices)
     if len(loaded) != config.pages or not all(loaded):
         raise CheckFailure("LOAD_FAILED", "roundtrip_load", repr(loaded))
@@ -380,8 +416,11 @@ def _roundtrip_v1(
         target = _pool_page_views(host_pool, "kv", config.pages + page)
         for index, (expected, actual) in enumerate(zip(components, target)):
             if not torch.equal(expected, actual):
-                raise CheckFailure("ROUNDTRIP_MISMATCH", "roundtrip_compare",
-                                   f"kv page={page} component={index} differs")
+                raise CheckFailure(
+                    "ROUNDTRIP_MISMATCH",
+                    "roundtrip_compare",
+                    f"kv page={page} component={index} differs",
+                )
             bytes_compared += expected.numel() * expected.element_size()
     return {
         "pages_written": config.pages,
@@ -400,6 +439,7 @@ def _roundtrip_v2(
     """Exercise real side pools with their own page units and sparse windows."""
     import torch
     from sglang.srt.mem_cache.hicache_storage import PoolHitPolicy, PoolTransfer
+
     from .pool_probe import checkpoint_pages, expected_prefixes, persisted_positions
 
     anchor = pools["kv"]
@@ -407,14 +447,21 @@ def _roundtrip_v2(
     logical = specs["kv"].kind == "logical"
     totals = (
         {"pages_written": 0, "pages_loaded": 0, "bytes_compared": 0}
-        if logical else _roundtrip_v1(storage, anchor, keys, config)
+        if logical
+        else _roundtrip_v1(storage, anchor, keys, config)
     )
     if len(specs) == 1:
         if logical:
-            raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "roundtrip_prepare",
-                               "logical anchor has no physical payload pools")
-        totals.update(pool_names=["kv"], storage_api="v1_integrated_payload",
-                      pool_specs={"kv": specs["kv"].report()})
+            raise CheckFailure(
+                "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                "roundtrip_prepare",
+                "logical anchor has no physical payload pools",
+            )
+        totals.update(
+            pool_names=["kv"],
+            storage_api="v1_integrated_payload",
+            pool_specs={"kv": specs["kv"].report()},
+        )
         return totals
     windows = {spec.name: spec.window_pages for spec in pool_specs}
     written_positions = {"kv": set(range(config.pages))}
@@ -423,24 +470,39 @@ def _roundtrip_v2(
     snapshots = {}
 
     def descriptors(count, placeholders=False):
-        return [PoolTransfer(
-            name=_pool_name(name),
-            keys=(
-                ["__placeholder__"] * min(windows[name], count)
-                if placeholders and windows[name]
-                else keys[max(0, count - windows[name]):count] if windows[name]
-                else keys[:count]
-            ),
-            hit_policy=(PoolHitPolicy.TRAILING_PAGES if windows[name] else PoolHitPolicy.ALL_PAGES),
-        ) for name in specs if name != "kv"]
+        return [
+            PoolTransfer(
+                name=_pool_name(name),
+                keys=(
+                    ["__placeholder__"] * min(windows[name], count)
+                    if placeholders and windows[name]
+                    else (
+                        keys[max(0, count - windows[name]) : count]
+                        if windows[name]
+                        else keys[:count]
+                    )
+                ),
+                hit_policy=(
+                    PoolHitPolicy.TRAILING_PAGES
+                    if windows[name]
+                    else PoolHitPolicy.ALL_PAGES
+                ),
+            )
+            for name in specs
+            if name != "kv"
+        ]
 
     def check_lookup(query, transfers, expected):
         hit = storage.batch_exists_v2(query, transfers)
         actual_pages = int(getattr(hit, "kv_hit_pages", -1))
         actual_prefixes = getattr(hit, "restorable_prefix_pages", None)
-        if actual_pages != (max(expected) if expected else 0) or actual_prefixes != expected:
+        if (
+            actual_pages != (max(expected) if expected else 0)
+            or actual_prefixes != expected
+        ):
             raise CheckFailure(
-                "LOOKUP_CONTRACT_MISMATCH", "roundtrip_exists_v2",
+                "LOOKUP_CONTRACT_MISMATCH",
+                "roundtrip_exists_v2",
                 f"expected restorable={expected}, got {hit!r}",
             )
 
@@ -458,20 +520,31 @@ def _roundtrip_v2(
             target = _pool_page_views(pool, name, config.pages + page)
             snapshots[name, page] = []
             for component, (src, dst) in enumerate(zip(source, target)):
-                _fill_pattern(src, seed=20260909 + pool_number * 100003 + page * 101 + component)
+                _fill_pattern(
+                    src, seed=20260909 + pool_number * 100003 + page * 101 + component
+                )
                 snapshots[name, page].append(src.clone())
                 dst.zero_()
         page_size = int(pool.page_size)
-        source_indices = torch.tensor([
-            index for page in positions
-            for index in range(page * page_size, (page + 1) * page_size)
-        ], dtype=torch.int64)
+        source_indices = torch.tensor(
+            [
+                index
+                for page in positions
+                for index in range(page * page_size, (page + 1) * page_size)
+            ],
+            dtype=torch.int64,
+        )
         transfer_keys = [keys[page] for page in positions]
         source_transfers.append(
             PoolTransfer(
-                name=_pool_name(name), host_indices=source_indices,
+                name=_pool_name(name),
+                host_indices=source_indices,
                 keys=transfer_keys,
-                hit_policy=(PoolHitPolicy.TRAILING_PAGES if spec.window_pages else PoolHitPolicy.ALL_PAGES),
+                hit_policy=(
+                    PoolHitPolicy.TRAILING_PAGES
+                    if spec.window_pages
+                    else PoolHitPolicy.ALL_PAGES
+                ),
             )
         )
         target_transfers.append(
@@ -479,41 +552,75 @@ def _roundtrip_v2(
                 name=_pool_name(name),
                 host_indices=source_indices + config.pages * page_size,
                 keys=transfer_keys,
-                hit_policy=(PoolHitPolicy.TRAILING_PAGES if spec.window_pages else PoolHitPolicy.ALL_PAGES),
+                hit_policy=(
+                    PoolHitPolicy.TRAILING_PAGES
+                    if spec.window_pages
+                    else PoolHitPolicy.ALL_PAGES
+                ),
             )
         )
 
     written = storage.batch_set_v2(source_transfers)
     for transfer in source_transfers:
-        _require_page_results(written, [transfer.name], len(transfer.keys),
-                              "DUMP_FAILED", "roundtrip_dump_v2")
+        _require_page_results(
+            written,
+            [transfer.name],
+            len(transfer.keys),
+            "DUMP_FAILED",
+            "roundtrip_dump_v2",
+        )
     expected = expected_prefixes(config.pages, written_positions, windows)
     check_lookup(keys, descriptors(config.pages), expected)
     check_lookup(keys, descriptors(config.pages, True), expected)
     if config.pages > 1:
         shorter = config.pages - 1
-        check_lookup(keys[:shorter], descriptors(shorter, True),
-                     expected_prefixes(shorter, written_positions, windows))
-    check_lookup([f"missing-{uuid.uuid4().hex}" for _ in keys], descriptors(config.pages), [])
+        check_lookup(
+            keys[:shorter],
+            descriptors(shorter, True),
+            expected_prefixes(shorter, written_positions, windows),
+        )
+    check_lookup(
+        [f"missing-{uuid.uuid4().hex}" for _ in keys], descriptors(config.pages), []
+    )
     loaded = storage.batch_get_v2(target_transfers)
     for transfer in target_transfers:
-        _require_page_results(loaded, [transfer.name], len(transfer.keys),
-                              "LOAD_FAILED", "roundtrip_load_v2")
+        _require_page_results(
+            loaded,
+            [transfer.name],
+            len(transfer.keys),
+            "LOAD_FAILED",
+            "roundtrip_load_v2",
+        )
     for (name, page), components in snapshots.items():
         target = _pool_page_views(pools[name], name, config.pages + page)
         for component, (expected_data, actual) in enumerate(zip(components, target)):
             if not torch.equal(expected_data, actual):
-                raise CheckFailure("ROUNDTRIP_MISMATCH", "roundtrip_compare_v2",
-                                   f"{name} page={page} component={component} differs")
-            totals["bytes_compared"] += expected_data.numel() * expected_data.element_size()
+                raise CheckFailure(
+                    "ROUNDTRIP_MISMATCH",
+                    "roundtrip_compare_v2",
+                    f"{name} page={page} component={component} differs",
+                )
+            totals["bytes_compared"] += (
+                expected_data.numel() * expected_data.element_size()
+            )
     totals["pool_names"] = list(pools)
     totals["storage_api"] = "v2"
     totals["logical_anchor"] = logical
     totals["pool_specs"] = {name: spec.report() for name, spec in specs.items()}
-    totals["persisted_pages"] = {name: sorted(value) for name, value in written_positions.items()}
-    totals["restorable_prefix_pages"] = expected_prefixes(config.pages, written_positions, windows)
-    totals["checks"] = ["cold_side_miss", "exact_keys", "placeholder_keys",
-                        "shorter_prefix", "missing_primary", "component_data_compare"]
+    totals["persisted_pages"] = {
+        name: sorted(value) for name, value in written_positions.items()
+    }
+    totals["restorable_prefix_pages"] = expected_prefixes(
+        config.pages, written_positions, windows
+    )
+    totals["checks"] = [
+        "cold_side_miss",
+        "exact_keys",
+        "placeholder_keys",
+        "shorter_prefix",
+        "missing_primary",
+        "component_data_compare",
+    ]
     return totals
 
 
@@ -525,12 +632,17 @@ def _pool_page_views(pool: Any, name: str, page: int) -> list[Any]:
     lifetime of these views. No copies or fabricated generic KV buffers occur.
     """
     import ctypes
+
     import torch
+
     from ucm.integration.sglang.ucm_connector import SglangUcmConnector
 
     if str(pool.device).split(":")[0] != "cpu":
-        raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "page_metadata",
-                           "the storage probe accepts CPU host buffers only")
+        raise CheckFailure(
+            "CHECKER_HOST_POOL_API_UNSUPPORTED",
+            "page_metadata",
+            "the storage probe accepts CPU host buffers only",
+        )
     start = page * pool.page_size
     indices = torch.arange(start, start + pool.page_size, dtype=torch.int64)
     pointers, sizes = pool.get_page_buffer_meta(indices)
@@ -541,13 +653,19 @@ def _pool_page_views(pool: Any, name: str, page: int) -> list[Any]:
         if size == 0:
             continue
         if pointer <= 0 or size < 0:
-            raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "page_metadata",
-                               f"invalid {name} page pointer/size")
+            raise CheckFailure(
+                "CHECKER_HOST_POOL_API_UNSUPPORTED",
+                "page_metadata",
+                f"invalid {name} page pointer/size",
+            )
         array = (ctypes.c_ubyte * size).from_address(pointer)
         views.append(torch.frombuffer(array, dtype=torch.uint8))
     if not views:
-        raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "page_metadata",
-                           f"{name} has no physical page payload")
+        raise CheckFailure(
+            "CHECKER_HOST_POOL_API_UNSUPPORTED",
+            "page_metadata",
+            f"{name} has no physical page payload",
+        )
     return views
 
 
@@ -559,18 +677,29 @@ def _make_mamba_host_pool(spec: Any, config: CheckConfig) -> Any:
     capacity = config.pages * 2 + 1
     shape_prefix = (len(spec.layers), capacity)
     info = MambaStateBufferInfo(
-        temporal=torch.empty(shape_prefix + spec.temporal_shape,
-                             dtype=spec.temporal_dtype, device="cpu"),
-        conv=tuple(torch.empty(shape_prefix + shape, dtype=spec.conv_dtype,
-                               device="cpu") for shape in spec.conv_shapes),
+        temporal=torch.empty(
+            shape_prefix + spec.temporal_shape, dtype=spec.temporal_dtype, device="cpu"
+        ),
+        conv=tuple(
+            torch.empty(shape_prefix + shape, dtype=spec.conv_dtype, device="cpu")
+            for shape in spec.conv_shapes
+        ),
     )
     if "buffer_info" not in inspect.signature(MambaPoolHost).parameters:
-        raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "host_pool",
-                           "installed MambaPoolHost has no buffer_info constructor")
+        raise CheckFailure(
+            "CHECKER_HOST_POOL_API_UNSUPPORTED",
+            "host_pool",
+            "installed MambaPoolHost has no buffer_info constructor",
+        )
     return MambaPoolHost(
-        buffer_info=info, host_to_device_ratio=1.0, host_size=0,
-        device_capacity=capacity, pin_memory=False, device="cpu",
-        allocator_type="default", layout=config.layout,
+        buffer_info=info,
+        host_to_device_ratio=1.0,
+        host_size=0,
+        device_capacity=capacity,
+        pin_memory=False,
+        device="cpu",
+        allocator_type="default",
+        layout=config.layout,
     )
 
 
@@ -579,37 +708,59 @@ def _hybrid_specs(model_config: Any, requirements: Any, config: CheckConfig) -> 
     from .sglang_compat import environment_info
 
     try:
-        return build_pool_specs(model_config, requirements.pool_names,
-                                config.page_size, environment_info()["platform"])
-    except (PoolProbeUnavailable, AttributeError, ImportError, TypeError, ValueError,
-            RuntimeError, NotImplementedError) as exc:
-        raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "pool_description",
-                           f"{type(exc).__name__}: {exc}") from exc
+        return build_pool_specs(
+            model_config,
+            requirements.pool_names,
+            config.page_size,
+            environment_info()["platform"],
+        )
+    except (
+        PoolProbeUnavailable,
+        AttributeError,
+        ImportError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        NotImplementedError,
+    ) as exc:
+        raise CheckFailure(
+            "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+            "pool_description",
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
 
 
 def _roundtrip(
     config: CheckConfig, model_config: Any, requirements: Any
 ) -> dict[str, Any]:
-    from .native_probe import native_family, build_native_pools, ProbeMemoryLimit
+    from .native_probe import ProbeMemoryLimit, build_native_pools, native_family
     from .pool_probe import PoolProbeUnavailable
     from .sglang_compat import environment_info
 
     family = native_family(requirements)
-    specs = (_hybrid_specs(model_config, requirements, config)
-             if requirements.is_hybrid and not family else None)
+    specs = (
+        _hybrid_specs(model_config, requirements, config)
+        if requirements.is_hybrid and not family
+        else None
+    )
     if specs is not None:
         # Sum every pool before allocating any of them; per-pool limits alone
         # do not protect a hybrid model's aggregate memory footprint.
         estimate = sum(
             (config.pages * 2 + 2)
-            * spec.bytes_per_slot(model_config.dtype, config.page_size) * 8
+            * spec.bytes_per_slot(model_config.dtype, config.page_size)
+            * 8
             for spec in specs
         )
         if estimate > config.max_host_mib * 1024 * 1024:
-            raise CheckFailure("CHECKER_MEMORY_LIMIT", "host_pool",
-                               f"aggregate probe estimate {estimate} bytes exceeds --max-host-mib={config.max_host_mib}")
+            raise CheckFailure(
+                "CHECKER_MEMORY_LIMIT",
+                "host_pool",
+                f"aggregate probe estimate {estimate} bytes exceeds --max-host-mib={config.max_host_mib}",
+            )
 
     from sglang.srt.mem_cache.hicache_storage import HiCacheStorage
+
     from ucm.integration.sglang.unifiedcache_store import UnifiedCacheStore
 
     pools = {}
@@ -629,15 +780,30 @@ def _roundtrip(
             platform = environment_info()["platform"]
             try:
                 native_bundle = build_native_pools(
-                    model_config, requirements, config, platform,
+                    model_config,
+                    requirements,
+                    config,
+                    platform,
                     _native_cache_dtype(model_config, config, family, platform),
                 )
             except ProbeMemoryLimit as exc:
-                raise CheckFailure("CHECKER_MEMORY_LIMIT", "native_pool_construction", str(exc)) from exc
-            except (PoolProbeUnavailable, ImportError, AttributeError, TypeError,
-                    ValueError, RuntimeError, AssertionError) as exc:
-                raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "native_pool_construction",
-                                   f"{type(exc).__name__}: {exc}") from exc
+                raise CheckFailure(
+                    "CHECKER_MEMORY_LIMIT", "native_pool_construction", str(exc)
+                ) from exc
+            except (
+                PoolProbeUnavailable,
+                ImportError,
+                AttributeError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                AssertionError,
+            ) as exc:
+                raise CheckFailure(
+                    "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                    "native_pool_construction",
+                    f"{type(exc).__name__}: {exc}",
+                ) from exc
             pools, specs = native_bundle.pools, native_bundle.specs
         elif specs is None:
             pools["kv"] = _make_host_pool(model_config, requirements, config)
@@ -648,11 +814,13 @@ def _roundtrip(
 
                     pools[spec.name] = LogicalHostPool(
                         (config.pages * 2 + 2) * config.page_size,
-                        config.page_size, layout=config.layout,
+                        config.page_size,
+                        layout=config.layout,
                     )
                 else:
                     pools[spec.name] = (
-                        _make_mamba_host_pool(spec, config) if spec.kind == "mamba"
+                        _make_mamba_host_pool(spec, config)
+                        if spec.kind == "mamba"
                         else _make_host_pool(model_config, requirements, config, spec)
                     )
         host_pool = pools["kv"]
@@ -663,19 +831,15 @@ def _roundtrip(
                 for name, pool in pools.items():
                     storage.register_mem_host_pool_v2(pool, _pool_name(name))
         except (ValueError, NotImplementedError) as exc:
-            raise CheckFailure("UCM_POOL_REGISTRATION_UNSUPPORTED", "pool_registration", str(exc)) from exc
+            raise CheckFailure(
+                "UCM_POOL_REGISTRATION_UNSUPPORTED", "pool_registration", str(exc)
+            ) from exc
         salt = uuid.uuid4().hex
-        keys = [
-            f"sglang-model-check-{salt}-{index}" for index in range(config.pages)
-        ]
+        keys = [f"sglang-model-check-{salt}-{index}" for index in range(config.pages)]
         if requirements.storage_api == "v2":
-            totals = _roundtrip_v2(
-                storage, pools, keys, config, specs
-            )
+            totals = _roundtrip_v2(storage, pools, keys, config, specs)
         else:
-            totals = _roundtrip_v1(
-                storage, host_pool, keys, config
-            )
+            totals = _roundtrip_v1(storage, host_pool, keys, config)
             totals.update(pool_names=["kv"], storage_api="v1")
         totals["host_pool_classes"] = {
             name: type(pool).__name__ for name, pool in pools.items()
@@ -701,7 +865,9 @@ def _native_cache_dtype(model_config, config, family, platform):
     import torch
 
     if config.kv_cache_dtype != "auto":
-        name = {"fp8_e4m3": "float8_e4m3fn"}.get(config.kv_cache_dtype, config.kv_cache_dtype)
+        name = {"fp8_e4m3": "float8_e4m3fn"}.get(
+            config.kv_cache_dtype, config.kv_cache_dtype
+        )
         return getattr(torch, name)
     if family == "deepseek_v4":
         return torch.bfloat16 if platform == "ascend" else torch.float8_e4m3fn
@@ -720,10 +886,16 @@ def run(config: CheckConfig) -> CheckResult:
         "inference": "not_run",
     }
     try:
-        from .sglang_compat import environment_info, refine_facts_from_model, server_args_guard
         from sglang.srt.configs.model_config import ModelConfig
         from sglang.srt.mem_cache.hicache_storage import HiCacheStorage
+
         from ucm.integration.sglang.unifiedcache_store import UnifiedCacheStore
+
+        from .sglang_compat import (
+            environment_info,
+            refine_facts_from_model,
+            server_args_guard,
+        )
 
         model_config = ModelConfig(
             model_path=config.model,
@@ -741,21 +913,34 @@ def run(config: CheckConfig) -> CheckResult:
                 from sglang.srt.configs.model_config import get_dsa_index_kpool
 
                 physical_page = 1 if result.environment["platform"] == "rocm" else 64
-                automatic_page_size = physical_page * get_dsa_index_kpool(model_config.hf_config)
+                automatic_page_size = physical_page * get_dsa_index_kpool(
+                    model_config.hf_config
+                )
             config = replace(config, page_size=automatic_page_size)
         result.environment["probe_page_size"] = config.page_size
         result.environment["requested_kv_cache_dtype"] = config.kv_cache_dtype
 
         detected_platform = result.environment.get("platform")
         if config.platform != "auto" and config.platform != detected_platform:
-            raise CheckFailure("ENVIRONMENT_UNSUPPORTED", "platform_check",
-                               f"requested {config.platform!r}, detected {detected_platform!r}")
+            raise CheckFailure(
+                "ENVIRONMENT_UNSUPPORTED",
+                "platform_check",
+                f"requested {config.platform!r}, detected {detected_platform!r}",
+            )
         if config.layout not in {"page_first", "page_first_direct"}:
-            raise CheckFailure("UCM_LAYOUT_UNSUPPORTED", "capability_check",
-                               "UCM requires page_first or page_first_direct")
-        if facts["attention_arch"] == "MHA" and facts.get("head_dim") != facts.get("v_head_dim"):
-            raise CheckFailure("UCM_POOL_GEOMETRY_UNSUPPORTED", "capability_check",
-                               "UCM v1 primary K/V components require equal head dimensions")
+            raise CheckFailure(
+                "UCM_LAYOUT_UNSUPPORTED",
+                "capability_check",
+                "UCM requires page_first or page_first_direct",
+            )
+        if facts["attention_arch"] == "MHA" and facts.get("head_dim") != facts.get(
+            "v_head_dim"
+        ):
+            raise CheckFailure(
+                "UCM_POOL_GEOMETRY_UNSUPPORTED",
+                "capability_check",
+                "UCM v1 primary K/V components require equal head dimensions",
+            )
 
         supported_platforms = facts.get("supported_platforms")
         if supported_platforms and detected_platform not in supported_platforms:
@@ -790,8 +975,16 @@ def run(config: CheckConfig) -> CheckResult:
                 facts["resolved_sliding_window_size"] = model_config.sliding_window_size
             result.validation["meta_model"] = "passed"
 
-        unknown = [name for name in ("has_linear_attention", "is_dsa", "is_deepseek_v4", "is_minimax_sparse")
-                   if facts.get(name) is None]
+        unknown = [
+            name
+            for name in (
+                "has_linear_attention",
+                "is_dsa",
+                "is_deepseek_v4",
+                "is_minimax_sparse",
+            )
+            if facts.get(name) is None
+        ]
         if unknown:
             result.model_info = facts
             result.fail(
@@ -805,8 +998,11 @@ def run(config: CheckConfig) -> CheckResult:
 
         family = native_family(requirements)
         if config.kv_cache_dtype != "auto" and not family:
-            raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "cache_dtype",
-                               "explicit KV dtype needs a native cache provider for this family")
+            raise CheckFailure(
+                "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                "cache_dtype",
+                "explicit KV dtype needs a native cache provider for this family",
+            )
         capabilities = infer_capabilities(UnifiedCacheStore, HiCacheStorage)
         result.model_info = facts
         result.cache_requirements = requirements.to_dict()
@@ -826,9 +1022,12 @@ def run(config: CheckConfig) -> CheckResult:
 
         if config.mode == "roundtrip":
             cache_context = dict(
-                model_path=model_config.model_path, revision=model_config.revision,
-                page_size=config.page_size, hicache_mem_layout=config.layout,
-                hicache_ratio=1.0, hicache_size=0,
+                model_path=model_config.model_path,
+                revision=model_config.revision,
+                page_size=config.page_size,
+                hicache_mem_layout=config.layout,
+                hicache_ratio=1.0,
+                hicache_size=0,
                 kv_cache_dtype=config.kv_cache_dtype,
             )
             if family == "deepseek_v4":
@@ -842,9 +1041,13 @@ def run(config: CheckConfig) -> CheckResult:
             result.cache_requirements["pool_names"] = result.roundtrip["pool_names"]
             result.validation["storage_io"] = "passed"
             result.validation["runtime_pools"] = (
-                "sglang_native_host_pools" if family else
-                "config_derived_specialized_host_pools" if requirements.is_hybrid
-                else "single_pool_host_only"
+                "sglang_native_host_pools"
+                if family
+                else (
+                    "config_derived_specialized_host_pools"
+                    if requirements.is_hybrid
+                    else "single_pool_host_only"
+                )
             )
             result.succeed("roundtrip", "UCM dump/load data matched")
         else:
@@ -854,8 +1057,13 @@ def run(config: CheckConfig) -> CheckResult:
                     result.validation["pool_description"] = "native_provider_available"
                     result.cache_requirements["native_provider"] = family
                 else:
-                    with server_args_guard(model_path=model_config.model_path,
-                                           revision=model_config.revision), _single_rank_model_parallel():
+                    with (
+                        server_args_guard(
+                            model_path=model_config.model_path,
+                            revision=model_config.revision,
+                        ),
+                        _single_rank_model_parallel(),
+                    ):
                         specs = _hybrid_specs(model_config, requirements, config)
                     result.cache_requirements["pool_specs"] = {
                         spec.name: spec.report() for spec in specs

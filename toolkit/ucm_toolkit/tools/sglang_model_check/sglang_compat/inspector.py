@@ -44,8 +44,17 @@ def server_args_guard(*, single_rank=True, **fields):
         # Building a singleton TP group alone does not populate tp_rank, etc.
         # Read declarations statically: reading an unset rank property raises.
         # Older contexts without declared rank properties retain their old path.
-        for prefix in ("tp", "pp", "attn_tp", "attn_cp", "moe_ep",
-                       "moe_dp", "moe_tp", "dcp", "attn_dcp"):
+        for prefix in (
+            "tp",
+            "pp",
+            "attn_tp",
+            "attn_cp",
+            "moe_ep",
+            "moe_dp",
+            "moe_tp",
+            "dcp",
+            "attn_dcp",
+        ):
             rank = f"{prefix}_rank"
             if inspect.getattr_static(parallel, rank, None) is not None:
                 values[rank] = 0
@@ -98,9 +107,7 @@ def _linear_attention(model_config: Any):
         if value:
             return True, "linear_attn_registry_result", None
 
-    function = _optional_callable(
-        "sglang.srt.configs.hybrid_arch", "mambaish_config"
-    )
+    function = _optional_callable("sglang.srt.configs.hybrid_arch", "mambaish_config")
     if function is not None:
         try:
             value = function(model_config)
@@ -121,7 +128,11 @@ def _linear_attention(model_config: Any):
                 mamba_error,
             )
         except Exception as exc:
-            return None, "uses_kda_attention", f"{mamba_error}; {type(exc).__name__}: {exc}"
+            return (
+                None,
+                "uses_kda_attention",
+                f"{mamba_error}; {type(exc).__name__}: {exc}",
+            )
 
     text_config = model_config.hf_text_config
     indicators = (
@@ -196,7 +207,9 @@ def collect_model_facts(model_config: Any) -> dict[str, Any]:
     except Exception:
         pool_names = []
 
-    errors = [item for item in (linear_error, dsa_error, dsv4_error, minimax_error) if item]
+    errors = [
+        item for item in (linear_error, dsa_error, dsv4_error, minimax_error) if item
+    ]
     quantization = getattr(model_config, "quantization", None)
     return {
         "architectures": architectures,
@@ -207,11 +220,18 @@ def collect_model_facts(model_config: Any) -> dict[str, Any]:
         "is_dsa": dsa,
         "is_deepseek_v4": dsv4,
         "is_minimax_sparse": minimax,
-        "num_layers": int(max(getattr(model_config, "num_hidden_layers", 0), getattr(model_config, "num_attention_layers", 0))),
+        "num_layers": int(
+            max(
+                getattr(model_config, "num_hidden_layers", 0),
+                getattr(model_config, "num_attention_layers", 0),
+            )
+        ),
         "dtype": str(model_config.dtype),
         "quantization": quantization,
         "head_dim": getattr(model_config, "head_dim", None),
-        "v_head_dim": getattr(model_config, "v_head_dim", getattr(model_config, "head_dim", None)),
+        "v_head_dim": getattr(
+            model_config, "v_head_dim", getattr(model_config, "head_dim", None)
+        ),
         "supported_platforms": supported_platforms_for_quantization(quantization),
         "sglang_pool_names": pool_names,
         "detection_sources": {
