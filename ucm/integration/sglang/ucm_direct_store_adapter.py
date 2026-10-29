@@ -87,13 +87,6 @@ class UcmDirectStoreAdapter:
         self._connector_name = connector_name
         self._module_path = module_path
         self._identity = dict(identity)
-        self._logger = (
-            logger
-            if int(self._identity.get("tp_rank", 0)) == 0
-            else logging.Logger(__name__)
-        )
-        if int(self._identity.get("tp_rank", 0)) != 0:
-            self._logger.disabled = True
         self._store_config = copy.deepcopy(store_config)
         # Cache's D2H stream waits on this CUDA event before reading KV data.
         # Other connectors/pipelines have not established that contract.
@@ -107,7 +100,7 @@ class UcmDirectStoreAdapter:
         try:
             self.load_prefetch_layers = min(8, max(0, int(prefetch_layers_config)))
         except (TypeError, ValueError):
-            self._logger.warning(
+            logger.warning(
                 "Invalid sglang_load_prefetch_layers=%r; fallback to 2.",
                 prefetch_layers_config,
             )
@@ -223,7 +216,7 @@ class UcmDirectStoreAdapter:
         for group in order[:leftover]:
             capacities[group] += 1
         for group in weights:
-            self._logger.info(
+            logger.info(
                 "SGLang UCM GC capacity group=%s estimated_bytes=%d "
                 "capacity_gb=%d minimum_gb=%d",
                 group,
@@ -273,7 +266,7 @@ class UcmDirectStoreAdapter:
                 )
                 if not device_buffers:
                     raise ValueError("no device buffers")
-                self._logger.info(
+                logger.info(
                     "UCM register pool group=%s source=%s pools=%s page_size=%d "
                     "tensors=%d page_block_bytes=%d buffers=%d "
                     "buffer_bytes=%d.",
@@ -300,7 +293,7 @@ class UcmDirectStoreAdapter:
                     tensor_size_list=layer_tensor_size_list,
                 )
             except Exception:
-                self._logger.exception(
+                logger.exception(
                     "Failed to register UCM pool group=%s source=%s pools=%s.",
                     group,
                     members[0].source_pool,
@@ -558,7 +551,7 @@ class UcmDirectStoreAdapter:
                 if self._identity.get("rank_replicated", False)
                 else 1
             )
-            self._logger.info(
+            logger.info(
                 "Creating SGLang UCM Store group=%s fragments=%d "
                 "page_shard_bytes=%d page_block_bytes=%d layers=%d buffers=%d.",
                 store_group,
@@ -568,7 +561,7 @@ class UcmDirectStoreAdapter:
                 payload_size // shard_size,
                 len(device_buffers),
             )
-            self._logger.info(
+            logger.info(
                 "SGLang UCM Posix GC group=%s enabled=%s capacity_gb=%s "
                 "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
                 store_group,
@@ -683,7 +676,7 @@ class UcmDirectStoreAdapter:
                 if not candidates:
                     return []
             except Exception:
-                self._logger.exception(
+                logger.exception(
                     "UCM lookup failed: group=%s source=%s layers=%s pools=%s "
                     "pages=%d.",
                     transfer.store_group,
@@ -756,7 +749,7 @@ class UcmDirectStoreAdapter:
                     )
                 )
             except Exception:
-                self._logger.exception(
+                logger.exception(
                     "UCM %s prepare failed: group=%s source=%s layers=%s pools=%s "
                     "pages=%d.",
                     "offload" if is_offload else "load",
@@ -821,10 +814,10 @@ class UcmDirectStoreAdapter:
                 try:
                     self.wait(tasks)
                 except Exception:
-                    self._logger.exception(
+                    logger.exception(
                         "UCM partially submitted transfer failed while draining"
                     )
-                self._logger.exception(
+                logger.exception(
                     "UCM %s submit failed: group=%s source=%s layers=%s pools=%s "
                     "pages=%d.",
                     "offload" if is_offload else "load",

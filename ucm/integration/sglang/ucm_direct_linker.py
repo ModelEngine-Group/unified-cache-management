@@ -164,9 +164,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             self._tp_rank = torch.distributed.get_rank(group=tp_group)
             self._tp_size = torch.distributed.get_world_size(group=tp_group)
-        self._logger = logger if self._tp_rank == 0 else logging.Logger(__name__)
-        if self._tp_rank != 0:
-            self._logger.disabled = True
         self._lookup_owner = True
         self._offload_owner = not self.pool_group.rank_replicated or self._tp_rank == 0
         self._log_pool_topology()
@@ -177,12 +174,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._load_prefetch_layers = getattr(
                 self.adapter, "load_prefetch_layers", 2
             )
-            if self._tp_rank == 0:
-                self._logger.info(
-                    "UCM linker load prefetch layers=%d", self._load_prefetch_layers
-                )
+            logger.info(
+                "UCM linker load prefetch layers=%d", self._load_prefetch_layers
+            )
         except Exception:
-            self._logger.exception(
+            logger.exception(
                 "UCM linker initialization failed: layers=%d tp=%d/%d replicated=%s.",
                 self.num_layers,
                 self._tp_rank,
@@ -250,7 +246,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if cache_identity is not None:
             self._lookup_owner = self._tp_rank == identities.index(cache_identity)
         if self._lookup_owner:
-            (logger if cache_identity is not None else self._logger).info(
+            logger.info(
                 "UCM linker lookup owner dp_rank=%d tp_rank=%d tp_size=%d "
                 "shared_cache_identified=%s",
                 self._dp_rank,
@@ -377,9 +373,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         return tuple(bundles)
 
     def _log_pool_topology(self) -> None:
-        if self._tp_rank != 0:
-            return
-        self._logger.info(
+        logger.info(
             "UCM device-pool topology: layers=%d page_size=%d pools=%d bundles=%d "
             "tp=%d/%d replicated=%s.",
             self.num_layers,
@@ -397,7 +391,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 for entry in bundle.entries
                 for size, _ in self._entry_layer_schema(entry, layer)
             )
-            self._logger.info(
+            logger.info(
                 "UCM pool bundle=%s source=%s pools=%s "
                 "page_block_tensors=%d page_block_bytes=%d.",
                 bundle.name,
@@ -765,13 +759,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             try:
                                 self._wait_tasks(tasks)
                             except Exception:
-                                self._logger.exception(
+                                logger.exception(
                                     "UCM prefetched load failed while draining"
                                 )
                 except BaseException as error:
                     landed = False
                     self.layer_done_counter.fail(counter_index, error)
-                    self._logger.exception(
+                    logger.exception(
                         "UCM layer-wise load batch failed tp_rank=%d batch=%d "
                         "layer=%d requests=%d",
                         self._tp_rank,
@@ -845,7 +839,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     else self.adapter.submit_offload(transfers)
                 )
             except BaseException:
-                self._logger.exception(
+                logger.exception(
                     "UCM offload submit failed tp_rank=%d node=%d",
                     self._tp_rank,
                     sequence,
@@ -898,7 +892,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     try:
                         completed = all(self.adapter.check(t) for t in pending.tasks)
                     except BaseException:
-                        self._logger.exception(
+                        logger.exception(
                             "UCM offload check failed tp_rank=%d node=%d",
                             self._tp_rank,
                             pending.sequence,
@@ -916,7 +910,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         # final status and releases it after Check reports done.
                         self._wait_tasks(pending.tasks)
                     except BaseException:
-                        self._logger.exception(
+                        logger.exception(
                             "UCM offload failed tp_rank=%d node=%d",
                             self._tp_rank,
                             pending.sequence,
