@@ -384,7 +384,7 @@ def _probe(config, result):
                             layout=config.layout,
                         )
                     elif spec.kind == "mamba":
-                        pool = _make_mamba_host_pool(spec, config)
+                        pool = _make_mamba_host_pool(spec, config, model_config)
                     else:
                         pool = _make_host_pool(
                             model_config,

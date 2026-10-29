@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import inspect
 from contextlib import ExitStack, contextmanager
+from copy import copy
 from dataclasses import dataclass, field
 from importlib import import_module
 from math import prod
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -48,6 +50,73 @@ def native_family(requirements: Any) -> str | None:
     if "indexer" in names:
         return "dsa" if requirements.is_mla else "minimax_sparse"
     return None
+
+
+def cache_builder(model, config, dtype, start, end, *, is_mla=False):
+    """Minimal context for native construction, without device-memory sizing."""
+    from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+    from sglang.srt.model_executor.model_runner_components.layer_setup import (
+        ModelLayerInfo,
+    )
+
+    builder = object.__new__(KVCacheConfigurator)
+    builder.device = "cpu"
+    builder.model_config = model
+    builder.model_dtype = model.dtype
+    builder.kv_cache_dtype = dtype
+    builder.kv_cache_dtype_str = config.kv_cache_dtype
+    builder.page_size = config.page_size
+    builder.is_draft_worker = False
+    builder.post_capture_kv_active = False
+    builder.use_mla_backend = is_mla
+    builder.layer_info = ModelLayerInfo(
+        start_layer=start, end_layer=end, num_effective_layers=end - start
+    )
+    if "kv_shard_rank" in KVCacheConfigurator.__dataclass_fields__:
+        builder.kv_shard_rank = None
+    return builder
+
+
+def _pool_class(builder, kind, default):
+    resolve = getattr(builder, "_resolve_kv_pool_class", None)
+    return resolve(kind=kind, default=default) if callable(resolve) else default
+
+
+@contextmanager
+def _cpu_mha_construction():
+    """Keep native CPU buffer layouts, without creating an accelerator stream."""
+    from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+
+    initialize = MHATokenToKVPool.__init__
+
+    def initialize_cpu(self, *args, **kwargs):
+        kwargs["enable_alt_stream"] = False
+        initialize(self, *args, **kwargs)
+
+    with patch.object(MHATokenToKVPool, "__init__", initialize_cpu):
+        yield
+
+
+def attention_device_pool(model, config, size, start, end, *, is_mla):
+    from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, MLATokenToKVPool
+
+    from .sglang_compat import environment_info
+
+    builder = cache_builder(model, config, model.dtype, start, end, is_mla=is_mla)
+    kind = "mla" if is_mla else "mha"
+    if environment_info()["platform"] == "ascend":
+        build = getattr(builder, f"_build_ascend_{kind}_kv_pool")
+        arguments = {"is_dsa_model": False} if is_mla else {}
+    else:
+        build = getattr(builder, f"_build_{kind}_kv_pool")
+        arguments = {}
+        parameter = f"{kind}_pool_class"
+        if parameter in inspect.signature(build).parameters:
+            arguments[parameter] = _pool_class(
+                builder, kind, MLATokenToKVPool if is_mla else MHATokenToKVPool
+            )
+    with _cpu_mha_construction():
+        return build(max_total_num_tokens=size, **arguments)
 
 
 @contextmanager
@@ -220,53 +289,62 @@ def _build_dsa(
     layer_range=None,
     tp_size=1,
 ):
-    from sglang.srt.configs.model_config import (
-        dsa_layer_skips_topk,
-        get_dsa_index_head_dim,
-        get_dsa_index_kpool,
-        get_dsa_index_kpool_compress,
+    from sglang.srt.configs.hybrid_arch import mambaish_config
+    from sglang.srt.mem_cache.memory_pool import (
+        DSATokenToKVPool,
+        MHATokenToKVPool,
+        MLATokenToKVPool,
     )
-    from sglang.srt.mem_cache.kv_cache_configurator import calculate_mla_kv_cache_dim
-    from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
     from sglang.srt.mem_cache.pool_host.dsa import DSAIndexerPoolHost
 
     start, end = layer_range or (0, model.num_hidden_layers)
     layers = tuple(range(start, end)) if full_layers is None else tuple(full_layers)
-    # HybridLinearKVPool compacts its attention child and maps global IDs.
-    pool_start = start if full_layers is None else 0
     size = config.page_size * (config.pages * 2 + 2)
-    kwargs = dict(
-        size=size,
-        page_size=config.page_size,
-        dtype=dtype,
-        kv_lora_rank=model.kv_lora_rank,
-        qk_rope_head_dim=model.qk_rope_head_dim,
-        layer_num=len(layers),
-        device="cpu",
-        enable_memory_saver=False,
-        start_layer=pool_start,
-        end_layer=pool_start + len(layers),
-        index_head_dim=get_dsa_index_head_dim(model.hf_config),
-        kv_cache_dim=calculate_mla_kv_cache_dim(
-            model_config=model, kv_cache_dtype=dtype
-        ),
-    )
-    if platform == "ascend":
-        from sglang.srt.hardware_backend.npu.memory_pool_npu import NPUMLATokenToKVPool
+    # Invoke only the native construction methods, not configure(), which sizes
+    # accelerator memory and creates request allocators. Parameter/layout choices
+    # stay in the installed SGLang, including older NPU constructor signatures.
+    builder = cache_builder(model, config, dtype, start, end, is_mla=True)
 
-        kwargs.update(index_size=size, index_page_size=config.page_size)
-        device_pool = NPUMLATokenToKVPool(**kwargs)
-    else:
-        from sglang.srt.platforms import current_platform
-
-        pool_cls = current_platform.get_kv_pool_cls(kind="dsa") or DSATokenToKVPool
-        kwargs.update(
-            index_kpool=get_dsa_index_kpool(model.hf_config),
-            index_kpool_compress=get_dsa_index_kpool_compress(model.hf_config),
-            max_running_requests=1,
-            skip_topk_layers=[dsa_layer_skips_topk(model.hf_config, i) for i in layers],
+    if full_layers is not None:
+        builder.mambaish_config = mambaish_config(model)
+        build = builder._build_hybrid_linear_kv_pool
+        # Capacity metadata only: the wrapper stores this reference but the
+        # actual recurrent-state Host pool is constructed/verified separately.
+        arguments = dict(
+            max_total_num_tokens=size,
+            req_to_token_pool=SimpleNamespace(
+                mamba_pool=None, req_to_token=SimpleNamespace(shape=(1,))
+            ),
+            mha_pool_class=_pool_class(builder, "mha", MHATokenToKVPool),
         )
-        device_pool = pool_cls(**kwargs)
+        parameters = inspect.signature(build).parameters
+        for name, kind, default in (
+            ("mla_pool_class", "mla", MLATokenToKVPool),
+            ("dsa_pool_class", "dsa", DSATokenToKVPool),
+        ):
+            if name in parameters:
+                arguments[name] = _pool_class(builder, kind, default)
+        wrapper = build(**arguments)
+        bundle.keepalive.append(wrapper)
+        if tuple(wrapper.full_attention_layer_id_mapping) != layers:
+            raise PoolProbeUnavailable(
+                "native hybrid builder selected different attention layers"
+            )
+        device_pool = wrapper.full_kv_pool
+        build_path = "_build_hybrid_linear_kv_pool"
+    elif platform == "ascend":
+        device_pool = builder._build_ascend_mla_kv_pool(
+            max_total_num_tokens=size, is_dsa_model=True
+        )
+        build_path = "_build_ascend_mla_kv_pool"
+    else:
+        build = builder._build_dsa_kv_pool
+        arguments = dict(max_total_num_tokens=size, max_running_requests=1)
+        if "dsa_pool_class" in inspect.signature(build).parameters:
+            arguments["dsa_pool_class"] = _pool_class(builder, "dsa", DSATokenToKVPool)
+        device_pool = build(**arguments)
+        build_path = "_build_dsa_kv_pool"
+    bundle.report["device_pool_builder"] = f"KVCacheConfigurator.{build_path}"
     bundle.keepalive.append(device_pool)
     bundle.pools["kv"] = _host_from_device(
         device_pool, config.page_size, config.layout, is_mla=True
@@ -358,11 +436,10 @@ def _build_dsa(
 def _build_dsa_recurrent(
     bundle, model, config, platform, dtype, *, layer_range=None, tp_size=1
 ):
-    """Mirror HybridLinearKVPool's compact DSA child plus persistent state.
+    """Use native hybrid construction for the compact DSA child plus state.
 
-    No engine wrapper or request allocator is needed for Host-storage IO; the
-    global-to-compact layer map is retained in the report instead of executing
-    model-forward/transfer dispatch through that wrapper.
+    The temporary wrapper supplies its real attention child and layer mapping.
+    Request-state allocation and model-forward/transfer dispatch are not run.
     """
     from .pool_probe import build_pool_specs
     from .runner import _make_mamba_host_pool
@@ -391,16 +468,24 @@ def _build_dsa_recurrent(
         )
         bundle.specs.append(primary)
     else:
-        _build_dsa(bundle, model, config, platform, dtype, full_layers=primary.layers)
+        _build_dsa(
+            bundle,
+            model,
+            config,
+            platform,
+            dtype,
+            full_layers=primary.layers,
+            **options,
+        )
     state = next((spec for spec in specs if spec.name == "mamba"), None)
     if state is not None:
-        bundle.pools["mamba"] = _make_mamba_host_pool(state, config)
+        bundle.pools["mamba"] = _make_mamba_host_pool(state, config, model)
         bundle.specs.append(state)
         bundle.layer_ids["mamba"] = state.layers
     bundle.report["hybrid_layer_mapping"] = {
         "attention_model_layers": list(primary.layers),
         "state_model_layers": list(state.layers) if state is not None else [],
-        "scope": "config partition and native child pools; engine wrapper dispatch not executed",
+        "scope": "native hybrid construction and state Host pool; forward/transfer dispatch not executed",
     }
 
 
@@ -412,8 +497,8 @@ def _build_minimax(
         get_minimax_sparse_disable_value_layer_ids,
         get_minimax_sparse_layer_ids,
     )
-    from sglang.srt.mem_cache.memory_pool import MiniMaxSparseKVPool
     from sglang.srt.mem_cache.pool_host.mha import MHATokenToKOnlyPoolHost
+    from sglang.srt.runtime_context import get_server_args
 
     cfg = get_minimax_sparse_attention_config(model.hf_config)
     dense, sparse = get_minimax_sparse_layer_ids(cfg)
@@ -426,29 +511,18 @@ def _build_minimax(
         raise PoolProbeUnavailable(
             "production MiniMax HiCache rejects value-bearing sparse index layers"
         )
-    pool_cls = MiniMaxSparseKVPool
-    if platform == "ascend":
-        from sglang.srt.hardware_backend.npu.memory_pool_npu import (
-            NPUMiniMaxSparseKVPool,
-        )
-
-        pool_cls = NPUMiniMaxSparseKVPool
-    device_pool = pool_cls(
-        size=config.page_size * (config.pages * 2 + 2),
-        page_size=config.page_size,
-        dtype=dtype,
-        index_dtype=model.dtype,
-        head_num=model.get_num_kv_heads(tp_size),
-        head_dim=model.head_dim,
-        idx_head_dim=cfg["sparse_index_dim"],
-        dense_layer_ids=dense,
-        sparse_layer_ids=sparse,
-        disable_value_sparse_layer_ids=disabled,
-        device="cpu",
-        enable_memory_saver=False,
-        start_layer=start,
-        end_layer=end,
+    builder = cache_builder(model, config, dtype, start, end)
+    builder.server_args = get_server_args()
+    method = (
+        "_build_ascend_minimax_sparse_kv_pool"
+        if platform == "ascend"
+        else "_build_minimax_sparse_kv_pool"
     )
+    with _cpu_mha_construction():
+        device_pool = getattr(builder, method)(
+            max_total_num_tokens=config.page_size * (config.pages * 2 + 2),
+        )
+    bundle.report["device_pool_builder"] = f"KVCacheConfigurator.{method}"
     bundle.keepalive.append(device_pool)
     bundle.pools["kv"] = _host_from_device(
         device_pool.main_pool, config.page_size, config.layout, is_mla=False
@@ -516,6 +590,7 @@ def _build_dsv4(bundle, model, config, platform, dtype, *, layer_range=None, tp_
         DeepSeekV4StateHostPool,
         LogicalHostPool,
     )
+    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
     if platform != "ascend" and config.page_size != 256:
         raise PoolProbeUnavailable(
@@ -525,47 +600,33 @@ def _build_dsv4(bundle, model, config, platform, dtype, *, layer_range=None, tp_
     size = pages * config.page_size
     ratios = _dsv4_main_layer_ratios(model)
     start, end = layer_range or (0, model.num_hidden_layers)
-    cls = native.DeepSeekV4TokenToKVPool
-    layout_args = {}
-    if platform == "ascend":
-        from sglang.srt.hardware_backend.npu.dsv4.dsv4_memory_pool import (
-            DSV4NPUTokenToKVPool,
-        )
-
-        cls = DSV4NPUTokenToKVPool
-    else:
-        main_layout, compressed_layout = native.select_dsv4_kv_layout()
-        layout_args = dict(
-            kv_layout=main_layout, compressed_kv_layout=compressed_layout
-        )
+    main_model = copy(model)
+    main_model.compress_ratios = ratios
+    builder = cache_builder(main_model, config, dtype, start, end, is_mla=True)
+    builder.spec_algorithm = SpeculativeAlgorithm.NONE
+    build = builder._build_dsv4_kv_pool
     c4_dtype, c128_dtype = _get_dsv4_compress_state_dtypes()
-    device_pool = cls(
-        max_num_reqs=1,
-        num_req_slots=2,
-        swa_size=size,
-        c4_size=size // 4,
-        c128_size=max(1, size // 128),
+    # Only capacities are probe-specific; the factory selects the platform,
+    # physical layouts, source sharing and optional constructor parameters.
+    callbacks = []
+    arguments = dict(
+        max_running_requests=1,
+        swa_max_total_num_tokens=size,
+        c4_max_total_num_tokens=size // 4,
+        c128_max_total_num_tokens=max(1, size // 128),
         c4_state_pool_size=pages * native.resolve_compress_state_ring_size(4),
         c128_state_pool_size=2 * native.resolve_compress_state_ring_size(128),
-        page_size=config.page_size,
-        swa_page_size=config.page_size,
-        dtype=dtype,
         c4_state_dtype=c4_dtype,
         c128_state_dtype=c128_dtype,
-        qk_nope_head_dim=model.qk_nope_head_dim,
-        qk_rope_head_dim=model.qk_rope_head_dim,
-        indexer_head_dim=model.index_head_dim,
-        layer_num=end - start,
-        device="cpu",
-        enable_memory_saver=False,
-        compression_ratios=ratios,
-        sliding_window=model.window_size,
-        start_layer=start,
-        end_layer=end,
-        kv_source_layers=list(getattr(model.hf_config, "kv_source_layer_ids", ())),
-        full_size=size,
-        **layout_args,
+        req_to_token_pool=SimpleNamespace(
+            req_to_token=SimpleNamespace(shape=(2,)),
+            register_on_alloc_rows=callbacks.append,
+        ),
     )
+    if "full_max_total_num_tokens" in inspect.signature(build).parameters:
+        arguments["full_max_total_num_tokens"] = size
+    device_pool = build(**arguments)
+    bundle.report["device_pool_builder"] = "KVCacheConfigurator._build_dsv4_kv_pool"
     bundle.keepalive.append(device_pool)
     bundle.pools["kv"] = LogicalHostPool(
         pages * config.page_size, config.page_size, layout=config.layout

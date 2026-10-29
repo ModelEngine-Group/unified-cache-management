@@ -62,7 +62,7 @@ class NativeRoutingTest(unittest.TestCase):
         dsa.assert_called_once_with(
             bundle, model, config, "cuda", "bf16", full_layers=(0, 3)
         )
-        state.assert_called_once_with(plan[1], config)
+        state.assert_called_once_with(plan[1], config, model)
         self.assertIs(bundle.pools["mamba"], state_host)
         self.assertEqual(bundle.specs, [plan[1]])
         self.assertEqual(bundle.layer_ids["mamba"], (1, 2))
@@ -94,6 +94,16 @@ class NativeRoutingTest(unittest.TestCase):
             tp_size=2,
         )
         state.assert_not_called()
+        dsa.assert_called_once_with(
+            stage,
+            model,
+            config,
+            "cuda",
+            "bf16",
+            full_layers=(0, 3),
+            layer_range=(0, 4),
+            tp_size=2,
+        )
         self.assertEqual(stage.report["hybrid_layer_mapping"]["state_model_layers"], [])
 
     def test_low_ratio_discovery_compatibility(self):
@@ -414,6 +424,26 @@ class NativeAssemblyTest(unittest.TestCase):
                 self.device_pool = device_pool
                 self.kv_buffer = device_pool.kv_buffer
 
+        class Configurator:
+            __dataclass_fields__ = {}
+
+            def _build_mla_kv_pool(self, *, max_total_num_tokens):
+                return DevicePool(
+                    size=max_total_num_tokens,
+                    layer_num=self.layer_info.num_effective_layers,
+                    device=self.device,
+                    kv_lora_rank=self.model_config.kv_lora_rank,
+                )
+
+            def _build_mha_kv_pool(self, *, max_total_num_tokens, mha_pool_class):
+                return mha_pool_class(
+                    size=max_total_num_tokens,
+                    layer_num=self.layer_info.num_effective_layers,
+                    device=self.device,
+                    head_num=self.model_config.get_num_kv_heads(1),
+                    head_dim=self.model_config.head_dim,
+                )
+
         modules = _module_tree(
             {
                 "torch": {},
@@ -426,25 +456,42 @@ class NativeAssemblyTest(unittest.TestCase):
                     "get_mha_host_pool_cls": lambda pool: Host,
                 },
                 "sglang.srt.mem_cache.pool_host.mla": {"MLATokenToKVPoolHost": MLAHost},
+                "sglang.srt.mem_cache.kv_cache_configurator": {
+                    "KVCacheConfigurator": Configurator
+                },
+                "sglang.srt.model_executor.model_runner_components.layer_setup": {
+                    "ModelLayerInfo": SimpleNamespace
+                },
             }
         )
         model = SimpleNamespace(
             num_hidden_layers=62,
             num_key_value_heads=2,
+            get_num_kv_heads=lambda *args: 2,
             head_dim=128,
             dtype=SimpleNamespace(itemsize=2),
             kv_lora_rank=192,
             qk_rope_head_dim=64,
         )
-        with patch.dict(sys.modules, modules):
-            for arch in ("MHA", "MLA"):
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                "ucm_toolkit.tools.sglang_model_check.sglang_compat.environment_info",
+                return_value={"platform": "cuda"},
+            ),
+        ):
+            for arch, spec in (
+                ("MHA", None),
+                (
+                    "MHA",
+                    PoolSpec(
+                        "swa", "mha", (1, 3), head_num=1, head_dim=128, v_head_dim=128
+                    ),
+                ),
+                ("MLA", PoolSpec("kv", "mla", (3, 7), kv_cache_dim=256)),
+            ):
                 for layout in ("page_first", "page_first_direct"):
                     with self.subTest(arch=arch, layout=layout):
-                        spec = (
-                            PoolSpec("kv", "mla", (3, 7), kv_cache_dim=256)
-                            if arch == "MLA"
-                            else None
-                        )
                         host = _make_host_pool(
                             model,
                             requirements_from_facts({"attention_arch": arch}),
@@ -453,7 +500,9 @@ class NativeAssemblyTest(unittest.TestCase):
                         )
                         self.assertIsInstance(host.device_pool, DevicePool)
                         if arch == "MHA":
-                            self.assertEqual(host.head_num, 2)
+                            self.assertEqual(
+                                host.head_num, spec.head_num if spec else 2
+                            )
                             self.assertFalse(allocations[-1]["enable_alt_stream"])
                         else:
                             self.assertIs(host.kv_buffer, host.device_pool.kv_buffer)
@@ -462,6 +511,124 @@ class NativeAssemblyTest(unittest.TestCase):
                             allocations[-1]["layer_num"], 2 if spec else 62
                         )
                         self.assertEqual(allocations[-1]["device"], "cpu")
+                        self.assertEqual(model.get_num_kv_heads(1), 2)
+
+    def test_native_state_buffers_support_both_host_apis(self):
+        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolSpec
+        from ucm_toolkit.tools.sglang_model_check.runner import _make_mamba_host_pool
+
+        calls, params, info = [], object(), object()
+
+        class StatePool:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+            def get_device_pool_infos(self):
+                return [SimpleNamespace(buffer_info=info)]
+
+        class LegacyHost:
+            def __init__(self, device_pool, **kwargs):
+                self.source = device_pool
+
+        class ModernHost:
+            def __init__(self, buffer_info, **kwargs):
+                self.source = buffer_info
+
+        modules = _module_tree(
+            {
+                "sglang.srt.configs.hybrid_arch": {
+                    "mambaish_config": lambda model: SimpleNamespace(
+                        mamba2_cache_params=params
+                    )
+                },
+                "sglang.srt.mem_cache.memory_pool": {"MambaPool": StatePool},
+                "sglang.srt.mem_cache.pool_host.mamba": {},
+            }
+        )
+        for host in (LegacyHost, ModernHost):
+            modules["sglang.srt.mem_cache.pool_host.mamba"].MambaPoolHost = host
+            with self.subTest(host=host), patch.dict(sys.modules, modules):
+                result = _make_mamba_host_pool(
+                    PoolSpec("mamba", "mamba", (1, 3)),
+                    CheckConfig(model="test"),
+                    object(),
+                )
+                self.assertIs(calls[-1]["cache_params"], params)
+                self.assertEqual(calls[-1]["mamba_layer_ids"], [1, 3])
+                self.assertEqual(calls[-1]["device"], "cpu")
+                if host is LegacyHost:
+                    self.assertIsInstance(result.source, StatePool)
+                else:
+                    self.assertIs(result.source, info)
+
+    def test_minimax_native_factory_keeps_stage_and_platform(self):
+        from ucm_toolkit.tools.sglang_model_check.native_probe import _build_minimax
+
+        native = SimpleNamespace(main_pool=object(), index_k_pool=object())
+        main, index = object(), object()
+        calls = []
+
+        class Configurator:
+            __dataclass_fields__ = {}
+
+            def _build_minimax_sparse_kv_pool(self, *, max_total_num_tokens):
+                calls.append(
+                    (
+                        self.layer_info.start_layer,
+                        self.layer_info.end_layer,
+                        self.device,
+                        max_total_num_tokens,
+                    )
+                )
+                return native
+
+            _build_ascend_minimax_sparse_kv_pool = _build_minimax_sparse_kv_pool
+
+        modules = _module_tree(
+            {
+                "sglang.srt.configs.model_config": {
+                    "get_minimax_sparse_attention_config": lambda cfg: {},
+                    "get_minimax_sparse_layer_ids": lambda cfg: ([0, 2], [1, 3]),
+                    "get_minimax_sparse_disable_value_layer_ids": lambda cfg: [1, 3],
+                },
+                "sglang.srt.mem_cache.kv_cache_configurator": {
+                    "KVCacheConfigurator": Configurator
+                },
+                "sglang.srt.mem_cache.pool_host.mha": {
+                    "MHATokenToKOnlyPoolHost": lambda *args, **kwargs: index
+                },
+                "sglang.srt.mem_cache.memory_pool": {
+                    "MHATokenToKVPool": type("MHA", (), {})
+                },
+                "sglang.srt.model_executor.model_runner_components.layer_setup": {
+                    "ModelLayerInfo": SimpleNamespace
+                },
+                "sglang.srt.runtime_context": {"get_server_args": object},
+            }
+        )
+        model = SimpleNamespace(num_hidden_layers=4, hf_config=object(), dtype="bf16")
+        for platform in ("cuda", "ascend"):
+            with (
+                self.subTest(platform=platform),
+                patch.dict(sys.modules, modules),
+                patch(
+                    "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device",
+                    return_value=main,
+                ),
+            ):
+                bundle = NativePools()
+                _build_minimax(
+                    bundle,
+                    model,
+                    CheckConfig(model="test", page_size=64),
+                    platform,
+                    "bf16",
+                    layer_range=(2, 4),
+                    tp_size=2,
+                )
+            self.assertEqual(calls[-1], (2, 4, "cpu", 384))
+            self.assertEqual(bundle.pools, {"kv": main, "indexer": index})
+            self.assertEqual(bundle.layer_ids, {"kv": (2, 3), "indexer": (3,)})
 
     def test_native_mla_host_supports_old_and_new_constructor_apis(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _host_from_device
@@ -520,28 +687,62 @@ class NativeAssemblyTest(unittest.TestCase):
                 skip_topk_layers=kwargs["skip_topk_layers"],
             )
 
+        class Configurator:
+            __dataclass_fields__ = {}
+
+            def _build_dsa_kv_pool(self, *, max_total_num_tokens, max_running_requests):
+                layers = range(self.layer_info.start_layer, self.layer_info.end_layer)
+                return self.create(
+                    layers, self.layer_info.start_layer, max_total_num_tokens
+                )
+
+            def _build_hybrid_linear_kv_pool(
+                self, *, max_total_num_tokens, req_to_token_pool, mha_pool_class
+            ):
+                layers = self.mambaish_config.full_attention_layer_ids
+                layers = [
+                    i
+                    for i in layers
+                    if self.layer_info.start_layer <= i < self.layer_info.end_layer
+                ]
+                return SimpleNamespace(
+                    full_attention_layer_id_mapping={
+                        layer: i for i, layer in enumerate(layers)
+                    },
+                    full_kv_pool=self.create(layers, 0, max_total_num_tokens),
+                )
+
+            def create(self, layers, start, size):
+                layers = list(layers)
+                queried_layers.extend(layers)
+                return create(
+                    size=size,
+                    layer_num=len(layers),
+                    start_layer=start,
+                    end_layer=start + len(layers),
+                    skip_topk_layers=[i == 3 for i in layers],
+                )
+
         modules = _module_tree(
             {
-                "sglang.srt.configs.model_config": {
-                    "get_dsa_index_head_dim": lambda config: 64,
-                    "get_dsa_index_kpool": lambda config: 4,
-                    "get_dsa_index_kpool_compress": lambda config: False,
-                    "dsa_layer_skips_topk": lambda config, layer: queried_layers.append(
-                        layer
-                    )
-                    or layer == 3,
-                },
                 "sglang.srt.mem_cache.kv_cache_configurator": {
-                    "calculate_mla_kv_cache_dim": lambda **kwargs: 256,
+                    "KVCacheConfigurator": Configurator,
                 },
-                "sglang.srt.mem_cache.memory_pool": {"DSATokenToKVPool": create},
+                "sglang.srt.configs.hybrid_arch": {
+                    "mambaish_config": lambda model: SimpleNamespace(
+                        full_attention_layer_ids=(0, 3)
+                    ),
+                },
+                "sglang.srt.model_executor.model_runner_components.layer_setup": {
+                    "ModelLayerInfo": SimpleNamespace,
+                },
+                "sglang.srt.mem_cache.memory_pool": {
+                    "DSATokenToKVPool": create,
+                    "MHATokenToKVPool": create,
+                    "MLATokenToKVPool": create,
+                },
                 "sglang.srt.mem_cache.pool_host.dsa": {
                     "DSAIndexerPoolHost": type("Host", (), {})
-                },
-                "sglang.srt.platforms": {
-                    "current_platform": SimpleNamespace(
-                        get_kv_pool_cls=lambda **kwargs: create
-                    )
                 },
             }
         )
@@ -550,6 +751,7 @@ class NativeAssemblyTest(unittest.TestCase):
             hf_config=object(),
             kv_lora_rank=192,
             qk_rope_head_dim=64,
+            dtype="bf16",
         )
         host = SimpleNamespace(index_k_buffer=object())
         bundle = NativePools()
@@ -573,6 +775,65 @@ class NativeAssemblyTest(unittest.TestCase):
         self.assertEqual(queried_layers, [0, 3])
         self.assertEqual(calls[0]["skip_topk_layers"], [False, True])
         self.assertEqual(bundle.layer_ids["kv"], (0, 3))
+        # Ascend hybrids must use the same native hybrid path, not NPU MLA.
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device",
+                return_value=host,
+            ),
+        ):
+            hybrid = NativePools()
+            _build_dsa(
+                hybrid,
+                model,
+                CheckConfig(model="test", page_size=256),
+                "ascend",
+                "bf16",
+                full_layers=(3,),
+                layer_range=(2, 4),
+                tp_size=2,
+            )
+        self.assertEqual(hybrid.layer_ids["kv"], (3,))
+        self.assertEqual(
+            hybrid.report["device_pool_builder"],
+            "KVCacheConfigurator._build_hybrid_linear_kv_pool",
+        )
+
+        # The installed native builder, not the checker, owns NPU arguments.
+        # This strict legacy constructor deliberately has no index_size argument.
+        def npu_legacy(size, *, page_size, layer_num):
+            self.assertEqual((size, page_size, layer_num), (1536, 256, 4))
+            return SimpleNamespace(host_pool_decls=lambda: [])
+
+        def native_npu_builder(self, *, max_total_num_tokens, is_dsa_model):
+            return npu_legacy(
+                max_total_num_tokens,
+                page_size=self.page_size,
+                layer_num=self.layer_info.num_effective_layers,
+            )
+
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(
+                Configurator,
+                "_build_ascend_mla_kv_pool",
+                native_npu_builder,
+                create=True,
+            ),
+            patch(
+                "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device",
+                return_value=host,
+            ),
+        ):
+            npu = NativePools()
+            _build_dsa(
+                npu, model, CheckConfig(model="test", page_size=256), "ascend", "bf16"
+            )
+        self.assertEqual(
+            npu.report["device_pool_builder"],
+            "KVCacheConfigurator._build_ascend_mla_kv_pool",
+        )
         calls.clear()
         queried_layers.clear()
         with (
@@ -704,6 +965,30 @@ class NativeAssemblyTest(unittest.TestCase):
             constructor_calls.append(kwargs)
             return cache
 
+        class Configurator:
+            __dataclass_fields__ = {}
+
+            def _build_dsv4_kv_pool(
+                self,
+                *,
+                max_running_requests,
+                swa_max_total_num_tokens,
+                c4_max_total_num_tokens,
+                c128_max_total_num_tokens,
+                c4_state_pool_size,
+                c128_state_pool_size,
+                c4_state_dtype,
+                c128_state_dtype,
+                req_to_token_pool,
+            ):
+                return create(
+                    device=self.device,
+                    compression_ratios=self.model_config.compress_ratios,
+                    start_layer=self.layer_info.start_layer,
+                    end_layer=self.layer_info.end_layer,
+                    layer_num=self.layer_info.num_effective_layers,
+                )
+
         mapping = SimpleNamespace(c4={0: 0}, c128={1: 0}, c4_state_global_layers=[0])
         modules = _module_tree(
             {
@@ -742,6 +1027,13 @@ class NativeAssemblyTest(unittest.TestCase):
                 },
                 "sglang.srt.mem_cache.kv_cache_configurator": {
                     "_get_dsv4_compress_state_dtypes": lambda: ("fp32", "fp32"),
+                    "KVCacheConfigurator": Configurator,
+                },
+                "sglang.srt.model_executor.model_runner_components.layer_setup": {
+                    "ModelLayerInfo": SimpleNamespace
+                },
+                "sglang.srt.speculative.spec_info": {
+                    "SpeculativeAlgorithm": SimpleNamespace(NONE=None)
                 },
                 "sglang.srt.mem_cache.memory_pool_host": {
                     "LogicalHostPool": Host,
@@ -753,6 +1045,7 @@ class NativeAssemblyTest(unittest.TestCase):
         model = SimpleNamespace(
             num_hidden_layers=2,
             compress_ratios=[4, 128, 0, 0, 0],
+            dtype="bf16",
             qk_nope_head_dim=448,
             qk_rope_head_dim=64,
             index_head_dim=128,

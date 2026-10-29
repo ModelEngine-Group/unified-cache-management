@@ -51,9 +51,10 @@ new physical formats still require an explicit descriptor.
 It reuses `get_num_kv_heads`, `get_swa_num_kv_heads`, `sliding_window_size`, and
 `mambaish_config(...).mamba2_cache_params`; no model-name whitelist is needed.
 SWA uses the actual MHA Host Pool with its own layers/head geometry and a
-configuration-derived page window. Mamba uses the production `MambaPoolHost`
-and heterogeneous temporal/conv tensors, with state dtypes from SGLang config.
-NPU conv axes follow the standard persistent NPU layout. Replay/speculative
+configuration-derived page window. Mamba creates a small native `MambaPool`
+and passes its real state buffers to `MambaPoolHost`, adapting to both the old
+`device_pool` and new `buffer_info` Host APIs. State dtype and NPU conv axes are
+chosen by SGLang, not by hand-built probe tensors. Replay/speculative
 side states and CPU AMX-specific state layouts are outside this probe's scope.
 
 Each side pool has its own page unit (Mamba checkpoint page_size=1).
@@ -80,12 +81,12 @@ Additional providers reuse native SGLang cache constructors and host builders:
 
 | Cache family | Probe path |
 | --- | --- |
-| MHA/GQA/MQA and MLA | Physical KV host pages and v1 dump/lookup/load |
+| MHA/GQA/MQA and MLA | Native platform-specific factory, real Host pages and v1 dump/lookup/load |
 | MHA + SWA / Mamba | Configuration-derived layer partitions and specialized pools |
 | SWA-only / recurrent-state-only | Production logical anchor plus real side pool |
-| DSA | Native cache declarations and Host pool-group assembly, including indexer/scale payloads |
-| MiniMax sparse | Native main KV plus K-only sparse indexer, subject to production restrictions |
-| DeepSeek V4 | Native CUDA/ROCm or Ascend pool producer; logical anchor; active compressed, indexer, scale, RoPE and checkpoint regions |
+| DSA | Native cache factories, declarations and Host pool-group assembly, including indexer/scale payloads |
+| MiniMax sparse | Native sparse factory chooses main KV/indexer formats; K-only Host indexer follows production restrictions |
+| DeepSeek V4 | Native factory selects CUDA/ROCm or Ascend layout; logical anchor; active compressed, indexer, scale, RoPE and checkpoint regions |
 
 DSV4 pools are discovered from actual native regions, not all `PoolName` enum
 members. Shared-source C1/C2 pools are included when exposed by SGLang; C128
@@ -101,8 +102,21 @@ validation, dependency ordering and transfer-layer mapping. The probe supplies
 a bounded CPU primary Host pool and disables indexer pinning; it does not build
 a cache controller. Older versions use the individual declared builders.
 Verbose `native_provider.host_pool_assembly` identifies the path used.
-SWA/Mamba partitioning and DeepSeek V4 region assembly retain their existing
-probe paths; they do not yet expose the same standalone declaration interface.
+DSA device buffers use the installed `KVCacheConfigurator` construction methods:
+ordinary Ascend DSA follows its NPU MLA builder, while DSA + Mamba follows the
+native hybrid builder on every platform and exposes its compact attention child.
+The checker does not assemble NPU constructor arguments or silently discard
+unknown arguments. Only capacity, CPU placement and minimal construction context
+are supplied; `configure()`, request allocation and forward/transfer dispatch are
+not executed. Verbose `native_provider.device_pool_builder` records the method.
+MHA/MLA (including configured SWA children), MiniMax and V4 likewise use native
+`KVCacheConfigurator` methods rather than fixed constructor arguments. Minimal
+construction context is shared; no full configurator, allocator or controller
+is initialized. V4 capacities remain deliberately small and native constructors
+choose the physical layout. SWA/Mamba layer planning, sparse checkpoint test
+positions and V4 Host region assembly remain probe-specific; full service
+assembly/scheduling is not executed. Native private APIs can still change:
+unknown construction contracts return inconclusive, not a compatibility claim.
 
 Inspect remains `inconclusive` for hybrid storage compatibility until roundtrip
 runs. Native families defer actual pool discovery/allocation to roundtrip.

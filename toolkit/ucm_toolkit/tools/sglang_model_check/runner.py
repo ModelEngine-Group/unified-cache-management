@@ -7,6 +7,7 @@ import inspect
 import socket
 import traceback
 import uuid
+from copy import copy
 from dataclasses import replace
 from typing import Any, Iterator
 
@@ -267,39 +268,22 @@ def _make_host_pool(
     try:
         # Both Host APIs consume metadata supplied by a real SGLang CPU pool.
         # Keep constructor compatibility in the shared native-pool helper.
-        from .native_probe import _host_from_device
+        from .native_probe import _host_from_device, attention_device_pool
 
-        if requirements.is_mla:
-            from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
-
-            native = MLATokenToKVPool(
-                size=size,
-                page_size=config.page_size,
-                dtype=model_config.dtype,
-                kv_lora_rank=kv_lora_rank,
-                qk_rope_head_dim=qk_rope_head_dim,
-                layer_num=layer_num,
-                device="cpu",
-                enable_memory_saver=False,
-                start_layer=layer_start,
-                end_layer=layer_start + layer_num,
-            )
-        else:
-            from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
-
-            native = MHATokenToKVPool(
-                size=size,
-                page_size=config.page_size,
-                dtype=model_config.dtype,
-                head_num=head_num,
-                head_dim=head_dim,
-                layer_num=layer_num,
-                device="cpu",
-                enable_memory_saver=False,
-                start_layer=layer_start,
-                end_layer=layer_start + layer_num,
-                enable_alt_stream=False,
-            )
+        model = model_config
+        if pool_spec is not None and not requirements.is_mla:
+            # The plan carries TP-local geometry for this full/SWA child.
+            model = copy(model_config)
+            model.get_num_kv_heads = lambda *args: head_num
+            model.head_dim, model.v_head_dim = head_dim, v_head_dim
+        native = attention_device_pool(
+            model,
+            config,
+            size,
+            layer_start,
+            layer_start + layer_num,
+            is_mla=requirements.is_mla,
+        )
         return _host_from_device(
             native, config.page_size, config.layout, is_mla=requirements.is_mla
         )
@@ -669,37 +653,41 @@ def _pool_page_views(pool: Any, name: str, page: int) -> list[Any]:
     return views
 
 
-def _make_mamba_host_pool(spec: Any, config: CheckConfig) -> Any:
-    import torch
-    from sglang.srt.mem_cache.device_pool_info import MambaStateBufferInfo
+def _make_mamba_host_pool(spec: Any, config: CheckConfig, model_config: Any) -> Any:
+    from sglang.srt.configs.hybrid_arch import mambaish_config
+    from sglang.srt.mem_cache.memory_pool import MambaPool
     from sglang.srt.mem_cache.pool_host.mamba import MambaPoolHost
 
     capacity = config.pages * 2 + 1
-    shape_prefix = (len(spec.layers), capacity)
-    info = MambaStateBufferInfo(
-        temporal=torch.empty(
-            shape_prefix + spec.temporal_shape, dtype=spec.temporal_dtype, device="cpu"
-        ),
-        conv=tuple(
-            torch.empty(shape_prefix + shape, dtype=spec.conv_dtype, device="cpu")
-            for shape in spec.conv_shapes
-        ),
+    native = MambaPool(
+        size=capacity,
+        spec_state_size=0,
+        cache_params=mambaish_config(model_config).mamba2_cache_params,
+        mamba_layer_ids=list(spec.layers),
+        device="cpu",
+        enable_memory_saver=False,
     )
-    if "buffer_info" not in inspect.signature(MambaPoolHost).parameters:
+    parameters = inspect.signature(MambaPoolHost).parameters
+    common = dict(
+        host_to_device_ratio=1.0,
+        host_size=0,
+        pin_memory=False,
+        device="cpu",
+        allocator_type="default",
+        layout=config.layout,
+    )
+    if "device_pool" in parameters:
+        return MambaPoolHost(device_pool=native, **common)
+    if "buffer_info" not in parameters:
         raise CheckFailure(
             "CHECKER_HOST_POOL_API_UNSUPPORTED",
             "host_pool",
             "installed MambaPoolHost has no buffer_info constructor",
         )
     return MambaPoolHost(
-        buffer_info=info,
-        host_to_device_ratio=1.0,
-        host_size=0,
+        buffer_info=native.get_device_pool_infos()[0].buffer_info,
         device_capacity=capacity,
-        pin_memory=False,
-        device="cpu",
-        allocator_type="default",
-        layout=config.layout,
+        **common,
     )
 
 
@@ -819,7 +807,7 @@ def _roundtrip(
                     )
                 else:
                     pools[spec.name] = (
-                        _make_mamba_host_pool(spec, config)
+                        _make_mamba_host_pool(spec, config, model_config)
                         if spec.kind == "mamba"
                         else _make_host_pool(model_config, requirements, config, spec)
                     )
