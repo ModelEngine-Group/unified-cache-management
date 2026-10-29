@@ -217,6 +217,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             s = stream.WaitEvent(Trans::Event{parentTask->desc.prerequisiteHandle});
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to wait prerequisite event for load task({}).", s, taskHandle);
+                RecordShardResults(holder_, &task, false);
                 break;
             }
         }
