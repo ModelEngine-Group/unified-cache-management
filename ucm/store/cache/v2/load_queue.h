@@ -69,6 +69,7 @@ class LoadQ {
         Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
         bool fromCache{false};
+        bool firstShard{false};
     };
 
     alignas(64) std::atomic_bool stop_{false};
@@ -196,6 +197,7 @@ private:
             shardTask.shard = &shard;
             shardTask.bufferHandle = std::move(handle);
             shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
+            shardTask.firstShard = i == 0;
             running_.Push(std::move(shardTask));
         }
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_submit_duration_ms"),
@@ -283,6 +285,14 @@ private:
             return;
         }
         auto s = WaitShardReady(task);
+        if (s.Success() && task.firstShard && task.task->desc.prerequisiteHandle != 0) {
+            // CopyStream applies the dependency to every rotating copy stream.
+            s = stream.WaitEvent(Trans::Event{task.task->desc.prerequisiteHandle});
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to wait prerequisite event for load task({}).", s,
+                         task.task->id);
+            }
+        }
         if (s.Success()) { s = ScatterShard(stream, task); }
         if (s.Failure()) [[unlikely]] {
             RecordShardResults(holder_, &task, false);

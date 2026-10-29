@@ -155,6 +155,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
+        prerequisite_handle: int = 0,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
@@ -162,7 +163,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             addrs = dst_addr
         else:
             addrs = np.array(dst_addr, dtype=np.uint64)
-        task_id = self.store_.Load(ids, indexes, addrs)
+        task_id = self.store_.Load(ids, indexes, addrs, prerequisite_handle)
         return UcmPipelineStoreTransTask(task_id)
 
     def dump_data(
