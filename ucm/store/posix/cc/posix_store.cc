@@ -138,6 +138,13 @@ public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
+        if (task.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+            auto s = ValidateDdrLoad(task);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to validate ddr load task({}).", s, task.brief);
+                return s;
+            }
+        }
         auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
@@ -167,6 +174,16 @@ public:
     }
 
 private:
+    static Status ValidateDdrLoad(const Detail::TaskDesc& task)
+    {
+        for (const auto& shard : task) {
+            if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) {
+                return Status::InvalidParam("ddr load shard({}) requires one host address",
+                                            shard.index);
+            }
+        }
+        return Status::OK();
+    }
     static void RecordLookupQueries(size_t count)
     {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_lookup_query_blocks_total"),
