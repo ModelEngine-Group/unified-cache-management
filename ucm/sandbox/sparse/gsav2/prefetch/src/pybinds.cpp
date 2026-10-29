@@ -1,12 +1,30 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
- */
-#pragma GCC diagnostic push
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
-#pragma GCC diagnostic pop
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -122,6 +140,12 @@ PYBIND11_MODULE(gsa_prefetch, m)
     pybind11::class_<ucmprefetch::GSAPrefetchEngineC>(m, "GSAPrefetchEngineC")
         .def(pybind11::init<std::vector<int>&, std::vector<int>&, bool, int, int, std::vector<int>,
                             std::vector<int>, std::string>())
+        // NOTE: get_self_ptr / set_store_v1 pass raw pointers across the Python
+        // boundary as uintptr_t. The caller MUST guarantee that the engine
+        // (get_self_ptr) and the UCM store (set_store_v1) outlive every use on
+        // the Python side: any use after the C++ object/store is destroyed is a
+        // dangling-pointer use-after-free. A pybind11 owning wrapper that holds
+        // the pointer is the long-term fix.
         .def("set_blocks_map", &ucmprefetch::SetBlocksMapFromBuffer, pybind11::arg("req_id"),
              pybind11::arg("ids").noconvert(), pybind11::arg("max_idx"),
              pybind11::arg("block_idxs"), pybind11::arg("k_addrs"), pybind11::arg("v_addrs"))
@@ -129,7 +153,7 @@ PYBIND11_MODULE(gsa_prefetch, m)
              pybind11::arg("req_id"), pybind11::arg("block_idxs"), pybind11::arg("indexer_addrs"))
         .def("set_tokens_map", &ucmprefetch::GSAPrefetchEngineC::SetTokensMap)
         .def("del_blocks_map", &ucmprefetch::GSAPrefetchEngineC::DelBlocksMap)
-        .def("set_topk_indices", &ucmprefetch::GSAPrefetchEngineC::SetTopkIndies)
+        .def("set_topk_indices", &ucmprefetch::GSAPrefetchEngineC::SetTopkIndices)
         .def("pre_swap_tokens", &ucmprefetch::GSAPrefetchEngineC::PreSwapTokens)
         .def("submit_prefetch_task", &ucmprefetch::GSAPrefetchEngineC::SubmitTask)
         .def("set_kvTensor_Layer", &ucmprefetch::GSAPrefetchEngineC::SetKvTensor)
@@ -143,7 +167,7 @@ PYBIND11_MODULE(gsa_prefetch, m)
         .def("get_sparse_len", &ucmprefetch::GSAPrefetchEngineC::GetSparseSeqLen)
         .def("set_indexer_map", &ucmprefetch::GSAPrefetchEngineC::SetIndexerMap)
         .def("update_indexer_map", &ucmprefetch::GSAPrefetchEngineC::UpdateIndexerMap)
-        .def("submit_task_indexer", &ucmprefetch::GSAPrefetchEngineC::SubmitTaskIndxer)
+        .def("submit_task_indexer", &ucmprefetch::GSAPrefetchEngineC::SubmitTaskIndexer)
         .def("get_indexer_status", &ucmprefetch::GSAPrefetchEngineC::GetIndexerStatus)
         .def("indexer_init_load", &ucmprefetch::GSAPrefetchEngineC::IndexerInitLoad)
         .def("indexer_block_map", &ucmprefetch::GSAPrefetchEngineC::GetIndexerBlockMap)

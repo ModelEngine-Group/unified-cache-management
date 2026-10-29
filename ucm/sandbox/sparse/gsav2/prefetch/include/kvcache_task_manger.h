@@ -23,7 +23,7 @@
 #include "../ascend/kvcache_trans_ascend.h"
 
 // Task Status Enumeration
-enum class TaskStatus { PENDING, RUNNING, COMPLETED, CANCELLED };
+enum class TaskStatus { PENDING, RUNNING, COMPLETED, FAILED, CANCELLED };
 
 // Task structure
 struct TaskInfo {

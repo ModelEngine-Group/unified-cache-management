@@ -55,7 +55,10 @@ class __attribute__((visibility("hidden"))) GSAPrefetchEngineC {
 
 public:
     std::mutex mMutexUseToken;
-    std::mutex mDelReqMutex;
+    // Serializes access to the per-request maps (mReqUseBlockTable, mDocsTables,
+    // mBlocksMap, mIndexerSlot, ...) that are touched concurrently by
+    // DelBlocksMap (Python thread), SetIndexerMap (Python thread) and
+    // IndexerLoadProcess (indexer worker thread).
     std::mutex mUpdateReqMutex;
     bool mStopPrefetch = false;
     std::atomic<bool> mIsPrefetchRunning{false};
@@ -143,7 +146,7 @@ public:
     int CallPrefetchProcess(const TaskInfo& taskInfo, ThreadInfo& threadInfo);
 
     // set output
-    void SetTopkIndies(std::string reqID, torch::Tensor& topIndices);
+    void SetTopkIndices(std::string reqID, torch::Tensor& topIndices);
 
     void PreSwapTokens(std::vector<uintptr_t>& useTokenPtrs, std::vector<int32_t>& seqLens,
                        std::vector<std::vector<int>>& swapIndex,
@@ -196,7 +199,7 @@ public:
 
     void UCMIndexerLoadAsync(void* context, void* stream);
 
-    void SubmitTaskIndxer(std::vector<int>& topkLensInput, std::vector<std::string>& reqIDList,
+    void SubmitTaskIndexer(std::vector<int>& topkLensInput, std::vector<std::string>& reqIDList,
                           std::vector<torch::Tensor>& topkLists, uint32_t stepTime);
 
     void IndexerInitLoad(std::vector<std::vector<int>>& blockTable,

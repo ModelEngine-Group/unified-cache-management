@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
     from vllm.config import VllmConfig
 
+import numpy as np
 import torch
 from vllm.forward_context import ForwardContext
 
@@ -51,6 +52,82 @@ class UcmSparseMetadata(ABC):  # noqa: B024
     """
 
     pass
+
+
+class UcmSparseCpuGpuBuffer:
+    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM.
+
+    Kept for backward compatibility: ``ucm/sparse/gsa_on_device/gsa_on_device.py``
+    still imports this class. New implementations (e.g. GSA v2) may use their own
+    buffer helpers instead.
+    """
+
+    def __init__(
+        self,
+        *size: Union[int, torch.SymInt],
+        dtype: torch.dtype,
+        device: torch.device,
+        pin_memory: bool = True,
+        with_numpy: bool = True,
+    ) -> None:
+        self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)
+        self.gpu = self.cpu.to(device)
+        self.np: np.ndarray
+        self.n = 0
+
+        if with_numpy:
+            if dtype == torch.bfloat16:
+                raise ValueError(
+                    "Bfloat16 torch tensors cannot be directly cast to a "
+                    "numpy array, so call UcmSparseCpuGpuBuffer with with_numpy=False"
+                )
+            self.np = self.cpu.numpy()
+
+    def copy_to_gpu(self, n: Optional[int] = None) -> None:
+        # TODO: replace with esa_copy
+        if n is None:
+            n = self.n
+        if n <= 0:
+            return
+        self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)
+
+    def copy_to_cpu(self, n: Optional[int] = None) -> None:
+        # TODO: replace with esa_copy
+        """NOTE: Because this method is non-blocking, explicit synchronization
+        is needed to ensure the data is copied to CPU."""
+        if n is None:
+            n = self.n
+        if n <= 0:
+            return
+        self.cpu[:n].copy_(self.gpu[:n], non_blocking=True)
+
+    def append_numpy(self, data: List[Any]) -> None:
+        size = len(data)
+        assert (
+            self.np is not None
+        ), "append_numpy meed to be initialized by with_numpy=True."
+        assert self.n + size < self.cpu.shape[0], "append_numpy data out of range."
+        self.np[self.n : self.n + size] = data
+        self.n += size
+
+    def clear(self) -> None:
+        self.n = 0
+
+    @property
+    def size(self) -> int:
+        return self.n
+
+    @property
+    def valid_np(self) -> np.ndarray:
+        return self.np[: self.n]
+
+    @property
+    def valid_cpu(self) -> torch.Tensor:
+        return self.cpu[: self.n]
+
+    @property
+    def valid_gpu(self) -> torch.Tensor:
+        return self.gpu[: self.n]
 
 
 class UcmSparseBase(ABC):
@@ -126,8 +203,12 @@ class UcmSparseBase(ABC):
     def execute_finished(self, rec_result=None):
         """
         This is called at the end of "ModelRunner->execute_model" function.
+
+        Kept for backward compatibility: returns ``rec_result`` unchanged so that
+        existing callers that rely on ``return ucm_sparse.execute_finished(...)``
+        (e.g. the v0110 integration patches) keep receiving the value back.
         """
-        pass
+        return rec_result
 
     def warmup(self):
         """
@@ -174,10 +255,19 @@ class UcmSparseBase(ABC):
         """
         pass
 
+    def update_states(self, scheduler_output: SchedulerOutput) -> None:
+        """
+        This is called at the beginning of "ModelRunner->execute_model" function.
+        Update the cached states with the scheduler output.
+
+        Kept for backward compatibility with the v0110 integration patches.
+        """
+        pass
+
     def set_sparse_topk(
         self,
         layer_name: str,
-        kv_cache: List[torch.tensor],
+        kv_cache: List[torch.Tensor],
         attn_metadata,
     ) -> None:
         """

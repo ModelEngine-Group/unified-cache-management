@@ -808,6 +808,12 @@ bool GSAPrefetchEngineC::SubmitIndexerInitLoadTask(UC::Detail::TaskDesc& task,
                                                    const std::string& reqID, int layerID)
 {
     if (task.empty()) { return true; }
+    if (!mStoreV1_) {
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] IndexerInitLoad mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
+                    reqID.c_str(), layerID);
+        return false;
+    }
     const size_t loadNumber = task.size();
     auto status = mStoreV1_->LoadToDevice(std::move(task));
     if (status.Failure()) {
@@ -1031,6 +1037,12 @@ bool GSAPrefetchEngineC::CopyNonUCMIndexerBlock(const std::string& reqID, int la
 bool GSAPrefetchEngineC::LoadIndexerTask(const std::string& reqID, int layerID,
                                          UC::Detail::TaskDesc& task, size_t& totalNumber)
 {
+    if (!mStoreV1_) {
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] UCMIndexerLoadAsync mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
+                    reqID.c_str(), layerID);
+        return false;
+    }
     const size_t loadNumber = task.size();
     auto status = mStoreV1_->LoadToDevice(std::move(task));
     if (status.Failure()) {
@@ -1186,13 +1198,13 @@ void GSAPrefetchEngineC::SubmitTask(std::vector<int>& topkLensInput, std::vector
         mDecodeStep, reqIDList.size(), durationLoadPre.count());
 }
 
-void GSAPrefetchEngineC::SubmitTaskIndxer(std::vector<int>& topkLensInput,
+void GSAPrefetchEngineC::SubmitTaskIndexer(std::vector<int>& topkLensInput,
                                           std::vector<std::string>& reqIDList,
                                           std::vector<torch::Tensor>& topkLists, uint32_t stepTime)
 {
     if (!mOpenIndexerOffload) { return; }
     mLogger.log(LogLevel::INFO,
-                "Decode step: %u, |KVCache Prefetch| start SubmitTaskIndxer batch size: %lu\n",
+                "Decode step: %u, |KVCache Prefetch| start SubmitTaskIndexer batch size: %lu\n",
                 mDecodeStep, reqIDList.size());
     auto start = std::chrono::high_resolution_clock::now();
     for (uint32_t i = 0; i < reqIDList.size(); i++) {
@@ -1215,18 +1227,18 @@ void GSAPrefetchEngineC::SubmitTaskIndxer(std::vector<int>& topkLensInput,
         std::chrono::duration_cast<std::chrono::microseconds>(endLoadPre - start);
     mLogger.log(
         LogLevel::INFO,
-        "Decode step: %u, |KVCache Prefetch| finish SubmitTaskIndxer batch size: %lu, cost: %lu\n",
+        "Decode step: %u, |KVCache Prefetch| finish SubmitTaskIndexer batch size: %lu, cost: %lu\n",
         mDecodeStep, reqIDList.size(), durationLoadPre.count());
 }
 
-void GSAPrefetchEngineC::SetTopkIndies(std::string reqID, torch::Tensor& topIndices)
+void GSAPrefetchEngineC::SetTopkIndices(std::string reqID, torch::Tensor& topIndices)
 {
     mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start SetTopkIndies reqID: %s\n", mDecodeStep,
+                "Decode step: %u, |KVCache Prefetch| Start SetTopkIndices reqID: %s\n", mDecodeStep,
                 reqID.c_str());
     mAllTopkIndicesTensor[reqID] = topIndices;
     mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| End SetTopkIndies reqID: %s\n", mDecodeStep,
+                "Decode step: %u, |KVCache Prefetch| End SetTopkIndices reqID: %s\n", mDecodeStep,
                 reqID.c_str());
 }
 
@@ -1314,10 +1326,12 @@ void GSAPrefetchEngineC::DelBlocksMap(std::string reqID)
     mLogger.log(LogLevel::DEBUG,
                 "Decode step: %u, |KVCache Prefetch| Start DelBlocksMap, reqID: %s\n", mDecodeStep,
                 reqID.c_str());
-    mDelReqMutex.lock();
+    mUpdateReqMutex.lock();
     mDelSeqIds.insert(reqID);
-    if (!GetPrefetchStatus()) { DelReqIDRun(); }
-    mDelReqMutex.unlock();
+    // Only run the deletion when neither prefetch nor indexer load is running,
+    // so that the shared per-request maps are not erased mid-update.
+    if (!GetPrefetchStatus() && !GetIndexerStatus()) { DelReqIDRun(); }
+    mUpdateReqMutex.unlock();
     mLogger.log(LogLevel::DEBUG,
                 "Decode step: %u, |KVCache Prefetch| End DelBlocksMap, reqID: %s\n", mDecodeStep,
                 reqID.c_str());

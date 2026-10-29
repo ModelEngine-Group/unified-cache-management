@@ -33,29 +33,43 @@ def ensure_ucm_sparse_initialized(
     """
     Initialize UCM sparse agent for the given role.
 
+    The sparse method is selected from the user's ``kv_transfer_config``
+    (``ucm_sparse_config``), restoring the config-driven behavior so that
+    ESA / KVStar / GSAOnDevice / Blend can still be selected by their own
+    configurations. GSA / GSAPD additionally require the explicit
+    ``IS_OPEN_GSA`` switch (see ``ucm.sparse.utils``).
+
     Args:
         vllm_config: vLLM configuration
         role: UCM sparse role (SCHEDULER or WORKER)
     """
-    if not IS_OPEN_GSA:
-        return
     global _UCM_SPARSE_AGENT
 
-    is_pd_mix = vllm_config.kv_transfer_config is None or (
-        vllm_config.kv_transfer_config.is_kv_consumer
-        and vllm_config.kv_transfer_config.is_kv_producer
-    )
-    ucm_sparse_config = {}
-    if not is_pd_mix:
-        if vllm_config.kv_transfer_config.is_kv_producer:
-            return
-        ucm_sparse_config["GSAPD"] = {}
-    else:
-        ucm_sparse_config["GSA"] = {}
-    sparse_method_name = ucm_sparse_config
+    if vllm_config.kv_transfer_config is None:
+        return
+
+    # Read the user-configured sparse method (config-driven).
+    ucm_config = Config(vllm_config.kv_transfer_config)
+    ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
+    if not ucm_sparse_config:
+        return
+
+    sparse_method_name = next(iter(ucm_sparse_config))
+
+    # GSA / GSAPD are opt-in: require the explicit IS_OPEN_GSA switch so that
+    # non-GSA deployments are unaffected.
+    if sparse_method_name in ("GSA", "GSAPD") and not IS_OPEN_GSA:
+        logger.info(
+            "Sparse method %s selected but GSA is disabled; "
+            "set UCM_SPARSE_GSA_ENABLE=1 to enable it. Skip initialization.",
+            sparse_method_name,
+        )
+        return
 
     if _UCM_SPARSE_AGENT is None:
-        logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)
+        logger.info(
+            "Initializing UCM sparse agent with method: %s", sparse_method_name
+        )
         _UCM_SPARSE_AGENT = UcmSparseFactory.create_sparse_method(
             vllm_config,
             ucm_sparse_config,

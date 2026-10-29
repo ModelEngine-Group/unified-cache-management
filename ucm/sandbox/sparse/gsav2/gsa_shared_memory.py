@@ -10,11 +10,18 @@ import torch
 
 
 class SharedBlockTable:
-    def __init__(self, name: str, is_create: bool = False, timeout: float = 30):
+    def __init__(
+        self,
+        name: str,
+        is_create: bool = False,
+        timeout: float = 30,
+        max_bs: int = 100,
+        max_block_len: int = 2000,
+    ):
         self.name = name
         # 预计算内存布局
-        self.max_bs = 100
-        self.max_block_len = 2000
+        self.max_bs = max_bs
+        self.max_block_len = max_block_len
         self.elements_size = 4
         self.version_size = 4
         self.one_req_offset = self.max_block_len * self.elements_size
@@ -56,6 +63,15 @@ class SharedBlockTable:
         for index, add_block in enumerate(add_blocks):
             if len(add_block) == 0:
                 continue
+            if index >= self.max_bs:
+                raise IndexError(
+                    f"add_block index {index} exceeds max_bs {self.max_bs}"
+                )
+            if len(add_block) > self.max_block_len:
+                raise ValueError(
+                    f"add_block len {len(add_block)} exceeds "
+                    f"max_block_len {self.max_block_len}"
+                )
             index_offset = self.one_req_offset * index + self.version_size
             arr = array.array("i", add_block)
             raw_bytes = arr.tobytes()
@@ -72,14 +88,25 @@ class SharedBlockTable:
             time.sleep(0.0001)
 
         if time.time() - start > self.timeout:
-            print(f"[GSA] [PID {os.getpid()}] timeout for wait for read_add_block")
-            return None
+            raise TimeoutError(
+                f"[GSA] [PID {os.getpid()}] timeout waiting for read_add_block "
+                f"(version {self.version})"
+            )
 
         add_blocks = []
         for index, add_block in enumerate(add_block_lens):
             if add_block == 0:
                 add_blocks.append([])
                 continue
+            if index >= self.max_bs:
+                raise IndexError(
+                    f"add_block index {index} exceeds max_bs {self.max_bs}"
+                )
+            if add_block > self.max_block_len:
+                raise ValueError(
+                    f"add_block len {add_block} exceeds "
+                    f"max_block_len {self.max_block_len}"
+                )
             index_offset = self.one_req_offset * index + self.version_size
             arr = array.array("i")
             raw_bytes = add_block * self.elements_size
@@ -94,9 +121,18 @@ class SharedBlockTable:
             self.shm = None
 
     def unlink(self):
-        """🗑️ 销毁共享内存（⚠️ 仅创建者进程调用一次）"""
-        if self.shm is not None and self.is_creator:
-            self.shm.unlink()
+        """销毁共享内存（⚠️ 仅创建者进程调用一次）"""
+        if not self.is_creator:
+            return
+        shm = self.shm
+        if shm is None:
+            # close() has already been called: re-attach so we can still unlink.
+            try:
+                shm = shared_memory.SharedMemory(name=self.name, create=False)
+            except FileNotFoundError:
+                return
+        shm.unlink()
+        shm.close()
 
 
 class SharedTensorManager:
@@ -160,9 +196,17 @@ class SharedTensorManager:
             self.shm = None
 
     def unlink(self):
-        """🗑️ 销毁共享内存（⚠️ 仅创建者进程调用一次）"""
-        if self.shm is not None and self.is_creator:
-            self.shm.unlink()
+        """销毁共享内存（⚠️ 仅创建者进程调用一次）"""
+        if not self.is_creator:
+            return
+        shm = self.shm
+        if shm is None:
+            try:
+                shm = shared_memory.SharedMemory(name=self.name, create=False)
+            except FileNotFoundError:
+                return
+        shm.unlink()
+        shm.close()
 
 
 class SharedTensorVersion:
@@ -216,15 +260,18 @@ class SharedTensorVersion:
                 f"[PID {os.getpid()}] 超时 {timeout}s：未能创建或连接共享内存 {name}"
             )
 
-    def update_prefetch_status(self, is_done, vetrsion):
+    def update_prefetch_status(self, is_done, version):
         struct.pack_into("<Q", self.shm.buf, self.i_offset, is_done)
-        struct.pack_into("<Q", self.shm.buf, self.v_offset, vetrsion)
+        struct.pack_into("<Q", self.shm.buf, self.v_offset, version)
 
-    def _wait_ranks_version(self, version):
-        """等待所有 rank 的 version 与目标一致，超时 1s"""
-        time_out = 30
+    def _wait_ranks_version(self, version, timeout: float = 30.0) -> bool:
+        """等待所有 rank 的 version 与目标一致，最长 ``timeout`` 秒。
+
+        Returns:
+            True if all ranks are aligned on ``version``, False on timeout.
+        """
         start = time.time()
-        while time.time() - start < time_out:
+        while time.time() - start < timeout:
             flag = True
             for i in range(self.tp_size):
                 cur_v = struct.unpack_from(
@@ -237,11 +284,15 @@ class SharedTensorVersion:
                     time.sleep(0.0001)
                     break
             if flag:
-                break
+                return True
+        return False
 
     def update_version(self, version):
         if self.is_creator:
-            self._wait_ranks_version(version)
+            if not self._wait_ranks_version(version):
+                raise TimeoutError(
+                    f"[GSA] timeout waiting for all ranks to align on version {version}"
+                )
 
             for i in range(self.tp_size):
                 cur_v = struct.unpack_from("<Q", self.shm.buf, i * self.elements_size)[
@@ -280,9 +331,17 @@ class SharedTensorVersion:
             self.shm = None
 
     def unlink(self):
-        """🗑️ 销毁共享内存（⚠️ 仅创建者进程调用一次）"""
-        if self.shm is not None and self.is_creator:
-            self.shm.unlink()
+        """销毁共享内存（⚠️ 仅创建者进程调用一次）"""
+        if not self.is_creator:
+            return
+        shm = self.shm
+        if shm is None:
+            try:
+                shm = shared_memory.SharedMemory(name=self.name, create=False)
+            except FileNotFoundError:
+                return
+        shm.unlink()
+        shm.close()
 
 
 class SharedTensorPool:

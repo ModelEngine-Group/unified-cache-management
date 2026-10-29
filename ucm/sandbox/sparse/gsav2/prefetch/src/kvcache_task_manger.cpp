@@ -1,28 +1,40 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
- */
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include "kvcache_pre.h"
+#include <exception>
+#include <iostream>
 
 namespace {
 
-// Bind worker threads to specified CPU cores and print binding info.
-void SetupCpuAffinity(const std::vector<int>& cpuToBind, const std::string& type, int deviceID,
-                      size_t cpuNum, size_t cpuOffset, size_t resetCpuNum, size_t cpuNumMax)
+// Bind worker threads to the CPU cores given in cpuToBind and print binding info.
+void SetupCpuAffinity(const std::vector<int>& cpuToBind, const std::string& type, int deviceID)
 {
-    if (cpuToBind.size() >= cpuNumMax) {
-        if (type == "indexer") {
-            cpuOffset = cpuOffset + cpuNum;
-            cpuNum = resetCpuNum;
-        }
-    } else {
-        cpuNum = cpuToBind.size();
-        cpuOffset = 0;
-    }
-    if (cpuToBind.size() <= 0) { return; }
-    std::vector<ssize_t> cores(cpuNum);
-    std::cout << "[GSA] cpu binds of" << type << " for rank " << deviceID << ": [";
-    for (size_t tid = 0; tid < cpuNum; tid++) {
-        cores[tid] = cpuToBind[tid + cpuOffset];
+    if (cpuToBind.empty()) { return; }
+    std::vector<ssize_t> cores(cpuToBind.size());
+    std::cout << "[GSA] cpu binds of " << type << " for rank " << deviceID << ": [";
+    for (size_t tid = 0; tid < cpuToBind.size(); tid++) {
+        cores[tid] = cpuToBind[tid];
         std::cout << cores[tid] << ", ";
     }
     std::cout << "]" << std::endl;
@@ -45,18 +57,10 @@ TaskManager::TaskManager(int deviceID, int dpRank, int tpSize, void* args, size_
                                       cpuToBind]() {
             void* stream;
             void* context;
-            // Solution 1: Each rank corresponds to a different node and different IDs.
-            size_t cpuNum = 20;
-            size_t cpuOffset = 0;
-            size_t resetCpuNum = 4;
-            size_t cpuNumMax = 24;
-            SetupCpuAffinity(cpuToBind, type, deviceID, cpuNum, cpuOffset, resetCpuNum, cpuNumMax);
+            SetupCpuAffinity(cpuToBind, type, deviceID);
             ObtainStream(&stream, &context, deviceID, mStreamNum);
             ThreadInfo local_thread_info(static_cast<uint64_t>(hasher(std::this_thread::get_id())),
                                          deviceID, stream, context, args);
-            std::cout << "zambin thread id: "
-                      << static_cast<uint64_t>(hasher(std::this_thread::get_id()))
-                      << " args: " << args << " mStreamNum: " << mStreamNum << std::endl;
             // Store thread information into a global array
             {
                 std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -85,7 +89,7 @@ TaskManager::TaskManager(int deviceID, int dpRank, int tpSize, void* args, size_
                 }
                 if (task_to_execute) { ExecuteTask(task_to_execute, local_thread_info); }
             }
-            DestoryStream(local_thread_info.stream_, local_thread_info.context_,
+            DestroyStream(local_thread_info.stream_, local_thread_info.context_,
                           local_thread_info.deviceID_, mStreamNum);
         });
     }
@@ -95,11 +99,16 @@ void TaskManager::ExecuteTask(std::shared_ptr<TaskWrapper>& task, ThreadInfo& lo
 {
     try {
         task->inputTaskFunc(*task->inputTaskInfo, local_thread_info);
+        task->status.store(TaskStatus::COMPLETED, std::memory_order_release);
+    } catch (const std::exception& e) {
+        std::cerr << "[GSA] Task: " << task->inputTaskInfo->taskID
+                  << " failed: " << e.what() << std::endl;
+        task->status.store(TaskStatus::FAILED, std::memory_order_release);
     } catch (...) {
-        std::cout << "[GSA] Task: " << task->inputTaskInfo->taskID << " is wrong!!" << std::endl;
+        std::cerr << "[GSA] Task: " << task->inputTaskInfo->taskID
+                  << " failed with unknown exception" << std::endl;
+        task->status.store(TaskStatus::FAILED, std::memory_order_release);
     }
-    // Update the task status
-    task->status.store(TaskStatus::COMPLETED, std::memory_order_release);
     running_tasks_count_.fetch_sub(1, std::memory_order_relaxed);
     task->end_time = std::chrono::steady_clock::now();
 }

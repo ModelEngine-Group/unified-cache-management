@@ -280,9 +280,9 @@ void MultiBSThreadFun(const TaskInfo& taskInfo, ThreadInfo& threadInfo)
 {
     GSAPrefetchEngineC* engine = static_cast<GSAPrefetchEngineC*>(threadInfo.args_);
     int ret = engine->CallPrefetchProcess(taskInfo, threadInfo);
-    engine->mDelReqMutex.lock();
+    engine->mUpdateReqMutex.lock();
     engine->DelReqIDRun();
-    engine->mDelReqMutex.unlock();
+    engine->mUpdateReqMutex.unlock();
     engine->mIsPrefetchRunning.store(false, std::memory_order_release);
     if (ret == 0) { return; }
 }
@@ -423,6 +423,11 @@ void GSAPrefetchEngineC::InitAclRuntime()
 {
     mContext = (void*)malloc(sizeof(aclrtContext));
     mStream = (void*)malloc(sizeof(aclrtStream));
+    if (mContext == nullptr || mStream == nullptr) {
+        mLogger.log(LogLevel::ERROR,
+                    "|KVCache Prefetch| InitAclRuntime malloc failed\n");
+        throw std::runtime_error("InitAclRuntime: malloc failed");
+    }
 
     auto ret = aclrtGetCurrentContext(static_cast<aclrtContext*>(mContext));
     if (ret != ACL_SUCCESS) {
@@ -430,6 +435,7 @@ void GSAPrefetchEngineC::InitAclRuntime()
         mLogger.log(LogLevel::ERROR,
                     "|KVCache Prefetch| aclrtGetCurrentContext Error: %d, Error: %s\n", ret,
                     errMsg ? errMsg : "Unknown error");
+        throw std::runtime_error("InitAclRuntime: aclrtGetCurrentContext failed");
     }
 
     ret = aclrtCreateStream(static_cast<aclrtStream*>(mStream));
@@ -437,6 +443,7 @@ void GSAPrefetchEngineC::InitAclRuntime()
         const char* errMsg = aclGetRecentErrMsg();
         mLogger.log(LogLevel::ERROR, "|KVCache Prefetch| aclrtCreateStream Error: %d, Error: %s\n",
                     ret, errMsg ? errMsg : "Unknown error");
+        throw std::runtime_error("InitAclRuntime: aclrtCreateStream failed");
     }
 
     mLogger.log(LogLevel::INFO,
@@ -476,7 +483,7 @@ void GSAPrefetchEngineC::AttachPrefetchResultShm()
     while (shmFd == -1 && retryCount < 100) {
         shmFd = shm_open(mPrefetchResultShmName.c_str(), O_RDONLY, 0666);
         if (shmFd == -1) {
-            sleep(1);  // Wait 1ms before retry
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Wait 1ms before retry
             retryCount++;
         }
     }
@@ -530,7 +537,9 @@ void GSAPrefetchEngineC::CheckInputIndex(uint32_t maxLen, uint32_t index)
         mLogger.log(LogLevel::ERROR,
                     "Decode step: %u, |KVCache Prefetch| index error! index: %u, maxLen: %u\n",
                     mDecodeStep, index, maxLen);
-        std::abort();
+        throw std::out_of_range(
+            "KVCache Prefetch: index " + std::to_string(index) +
+            " out of range [0, " + std::to_string(maxLen) + ")");
     }
 }
 
@@ -1097,6 +1106,12 @@ bool GSAPrefetchEngineC::LoadLastChunkSources(int layerID, const std::string& re
                                               UC::Detail::TaskHandle& hostTaskId, bool& hasHostTask)
 {
     if (task.empty()) { return true; }
+    if (!mStoreV1_) {
+        mLogger.log(LogLevel::ERROR,
+                    "|LastChunkMove| mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
+                    reqID.c_str(), layerID);
+        return false;
+    }
     const size_t kBlockBytes =
         static_cast<size_t>(mBlockSize) * static_cast<size_t>(mKVSizeBytesToken);
     const size_t normalBlockCount = task.size();
@@ -1188,6 +1203,11 @@ UCMMergeHostAddress::~UCMMergeHostAddress() { owner.ReleaseUCMMergeHostAddress(*
 void GSAPrefetchEngineC::ReleaseUCMMergeHostAddress(UCMMergeHostAddress& address)
 {
     if (!address.hasHostTask) { return; }
+    if (!mStoreV1_) {
+        mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| mStoreV1_ is nullptr");
+        address.hasHostTask = false;
+        return;
+    }
     const auto status = mStoreV1_->ReleaseHostBuffer(address.taskId);
     if (status.Failure()) {
         mLogger.log(LogLevel::ERROR,

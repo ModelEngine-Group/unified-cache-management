@@ -295,32 +295,36 @@ class GSALogger:
         if level < self.level:
             return
 
-        if self.log_type == GSALogger.LOG_TYPE_ALL:
-            # 所有模式：所有日志类型都写入对应文件
-            for logger in self.loggers.values():
-                logger.log(level, message)
-        else:
-            # 单类型模式：只写入对应文件
-            if log_type in self.loggers:
-                self.loggers[log_type].log(level, message)
+        # 路由到与 log_type 对应的日志文件。
+        # LOG_TYPE_ALL 模式下三个文件都已创建，但每条日志仍应按其
+        # 类型写入对应的文件，而不是全部写进三个文件。
+        logger = self.loggers.get(log_type)
+        if logger is not None:
+            logger.log(level, message)
 
     def performance_is_info(self):
-        self.loggers[GSALogger.LOG_TYPE_PERFORMANCE].is_info_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_PERFORMANCE)
+        return bool(logger) and logger.is_info_enabled
 
     def performance_is_debug(self):
-        self.loggers[GSALogger.LOG_TYPE_PERFORMANCE].is_debug_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_PERFORMANCE)
+        return bool(logger) and logger.is_debug_enabled
 
     def accuracy_is_info(self):
-        self.loggers[GSALogger.LOG_TYPE_ACCURACY].is_info_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_ACCURACY)
+        return bool(logger) and logger.is_info_enabled
 
     def accuracy_is_debug(self):
-        self.loggers[GSALogger.LOG_TYPE_ACCURACY].is_debug_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_ACCURACY)
+        return bool(logger) and logger.is_debug_enabled
 
     def normal_is_info(self):
-        self.loggers[GSALogger.LOG_TYPE_NORMAL].is_info_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_NORMAL)
+        return bool(logger) and logger.is_info_enabled
 
     def normal_is_debug(self):
-        self.loggers[GSALogger.LOG_TYPE_NORMAL].is_debug_enabled
+        logger = self.loggers.get(GSALogger.LOG_TYPE_NORMAL)
+        return bool(logger) and logger.is_debug_enabled
 
     def performance_debug(self, message):
         """性能日志debug级别"""
@@ -389,8 +393,10 @@ class GSALogger:
 
     @property
     def is_debug_enabled(self):
-        return self.normal_is_info
+        logger = self.loggers.get(GSALogger.LOG_TYPE_NORMAL)
+        return bool(logger) and logger.is_debug_enabled
 
     @property
     def is_info_enabled(self):
-        return self.normal_is_debug
+        logger = self.loggers.get(GSALogger.LOG_TYPE_NORMAL)
+        return bool(logger) and logger.is_info_enabled

@@ -119,7 +119,7 @@ bool IsStreamIdle(void* stream)
     }
 }
 
-void DestoryStream(void* stream, void* context, int32_t deviceID, int32_t mStreamNum)
+void DestroyStream(void* stream, void* context, int32_t deviceID, int32_t mStreamNum)
 {
     for (int i = 0; i < mStreamNum; i++) {
         auto ret = aclrtDestroyStream((static_cast<aclrtStream*>(stream))[i]);
