@@ -18,12 +18,14 @@ TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
 sys.path.insert(0, str(RELEASE_ROOT))
 
 builders = importlib.import_module("ucm_release.builders")
+chart = importlib.import_module("ucm_release.chart")
 cleanup_records = importlib.import_module("ucm_release.cleanup_records")
 wheel_ops = importlib.import_module("ucm_release.wheel")
 planner = importlib.import_module("ucm_release.plan")
 serialization = importlib.import_module("ucm_release.serialization")
 policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
+version_config = importlib.import_module("ucm_release.version_config")
 
 
 def _fixture_policy(
@@ -307,6 +309,159 @@ def test_plan_projects_only_runtime_referenced_wheel_union() -> None:
     assert all(
         item["builder"]["digest"].startswith("sha256:") for item in plan["wheels"]
     )
+
+
+def _opaque_pin_inputs(
+    product_id: str,
+    backend: str,
+    tags: list[str],
+    *,
+    version: str = "0.7.60rc1",
+    release_type: str = "prerelease",
+):
+    formal = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override=version,
+        release_type=release_type,
+        dockerhub_namespace="docker.io/release-test",
+    )
+    key = version_config.SUPPORTED_VERSION_KEYS[product_id]
+    configured_tags = ",".join(f"@{tag}" for tag in tags)
+    formal["runtime_selectors"] = version_config.parse(
+        f"UCM_VERSION={version}\n{key}={configured_tags}\n"
+    )["supported_runtimes"]
+    for product in formal["products"]:
+        product["runtime_selectors"] = formal["runtime_selectors"][product["id"]]
+    product = next(item for item in formal["products"] if item["id"] == product_id)
+    source = product["runtime_repository"]
+    fixture = serialization.load_json(TAG_FIXTURE)
+    fixture["repositories"][source] = {"pages": [{"tags": tags}]}
+    source_probes = [
+        probe
+        for probe in fixture["runtime_probe"]["probes"]
+        if probe["backend"] == backend
+    ]
+    probes = []
+    for index, tag in enumerate(tags):
+        for source_probe in source_probes:
+            probe = copy.deepcopy(source_probe)
+            request_id = f"runtime-pin-{index}"
+            probe.update(
+                probe_id=f"{request_id}-{probe['cpu_arch']}",
+                request_id=request_id,
+                product_id=product_id,
+                repository=source,
+                tag=tag,
+                runtime_ref=f"{source}:{tag}",
+                target_repository=product["target_repository"],
+                image_reference=f"{source}@{probe['image_reference'].split('@')[1]}",
+            )
+            probes.append(probe)
+    fixture["runtime_probe"]["probes"] = probes
+    return formal, fixture
+
+
+@pytest.mark.parametrize(
+    ("product_id", "backend", "tag"),
+    [
+        ("vllm-ascend", "cann-a2", "custom-310p"),
+        ("sglang", "cann-a3", "custom-cu129-runtime"),
+    ],
+)
+def test_opaque_tags_use_probed_capabilities_instead_of_name_hints(
+    product_id, backend, tag
+):
+    formal, fixture = _opaque_pin_inputs(product_id, backend, [tag])
+    selection = upstream.resolve_upstreams(formal, tag_fixture=fixture)
+    runtime = selection["runtimes"][0]
+    assert (runtime["runtime_tag"], runtime["version"], runtime["channel"]) == (
+        tag,
+        tag,
+        "pinned",
+    )
+    assert runtime["backend"] == backend
+
+
+@pytest.fixture
+def named_draft_inputs():
+    coordinates = version_config.classify_tag("draft/v0.9.0-1-test")
+    formal, fixture = _opaque_pin_inputs(
+        "vllm",
+        "cuda",
+        ["Release", "release"],
+        version=coordinates["version"],
+        release_type="draft",
+    )
+    selection = upstream.resolve_upstreams(formal, tag_fixture=fixture)
+    return {
+        "catalog": formal,
+        "runtime_selection": selection,
+        "builder_catalog": _builder_catalog(formal, selection),
+    }, coordinates
+
+
+def test_named_draft_plan_preserves_identity_and_case_distinct_runtime_pins(
+    named_draft_inputs,
+):
+    inputs, coordinates = named_draft_inputs
+    plan = planner.resolve_plan(**inputs, route="release")
+    version = coordinates["version"]
+    assert plan["git_tag"] == coordinates["git_tag"]
+    assert plan["release_kind"] == "draft" and plan["is_prerelease"] is True
+    assert plan["version"] == plan["chart"]["app_version"] == version
+    assert plan["chart"]["version"] == coordinates["chart_version"]
+    assert plan["image_version"] == coordinates["image_version"]
+    assert {wheel["wheel_version"] for wheel in plan["wheels"]} == {version}
+    assert (
+        plan["meta_package"]["version"] == plan["toolkit_package"]["version"] == version
+    )
+    assert all(
+        requirement.endswith(f"=={version}")
+        for requirement in plan["meta_package"]["extras"].values()
+    )
+    families = plan["families"]
+    assert {family["runtime"]["tag"] for family in families} == {"Release", "release"}
+    assert len({family["id"] for family in families}) == len(families)
+    assert len({family["published_reference"] for family in families}) == len(families)
+    assert {wheel["id"] for wheel in plan["wheels"]} == set(
+        inputs["runtime_selection"]["runtimes"][0]["wheel_build_ids"].values()
+    )
+    rendered = chart.render_values(
+        plan, (ROOT / plan["chart"]["source"] / "values.yaml").read_text()
+    )
+    for family in families:
+        assert f"{family['runtime']['tag']}-ucm-{plan['image_version']}" in rendered
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"chart_version": "1.0.0"}, {"release_kind": "publish"}]
+)
+def test_named_draft_plan_rejects_inconsistent_publication_coordinates(
+    named_draft_inputs, overrides
+):
+    inputs, _ = named_draft_inputs
+    with pytest.raises(ValueError, match="custom Draft Tag coordinates differ"):
+        planner.resolve_plan(**inputs, route="release", **overrides)
+
+
+@pytest.mark.parametrize("restriction", ["blocked-backend", "excluded-variant"])
+def test_opaque_pin_rejects_probed_platform_before_builder_resolution(
+    monkeypatch, restriction
+):
+    formal, fixture = _opaque_pin_inputs("vllm-ascend", "cann-a2", ["aaaaa-cc"])
+    if restriction == "blocked-backend":
+        formal["backends"]["cann-a2"].update(
+            status="blocked", reason="Disabled by platform policy"
+        )
+    else:
+        formal["excluded_upstream_variants"]["vllm-ascend"] = ["a2"]
+
+    def unexpected_builder_resolution(*args, **kwargs):
+        pytest.fail("a rejected Runtime must not query or resolve Builders")
+
+    monkeypatch.setattr(builders, "resolve_probe_builds", unexpected_builder_resolution)
+    with pytest.raises(ValueError, match="probed Runtime.*(blocked|excluded)"):
+        upstream.resolve_upstreams(formal, tag_fixture=fixture)
 
 
 def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -> None:
@@ -771,9 +926,11 @@ def test_multiple_pr_runtime_tags_with_same_capability_reuse_wheels() -> None:
 
 
 def test_wheel_result_manifest_uses_actual_filename_tags(tmp_path: Path) -> None:
+    version = "0.9.0.dev0+draft.1.test"
     task = _wheel_result_task("amd64")
+    task["wheel_version"] = version
     wheel = tmp_path / (
-        "uc_manager_cuda_cu130-0.7.60rc1-cp312-cp312-" "manylinux_2_28_x86_64.whl"
+        f"uc_manager_cuda_cu130-{version}-cp312-cp312-manylinux_2_28_x86_64.whl"
     )
     _write_wheel_fixture(wheel, "cp312-cp312-manylinux_2_28_x86_64")
     report = _write_auditwheel_report(
@@ -784,6 +941,7 @@ def test_wheel_result_manifest_uses_actual_filename_tags(tmp_path: Path) -> None
     result = wheel_ops.record_wheel_result(task, wheel)
     assert result["task_id"] == "cuda130-cp312-amd64"
     assert result["filename"] == wheel.name
+    assert result["version"] == version
     assert result["schema_version"] == 5
     assert result["platform_tags"] == ["manylinux_2_28_x86_64"]
     assert result["auditwheel_platform_tag"] == "linux_x86_64"

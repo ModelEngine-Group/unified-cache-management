@@ -9,6 +9,7 @@ Git is not read.
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -205,7 +206,8 @@ def _without_sglang_runtime_tags(
     return [
         dict(item)
         for item in selected
-        if not str(item.get("runtime_tag", "")).endswith("-runtime")
+        if item.get("channel") == "pinned"
+        or not str(item.get("runtime_tag", "")).endswith("-runtime")
     ]
 
 
@@ -242,13 +244,7 @@ def _validated_raw_selector(
     index: int,
     raw_selector: object,
 ) -> tuple[Mapping[str, object], str]:
-    """Validate the shape and version of one raw Runtime selector.
-
-    ``_select_runtime_tags`` compares selector versions before its main loop when
-    ``latest_only`` is set, so this helper shares the loop's contextual
-    ``ValueError``: reading ``raw_selector["version"]`` directly would surface a
-    bare ``KeyError``/``TypeError``/``InvalidVersion`` for a malformed selector.
-    """
+    """Validate a selector and return its numeric range or opaque Tag."""
 
     context = f"{product_id} runtime selector[{index}]"
     if not isinstance(raw_selector, Mapping) or set(raw_selector) != {
@@ -257,9 +253,27 @@ def _validated_raw_selector(
         "tag",
     }:
         raise ValueError(f"{context}: malformed selector")
-    return raw_selector, version_config.runtime_selector_version(
-        raw_selector.get("version"), f"{context} version"
-    )
+    explicit_tag = raw_selector.get("tag")
+    if explicit_tag is None:
+        version = version_config.runtime_selector_version(
+            raw_selector.get("version"), f"{context} version"
+        )
+        expected_raw = version
+    else:
+        if raw_selector.get("version") is not None:
+            raise ValueError(
+                f"{context}: explicit Runtime tag must use @tag without a version range"
+            )
+        if (
+            not isinstance(explicit_tag, str)
+            or version_config.OCI_TAG_PATTERN.fullmatch(explicit_tag) is None
+        ):
+            raise ValueError(f"{context}: explicit Runtime tag is not a valid OCI tag")
+        version = explicit_tag
+        expected_raw = f"@{explicit_tag}"
+    if raw_selector.get("raw") != expected_raw:
+        raise ValueError(f"{context}: raw selector is inconsistent")
+    return raw_selector, version
 
 
 def _select_runtime_tags(
@@ -269,25 +283,30 @@ def _select_runtime_tags(
     excluded_variants: Sequence[str] = (),
     latest_only: bool = False,
 ) -> list[dict[str, str]]:
-    """Resolve version.ini ranges to one published Runtime version per selector.
+    """Resolve version.ini ranges and exact Tag pins to published Runtimes.
 
-    ``latest_only`` narrows the product to its single newest selector so a
-    caller can smoke one version without changing the configured support range.
+    ``latest_only`` keeps the newest numeric range and every explicit Tag.
+    Pins have no version ordering and never participate in automatic selection.
     """
 
     product_id = _string(product, "id", "release product")
     raw_selectors = product.get("runtime_selectors")
     if not isinstance(raw_selectors, list) or not raw_selectors:
         raise ValueError(f"{product_id}: version.ini has no Runtime selectors")
-    if latest_only and len(raw_selectors) > 1:
-        selector_versions = [
-            Version(_validated_raw_selector(product_id, index, raw_selector)[1])
-            for index, raw_selector in enumerate(raw_selectors)
-        ]
-        newest_version = max(selector_versions)
+    selectors = [
+        (index, *_validated_raw_selector(product_id, index, raw_selector))
+        for index, raw_selector in enumerate(raw_selectors)
+    ]
+    range_versions = {
+        index: Version(text)
+        for index, selector, text in selectors
+        if selector["tag"] is None
+    }
+    if latest_only and range_versions:
+        newest_version = max(range_versions.values())
         newest_indexes = [
             index
-            for index, version in enumerate(selector_versions)
+            for index, version in range_versions.items()
             if version == newest_version
         ]
         if len(newest_indexes) > 1:
@@ -295,7 +314,11 @@ def _select_runtime_tags(
                 f"{product_id}: runtime selectors {newest_indexes} share the "
                 f"newest version {newest_version}; the latest selector is ambiguous"
             )
-        raw_selectors = [raw_selectors[newest_indexes[0]]]
+        selectors = [
+            item
+            for item in selectors
+            if item[1]["tag"] is not None or item[0] == newest_indexes[0]
+        ]
     available_tags = sorted(set(str(tag) for tag in tags))
     parsed_by_tag = {
         tag: parsed
@@ -304,34 +327,21 @@ def _select_runtime_tags(
     }
     selected: list[dict[str, str]] = []
     selected_tags: set[str] = set()
-    for index, raw_selector in enumerate(raw_selectors):
-        raw_selector, selector_text = _validated_raw_selector(
-            product_id, index, raw_selector
-        )
+    for index, raw_selector, selector_text in selectors:
         context = f"{product_id} runtime selector[{index}]"
-        selector_version = Version(selector_text)
         explicit_tag = raw_selector.get("tag")
-        expected_raw = (
-            selector_text if explicit_tag is None else f"{selector_text}@{explicit_tag}"
-        )
-        if raw_selector.get("raw") != expected_raw:
-            raise ValueError(f"{context}: raw selector is inconsistent")
         if explicit_tag is not None:
             if not isinstance(explicit_tag, str) or explicit_tag not in available_tags:
                 raise ValueError(f"{context}: explicit Runtime tag is not published")
-            parsed = parsed_by_tag.get(explicit_tag)
-            if parsed is None:
-                raise ValueError(
-                    f"{context}: explicit Runtime tag does not match product grammar"
-                )
-            if not _version_is_in_selector(parsed["version"], selector_version):
-                raise ValueError(
-                    f"{context}: explicit Runtime tag is outside its version range"
-                )
-            if parsed["variant"] in excluded_variants:
-                raise ValueError(f"{context}: explicit Runtime tag is excluded")
-            values = [parsed]
+            values = [
+                {
+                    "runtime_tag": explicit_tag,
+                    "version_text": explicit_tag,
+                    "channel": "pinned",
+                }
+            ]
         else:
+            selector_version = Version(selector_text)
             matching = [
                 item
                 for item in parsed_by_tag.values()
@@ -387,9 +397,8 @@ def resolve_runtime_candidates(
 ) -> dict[str, object]:
     """Select formal Runtime references strictly from published Registry tags.
 
-    ``latest_per_product`` keeps only the newest selector for the named products,
-    so a caller can smoke one version of a product without changing the product's
-    configured support range.
+    ``latest_per_product`` keeps only the newest numeric range for the named
+    products. Every explicitly pinned Tag is retained.
     """
 
     products = release.get("products")
@@ -415,6 +424,8 @@ def resolve_runtime_candidates(
         product = _mapping(raw_product, f"release products[{index}]")
         product_id = _string(product, "id", f"release products[{index}]")
         if pr_default and product_id != "vllm-ascend":
+            continue
+        if not pr_default and product.get("runtime_selectors") == []:
             continue
         repository = _string(product, "runtime_repository", product_id)
         excluded = excluded_by_product.get(product_id, [])
@@ -452,23 +463,24 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _mapping(
-                _parsed_runtime_tag(product_id, tag),
-                f"selected Runtime tag {tag}",
-            )
-            backend = str(parsed["backend"])
-            backend_policy = _mapping(backends.get(backend), f"backend {backend}")
-            if backend_policy.get("status") == "blocked":
-                problems.append(
-                    _blocked_problem(
-                        backend=backend,
-                        capability=f"{backend} runtime",
-                        reason=str(backend_policy["reason"]),
-                        repository=repository,
-                        tag=tag,
-                    )
+            if item["channel"] != "pinned":
+                parsed = _mapping(
+                    _parsed_runtime_tag(product_id, tag),
+                    f"selected Runtime tag {tag}",
                 )
-                continue
+                backend = str(parsed["backend"])
+                backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+                if backend_policy.get("status") == "blocked":
+                    problems.append(
+                        _blocked_problem(
+                            backend=backend,
+                            capability=f"{backend} runtime",
+                            reason=str(backend_policy["reason"]),
+                            repository=repository,
+                            tag=tag,
+                        )
+                    )
+                    continue
             candidate = {
                 "product_id": product_id,
                 "runtime_repository": repository,
@@ -566,13 +578,26 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        parsed = _parsed_runtime_tag(product_id, runtime_tag)
-        if parsed is None:
-            raise ValueError(f"{reference}: Runtime tag does not match product grammar")
-        if item.get("version") != parsed["version_text"]:
-            raise ValueError(f"{reference}: Runtime version differs from its tag")
-        if item.get("channel") != parsed["channel"]:
-            raise ValueError(f"{reference}: Runtime channel differs from its tag")
+        if item.get("channel") == "pinned":
+            if product_id not in version_config.SUPPORTED_VERSION_KEYS:
+                raise ValueError(
+                    f"{reference}: unsupported runtime product {product_id!r}"
+                )
+            runtime_contract.parse_runtime_reference(reference)
+            if item.get("version") != runtime_tag:
+                raise ValueError(
+                    f"{reference}: pinned Runtime version must equal its tag"
+                )
+        else:
+            parsed = _parsed_runtime_tag(product_id, runtime_tag)
+            if parsed is None:
+                raise ValueError(
+                    f"{reference}: Runtime tag does not match product grammar"
+                )
+            if item.get("version") != parsed["version_text"]:
+                raise ValueError(f"{reference}: Runtime version differs from its tag")
+            if item.get("channel") != parsed["channel"]:
+                raise ValueError(f"{reference}: Runtime channel differs from its tag")
         expected_refs.append(reference)
     if sorted(references) != sorted(expected_refs):
         raise ValueError("runtime candidate references do not match runtimes")
@@ -636,6 +661,29 @@ def resolve_upstreams(
         raise ValueError(
             f"runtime probes differ from candidates: missing={missing}, extra={extra}"
         )
+
+    backend_policies = _mapping(release.get("backends"), "platform backends")
+    excluded_by_product = _mapping(
+        release.get("excluded_upstream_variants"), "excluded upstream variants"
+    )
+    # An opaque pin's platform comes from the inspected image, not its name.
+    for probe in probes:
+        reference = str(probe["runtime_ref"])
+        if candidate_by_ref[reference]["channel"] != "pinned":
+            continue
+        backend = str(probe["backend"])
+        backend_policy = _mapping(backend_policies.get(backend), f"backend {backend}")
+        if backend_policy.get("status") == "blocked":
+            raise ValueError(
+                f"{reference}: probed Runtime backend {backend} is blocked: "
+                f"{backend_policy.get('reason', '')}"
+            )
+        _, variant, _ = runtime_contract.wheel_variant(probe)
+        excluded = excluded_by_product.get(probe["product_id"], [])
+        if variant in excluded:
+            raise ValueError(
+                f"{reference}: probed Runtime variant {variant} is excluded"
+            )
 
     wheel_builds = builders.resolve_probe_builds(
         release,
@@ -716,6 +764,11 @@ def resolve_upstreams(
         runtime_id = re.sub(r"[^a-z0-9._-]+", "-", f"{product_id}-{tag}".lower()).strip(
             ".-"
         )
+        if candidate["channel"] == "pinned":
+            # OCI Tags are case-sensitive, while task IDs must be lowercase.
+            runtime_id = (
+                f"{product_id}-pin-{hashlib.sha256(tag.encode()).hexdigest()[:16]}"
+            )
         image_suffix = (
             f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
         )

@@ -492,7 +492,21 @@ def resolve(
     merged["release_type"] = release_type
     merged["release_profile"] = selected_profile
     version_authority = version_config.load(repository_root / "version.ini")
-    version = version_override or str(version_authority["ucm_version"])
+    version = version_config.release_version(
+        version_authority["ucm_version"]
+        if version_override is None
+        else version_override
+    )
+    custom_draft_tag = version_config.custom_draft_tag(version)
+    if (
+        release_type == "draft"
+        and custom_draft_tag is not None
+        and normalized_publish["pypi"]["requested"]
+    ):
+        raise ValueError(
+            "custom Draft versions cannot be published to PyPI/TestPyPI; "
+            "set release_profiles.draft.publish.pypi to false"
+        )
     selectors = version_authority["supported_runtimes"]
     for product in merged["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -511,7 +525,7 @@ def resolve(
             "ucm_base_version": version_authority["ucm_base_version"],
             "version_authority_sha256": version_authority["authority_sha256"],
             "runtime_selectors": copy.deepcopy(selectors),
-            "release_tag": f"v{version}",
+            "release_tag": custom_draft_tag or f"v{version}",
             "matrix_limits": copy.deepcopy(_MATRIX_LIMITS),
             "requirements": copy.deepcopy(bundle["requirements"]),
         }

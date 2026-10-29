@@ -6,6 +6,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -717,10 +718,8 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     )
 
 
-def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def published_release(tmp_path):
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
     plan = _plan()
     plan["meta_package"] = {
@@ -798,7 +797,16 @@ def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
             ),
         }
     )
+    return state, document
 
+
+def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published_release,
+) -> None:
+    state, document = published_release
+    asset_urls = _asset_urls(state)
     manifest = public_manifest.build_manifest(state, document)
 
     assert manifest["schema_version"] == 10
@@ -875,6 +883,60 @@ def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
     )
     command.func(command)
     assert json.loads((output / "release-manifest.json").read_text()) == manifest
+
+
+@pytest.fixture
+def custom_draft_publication(published_release):
+    state, document = json.loads(
+        json.dumps(published_release)
+        .replace("0.7.62rc1", "0.7.62.dev0+draft.test")
+        .replace("0.7.62-rc.1", "0.7.62-draft.test")
+        .replace("v0.23.0-ucm-amd64", "nightly-ucm-0.7.62.dev0.draft.test")
+    )
+    tag = "draft/v0.7.62-test"
+    state["release"].update(git_tag=tag, release_type="draft", release_kind="draft")
+    for item in [*state["images"], *state["families"]]:
+        item["runtime"].update(tag="nightly", version="nightly", channel="pinned")
+    document.update(
+        tag_name=tag,
+        draft=True,
+        html_url=f"https://github.com/example/ucm/releases/tag/{tag}",
+    )
+    return state, document
+
+
+def test_custom_draft_manifest_keeps_local_version_and_opaque_runtime(
+    custom_draft_publication,
+):
+    state, document = custom_draft_publication
+    manifest = public_manifest.build_manifest(state, document)
+    version = "0.7.62.dev0+draft.test"
+    wheel = manifest["wheels"][0]
+    assert {
+        manifest["release"]["version"],
+        manifest["python"]["version"],
+        wheel["version"],
+    } == {version}
+    assert manifest["images"][0]["upstream"] == {
+        "version": "nightly",
+        "channel": "pinned",
+    }
+    assert quote(version, safe="") in wheel["url"]
+    assert cleanup_records.record_from_manifest(manifest, "example/ucm")[
+        "versions"
+    ] == [version]
+
+
+def test_custom_draft_manifest_generation_rejects_a_lost_label(
+    custom_draft_publication,
+):
+    state, document = custom_draft_publication
+    # Keep every package and filename consistent, so the Tag binding must detect the loss.
+    state, document = json.loads(
+        json.dumps((state, document)).replace("0.7.62.dev0+draft.test", "0.7.62.dev0")
+    )
+    with pytest.raises(ValueError, match="version differs from release state identity"):
+        public_manifest.build_manifest(state, document)
 
 
 def test_wheel_capabilities_include_every_linked_image_runtime() -> None:
@@ -1793,12 +1855,17 @@ class TestCleanupRecords:
                 snapshot, self.REPOSITORY, "release-cleanup-19-2-opened.json"
             )
 
+    @pytest.mark.parametrize(
+        "tag,version",
+        [
+            ("draft/v0.8.0", "0.8.0.dev0+gabcdef"),
+            ("draft/v0.8.0-1", "0.8.0.dev1+gabcdef"),
+        ],
+    )
     def test_generic_snapshot_preserves_local_version_and_configured_image_repository(
-        self,
+        self, tag, version
     ):
-        tag = "draft/v0.8.0-1"
-        version = "0.8.0.dev1+gabcdef"
-        reference = "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev1.gabcdef"
+        reference = "ghcr.io/release-org/vllm:v0.23.0-ucm-" + version.replace("+", ".")
         plan = {
             "kind": "ucm-release-plan",
             "route": "release",

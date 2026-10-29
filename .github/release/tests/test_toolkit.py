@@ -7,12 +7,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from ucm_release import toolkit
+from ucm_release import toolkit, version_config
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_toolkit_wheel_contains_external_resources_and_fork_identity(tmp_path):
+def test_toolkit_wheel_contains_external_resources_and_fork_identity(
+    tmp_path,
+):
     source = tmp_path / "source"
     shutil.copytree(
         ROOT / "toolkit",
@@ -20,14 +22,14 @@ def test_toolkit_wheel_contains_external_resources_and_fork_identity(tmp_path):
         ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__"),
     )
     shutil.copy2(ROOT / "version.ini", source / "version.ini")
+    version = "0.9.0.dev0+draft.test"
+    authority = source / "version.ini"
+    authority.write_bytes(
+        version_config.materialize_bytes(authority.read_text(), version)
+    )
     worker = source / "ucm/store/test/e2e/posixstore_aio_test.py"
     worker.parent.mkdir(parents=True)
     shutil.copy2(ROOT / worker.relative_to(source), worker)
-    version = next(
-        line.partition("=")[2]
-        for line in (source / "version.ini").read_text().splitlines()
-        if line.startswith("UCM_VERSION=")
-    )
     repository = "SuperMarioYL/unified-cache-management"
     plan = {
         "repository": repository,
@@ -52,6 +54,8 @@ def test_toolkit_wheel_contains_external_resources_and_fork_identity(tmp_path):
     wheel = next((tmp_path / "dist").glob("*.whl"))
     result = toolkit.record_result(plan, wheel)
     assert result["distribution"] == "supermarioyl-ucm-toolkit"
+    assert result["version"] == version
+    toolkit.validate_result(plan["toolkit_package"], result)
     (wheel.parent / "toolkit-result.json").write_text(json.dumps(result))
     assert toolkit.load_artifact(plan, wheel.parent) == (result, wheel)
     result["sha256"] = "sha256:" + "0" * 64

@@ -246,6 +246,23 @@ def _classification(tag: object) -> dict[str, object]:
         raise CleanupRecordError(str(error)) from error
 
 
+def _version_matches_tag(value: object, classification: dict[str, object]) -> bool:
+    """Bind labeled Drafts exactly while preserving historical local versions."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = Version(value)
+    except ValueError:
+        return False
+    if str(parsed) != value:
+        return False
+    expected = str(classification["version"])
+    if Version(expected).local is not None:
+        return value == expected
+    # Old plans recorded commit suffixes that were not part of their Git Tag.
+    return parsed.public == expected
+
+
 def _sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
     match = version_config.NIGHTLY_TAG.fullmatch(record["tag"])
     if match is not None:
@@ -340,6 +357,7 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
             "cleanup record repository differs from requested repository"
         )
     classification = _classification(record["tag"])
+    labeled_draft = Version(str(classification["version"])).local is not None
     source_sha = record["source_sha"]
     if source_sha is not None and (
         not isinstance(source_sha, str) or _SHA.fullmatch(source_sha) is None
@@ -369,6 +387,8 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
             raise CleanupRecordError("cleanup version must be canonical") from error
         if str(parsed) != version:
             raise CleanupRecordError("cleanup version must be canonical")
+        if labeled_draft and not _version_matches_tag(version, classification):
+            raise CleanupRecordError("cleanup version differs from its Tag")
         versions.add(version)
     if not versions:
         raise CleanupRecordError("cleanup record requires version coordinates")
@@ -400,7 +420,11 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
         raise CleanupRecordError(f"Nightly {record['tag']} has conflicting source SHAs")
     resources = {}
     for raw_resource in _array(record["resources"], "cleanup resources"):
-        resource = _registry_resource(raw_resource, repository)
+        resource = (
+            _resource(raw_resource, repository, classification, sorted(versions))
+            if labeled_draft
+            else _registry_resource(raw_resource, repository)
+        )
         previous = resources.setdefault(resource["reference"], resource)
         if previous != resource:
             raise CleanupRecordError(
@@ -508,21 +532,13 @@ def record_from_plan(record: object, plan: object) -> dict[str, Any]:
     plan = _object(plan, "release plan")
     classification = _classification(result["tag"])
     version = plan.get("version")
-    try:
-        parsed = Version(version) if isinstance(version, str) else None
-    except ValueError as error:
-        raise CleanupRecordError(
-            "release plan identity differs from cleanup binding"
-        ) from error
     if (
         plan.get("kind") != "ucm-release-plan"
         or plan.get("repository") != repository
         or plan.get("route") != "release"
         or plan.get("release_type") != classification["release_type"]
         or plan.get("git_tag") != result["tag"]
-        or parsed is None
-        or str(parsed) != version
-        or parsed.public != classification["version"]
+        or not _version_matches_tag(version, classification)
         or (
             "image_version" in plan
             and plan["image_version"] != runtime.oci_tag_version(version)
@@ -583,8 +599,8 @@ def record_from_manifest(
             )
         if (
             classification["release_type"] == "nightly"
-            and Version(release["version"]).public != classification["version"]
-        ):
+            or Version(str(classification["version"])).local is not None
+        ) and not _version_matches_tag(release["version"], classification):
             raise CleanupRecordError("release Manifest version differs from its Tag")
         resources = [
             {"kind": resource.kind, "reference": resource.reference}
@@ -776,15 +792,7 @@ def decode_snapshot(
     if match.group("stage") == "opened" and resources:
         raise CleanupRecordError("opened cleanup snapshot must not contain resources")
     version = document["version"]
-    try:
-        parsed = Version(version) if isinstance(version, str) else None
-    except ValueError as error:
-        raise CleanupRecordError("cleanup recovery version is invalid") from error
-    if (
-        parsed is None
-        or str(parsed) != version
-        or parsed.public != coordinates["version"]
-    ):
+    if not _version_matches_tag(version, coordinates):
         raise CleanupRecordError("cleanup recovery version differs from its Tag")
     resources = [
         _resource(resource, repository, coordinates, [version])
