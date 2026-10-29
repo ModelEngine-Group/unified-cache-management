@@ -29,7 +29,7 @@ import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 import numpy as np
 import torch
@@ -88,6 +88,37 @@ class UcmPipelineStoreTransTask(Task):
     task_id: int
 
 
+@dataclass(frozen=True)
+class _PreparedPipelineTransfer:
+    """Keep encoded IDs alive and reuse them for every shard of one transfer."""
+
+    store: Any
+    ids: np.ndarray
+    page_count: int
+
+    def load_data(self, shard_index: int, addresses) -> Task:
+        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
+        addrs = (
+            addresses
+            if isinstance(addresses, np.ndarray)
+            else np.array(addresses, dtype=np.uint64)
+        )
+        return UcmPipelineStoreTransTask(self.store.Load(self.ids, indexes, addrs))
+
+    def dump_data(
+        self, shard_index: int, addresses, prerequisite_handle: int = 0
+    ) -> Task:
+        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
+        addrs = (
+            addresses
+            if isinstance(addresses, np.ndarray)
+            else np.array(addresses, dtype=np.uint64)
+        )
+        return UcmPipelineStoreTransTask(
+            self.store.Dump(self.ids, indexes, addrs, prerequisite_handle)
+        )
+
+
 class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
@@ -99,6 +130,16 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
 
     def cc_store(self) -> int:
         return self.store_.Self()
+
+    def prepare_data_transfer(
+        self, block_ids: List[bytes]
+    ) -> _PreparedPipelineTransfer:
+        """Optional adapter fast path; normal load/dump interfaces stay available."""
+        return _PreparedPipelineTransfer(
+            self.store_,
+            np.frombuffer(b"".join(block_ids), dtype=np.uint8),
+            len(block_ids),
+        )
 
     def lookup(self, block_ids: List[bytes]) -> List[bool]:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)

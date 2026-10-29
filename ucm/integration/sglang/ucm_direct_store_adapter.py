@@ -59,9 +59,10 @@ class _StoreTask:
 class _PreparedStoreTransfer:
     transfer: UcmLayerTransfer
     store: UcmKVStoreBaseV1
-    block_ids: tuple[bytes, ...]
+    block_ids: list[bytes]
     tensor_count: int
     shards_by_layer: dict[int, tuple[int, ...]]
+    prepared_io: Any = None
 
 
 @dataclass(frozen=True)
@@ -773,13 +774,18 @@ class UcmDirectStoreAdapter:
                         for row in transfer.addresses
                     ):
                         raise ValueError("address/schema mismatch")
+                block_ids = self._block_ids(transfer)
+                prepare_io = getattr(layout.store, "prepare_data_transfer", None)
                 prepared.append(
                     _PreparedStoreTransfer(
                         transfer=transfer,
                         store=layout.store,
-                        block_ids=tuple(self._block_ids(transfer)),
+                        block_ids=block_ids,
                         tensor_count=layout.tensor_count,
                         shards_by_layer=layout.shards_by_layer,
+                        prepared_io=(
+                            prepare_io(block_ids) if callable(prepare_io) else None
+                        ),
                     )
                 )
             except Exception:
@@ -798,8 +804,12 @@ class UcmDirectStoreAdapter:
 
     def prepare_load(
         self, transfers: list[UcmLayerTransfer]
-    ) -> list[_PreparedStoreTransfer]:
-        return self._prepare_transfers(transfers, is_offload=False)
+    ) -> dict[int, list[_PreparedStoreTransfer]]:
+        by_layer: dict[int, list[_PreparedStoreTransfer]] = {}
+        for item in self._prepare_transfers(transfers, is_offload=False):
+            for layer in item.shards_by_layer:
+                by_layer.setdefault(layer, []).append(item)
+        return by_layer
 
     def _submit_prepared(
         self,
@@ -813,13 +823,15 @@ class UcmDirectStoreAdapter:
         for item in prepared:
             transfer = item.transfer
             try:
-                operation = item.store.dump_data if is_offload else item.store.load_data
+                target = (
+                    item.prepared_io if item.prepared_io is not None else item.store
+                )
+                operation = target.dump_data if is_offload else target.load_data
                 shard_indices = (
                     range(len(transfer.layers))
                     if logical_layer is None
                     else item.shards_by_layer.get(logical_layer, ())
                 )
-                block_ids = list(item.block_ids)
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
@@ -831,9 +843,13 @@ class UcmDirectStoreAdapter:
                         else [list(row[start:stop]) for row in transfer.addresses]
                     )
                     args = (
-                        block_ids,
-                        [shard_index] * len(item.block_ids),
-                        addresses,
+                        (shard_index, addresses)
+                        if item.prepared_io is not None
+                        else (
+                            item.block_ids,
+                            [shard_index] * len(item.block_ids),
+                            addresses,
+                        )
                     )
                     task = (
                         operation(*args, prerequisite_handle=prerequisite_handle)
@@ -865,10 +881,12 @@ class UcmDirectStoreAdapter:
         return tasks
 
     def submit_prepared_load_layer(
-        self, prepared: list[_PreparedStoreTransfer], logical_layer: int
+        self, prepared: dict[int, list[_PreparedStoreTransfer]], logical_layer: int
     ) -> list[_StoreTask]:
         return self._submit_prepared(
-            prepared, is_offload=False, logical_layer=logical_layer
+            prepared.get(logical_layer, []),
+            is_offload=False,
+            logical_layer=logical_layer,
         )
 
     def submit_offload(
