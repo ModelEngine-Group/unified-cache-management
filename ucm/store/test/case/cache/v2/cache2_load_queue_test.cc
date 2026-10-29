@@ -214,6 +214,7 @@ public:
     };
     static inline std::vector<ScatterCall> scatters;
     static inline std::vector<ScatterCall> d2dScatters;
+    static inline std::vector<uintptr_t> waitedEvents;
     static inline std::atomic<size_t> syncs{0};
     static inline std::atomic<int32_t> lastDeviceId{-1};
     static inline std::atomic<size_t> lastStreamNumber{0};
@@ -221,6 +222,7 @@ public:
     static inline std::function<UC::Status()> onSetup;
     static inline std::function<UC::Status(const ScatterCall&)> onScatter;
     static inline std::function<UC::Status()> onSync;
+    static inline std::function<UC::Status()> onWaitEvent;
 
     UC::Status Setup(const int32_t deviceId, const size_t streamNumber, bool = false)
     {
@@ -244,6 +246,11 @@ public:
         scatters.push_back(ScatterCall{src, std::vector<void*>(dst, dst + sizes.size()), sizes});
         return onScatter ? onScatter(scatters.back()) : UC::Status::OK();
     }
+    UC::Status WaitEvent(const UC::Trans::Event& event)
+    {
+        waitedEvents.push_back(event.NativeHandle());
+        return onWaitEvent ? onWaitEvent() : UC::Status::OK();
+    }
     UC::Status DeviceToDeviceScatterAsync(void* src, void* dst[], const std::vector<size_t>& sizes)
     {
         d2dScatters.push_back(ScatterCall{src, std::vector<void*>(dst, dst + sizes.size()), sizes});
@@ -258,6 +265,7 @@ public:
     {
         scatters.clear();
         d2dScatters.clear();
+        waitedEvents.clear();
         syncs.store(0, std::memory_order_relaxed);
         lastDeviceId.store(-1, std::memory_order_relaxed);
         lastStreamNumber.store(0, std::memory_order_relaxed);
@@ -265,6 +273,7 @@ public:
         onSetup = nullptr;
         onScatter = nullptr;
         onSync = nullptr;
+        onWaitEvent = nullptr;
     }
 };
 
@@ -382,6 +391,83 @@ TEST_F(UCCache2LoadQueueTest, SetupPassesStreamParams)
     EXPECT_EQ(FakeStream::setupCalls.load(), 1);
     EXPECT_EQ(FakeStream::lastDeviceId.load(), 0);
     EXPECT_EQ(FakeStream::lastStreamNumber.load(), 2);
+}
+
+TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitPrecedesAllH2dShards)
+{
+    UC::Detail::TaskDesc desc;
+    desc.prerequisiteHandle = 0x1234;
+    for (size_t i = 0; i < 3; ++i) {
+        const auto block = TypesHelper::MakeBlockIdRandomly();
+        buffer_.SetExisting(block);
+        desc.push_back({block, 0, {reinterpret_cast<void*>(0x1000 * (i + 1))}});
+    }
+    EXPECT_CALL(backend_, Load).Times(0);
+    FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
+        EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x1234});
+        return UC::Status::OK();
+    };
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(FakeStream::scatters.size(), 3);
+    EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x1234});
+}
+
+TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitPrecedesD2dHit)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    buffer_.SetHostAccessible(block, false);
+    auto desc = MakeDesc(block);
+    desc.prerequisiteHandle = 0x2345;
+    FakeStream::onWaitEvent = [] {
+        EXPECT_TRUE(FakeStream::d2dScatters.empty());
+        return UC::Status::OK();
+    };
+    EXPECT_CALL(backend_, Load).Times(0);
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x2345});
+    EXPECT_EQ(FakeStream::d2dScatters.size(), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitFollowsBackendRead)
+{
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke(NextBackendHandle));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([this] {
+        EXPECT_TRUE(FakeStream::waitedEvents.empty());
+        ++backendWaits_;
+        return UC::Status::OK();
+    }));
+    FakeStream::onWaitEvent = [this] {
+        EXPECT_EQ(backendWaits_.load(), 1);
+        EXPECT_TRUE(FakeStream::scatters.empty());
+        return UC::Status::OK();
+    };
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.prerequisiteHandle = 0x3456;
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x3456});
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitFailureSkipsCopies)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    auto desc = MakeDesc(block);
+    desc.prerequisiteHandle = 0x4567;
+    FakeStream::onWaitEvent = [] { return UC::Status::InvalidParam("event failure"); };
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_TRUE(FakeStream::d2dScatters.empty());
 }
 
 TEST_F(UCCache2LoadQueueTest, LoadCacheHitSkipsBackend)
@@ -555,6 +641,155 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)
     EXPECT_EQ(counters.at("cache_load_failed_shards_total"), 1);
 }
 
+TEST_F(UCCache2LoadQueueTest, PartialSubmitFailureWaitsForEarlierBackendRead)
+{
+    std::atomic<bool> readEntered{false};
+    std::atomic<bool> readFinished{false};
+    UC::Latch releaseRead;
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load)
+        .WillOnce(testing::Invoke(NextBackendHandle))
+        .WillOnce(testing::Invoke([&] {
+            EXPECT_TRUE(AwaitTrue([&] { return readEntered.load(); }));
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Status::NotFound());
+        }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&] {
+        readEntered.store(true);
+        EXPECT_TRUE(releaseRead.WaitForDuration(kWaitMs));
+        EXPECT_GE(buffer_.LiveHandles(), 1);
+        readFinished.store(true);
+        return UC::Status::OK();
+    }));
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return failureSet_.Contains(task->id); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    EXPECT_FALSE(readFinished.load());
+    releaseRead.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_TRUE(readFinished.load());
+    EXPECT_EQ(task->FailureStatus(), UC::Status::NotFound());
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, PartialSubmitFailureWaitsForEarlierH2d)
+{
+    const auto cached = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(cached);
+    std::atomic<bool> copySubmitted{false};
+    std::atomic<bool> syncEntered{false};
+    UC::Latch releaseSync;
+    releaseSync.Up();
+    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
+        copySubmitted.store(true);
+        return UC::Status::OK();
+    };
+    FakeStream::onSync = [&] {
+        EXPECT_GE(buffer_.LiveHandles(), 1);
+        syncEntered.store(true);
+        EXPECT_TRUE(releaseSync.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    };
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&] {
+        EXPECT_TRUE(AwaitTrue([&] { return copySubmitted.load(); }));
+        return UC::Expected<UC::Detail::TaskHandle>(UC::Status::NotFound());
+    }));
+    auto desc = MakeDesc(cached);
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return syncEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseSync.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::NotFound());
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, CancelledLoadDrainsQueuedBackendRead)
+{
+    const auto cached = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(cached);
+    std::atomic<bool> readSubmitted{false};
+    std::atomic<bool> readEntered{false};
+    UC::Latch releaseRead;
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&] {
+        readSubmitted.store(true);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
+        EXPECT_TRUE(AwaitTrue([&] { return readSubmitted.load(); }));
+        return UC::Status::InvalidParam("scatter failure");
+    };
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&] {
+        readEntered.store(true);
+        EXPECT_TRUE(releaseRead.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    }));
+    auto desc = MakeDesc(cached);
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(AwaitTrue([&] { return readEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseRead.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, FailedScatterKeepsSourceUntilSync)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    std::atomic<bool> syncEntered{false};
+    UC::Latch releaseSync;
+    releaseSync.Up();
+    FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
+        return UC::Status::InvalidParam("partial scatter failure");
+    };
+    FakeStream::onSync = [&] {
+        EXPECT_EQ(buffer_.LiveHandles(), 1);
+        syncEntered.store(true);
+        EXPECT_TRUE(releaseSync.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    };
+    auto [task, waiter] = SubmitOne(MakeDesc(block));
+    EXPECT_TRUE(AwaitTrue([&] { return syncEntered.load(); }));
+    EXPECT_FALSE(waiter->WaitForDuration(30));
+    releaseSync.Done();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ_.Close();
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, FailedEventWaitIsDrainedBeforeCompletion)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    auto desc = MakeDesc(block);
+    desc.prerequisiteHandle = 0x6789;
+    FakeStream::onWaitEvent = [] { return UC::Status::InvalidParam("partial event wait failure"); };
+    FakeStream::onSync = [] {
+        EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x6789});
+        EXPECT_TRUE(FakeStream::scatters.empty());
+        return UC::Status::OK();
+    };
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+}
+
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenScatterFails)
 {
     FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
@@ -573,7 +808,7 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenScatterFails)
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(buffer_.MarkedReady(), 1);
     EXPECT_EQ(FakeStream::scatters.size(), 1);
-    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
     auto stats = UC::Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
     EXPECT_EQ(counters.at("cache_h2d_errors_total"), 1);
@@ -645,6 +880,11 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
     UC::Detail::TaskDesc desc;
+    desc.prerequisiteHandle = 0x5678;
+    FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
+        EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x5678});
+        return UC::Status::OK();
+    };
     std::vector<void*> addrs(8);
     for (size_t i = 0; i < 8; ++i) {
         addrs[i] = reinterpret_cast<void*>(0x1000 * (i + 1));

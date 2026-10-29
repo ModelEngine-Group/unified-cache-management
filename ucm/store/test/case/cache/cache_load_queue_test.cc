@@ -226,3 +226,66 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
     ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
 }
+
+TEST_F(UCCacheLoadQueueTest, PartialSubmitFailureDrainsEarlierBackendRead)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    std::promise<void> waitEntered;
+    auto entered = waitEntered.get_future().share();
+    std::promise<void> allowRead;
+    auto allowed = allowRead.get_future().share();
+    std::promise<void> submitFailed;
+    auto failed = submitFailed.get_future();
+    UC::Test::Detail::MockStore backend;
+    {
+        InSequence sequence;
+        EXPECT_CALL(backend, Load).WillOnce(Invoke(NextId));
+        EXPECT_CALL(backend, Load)
+            .WillOnce(Invoke([&](UC::Detail::TaskDesc) -> UC::Expected<UC::Detail::TaskHandle> {
+                EXPECT_EQ(entered.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+                submitFailed.set_value();
+                return UC::Status::NotFound();
+            }));
+    }
+    EXPECT_CALL(backend, Wait).WillOnce(Invoke([&](UC::Detail::TaskHandle) {
+        waitEntered.set_value();
+        allowed.wait();
+        return UC::Status::OK();
+    }));
+    UC::HashSet<UC::Detail::TaskHandle> failures;
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {32768};
+    config.shardSize = 32768;
+    config.blockSize = 32768;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue queue;
+    ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
+    ASSERT_EQ(queue.Setup(config, &failures, &buffer), UC::Status::OK());
+    auto first = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    auto second = UC::Test::Detail::TypesHelper::MakeBlockId("b1b2c3d4e5f6789012345678901234ab");
+    ASSERT_NE(first, second);
+    UC::Test::Detail::DataGenerator data{2, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{{first, 0, {data.Buffer()}}, {second, 0, {data.Buffer()}}};
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    queue.Submit(task, waiter);
+    const auto dispatchStatus = failed.wait_for(std::chrono::seconds(3));
+    if (dispatchStatus != std::future_status::ready) {
+        allowRead.set_value();
+        EXPECT_EQ(dispatchStatus, std::future_status::ready);
+        EXPECT_TRUE(waiter->WaitForDuration(2000));
+        return;
+    }
+    EXPECT_FALSE(waiter->WaitForDuration(20));
+    allowRead.set_value();
+    ASSERT_TRUE(waiter->WaitForDuration(2000));
+    ASSERT_TRUE(failures.Contains(task->id));
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}

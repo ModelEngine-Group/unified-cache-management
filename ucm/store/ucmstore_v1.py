@@ -173,6 +173,7 @@ class UcmKVStoreBaseV1(ABC):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
+        prerequisite_handle: int = 0,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -181,6 +182,8 @@ class UcmKVStoreBaseV1(ABC):
             shard_index: Shard index for each block.
             dst_addr: Double-list of ``int`` pointers (as Python ``int``) to
                 pre-allocated device buffers.
+            prerequisite_handle: Optional compute-stream event. A supporting
+                device-facing stage waits before writing the destination buffers.
 
         Returns:
             A ``Task`` handle for the asynchronous copy.
