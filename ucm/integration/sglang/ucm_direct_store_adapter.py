@@ -155,7 +155,7 @@ class UcmDirectStoreAdapter:
         return cls(
             connector_name=name,
             module_path=connector.get("ucm_connector_module_path"),
-            store_config=copy.deepcopy(store_config),
+            store_config=store_config,
             identity=identity,
         )
 
@@ -247,6 +247,7 @@ class UcmDirectStoreAdapter:
         self._gc_capacity_by_group = self._estimate_gc_capacities(by_group)
         for group, members in by_group.items():
             try:
+                ordered_members = sorted(members, key=lambda item: item.name)
                 schemas_by_member = {
                     member.name: dict(member.layer_schemas) for member in members
                 }
@@ -260,7 +261,7 @@ class UcmDirectStoreAdapter:
                 schema = tuple(
                     (int(size), 0)
                     for layer in layers
-                    for member in sorted(members, key=lambda item: item.name)
+                    for member in ordered_members
                     for size, _ in schemas_by_member[member.name][layer]
                 )
                 if not schema:
@@ -287,7 +288,7 @@ class UcmDirectStoreAdapter:
                 )
                 layer_tensor_size_list = tuple(
                     size
-                    for member in sorted(members, key=lambda item: item.name)
+                    for member in ordered_members
                     for size, _ in schemas_by_member[member.name][layers[0]]
                 )
                 layer_shard_size = sum(layer_tensor_size_list)
@@ -607,14 +608,12 @@ class UcmDirectStoreAdapter:
         return str(transfer.hit_policy) == "trailing_pages"
 
     @staticmethod
-    def _apply_hit_policy(
+    def _apply_trailing_hit_policy(
         candidates: list[int], exists: list[bool], transfer: UcmLayerTransfer
     ) -> list[int]:
         prefix = [0]
         for present in exists:
             prefix.append(prefix[-1] + int(bool(present)))
-        if not UcmDirectStoreAdapter._is_trailing(transfer):
-            return [end for end in candidates if prefix[end] == end]
         trailing = max(1, len(transfer.page_keys))
         return [
             end
@@ -629,7 +628,6 @@ class UcmDirectStoreAdapter:
         page_keys: list[str],
         *,
         resume_from_pages: int = 0,
-        lookup_stats: dict[str, int] | None = None,
     ) -> list[int]:
         if not transfers or not page_keys:
             return []
@@ -642,21 +640,6 @@ class UcmDirectStoreAdapter:
                 # ALL_PAGES group. Recheck its last page, then probe the tail.
                 # TRAILING_PAGES can have sparse valid boundaries and must
                 # still inspect its complete candidate range.
-                start = (
-                    resume_from_pages - 1
-                    if not self._is_trailing(transfer)
-                    and 0 < resume_from_pages <= len(keys)
-                    else 0
-                )
-                query_keys = keys[start:]
-                if lookup_stats is not None and start:
-                    lookup_stats["resumed_groups"] = (
-                        lookup_stats.get("resumed_groups", 0) + 1
-                    )
-                if lookup_stats is not None:
-                    lookup_stats["queried_pages"] = lookup_stats.get(
-                        "queried_pages", 0
-                    ) + len(query_keys)
                 if self._is_trailing(transfer):
                     exists = [
                         bool(value)
@@ -664,8 +647,16 @@ class UcmDirectStoreAdapter:
                     ]
                     if len(exists) != len(keys):
                         raise RuntimeError(f"expected={len(keys)} actual={len(exists)}")
-                    candidates = self._apply_hit_policy(candidates, exists, transfer)
+                    candidates = self._apply_trailing_hit_policy(
+                        candidates, exists, transfer
+                    )
                 else:
+                    start = (
+                        resume_from_pages - 1
+                        if 0 < resume_from_pages <= len(keys)
+                        else 0
+                    )
+                    query_keys = keys[start:]
                     # ALL_PAGES needs only the contiguous hit length. Native
                     # stores can stop at the first miss without returning a
                     # bool for every page.
@@ -682,11 +673,6 @@ class UcmDirectStoreAdapter:
                         found = (
                             store.lookup_on_prefix(self._block_ids(transfer, keys)) + 1
                         )
-                        if lookup_stats is not None:
-                            lookup_stats["queried_pages"] += len(keys)
-                            lookup_stats["fallbacks"] = (
-                                lookup_stats.get("fallbacks", 0) + 1
-                            )
                         if not 0 <= found <= len(keys):
                             raise RuntimeError(
                                 f"invalid prefix hit count={found} pages={len(keys)}"
@@ -806,6 +792,7 @@ class UcmDirectStoreAdapter:
                     if logical_layer is None
                     else item.shards_by_layer.get(logical_layer, ())
                 )
+                block_ids = list(item.block_ids)
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
@@ -817,7 +804,7 @@ class UcmDirectStoreAdapter:
                         else [list(row[start:stop]) for row in transfer.addresses]
                     )
                     args = (
-                        list(item.block_ids),
+                        block_ids,
                         [shard_index] * len(item.block_ids),
                         addresses,
                     )
@@ -849,19 +836,6 @@ class UcmDirectStoreAdapter:
                 )
                 raise
         return tasks
-
-    def submit_load(self, transfers: list[UcmLayerTransfer]) -> list[_StoreTask]:
-        return self._submit_prepared(self.prepare_load(transfers), is_offload=False)
-
-    def submit_load_layer(
-        self, transfers: list[UcmLayerTransfer], logical_layer: int
-    ) -> list[_StoreTask]:
-        selected = [
-            transfer for transfer in transfers if logical_layer in transfer.layers
-        ]
-        return self.submit_prepared_load_layer(
-            self.prepare_load(selected), logical_layer
-        )
 
     def submit_prepared_load_layer(
         self, prepared: list[_PreparedStoreTransfer], logical_layer: int

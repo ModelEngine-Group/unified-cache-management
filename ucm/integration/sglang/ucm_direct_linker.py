@@ -42,13 +42,8 @@ from ucm.integration.sglang.ucm_direct_store_adapter import (
 
 logger = logging.getLogger(__name__)
 device_module = get_device_module()
-_LOOKUP_TIMING_LOG_MS = 10.0
 _LOOKUP_PROGRESS_MAX_REQUESTS = 128
-_LOAD_TIMING_LOG_MS = 20.0
-_OFFLOAD_TIMING_LOG_MS = 100.0
 _OFFLOAD_POLL_INTERVAL_S = 0.005
-_SLOW_LOG_FIRST = 3
-_SLOW_LOG_EVERY = 50
 
 
 def _pool_group_name(
@@ -89,25 +84,6 @@ class _LookupProgress:
     hit_pages: int
 
 
-@dataclass
-class _LookupTiming:
-    calls: int = 0
-    slow_calls: int = 0
-    total_ms: float = 0.0
-    store_total_ms: float = 0.0
-    max_ms: float = 0.0
-    max_store_ms: float = 0.0
-
-
-@dataclass
-class _ForwardWaitTiming:
-    calls: int = 0
-    slow_calls: int = 0
-    total_ms: float = 0.0
-    max_ms: float = 0.0
-    max_layer: int = -1
-
-
 @dataclass(frozen=True)
 class _LayerPointerLayout:
     """Fixed buffer addresses, strides and fragment schema for one pool layer."""
@@ -118,37 +94,12 @@ class _LayerPointerLayout:
 
 
 @dataclass
-class _TransferBuildTimings:
-    schema_ms: float = 0.0
-    locations_ms: float = 0.0
-    layer_meta_ms: float = 0.0
-    # Kept in the log for before/after comparison; array I/O no longer
-    # converts address rows to Python lists.
-    row_convert_ms: float = 0.0
-    address_assemble_ms: float = 0.0
-    layer_meta_calls: int = 0
-
-
-@dataclass
 class _PendingOffload:
     sequence: int
     tasks: list[Any]
     transfers: list[UcmLayerTransfer]
     ready_events: list[object]
-    queued_at: float
-    submitted_at: float
-    transfer_pages: int
-    store_tasks: int = 0
-    queue_backlog: int = 0
-    queue_ms: float = 0.0
-    ready_event_ms: float = 0.0
-    transfer_build_ms: float = 0.0
-    store_submit_ms: float = 0.0
     result: bool | None = None
-    finished_at: float | None = None
-    check_calls: int = 0
-    check_ms: float = 0.0
-    wait_ms: float = 0.0
 
 
 class UcmDirectLinker(UnifiedCacheLinker):
@@ -190,30 +141,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._pending_lock = threading.Lock()
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], object, float] | None
+            tuple[int, dict[str, list[PoolTransfer]], object] | None
         ] = Queue()
         self._completed_loads: Queue[list[str]] = Queue()
         self._requires_load_finish = hasattr(
             UnifiedCacheLinker, "finish_layer_wise_loading"
         )
         self._load_results: dict[int, Future[bool]] = {}
-        self._offload_queue: Queue[
-            tuple[list[PoolTransfer], list[object], float] | None
-        ] = Queue()
+        self._offload_queue: Queue[tuple[list[PoolTransfer], list[object]] | None] = (
+            Queue()
+        )
         self._offload_results: Queue[bool] = Queue()
         self._lookup_progress: OrderedDict[str, _LookupProgress] = OrderedDict()
         self._lookup_progress_lock = threading.Lock()
-        self._timing_log_lock = threading.Lock()
-        self._lookup_timings: OrderedDict[str, _LookupTiming] = OrderedDict()
-        self._forward_wait_timings: dict[int, _ForwardWaitTiming] = {}
-        self._slow_timings: dict[str, tuple[int, float]] = {}
-        self.stats = {
-            "lookup": 0,
-            "lookup_skipped": 0,
-            "lookup_resumed": 0,
-            "load": 0,
-            "offload": 0,
-        }
 
         self._tp_rank = 0
         parallel = get_parallel()
@@ -228,16 +168,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if self._tp_rank != 0:
             self._logger.disabled = True
         self._lookup_owner = True
-        self._lookup_dedup_active = False
-        self._lookup_logger = self._logger
         self._offload_owner = not self.pool_group.rank_replicated or self._tp_rank == 0
         self._log_pool_topology()
         try:
             self.adapter = adapter or self._create_adapter(params)
             self.adapter.register_device_pools(self._pool_metadata())
             self._select_lookup_owner(tp_group, params.attn_cp_size)
-            if self._lookup_dedup_active and self._lookup_owner:
-                self._lookup_logger = logger
             self._load_prefetch_layers = getattr(
                 self.adapter, "load_prefetch_layers", 2
             )
@@ -256,8 +192,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             raise
 
         self.layer_done_counter = LayerWiseLoadCounter(self.num_layers)
-        if self._tp_rank == 0 and self._requires_load_finish:
-            self._observe_layer_waits()
         if PoolName.MAMBA in self.pools:
             params.req_to_token_pool.register_layer_transfer_counter(
                 self.layer_done_counter
@@ -273,107 +207,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         self._load_thread.start()
         self._offload_thread.start()
-
-    def _should_log_timing(
-        self, kind: str, duration_ms: float, threshold: float
-    ) -> bool:
-        if self._tp_rank != 0 or duration_ms < threshold:
-            return False
-        with self._timing_log_lock:
-            count, maximum = self._slow_timings.get(kind, (0, 0.0))
-            count += 1
-            self._slow_timings[kind] = (count, max(maximum, duration_ms))
-            return (
-                count <= _SLOW_LOG_FIRST
-                or count % _SLOW_LOG_EVERY == 0
-                or duration_ms >= 2 * maximum
-            )
-
-    def _log_lookup_summary(self, rid: str, timing: _LookupTiming) -> None:
-        if timing.slow_calls or timing.calls > 1:
-            self._lookup_logger.info(
-                "UCM linker lookup summary dp_rank=%d tp_rank=%d rid=%s calls=%d "
-                "slow_calls=%d total_ms=%.3f store_total_ms=%.3f "
-                "max_ms=%.3f max_store_ms=%.3f",
-                self._dp_rank,
-                self._tp_rank,
-                rid,
-                timing.calls,
-                timing.slow_calls,
-                timing.total_ms,
-                timing.store_total_ms,
-                timing.max_ms,
-                timing.max_store_ms,
-            )
-
-    def _record_lookup_timing(
-        self, rid: str, total_ms: float, store_ms: float
-    ) -> tuple[bool, int, int]:
-        if self._lookup_logger.disabled:
-            return False, 0, 0
-        evicted = None
-        with self._timing_log_lock:
-            timing = self._lookup_timings.setdefault(rid, _LookupTiming())
-            previous_max_ms = timing.max_ms
-            timing.calls += 1
-            timing.total_ms += total_ms
-            timing.store_total_ms += store_ms
-            timing.max_ms = max(timing.max_ms, total_ms)
-            timing.max_store_ms = max(timing.max_store_ms, store_ms)
-            if total_ms >= _LOOKUP_TIMING_LOG_MS:
-                timing.slow_calls += 1
-            self._lookup_timings.move_to_end(rid)
-            if len(self._lookup_timings) > _LOOKUP_PROGRESS_MAX_REQUESTS:
-                evicted = self._lookup_timings.popitem(last=False)
-            calls, slow_calls = timing.calls, timing.slow_calls
-        if evicted is not None:
-            self._log_lookup_summary(*evicted)
-        return (
-            total_ms >= _LOOKUP_TIMING_LOG_MS
-            and (
-                slow_calls <= _SLOW_LOG_FIRST
-                or slow_calls % _SLOW_LOG_EVERY == 0
-                or total_ms >= 2 * previous_max_ms
-            ),
-            calls,
-            slow_calls,
-        )
-
-    def _finish_lookup_timing(self, rid: str) -> None:
-        with self._timing_log_lock:
-            timing = self._lookup_timings.pop(rid, None)
-        if timing is not None:
-            self._log_lookup_summary(rid, timing)
-
-    def _slow_timing_snapshot(self, kind: str) -> tuple[int, float]:
-        with self._timing_log_lock:
-            return self._slow_timings.get(kind, (0, 0.0))
-
-    def _observe_layer_waits(self) -> None:
-        counter = self.layer_done_counter
-        original_wait = counter.wait_until
-
-        def observed_wait(layer: int) -> None:
-            index = counter.consumer_index
-            if index < 0:
-                return original_wait(layer)
-            started = time.perf_counter()
-            try:
-                return original_wait(layer)
-            finally:
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                with self._timing_log_lock:
-                    timing = self._forward_wait_timings.setdefault(
-                        index, _ForwardWaitTiming()
-                    )
-                    timing.calls += 1
-                    timing.slow_calls += int(elapsed_ms >= _LOAD_TIMING_LOG_MS)
-                    timing.total_ms += elapsed_ms
-                    if elapsed_ms > timing.max_ms:
-                        timing.max_ms = elapsed_ms
-                        timing.max_layer = layer
-
-        counter.wait_until = observed_wait
 
     def _select_lookup_owner(self, tp_group: Any, attn_cp_size: int) -> None:
         """Elect one reader per shared Cache within this attention-TP group."""
@@ -415,10 +248,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         identities: list[Any] = [None] * self._tp_size
         torch.distributed.all_gather_object(identities, cache_identity, group=tp_group)
         if cache_identity is not None:
-            self._lookup_dedup_active = True
             self._lookup_owner = self._tp_rank == identities.index(cache_identity)
         if self._lookup_owner:
-            (logger if self._lookup_dedup_active else self._logger).info(
+            (logger if cache_identity is not None else self._logger).info(
                 "UCM linker lookup owner dp_rank=%d tp_rank=%d tp_size=%d "
                 "shared_cache_identified=%s",
                 self._dp_rank,
@@ -562,7 +394,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             schema = tuple(
                 size
                 for layer in bundle.layers
-                for entry in sorted(bundle.entries, key=lambda item: str(item.name))
+                for entry in bundle.entries
                 for size, _ in self._entry_layer_schema(entry, layer)
             )
             self._logger.info(
@@ -629,7 +461,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         transfer: PoolTransfer,
         layer: int,
         locations: np.ndarray,
-        timings: _TransferBuildTimings | None = None,
     ) -> tuple[np.ndarray, tuple[tuple[int, int], ...]]:
         layout = self._layer_pointer_layouts.get((entry.name, layer))
         if layout is None:
@@ -640,15 +471,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 f"UCM bundle requires one address row per page for {entry.name}: "
                 f"fragments={len(layout.schema)} pages={page_count}."
             )
-        meta_start = time.perf_counter() if timings is not None else 0.0
         # Only the page rows change per transfer. Compute the address matrix
         # without rebuilding a Python size/offset list for every page.
         pointer_matrix = (
             locations[:, None] * layout.strides[None, :] + layout.bases[None, :]
         )
-        if timings is not None:
-            timings.layer_meta_ms += (time.perf_counter() - meta_start) * 1000
-            timings.layer_meta_calls += 1
         if pointer_matrix.shape[0] != page_count:
             raise ValueError(
                 f"UCM bundle requires one address row per page for {entry.name}: "
@@ -661,15 +488,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
         transfers: list[PoolTransfer],
         *,
         for_io: bool,
-        timings: _TransferBuildTimings | None = None,
     ) -> list[UcmLayerTransfer]:
         by_name = {transfer.name: transfer for transfer in transfers}
         result: list[UcmLayerTransfer] = []
         for bundle in self._bundles:
-            members = [
-                (entry, by_name.get(entry.name))
-                for entry in sorted(bundle.entries, key=lambda item: str(item.name))
-            ]
+            members = [(entry, by_name.get(entry.name)) for entry in bundle.entries]
             if any(transfer is None or not transfer.keys for _, transfer in members):
                 continue
             page_keys = tuple(members[0][1].keys)
@@ -682,7 +505,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     f"UCM store bundle {bundle.name} has inconsistent source transfer metadata."
                 )
 
-            schema_start = time.perf_counter() if timings is not None else 0.0
             fragments = tuple(
                 fragment
                 for layer in bundle.layers
@@ -709,10 +531,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 for entry, _ in members
                 for size, _ in self._entry_layer_schema(entry, bundle.layers[0])
             )
-            if timings is not None:
-                timings.schema_ms += (time.perf_counter() - schema_start) * 1000
             if for_io:
-                locations_start = time.perf_counter() if timings is not None else 0.0
                 prepared_locations = []
                 for entry, transfer in members:
                     if transfer.host_indices is None:
@@ -725,11 +544,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             dtype=np.uint64,
                         )
                     )
-                if timings is not None:
-                    timings.locations_ms += (
-                        time.perf_counter() - locations_start
-                    ) * 1000
-                assemble_start = time.perf_counter() if timings is not None else 0.0
                 # Each layer slice is contiguous and can be passed to Store
                 # without converting every page's pointers to Python lists.
                 tensor_count = len(layer_tensor_size_list)
@@ -741,17 +555,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     (len(bundle.layers), len(page_keys), tensor_count),
                     dtype=np.uint64,
                 )
-                if timings is not None:
-                    timings.address_assemble_ms += (
-                        time.perf_counter() - assemble_start
-                    ) * 1000
                 for layer_index, layer in enumerate(bundle.layers):
                     column = 0
                     for (entry, transfer), locations in zip(
                         members, prepared_locations
                     ):
                         entry_rows, schema = self._entry_layer_rows(
-                            entry, transfer, layer, locations, timings
+                            entry, transfer, layer, locations
                         )
                         if (
                             entry_rows.shape != (len(page_keys), len(schema))
@@ -761,16 +571,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 f"UCM bundle {bundle.name} is missing "
                                 f"{entry.name} layer={layer}."
                             )
-                        assemble_start = (
-                            time.perf_counter() if timings is not None else 0.0
-                        )
                         next_column = column + len(schema)
                         addresses[layer_index, :, column:next_column] = entry_rows
                         column = next_column
-                        if timings is not None:
-                            timings.address_assemble_ms += (
-                                time.perf_counter() - assemble_start
-                            ) * 1000
                     if column != tensor_count:
                         raise ValueError(
                             f"UCM bundle {bundle.name} page address/schema mismatch."
@@ -797,7 +600,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         return self.pool_group.resolve_transfers(transfers, **kwargs)
 
     def lookup(self, rid: str, transfers: list[PoolTransfer]) -> list[int]:
-        started_at = time.perf_counter()
         expanded = self._expand(transfers)
         if not expanded:
             return []
@@ -812,11 +614,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
             # SGLang intersects each rank's restorable-boundary set. Supplying
             # every boundary is neutral while the local host owner probes its
             # shared Cache/Posix view.
-            self.stats["lookup_skipped"] += 1
             return list(range(1, len(page_keys) + 1))
-        build_start = time.perf_counter()
         lookup_transfers = self._page_transfers(expanded, for_io=False)
-        build_ms = (time.perf_counter() - build_start) * 1000
         if not lookup_transfers:
             return []
         transfer_keys = tuple(
@@ -844,15 +643,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         ):
             resume_from_pages = previous.hit_pages
-        lookup_stats = {"queried_pages": 0, "fallbacks": 0, "resumed_groups": 0}
-        store_start = time.perf_counter()
         result = self.adapter.lookup(
             lookup_transfers,
             page_keys,
             resume_from_pages=resume_from_pages,
-            lookup_stats=lookup_stats,
         )
-        store_ms = (time.perf_counter() - store_start) * 1000
         with self._lookup_progress_lock:
             self._lookup_progress[rid] = _LookupProgress(
                 tuple(page_keys), transfer_keys, result[-1] if result else 0
@@ -860,40 +655,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._lookup_progress.move_to_end(rid)
             if len(self._lookup_progress) > _LOOKUP_PROGRESS_MAX_REQUESTS:
                 self._lookup_progress.popitem(last=False)
-        total_ms = (time.perf_counter() - started_at) * 1000
-        self.stats["lookup"] += 1
-        self.stats["lookup_resumed"] += int(lookup_stats["resumed_groups"] > 0)
-        log_lookup, lookup_calls, slow_calls = self._record_lookup_timing(
-            rid, total_ms, store_ms
-        )
-        if log_lookup:
-            self._lookup_logger.info(
-                "UCM linker lookup dp_rank=%d tp_rank=%d rid=%s pages=%d transfers=%d "
-                "lookup_calls=%d slow_calls=%d hit_pages=%d queried_pages=%d resume_from_pages=%d "
-                "resumed_groups=%d lookup_fallbacks=%d "
-                "build_ms=%.3f store_lookup_ms=%.3f "
-                "total_ms=%.3f",
-                self._dp_rank,
-                self._tp_rank,
-                rid,
-                len(page_keys),
-                len(lookup_transfers),
-                lookup_calls,
-                slow_calls,
-                result[-1] if result else 0,
-                lookup_stats["queried_pages"],
-                resume_from_pages,
-                lookup_stats["resumed_groups"],
-                lookup_stats["fallbacks"],
-                build_ms,
-                store_ms,
-                total_ms,
-            )
         return result
 
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
-        started_at = time.perf_counter()
-        self._finish_lookup_timing(rid)
         with self._lookup_progress_lock:
             self._lookup_progress.pop(rid, None)
         expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
@@ -903,16 +667,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             if rid in self._pending_loads:
                 raise RuntimeError(f"UCM load for rid={rid} is already queued.")
             self._pending_loads[rid] = expanded
-        enqueue_ms = (time.perf_counter() - started_at) * 1000
-        if self._should_log_timing("load_enqueue", enqueue_ms, _LOAD_TIMING_LOG_MS):
-            self._logger.info(
-                "UCM linker load enqueue tp_rank=%d rid=%s transfers=%d "
-                "enqueue_ms=%.3f",
-                self._tp_rank,
-                rid,
-                len(expanded),
-                enqueue_ms,
-            )
         return True
 
     def cancel_queued_load(self, rid: str) -> bool:
@@ -942,43 +696,17 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._load_results[counter_index] = Future()
         ready_event = device_module.Event()
         ready_event.record()
-        self._load_queue.put((counter_index, pending, ready_event, time.perf_counter()))
-        self.stats["load"] += len(pending)
+        self._load_queue.put((counter_index, pending, ready_event))
         return counter_index
 
     def finish_layer_wise_loading(self, counter_index: int) -> bool:
         if counter_index < 0:
             return True
-        started_at = time.perf_counter()
         result = self._load_results[counter_index]
         try:
             landed = result.result()
             return self.layer_done_counter.finish(counter_index) and landed
         finally:
-            wait_ms = (time.perf_counter() - started_at) * 1000
-            with self._timing_log_lock:
-                forward_wait = self._forward_wait_timings.pop(counter_index, None)
-            if forward_wait is not None and self._should_log_timing(
-                "forward_wait", forward_wait.total_ms, _LOAD_TIMING_LOG_MS
-            ):
-                self._logger.info(
-                    "UCM linker forward layer wait tp_rank=%d batch=%d calls=%d "
-                    "slow_calls=%d total_ms=%.3f max_layer=%d max_ms=%.3f",
-                    self._tp_rank,
-                    counter_index,
-                    forward_wait.calls,
-                    forward_wait.slow_calls,
-                    forward_wait.total_ms,
-                    forward_wait.max_layer,
-                    forward_wait.max_ms,
-                )
-            if self._should_log_timing("load_finish", wait_ms, _LOAD_TIMING_LOG_MS):
-                self._logger.info(
-                    "UCM linker load finish tp_rank=%d batch=%d finish_wait_ms=%.3f",
-                    self._tp_rank,
-                    counter_index,
-                    wait_ms,
-                )
             self._load_results.pop(counter_index, None)
 
     def _wait_tasks(self, tasks: object) -> None:
@@ -993,56 +721,22 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 if task is None:
                     return
-                counter_index, pending, ready_event, queued_at = task
+                counter_index, pending, ready_event = task
                 landed = True
                 active_layer = -1
                 try:
-                    worker_started = time.perf_counter()
-                    batch_start = worker_started
-                    queue_wait_ms = (worker_started - queued_at) * 1000
-                    ready_start = worker_started
                     ready_event.synchronize()
-                    ready_wait_ms = (time.perf_counter() - ready_start) * 1000
-                    transfer_build_start = time.perf_counter()
-                    build_timings = _TransferBuildTimings()
                     page_transfers = [
                         transfer
                         for request in pending.values()
-                        for transfer in self._page_transfers(
-                            request, for_io=True, timings=build_timings
-                        )
+                        for transfer in self._page_transfers(request, for_io=True)
                     ]
-                    transfer_build_ms = (
-                        time.perf_counter() - transfer_build_start
-                    ) * 1000
-                    transfer_build_other_ms = transfer_build_ms - sum(
-                        (
-                            build_timings.schema_ms,
-                            build_timings.locations_ms,
-                            build_timings.layer_meta_ms,
-                            build_timings.row_convert_ms,
-                            build_timings.address_assemble_ms,
-                        )
-                    )
-                    transfer_prepare_start = time.perf_counter()
                     prepared_transfers = self.adapter.prepare_load(page_transfers)
-                    transfer_prepare_ms = (
-                        time.perf_counter() - transfer_prepare_start
-                    ) * 1000
-                    page_count = sum(
-                        len(transfer.page_keys) for transfer in page_transfers
-                    )
                     # Submit a bounded number of future layers, but publish
                     # readiness in logical-layer order. CacheStore can progress
                     # queued tasks in C++ while Python waits for this layer.
-                    in_flight: dict[int, tuple[list[Any], float, float]] = {}
+                    in_flight: dict[int, list[Any]] = {}
                     next_layer = 0
-                    total_submit_ms = 0.0
-                    total_wait_ms = 0.0
-                    max_layer_ms = 0.0
-                    max_layer_index = -1
-                    slow_layer_count = 0
-                    store_task_count = 0
                     try:
                         for layer in range(self.num_layers):
                             active_layer = layer
@@ -1052,118 +746,38 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                     layer + self._load_prefetch_layers + 1,
                                 )
                                 while next_layer < limit:
-                                    submit_start = time.perf_counter()
                                     tasks = self.adapter.submit_prepared_load_layer(
                                         prepared_transfers, next_layer
                                     )
-                                    submit_ms = (
-                                        time.perf_counter() - submit_start
-                                    ) * 1000
-                                    total_submit_ms += submit_ms
-                                    store_task_count += len(tasks)
-                                    in_flight[next_layer] = (
-                                        tasks,
-                                        submit_start,
-                                        submit_ms,
-                                    )
+                                    in_flight[next_layer] = tasks
                                     next_layer += 1
 
                                 # A logical layer can span several pool bundles
                                 # and requests; release it only after every task
                                 # for that layer has finished.
-                                tasks, layer_start, submit_ms = in_flight.pop(layer)
-                                store_wait_start = time.perf_counter()
+                                tasks = in_flight.pop(layer)
                                 self._wait_tasks(tasks)
-                                store_wait_ms = (
-                                    time.perf_counter() - store_wait_start
-                                ) * 1000
-                                total_wait_ms += store_wait_ms
-                                layer_ms = (time.perf_counter() - layer_start) * 1000
-                                slow_layer_count += int(layer_ms >= _LOAD_TIMING_LOG_MS)
-                                self._should_log_timing(
-                                    "load_layer", layer_ms, _LOAD_TIMING_LOG_MS
-                                )
-                                if layer_ms > max_layer_ms:
-                                    max_layer_ms = layer_ms
-                                    max_layer_index = layer
                             self.layer_done_counter.complete(counter_index, layer)
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
-                        for tasks, _, _ in in_flight.values():
+                        for tasks in in_flight.values():
                             try:
                                 self._wait_tasks(tasks)
                             except Exception:
                                 self._logger.exception(
                                     "UCM prefetched load failed while draining"
                                 )
-                    finished_at = time.perf_counter()
-                    worker_ms = (finished_at - batch_start) * 1000
-                    total_ms = (finished_at - queued_at) * 1000
-                    if self._should_log_timing(
-                        "load_batch", total_ms, _LOAD_TIMING_LOG_MS
-                    ):
-                        slow_batches, max_batch_ms = self._slow_timing_snapshot(
-                            "load_batch"
-                        )
-                        slow_layers_total, max_layer_total_ms = (
-                            self._slow_timing_snapshot("load_layer")
-                        )
-                        self._logger.info(
-                            "UCM linker load batch end tp_rank=%d batch=%d requests=%d "
-                            "transfers=%d transfer_pages=%d store_tasks=%d "
-                            "prefetch_layers=%d queue_wait_ms=%.3f ready_event_ms=%.3f "
-                            "transfer_build_ms=%.3f transfer_prepare_ms=%.3f "
-                            "build_schema_ms=%.3f build_locations_ms=%.3f "
-                            "build_layer_meta_ms=%.3f build_row_convert_ms=%.3f "
-                            "build_address_assemble_ms=%.3f build_other_ms=%.3f "
-                            "build_layer_meta_calls=%d "
-                            "submit_sum_ms=%.3f wait_sum_ms=%.3f "
-                            "slow_layers=%d slowest_layer=%d slowest_layer_ms=%.3f "
-                            "worker_ms=%.3f total_ms=%.3f "
-                            "slow_batches=%d max_batch_ms=%.3f "
-                            "slow_layers_total=%d max_layer_total_ms=%.3f",
-                            self._tp_rank,
-                            counter_index,
-                            len(pending),
-                            len(page_transfers),
-                            page_count,
-                            store_task_count,
-                            self._load_prefetch_layers,
-                            queue_wait_ms,
-                            ready_wait_ms,
-                            transfer_build_ms,
-                            transfer_prepare_ms,
-                            build_timings.schema_ms,
-                            build_timings.locations_ms,
-                            build_timings.layer_meta_ms,
-                            build_timings.row_convert_ms,
-                            build_timings.address_assemble_ms,
-                            transfer_build_other_ms,
-                            build_timings.layer_meta_calls,
-                            total_submit_ms,
-                            total_wait_ms,
-                            slow_layer_count,
-                            max_layer_index,
-                            max_layer_ms,
-                            worker_ms,
-                            total_ms,
-                            slow_batches,
-                            max_batch_ms,
-                            slow_layers_total,
-                            max_layer_total_ms,
-                        )
                 except BaseException as error:
                     landed = False
                     self.layer_done_counter.fail(counter_index, error)
                     self._logger.exception(
                         "UCM layer-wise load batch failed tp_rank=%d batch=%d "
-                        "layer=%d requests=%d elapsed_ms=%.3f",
+                        "layer=%d requests=%d",
                         self._tp_rank,
                         counter_index,
                         active_layer,
                         len(pending),
-                        (time.perf_counter() - batch_start) * 1000,
                     )
                 finally:
                     if self._requires_load_finish:
@@ -1193,7 +807,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             kv_written = device_module.Event()
             kv_written.record(self._forward_stream)
             ready_events.append(kv_written)
-        self._offload_queue.put((expanded, ready_events, time.perf_counter()))
+        self._offload_queue.put((expanded, ready_events))
         return True
 
     def _offload_worker(self) -> None:
@@ -1204,13 +818,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
         next_poll_at = 0.0
         sequence = 0
 
-        def submit(task: tuple[list[PoolTransfer], list[object], float]) -> None:
+        def submit(task: tuple[list[PoolTransfer], list[object]]) -> None:
             nonlocal sequence
             sequence += 1
-            expanded, ready_events, queued_at = task
+            expanded, ready_events = task
             transfers: list[UcmLayerTransfer] = []
-            transfer_pages = 0
-            started_at = time.perf_counter()
             try:
                 # The index is read on CPU while building transfers. The KV
                 # event can instead be waited on by Cache's D2H stream.
@@ -1224,12 +836,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         )
                     if not prerequisite_handle:
                         kv_event.synchronize()
-                ready_ms = (time.perf_counter() - started_at) * 1000
-                build_start = time.perf_counter()
                 transfers = self._page_transfers(expanded, for_io=True)
-                transfer_pages = sum(len(t.page_keys) for t in transfers)
-                build_ms = (time.perf_counter() - build_start) * 1000
-                submit_start = time.perf_counter()
                 tasks = (
                     self.adapter.submit_offload(
                         transfers, prerequisite_handle=prerequisite_handle
@@ -1237,16 +844,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     if prerequisite_handle
                     else self.adapter.submit_offload(transfers)
                 )
-                submitted_at = time.perf_counter()
             except BaseException:
-                finished_at = time.perf_counter()
                 self._logger.exception(
-                    "UCM offload submit failed tp_rank=%d node=%d queue_ms=%.3f "
-                    "elapsed_ms=%.3f",
+                    "UCM offload submit failed tp_rank=%d node=%d",
                     self._tp_rank,
                     sequence,
-                    (started_at - queued_at) * 1000,
-                    (finished_at - started_at) * 1000,
                 )
                 in_flight.append(
                     _PendingOffload(
@@ -1254,11 +856,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         tasks=[],
                         transfers=transfers,
                         ready_events=[],
-                        queued_at=queued_at,
-                        submitted_at=finished_at,
-                        transfer_pages=transfer_pages,
                         result=False,
-                        finished_at=finished_at,
                     )
                 )
                 return
@@ -1270,15 +868,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     tasks=tasks,
                     transfers=transfers,
                     ready_events=ready_events,
-                    queued_at=queued_at,
-                    submitted_at=submitted_at,
-                    transfer_pages=transfer_pages,
-                    store_tasks=len(tasks),
-                    queue_backlog=self._offload_queue.qsize(),
-                    queue_ms=(started_at - queued_at) * 1000,
-                    ready_event_ms=ready_ms,
-                    transfer_build_ms=build_ms,
-                    store_submit_ms=(submitted_at - submit_start) * 1000,
                 )
             )
 
@@ -1306,8 +895,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 for pending in in_flight:
                     if pending.result is not None:
                         continue
-                    check_start = time.perf_counter()
-                    pending.check_calls += 1
                     try:
                         completed = all(self.adapter.check(t) for t in pending.tasks)
                     except BaseException:
@@ -1320,13 +907,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         # every handle before tree locks are released.
                         pending.result = False
                         completed = True
-                    finally:
-                        pending.check_ms += (time.perf_counter() - check_start) * 1000
                     if not completed:
                         continue
                     if pending.result is None:
                         pending.result = True
-                    wait_start = time.perf_counter()
                     try:
                         # Check does not consume a task handle. Wait obtains its
                         # final status and releases it after Check reports done.
@@ -1338,8 +922,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             pending.sequence,
                         )
                         pending.result = False
-                    pending.wait_ms = (time.perf_counter() - wait_start) * 1000
-                    pending.finished_at = time.perf_counter()
                     pending.tasks = []
                     pending.transfers = []
                     pending.ready_events = []
@@ -1347,45 +929,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
             while in_flight and in_flight[0].result is not None:
                 pending = in_flight.popleft()
-                published_at = time.perf_counter()
-                store_ms = (pending.finished_at - pending.submitted_at) * 1000
-                total_ms = (published_at - pending.queued_at) * 1000
-                publish_delay_ms = (published_at - pending.finished_at) * 1000
-                if self._should_log_timing("offload", total_ms, _OFFLOAD_TIMING_LOG_MS):
-                    slow_offloads, max_offload_ms = self._slow_timing_snapshot(
-                        "offload"
-                    )
-                    self._logger.info(
-                        "UCM linker offload complete tp_rank=%d node=%d "
-                        "success=%s transfer_pages=%d store_tasks=%d "
-                        "queue_backlog=%d queue_ms=%.3f ready_event_ms=%.3f "
-                        "transfer_build_ms=%.3f store_submit_ms=%.3f "
-                        "check_calls=%d "
-                        "check_ms=%.3f store_wait_ms=%.3f store_async_ms=%.3f "
-                        "publish_delay_ms=%.3f total_ms=%.3f in_flight=%d "
-                        "slow_offloads=%d max_offload_ms=%.3f",
-                        self._tp_rank,
-                        pending.sequence,
-                        pending.result,
-                        pending.transfer_pages,
-                        pending.store_tasks,
-                        pending.queue_backlog,
-                        pending.queue_ms,
-                        pending.ready_event_ms,
-                        pending.transfer_build_ms,
-                        pending.store_submit_ms,
-                        pending.check_calls,
-                        pending.check_ms,
-                        pending.wait_ms,
-                        store_ms,
-                        publish_delay_ms,
-                        total_ms,
-                        len(in_flight),
-                        slow_offloads,
-                        max_offload_ms,
-                    )
-                if pending.result:
-                    self.stats["offload"] += 1
                 self._offload_results.put(pending.result)
                 self._offload_queue.task_done()
             if not in_flight:
@@ -1413,18 +956,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_queue.join()
         self._load_results.clear()
         self._offload_queue.join()
-        with self._timing_log_lock:
-            pending_timings = tuple(self._lookup_timings.items())
-            self._lookup_timings.clear()
-            self._forward_wait_timings.clear()
-            slow_timings = dict(self._slow_timings)
-            self._slow_timings.clear()
-        for rid, timing in pending_timings:
-            self._log_lookup_summary(rid, timing)
-        if slow_timings and self._tp_rank == 0:
-            self._logger.info(
-                "UCM linker slow timings count_and_max_ms=%s", slow_timings
-            )
         self._drain(self._completed_loads)
         self._drain(self._offload_results)
         self.layer_done_counter.reset()
@@ -1439,5 +970,3 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_thread.join()
         self._offload_thread.join()
         self.adapter.close()
-        if self._tp_rank == 0:
-            self._logger.info("UCM direct linker stats: %s", self.stats)
