@@ -1248,7 +1248,8 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     MiniMax M3 has two independently allocated cache roles per transformer
     layer. Every layer has an Attention cache, while only sparse-attention
     layers have an Indexer cache. In the released M3 configuration, layers
-    0-2 are dense and layers 3-59 are sparse. vLLM passes both roles through
+    0-2 are dense and layers 3-59 are sparse; in M3.1 all 60 layers are
+    sparse, so no ghost Indexer slots appear. vLLM passes both roles through
     the connector's ``kvcaches`` mapping as separate entries. The
     ``index_cache`` path component is the stable discriminator between them.
 
@@ -1263,7 +1264,8 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     * vLLM-Ascend hands the connector ``(K, V)`` as two block-first 4D
       tensors, so UCM must describe two segments for every Attention page.
 
-    The Indexer entry is a block-first 3D tensor. CUDA exposes the tensor
+    The Indexer entry is a block-first 3D tensor (M3) or 4D tensor with a
+    per-rank index-head axis (M3.1). CUDA exposes the tensor
     directly; vLLM-Ascend wraps it in a singleton tuple. The Indexer remains a
     separate UCM segment because it has its own allocation and block stride.
 
@@ -1380,9 +1382,9 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
                 )
             value = value[0]
         tensor = self._require_tensor(layer_name, value)
-        if tensor.dim() != 3:
+        if tensor.dim() not in (3, 4):
             raise ValueError(
-                "MiniMax M3 Indexer cache must be 3D: "
+                "MiniMax M3 Indexer cache must be a block-first 3D or 4D tensor: "
                 f"layer={layer_name}, shape={tuple(tensor.shape)}."
             )
         return self._segment(layer_name, tensor)
