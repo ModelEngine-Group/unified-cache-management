@@ -152,8 +152,9 @@ TEST(UCHealthTrackerTest, PassiveIgnoresRequestErrorsAndStaleGenerations)
 {
     const auto t0 = HealthTracker::Clock::now();
     HealthTracker tracker{"Test", "backend-0", TestConfig()};
-    for (const auto& status : {Status::NotFound(), Status::InvalidParam(), Status::DuplicateKey(),
-                               Status::Unsupported(), Status::StoreUnhealthy()}) {
+    for (const auto& status :
+         {Status::NotFound(), Status::InvalidParam(), Status::DuplicateKey(), Status::Unsupported(),
+          Status::StoreUnhealthy(), Status::TimeoutInQueue()}) {
         EXPECT_FALSE(tracker.RecordIo(tracker.Generation(), status, t0).has_value());
     }
     EXPECT_EQ(tracker.Snapshot(t0).passive.failures, 0);

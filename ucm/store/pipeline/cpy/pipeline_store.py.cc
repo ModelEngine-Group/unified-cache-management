@@ -175,6 +175,7 @@ public:
         if (name != "Posix" && name != "Mooncake") { healthConfig.passiveEnabled = false; }
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, storeDict));
+        config.Set("store_health", healthConfig);
         config.Set<StoreV1*>("store_backend", StoreBack());
         StoreLoader loader{path, "Make" + name + "Store"};
         ThrowIfFailed(loader.LoadLibrary());
@@ -184,7 +185,9 @@ public:
         loaders_.push_back(std::move(loader));
         stores_.push_back(std::move(store));
         entry_ = stores_.back().get();
-        if (healthConfig.enabled) {
+        // Posix tracks the health of each backend itself and fails fast when none is healthy,
+        // so it does not need a store breaker.
+        if (healthConfig.enabled && name != "Posix") {
             const auto storeId =
                 "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
             auto healthBreakerStore = std::make_shared<HealthBreakerStore>();

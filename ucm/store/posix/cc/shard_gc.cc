@@ -30,6 +30,20 @@
 
 namespace UC::PosixStore {
 
+namespace {
+
+// FinishTask use atomic operation to avoid success result conflict with timeout,
+// as they may occur at the same time, and the waiter->Done should only be called once
+void FinishTask(const ShardTaskContext& ctx, const std::function<void(ShardTaskResult&)>& write)
+{
+    if (!ctx.result->finished.exchange(true)) {
+        write(*ctx.result);
+        ctx.waiter->Done();
+    }
+}
+
+}  // namespace
+
 ShardGarbageCollector::~ShardGarbageCollector() { StopBackgroundCheck(); }
 
 Status ShardGarbageCollector::ValidateAndInitCapacity()
@@ -56,14 +70,16 @@ Status ShardGarbageCollector::ValidateAndInitCapacity()
     return Status::OK();
 }
 
-Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const Config& config)
+Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const BackendManager* backendMgr,
+                                    const Config& config)
 {
     layout_ = layout;
+    backendMgr_ = backendMgr;
     config_ = config;
     auto s = ValidateAndInitCapacity();
     if (s.Failure()) { return s; }
     leaseEnable_ = config_.posixGcCrossInstanceLock;
-    if (leaseEnable_) { lease_.Setup(config_); }
+    if (leaseEnable_) { lease_.Setup(config_, backendMgr_); }
     auto success = gcPool_.SetWorkerFn([this](ShardTaskContext& ctx, auto&) { ProcessTask(ctx); })
                        .SetWorkerTimeoutFn(
                            [this](ShardTaskContext& ctx, ssize_t tid) { OnTaskTimeout(ctx, tid); },
@@ -110,7 +126,7 @@ void ShardGarbageCollector::GCCheckLoop()
                     UC_INFO("Another instance holds the GC lock; skipping this cycle.");
                     break;
                 case GcLease::Acquisition::Unavailable:
-                    UC_ERROR(
+                    UC_WARN(
                         "GC lock is unusable; skipping this cycle. Capacity will not be "
                         "reclaimed until this is resolved.");
                     break;
@@ -153,45 +169,58 @@ void ShardGarbageCollector::RunGcCycle()
     }
 }
 
+std::vector<std::shared_ptr<ShardTaskResult>> ShardGarbageCollector::RunShardTasks(
+    std::vector<ShardTaskContext> tasks)
+{
+    auto waiter = std::make_shared<Latch>();
+    waiter->Set(tasks.size());
+    std::vector<std::shared_ptr<ShardTaskResult>> results;
+    results.reserve(tasks.size());
+    for (auto& task : tasks) {
+        task.waiter = waiter;
+        task.result = std::make_shared<ShardTaskResult>();
+        results.push_back(task.result);
+        gcPool_.Push(std::move(task));
+    }
+    waiter->Wait();
+    return results;
+}
+
 bool ShardGarbageCollector::Execute()
 {
     if (config_.posixGcPreciseMode) { return ExecutePrecise(); }
-    auto waiter = std::make_shared<Latch>();
-    auto shards = layout_->SampleShards(1.0);
-    waiter->Set(shards.size());
-    std::atomic<bool> gcLimited{false};
-    for (const auto& shard : shards) {
-        gcPool_.Push({ShardTaskContext::Type::GC, shard, waiter, nullptr, &gcLimited});
+    std::vector<ShardTaskContext> tasks;
+    for (const auto& shard : layout_->SampleShards(1.0)) {
+        tasks.push_back({ShardTaskContext::Type::GC, shard});
     }
-    waiter->Wait();
-    return gcLimited.load();
+    bool gcLimited = false;
+    for (const auto& result : RunShardTasks(std::move(tasks))) {
+        gcLimited = gcLimited || result->limited;
+    }
+    return gcLimited;
 }
 
 bool ShardGarbageCollector::ExecutePrecise()
 {
-    const auto shards = layout_->SampleShards(1.0);
-    std::atomic<bool> gcLimited{false};
-    std::vector<std::vector<FileInfo>> perShard(shards.size());
-    {
-        auto waiter = std::make_shared<Latch>();
-        waiter->Set(shards.size());
-        for (size_t i = 0; i < shards.size(); i++) {
-            gcPool_.Push({ShardTaskContext::Type::COLLECT, shards[i], waiter, nullptr, &gcLimited,
-                          &perShard[i]});
-        }
-        waiter->Wait();
+    std::vector<ShardTaskContext> collects;
+    for (const auto& shard : layout_->SampleShards(1.0)) {
+        collects.push_back({ShardTaskContext::Type::COLLECT, shard});
     }
-
+    const auto collected = RunShardTasks(std::move(collects));
+    bool gcLimited = false;
     size_t candidateCount = 0;
-    for (const auto& shardCandidates : perShard) { candidateCount += shardCandidates.size(); }
+    for (const auto& result : collected) {
+        gcLimited = gcLimited || result->limited;
+        candidateCount += result->candidates.size();
+    }
     if (candidateCount == 0) { return false; }
 
     std::vector<FileInfo> merged;
     merged.reserve(candidateCount);
-    for (auto& shardCandidates : perShard) {
-        merged.insert(merged.end(), shardCandidates.begin(), shardCandidates.end());
-        shardCandidates.clear();
-        shardCandidates.shrink_to_fit();
+    for (const auto& result : collected) {
+        merged.insert(merged.end(), result->candidates.begin(), result->candidates.end());
+        result->candidates.clear();
+        result->candidates.shrink_to_fit();
     }
 
     const auto candidatePercent =
@@ -211,36 +240,42 @@ bool ShardGarbageCollector::ExecutePrecise()
     UC_DEBUG("GC precise: candidates={}, deleting={} across {} shard(s)", candidateCount,
              victimCount, victimsByShard.size());
 
-    {
-        auto waiter = std::make_shared<Latch>();
-        waiter->Set(victimsByShard.size());
-        for (const auto& [shard, victims] : victimsByShard) {
-            gcPool_.Push({ShardTaskContext::Type::DELETE, shard, waiter, nullptr, nullptr, nullptr,
-                          &victims});
-        }
-        waiter->Wait();
+    std::vector<ShardTaskContext> deletes;
+    for (auto& [shard, victims] : victimsByShard) {
+        deletes.push_back(
+            {ShardTaskContext::Type::DELETE, shard, nullptr, nullptr,
+             std::make_shared<const std::vector<Detail::BlockId>>(std::move(victims))});
     }
-    return gcLimited.load();
+    RunShardTasks(std::move(deletes));
+    return gcLimited;
 }
 
 std::tuple<bool, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
 {
-    auto sampleShards = layout_->SampleShards(config_.posixGcShardSampleRatio);
-    auto waiter = std::make_shared<Latch>();
-    std::atomic<size_t> sampledFiles{0};
-    waiter->Set(sampleShards.size());
-    for (const auto& shard : sampleShards) {
-        gcPool_.Push({ShardTaskContext::Type::SAMPLE, shard, waiter, &sampledFiles});
+    std::vector<ShardTaskContext> samples;
+    for (const auto& shard : layout_->SampleShards(config_.posixGcShardSampleRatio)) {
+        samples.push_back({ShardTaskContext::Type::SAMPLE, shard});
     }
-    waiter->Wait();
-    size_t avgFilesPerShard = sampledFiles.load() / sampleShards.size();
+    size_t sampledFiles = 0;
+    size_t sampledShards = 0;
+    for (const auto& result : RunShardTasks(std::move(samples))) {
+        if (result->scanned) {
+            sampledFiles += result->files;
+            ++sampledShards;
+        }
+    }
     const auto shardCount = layout_->SampleShards(1.0).size();
     size_t thresholdFilesPerShard = maxFileCount_ / shardCount;
     size_t threshold =
         static_cast<size_t>(thresholdFilesPerShard * config_.posixGcTriggerThresholdRatio);
-    const auto estimatedFiles = static_cast<double>(sampledFiles.load()) *
+    if (sampledShards == 0) {
+        UC_WARN("GC sampling got no result from any shard; skipping this check.");
+        return {false, 0, threshold};
+    }
+    size_t avgFilesPerShard = sampledFiles / sampledShards;
+    const auto estimatedFiles = static_cast<double>(sampledFiles) *
                                 static_cast<double>(shardCount) /
-                                static_cast<double>(sampleShards.size());
+                                static_cast<double>(sampledShards);
     const auto usedBytes = estimatedFiles * static_cast<double>(config_.blockSize);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_used_bytes"), usedBytes);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_capacity_bytes"),
@@ -255,44 +290,74 @@ void ShardGarbageCollector::OnTaskTimeout(const ShardTaskContext& ctx, ssize_t t
 {
     UC_WARN(
         "GC {} task on shard({}) exceeded {}ms (tid={}); storage may be unresponsive. "
-        "This round keeps waiting; a replacement worker is started.",
+        "Giving up this shard for this round; a replacement worker is started.",
         ctx.type == ShardTaskContext::Type::SAMPLE ? "sample" : "recycle", ctx.shard,
         config_.posixGcTaskTimeoutMs, tid);
+    std::optional<BackendManager::BackendAttempt> attempt;
+    {
+        std::lock_guard<std::mutex> lock(ctx.result->attemptMutex);
+        attempt = ctx.result->attempt;
+    }
+    if (attempt) { backendMgr_->RecordResult(attempt.value(), Status::Timeout()); }
+    FinishTask(ctx, [](ShardTaskResult&) {});
+}
+
+void ShardGarbageCollector::RemoveFiles(const std::vector<Detail::BlockId>& blocks,
+                                        const std::string& backend, const ShardTaskResult& result)
+{
+    for (const auto& blockId : blocks) {
+        if (result.finished.load()) { break; }
+        layout_->RemoveFile(backend, blockId);
+    }
 }
 
 void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
 {
+    std::vector<std::string> attempted;
+    auto attempt = backendMgr_->SelectNextBackend({}, attempted);
+    if (!attempt) {
+        FinishTask(ctx, [](ShardTaskResult&) {});
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(ctx.result->attemptMutex);
+        ctx.result->attempt = attempt.Value();
+    }
+    const auto& backend = backendMgr_->Backends()[attempt.Value().index];
+    const auto maxRecycle = config_.posixGcMaxRecycleCountPerShard;
+    size_t files = 0;
+    std::vector<FileInfo> candidates;
+    std::vector<Detail::BlockId> oldest;
     switch (ctx.type) {
         case ShardTaskContext::Type::SAMPLE: {
-            size_t count = layout_->CountFilesInShard(ctx.shard);
-            ctx.sampledFiles->fetch_add(count, std::memory_order_relaxed);
+            files = layout_->CountFilesInShard(backend, ctx.shard);
             break;
         }
         case ShardTaskContext::Type::COLLECT: {
             const auto candidatePercent =
                 config_.posixGcRecyclePercent + config_.posixGcCandidateExtraPercent;
-            *ctx.candidates = layout_->GetColdestCandidates(ctx.shard, candidatePercent,
-                                                            config_.posixGcMaxRecycleCountPerShard);
-            if (ctx.candidates->size() >= config_.posixGcMaxRecycleCountPerShard) {
-                ctx.gcLimited->store(true, std::memory_order_relaxed);
-            }
+            candidates =
+                layout_->GetColdestCandidates(backend, ctx.shard, candidatePercent, maxRecycle);
             break;
         }
         case ShardTaskContext::Type::DELETE: {
-            for (const auto& blockId : *ctx.victims) { layout_->RemoveFile(blockId); }
+            RemoveFiles(*ctx.victims, backend, *ctx.result);
             break;
         }
         case ShardTaskContext::Type::GC: {
-            auto filesToDelete = layout_->GetOldestFiles(ctx.shard, config_.posixGcRecyclePercent,
-                                                         config_.posixGcMaxRecycleCountPerShard);
-            for (const auto& blockId : filesToDelete) { layout_->RemoveFile(blockId); }
-            if (filesToDelete.size() >= config_.posixGcMaxRecycleCountPerShard) {
-                ctx.gcLimited->store(true, std::memory_order_relaxed);
-            }
+            oldest = layout_->GetOldestFiles(backend, ctx.shard, config_.posixGcRecyclePercent,
+                                             maxRecycle);
+            RemoveFiles(oldest, backend, *ctx.result);
             break;
         }
     }
-    ctx.waiter->Done();
+    const auto limited = candidates.size() >= maxRecycle || oldest.size() >= maxRecycle;
+    FinishTask(ctx, [&](ShardTaskResult& result) {
+        result.scanned = true;
+        result.files = files;
+        result.limited = limited;
+        result.candidates = std::move(candidates);
+    });
 }
 
 }  // namespace UC::PosixStore

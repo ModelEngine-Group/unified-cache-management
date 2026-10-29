@@ -222,8 +222,10 @@ void DumpQueue::BackendDumpStage()
                                      (NowTime::Now() - tpWait) * 1e3);
             finishedBackendTaskHandle_ = task.backendTaskHandle;
             if (s.Failure()) {
-                UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
-                         task.taskHandle);
+                if (s != Status::StoreUnhealthy()) {
+                    UC_ERROR("Failed({}) to wait backend({}) for task({}).", s,
+                             task.backendTaskHandle, task.taskHandle);
+                }
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_wait_errors_total"),
                                          1.0);
                 return;

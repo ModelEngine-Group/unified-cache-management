@@ -21,6 +21,8 @@ UCM uses the following error codes in its underlying C++ stores. These codes app
 | **-50008** | `Unsupported` | Unsupported operation | Feature or operation not supported in current context |
 | **-50009** | `NoSpace` | No space | Storage space (disk/cache) is full |
 | **-50010** | `Timeout` | Timeout | Operation timed out |
+| **-50011** | `StoreUnhealthy` | Store unhealthy | The store is tripped by the health breaker; requests are rejected until it recovers |
+| **-50012** | `TimeoutInQueue` | Timed out in queue | The request waited in a queue past its deadline before any I/O started; not counted as a backend failure |
 
 ## Common Issues
 

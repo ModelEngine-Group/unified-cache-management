@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <mutex>
@@ -168,6 +169,19 @@ private:
     mutable std::shared_mutex indexMutex_;
     std::unordered_map<Detail::BlockId, uint32_t, Detail::BlockIdHasher> index_;
 };
+
+// Sets up one handle cache per backend, so a load retried on another backend opens the file
+// through that backend. The backends share the configured cache size.
+inline Status SetupLoadHandles(std::deque<LoadHandleCache>& caches, size_t backendCount,
+                               size_t capacity, bool ioDirect)
+{
+    const auto capacityPerBackend = (capacity + backendCount - 1) / backendCount;
+    for (size_t i = 0; i < backendCount; ++i) {
+        auto status = caches.emplace_back().Setup(capacityPerBackend, ioDirect);
+        if (status.Failure()) { return status; }
+    }
+    return Status::OK();
+}
 
 }  // namespace UC::PosixStore
 
