@@ -133,10 +133,6 @@ class UcmDirectStoreAdapter:
                 "or UNIFIEDCACHE_CONFIG_FILE."
             )
         path = Path(config_file)
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"SGLang UCM configuration file does not exist: {path}"
-            )
         with path.open("r", encoding="utf-8") as stream:
             document = yaml.safe_load(stream) or {}
         if not isinstance(document, dict):
@@ -173,66 +169,30 @@ class UcmDirectStoreAdapter:
         if not total or not by_group:
             return {}
 
-        gc_enabled = self._store_config.get("posix_gc_enable", True)
-        shard_digits = int(self._store_config.get("data_dir_shard_bytes", 3))
-        trigger = float(self._store_config.get("posix_gc_trigger_threshold_ratio", 0.7))
-        recycle = float(self._store_config.get("posix_gc_recycle_percent", 0.1))
-        if not 0 <= shard_digits <= 5 or (
-            gc_enabled and (not 0 < trigger <= 1 or not 0 < recycle <= 1)
-        ):
-            raise ValueError(
-                "Invalid Posix GC shard, trigger, or recycle configuration"
-            )
-        shard_count = 16**shard_digits
-        min_files = int(1.0 / (trigger * recycle)) + 1 if gc_enabled else 0
-        gib = 1024**3
         weights: dict[str, int] = {}
-        minimums: dict[str, int] = {}
         for group, members in sorted(by_group.items()):
-            pages = {member.capacity_pages for member in members}
-            if len(pages) != 1 or next(iter(pages)) <= 0:
-                raise ValueError(
-                    f"Invalid or inconsistent page capacity for {group}: {pages}"
-                )
+            pages = members[0].capacity_pages
             block_bytes = sum(
                 int(size)
                 for member in members
                 for _, schema in member.layer_schemas
                 for size, _ in schema
             )
-            if block_bytes <= 0:
-                raise ValueError(f"Invalid block size for {group}: {block_bytes}")
-            weights[group] = next(iter(pages)) * block_bytes
-            minimums[group] = max(
-                1, (min_files * shard_count * block_bytes + gib - 1) // gib
-            )
-
-        required = sum(minimums.values())
-        if required > total:
-            raise ValueError(
-                f"posix_capacity_gb={total} is insufficient for Store groups; "
-                f"minimum total is {required} GiB: {minimums}"
-            )
-        remaining = total - required
+            weights[group] = pages * block_bytes
         weight_total = sum(weights.values())
         capacities = {
-            group: minimums[group] + remaining * weight // weight_total
-            for group, weight in weights.items()
+            group: total * weight // weight_total for group, weight in weights.items()
         }
         leftover = total - sum(capacities.values())
-        order = sorted(
-            weights, key=lambda g: (-(remaining * weights[g] % weight_total), g)
-        )
+        order = sorted(weights, key=lambda g: (-(total * weights[g] % weight_total), g))
         for group in order[:leftover]:
             capacities[group] += 1
         for group in weights:
             logger.info(
-                "SGLang UCM GC capacity group=%s estimated_bytes=%d "
-                "capacity_gb=%d minimum_gb=%d",
+                "SGLang UCM GC capacity group=%s estimated_bytes=%d " "capacity_gb=%d",
                 group,
                 weights[group],
                 capacities[group],
-                minimums[group],
             )
         return capacities
 
@@ -258,6 +218,8 @@ class UcmDirectStoreAdapter:
                 if len(layer_sets) != 1:
                     raise ValueError("inconsistent logical layers")
                 layers = next(iter(layer_sets), ())
+                if not layers:
+                    raise ValueError("no logical layers")
                 page_sizes = {member.page_size for member in members}
                 if len(page_sizes) != 1:
                     raise ValueError(f"inconsistent page sizes: {sorted(page_sizes)}")
@@ -267,8 +229,6 @@ class UcmDirectStoreAdapter:
                     for member in ordered_members
                     for size, _ in schemas_by_member[member.name][layer]
                 )
-                if not schema:
-                    raise ValueError("no layer fragments")
                 device_buffers = tuple(
                     dict.fromkeys(
                         buffer for member in members for buffer in member.device_buffers
@@ -369,12 +329,12 @@ class UcmDirectStoreAdapter:
 
     @staticmethod
     def _schema(transfer: UcmLayerTransfer) -> tuple[tuple[int, int], ...]:
-        if not transfer.fragments:
-            raise ValueError(f"UCM transfer {transfer.store_group} has no fragments.")
         raw_schema = tuple(
             (int(size), int(offset)) for size, offset in transfer.fragments
         )
-        if any(size <= 0 or offset < 0 for size, offset in raw_schema):
+        # Tensor sizes are validated centrally when creating the Store.
+        # Offsets are discarded below, so check them before normalization.
+        if any(offset < 0 for _, offset in raw_schema):
             raise ValueError(
                 f"UCM transfer {transfer.store_group} has an invalid fragment schema."
             )
@@ -405,7 +365,7 @@ class UcmDirectStoreAdapter:
                 key=lambda name: (pool_order.get(name, 4), name),
             )
         )
-        if not pool_names or any(not name for name in pool_names):
+        if any(not name for name in pool_names):
             raise ValueError(
                 f"UCM store group {group} has an empty physical pool name."
             )
@@ -481,11 +441,8 @@ class UcmDirectStoreAdapter:
         tensor_size_list: tuple[int, ...],
     ) -> UcmKVStoreBaseV1:
         with self._store_lock:
-            schema = tuple((int(size), 0) for size, _ in schema)
-            if not schema or any(size <= 0 for size, _ in schema):
-                raise ValueError(f"UCM store group {store_group} has no fragments.")
-            existing_schema = self._schemas.setdefault(store_group, schema)
-            if existing_schema != schema:
+            existing_schema = self._schemas.get(store_group)
+            if existing_schema is not None and existing_schema != schema:
                 raise ValueError(
                     "One UCM store group must have a fixed page/layer schema: "
                     f"group={store_group}."
@@ -493,6 +450,12 @@ class UcmDirectStoreAdapter:
             existing = self._stores.get(store_group)
             if existing is not None:
                 return existing
+
+            if not schema or any(size <= 0 for size, _ in schema):
+                raise ValueError(
+                    f"UCM store group {store_group} has no valid fragments."
+                )
+            self._schemas[store_group] = schema
 
             tensor_size_list = [int(size) for size in tensor_size_list]
             payload_size = sum(size for size, _ in schema)
@@ -591,18 +554,10 @@ class UcmDirectStoreAdapter:
             )
             return store
 
-    def _ensure_store(self, transfer: UcmLayerTransfer) -> UcmKVStoreBaseV1:
-        return self._ensure_store_schema(
-            transfer.store_group,
-            self._schema(transfer),
-            shard_size=transfer.shard_size,
-            tensor_size_list=transfer.tensor_size_list,
-        )
-
     def _block_ids(
         self, transfer: UcmLayerTransfer, page_keys: Iterable[str] | None = None
     ) -> list[bytes]:
-        keys = transfer.page_keys if page_keys is None else tuple(page_keys)
+        keys = transfer.page_keys if page_keys is None else page_keys
         prefix = f"{self._identity_suffix()}|{transfer.store_group}|"
         return [hashlib.md5(f"{prefix}{key}".encode("utf-8")).digest() for key in keys]
 
@@ -637,7 +592,7 @@ class UcmDirectStoreAdapter:
         candidates = list(range(1, len(page_keys) + 1))
         for transfer in transfers:
             try:
-                store = self._ensure_store(transfer)
+                store = self._transfer_layout(transfer).store
                 keys = page_keys[: candidates[-1]]
                 # A previous joint hit proves the leading pages of every
                 # ALL_PAGES group. Recheck its last page, then probe the tail.

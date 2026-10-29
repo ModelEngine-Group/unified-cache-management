@@ -221,14 +221,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
             or attn_cp_size != 1
             or tp_group is None
             or self._tp_size <= 1
-            or not torch.distributed.is_available()
             or not torch.distributed.is_initialized()
         ):
             return
 
-        # A shared Cache is a host-local POSIX shm object. Identify both the
-        # host kernel and the /dev/shm mount so isolated containers do not get
-        # grouped together. Unknown identities keep their own lookup.
+        # Ranks on one host are assumed to share /dev/shm. Keep separate
+        # readers for different hosts or Store identities.
         config = getattr(self.adapter, "_store_config", {})
         shared_cache = (
             getattr(self.adapter, "_connector_name", None) == "UcmPipelineStore"
@@ -241,12 +239,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
                     boot_id = f.read().strip()
-                shm = os.stat("/dev/shm")
                 if boot_id:
                     cache_identity = (
                         boot_id,
-                        shm.st_dev,
-                        shm.st_ino,
                         tuple(sorted(store_signatures.items())),
                     )
             except OSError:
@@ -452,6 +447,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         )
                         for index in buffer_indices
                     ]
+                    if not items or (not entry.packed and len(items) != 1):
+                        raise ValueError(
+                            f"UCM pool {entry.name} layer={layer} has an unsupported "
+                            f"address layout: fragments={len(items)} packed={entry.packed}."
+                        )
                     bases = np.asarray([item[0] for item in items], dtype=np.uint64)
                     strides = np.asarray([item[1] for item in items], dtype=np.uint64)
                     bases.setflags(write=False)
@@ -466,29 +466,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def _entry_layer_rows(
         self,
         entry: DevicePoolEntry,
-        transfer: PoolTransfer,
         layer: int,
         locations: np.ndarray,
     ) -> tuple[np.ndarray, tuple[tuple[int, int], ...]]:
-        layout = self._layer_pointer_layouts.get((entry.name, layer))
-        if layout is None:
-            return np.empty((0, 0), dtype=np.uint64), ()
-        page_count = len(transfer.keys or ())
-        if not entry.packed and len(layout.schema) != 1:
-            raise ValueError(
-                f"UCM bundle requires one address row per page for {entry.name}: "
-                f"fragments={len(layout.schema)} pages={page_count}."
-            )
+        layout = self._layer_pointer_layouts[(entry.name, layer)]
         # Only the page rows change per transfer. Compute the address matrix
         # without rebuilding a Python size/offset list for every page.
         pointer_matrix = (
             locations[:, None] * layout.strides[None, :] + layout.bases[None, :]
         )
-        if pointer_matrix.shape[0] != page_count:
-            raise ValueError(
-                f"UCM bundle requires one address row per page for {entry.name}: "
-                f"pointers={pointer_matrix.shape[0]} pages={page_count}."
-            )
         return pointer_matrix, layout.schema
 
     def _page_transfers(
@@ -531,10 +517,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 # Each layer slice is contiguous and can be passed to Store
                 # without converting every page's pointers to Python lists.
                 tensor_count = len(layer_tensor_size_list)
-                if len(fragments) != len(bundle.layers) * tensor_count:
-                    raise ValueError(
-                        f"UCM bundle {bundle.name} has inconsistent fragment counts."
-                    )
                 addresses = np.empty(
                     (len(bundle.layers), len(page_keys), tensor_count),
                     dtype=np.uint64,
@@ -545,12 +527,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         members, prepared_locations
                     ):
                         entry_rows, schema = self._entry_layer_rows(
-                            entry, transfer, layer, locations
+                            entry, layer, locations
                         )
-                        if (
-                            entry_rows.shape != (len(page_keys), len(schema))
-                            or not schema
-                        ):
+                        if entry_rows.shape != (len(page_keys), len(schema)):
                             raise ValueError(
                                 f"UCM bundle {bundle.name} is missing "
                                 f"{entry.name} layer={layer}."
@@ -558,10 +537,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         next_column = column + len(schema)
                         addresses[layer_index, :, column:next_column] = entry_rows
                         column = next_column
-                    if column != tensor_count:
-                        raise ValueError(
-                            f"UCM bundle {bundle.name} page address/schema mismatch."
-                        )
             else:
                 addresses = tuple(() for _ in page_keys)
             result.append(

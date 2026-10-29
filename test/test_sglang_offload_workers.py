@@ -74,7 +74,10 @@ class OffloadWorkersTest(unittest.TestCase):
 
         obj.adapter = types.SimpleNamespace(
             supports_dump_prerequisite=True,
-            submit_offload=submit, check=check, wait=wait, close=lambda: None,
+            submit_offload=submit,
+            check=check,
+            wait=wait,
+            close=lambda: None,
         )
         obj._load_thread = threading.Thread(target=obj._load_worker, daemon=True)
         obj._offload_thread = threading.Thread(target=obj._offload_worker, daemon=True)
@@ -123,12 +126,14 @@ class OffloadWorkersTest(unittest.TestCase):
     def test_reap_while_next_node_builds_addresses(self):
         gate, entered = threading.Event(), threading.Event()
         self.gates.append(gate)
+
         def prepare(transfers, **kwargs):
             if transfers == ["B"]:
                 entered.set()
                 if not gate.wait(3):
                     raise RuntimeError("test preparation timeout")
             return transfers
+
         self.obj._page_transfers = prepare
         self.enqueue("A")
         self.assertTrue(self.submitted["A"].wait(2))
@@ -143,7 +148,8 @@ class OffloadWorkersTest(unittest.TestCase):
         # Hold A's check failure until B has completed, so order is observable.
         original_check = self.obj.adapter.check
         self.obj.adapter.check = lambda key: (
-            False if key == "A" and not self.complete["A"].is_set()
+            False
+            if key == "A" and not self.complete["A"].is_set()
             else original_check(key)
         )
         self.enqueue("A")

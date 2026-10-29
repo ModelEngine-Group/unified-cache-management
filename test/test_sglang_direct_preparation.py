@@ -160,6 +160,55 @@ class LayoutPreparationTest(unittest.TestCase):
         )
         lookup = linker._page_transfers(transfers, for_io=False)[0]
         self.assertIs(lookup.fragments, result.fragments)
+        linker.pools["kv"].prepare_locations = lambda indices: indices[:1]
+        with self.assertRaisesRegex(ValueError, "missing kv layer"):
+            linker._page_transfers(transfers, for_io=True)
+
+    def test_lookup_reuses_layout_and_preserves_resume_fallback(self):
+        hits = {"a", "b", "c"}
+        calls = []
+
+        class Store:
+            def lookup_on_prefix(self, ids):
+                calls.append(len(ids))
+                return next(
+                    (i - 1 for i, key in enumerate(ids) if key not in hits),
+                    len(ids) - 1,
+                )
+
+        adapter = self.adapter()
+        store = Store()
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        adapter._block_ids = lambda transfer, keys: list(keys)
+        transfer = self.transfer()
+        keys = ["a", "b", "c", "d"]
+        self.assertEqual(adapter.lookup([transfer], keys), [1, 2, 3])
+        layout = adapter._transfer_layouts["g"]
+        self.assertEqual(
+            adapter.lookup([transfer], keys, resume_from_pages=3), [1, 2, 3]
+        )
+        hits.remove("c")
+        self.assertEqual(adapter.lookup([transfer], keys, resume_from_pages=3), [1, 2])
+        self.assertEqual(calls, [4, 2, 2, 4])
+        self.assertIs(adapter._transfer_layouts["g"], layout)
+
+    def test_central_schema_validation_rejects_empty_and_negative_sizes(self):
+        adapter = self.adapter()
+        del adapter._ensure_store_schema
+        invalid = [
+            self.transfer(layers=(), fragments=()),
+            self.transfer(
+                tensor_size_list=(-8,),
+                shard_size=-8,
+                fragments=((-8, 0), (-8, 0)),
+            ),
+        ]
+        for transfer in invalid:
+            with self.subTest(transfer=transfer):
+                with self.assertRaisesRegex(ValueError, "no valid fragments"):
+                    adapter._transfer_layout(transfer)
+        self.assertEqual(adapter._schemas, {})
+        self.assertEqual(adapter._transfer_layouts, {})
 
     def test_prepared_pipeline_reuses_ids_and_preserves_shards_and_event(self):
         calls = []
