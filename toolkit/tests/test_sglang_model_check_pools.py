@@ -225,10 +225,6 @@ class _Tensor:
         return 4
 
 
-class _Transfer(SimpleNamespace):
-    pass
-
-
 class PrimaryTransferTest(unittest.TestCase):
     def exercise(self, corrupt=False):
         pages, size = 3, 4
@@ -261,12 +257,12 @@ class PrimaryTransferTest(unittest.TestCase):
         )
         with patch.dict(sys.modules, {"torch": torch}), patch(
             "ucm_toolkit.tools.sglang_model_check.runner._pool_page_views",
-            side_effect=lambda pool, name, page, mla: memory[page],
+            side_effect=lambda pool, name, page: memory[page],
         ), patch("ucm_toolkit.tools.sglang_model_check.runner._fill_pattern",
                  side_effect=lambda tensor, seed: tensor.values.__setitem__(slice(None), [seed, seed + 1])):
             return _roundtrip_v1(Storage(), SimpleNamespace(page_size=size),
                                  [f"key-{i}" for i in range(pages)],
-                                 SimpleNamespace(pages=pages), True)
+                                 SimpleNamespace(pages=pages))
 
     def test_primary_component_roundtrip(self):
         self.assertEqual(self.exercise()["bytes_compared"], 3 * 2 * 2 * 4)
@@ -343,18 +339,18 @@ class HybridTransferTest(unittest.TestCase):
         with patch.dict(sys.modules, {
             "torch": fake_torch,
             "sglang.srt.mem_cache.hicache_storage": SimpleNamespace(
-                PoolTransfer=_Transfer,
+                PoolTransfer=SimpleNamespace,
                 PoolHitPolicy=SimpleNamespace(TRAILING_PAGES="trailing", ALL_PAGES="all")),
         }), patch("ucm_toolkit.tools.sglang_model_check.runner._roundtrip_v1",
                   return_value={"bytes_compared": 0}), patch(
             "ucm_toolkit.tools.sglang_model_check.runner._pool_name", side_effect=lambda name: name
         ), patch("ucm_toolkit.tools.sglang_model_check.runner._pool_page_views",
-                 side_effect=lambda pool, name, page, mla: memory[name, page]), patch(
+                 side_effect=lambda pool, name, page: memory[name, page]), patch(
             "ucm_toolkit.tools.sglang_model_check.runner._fill_pattern",
             side_effect=lambda tensor, seed: tensor.values.__setitem__(slice(None), [seed, seed + 1]),
         ):
             return _roundtrip_v2(Storage(), pools, [f"key-{i}" for i in range(pages)],
-                                 SimpleNamespace(pages=pages, page_size=4), dsa_state, specs)
+                                 SimpleNamespace(pages=pages, page_size=4), specs)
 
     def test_sparse_windows_and_checkpoint_index_units(self):
         result = self.exercise()

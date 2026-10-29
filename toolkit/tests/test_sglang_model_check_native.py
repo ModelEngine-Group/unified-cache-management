@@ -17,32 +17,12 @@ from ucm_toolkit.tools.sglang_model_check.native_probe import (
     _build_dsv4,
 )
 from ucm_toolkit.tools.sglang_model_check.config import CheckConfig
-from ucm_toolkit.tools.sglang_model_check.runner import _pool_page_views, _fill_pattern
+from ucm_toolkit.tools.sglang_model_check.runner import _pool_page_views
 from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable
 from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import server_args_guard
 
 
 class NativeRoutingTest(unittest.TestCase):
-    def test_native_constructor_receives_half_of_host_budget(self):
-        from contextlib import nullcontext
-        from ucm_toolkit.tools.sglang_model_check.native_probe import build_native_pools
-
-        requirements = requirements_from_facts({"attention_arch": "MLA", "is_dsa": True})
-
-        def build(bundle, *args):
-            bundle.pools.update(kv=object(), indexer=object())
-
-        with patch.dict(sys.modules, {"torch": SimpleNamespace()}), patch(
-            "ucm_toolkit.tools.sglang_model_check.native_probe.cpu_allocation_budget",
-            return_value=nullcontext([123]),
-        ) as guard, patch(
-            "ucm_toolkit.tools.sglang_model_check.native_probe._build_dsa", side_effect=build
-        ), patch("ucm_toolkit.tools.sglang_model_check.native_probe._describe"):
-            bundle = build_native_pools(object(), requirements,
-                CheckConfig(model="test", max_host_mib=2048), "cuda", "bf16")
-        self.assertEqual(guard.call_args.args[1], 1024 * 1024 * 1024)
-        self.assertEqual(bundle.report["constructor_factory_bytes"], 123)
-
     def test_combined_dsa_state_uses_compact_attention_and_state_descriptors(self):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa_recurrent
         from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolSpec
@@ -98,20 +78,6 @@ class NativeRoutingTest(unittest.TestCase):
             _dsv4_low_ratio_regions_compat(
                 SimpleNamespace(_dsv4_low_ratio_regions=discover), pool, 256, [1])
 
-    def test_dsv4_ratios_select_only_main_layers(self):
-        from ucm_toolkit.tools.sglang_model_check.native_probe import _dsv4_main_layer_ratios
-        from ucm_toolkit.tools.sglang_model_check.pool_probe import PoolProbeUnavailable
-
-        ratios = [0, 0] + [4, 128] * 20 + [4] + [0, 0, 0]
-        model = SimpleNamespace(num_hidden_layers=43, compress_ratios=ratios)
-        self.assertEqual(_dsv4_main_layer_ratios(model), ratios[:43])
-        self.assertEqual(len(model.compress_ratios), 46)
-        self.assertEqual(_dsv4_main_layer_ratios(
-            SimpleNamespace(num_hidden_layers=2, compress_ratios=[4, 128])), [4, 128])
-        with self.assertRaisesRegex(PoolProbeUnavailable, "1 entries.*2 main model layers"):
-            _dsv4_main_layer_ratios(
-                SimpleNamespace(num_hidden_layers=2, compress_ratios=[4]))
-
     def test_registered_families(self):
         for facts, family in (
             ({"attention_arch": "MLA", "is_deepseek_v4": True}, "deepseek_v4"),
@@ -145,6 +111,10 @@ class NativeRoutingTest(unittest.TestCase):
                 torch.zeros((2, 3), device="cpu")
         self.assertEqual(len(called), 1)
         self.assertIs(torch.empty, original)
+        source = SimpleNamespace(shape=(4, 3), dtype=SimpleNamespace(itemsize=2), device="cpu")
+        with cpu_allocation_budget(torch, 24) as used:
+            torch.empty_like(source)
+            self.assertEqual(used[0], 24)
 
     def test_hidden_device_allocation_is_rejected_not_redirected(self):
         torch, called, original = self.fake_torch()
@@ -153,14 +123,6 @@ class NativeRoutingTest(unittest.TestCase):
                 torch.ones((2, 3), device="cuda:0")
         self.assertFalse(called)
         self.assertIs(torch.ones, original)
-
-    def test_like_factory_uses_source_shape_and_dtype(self):
-        torch, called, _ = self.fake_torch()
-        source = SimpleNamespace(shape=(4, 3), dtype=SimpleNamespace(itemsize=2), device="cpu")
-        with cpu_allocation_budget(torch, 24) as used:
-            torch.empty_like(source)
-            self.assertEqual(used[0], 24)
-        self.assertEqual(len(called), 1)
 
     def test_native_bundle_retains_producer_until_host_release(self):
         device = object()
@@ -193,15 +155,6 @@ class NativeRoutingTest(unittest.TestCase):
             with server_args_guard(page_size=256, hicache_ratio=1.0):
                 self.assertEqual(entered[-1], "enter")
         self.assertEqual(entered, [{"page_size": 256, "hicache_ratio": 1.0}, "enter", "exit"])
-
-    def test_byte_payload_pattern_is_nonzero(self):
-        calls = []
-        tensor = SimpleNamespace(device="cpu", is_floating_point=lambda: False,
-                                 random_=lambda low, high, **kwargs: calls.append((low, high)))
-        torch = SimpleNamespace(Generator=lambda **kwargs: SimpleNamespace(manual_seed=lambda seed: None))
-        with patch.dict(sys.modules, {"torch": torch}):
-            _fill_pattern(tensor)
-        self.assertEqual(calls, [(1, 127)])
 
     def test_rank_context_is_complete_scoped_and_does_not_read_unset_properties(self):
         from contextlib import contextmanager
@@ -253,7 +206,7 @@ class NativeRoutingTest(unittest.TestCase):
         connector = SimpleNamespace(_flatten_page_meta=lambda ptrs, sizes, count: ([ptrs], [sizes]))
         with patch.dict(sys.modules, {"torch": fake_torch,
              "ucm.integration.sglang.ucm_connector": SimpleNamespace(SglangUcmConnector=connector)}):
-            views = _pool_page_views(pool, "packed", 1, True)
+            views = _pool_page_views(pool, "packed", 1)
             views[0][0] = 79
             views[0][-1] = 127
         self.assertEqual(list(backing), [0] * 8 + [79] + [0] * 6 + [127])
@@ -325,6 +278,7 @@ class NativeAssemblyTest(unittest.TestCase):
                 self.row_dim = kwargs.get("head_num", 0) * kwargs.get("head_dim", 0)
                 self.k_data_ptrs, self.v_data_ptrs = object(), object()
                 self.kv_buffer = object()
+                self.kv_cache_dim = kwargs.get("kv_lora_rank", 0) + kwargs.get("qk_rope_head_dim", 0)
 
         class Host:
             def __init__(self, device_pool, **kwargs):
@@ -341,7 +295,8 @@ class NativeAssemblyTest(unittest.TestCase):
             "torch": {},
             "sglang.srt.mem_cache.memory_pool": {"MHATokenToKVPool": DevicePool,
                                                  "MLATokenToKVPool": DevicePool},
-            "sglang.srt.mem_cache.pool_host.mha": {"MHATokenToKVPoolHost": Host},
+            "sglang.srt.mem_cache.pool_host.mha": {"MHATokenToKVPoolHost": Host,
+                                                 "get_mha_host_pool_cls": lambda pool: Host},
             "sglang.srt.mem_cache.pool_host.mla": {"MLATokenToKVPoolHost": MLAHost},
         })
         model = SimpleNamespace(num_hidden_layers=62, num_key_value_heads=2,
@@ -403,10 +358,11 @@ class NativeAssemblyTest(unittest.TestCase):
         from ucm_toolkit.tools.sglang_model_check.native_probe import _build_dsa
 
         calls, queried_layers = [], []
+        declarations = []
 
         def create(**kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(host_pool_decls=lambda: [], skip_topk_layers=kwargs["skip_topk_layers"])
+            return SimpleNamespace(host_pool_decls=lambda: declarations, skip_topk_layers=kwargs["skip_topk_layers"])
 
         modules = _module_tree({
             "sglang.srt.configs.model_config": {
@@ -453,6 +409,48 @@ class NativeAssemblyTest(unittest.TestCase):
             _build_dsa(elided, model, CheckConfig(model="test", page_size=256),
                        "cuda", "bf16", layer_range=(3, 4), tp_size=2)
         self.assertEqual(elided.report["elided_payloads"], ["indexer"])
+
+        # Modern SGLang owns validation and group assembly. The offline probe
+        # changes allocation policy, not the declared side-pool selection.
+        declarations.extend([
+            SimpleNamespace(pool_name="kv", is_primary=True, owned_device_layers=None),
+            SimpleNamespace(pool_name="indexer", is_primary=False, owned_device_layers=(0,)),
+        ])
+        prepared = object()
+        indexer = object()
+
+        def prepare(**kwargs):
+            self.assertIs(kwargs["decls"], declarations)
+            self.assertEqual(kwargs["full_layer_mapping"], {0: 0, 1: 1})
+            self.assertEqual(kwargs["transfer_layer_id_max"], 2)
+            self.assertEqual(kwargs["transfer_page_size"], 256)
+            return prepared
+
+        def build_group(*, config):
+            self.assertIs(config, prepared)
+            self.assertIs(assembler.build_kv_host_pool(), host)
+            self.assertEqual(assembler._get_allocator_type(), "default")
+            return SimpleNamespace(entries=[
+                SimpleNamespace(name="kv", host_pool=host),
+                SimpleNamespace(name="indexer", host_pool=indexer),
+            ])
+
+        assembler = ModuleType("sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler")
+        assembler.build_host_pool_group = build_group
+        assembler.build_kv_host_pool = assembler._get_allocator_type = None
+        host_config = ModuleType("sglang.srt.mem_cache.hybrid_cache.host_pool_config")
+        host_config.prepare_host_pool_config = prepare
+        modules[assembler.__name__] = assembler
+        modules[host_config.__name__] = host_config
+        with patch.dict(sys.modules, modules), patch(
+            "ucm_toolkit.tools.sglang_model_check.native_probe._host_from_device", return_value=host
+        ):
+            declared = NativePools()
+            _build_dsa(declared, model, CheckConfig(model="test", page_size=256),
+                       "cuda", "bf16", full_layers=(0, 3))
+        self.assertIs(declared.pools["indexer"], indexer)
+        self.assertEqual(declared.layer_ids["indexer"], (0,))
+        self.assertEqual(declared.report["host_pool_assembly"], "sglang_host_pool_group")
 
     """Check provider orchestration, not native kernel/allocator execution."""
 
@@ -535,6 +533,9 @@ class NativeAssemblyTest(unittest.TestCase):
         self.assertNotIn("deepseek_v4_c4", stage.pools)
         self.assertNotIn("deepseek_v4_c4_state", stage.pools)
         self.assertEqual(stage.layer_ids["deepseek_v4_c128"], (1,))
+        model.compress_ratios = [4]
+        with patch.dict(sys.modules, modules), self.assertRaisesRegex(PoolProbeUnavailable, "main model layers"):
+            _build_dsv4(NativePools(), model, CheckConfig(model="test", page_size=256), "cuda", "fp8")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from math import prod
+from importlib import import_module
 import inspect
 from typing import Any
 from unittest.mock import patch
@@ -198,26 +199,58 @@ def _build_dsa(bundle, model, config, platform, dtype, *, full_layers=None, laye
     bundle.keepalive.append(device_pool)
     bundle.pools["kv"] = _host_from_device(device_pool, config.page_size, config.layout, is_mla=True)
     declarations = device_pool.host_pool_decls()
-    for decl in declarations:
-        if decl.is_primary:
-            continue
-        name = str(decl.pool_name)
-        decl.host_pool_builder.validate(decl=decl, transfer_page_size=config.page_size,
-                                        packed_draft_device_pools=())
-        # Use the real declared builder, disabling pinning only at its actual
-        # DSA host constructor; no transfer kernel is invoked in this probe.
-        import sglang.srt.mem_cache.pool_host.dsa as dsa_module
+    try:
+        host_pool_config = import_module("sglang.srt.mem_cache.hybrid_cache.host_pool_config")
+        assembler = import_module("sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler")
+    except ModuleNotFoundError as exc:
+        if exc.name not in (
+            "sglang.srt.mem_cache.hybrid_cache",
+            "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler",
+            "sglang.srt.mem_cache.hybrid_cache.host_pool_config",
+        ):
+            raise
+        assembler = host_pool_config = None
+    prepare = getattr(host_pool_config, "prepare_host_pool_config", None)
+    build_group = getattr(assembler, "build_host_pool_group", None)
 
-        class CpuIndexer(DSAIndexerPoolHost):
-            def __init__(self, *args, **kwargs):
-                kwargs["pin_memory"] = False
-                super().__init__(*args, **kwargs)
+    import sglang.srt.mem_cache.pool_host.dsa as dsa_module
 
-        with patch.object(dsa_module, "DSAIndexerPoolHost", CpuIndexer):
-            bundle.pools[name] = decl.host_pool_builder.build(
-                decl=decl, anchor_host=bundle.pools["kv"], allocator_type="default",
-                packed_draft_device_pools=(),
+    class CpuIndexer(DSAIndexerPoolHost):
+        def __init__(self, *args, **kwargs):
+            kwargs["pin_memory"] = False
+            super().__init__(*args, **kwargs)
+
+    # Only allocation policy differs from the service: bounded CPU, no pinning.
+    # Native declarations still choose side pools, dependencies and layer maps.
+    with patch.object(dsa_module, "DSAIndexerPoolHost", CpuIndexer):
+        if callable(prepare) and callable(build_group):
+            prepared = prepare(
+                decls=declarations,
+                full_layer_mapping={i: i for i in range(len(layers))},
+                transfer_layer_id_max=len(layers),
+                transfer_page_size=config.page_size,
             )
+            with patch.object(assembler, "build_kv_host_pool", return_value=bundle.pools["kv"]), \
+                 patch.object(assembler, "_get_allocator_type", return_value="default"):
+                group = build_group(config=prepared)
+            bundle.pools.update((str(entry.name), entry.host_pool) for entry in group.entries)
+            bundle.report["host_pool_assembly"] = "sglang_host_pool_group"
+        else:
+            # Older SGLang exposes only individual declaration builders.
+            for decl in declarations:
+                if decl.is_primary:
+                    continue
+                decl.host_pool_builder.validate(decl=decl, transfer_page_size=config.page_size,
+                                                packed_draft_device_pools=())
+                bundle.pools[str(decl.pool_name)] = decl.host_pool_builder.build(
+                    decl=decl, anchor_host=bundle.pools["kv"], allocator_type="default",
+                    packed_draft_device_pools=(),
+                )
+            bundle.report["host_pool_assembly"] = "sglang_declaration_builders"
+    for decl in declarations:
+        owned = getattr(decl, "owned_device_layers", None)
+        if owned is not None:
+            bundle.layer_ids[str(decl.pool_name)] = tuple(layers[i] for i in owned)
     if "indexer" not in bundle.pools:
         # NPU MLA embeds index K/scale in the primary captured buffer_info.
         host = bundle.pools["kv"]
@@ -229,7 +262,7 @@ def _build_dsa(bundle, model, config, platform, dtype, *, full_layers=None, laye
         else:
             bundle.report["integrated_payloads"] = {"kv": ["kv", "indexer"]}
     for name in bundle.pools:
-        bundle.layer_ids[name] = layers
+        bundle.layer_ids.setdefault(name, layers)
 
 
 def _build_dsa_recurrent(bundle, model, config, platform, dtype, *, layer_range=None, tp_size=1):

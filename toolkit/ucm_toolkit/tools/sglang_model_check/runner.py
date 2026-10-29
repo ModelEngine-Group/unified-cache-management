@@ -7,7 +7,6 @@ import inspect
 import socket
 import traceback
 import uuid
-from types import SimpleNamespace
 from dataclasses import replace
 from typing import Any, Iterator
 
@@ -202,8 +201,6 @@ def _make_host_pool(
     model_config: Any, requirements: Any, config: CheckConfig, pool_spec: Any = None,
     *, layer_start: int = 0,
 ) -> Any:
-    import torch
-
     layer_num = int(
         max(
             getattr(model_config, "num_hidden_layers", 0),
@@ -215,51 +212,32 @@ def _make_host_pool(
     if layer_num <= 0:
         raise CheckFailure("KV_POOL_UNSUPPORTED", "host_pool", "invalid layer count")
 
-    device_pool = SimpleNamespace(
-        store_dtype=model_config.dtype,
-        size=config.page_size * (config.pages * 2 + 1),
-        start_layer=layer_start,
-        end_layer=layer_start + layer_num,
-        layer_num=layer_num,
-        device="cpu",
-        layer_shard_enabled=False,
-        layer_shard_size=layer_num,
-    )
+    size = config.page_size * (config.pages * 2 + 1)
     if requirements.is_mla:
-        from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
-
-        device_pool.kv_lora_rank = int(model_config.kv_lora_rank)
-        device_pool.qk_rope_head_dim = int(model_config.qk_rope_head_dim)
-        device_pool.index_head_dim = getattr(model_config, "index_head_dim", None)
-        pool_cls = MLATokenToKVPoolHost
+        kv_lora_rank = int(model_config.kv_lora_rank)
+        qk_rope_head_dim = int(model_config.qk_rope_head_dim)
+        width = kv_lora_rank + qk_rope_head_dim
     else:
-        from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
-
-        device_pool.head_num = int(
+        head_num = int(
             getattr(model_config, "num_key_value_heads", None)
             or model_config.num_attention_heads
         )
-        device_pool.head_dim = int(model_config.head_dim)
-        device_pool.v_head_dim = int(getattr(model_config, "v_head_dim", None) or model_config.head_dim)
+        head_dim = int(model_config.head_dim)
+        v_head_dim = int(getattr(model_config, "v_head_dim", None) or model_config.head_dim)
         if pool_spec is not None:
-            device_pool.head_num = pool_spec.head_num
-            device_pool.head_dim = pool_spec.head_dim
-            device_pool.v_head_dim = pool_spec.v_head_dim
-        if device_pool.head_dim != device_pool.v_head_dim:
+            head_num = pool_spec.head_num
+            head_dim = pool_spec.head_dim
+            v_head_dim = pool_spec.v_head_dim
+        if head_dim != v_head_dim:
             raise CheckFailure(
                 "UCM_POOL_GEOMETRY_UNSUPPORTED", "host_pool",
                 "UCM primary v1 stores equal-size K/V components; asymmetric K/V requires a production adapter change",
             )
-        pool_cls = MHATokenToKVPoolHost
 
-    width = (
-        device_pool.kv_lora_rank + device_pool.qk_rope_head_dim
-        if requirements.is_mla
-        else 2 * device_pool.head_num * device_pool.head_dim
-    )
+        width = 2 * head_num * head_dim
     # Cover device-description CPU buffers, host buffers, source snapshots and
     # comparison temporaries. This is a conservative estimate, not RSS accounting.
-    estimated = device_pool.size * layer_num * width * model_config.dtype.itemsize * 8
+    estimated = size * layer_num * width * model_config.dtype.itemsize * 8
     if estimated > config.max_host_mib * 1024 * 1024:
         raise CheckFailure(
             "CHECKER_MEMORY_LIMIT", "host_pool",
@@ -267,77 +245,31 @@ def _make_host_pool(
         )
 
     try:
-        kwargs = dict(
-            host_to_device_ratio=1.0,
-            host_size=0,
-            page_size=config.page_size,
-            layout=config.layout,
-            pin_memory=False,
-            device="cpu",
-            allocator_type="default",
-        )
-        parameters = inspect.signature(pool_cls).parameters
-        if "device_pool" in parameters:
-            if requirements.is_mla:
-                from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
+        # Both Host APIs consume metadata supplied by a real SGLang CPU pool.
+        # Keep constructor compatibility in the shared native-pool helper.
+        from .native_probe import _host_from_device
 
-                device_pool = MLATokenToKVPool(
-                    size=device_pool.size, page_size=config.page_size,
-                    dtype=model_config.dtype, kv_lora_rank=device_pool.kv_lora_rank,
-                    qk_rope_head_dim=device_pool.qk_rope_head_dim, layer_num=layer_num,
-                    device="cpu", enable_memory_saver=False,
-                    start_layer=layer_start, end_layer=layer_start + layer_num,
-                )
-            else:
-                # Legacy Host constructors read native row geometry and pointer
-                # tables. Use the real CPU pool, not a partial attribute mock.
-                from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
-
-                device_pool = MHATokenToKVPool(
-                    size=device_pool.size, page_size=config.page_size,
-                    dtype=model_config.dtype, head_num=device_pool.head_num,
-                    head_dim=device_pool.head_dim, layer_num=layer_num,
-                    device="cpu", enable_memory_saver=False,
-                    start_layer=layer_start, end_layer=layer_start + layer_num, enable_alt_stream=False,
-                )
-            return pool_cls(device_pool=device_pool, **kwargs)
-        if "buffer_info" not in parameters:
-            raise CheckFailure("CHECKER_HOST_POOL_API_UNSUPPORTED", "host_pool",
-                               f"unknown constructor for {pool_cls.__name__}")
-        # New SGLang separates physical buffer descriptions from pool capacity.
-        # These CPU buffers describe geometry only; no device transfer is tested.
-        common = dict(device_capacity_tokens=device_pool.size,
-                      start_layer=layer_start, end_layer=layer_start + layer_num)
         if requirements.is_mla:
-            from sglang.srt.mem_cache.pool_host.mla import MLAHostAllocation
+            from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
-            info = MLAHostAllocation(
-                dtype=model_config.dtype,
-                kv_lora_rank=device_pool.kv_lora_rank,
-                qk_rope_head_dim=device_pool.qk_rope_head_dim,
-                kv_cache_dim=width,
-                size_per_token=layer_num * width * model_config.dtype.itemsize,
+            native = MLATokenToKVPool(
+                size=size, page_size=config.page_size,
+                dtype=model_config.dtype, kv_lora_rank=kv_lora_rank,
+                qk_rope_head_dim=qk_rope_head_dim, layer_num=layer_num,
+                device="cpu", enable_memory_saver=False,
+                start_layer=layer_start, end_layer=layer_start + layer_num,
             )
-            common["target_layer_num"] = layer_num
         else:
-            from sglang.srt.mem_cache.device_pool_info import (
-                KVBufferLayout, KVBuffers, MHABufferInfo,
-            )
+            from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 
-            shape = (device_pool.size, device_pool.head_num, device_pool.head_dim)
-            k = tuple(torch.empty(shape, dtype=model_config.dtype) for _ in range(layer_num))
-            v = tuple(torch.empty_like(item) for item in k)
-            info = MHABufferInfo(
-                buffers=KVBuffers(
-                    k=k, v=v, layout=KVBufferLayout.NHD,
-                    k_data_ptrs=torch.tensor([item.data_ptr() for item in k], dtype=torch.uint64),
-                    v_data_ptrs=torch.tensor([item.data_ptr() for item in v], dtype=torch.uint64),
-                ),
-                page_size=config.page_size, head_num=device_pool.head_num,
-                head_dim=device_pool.head_dim, v_head_dim=device_pool.v_head_dim,
-                dtype=model_config.dtype, device=torch.device("cpu"),
+            native = MHATokenToKVPool(
+                size=size, page_size=config.page_size,
+                dtype=model_config.dtype, head_num=head_num,
+                head_dim=head_dim, layer_num=layer_num,
+                device="cpu", enable_memory_saver=False,
+                start_layer=layer_start, end_layer=layer_start + layer_num, enable_alt_stream=False,
             )
-        return pool_cls(buffer_info=info, **common, **kwargs)
+        return _host_from_device(native, config.page_size, config.layout, is_mla=requirements.is_mla)
     except CheckFailure:
         raise
     except Exception as exc:
@@ -406,15 +338,14 @@ def _roundtrip_v1(
     host_pool: Any,
     keys: list[str],
     config: Any,
-    is_mla: bool,
 ) -> dict[str, Any]:
     import torch
 
     tokens = config.pages * host_pool.page_size
     snapshots = {}
     for page in range(config.pages):
-        source = _pool_page_views(host_pool, "kv", page, is_mla)
-        target = _pool_page_views(host_pool, "kv", config.pages + page, is_mla)
+        source = _pool_page_views(host_pool, "kv", page)
+        target = _pool_page_views(host_pool, "kv", config.pages + page)
         snapshots[page] = []
         for index, (src, dst) in enumerate(zip(source, target)):
             _fill_pattern(src, seed=20260909 + page * 101 + index)
@@ -446,7 +377,7 @@ def _roundtrip_v1(
         raise CheckFailure("LOAD_FAILED", "roundtrip_load", repr(loaded))
     bytes_compared = 0
     for page, components in snapshots.items():
-        target = _pool_page_views(host_pool, "kv", config.pages + page, is_mla)
+        target = _pool_page_views(host_pool, "kv", config.pages + page)
         for index, (expected, actual) in enumerate(zip(components, target)):
             if not torch.equal(expected, actual):
                 raise CheckFailure("ROUNDTRIP_MISMATCH", "roundtrip_compare",
@@ -464,7 +395,6 @@ def _roundtrip_v2(
     pools: dict[str, Any],
     keys: list[str],
     config: Any,
-    is_mla: bool,
     pool_specs: Any,
 ) -> dict[str, Any]:
     """Exercise real side pools with their own page units and sparse windows."""
@@ -477,7 +407,7 @@ def _roundtrip_v2(
     logical = specs["kv"].kind == "logical"
     totals = (
         {"pages_written": 0, "pages_loaded": 0, "bytes_compared": 0}
-        if logical else _roundtrip_v1(storage, anchor, keys, config, is_mla)
+        if logical else _roundtrip_v1(storage, anchor, keys, config)
     )
     if len(specs) == 1:
         if logical:
@@ -524,8 +454,8 @@ def _roundtrip_v2(
         positions = persisted_positions(config.pages, spec.window_pages, checkpoints)
         written_positions[name] = set(positions)
         for page in positions:
-            source = _pool_page_views(pool, name, page, is_mla)
-            target = _pool_page_views(pool, name, config.pages + page, is_mla)
+            source = _pool_page_views(pool, name, page)
+            target = _pool_page_views(pool, name, config.pages + page)
             snapshots[name, page] = []
             for component, (src, dst) in enumerate(zip(source, target)):
                 _fill_pattern(src, seed=20260909 + pool_number * 100003 + page * 101 + component)
@@ -570,7 +500,7 @@ def _roundtrip_v2(
         _require_page_results(loaded, [transfer.name], len(transfer.keys),
                               "LOAD_FAILED", "roundtrip_load_v2")
     for (name, page), components in snapshots.items():
-        target = _pool_page_views(pools[name], name, config.pages + page, is_mla)
+        target = _pool_page_views(pools[name], name, config.pages + page)
         for component, (expected_data, actual) in enumerate(zip(components, target)):
             if not torch.equal(expected_data, actual):
                 raise CheckFailure("ROUNDTRIP_MISMATCH", "roundtrip_compare_v2",
@@ -587,7 +517,7 @@ def _roundtrip_v2(
     return totals
 
 
-def _pool_page_views(pool: Any, name: str, page: int, is_mla: bool) -> list[Any]:
+def _pool_page_views(pool: Any, name: str, page: int) -> list[Any]:
     """Writable byte views of real CPU host pages, independent of tensor layout.
 
     Using the production page metadata also covers split scales, packed rows
@@ -683,7 +613,6 @@ def _roundtrip(
     from ucm.integration.sglang.unifiedcache_store import UnifiedCacheStore
 
     pools = {}
-    anchor_name = "kv"
     storage = None
     native_bundle = None
     try:
@@ -726,7 +655,7 @@ def _roundtrip(
                         _make_mamba_host_pool(spec, config) if spec.kind == "mamba"
                         else _make_host_pool(model_config, requirements, config, spec)
                     )
-        host_pool = pools[anchor_name]
+        host_pool = pools["kv"]
         storage = UnifiedCacheStore(_make_storage_config(config, requirements))
         try:
             storage.register_mem_pool_host(host_pool)
@@ -741,13 +670,13 @@ def _roundtrip(
         ]
         if requirements.storage_api == "v2":
             totals = _roundtrip_v2(
-                storage, pools, keys, config, requirements.is_mla, specs
+                storage, pools, keys, config, specs
             )
         else:
             totals = _roundtrip_v1(
-                storage, host_pool, keys, config, requirements.is_mla
+                storage, host_pool, keys, config
             )
-            totals.update(pool_names=[anchor_name], storage_api="v1")
+            totals.update(pool_names=["kv"], storage_api="v1")
         totals["host_pool_classes"] = {
             name: type(pool).__name__ for name, pool in pools.items()
         }

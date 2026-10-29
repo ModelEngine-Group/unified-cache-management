@@ -49,8 +49,8 @@ def validate_partitions(ranges, total, tp_size, pp_size):
 def require_supported_model(facts):
     if facts.get("attention_arch") not in {"MHA", "MLA"} or any(
         facts.get(name) not in (True, False) for name in
-        ("is_dsa", "is_deepseek_v4", "is_minimax_sparse")
-    ) or any(facts.get(name) not in (True, False) for name in ("has_linear_attention", "is_hybrid_swa")):
+        ("is_dsa", "is_deepseek_v4", "is_minimax_sparse", "has_linear_attention", "is_hybrid_swa")
+    ):
         raise CheckFailure("CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "distributed_scope",
                            "SGLang could not identify a supported attention/cache family for TP/PP probing")
 
@@ -295,8 +295,8 @@ def _probe(config, result):
                     if spec.kind == "logical":
                         continue
                     for page in positions[name]:
-                        source = _pool_page_views(pools[name], name, page, requirements.is_mla)
-                        target = _pool_page_views(pools[name], name, config.pages + page, requirements.is_mla)
+                        source = _pool_page_views(pools[name], name, page)
+                        target = _pool_page_views(pools[name], name, config.pages + page)
                         for component, (src, dst) in enumerate(zip(source, target)):
                             replicated = storage_config.is_mla_model and name != "mamba"
                             owner = pp_rank * config.tp_size + (0 if replicated else tp_rank)
@@ -366,7 +366,7 @@ def _probe(config, result):
                     for transfer in selected:
                         _require_page_results(results, [transfer.name], len(transfer.keys), "LOAD_FAILED", "load_compare")
                 for (name, page, component), expected in snapshots.items():
-                    actual = _pool_page_views(pools[name], name, config.pages + page, requirements.is_mla)[component]
+                    actual = _pool_page_views(pools[name], name, config.pages + page)[component]
                     if not torch.equal(expected, actual):
                         raise CheckFailure("ROUNDTRIP_MISMATCH", "load_compare",
                                            f"rank data mismatch: pool={name}, page={page}, component={component}")

@@ -83,7 +83,7 @@ Additional providers reuse native SGLang cache constructors and host builders:
 | MHA/GQA/MQA and MLA | Physical KV host pages and v1 dump/lookup/load |
 | MHA + SWA / Mamba | Configuration-derived layer partitions and specialized pools |
 | SWA-only / recurrent-state-only | Production logical anchor plus real side pool |
-| DSA | Native DSA cache descriptions, declared indexer builder and packed scale payloads |
+| DSA | Native cache declarations and Host pool-group assembly, including indexer/scale payloads |
 | MiniMax sparse | Native main KV plus K-only sparse indexer, subject to production restrictions |
 | DeepSeek V4 | Native CUDA/ROCm or Ascend pool producer; logical anchor; active compressed, indexer, scale, RoPE and checkpoint regions |
 
@@ -95,6 +95,14 @@ report states `host_storage_contract_only`: compressed-token translation,
 controller transfer construction and device copies are outside this probe.
 DSA indexer content integrated into a native primary host pool is checked
 through the primary bytes and reported as `v1_integrated_payload`.
+Where available, DSA (including the attention child of DSA + Mamba) reuses
+SGLang's `prepare_host_pool_config` and `build_host_pool_group` for declaration
+validation, dependency ordering and transfer-layer mapping. The probe supplies
+a bounded CPU primary Host pool and disables indexer pinning; it does not build
+a cache controller. Older versions use the individual declared builders.
+Verbose `native_provider.host_pool_assembly` identifies the path used.
+SWA/Mamba partitioning and DeepSeek V4 region assembly retain their existing
+probe paths; they do not yet expose the same standalone declaration interface.
 
 Inspect remains `inconclusive` for hybrid storage compatibility until roundtrip
 runs. Native families defer actual pool discovery/allocation to roundtrip.

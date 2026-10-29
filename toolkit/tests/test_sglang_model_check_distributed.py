@@ -107,7 +107,6 @@ class DistributedCheckTest(unittest.TestCase):
         result.validation = dict(scope="tp_pp_host_storage_contract", tp_size=2, pp_size=2)
         result.succeed("roundtrip")
         summary = result.to_dict()["summary"]
-        self.assertIn("TP=2 PP=2", summary)
         self.assertEqual(summary, "TP=2 PP=2: structure, communication and UCM storage checks passed.")
 
 
