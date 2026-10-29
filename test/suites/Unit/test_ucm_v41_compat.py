@@ -65,7 +65,11 @@ def _load_hma_methods(names):
         n
         for n in tree.body
         if getattr(n, "name", None)
-        in ("_v41_whole_page_sizes", "_ascend_v41_whole_page_sizes")
+        in (
+            "_v41_whole_page_sizes",
+            "_ascend_v41_whole_page_sizes",
+            "select_transfer_views",
+        )
     ]
     module = ast.Module(body=helpers + nodes, type_ignores=[])
     ast.fix_missing_locations(module)
@@ -82,6 +86,8 @@ def _load_hma_methods(names):
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
         "Optional": Optional,
+        "uses_partitioned_cache": lambda: False,
+        "cache_core_version": lambda: 0,
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
@@ -870,6 +876,57 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         self.assertEqual(config["tensor_size_list"], [576, 8])
         self.assertEqual(published_sizes, [(4096, "fa")])
 
+    def test_wa_load_reserve_default_preserves_fa_and_explicit_configuration(self):
+        method = _load_hma_methods({"_create_store"})["_create_store"]
+        method.__globals__["KVConnectorRole"] = types.SimpleNamespace(WORKER="worker")
+        method.__globals__["UcmConnectorFactoryV1"] = types.SimpleNamespace(
+            create_connector=lambda _name, config, _path: config
+        )
+        cases = (
+            ("FA", 2, None, None),
+            ("WA", 2, None, 512),
+            ("WA", 0, None, None),
+            ("WA", 2, 256, 256),
+            ("WA", 2, 2048, 2048),
+            ("FA", 2, 256, 256),
+            ("FA", 1, None, None),
+            ("WA", 1, None, 512),
+            ("WA", 1, 2048, 2048),
+        )
+        for label, version, explicit, expected in cases:
+            with self.subTest(label=label, version=version, explicit=explicit):
+                method.__globals__["uses_partitioned_cache"] = lambda: version == 2
+                method.__globals__["cache_core_version"] = lambda: version
+                supplied = {
+                    "cache_buffer_capacity_gb": 10,
+                    "io_direct": False,
+                    "share_buffer_enable": False,
+                }
+                if explicit is not None:
+                    supplied["cache_load_exclusive_buffer_number"] = explicit
+                shard_size = (3 if label == "FA" else 6) << 20
+                connector = types.SimpleNamespace(
+                    _role="worker",
+                    _base_store_config=lambda _suffix: ("fake", None, dict(supplied)),
+                    _get_world_size=lambda: 1,
+                    _configure_numa_placement=lambda _config: None,
+                    _set_default_shm_buffer_capacity=lambda _config: None,
+                    _summarize_store_config=lambda config: config,
+                    _publish_block_size=lambda *_args, **_kwargs: None,
+                    device_id=0,
+                    file_size={label: shard_size},
+                    is_v41_layout=False,
+                    is_mla=True,
+                    tp_size=1,
+                )
+                config = method(connector, label, label.lower(), [shard_size])
+                self.assertEqual(
+                    config.get("cache_load_exclusive_buffer_number"), expected
+                )
+                self.assertEqual(config["cache_buffer_capacity_gb"], 10)
+                self.assertFalse(config["io_direct"])
+                self.assertFalse(config["share_buffer_enable"])
+
     def test_route_checks_fawa_before_hla(self):
         connector = UCM_PATH.read_text(encoding="utf-8")
         # The lite branch runs its own FAWA/HLA probe, so scope the check to the
@@ -881,6 +938,101 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 "UCMHybridLinearAttentionConnector.supports_kv_cache_layout"
             ),
         )
+
+    def test_ascend_dsv4_registration_keeps_native_token_dimension(self):
+        """Descriptor.layers does not turn native Ascend [B,N,H,C] into [B,H,N,C]."""
+        methods = _load_hma_methods({"register_kv_caches"})
+        tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
+        node = next(
+            n for n in tree.body if getattr(n, "name", None) == "KVCacheGroupLayout"
+        )
+
+        class Tensor:
+            dtype = "test"
+            device = "npu:0"
+
+            def __init__(self, width, element_bytes, page_bytes, offset=0):
+                self.shape = (2, 128, 1, width)
+                self.element_bytes = element_bytes
+                self.strides = (page_bytes // element_bytes, width, width, 1)
+                self.offset = offset
+
+            def __getitem__(self, _index):
+                return types.SimpleNamespace(
+                    data_ptr=self.data_ptr,
+                    numel=lambda: math.prod(self.shape[1:]),
+                    is_contiguous=lambda: True,
+                )
+
+            def data_ptr(self):
+                return 4096 + self.offset
+
+            def untyped_storage(self):
+                return types.SimpleNamespace(data_ptr=lambda: 4096)
+
+            def dim(self):
+                return 4
+
+            def element_size(self):
+                return self.element_bytes
+
+            def stride(self, index=None):
+                return self.strides if index is None else self.strides[index]
+
+        def reject_gpu_layout(_):
+            raise AssertionError(
+                "Native DSV4 indexer must not use V4.1 packed descriptors"
+            )
+
+        methods.update(
+            torch=types.SimpleNamespace(Tensor=Tensor),
+            Tuple=tuple,
+            Sequence=Sequence,
+            create_device=lambda: object(),
+            extract_layer_index=lambda name: int(name.split(".")[2]),
+            _use_ucm_connector_cpu_affinity=lambda: False,
+            _group_tokens_per_state_by_layer=reject_gpu_layout,
+            _group_physical_layout_by_layer=reject_gpu_layout,
+        )
+        module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
+        exec(compile(module, str(HMA_PATH), "exec"), methods)
+        main = "model.layers.2.attn"
+        indexer = "model.layers.2.indexer.k_cache"
+        group = types.SimpleNamespace(
+            layer_names=[main, indexer],
+            kv_cache_spec=types.SimpleNamespace(block_size=512),
+        )
+        connector = types.SimpleNamespace(
+            _kv_cache_config=types.SimpleNamespace(
+                kv_cache_groups=[group],
+                kv_cache_tensors=[types.SimpleNamespace(layers=group.layer_names)],
+            ),
+            is_ascend_layout=True,
+            is_ascend_v41_layout=False,
+            transient_group_ids=set(),
+            whole_page_sizes={},
+            group_layouts={},
+            ascend_block_geometry=lambda _: types.SimpleNamespace(
+                logical=512, physical=128
+            ),
+            _create_fa_store=lambda *_: None,
+            _create_wa_store=lambda *_: None,
+        )
+        for include_full_view in (False, True):
+            # rc2 A2 exposes the first two views; older compressed-cache
+            # profiles may also expose the overlapping complete byte page.
+            views = [Tensor(128, 1, 16640), Tensor(1, 2, 16640, offset=16384)]
+            expected = [131072, 16384, 256]
+            if include_full_view:
+                views.append(Tensor(130, 1, 16640))
+                expected = [131072, 16640]
+            methods["register_kv_caches"](
+                connector, {main: Tensor(512, 2, 131072), indexer: tuple(views)}
+            )
+            layout = connector.group_layouts[0]
+            self.assertFalse(layout.standardized_layout)
+            self.assertEqual(layout.tensor_block_size, 128)
+            self.assertEqual(layout.segment_tensor_size_list(512, 512), expected)
 
     def test_standardized_layout_uses_state_dimension(self):
         tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
@@ -1259,6 +1411,31 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             self.assertEqual(connector.hash_block_size, 64)
             self.assertEqual(connector.file_size, {"FA": 45056, "WA": 0})
 
+    def test_striped_fa_uses_absolute_hash_positions_for_token_offsets(self):
+        import numpy as np
+
+        methods = _load_hma_methods({"_extract_fa_ptr"})
+        layout = types.SimpleNamespace(
+            extract_addrs_with_offsets=lambda ids, _size, offsets: np.column_stack(
+                (ids, offsets)
+            )
+        )
+        connector = types.SimpleNamespace(
+            fa_group_ids=[0],
+            group_layouts={0: layout},
+            group_metas={0: types.SimpleNamespace(token_block_size=128)},
+            hash_block_size=32,
+        )
+        result = methods["_extract_fa_ptr"](
+            connector,
+            [b"a", b"b"],
+            3,
+            11,
+            ([101, 102],),
+            hash_positions=np.array([6, 10]),
+        )
+        self.assertEqual(result.tolist(), [[101, 64], [102, 64]])
+
     def test_fa_only_prefix_can_be_found_and_saved_without_a_window_store(self):
         methods = _load_hma_methods(
             {"_create_wa_store", "_lookup_external_hit_blocks", "wait_for_save"}
@@ -1292,9 +1469,12 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                         request_meta={"req": request}
                     ),
                     _poll_completed_dump_tasks=lambda: None,
-                    _extract_fa_ptr=lambda keys, *_args: __import__("numpy").zeros(
-                        (len(keys), 2), dtype="uint64"
+                    _get_mla_dump_slice=lambda start, rank=rank, size=tp_size: slice(
+                        (rank - start) % size, None, size
                     ),
+                    _extract_fa_ptr=lambda keys, *_args, **_kwargs: __import__(
+                        "numpy"
+                    ).zeros((len(keys), 2), dtype="uint64"),
                     _get_dump_event_handle=lambda: 1,
                     _submit_dump_task=submit,
                     tp_size=tp_size,
@@ -1307,9 +1487,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     methods["_lookup_external_hit_blocks"](connector, keys), 8
                 )
                 methods["wait_for_save"](connector)
-                start = len(keys) * rank // tp_size
-                end = len(keys) * (rank + 1) // tp_size
-                self.assertEqual(saved, [("FA", keys[start:end])])
+                self.assertEqual(saved, [("FA", keys[rank::tp_size])])
 
     def test_replay_chunks_do_not_dump_past_the_scheduler_computed_position(self):
         methods = _load_hma_methods(
@@ -1463,13 +1641,19 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
     def test_nested_c4_detection_validates_every_members_geometry(self):
         methods = _load_hma_methods(
-            {"_get_ascend_base_block_size", "_specs_for_group", "ascend_block_geometry"}
+            {
+                "_get_ascend_base_block_size",
+                "_specs_for_group",
+                "ascend_block_geometry",
+                "ascend_compression_ratio",
+            }
         )
         methods["ascend_block_geometry"].__globals__.update(
             _ascend_block_size_is_logical=lambda: False,
         )
         cls = types.SimpleNamespace(
             _specs_for_group=methods["_specs_for_group"],
+            ascend_compression_ratio=methods["ascend_compression_ratio"],
             ASCEND_C4_COMPRESS_RATIO=4,
             ASCEND_SUPPORTED_VLLM_BLOCK_SIZES={32, 64, 128},
         )

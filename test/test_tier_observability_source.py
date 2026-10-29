@@ -21,18 +21,18 @@ class TierObservabilitySourceTest(unittest.TestCase):
         self.assertIn("if (status.Success())", source)
 
     def test_cache_records_each_shard_without_tp_adjustment(self):
-        source = (REPO_ROOT / "ucm/store/cache/cc/load_queue.cc").read_text(
+        source = (REPO_ROOT / "ucm/store/cache/v2/load_queue.h").read_text(
             encoding="utf-8"
         )
 
-        source_assignment = "shardTask.fromPosix = !shardTask.bufferHandle.Ready();"
-        owner_branch = (
-            "if (shardTask.bufferHandle.Owner() && " "!shardTask.bufferHandle.Ready())"
+        source_assignment = (
+            "shardTask.fromCache = handle.GetState() == SlotState::Ready;"
         )
+        owner_branch = "if (handle.Owner() && !shardTask.fromCache)"
         self.assertLess(source.index(source_assignment), source.index(owner_branch))
         self.assertIn('"cache_load_shards_total"', source)
         self.assertIn('"cache_load_wait_shards_total"', source)
-        self.assertIn("if (shardTask.fromPosix) { waitShardCount++; }", source)
+        self.assertIn("if (!shardTask.fromCache) { ++waitShardCount; }", source)
         self.assertIn('"cache_load_success_shards_total"', source)
         self.assertIn('"cache_posix_load_success_shards_total"', source)
         self.assertNotIn("tpSize", source)
