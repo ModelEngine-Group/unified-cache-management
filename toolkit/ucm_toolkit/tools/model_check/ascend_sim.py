@@ -57,7 +57,6 @@ from .sim_runtime import (
     disable_pin_memory,
     patch_execution_ordering,
     patch_ucm_device,
-    rebind,
     require_platform,
 )
 

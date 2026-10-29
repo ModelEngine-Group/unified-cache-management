@@ -251,4 +251,8 @@ class ModelCheckTool(ToolAdapter):
         ascend_status = "OK" if ascend_ok else "MISSING (vllm_ascend or common stack)"
         print(f"{self.name}: ascend {ascend_status}")
         print(f"{self.name}: ascend-sim {ascend_status} (no NPU required)")
+        print(
+            f"{self.name}: cuda-sim {common_status} "
+            "(no GPU required; needs a CUDA build of vLLM)"
+        )
         return 0 if cuda_ok or ascend_ok else 1

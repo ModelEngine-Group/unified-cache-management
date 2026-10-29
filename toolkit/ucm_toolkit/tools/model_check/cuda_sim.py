@@ -124,20 +124,27 @@ def _force_cuda_platform() -> None:
     """
 
     platforms = importlib.import_module("vllm.platforms")
-    if getattr(platforms, "_current_platform", None) is not None:
+    # vLLM records a stack trace when it resolves its platform, and caches the
+    # result. Read those markers instead of ``current_platform``, whose getter
+    # would do the resolving.
+    if getattr(platforms, "_init_trace", "") or (
+        getattr(platforms, "_current_platform", None) is not None
+    ):
         raise UnsupportedEnvironment(
             "vLLM already resolved its platform before cuda-sim could declare "
             "CUDA. Run this launcher as the process entry point so nothing "
             "imports vllm.platforms.current_platform first."
         )
-    if not hasattr(platforms, "builtin_platform_plugins"):
+    plugins = getattr(platforms, "builtin_platform_plugins", None)
+    if not isinstance(plugins, dict):
         raise UnsupportedEnvironment(
-            "the installed vLLM has no vllm.platforms.builtin_platform_plugins, "
-            "so cuda-sim cannot declare which platform to simulate."
+            "the installed vLLM has no vllm.platforms.builtin_platform_plugins "
+            "dict, so cuda-sim cannot declare which platform to simulate."
         )
-    platforms.builtin_platform_plugins = {
-        "cuda": lambda: CUDA_PLATFORM_QUALNAME,
-    }
+    # Mutate the dict in place: this module defines its own ``__setattr__``,
+    # so rebinding the name could be intercepted.
+    plugins.clear()
+    plugins["cuda"] = lambda: CUDA_PLATFORM_QUALNAME
     log("cuda-sim: CUDA declared as the simulated platform (NVML probe bypassed)")
 
 
