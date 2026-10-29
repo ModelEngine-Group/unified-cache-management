@@ -48,6 +48,7 @@ struct Config {
     size_t commitConcurrency{4};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
+    bool posixHotnessEnable{false};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};
     bool posixGcPreciseMode{true};

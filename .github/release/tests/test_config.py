@@ -9,9 +9,10 @@ import sys
 from email.parser import Parser
 from pathlib import Path
 
-import build
 import pytest
 import yaml
+
+import build
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / ".github" / "release"))
