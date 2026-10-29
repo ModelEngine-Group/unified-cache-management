@@ -116,7 +116,8 @@ class PrometheusStatsLogger:
             if not name:
                 continue
             doc = cfg.get("documentation", "")
-            prometheus_name = multiproc_metric_name(self.config, name)
+            export_name = str(cfg.get("prometheus_name") or name)
+            prometheus_name = multiproc_metric_name(self.config, export_name)
             labelnames = list(self.labelnames)
             if name in self._dynamic_label_by_name:
                 labelnames.append(self._dynamic_label_by_name[name])

@@ -125,7 +125,7 @@ def check_metric_document(
     for line in block.splitlines():
         if line.startswith("#### "):
             section = headings.get(line[5:].strip())
-        row = re.match(r"^\|\s*`ucm:([^`]+)`\s*\|", line)
+        row = re.match(r"^\|\s*`kv:([^`]+)`\s*\|", line)
         if row:
             actual.setdefault(row.group(1), []).append(section)
     expected = {
@@ -191,6 +191,7 @@ def render_ucm_block(
     for metric in definitions[section]:
         name = json.dumps(metric["name"])
         documentation = json.dumps(metric["documentation"])
+        export_name = json.dumps("kv:" + metric["name"])
         # YAML 1.1 treats bare 1e-05 as a string; use decimal literals on both sides.
         buckets = (
             "["
@@ -200,14 +201,17 @@ def render_ucm_block(
             + "]"
         )
         if python:
-            extra = (
-                f", {buckets}"
-                if section == "histogram"
-                else ", {}" if section == "gauge" else ""
-            )
+            extra = f", {buckets}" if section == "histogram" else ""
+            extra += ', {"prometheus_name": ' + export_name + "}"
             lines.append(f"    ({name}, {documentation}{extra}),")
         else:
-            lines.extend([f"  - name: {name}", f"    documentation: {documentation}"])
+            lines.extend(
+                [
+                    f"  - name: {name}",
+                    f"    documentation: {documentation}",
+                    f"    prometheus_name: {export_name}",
+                ]
+            )
             if section == "histogram":
                 lines.append(f"    buckets: {buckets}")
     lines.append(
@@ -256,6 +260,8 @@ def check_ucm_definitions(
                 errors.append(f"duplicate KV metric: {name}")
                 continue
             actual_type, entry = entries[0]
+            if entry.get("prometheus_name") != f"kv:{name}":
+                errors.append(f"export name mismatch for {name}")
             if actual_type != section:
                 errors.append(
                     f"type mismatch for {name}: expected {section}, got {actual_type}"

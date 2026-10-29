@@ -42,7 +42,7 @@ metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metri
 使用 UCM connector 启动 vLLM 并发送至少一个推理请求。然后验证 UCM 指标是否可用：
 
 ```bash
-curl http://<vllm-ip>:<vllm-port>/metrics | grep '^ucm:'
+curl http://<vllm-ip>:<vllm-port>/metrics | grep -E '^(ucm|kv):'
 ```
 
 大多数 UCM 指标只有在相应代码路径运行后才会出现。当没有外部存储命中时，可能只存在一小部分指标。
@@ -106,7 +106,7 @@ docker run -d \
   prom/prometheus
 ```
 
-访问 `http://<prometheus-host>:9090/targets`，确认 `vllm` 抓取目标为 **UP**，并查询 `ucm:` 指标。已有 `ucm-monitoring` 网络时复用它，不必重复创建。
+访问 `http://<prometheus-host>:9090/targets`，确认 `vllm` 抓取目标为 **UP**，并查询 `ucm:` 指标；启用 KVClient 指标且执行相应操作后，也应检查 `kv:` 指标。已有 `ucm-monitoring` 网络时复用它，不必重复创建。
 
 ### 安装 Grafana
 
@@ -161,6 +161,21 @@ ucm-toolkit run metrics-view check \
 ```
 
 以上查看当前快照；后台采集、时间窗口查询以及 MLA 的 TP 参数见 [metrics-view 完整操作](../../toolkit/user/metrics-view.md)。
+
+## 指标对外名称
+
+配置中的 `name` 是内部采集键；可选字段 `prometheus_name` 指定 vLLM 和 multiproc 两个出口的公共名称。名称包含 `:` 时原样保留，否则添加该出口的默认前缀（默认 `ucm:`）。`vllm_connector_name` 仍可单独覆盖 vLLM 的对外名称。名称配置不改变数值、单位、桶或标签。
+
+## KVClient 指标（`kv:`）
+
+KVClient 及其传输层使用 `kv:` 命名空间。默认配置显式指定了这些指标的对外名称：
+
+- `kv:kv_client_*`：KVClient API 计数器和任务耗时直方图。
+- `kv:kv_transport_*`：传输层错误计数器和任务耗时直方图。
+
+例如，内部采集键 `kv_client_query_requests_total` 对外上报为 `kv:kv_client_query_requests_total`。vLLM 和 multiproc 两个出口均使用这些配置名称，其他默认 UCM 指标继续使用 `ucm:`。
+
+自定义 YAML 和内联配置会替换默认配置，使用时应包含 KV 指标的 `prometheus_name` 字段。运行 `python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm` 可更新仓库中的示例 YAML 和 Python 默认配置。已有查询中的 `ucm:kv_*` 应更新为 `kv:kv_*`。
 
 ## 参考
 
