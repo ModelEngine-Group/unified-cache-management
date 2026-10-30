@@ -343,6 +343,18 @@ Re-checked on vLLM 0.30.0 / vLLM-Ascend 0.30.0rc1 unless noted.
   `wrapt` before running, and pass `--no-build-isolation` when installing the
   toolkit. The CPU image's optional `torchcodec` can fail to load (missing CUDA
   libraries) and must be moved aside for the run.
+- **The declaration has to reach child interpreters.** vLLM inspects a model
+  architecture in a fresh process
+  (`python -m vllm.model_executor.models.registry`) which calls
+  `load_general_plugins()` before anything else, so a monkey patch in the
+  parent never reaches it and the child repeats the device query. `ascend_sim`
+  therefore writes a `sitecustomize.py` and prepends its directory to
+  `PYTHONPATH`; Python's `site` imports that name at startup, before the `-m`
+  module runs. The same declaration then runs in every interpreter of the run,
+  from one implementation in `sim_bootstrap.py`. It chains to any
+  `sitecustomize` it shadows, does nothing when no simulated platform is
+  declared, and warns on stderr rather than killing a child if it cannot
+  declare -- replacing a clear error with an unrelated crash would be worse.
 - **triton's Ascend arch lookup moved between images.** On
   `vllm-ascend:v0.30.0rc1` (triton-ascend 3.2.2) the `TRITON_ASCEND_ARCH`
   override is honoured. On `v0.30.0rc2` (3.6.0+dev) triton logs

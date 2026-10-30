@@ -44,10 +44,12 @@ from __future__ import annotations
 import gc
 import importlib
 import os
+import tempfile
 from typing import Any
 
 import torch
 
+from . import sim_bootstrap
 from .common import CacheFixture, UnsupportedEnvironment, describe_ucm_layout, log
 from .common import make_cache as make_common_cache
 from .common import make_worker, schedule, verify
@@ -64,89 +66,42 @@ config = load_config()
 
 
 def _declared_ascend_arch() -> str:
-    """The triton Ascend arch to simulate, taken from the environment.
+    """The triton Ascend arch to simulate; see ``sim_bootstrap``."""
 
-    ``TRITON_ASCEND_ARCH`` wins when the caller set it; otherwise it is derived
-    from the ``SOC_VERSION`` the image declares. Nothing is read from a device.
-    """
-
-    declared = os.getenv("TRITON_ASCEND_ARCH", "").strip()
-    if declared:
-        return declared
-    soc_version = os.getenv("SOC_VERSION", "").strip()
-    prefix = "ascend"
-    if not soc_version.lower().startswith(prefix):
-        raise UnsupportedEnvironment(
-            "ascend-sim needs the triton Ascend arch: set TRITON_ASCEND_ARCH "
-            "(e.g. Ascend910B1) or provide SOC_VERSION. Without an NPU, triton "
-            "cannot read the arch from the device."
-        )
-    return "Ascend" + soc_version[len(prefix) :].upper()
+    try:
+        return sim_bootstrap.declared_ascend_arch()
+    except sim_bootstrap.BootstrapError as exc:
+        raise UnsupportedEnvironment(f"ascend-sim: {exc}") from exc
 
 
 def _pin_triton_arch() -> None:
-    """Declare triton's Ascend arch before vLLM-Ascend is imported.
+    """Declare triton's Ascend arch, in this interpreter and in its children.
 
     ``vllm_ascend.patch.platform`` imports vLLM's flash-linear-attention ops,
     whose module body asks triton for the current target. Without an NPU that
-    query fails inside CANN, so the arch has to be declared instead of read.
+    query fails inside CANN, so the arch is declared instead of read.
 
-    Two mechanisms, because triton changed: older builds honour the
-    ``TRITON_ASCEND_ARCH`` environment override, while newer ones log
-    "host environment overrides are ignored" and query the device anyway
-    (observed with triton-ascend 3.6.0+dev against 3.2.2). The environment
-    variable is still set for the older path, and the driver's own arch lookup
-    -- the call that reaches the device -- is replaced for both. Declaring the
-    arch answers "which chip is this", not "what does the KV layout look
-    like".
+    The declaration has to reach **every** interpreter of the run. vLLM
+    inspects a model's architecture by starting a fresh one
+    (``python -m vllm.model_executor.models.registry``) which loads plugins
+    before anything else, and a monkey patch does not travel there. A
+    generated ``sitecustomize`` carries the same declaration into each child;
+    the directory holding it goes on ``PYTHONPATH`` here.
     """
 
     arch = _declared_ascend_arch()
-    os.environ["TRITON_ASCEND_ARCH"] = arch
     try:
-        from triton.backends.ascend.utils import get_ascend_arch_from_env
+        replaced = sim_bootstrap.declare_ascend_arch(arch)
+    except sim_bootstrap.BootstrapError as exc:
+        raise UnsupportedEnvironment(f"ascend-sim: {exc}") from exc
 
-        get_ascend_arch_from_env()  # older triton validates its override here
-    except ImportError:
-        pass
-
-    try:
-        import triton
-
-        driver_module = importlib.import_module("triton.backends.ascend.driver")
-    except ImportError as exc:
-        log(
-            "ascend-sim: triton's Ascend backend is not importable "
-            f"({exc}); relying on TRITON_ASCEND_ARCH={arch} alone"
-        )
-        return
-
-    # Replace the arch lookup on whichever class owns it, so instances that
-    # already exist pick it up too. ``get_aicore_num`` is a kernel launch
-    # parameter on the same object and also reaches the device.
-    replaced: list[str] = []
-    for name, candidate in vars(driver_module).items():
-        if not isinstance(candidate, type):
-            continue
-        if hasattr(candidate, "get_arch"):
-            candidate.get_arch = lambda self, _arch=arch: _arch
-            replaced.append(f"{name}.get_arch")
-        if hasattr(candidate, "get_aicore_num"):
-            candidate.get_aicore_num = lambda self: 1
-            replaced.append(f"{name}.get_aicore_num")
-    if not any(entry.endswith(".get_arch") for entry in replaced):
-        raise UnsupportedEnvironment(
-            "ascend-sim could not find triton's Ascend arch lookup to declare "
-            f"(triton {getattr(triton, '__version__', '?')}). Without it, "
-            "triton queries the device and fails with "
-            "'cann_get_soc_name failed' / 'get_arch returned NULL'. Check "
-            "triton.backends.ascend.driver for the class that resolves the "
-            "target arch in this version."
-        )
+    bootstrap_parent = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    directory = sim_bootstrap.install_child_bootstrap("ascend", bootstrap_parent)
     log(
-        f"ascend-sim: triton {getattr(triton, '__version__', '?')} arch declared "
-        f"as {arch} via TRITON_ASCEND_ARCH and {sorted(replaced)}"
+        f"ascend-sim: triton {sim_bootstrap.triton_version()} arch declared as "
+        f"{arch} via {sim_bootstrap.ARCH_ENV} and {sorted(replaced)}"
     )
+    log(f"ascend-sim: child interpreters bootstrap from {directory}")
 
 
 def _patch_npu_runtime() -> None:
