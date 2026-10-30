@@ -2,7 +2,7 @@
 
 ## 1. Metrics Exported by Default
 
-KVClient and transport metrics use the `kv:` prefix; other metrics in the tables below use `ucm:` by default. The example configuration contains 164 Counters, 37 Gauges, and 133 Histograms.
+KVClient and transport metrics use the `kv:` prefix; other metrics in the tables below use `ucm:` by default. The default configuration contains 164 Counters, 37 Gauges, and 133 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
