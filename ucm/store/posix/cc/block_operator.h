@@ -26,7 +26,6 @@
 
 #include <cerrno>
 #include <cstdint>
-#include <deque>
 #include <fcntl.h>
 #include <functional>
 #include <list>
@@ -85,11 +84,9 @@ public:
         openSrv.reset();
         commitSrv.reset();
     }
-    // loadHandles holds one handle cache per backend.
     Status Setup(const SpaceLayout* layout, const std::vector<std::string>* backends,
                  size_t nOpenWorker, size_t nCommitWorker, size_t timeoutMs,
-                 std::function<void()> onOpenStuck,
-                 std::deque<LoadHandleCache>* loadHandles = nullptr)
+                 std::function<void()> onOpenStuck, LoadHandleCache* loadHandles = nullptr)
     {
         layout_ = layout;
         backends_ = backends;
@@ -176,7 +173,7 @@ private:
         if (shouldStart) {
             OpenResult result{-1, 0, {}};
             if (task.useHandleCache && loadHandles_) {
-                result.borrowed = (*loadHandles_)[task.backendIndex].GetOrOpen(task.id, path);
+                result.borrowed = loadHandles_->GetOrOpen(task.id, task.backendIndex, path);
                 if (result.borrowed.Valid()) {
                     result.fd = result.borrowed.Fd();
                     result.error = 0;
@@ -212,7 +209,7 @@ private:
 
     const SpaceLayout* layout_{nullptr};
     const std::vector<std::string>* backends_{nullptr};
-    std::deque<LoadHandleCache>* loadHandles_{nullptr};
+    LoadHandleCache* loadHandles_{nullptr};
     std::shared_mutex srvMutex_;
     std::unique_ptr<ThreadPool<OpenTask>> openSrv_;
     std::unique_ptr<ThreadPool<CommitTask>> commitSrv_;

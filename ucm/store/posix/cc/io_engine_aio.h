@@ -26,7 +26,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <deque>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -55,7 +54,7 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
     size_t nShardPerBlock_;
     BlockCommitTracker tracker_;
-    std::deque<LoadHandleCache> loadHandles_;
+    LoadHandleCache loadHandles_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     const std::vector<std::string>* backends_{nullptr};
@@ -74,8 +73,7 @@ public:
         nShardPerBlock_ = config.blockSize / config.shardSize;
         backends_ = backends;
         tracker_.Setup(nShardPerBlock_);
-        auto s = SetupLoadHandles(loadHandles_, backends_->size(), config.loadHandleCacheSize,
-                                  config.ioDirect);
+        auto s = loadHandles_.Setup(config.loadHandleCacheSize, config.ioDirect);
         if (s.Failure()) { return s; }
         // A stuck open is already past its task deadline. Sweep before the new worker starts,
         // so the stuck backend trips and queued tasks retry first.

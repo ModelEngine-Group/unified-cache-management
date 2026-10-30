@@ -42,8 +42,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     ioDirect_ = config.ioDirect;
     timeoutMs_ = config.timeoutMs;
     tracker_.Setup(nShardPerBlock_);
-    auto cacheStatus = SetupLoadHandles(loadHandles_, backends_->size(), config.loadHandleCacheSize,
-                                        config.ioDirect);
+    auto cacheStatus = loadHandles_.Setup(config.loadHandleCacheSize, config.ioDirect);
     if (cacheStatus.Failure()) [[unlikely]] { return cacheStatus; }
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
@@ -209,7 +208,7 @@ Status TransQueue::S2H(IoUnit& ios)
     const auto backendIndex = ios.task->backendIndex;
     const auto& backend = (*backends_)[backendIndex];
     const auto& path = layout_->ArchivedFilePath(backend, ios.shard.owner);
-    auto borrowed = loadHandles_[backendIndex].GetOrOpen(ios.shard.owner, path);
+    auto borrowed = loadHandles_.GetOrOpen(ios.shard.owner, backendIndex, path);
     if (!borrowed.Valid()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) for load in backend({}:{}).", borrowed.Error(), path,
                  backendIndex, backend);
