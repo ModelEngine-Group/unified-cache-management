@@ -19,8 +19,10 @@ PATCH_PACKAGE_BY_VERSION = {
 
 
 def patch_package_for(version: str) -> str | None:
-    """Select only the releases whose linker API has a UCM backport."""
-    return PATCH_PACKAGE_BY_VERSION.get(version.split("+", 1)[0])
+    """Select a release's patch, normalizing rc/post/build suffixes like vLLM."""
+    release = version.strip().split("+", 1)[0]
+    release = release.split(".post", 1)[0].split("rc", 1)[0]
+    return PATCH_PACKAGE_BY_VERSION.get(release)
 
 
 def _has_native_external_linker() -> bool:
@@ -56,10 +58,11 @@ def apply_all_patches() -> None:
         return
     try:
         version = importlib.metadata.version("sglang")
-    except importlib.metadata.PackageNotFoundError as error:
-        raise RuntimeError(
-            "SGLang patch trigger ran without an installed SGLang package."
-        ) from error
+    except importlib.metadata.PackageNotFoundError:
+        logger.warning(
+            "Cannot detect the installed SGLang version; skipping UCM patch."
+        )
+        return
     expected = os.environ.get("UCM_SGLANG_VERSION", version)
     if expected != version:
         raise RuntimeError(
@@ -73,10 +76,12 @@ def apply_all_patches() -> None:
         return
     package_suffix = patch_package_for(version)
     if package_suffix is None:
-        raise RuntimeError(
+        logger.warning(
             "No UCM compatibility patch or native external linker support for "
-            f"SGLang {version}."
+            "SGLang %s; skipping UCM patch. Existing SGLang backends remain available.",
+            version,
         )
+        return
     package = f"ucm.integration.sglang.patch.{package_suffix}"
     try:
         module = importlib.import_module(package)

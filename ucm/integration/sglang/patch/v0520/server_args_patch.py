@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 
 from .linker_config import UnifiedCacheLinkerConfig
+
+logger = logging.getLogger(__name__)
 
 
 def apply(*, allow_legacy_ucm: bool = False) -> None:
@@ -62,6 +65,11 @@ def apply(*, allow_legacy_ucm: bool = False) -> None:
             raise ValueError(
                 "--unified-cache-external-linker-config requires the dynamic "
                 "backend when the UCM SGLang patch is enabled."
+            )
+        if config is not None and not args.enable_unified_cache_external_linker:
+            logger.warning(
+                "--unified-cache-external-linker-config is ignored because "
+                "--enable-unified-cache-external-linker is not set."
             )
         result = original_from_cli(cls, args)
         if config is not None:

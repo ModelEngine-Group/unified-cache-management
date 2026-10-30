@@ -56,13 +56,42 @@ class _StoreTask:
 
 
 @dataclass(frozen=True)
+class _PreparedPipelineTransfer:
+    """SGLang-local fast path for the stock PipelineStore.
+
+    IDs are encoded once per transfer. Native Load/Dump copy the submission
+    descriptors before returning; address arrays and events are retained by
+    the linker until tasks are reaped. Other Stores use their public methods.
+    """
+
+    store: Any
+    ids: np.ndarray
+    page_count: int
+    task_type: type[Task]
+
+    def load_data(self, shard_index: int, addresses) -> Task:
+        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
+        addrs = np.asarray(addresses, dtype=np.uint64)
+        return self.task_type(self.store.Load(self.ids, indexes, addrs))
+
+    def dump_data(
+        self, shard_index: int, addresses, prerequisite_handle: int = 0
+    ) -> Task:
+        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
+        addrs = np.asarray(addresses, dtype=np.uint64)
+        return self.task_type(
+            self.store.Dump(self.ids, indexes, addrs, prerequisite_handle)
+        )
+
+
+@dataclass(frozen=True)
 class _PreparedStoreTransfer:
     transfer: UcmLayerTransfer
     store: UcmKVStoreBaseV1
     block_ids: list[bytes]
     tensor_count: int
     shards_by_layer: dict[int, tuple[int, ...]]
-    prepared_io: Any = None
+    prepared_io: _PreparedPipelineTransfer | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +104,16 @@ class _TransferLayout:
 
 def _safe_name(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value))
+
+
+def _pool_names_key(members: Iterable[UcmPoolMetadata]) -> tuple[str, ...]:
+    pool_order = {"kv": 0, "indexer": 1, "swa": 2, "mamba": 3}
+    return tuple(
+        sorted(
+            {_safe_name(pool.pool_name).strip("._-").lower() for pool in members},
+            key=lambda name: (pool_order.get(name, 4), name),
+        )
+    )
 
 
 class UcmDirectStoreAdapter:
@@ -180,6 +219,11 @@ class UcmDirectStoreAdapter:
             )
             weights[group] = pages * block_bytes
         weight_total = sum(weights.values())
+        if weight_total <= 0:
+            raise ValueError(
+                "Cannot split posix_capacity_gb: Store groups have no positive "
+                "estimated pool capacity. Check pool capacity_pages and layer_schemas."
+            )
         capacities = {
             group: total * weight // weight_total for group, weight in weights.items()
         }
@@ -358,13 +402,7 @@ class UcmDirectStoreAdapter:
         ]
         if not members:
             raise ValueError(f"UCM store group {group} has no registered pools.")
-        pool_order = {"kv": 0, "indexer": 1, "swa": 2, "mamba": 3}
-        pool_names = tuple(
-            sorted(
-                {_safe_name(pool.pool_name).strip("._-").lower() for pool in members},
-                key=lambda name: (pool_order.get(name, 4), name),
-            )
-        )
+        pool_names = _pool_names_key(members)
         if any(not name for name in pool_names):
             raise ValueError(
                 f"UCM store group {group} has an empty physical pool name."
@@ -381,16 +419,7 @@ class UcmDirectStoreAdapter:
         matching_groups = {
             other_group: other_members
             for other_group, other_members in pools_by_group.items()
-            if tuple(
-                sorted(
-                    {
-                        _safe_name(candidate.pool_name).strip("._-").lower()
-                        for candidate in other_members
-                    },
-                    key=lambda name: (pool_order.get(name, 4), name),
-                )
-            )
-            == pool_names
+            if _pool_names_key(other_members) == pool_names
         }
         if len(matching_groups) > 1:
             layer_ids = tuple(
@@ -404,26 +433,24 @@ class UcmDirectStoreAdapter:
                     else "_".join(map(str, layer_ids))
                 )
                 directory_name = f"{directory_name}_layers_{layer_label}"
-            # Layer ranges normally distinguish split Stores. If the same pool
-            # set and layer range still collide, use a stable layout fingerprint.
-            if (
-                sum(
-                    tuple(
-                        sorted(
-                            {
-                                layer
-                                for pool in other_members
-                                for layer, _ in pool.layer_schemas
-                            }
-                        )
+            # Stores with the same pool set and layer range need a stable
+            # layout fingerprint to distinguish their backend directories.
+            for other_group, other_members in matching_groups.items():
+                if other_group == group:
+                    continue
+                other_layer_ids = tuple(
+                    sorted(
+                        {
+                            layer
+                            for pool in other_members
+                            for layer, _ in pool.layer_schemas
+                        }
                     )
-                    == layer_ids
-                    for other_members in matching_groups.values()
                 )
-                > 1
-            ):
-                fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[:10]
-                directory_name = f"{directory_name}_layout_{fingerprint}"
+                if other_layer_ids == layer_ids:
+                    fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[:10]
+                    directory_name = f"{directory_name}_layout_{fingerprint}"
+                    break
         backends = []
         for root in roots:
             backend = Path(root) / directory_name
@@ -594,8 +621,8 @@ class UcmDirectStoreAdapter:
             try:
                 store = self._transfer_layout(transfer).store
                 keys = page_keys[: candidates[-1]]
-                # A previous joint hit proves the leading pages of every
-                # ALL_PAGES group. Recheck its last page, then probe the tail.
+                # ALL_PAGES rechecks the last jointly hit page, then probes
+                # the tail.
                 # TRAILING_PAGES can have sparse valid boundaries and must
                 # still inspect its complete candidate range.
                 if self._is_trailing(transfer):
@@ -609,6 +636,13 @@ class UcmDirectStoreAdapter:
                         candidates, exists, transfer
                     )
                 else:
+                    # Resume assumes the earlier hit pages remain present.
+                    # If Posix GC evicts an earlier page while the last hit
+                    # page survives, this check can overestimate the restorable
+                    # prefix and a later load can fail at the layer wait.
+                    # SGLang 0.5.20/0.5.21 have no request-level load-failure path.
+                    # A miss on the checked boundary still triggers a full
+                    # prefix lookup below; earlier holes are not detected here.
                     start = (
                         resume_from_pages - 1
                         if 0 < resume_from_pages <= len(keys)
@@ -704,6 +738,26 @@ class UcmDirectStoreAdapter:
             raise ValueError(f"UCM group {transfer.store_group} changed its layout.")
         return cached
 
+    def _prepare_pipeline_io(
+        self, store: UcmKVStoreBaseV1, block_ids: list[bytes]
+    ) -> _PreparedPipelineTransfer | None:
+        if self._connector_name != "UcmPipelineStore" or self._module_path:
+            return None
+        # Do not bypass public methods of custom Stores or subclasses.
+        from ucm.store.pipeline.connector import (
+            UcmPipelineStore,
+            UcmPipelineStoreTransTask,
+        )
+
+        if type(store) is not UcmPipelineStore:
+            return None
+        return _PreparedPipelineTransfer(
+            store.store_,
+            np.frombuffer(b"".join(block_ids), dtype=np.uint8),
+            len(block_ids),
+            UcmPipelineStoreTransTask,
+        )
+
     def _prepare_transfers(
         self, transfers: list[UcmLayerTransfer], *, is_offload: bool
     ) -> list[_PreparedStoreTransfer]:
@@ -732,7 +786,6 @@ class UcmDirectStoreAdapter:
                     ):
                         raise ValueError("address/schema mismatch")
                 block_ids = self._block_ids(transfer)
-                prepare_io = getattr(layout.store, "prepare_data_transfer", None)
                 prepared.append(
                     _PreparedStoreTransfer(
                         transfer=transfer,
@@ -740,9 +793,7 @@ class UcmDirectStoreAdapter:
                         block_ids=block_ids,
                         tensor_count=layout.tensor_count,
                         shards_by_layer=layout.shards_by_layer,
-                        prepared_io=(
-                            prepare_io(block_ids) if callable(prepare_io) else None
-                        ),
+                        prepared_io=self._prepare_pipeline_io(layout.store, block_ids),
                     )
                 )
             except Exception:

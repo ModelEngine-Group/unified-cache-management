@@ -13,6 +13,7 @@ import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, List
+from unittest.mock import patch
 
 import numpy as np
 
@@ -70,7 +71,6 @@ linker_module = load_source(
 pipeline_module = load_source(
     "ucm/store/pipeline/connector.py",
     definitions={
-        "_PreparedPipelineTransfer",
         "UcmPipelineStoreTransTask",
         "UcmPipelineStore",
     },
@@ -78,6 +78,19 @@ pipeline_module = load_source(
 
 
 class LayoutPreparationTest(unittest.TestCase):
+    def test_gc_zero_weight_does_not_restore_full_budget_per_group(self):
+        adapter = self.adapter()
+        adapter._store_config["posix_capacity_gb"] = 100
+        member = types.SimpleNamespace(
+            capacity_pages=0, layer_schemas=((0, ((8, 0),)),)
+        )
+        with self.assertRaisesRegex(ValueError, "no positive estimated pool capacity"):
+            adapter._estimate_gc_capacities({"a": [member], "b": [member]})
+        member.capacity_pages = 10
+        member.layer_schemas = ()
+        with self.assertRaisesRegex(ValueError, "no positive estimated pool capacity"):
+            adapter._estimate_gc_capacities({"a": [member]})
+
     def transfer(self, **changes):
         transfer = adapter_module.UcmLayerTransfer(
             store_group="g",
@@ -225,9 +238,11 @@ class LayoutPreparationTest(unittest.TestCase):
         store = object.__new__(pipeline_module.UcmPipelineStore)
         store.store_ = Native()
         adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
         adapter._ensure_store_schema = lambda *args, **kwargs: store
         transfer = self.transfer()
-        prepared = adapter.prepare_load([transfer])
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            prepared = adapter.prepare_load([transfer])
         self.assertIs(prepared[0][0], prepared[2][0])
         self.assertEqual(adapter.submit_prepared_load_layer(prepared, 1), [])
         adapter.submit_prepared_load_layer(prepared, 0)
@@ -239,8 +254,30 @@ class LayoutPreparationTest(unittest.TestCase):
         np.testing.assert_array_equal(calls[1][1], [1, 1])
         np.testing.assert_array_equal(calls[0][2], transfer.addresses[0])
         np.testing.assert_array_equal(calls[1][2], transfer.addresses[1])
-        adapter.submit_offload([transfer], prerequisite_handle=42)
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            adapter.submit_offload([transfer], prerequisite_handle=42)
         self.assertEqual([call[3] for call in calls[2:]], [42, 42])
+
+    def test_custom_pipeline_stores_keep_their_public_methods(self):
+        calls = []
+
+        class CustomPipeline(pipeline_module.UcmPipelineStore):
+            def load_data(self, block_ids, indexes, addresses):
+                calls.append((block_ids, indexes, addresses))
+                return pipeline_module.UcmPipelineStoreTransTask(1)
+
+        store = object.__new__(CustomPipeline)
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            prepared = adapter.prepare_load([self.transfer()])
+        self.assertIsNone(prepared[0][0].prepared_io)
+        adapter.submit_prepared_load_layer(prepared, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], [0, 0])
+        adapter._module_path = "custom.backend"
+        self.assertIsNone(adapter._prepare_pipeline_io(store, [b"a" * 16]))
 
     def test_generic_fallback_and_partial_submit_drains_tasks(self):
         calls, waited = [], []
