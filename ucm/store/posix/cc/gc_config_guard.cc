@@ -338,10 +338,11 @@ Status GcConfigGuard::Join(const std::string& payload)
     return Status::OK();
 }
 
-Status GcConfigGuard::Setup(const Config& config)
+Status GcConfigGuard::Setup(const Config& config, const BackendManager* backendMgr)
 {
     if (config.storageBackends.empty()) { return Status::InvalidParam("invalid storage backends"); }
-    backend_ = NormalizeBackend(config.storageBackends.front());
+    backendMgr_ = backendMgr;
+    backend_ = backendMgr_->Backends().front();
     configPath_ = backend_ + kConfigName;
     gateDir_ = backend_ + kGateDirName;
     membersDir_ = backend_ + kMembersDirName;
@@ -361,8 +362,12 @@ Status GcConfigGuard::Setup(const Config& config)
     ReleaseGate();
     if (s.Failure()) { return s; }
 
-    heartbeat_.Setup(memberPath_, "ucm_posix_gccfg", heartbeatIntervalSec_,
-                     GcHeartbeat::OnMissing::Recreate);
+    heartbeat_.Setup(
+        backendMgr_,
+        [identity = identity_](const std::string& backend) {
+            return backend + kMembersDirName + "/" + identity;
+        },
+        heartbeatIntervalSec_, GcHeartbeat::OnMissing::Recreate, "ucm_posix_gccfg");
     s = heartbeat_.Start();
     if (s.Failure()) {
         if (registered_.exchange(false)) { UnregisterMember(); }

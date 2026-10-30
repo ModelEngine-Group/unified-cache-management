@@ -29,8 +29,9 @@ TAG = "draft/v0.8.0-1"
 SOURCE_SHA = "a" * 40
 
 
-def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
-    reference = "ghcr.io/release-org/vllm:v0.23.0-ucm-0.8.0.dev1"
+def _plan(*, multi_arch: bool = False, dockerhub: bool = False, tag: str = TAG) -> dict:
+    coordinates = resources_module.version_config.classify_tag(tag)
+    reference = f"ghcr.io/release-org/vllm:v0.23.0-ucm-{coordinates['image_version']}"
     members = (
         [reference + "-amd64", reference + "-arm64"] if multi_arch else [reference]
     )
@@ -38,9 +39,9 @@ def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
         "kind": "ucm-release-plan",
         "route": "release",
         "repository": REPOSITORY,
-        "git_tag": TAG,
+        "git_tag": tag,
         "release_type": "draft",
-        "version": "0.8.0.dev1",
+        "version": coordinates["version"],
         "publish": {
             "ghcr": {"enabled": True},
             "dockerhub": {"enabled": dockerhub, "namespace": "docker.io/release-org"},
@@ -53,7 +54,10 @@ def _plan(*, multi_arch: bool = False, dockerhub: bool = False) -> dict:
                 "members": [{"reference": member} for member in members],
             }
         ],
-        "chart": {"name": "unified-cache-chart", "version": "0.8.0-draft.1"},
+        "chart": {
+            "name": "unified-cache-chart",
+            "version": coordinates["chart_version"],
+        },
     }
 
 
@@ -727,6 +731,63 @@ def test_plan_projection_rejects_repository_and_tag_mismatch():
     ]:
         with pytest.raises(execution.CleanupError, match="identity differs"):
             resources_module.plan_resources(_plan(), repository=repository, tag=tag)
+
+
+@pytest.fixture
+def custom_draft_plan():
+    return _plan(multi_arch=True, tag="draft/v0.8.0-test")
+
+
+def test_custom_draft_cleanup_preserves_full_version_and_resource_coordinates(
+    custom_draft_plan,
+):
+    plan = custom_draft_plan
+    snapshot = resources_module.new_record(
+        REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1, plan=plan
+    )
+    record = resources_module.decode_snapshot(
+        snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
+    )
+    assert snapshot["version"] == "0.8.0.dev0+draft.test"
+    assert record["versions"] == [snapshot["version"]]
+    family = plan["families"][0]
+    assert {item["reference"] for item in record["resources"]} == {
+        f"ghcr.io/release-org/charts/unified-cache-chart:{plan['chart']['version']}",
+        family["published_reference"],
+        *(member["reference"] for member in family["members"]),
+    }
+    snapshot["version"] = "0.8.0.dev0"
+    with pytest.raises(resources_module.CleanupRecordError, match="version differs"):
+        resources_module.decode_snapshot(
+            snapshot, REPOSITORY, "release-cleanup-100-1-planned.json"
+        )
+
+
+@pytest.mark.parametrize("resource_index", [0, 1], ids=["chart", "image"])
+def test_custom_draft_cleanup_record_cannot_claim_another_labels_resources(
+    custom_draft_plan, resource_index
+):
+    plan = custom_draft_plan
+    record = resources_module.record_from_plan(
+        resources_module.record_for_tag(
+            REPOSITORY, plan["git_tag"], SOURCE_SHA, 100, 1
+        ),
+        plan,
+    )
+    resource = record["resources"][resource_index]
+    resource["reference"] = resource["reference"].replace("draft.test", "draft.other")
+    with pytest.raises(resources_module.CleanupRecordError, match="not owned"):
+        resources_module.validate_record(record, REPOSITORY)
+
+
+def test_custom_draft_retention_uses_release_creation_order():
+    tags = ["draft/v0.8.0-z-last-name", "draft/v0.8.0-a-first-name"]
+    records = [
+        resources_module.record_for_tag(REPOSITORY, tag, SOURCE_SHA, index, 1, index)
+        for index, tag in enumerate(tags, 1)
+    ]
+    selection = resources_module.select_retention(records, 1, release_type="draft")
+    assert [record["tag"] for record in selection.candidates] == tags[:1]
 
 
 def test_retention_defers_active_oldest_without_deleting_a_retained_newer_tag():
