@@ -21,7 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <cstddef>
+#include <cstring>
 #include <gtest/gtest.h>
+#include <vector>
 #include "cache/cc/load_queue.h"
 #include "detail/data_generator.h"
 #include "detail/mock_store.h"
@@ -225,4 +228,67 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     ASSERT_EQ(observer.GetState(), TransBuffer::State::FAILED);
     ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
     ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_F(UCCacheLoadQueueTest, DdrLoadCopiesCacheSlotIntoCallerBuffer)
+{
+    using namespace UC::CacheStore;
+    constexpr size_t tensorSize = 4096;
+    std::vector<std::byte> payload(tensorSize, std::byte{0x5a});
+    std::vector<std::byte> first(tensorSize, std::byte{0});
+    std::vector<std::byte> second(tensorSize, std::byte{0});
+    void* cacheAddr = nullptr;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc task) {
+        EXPECT_EQ(task.memoryType, UC::Detail::TaskDesc::MemoryType::DDR);
+        EXPECT_EQ(task.size(), 1U);
+        EXPECT_EQ(task.front().addrs.size(), 1U);
+        cacheAddr = task.front().addrs.front();
+        EXPECT_NE(cacheAddr, first.data());
+        std::memcpy(cacheAddr, payload.data(), tensorSize);
+        return NextId();
+    }));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = tensorSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+
+    UC::Detail::TaskDesc miss;
+    miss.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    miss.push_back(UC::Detail::Shard{blockId, 0, {first.data()}});
+    auto missTask = std::make_shared<TransTask>(TransTask::Type::LOAD, std::move(miss));
+    auto missWaiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(missTask, missWaiter);
+    ASSERT_TRUE(missWaiter->WaitForDuration(1000));
+    ASSERT_FALSE(failureSet.Contains(missTask->id));
+    EXPECT_EQ(std::memcmp(first.data(), payload.data(), tensorSize), 0);
+
+    UC::Detail::TaskDesc hit;
+    hit.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    hit.push_back(UC::Detail::Shard{blockId, 0, {second.data()}});
+    auto hitTask = std::make_shared<TransTask>(TransTask::Type::LOAD, std::move(hit));
+    auto hitWaiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(hitTask, hitWaiter);
+    ASSERT_TRUE(hitWaiter->WaitForDuration(1000));
+    ASSERT_FALSE(failureSet.Contains(hitTask->id));
+    EXPECT_EQ(std::memcmp(second.data(), payload.data(), tensorSize), 0);
+
+    auto handle = buffer.Get(blockId, 0, true, true);
+    EXPECT_TRUE(handle.Ready());
+    EXPECT_TRUE(handle.Owner());
+    EXPECT_EQ(std::memcmp(handle.Data(), payload.data(), tensorSize), 0);
 }
