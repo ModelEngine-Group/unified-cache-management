@@ -53,7 +53,7 @@ static int32_t AsyncWait(AsyncWaitCtx &ctx)
         result = AsyncWait(_ctx);                           \
     } while (0)
 
-const char* get_arg(int argc, const char** argv, const std::string& name)
+const char* get_arg(int argc, const char **argv, const std::string& name)
 {
     for (int i = 1; i + 1 < argc; ++i) {
         if (argv[i] == name) {
@@ -63,7 +63,7 @@ const char* get_arg(int argc, const char** argv, const std::string& name)
     return nullptr;
 }
 
-bool has_flag(int argc, const char** argv, const std::string& name)
+bool has_flag(int argc, const char **argv, const std::string& name)
 {
     for (int i = 1; i < argc; ++i) {
         if (argv[i] == name) {

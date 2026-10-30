@@ -72,7 +72,7 @@ public:
         Dispatcher::cct = context.get();
         std::cerr << "[trace] init: CephContext configured"
                   << " mon_host='" << mon_host << "'"
-                  << " client_name=" << client_name << "'" << std::endl;
+                  << " client_name='" << client_name << "'" << std::endl;
 
         std::cerr << "[trace] init: starting io_context_pool" << std::endl;
         pool = std::make_unique<ceph::async::io_context_pool>(1);
@@ -159,7 +159,7 @@ public:
                   << " is_connected=" << conn->is_connected() << std::endl;
 
         // Give the async connection a moment to initiate, then send the
-        // message - Ceph messenger queues it umtil the connection is ready.
+        // message - Ceph messenger queues it until the connection is ready.
         std::cerr << "[trace] pull: sleeping 500ms for async connect" << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         std::cerr << "[trace] pull: after sleep - is_connected="
@@ -168,7 +168,7 @@ public:
         // Build the pull request as an MOSDMap with empty maps/incremental_maps
         // and current_epoch encoded into the data bufferlist.  The OSD Agent
         // distinguishes pull requests from MON-pushed OSDMaps by checking
-        // maps.empty() && incremental_maps.empty() && data_len > 0
+        // maps.empty() && incremental_maps.empty() && data_len > 0.
         auto req = ceph::make_message<MOSDMap>();
         ceph::buffer::list req_data;
         ceph::encode(current_epoch, req_data);
@@ -183,7 +183,7 @@ public:
                   << " - waiting for response (timeout=" << wait_seconds << "s)"
                   << std::endl;
         AGENT_LOG(logger, agent::LogLevel::INFO,
-                  "send OSDMap pull request (current_epoch=" +
+                  "sent OSDMap pull request (current_epoch=" +
                   std::to_string(current_epoch) +
                   ") to OSD agent at " + target_addr_str);
 
@@ -265,7 +265,7 @@ public:
                   << " payload_len=" << message->get_payload().length()
                   << std::endl;
         if (message->get_type() != CEPH_MSG_OSD_MAP) {
-            std::cerr << "[trace] ms_dispatch: unexpected type" << message->get_type()
+            std::cerr << "[trace] ms_dispatch: unexpected type=" << message->get_type()
                       << " name=" << message->get_type_name()
                       << " - dropping" << std::endl;
             message->put();
@@ -402,7 +402,7 @@ private:
     bool monc_started = false;
 };
 
-const char* get_arg(int argc, const char** argv, const std::string& name)
+const char* get_arg(int argc, const char **argv, const std::string& name)
 {
     for (int i = 1; i + 1 < argc; ++i) {
         if (argv[i] == name) {
@@ -414,7 +414,7 @@ const char* get_arg(int argc, const char** argv, const std::string& name)
 
 } // namespace
 
-int main(int argc, const char** argv)
+int main(int argc, const char **argv)
 {
     const char* mon_host = get_arg(argc, argv, "--mon-host");
     const char *client_name = get_arg(argc, argv, "--client-name");
@@ -439,7 +439,7 @@ int main(int argc, const char** argv)
     unsigned long current_epoch_val =
         std::strtoul(current_epoch_str, nullptr, 10);
     if (current_epoch_val > UINT32_MAX) {
-        std::cerr << "Invalid current-epoch: " << current_epoch_str << std::endl;
+        std::cerr << "invalid current-epoch: " << current_epoch_str << std::endl;
         return EXIT_FAILURE;
     }
     unsigned wait_seconds = wait_arg ? std::strtoul(wait_arg, nullptr, 10) : 10;
@@ -496,7 +496,7 @@ int main(int argc, const char** argv)
         std::cout << "result: already up to date at epoch "
                   << pull_agent.get_reply_epoch() << std::endl;
     } else {
-        std::cout << "result: unknown " << std::endl;
+        std::cout << "result: unknown" << std::endl;
     }
 
     // If --expect is specified, verify the reply type matches and return
