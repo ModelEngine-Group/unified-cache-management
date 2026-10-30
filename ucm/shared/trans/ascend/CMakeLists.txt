@@ -15,11 +15,9 @@ if(UCM_RUNTIME_ASCEND_HAL)
     find_path(UCM_TRANS_HAL_INCLUDE_DIR ascend_hal.h
         PATHS "${ASCEND_ROOT}/include/driver"
         NO_DEFAULT_PATH REQUIRED)
-    find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
-        PATHS "${ASCEND_ROOT}/devlib" "${ASCEND_ROOT}/${CMAKE_SYSTEM_PROCESSOR}-linux/devlib"
-        NO_DEFAULT_PATH REQUIRED)
     target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
-    target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
+    # libascend_hal.so is loaded with dlopen at run time, see hal_memory.cc.
+    target_link_libraries(trans PRIVATE ${CMAKE_DL_LIBS})
 endif()
 if(ASCEND_SUPPORTS_REGISTER_PIN)
     target_compile_definitions(trans PRIVATE ASCEND_SUPPORTS_REGISTER_PIN=1)

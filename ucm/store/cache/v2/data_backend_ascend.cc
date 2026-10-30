@@ -257,8 +257,8 @@ Status AscendHalDataBackend::ReserveRankAddress(size_t rank)
         return status;
     }
     if (mappings_[rank].addr == nullptr) {
-        UC_ERROR("Invalid HAL VA reservation: owner={} device={} rank={} reserve_bytes={}",
-                 owner_, deviceId_, rank, rankStride_);
+        UC_ERROR("Invalid HAL VA reservation: owner={} device={} rank={} reserve_bytes={}", owner_,
+                 deviceId_, rank, rankStride_);
         return Status::Error("HAL did not return a valid ptr");
     }
     UC_INFO("HAL VA reservation: owner={} device={} rank={} addr={} reserve_bytes={}", owner_,
