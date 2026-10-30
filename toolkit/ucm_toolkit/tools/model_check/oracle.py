@@ -22,6 +22,12 @@ POISON_BYTE = 0xFF
 # Patterns only use bytes in [0, 250], so a poisoned (0xff) byte that a load
 # did not overwrite can never equal an expected byte.
 PATTERN_MODULUS = 251
+# A single arithmetic sequence modulo 251 repeats every 251 bytes, so swapping
+# two equal-length pieces 251 bytes apart would be invisible. Adding one term
+# per coarser scale pushes the repeat to 251**SCALES; within that span every
+# shift changes at least one byte.
+PATTERN_SCALES = 3
+PATTERN_PERIOD = PATTERN_MODULUS**PATTERN_SCALES
 
 
 def byte_view(tensor: torch.Tensor) -> torch.Tensor:
@@ -45,19 +51,31 @@ def byte_view(tensor: torch.Tensor) -> torch.Tensor:
 def pattern_bytes(shape: tuple[int, ...], *labels: object) -> torch.Tensor:
     """Deterministic CPU uint8 pattern in [0, 250] that depends on byte position.
 
-    Two labels collide only if both the start and the step of their
-    arithmetic sequences are equal, and a shift by ``d`` bytes inside one
-    pattern is visible unless ``d`` is a multiple of 251.
+    Values are a sum of one arithmetic sequence per scale -- per byte, per 251
+    bytes, per 251**2 bytes -- all modulo 251, with every start and step
+    derived from ``labels``.
+
+    Two labels collide only if every start and step matches. A shift of ``d``
+    bytes changes at least one byte for every ``0 < d < PATTERN_PERIOD``: a
+    single sequence would hide multiples of 251, but then the next scale's
+    term changes by its own non-zero step, and so on. Shifts that are exact
+    multiples of ``PATTERN_PERIOD`` (251**3, about 15.8 MB) remain invisible,
+    which is why callers must keep one pattern's span below it; a KV block is
+    orders of magnitude smaller.
     """
 
     digest = hashlib.sha256(repr(labels).encode("utf-8")).digest()
     start = int.from_bytes(digest[:8], "little") % PATTERN_MODULUS
-    step = 1 + int.from_bytes(digest[8:16], "little") % (PATTERN_MODULUS - 1)
     count = 1
     for size in shape:
         count *= int(size)
-    values = (torch.arange(count, dtype=torch.int64) * step + start) % PATTERN_MODULUS
-    return values.to(torch.uint8).reshape(shape)
+    index = torch.arange(count, dtype=torch.int64)
+    values = torch.full_like(index, start)
+    for scale in range(PATTERN_SCALES):
+        chunk = digest[8 + 8 * scale : 16 + 8 * scale]
+        step = 1 + int.from_bytes(chunk, "little") % (PATTERN_MODULUS - 1)
+        values += (index // PATTERN_MODULUS**scale) * step
+    return (values % PATTERN_MODULUS).to(torch.uint8).reshape(shape)
 
 
 def fill_pattern(tensor: torch.Tensor, *labels: object) -> None:
@@ -165,6 +183,24 @@ class StorageSnapshot:
             f"transfer range is outside every registered KV storage: "
             f"ptr={ptr:#x}, size={size}"
         )
+
+    def contains(self, ptr: int, size: int) -> bool:
+        """Whether every byte of ``[ptr, ptr + size)`` is already allowed.
+
+        Lets a caller treat an address the component under test reported as
+        something to **check** against the allowed set, instead of adding it to
+        that set. Returns False for a range that leaves the registered
+        storages altogether.
+        """
+
+        ptr, size = int(ptr), int(size)
+        if size <= 0:
+            return True
+        for record in self._records.values():
+            if record.base <= ptr and ptr + size <= record.base + record.nbytes:
+                start = ptr - record.base
+                return bool(record.allowed[start : start + size].all())
+        return False
 
     def stray_writes(self) -> list[tuple[int, int, int]]:
         """Return ``(storage_base, first_offset, changed_bytes)`` per storage."""

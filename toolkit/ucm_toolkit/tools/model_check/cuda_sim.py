@@ -27,8 +27,16 @@ What is substituted, and why it does not change the layout:
   same rule ``ascend_sim.py`` applies to the Ascend SoC family;
 * streams, events, ``synchronize`` and allocator statistics are host no-ops --
   they order execution and report usage, they do not shape tensors;
+* nothing else is replaced. vLLM's own capability and kernel-availability
+  rules keep running against the declared identity, so backend **selection**
+  stays native: a backend this capability cannot support is rejected here too,
+  exactly as it would be on the real GPU;
 * pinned host memory is reported unavailable;
 * UCM's worker device is the host ``CpuDevice``.
+
+Because vLLM's capability rules still run, a model whose backend needs a
+newer capability than the one declared will be rejected here rather than
+silently checked against the wrong layout.
 
 KV-cache specs, group/config values, tensor shapes, strides, dtypes and block
 IDs are never replaced. A PASS shows that UCM parses and round-trips vLLM's
@@ -64,7 +72,6 @@ from .sim_runtime import (
     disable_pin_memory,
     patch_execution_ordering,
     patch_ucm_device,
-    rebind,
     require_platform,
 )
 
@@ -222,30 +229,6 @@ def _require_cuda_flash_attn() -> None:
         ) from exc
 
 
-def _disable_kernel_availability_probes() -> None:
-    """Answer kernel-availability probes from the declared capability.
-
-    vLLM asks whether a FlashAttention build is usable before selecting it,
-    and that probe reads the device. The *selection* must stay native, because
-    the chosen backend decides the KV shapes -- so the probe is answered from
-    the declared capability rather than skipped, and both the answer and the
-    resulting backend appear in the layout log.
-    """
-
-    try:
-        fa_utils = importlib.import_module("vllm.v1.attention.backends.fa_utils")
-    except ImportError:
-        return
-    for attribute in ("flash_attn_supports_fp8", "is_fa_version_supported"):
-        if hasattr(fa_utils, attribute):
-            rebind(
-                "vllm.v1.attention.backends.fa_utils",
-                attribute,
-                lambda *args, **kwargs: True,
-            )
-            log(f"cuda-sim: fa_utils.{attribute}() answered from the declaration")
-
-
 def install_host_runtime() -> None:
     """Apply every substitution, in the order the import chain needs them."""
 
@@ -260,7 +243,6 @@ def install_host_runtime() -> None:
     )
     _require_cuda_flash_attn()
     _declare_device_identity(major, minor)
-    _disable_kernel_availability_probes()
     disable_pin_memory("cuda-sim")
     patch_ucm_device("cuda-sim")
 

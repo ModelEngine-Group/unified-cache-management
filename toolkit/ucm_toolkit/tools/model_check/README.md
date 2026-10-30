@@ -186,10 +186,11 @@ only vLLM's tensors, specs and block tables:
 
 | check | what it asserts | scope |
 |---|---|---|
-| **black-box** | no loaded byte holds a value UCM never stored: every byte of a poisoned target block is either the source byte at the same position (restored) or still `0xff` (not restored); a third value can only come from data placed at the wrong offset, block, layer or group | **every** persistent group, whatever it stores -- sliding-window and Mamba state groups included. Asserts nothing about *which* blocks a group stores, so a new group kind needs no adaptation. Prints restored/total bytes per group as a report; do not assert on it, a group legitimately restores only part of its blocks |
+| **black-box** | no loaded byte holds a value UCM never stored: every byte of a poisoned target block is either the source byte at the same position (restored) or still `0xff` (not restored); a third value can only come from data placed at the wrong offset, block, layer or group | **every** persistent group, whatever it stores -- sliding-window and Mamba state groups included. Asserts nothing about *which* blocks a group stores, so a new group kind needs no adaptation. This is a **placement** check, not a completeness one: a group whose bytes all stayed `0xff` passes it. Each group's verdict says whether an independent required-restore set backed it, and groups without one are reported as `PARTIALLY VERIFIED` |
+| **transfer ranges** | every range the connector is about to write lies inside a block vLLM allocated to this request | the allowed set comes from vLLM's block tables and views; the connector's addresses are verified against it, never added to it. Skipped, with a log line, when a layer's geometry is not addressable |
 | **strict oracle** | target block *i* equals source block *i* byte-for-byte, through `kv_caches[layer]` and the scheduler's block tables | persistent full-attention groups (every block of the hit) and sliding-window groups whose window is exactly one block (the restore-boundary block). Other geometries are listed as not natively assertable instead of being guessed at |
 | **stray writes** | the load changed no KV byte outside the ranges it was asked to fill | whole backing storage of every registered KV tensor |
-| **hit length** (v2) | the loaded FA chunks are a contiguous prefix of the dumped chunks and agree with the scheduler's external hit; for attention-only models the length is exact, for hybrid models it is an upper bound (a WA/State boundary may legitimately shorten the restore point) | connector v2 metadata |
+| **hit length** (v2) | the dumped FA chunk count equals what the source request's scheduled range implies, **and** the loaded chunks are a contiguous prefix agreeing with the scheduler's external hit. Both expectations come from the request lengths and the chunk granularity, so a truncated dump cannot shrink its own expectation. The dump side is exact; the load side is exact for attention-only models and an upper bound for hybrid ones | connector v2 metadata |
 
 The two are complementary: the strict check is narrow but demands equality, the
 black-box check is wide but tolerates "not restored". Together they need no
@@ -198,8 +199,11 @@ knowledge of a group's storage policy to cover it.
 Covered blocks are poisoned with `0xff` before the load, and the patterns are
 position-dependent bytes written through a `uint8` alias, so a swapped
 layer/component, a shifted offset and a low-precision rounding collision are
-all visible. Comparison is byte-wise, so NaN payloads compare equal when their
-bits match.
+visible. A pattern is a sum of one arithmetic sequence per scale modulo 251, so
+every shift below `PATTERN_PERIOD` (251**3, about 15.8 MB -- far beyond one KV
+block) changes at least one byte; a single sequence would have hidden shifts
+that are multiples of 251. Comparison is byte-wise, so NaN payloads compare
+equal when their bits match.
 
 The oracle is itself verified by fault injection: dropping one layer from
 every v2 transfer keeps the connector-derived comparison green while the

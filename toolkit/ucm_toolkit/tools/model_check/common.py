@@ -9,6 +9,7 @@ import math
 import os
 import time
 import traceback
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1968,6 +1969,33 @@ def poison_all_blocks(
     return len(entries)
 
 
+def restoration_verdicts(
+    coverage: dict[int, tuple[int, int]], asserted_groups: Iterable[int]
+) -> list[str]:
+    """One readable verdict per group, saying how much of it was asserted.
+
+    "writes landed in the right place" and "everything that had to be restored
+    was restored" are two different claims. A group only gets `full` when an
+    independent required-restore set exists for it (full attention, and a
+    sliding window that is exactly one block); the others are labelled
+    partially verified so a reader never reads their PASS as completeness.
+    """
+
+    asserted = set(asserted_groups)
+    verdicts = []
+    for group_id, (restored, total) in sorted(coverage.items()):
+        share = 100.0 * restored / total if total else 0.0
+        if group_id in asserted:
+            scope = "required set asserted"
+        else:
+            scope = "PARTIALLY VERIFIED: no independent required-restore set"
+        verdicts.append(
+            f"group {group_id}: restored {restored}/{total} bytes "
+            f"({share:.1f}%) -- {scope}"
+        )
+    return verdicts
+
+
 def compare_blackbox(
     fixture: Any,
     source_saved: dict[tuple[int, str, int, int], torch.Tensor],
@@ -2072,10 +2100,17 @@ def check_v2_hit(
     worker: Any,
     save_metadata: Any,
     load_metadata: Any,
+    source_tokens: int,
     target_tokens: int,
     hit_tokens: int | None,
 ) -> str:
-    """Require the loaded FA chunks to be the expected prefix of the dump."""
+    """Check the dumped and the loaded FA chunk counts, each independently.
+
+    Both expectations come from the request lengths the scheduler worked with
+    and the chunk granularity, not from the connector's own plans: deriving
+    the expected hit from the dump plan would let a truncated dump and a
+    correspondingly short hit agree with each other.
+    """
 
     connector = getattr(worker, "connector", worker)
     spec = getattr(connector, "spec", None)
@@ -2104,18 +2139,31 @@ def check_v2_hit(
     hybrid = bool(spec.state_groups) or any(
         (group.tail_tokens or 0) > 0 for group in spec.wa_groups
     )
+    # The source request was scheduled in one prefill, so FA stores every
+    # complete chunk of its prompt. Independent of what the dump plan says.
+    expected_dump = source_tokens // chunk_tokens
+    if len(dumped) != expected_dump:
+        raise AssertionError(
+            "dumped FA chunks disagree with the source request's scheduled "
+            f"range: dumped={len(dumped)}, expected={expected_dump} "
+            f"(source_tokens={source_tokens}, tokens_per_chunk={chunk_tokens})"
+        )
     # vLLM always recomputes at least the request's last token, so the longest
     # restorable prefix is bounded by the chunks before it. Read from the
     # request length, not from the connector's internals.
     reachable = max(target_tokens - 1, 0) // chunk_tokens
-    expected = min(len(dumped), reachable)
-    summary = f"FA hit {len(loaded)}/{len(dumped)} dumped chunks, expected={expected}"
+    expected_load = min(expected_dump, reachable)
+    summary = (
+        f"FA dumped {len(dumped)}/{expected_dump} expected, "
+        f"loaded {len(loaded)}/{expected_load} expected"
+    )
     if hybrid:
-        # WA/State boundaries may legitimately shorten the restore point.
-        if len(loaded) > expected:
+        # WA/State boundaries may legitimately shorten the restore point, so
+        # the load side is an upper bound here. The dump side is exact above.
+        if len(loaded) > expected_load:
             raise AssertionError(f"hit beyond reachable prefix: {summary}")
-        return summary + " (hybrid: upper bound only)"
-    if len(loaded) != expected:
+        return summary + " (hybrid: load side is an upper bound)"
+    if len(loaded) != expected_load:
         raise AssertionError(f"unexpected external hit length: {summary}")
     return summary
 
@@ -2134,7 +2182,13 @@ def allow_native_target_blocks(
     target_ids: tuple[list[int], ...],
     native_blocks: bool,
 ) -> bool:
-    """Allow the target's native blocks; False when a geometry is unknown."""
+    """Allow the target's native blocks; False when a geometry is unknown.
+
+    The allowed set must come from vLLM's block tables and tensor views, never
+    from the addresses the connector reported: authorizing those would put a
+    wrong address into the allowed set and hide the very mistake this check
+    exists to find.
+    """
 
     num_blocks = int(fixture.kv_cache_config.num_blocks)
     for layer, cache in fixture.kv_caches.items():
@@ -2151,6 +2205,35 @@ def allow_native_target_blocks(
                     return False
                 snapshot.allow_tensor(block)
     return True
+
+
+def check_transfers_inside_native_blocks(
+    snapshot: StorageSnapshot, worker: Any, load_metadata: Any
+) -> int:
+    """Every range the connector will write must lie in a native target block.
+
+    Called after ``allow_native_target_blocks`` filled the allowed set from
+    vLLM's own block tables, so this verifies the connector's addresses
+    against that set rather than trusting them. A range that leaves it points
+    at memory the scheduler never handed this request.
+    """
+
+    batch = _v2_batch(worker, load_metadata, "load")
+    if batch is None:
+        return 0
+    outside = [
+        (int(ptr), int(size))
+        for ptr, size in zip(batch.ptrs, batch.sizes, strict=True)
+        if not snapshot.contains(ptr, size)
+    ]
+    if outside:
+        shown = ", ".join(f"ptr={ptr:#x} size={size}" for ptr, size in outside[:4])
+        raise AssertionError(
+            "connector load ranges fall outside the target blocks vLLM "
+            f"allocated for this request: {len(outside)} of {len(batch.sizes)} "
+            f"ranges, e.g. {shown}"
+        )
+    return len(batch.sizes)
 
 
 def settle_after_dump(is_v2: bool) -> None:
@@ -2379,6 +2462,9 @@ def verify(
     whole_block_window: list[int] = []
     strict_indices: dict[int, list[int]] = {}
     blackbox_saved: dict = {}
+    # Layers whose block geometry this checker cannot address. Non-empty means
+    # the transfer-range check has no complete allowed set to verify against.
+    unverified: list[str] = []
     if is_v2:
         if _enabled("UCM_MODEL_CHECK_NATIVE_ORACLE") and native_oracle_supported(
             fixture
@@ -2465,6 +2551,7 @@ def verify(
                 worker,
                 save_metadata,
                 load_metadata,
+                len(dispatch.request.all_token_ids),
                 len(dispatch.prompt_token_ids),
                 target.num_computed_tokens,
             )
@@ -2511,18 +2598,33 @@ def verify(
                         poison(block)
 
     snapshot = None
+    checked_ranges = 0
     if _enabled("UCM_MODEL_CHECK_STRAY_CHECK"):
         synchronize()
         snapshot = make_storage_snapshot(fixture)
-        if is_v2:
-            load_batch = _v2_batch(worker, load_metadata, "load")
-            for ptr, size in zip(load_batch.ptrs, load_batch.sizes, strict=True):
-                snapshot.allow_range(ptr, size)
-        elif not allow_native_target_blocks(
-            snapshot, fixture, target_ids, native_blocks
+        # The allowed set is built from vLLM's block tables and views only.
+        # The connector's own ranges are then verified against it, never added
+        # to it: authorizing them would admit a wrong address into the allowed
+        # set and hide the mistake this check exists to find.
+        if not allow_native_target_blocks(
+            snapshot, fixture, target_ids, native_blocks and not is_v2
         ):
             log("stray-write check: skipped, unknown native block geometry")
             snapshot = None
+        elif is_v2:
+            if unverified:
+                log(
+                    "transfer-range check: skipped, these layers have no "
+                    f"addressable geometry: {unverified}"
+                )
+            else:
+                checked_ranges = check_transfers_inside_native_blocks(
+                    snapshot, worker, load_metadata
+                )
+                log(
+                    f"transfer-range check: {checked_ranges} connector load "
+                    "ranges all inside vLLM's target blocks"
+                )
 
     worker.bind_connector_metadata(load_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
@@ -2553,11 +2655,8 @@ def verify(
     coverage = compare_blackbox(fixture, blackbox_saved, target_ids, blackbox_groups)
     if blackbox_groups and not coverage:
         raise AssertionError("black-box check compared no blocks")
-    for group_id, (restored, total) in sorted(coverage.items()):
-        log(
-            f"black-box group {group_id}: restored {restored}/{total} bytes "
-            f"({100.0 * restored / total:.1f}%)"
-        )
+    for verdict in restoration_verdicts(coverage, strict_indices):
+        log(f"black-box {verdict}")
     strict_saved = {
         key: value
         for key, value in blackbox_saved.items()
@@ -2566,11 +2665,19 @@ def verify(
     native_compared = compare_native_blocks(fixture, strict_saved, target_ids)
     if strict_indices and not native_compared:
         raise AssertionError("strict oracle compared no blocks")
+    partial = sorted(set(coverage) - set(strict_indices))
     sync_workers()
     log(
         f"PASS: Scheduler->UCM dump/load, rank={os.getenv('RANK', '0')}, "
         f"compared_loaded_tensor_blocks={compared}, "
         f"blackbox_groups={len(coverage)}, "
         f"strict_oracle_blocks={native_compared}, "
+        f"transfer_ranges_checked={checked_ranges}, "
         f"stray_write_check={'on' if snapshot is not None else 'off'}"
     )
+    if partial:
+        log(
+            "PARTIALLY VERIFIED: no independent required-restore set for groups "
+            f"{partial} -- their bytes were checked for wrong placement, not "
+            "for completeness"
+        )
