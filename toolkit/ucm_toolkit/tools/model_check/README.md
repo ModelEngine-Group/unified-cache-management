@@ -103,7 +103,13 @@ The checker ships one launcher per serving stack in this directory
   ```
 - **toolkit** (provides the `ucm-toolkit` CLI):
   ```bash
-  pip install -e ./toolkit --no-deps
+  pip install -e ./toolkit --no-deps --no-build-isolation
+  ```
+  `--no-build-isolation` matters on the vLLM-Ascend images: they already ship
+  setuptools, and an isolated build tries to download it and fails.
+- **wrapt**, which UCM's patch helpers import and these images do not ship:
+  ```bash
+  pip install wrapt==1.17.2
   ```
 - **Runtime library path**: UCM's C++ core (`ucmpipelinestore` and friends) is
   installed under the `ucm/` tree; add those directories to `LD_LIBRARY_PATH`
@@ -334,8 +340,18 @@ Re-checked on vLLM 0.30.0 / vLLM-Ascend 0.30.0rc1 unless noted.
 - Distributed init uses a fixed TCP port (29500); run checkers serially within
   one network namespace to avoid `EADDRINUSE`.
 - These images ship no `wrapt`, which UCM's patch helpers import; install
-  `wrapt` before running. The CPU image's optional `torchcodec` can fail to
-  load (missing CUDA libraries) and must be moved aside for the run.
+  `wrapt` before running, and pass `--no-build-isolation` when installing the
+  toolkit. The CPU image's optional `torchcodec` can fail to load (missing CUDA
+  libraries) and must be moved aside for the run.
+- **triton's Ascend arch lookup moved between images.** On
+  `vllm-ascend:v0.30.0rc1` (triton-ascend 3.2.2) the `TRITON_ASCEND_ARCH`
+  override is honoured. On `v0.30.0rc2` (3.6.0+dev) triton logs
+  "host environment overrides are ignored" and queries the device, which
+  without one fails as `cann_get_soc_name failed` /
+  `get_arch returned NULL` during vLLM-Ascend's import chain -- before any KV
+  layout work. `ascend_sim.py` therefore declares the arch on the driver's own
+  lookup as well as through the environment, and fails with the triton version
+  named if a future release moves that lookup again.
 - Prefix caching: the CPU platform forces it off for MLA models; keep it off
   (UCM takes over prefix lookup; local HBM hits would bypass the external load,
   which is why `cpu.py` leaves it disabled).
