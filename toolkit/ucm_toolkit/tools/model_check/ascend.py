@@ -56,6 +56,7 @@ from .common import (
     CacheFixture,
     UnsupportedEnvironment,
     current_vllm_config_context,
+    describe_ucm_layout,
     log,
 )
 from .common import make_cache as make_common_cache
@@ -283,6 +284,10 @@ def main() -> int:
         # UCM's MLA shared buffer is created by the worker.  The scheduler reads
         # the worker-published id, so initialize the worker before Scheduler.
         worker = make_worker(fixture)
+        if config.layout_only:
+            describe_ucm_layout(worker)
+            log("PASS: layout-only (UCM parsed the native KV layout)")
+            return 0
         torch.npu.set_device(active_device)
         dispatch = schedule(fixture, tokens, request_token_salt, None, worker)
         verify(fixture, dispatch, worker, torch.npu.synchronize)
