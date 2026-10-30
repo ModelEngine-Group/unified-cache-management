@@ -36,11 +36,6 @@ public:
         backendConfig.port = config.port;
         backendConfig.metricsPath = config.path;
         backendConfig.aggregationIntervalMs = config.aggregationIntervalMs;
-        backendConfig.constantLabels = {
-            {"model_name", config.modelName},
-            {"source",     config.source   },
-            {"worker_id",  config.workerId },
-        };
         std::string error;
         if (!kv::metrics::SetUpStandaloneMetrics(std::move(backendConfig), &error)) {
             return Status::Error(kExitInvalidArgument,
