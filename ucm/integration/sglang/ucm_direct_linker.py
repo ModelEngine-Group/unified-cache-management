@@ -14,7 +14,6 @@ import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future
-from copy import deepcopy
 from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any
@@ -123,7 +122,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         adapter: UcmDirectStoreAdapter | None = None,
     ):
         del server_args
-        self._linker_extra_config = deepcopy(extra_config or {})
         self._forward_stream = forward_stream
         self.page_size = params.page_size
         self._kv_allocator = params.token_to_kv_pool_allocator
@@ -141,8 +139,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._layer_pointer_layouts = self._build_layer_pointer_layouts()
         self._closed = False
         self._gc_frozen = False
+        # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
-        self._pending_lock = threading.Lock()
         self._load_queue: Queue[
             tuple[int, dict[str, list[PoolTransfer]], object] | None
         ] = Queue()
@@ -156,7 +154,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         self._offload_results: Queue[bool] = Queue()
         self._lookup_progress: OrderedDict[str, _LookupProgress] = OrderedDict()
-        self._lookup_progress_lock = threading.Lock()
 
         self._tp_rank = 0
         parallel = get_parallel()
@@ -171,7 +168,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._offload_owner = not self.pool_group.rank_replicated or self._tp_rank == 0
         self._log_pool_topology()
         try:
-            self.adapter = adapter or self._create_adapter(params)
+            self.adapter = adapter or self._create_adapter(params, extra_config)
             self.adapter.register_device_pools(self._pool_metadata())
             self._select_lookup_owner(tp_group, params.attn_cp_size)
             self._load_prefetch_layers = getattr(
@@ -253,7 +250,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 cache_identity is not None,
             )
 
-    def _create_adapter(self, params: CacheInitParams) -> UcmDirectStoreAdapter:
+    def _create_adapter(
+        self, params: CacheInitParams, extra_config: dict[str, Any] | None
+    ) -> UcmDirectStoreAdapter:
         identity = {
             "model": getattr(get_model(), "model_path", None),
             "tp_rank": self._tp_rank,
@@ -267,7 +266,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             "rank_replicated": self.pool_group.rank_replicated,
             "device_id": int(device_module.current_device()),
         }
-        config = dict(self._linker_extra_config)
+        config = dict(extra_config or {})
         config.setdefault("config_file", os.environ.get("UNIFIEDCACHE_CONFIG_FILE"))
         return UcmDirectStoreAdapter.from_config(config, identity)
 
@@ -531,7 +530,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         addresses[layer_index, :, column:next_column] = entry_rows
                         column = next_column
             else:
-                addresses = tuple(() for _ in page_keys)
+                addresses = None
             result.append(
                 UcmLayerTransfer(
                     store_group=bundle.name,
@@ -581,8 +580,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
             for transfer in lookup_transfers
         )
-        with self._lookup_progress_lock:
-            previous = self._lookup_progress.get(rid)
+        previous = self._lookup_progress.get(rid)
         resume_from_pages = 0
         if (
             previous is not None
@@ -600,30 +598,26 @@ class UcmDirectLinker(UnifiedCacheLinker):
             page_keys,
             resume_from_pages=resume_from_pages,
         )
-        with self._lookup_progress_lock:
-            self._lookup_progress[rid] = _LookupProgress(
-                tuple(page_keys), transfer_keys, result[-1] if result else 0
-            )
-            self._lookup_progress.move_to_end(rid)
-            if len(self._lookup_progress) > _LOOKUP_PROGRESS_MAX_REQUESTS:
-                self._lookup_progress.popitem(last=False)
+        self._lookup_progress[rid] = _LookupProgress(
+            tuple(page_keys), transfer_keys, result[-1] if result else 0
+        )
+        self._lookup_progress.move_to_end(rid)
+        if len(self._lookup_progress) > _LOOKUP_PROGRESS_MAX_REQUESTS:
+            self._lookup_progress.popitem(last=False)
         return result
 
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
-        with self._lookup_progress_lock:
-            self._lookup_progress.pop(rid, None)
+        self._lookup_progress.pop(rid, None)
         expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
         if not expanded:
             return False
-        with self._pending_lock:
-            if rid in self._pending_loads:
-                raise RuntimeError(f"UCM load for rid={rid} is already queued.")
-            self._pending_loads[rid] = expanded
+        if rid in self._pending_loads:
+            raise RuntimeError(f"UCM load for rid={rid} is already queued.")
+        self._pending_loads[rid] = expanded
         return True
 
     def cancel_queued_load(self, rid: str) -> bool:
-        with self._pending_lock:
-            return self._pending_loads.pop(rid, None) is not None
+        return self._pending_loads.pop(rid, None) is not None
 
     def num_completed_loads(self) -> int:
         return self._completed_loads.qsize()
@@ -637,11 +631,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._gc_frozen = True
 
     def start_layer_wise_loading(self) -> int:
-        with self._pending_lock:
-            if not self._pending_loads:
-                return -1
-            pending = self._pending_loads
-            self._pending_loads = {}
+        if not self._pending_loads:
+            return -1
+        pending = self._pending_loads
+        self._pending_loads = {}
         self._freeze_gc_once()
         counter_index = self.layer_done_counter.update_producer()
         if self._requires_load_finish:
@@ -660,12 +653,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             return self.layer_done_counter.finish(counter_index) and landed
         finally:
             self._load_results.pop(counter_index, None)
-
-    def _wait_tasks(self, tasks: object) -> None:
-        # Wait consumes the CacheStore task handle after returning. Do not call
-        # check() afterwards: CacheStore would report -50005 (NotFound) for the
-        # already-reaped task even when the transfer completed successfully.
-        self.adapter.wait(tasks)
 
     def _load_worker(self) -> None:
         while True:
@@ -708,14 +695,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 # and requests; release it only after every task
                                 # for that layer has finished.
                                 tasks = in_flight.pop(layer)
-                                self._wait_tasks(tasks)
+                                self.adapter.wait(tasks)
                             self.layer_done_counter.complete(counter_index, layer)
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
                         for tasks in in_flight.values():
                             try:
-                                self._wait_tasks(tasks)
+                                self.adapter.wait(tasks)
                             except Exception:
                                 logger.exception(
                                     "UCM prefetched load failed while draining"
@@ -866,7 +853,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     try:
                         # Check does not consume a task handle. Wait obtains its
                         # final status and releases it after Check reports done.
-                        self._wait_tasks(pending.tasks)
+                        self.adapter.wait(pending.tasks)
                     except BaseException:
                         logger.exception(
                             "UCM offload failed tp_rank=%d node=%d",
@@ -901,10 +888,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 return
 
     def reset(self) -> None:
-        with self._lookup_progress_lock:
-            self._lookup_progress.clear()
-        with self._pending_lock:
-            self._pending_loads.clear()
+        self._lookup_progress.clear()
+        self._pending_loads.clear()
         self._load_queue.join()
         self._load_results.clear()
         self._offload_queue.join()

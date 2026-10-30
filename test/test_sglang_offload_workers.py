@@ -28,10 +28,6 @@ class OffloadWorkerTest(unittest.TestCase):
         obj._offload_queue, obj._offload_results = queue.Queue(), queue.Queue()
         obj._load_queue, obj._completed_loads = queue.Queue(), queue.Queue()
         obj._load_results, obj._lookup_progress, obj._pending_loads = {}, {}, {}
-        obj._lookup_progress_lock, obj._pending_lock = (
-            threading.Lock(),
-            threading.Lock(),
-        )
         obj.layer_done_counter = types.SimpleNamespace(reset=lambda: None)
         obj._page_transfers = lambda transfers, **kwargs: transfers
 

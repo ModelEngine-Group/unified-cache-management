@@ -78,6 +78,64 @@ pipeline_module = load_source(
 
 
 class LayoutPreparationTest(unittest.TestCase):
+    def test_registered_backend_paths_preserve_pool_and_layout_names(self):
+        adapter = self.adapter()
+        del adapter._ensure_store_schema
+        roots = ["cache-a", "cache-b"]
+        adapter._store_config["storage_backends"] = roots
+        pools = []
+        for group, names, layers, size in (
+            ("kv-a", ("kv",), (0, 1), 8),
+            ("kv-b", ("kv",), (0, 1), 16),
+            ("kv-tail", ("kv",), (4, 6), 8),
+            ("swa", ("swa",), (0, 1), 8),
+            ("dsa", ("INDEXER", "KV"), (0, 1), 8),
+        ):
+            for name in names:
+                pools.append(
+                    adapter_module.UcmPoolMetadata(
+                        name=f"{group}:{name}",
+                        pool_name=name,
+                        source_pool="kv",
+                        store_group=group,
+                        page_size=4,
+                        layer_schemas=tuple((layer, ((size, 0),)) for layer in layers),
+                        device_buffers=((100, 4096),),
+                    )
+                )
+        configs = []
+
+        def create_connector(name, config, module_path):
+            configs.append(config)
+            return object()
+
+        factory = types.SimpleNamespace(create_connector=create_connector)
+        with (
+            patch.object(adapter_module, "UcmConnectorFactoryV1", factory, create=True),
+            patch.object(Path, "mkdir") as mkdir,
+        ):
+            adapter.register_device_pools(pools)
+        expected_names = {
+            group: f"kv_layers_0-1_layout_{hashlib.sha256(group.encode()).hexdigest()[:10]}"
+            for group in ("kv-a", "kv-b")
+        }
+        expected_names.update(
+            {"kv-tail": "kv_layers_4_6", "swa": "swa", "dsa": "kv_indexer"}
+        )
+        expected = {
+            group: [str(Path(root) / name) for root in roots]
+            for group, name in expected_names.items()
+        }
+        self.assertEqual(adapter._backend_paths_by_group, expected)
+        self.assertEqual(
+            {
+                group: config["storage_backends"]
+                for group, config in zip(adapter._stores, configs)
+            },
+            expected,
+        )
+        self.assertEqual(mkdir.call_count, len(expected) * len(roots))
+
     def test_gc_zero_weight_does_not_restore_full_budget_per_group(self):
         adapter = self.adapter()
         adapter._store_config["posix_capacity_gb"] = 100
@@ -132,6 +190,10 @@ class LayoutPreparationTest(unittest.TestCase):
             adapter.prepare_load(
                 [self.transfer(addresses=np.zeros((1, 2, 1), dtype=np.uint64))]
             )
+        for addresses in (None, ((100, 200), (108, 208))):
+            with self.subTest(addresses=addresses):
+                with self.assertRaisesRegex(ValueError, "address/schema"):
+                    adapter.prepare_load([self.transfer(addresses=addresses)])
         with self.assertRaisesRegex(ValueError, "changed its layout"):
             adapter.prepare_load([self.transfer(layers=(0, 1))])
 
@@ -173,6 +235,7 @@ class LayoutPreparationTest(unittest.TestCase):
         )
         lookup = linker._page_transfers(transfers, for_io=False)[0]
         self.assertIs(lookup.fragments, result.fragments)
+        self.assertIsNone(lookup.addresses)
         linker.pools["kv"].prepare_locations = lambda indices: indices[:1]
         with self.assertRaisesRegex(ValueError, "missing kv layer"):
             linker._page_transfers(transfers, for_io=True)
@@ -193,7 +256,7 @@ class LayoutPreparationTest(unittest.TestCase):
         store = Store()
         adapter._ensure_store_schema = lambda *args, **kwargs: store
         adapter._block_ids = lambda transfer, keys: list(keys)
-        transfer = self.transfer()
+        transfer = self.transfer(addresses=None)
         keys = ["a", "b", "c", "d"]
         self.assertEqual(adapter.lookup([transfer], keys), [1, 2, 3])
         layout = adapter._transfer_layouts["g"]
@@ -254,6 +317,8 @@ class LayoutPreparationTest(unittest.TestCase):
         np.testing.assert_array_equal(calls[1][1], [1, 1])
         np.testing.assert_array_equal(calls[0][2], transfer.addresses[0])
         np.testing.assert_array_equal(calls[1][2], transfer.addresses[1])
+        self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
+        self.assertTrue(np.shares_memory(calls[1][2], transfer.addresses))
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
             adapter.submit_offload([transfer], prerequisite_handle=42)
         self.assertEqual([call[3] for call in calls[2:]], [42, 42])
@@ -270,12 +335,15 @@ class LayoutPreparationTest(unittest.TestCase):
         adapter = self.adapter()
         adapter._connector_name = "UcmPipelineStore"
         adapter._ensure_store_schema = lambda *args, **kwargs: store
+        transfer = self.transfer()
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
-            prepared = adapter.prepare_load([self.transfer()])
+            prepared = adapter.prepare_load([transfer])
         self.assertIsNone(prepared[0][0].prepared_io)
         adapter.submit_prepared_load_layer(prepared, 0)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1], [0, 0])
+        np.testing.assert_array_equal(calls[0][2], transfer.addresses[0])
+        self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
         adapter._module_path = "custom.backend"
         self.assertIsNone(adapter._prepare_pipeline_io(store, [b"a" * 16]))
 

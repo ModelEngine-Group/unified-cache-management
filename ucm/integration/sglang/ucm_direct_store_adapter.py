@@ -42,9 +42,9 @@ class UcmLayerTransfer:
     shard_size: int
     tensor_size_list: tuple[int, ...]
     page_keys: tuple[str, ...]
-    # I/O uses a contiguous (layer, page, fragment) uint64 array. Lookup
-    # retains empty per-page tuples because it does not materialize pointers.
-    addresses: tuple[tuple[int, ...], ...] | np.ndarray
+    # I/O uses a contiguous (layer, page, fragment) uint64 array.
+    # Lookup does not materialize pointers.
+    addresses: np.ndarray | None
     fragments: tuple[tuple[int, int], ...]
     hit_policy: str = "all_pages"
 
@@ -69,18 +69,16 @@ class _PreparedPipelineTransfer:
     page_count: int
     task_type: type[Task]
 
-    def load_data(self, shard_index: int, addresses) -> Task:
+    def load_data(self, shard_index: int, addresses: np.ndarray) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
-        addrs = np.asarray(addresses, dtype=np.uint64)
-        return self.task_type(self.store.Load(self.ids, indexes, addrs))
+        return self.task_type(self.store.Load(self.ids, indexes, addresses))
 
     def dump_data(
-        self, shard_index: int, addresses, prerequisite_handle: int = 0
+        self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
     ) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
-        addrs = np.asarray(addresses, dtype=np.uint64)
         return self.task_type(
-            self.store.Dump(self.ids, indexes, addrs, prerequisite_handle)
+            self.store.Dump(self.ids, indexes, addresses, prerequisite_handle)
         )
 
 
@@ -89,7 +87,6 @@ class _PreparedStoreTransfer:
     transfer: UcmLayerTransfer
     store: UcmKVStoreBaseV1
     block_ids: list[bytes]
-    tensor_count: int
     shards_by_layer: dict[int, tuple[int, ...]]
     prepared_io: _PreparedPipelineTransfer | None = None
 
@@ -135,6 +132,7 @@ class UcmDirectStoreAdapter:
         self._connector_name = connector_name
         self._module_path = module_path
         self._identity = dict(identity)
+        self._block_identity_prefix = self._identity_suffix()
         self._store_config = copy.deepcopy(store_config)
         # Cache's D2H stream waits on this CUDA event before reading KV data.
         # Other connectors/pipelines have not established that contract.
@@ -158,6 +156,7 @@ class UcmDirectStoreAdapter:
         self._schemas: dict[str, tuple[tuple[int, int], ...]] = {}
         self._transfer_layouts: dict[str, _TransferLayout] = {}
         self._pool_metadata: dict[str, UcmPoolMetadata] = {}
+        self._backend_paths_by_group: dict[str, list[str]] = {}
         self._gc_capacity_by_group: dict[str, int] = {}
         self._store_lock = threading.Lock()
 
@@ -252,6 +251,7 @@ class UcmDirectStoreAdapter:
         for pool in self._pool_metadata.values():
             by_group.setdefault(pool.store_group, []).append(pool)
         self._gc_capacity_by_group = self._estimate_gc_capacities(by_group)
+        self._backend_paths_by_group = self._prepare_backend_paths(by_group)
         for group, members in by_group.items():
             try:
                 ordered_members = sorted(members, key=lambda item: item.name)
@@ -387,7 +387,9 @@ class UcmDirectStoreAdapter:
         # ordered fragments for every layer in the page.
         return tuple((size, 0) for size, _ in raw_schema)
 
-    def _namespaced_backends(self, group: str) -> list[str]:
+    def _prepare_backend_paths(
+        self, by_group: dict[str, list[UcmPoolMetadata]]
+    ) -> dict[str, list[str]]:
         configured = self._store_config.get("storage_backends")
         if isinstance(configured, str):
             roots = [item for item in configured.split(":") if item]
@@ -397,65 +399,54 @@ class UcmDirectStoreAdapter:
             raise ValueError("UCM connector config requires storage_backends.")
         if not roots:
             raise ValueError("UCM connector config has no storage_backends.")
-        members = [
-            pool for pool in self._pool_metadata.values() if pool.store_group == group
-        ]
-        if not members:
-            raise ValueError(f"UCM store group {group} has no registered pools.")
-        pool_names = _pool_names_key(members)
-        if any(not name for name in pool_names):
-            raise ValueError(
-                f"UCM store group {group} has an empty physical pool name."
-            )
-        directory_name = "_".join(pool_names)
-
-        # Usually a physical pool set maps to one Store and gets a simple name
-        # such as ``kv`` or ``deepseek_v4_c128``. If mapping/schema splits it
-        # into multiple Stores, add a layout suffix so each Store has its own
-        # directory without introducing model or parallel-rank identity.
-        pools_by_group: dict[str, list[UcmPoolMetadata]] = {}
-        for pool in self._pool_metadata.values():
-            pools_by_group.setdefault(pool.store_group, []).append(pool)
-        matching_groups = {
-            other_group: other_members
-            for other_group, other_members in pools_by_group.items()
-            if _pool_names_key(other_members) == pool_names
-        }
-        if len(matching_groups) > 1:
-            layer_ids = tuple(
-                sorted({layer for pool in members for layer, _ in pool.layer_schemas})
-            )
-            if layer_ids:
-                contiguous = layer_ids == tuple(range(layer_ids[0], layer_ids[-1] + 1))
-                layer_label = (
-                    f"{layer_ids[0]}-{layer_ids[-1]}"
-                    if contiguous
-                    else "_".join(map(str, layer_ids))
+        groups_by_pools: dict[tuple[str, ...], list[str]] = {}
+        for group, members in by_group.items():
+            pool_names = _pool_names_key(members)
+            if any(not name for name in pool_names):
+                raise ValueError(
+                    f"UCM store group {group} has an empty physical pool name."
                 )
-                directory_name = f"{directory_name}_layers_{layer_label}"
-            # Stores with the same pool set and layer range need a stable
-            # layout fingerprint to distinguish their backend directories.
-            for other_group, other_members in matching_groups.items():
-                if other_group == group:
-                    continue
-                other_layer_ids = tuple(
+            groups_by_pools.setdefault(pool_names, []).append(group)
+
+        backends: dict[str, list[str]] = {}
+        for pool_names, groups in groups_by_pools.items():
+            base_name = "_".join(pool_names)
+            # A single Store for this physical pool set keeps the simple name.
+            if len(groups) == 1:
+                backends[groups[0]] = [str(Path(root) / base_name) for root in roots]
+                continue
+
+            groups_by_layers: dict[tuple[int, ...], list[str]] = {}
+            for group in groups:
+                layers = tuple(
                     sorted(
                         {
                             layer
-                            for pool in other_members
+                            for pool in by_group[group]
                             for layer, _ in pool.layer_schemas
                         }
                     )
                 )
-                if other_layer_ids == layer_ids:
-                    fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[:10]
-                    directory_name = f"{directory_name}_layout_{fingerprint}"
-                    break
-        backends = []
-        for root in roots:
-            backend = Path(root) / directory_name
-            backend.mkdir(parents=True, exist_ok=True)
-            backends.append(str(backend))
+                groups_by_layers.setdefault(layers, []).append(group)
+            for layers, matching_groups in groups_by_layers.items():
+                directory_name = base_name
+                if layers:
+                    contiguous = layers == tuple(range(layers[0], layers[-1] + 1))
+                    label = (
+                        f"{layers[0]}-{layers[-1]}"
+                        if contiguous
+                        else "_".join(map(str, layers))
+                    )
+                    directory_name = f"{directory_name}_layers_{label}"
+                for group in matching_groups:
+                    name = directory_name
+                    # Same pool set and layer range require a layout fingerprint.
+                    if len(matching_groups) > 1:
+                        fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[
+                            :10
+                        ]
+                        name = f"{name}_layout_{fingerprint}"
+                    backends[group] = [str(Path(root) / name) for root in roots]
         return backends
 
     def _ensure_store_schema(
@@ -503,7 +494,11 @@ class UcmDirectStoreAdapter:
                 store_config["posix_capacity_gb"] = self._gc_capacity_by_group[
                     store_group
                 ]
-            store_config["storage_backends"] = self._namespaced_backends(store_group)
+            store_config["storage_backends"] = list(
+                self._backend_paths_by_group[store_group]
+            )
+            for backend in store_config["storage_backends"]:
+                Path(backend).mkdir(parents=True, exist_ok=True)
             # ``unique_id`` is used in Cache/Fake POSIX shared-memory names.
             # Keep it bounded and include the actual layout so incompatible
             # Stores cannot accidentally attach to the same shared buffer.
@@ -585,7 +580,7 @@ class UcmDirectStoreAdapter:
         self, transfer: UcmLayerTransfer, page_keys: Iterable[str] | None = None
     ) -> list[bytes]:
         keys = transfer.page_keys if page_keys is None else page_keys
-        prefix = f"{self._identity_suffix()}|{transfer.store_group}|"
+        prefix = f"{self._block_identity_prefix}|{transfer.store_group}|"
         return [hashlib.md5(f"{prefix}{key}".encode("utf-8")).digest() for key in keys]
 
     @staticmethod
@@ -765,33 +760,25 @@ class UcmDirectStoreAdapter:
         for transfer in transfers:
             try:
                 layout = self._transfer_layout(transfer)
-                if isinstance(transfer.addresses, np.ndarray):
-                    if (
-                        transfer.addresses.shape
-                        != (
-                            len(transfer.layers),
-                            len(transfer.page_keys),
-                            len(transfer.tensor_size_list),
-                        )
-                        or transfer.addresses.dtype != np.uint64
-                        or not transfer.addresses.flags.c_contiguous
-                    ):
-                        raise ValueError("address/schema mismatch")
-                else:
-                    if len(transfer.page_keys) != len(transfer.addresses):
-                        raise ValueError("mismatched page keys and addresses")
-                    if any(
-                        len(row) != len(transfer.layers) * layout.tensor_count
-                        for row in transfer.addresses
-                    ):
-                        raise ValueError("address/schema mismatch")
+                addresses = transfer.addresses
+                if (
+                    not isinstance(addresses, np.ndarray)
+                    or addresses.shape
+                    != (
+                        len(transfer.layers),
+                        len(transfer.page_keys),
+                        layout.tensor_count,
+                    )
+                    or addresses.dtype != np.uint64
+                    or not addresses.flags.c_contiguous
+                ):
+                    raise ValueError("address/schema mismatch")
                 block_ids = self._block_ids(transfer)
                 prepared.append(
                     _PreparedStoreTransfer(
                         transfer=transfer,
                         store=layout.store,
                         block_ids=block_ids,
-                        tensor_count=layout.tensor_count,
                         shards_by_layer=layout.shards_by_layer,
                         prepared_io=self._prepare_pipeline_io(layout.store, block_ids),
                     )
@@ -843,13 +830,7 @@ class UcmDirectStoreAdapter:
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
-                    start = shard_index * item.tensor_count
-                    stop = start + item.tensor_count
-                    addresses = (
-                        transfer.addresses[shard_index]
-                        if isinstance(transfer.addresses, np.ndarray)
-                        else [list(row[start:stop]) for row in transfer.addresses]
-                    )
+                    addresses = transfer.addresses[shard_index]
                     args = (
                         (shard_index, addresses)
                         if item.prepared_io is not None
@@ -906,12 +887,10 @@ class UcmDirectStoreAdapter:
             prerequisite_handle=prerequisite_handle,
         )
 
-    def wait(self, tasks: _StoreTask | Iterable[_StoreTask] | None) -> None:
-        if tasks is None:
-            return
-        iterable = (tasks,) if isinstance(tasks, _StoreTask) else tasks
+    def wait(self, tasks: list[_StoreTask]) -> None:
+        # Wait consumes task handles; do not Check them again after this call.
         first_error: Exception | None = None
-        for item in iterable:
+        for item in tasks:
             try:
                 item.store.wait(item.task)
             except Exception as error:

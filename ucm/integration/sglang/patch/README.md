@@ -87,6 +87,13 @@ identity remains part of each block ID, so different models do not hit the
 same cached prompt even when they share a backend directory. DSA KV and
 INDEXER data share one composite block when they belong to the same pool group.
 
+The adapter resolves backend paths for all registered groups before worker
+threads start. Internal load/offload transfers carry contiguous `uint64` address
+arrays shaped `(layer, page, fragment)`; lookup transfers use `addresses=None`.
+Tuple/list I/O addresses are not supported by this adapter. Each Store submission
+receives a two-dimensional `(page, fragment)` array view for one shard. This
+restriction is local to the SGLang direct adapter; the shared Store API is unchanged.
+
 The SGLang UCM configuration may set `sglang_load_prefetch_layers` under
 `ucm_connector_config`. The default is `2`: the linker submits the current
 logical layer and two future layers, then waits and reports completion one
