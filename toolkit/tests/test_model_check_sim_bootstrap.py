@@ -80,9 +80,26 @@ def _write_fake_triton(directory: Path) -> Path:
     return directory
 
 
+# Every variable that changes what the bootstrap declares. A test states all
+# of them, so the result cannot depend on what the host or the image happens to
+# export -- the vLLM-Ascend images set SOC_VERSION themselves, which silently
+# turned the "nothing to declare" case into a declarable one.
+_CONTROLLED_ENV = (
+    "SOC_VERSION",
+    "TRITON_ASCEND_ARCH",
+    sim_bootstrap.PLATFORM_ENV,
+    sim_bootstrap.APPLIED_ENV,
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONNOUSERSITE",
+)
+
+
 def _run_child(environment: dict[str, str]) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env.pop("UCM_MODEL_CHECK_SIM_APPLIED", None)
+    env = {
+        name: value for name, value in os.environ.items() if name not in _CONTROLLED_ENV
+    }
     env.update(environment)
     return subprocess.run(
         [sys.executable, "-c", CHILD_PROBE],
@@ -167,7 +184,14 @@ class ChildInterpreterTest(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
-            env={**os.environ, **environment},
+            env={
+                **{
+                    name: value
+                    for name, value in os.environ.items()
+                    if name not in _CONTROLLED_ENV
+                },
+                **environment,
+            },
             timeout=120,
         )
         self.assertEqual(result.stdout.strip(), "ran", result.stderr)
