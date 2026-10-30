@@ -186,7 +186,9 @@ Status TransQueue::H2S(IoUnit& ios)
         UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
                  backendIndex, backend);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
-        return s;
+        // With O_CREAT, ENOENT means the data directory is gone, e.g. the mount disappeared.
+        // Report it as a backend error so the breaker trips, the same as the AIO engine.
+        return s == Status::NotFound() ? Status::Error() : s;
     }
     ios.ino = InoOf(file.Handle());
     auto offset = shardSize_ * ios.shard.index;
