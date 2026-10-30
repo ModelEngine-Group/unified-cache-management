@@ -163,13 +163,33 @@ except Exception as exc:  # never break an unrelated interpreter
     )
 
 # Chain to any sitecustomize this file shadowed, so the environment keeps its
-# own startup behaviour.
+# own startup behaviour. It is loaded by path and executed here: re-importing
+# the name would take this module out of sys.modules while ``site`` is still
+# inside its own ``import sitecustomize``, and every interpreter would then
+# report "Error in sitecustomize ... KeyError: 'sitecustomize'" on stderr.
+_shadowed = None
+for _entry in sys.path:
+    if not _entry:
+        continue
+    if os.path.abspath(_entry) == _SELF_DIR:
+        continue
+    _candidate = os.path.join(_entry, "sitecustomize.py")
+    if os.path.isfile(_candidate):
+        _shadowed = _candidate
+        break
+
+if _shadowed is not None:
+    try:
+        with open(_shadowed, "rb") as _handle:
+            _code = compile(_handle.read(), _shadowed, "exec")
+        exec(_code, {{"__name__": "sitecustomize", "__file__": _shadowed}})
+    except Exception as exc:  # never break an unrelated interpreter
+        sys.stderr.write(
+            "ucm-model-check bootstrap could not run the sitecustomize it "
+            "shadowed: {{}}: {{}}\\n".format(type(exc).__name__, exc)
+        )
+
 sys.path = [p for p in sys.path if os.path.abspath(p or ".") != _SELF_DIR]
-sys.modules.pop("sitecustomize", None)
-try:
-    import sitecustomize  # noqa: F401
-except ImportError:
-    pass
 """
 
 

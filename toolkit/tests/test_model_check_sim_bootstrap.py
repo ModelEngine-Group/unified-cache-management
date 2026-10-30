@@ -172,6 +172,23 @@ class ChildInterpreterTest(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "ran", result.stderr)
 
+    def test_a_child_without_a_shadowed_sitecustomize_stays_quiet(self):
+        """Chaining must not make ``site`` report a KeyError in every child.
+
+        The generated file used to chain by re-importing the name, which took
+        the running module out of ``sys.modules`` while ``site`` was still
+        inside that import: every interpreter printed
+        "Error in sitecustomize ... KeyError: 'sitecustomize'" on stderr even
+        though the declaration itself worked.
+        """
+
+        bootstrap = sim_bootstrap.write_child_bootstrap(self.root)
+        result = _run_child(self._environment(bootstrap))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["arch"], "Ascend910B1")
+        self.assertEqual(result.stderr, "")
+
     def test_a_broken_bootstrap_warns_but_does_not_kill_the_child(self):
         """Replacing a clear error with an unrelated crash would be worse."""
 
