@@ -69,8 +69,8 @@ int main(int argc, const char** argv)
     unsigned wait_seconds = wait_arg ? std::strtoul(wait_arg, nullptr, 10) : 2;
     if (config.mon_host.empty() || config.client_name.empty() ||
         config.client_key.empty()) {
-        std::cerr << "usage: kv-client-agent-smoke --mon-host <host> "
-                     "--client-name <client.name> --client-key <raw-cephx-key> "
+        std::cerr << "usage: kv-client-agent-smoke --mon-host <hosts> "
+                     "--client-name <client.name> --client-key <cephx-key> "
                      "[--log-dir <directory>] [--wait <seconds>] "
                      "[--ns <namespace>] [--get-in] "
                      "[--get-in-by-ns <namespace>] [--get-all-ns] "
@@ -89,7 +89,7 @@ int main(int argc, const char** argv)
         std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
         const auto nodes = client.get_view();
         for (const auto& node : nodes) {
-            std::cout << " osd." << node.osd_id;
+            std::cout << "osd." << node.osd_id;
             for (size_t i = 0; i < node.addrs.size(); ++i) {
                 std::cout << " addr[" << i << "]=" << node.addrs[i];
             }
@@ -98,7 +98,7 @@ int main(int argc, const char** argv)
 
         // ns 视图 (4 种状态过滤)
         if (ns_name) {
-            std::cout << "--- ns view: " << ns_name << " --- " << std::endl;
+            std::cout << "--- ns view: " << ns_name << " ---" << std::endl;
             struct NsQuery {
                 const char *label;
                 bool up;
@@ -122,7 +122,7 @@ int main(int argc, const char** argv)
 
         // get_in: 全局 in 状态 OSD
         if (flag_get_in) {
-            std::cout << "--- get_in --- " << std::endl;
+            std::cout << "--- get_in ---" << std::endl;
             auto in_nodes = client.get_in();
             if (in_nodes.empty()) {
                 std::cout << "get_in: (none)" << std::endl;
@@ -149,8 +149,8 @@ int main(int argc, const char** argv)
             if (ns_names.empty()) {
                 std::cout << "get_all_ns_name: (none)" << std::endl;
             } else {
-                for (size_t i = 0; i < ns_names.size(); i++) {
-                    std::cout << "ns[ " << i << "]=" << ns_names[i] << std::endl;
+                for (size_t i = 0; i < ns_names.size(); ++i) {
+                    std::cout << "ns[" << i << "]=" << ns_names[i] << std::endl;
                 }
             }
         }

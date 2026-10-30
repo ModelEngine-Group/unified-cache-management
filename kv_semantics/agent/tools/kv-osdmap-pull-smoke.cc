@@ -62,7 +62,7 @@ public:
             std::cerr << "[trace] init: set_val(mon_host) failed r=" << r << std::endl;
             return r;
         }
-        r =context->_conf.set_val("key", client_key);
+        r = context->_conf.set_val("key", client_key);
         if (r < 0) {
             std::cerr << "[trace] init: set_val(key) failed r=" << r << std::endl;
             return r;
@@ -71,8 +71,8 @@ public:
         common_init_finish(context.get());
         Dispatcher::cct = context.get();
         std::cerr << "[trace] init: CephContext configured"
-                  << " mon_host'" << mon_host << "'"
-                  << " client_name" << client_name << "'" << std::endl;
+                  << " mon_host='" << mon_host << "'"
+                  << " client_name=" << client_name << "'" << std::endl;
 
         std::cerr << "[trace] init: starting io_context_pool" << std::endl;
         pool = std::make_unique<ceph::async::io_context_pool>(1);
@@ -115,7 +115,7 @@ public:
         std::cerr << "[trace] init: monc authenticated, waiting for rotating keys"
                   << std::endl;
         // Ensure OSD service tickets are obtained so we can build an
-        // OSD anthorizer when connecting to the OSD Agent.
+        // OSD authorizer when connecting to the OSD Agent.
         r = monc->wait_auth_rotating(20);
         if (r < 0) {
             std::cerr << "[trace] init: wait_auth_rotating() failed r=" << r << std::endl;
@@ -182,7 +182,7 @@ public:
                   << " is_connected=" << conn->is_connected()
                   << " - waiting for response (timeout=" << wait_seconds << "s)"
                   << std::endl;
-        AGENT_LOG(logger, LogLevel::INFO,
+        AGENT_LOG(logger, agent::LogLevel::INFO,
                   "send OSDMap pull request (current_epoch=" +
                   std::to_string(current_epoch) +
                   ") to OSD agent at " + target_addr_str);
@@ -313,7 +313,7 @@ public:
                 empty_reply = true;
                 reply_epoch = reply->newest_map;
                 AGENT_LOG(logger, agent::LogLevel::INFO,
-                          "already up todate at epoch " +
+                          "already up to date at epoch " +
                           std::to_string(reply_epoch));
             }
         }
@@ -427,7 +427,7 @@ int main(int argc, const char** argv)
 
     if (!mon_host || !client_name || !client_key || !target_addr ||
         !current_epoch_str) {
-        std::cerr << "usage: kv-osdmap-pull-smoke --mon-host <host> "
+        std::cerr << "usage: kv-osdmap-pull-smoke --mon-host <hosts> "
                      "--client-name <client.name> --client-key <cephx-key> "
                      "--target-addr <ip[:port]> --current-epoch <N> "
                      "[--log-dir <directory>] [--wait <seconds>] "

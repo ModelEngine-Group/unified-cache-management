@@ -16,7 +16,7 @@
 
 namespace {
 
-/* sync wrapper for async API: smoke test 是普通 OS 程序， 可用 cv.wait */
+/* sync wrapper for async API: smoke test 是普通 OS 程序, 可用 cv.wait */
 struct AsyncWaitCtx {
     std::mutex mtx;
     std::condition_variable cv;
@@ -24,7 +24,7 @@ struct AsyncWaitCtx {
     bool done = false;
 };
 
-static void AsyncWaitCb(int32_t result, void* user_data)
+static void AsyncWaitCb(int32_t result, void *user_data)
 {
     auto *ctx = static_cast<AsyncWaitCtx *>(user_data);
     std::lock_guard<std::mutex> lock(ctx->mtx);
@@ -88,7 +88,7 @@ int main(int argc, const char** argv)
     bool flag_delete_only = has_flag(argc, argv, "--delete-only");
 
     if (!mon_host || !client_name || !client_key) {
-        std::cerr << "usage: crush-smoke --mon-host <host> "
+        std::cerr << "usage: crush-smoke --mon-host <hosts> "
                      "--client-name <client.name> --client-key <raw-cephx-key> "
                      "[--log-dir <directory>] [--wait <seconds>] "
                      "[--pool-name <kvpool-name>] [--ns-name <kvns-name>] "
@@ -116,7 +116,7 @@ int main(int argc, const char** argv)
     kv_osd_agent_config config{};
     config.mon_host = mon_host;
     config.osd_keyring = client_key;
-    config.osd_id = 0;  // dummy, OSD id, not used for crush operations
+    config.osd_id = 0;  // dummy OSD id, not used for crush operations
     config.dpu_id = 0;
     config.osd_uuid = "bffe722f-e279-4919-99cb-82f9584172b4";
     config.osd_mon_heartbeat_interval = 10;
@@ -257,7 +257,7 @@ int main(int argc, const char** argv)
                    const_cast<char*>(pool_name_str.c_str()),
                    static_cast<uint32_t>(pool_name_str.size()),
                    const_cast<char*>(ns_name_str.c_str()),
-                   static_cast<uint32_t>(ns_name_str.size(), AsyncWaitCb, &_ctx)));
+                   static_cast<uint32_t>(ns_name_str.size()), AsyncWaitCb, &_ctx));
         std::cerr << "[trace] kv_agent_create_ceph_pool result=" << result << std::endl;
         if (result != 0) {
             std::cerr << "kv_agent_create_ceph_pool failed: " << result << std::endl;

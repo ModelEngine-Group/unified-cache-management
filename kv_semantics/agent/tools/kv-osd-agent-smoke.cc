@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
 #define _POSIX_C_SOURCE 200809L
@@ -43,7 +43,7 @@ static void handle_signal(int signal)
 
 static int parse_u32(const char *value, uint32_t *result)
 {
-    char *end;
+    char *end = NULL;
     unsigned long parsed;
 
     errno = 0;
@@ -55,16 +55,16 @@ static int parse_u32(const char *value, uint32_t *result)
     return 0;
 }
 
-static int load_api(void *moudle, struct kv_agent_api *api)
+static int load_api(void *module, struct kv_agent_api *api)
 {
     dlerror();
     api->get_abi_version = (kv_agent_get_abi_version_fn)dlsym(
-        moudle, "kv_agent_get_abi_version");
-    api->create = (kv_agent_create_fn)dlsym(moudle, "kv_agent_create");
-    api->init = (kv_agent_init_fn)dlsym(moudle, "kv_agent_init");
+        module, "kv_agent_get_abi_version");
+    api->create = (kv_agent_create_fn)dlsym(module, "kv_agent_create");
+    api->init = (kv_agent_init_fn)dlsym(module, "kv_agent_init");
     api->start_heartbeat = (kv_agent_start_heartbeat_fn)dlsym(
-        moudle, "kv_agent_start_heartbeat");
-    api->destroy = (kv_agent_destroy_fn)dlsym(moudle, "kv_agent_destroy");
+        module, "kv_agent_start_heartbeat");
+    api->destroy = (kv_agent_destroy_fn)dlsym(module, "kv_agent_destroy");
 
     const char *error = dlerror();
     if (error != NULL) {
@@ -112,8 +112,8 @@ int main(int argc, char **argv)
         {"osd-key", required_argument, NULL, 'k'},
         {"osd-uuid", required_argument, NULL, 'u'},
         {"runtime", required_argument, NULL, 'r'},
-        {"restart_count", required_argument, NULL, 'n'},
-        {"log_dir", required_argument, NULL, 'g'},
+        {"restart-count", required_argument, NULL, 'n'},
+        {"log-dir", required_argument, NULL, 'g'},
         {"addrs", required_argument, NULL, 'a'},
         {NULL, 0, NULL, 0},
     };
@@ -153,16 +153,16 @@ int main(int argc, char **argv)
             if (option == 'd') {
                 config.dpu_id = number;
             }
-            else if (option == 'h') {
+            if (option == 'h') {
                 config.osd_mon_heartbeat_interval = number;
             }
-            else if (option == 'b') {
+            if (option == 'b') {
                 config.boot_beacon_delay = number;
             }
-            else if (option == 'r') {
+            if (option == 'r') {
                 runtime = number;
             }
-            else if (option == 'n') {
+            if (option == 'n') {
                 restart_count = number;
             }
             break;
@@ -223,7 +223,7 @@ int main(int argc, char **argv)
     for (uint32_t iteration = 0;
          iteration < restart_count && !stop_requested;
          ++iteration) {
-        kv_agent_handle * agent = api.create();
+        kv_agent_handle *agent = api.create();
         if (!agent) {
             fprintf(stderr, "kv_agent_create failed\n");
             result = -ENOMEM;
