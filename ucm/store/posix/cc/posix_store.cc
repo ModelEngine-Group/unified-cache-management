@@ -167,6 +167,7 @@ private:
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        inConfig.Get("posix_hotness_enable", config.posixHotnessEnable);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
         inConfig.Get("posix_gc_precise_mode", config.posixGcPreciseMode);
@@ -315,6 +316,8 @@ private:
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
+        UC_INFO("Set {}::HotnessTrackerEnable to {}.", ns,
+                config.deviceId == -1 || config.posixHotnessEnable);
         if (config.posixGcEnable) {
             UC_INFO("Set {}::PosixGcHeartbeatIntervalSec to {}.", ns,
                     config.posixGcHeartbeatIntervalSec);

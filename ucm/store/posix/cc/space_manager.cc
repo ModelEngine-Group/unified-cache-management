@@ -32,7 +32,7 @@ namespace UC::PosixStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
-    hotnessTrackerEnable_ = config.deviceId == -1;
+    hotnessTrackerEnable_ = config.deviceId == -1 || config.posixHotnessEnable;
     gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
