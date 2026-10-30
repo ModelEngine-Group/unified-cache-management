@@ -62,8 +62,9 @@ The human-maintained release authorities are:
 The release plan reads runtime dependencies directly from `project.dependencies`.
 The built Wheel metadata must match those declarations before publication.
 
-Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
-Patch range. Every range is resolved independently from parsed Registry tags:
+Each product selector is a canonical `X.Y` Minor range, an exact `X.Y.Z`
+Patch range, or a fixed `@Tag`. Every range is resolved independently from
+parsed Registry tags:
 vLLM and SGLang choose `stable` before `rc`; vLLM-Ascend also allows a
 `nightly` fallback. The selector then chooses the highest complete version in
 that channel and expands every legal variant of only that version and channel.
@@ -71,30 +72,53 @@ A newer RC never displaces a stable version in the same range, and missing
 variants are never backfilled from another version or channel. SGLang
 `main-cann*` and `nightly-*` tags are not automatic release candidates.
 
-An explicit `version@tag` binding such as
-`0.25@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag. The
-Tag must satisfy the product grammar and its parsed version must be inside the
-declared Minor or Patch range. The candidate records the Tag's complete version
-and actual channel; the pin is not expanded. Overlapping selectors such as
-`0.26,0.26.0`, missing ranges, missing explicit Tags, and selector sets that
-produce no publishable Runtime fail the release. All four Release Profiles
-consume the same selectors. After a winning version is chosen, 310P is filtered
-and A5 is reported as blocked; neither condition causes fallback.
+An explicit `@Tag` such as `@nightly-releases-v0.30.0` selects that exact published
+Tag from the product's configured upstream repository. Write only the Tag after
+`@`, not a repository address or digest. Any valid OCI Tag is accepted when it
+exists in that repository: names such as `nightly`, `latest`, or `my-build`
+do not have to encode a version. Matching is exact; wildcard selectors are not
+supported. A fixed candidate records the Tag itself as `version` and uses
+`channel: pinned`. Its hardware and Runtime
+capabilities come from image inspection and, when needed, native probing; these
+facts must identify a supported platform and a compatible Builder. Name-based
+version, channel, and variant candidate filters do not discard explicit pins.
+The pin is not expanded to other Tags, but its supported CPU architectures are
+still built. The old `version@Tag` syntax is rejected; for example, replace
+`0.30@v0.30.0-a3` with `@v0.30.0-a3`.
 
-These range rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
+Ranges and fixed Tags can be mixed in one comma-separated list without spaces.
+Overlapping ranges such as `0.30,0.30.0`, repeated fixed Tags, and a range plus a
+pin that resolve to the same Tag are errors. A configured range with no match,
+a missing explicit Tag, or selectors that produce no publishable Runtime also
+fail the release. All four Release Profiles consume the same selectors.
+Automatic ranges retain the configured variant exclusions and do not fall back
+when a selected backend is blocked. Fixed Tags bypass these name-based candidate
+filters, while platform support and Builder compatibility are checked against
+their inspected capabilities. `--latest-per-product` narrows only the numeric
+ranges for the named products; every explicitly pinned Tag is retained.
+
+These selector rules apply to `UCM_SUPPORTED_VLLM_VERSIONS`,
 `UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`, and `UCM_SUPPORTED_SGLANG_VERSIONS`.
+Deleting, commenting out, or assigning an empty value to one of these variables
+disables that product's automatic Runtime selection and build tasks. Disabled
+products are skipped before querying their Runtime Registry. Shared Wheels and
+Builders required by another enabled product are retained. At least one product
+must have valid selectors; disabling all three fails configuration parsing.
+Canonical output and version materialization omit disabled product assignments.
+
 Upstream candidate channels are independent of UCM's Stable, Prerelease, Draft,
 and Nightly Profiles: the Profile controls which artifacts are built and
-published, without widening the candidate set. `UCM_VERSION` remains a canonical
-PEP 440 `X.Y.Z` package version because it drives Wheel, Chart, and Release
-coordinates.
+published, without widening the candidate set. `UCM_VERSION` is a canonical
+PEP 440 package version with an `X.Y.Z` release tuple. Builds materialize the
+complete version selected by the Release Tag, including a named Draft's local
+identity as described below.
 
-For example:
+For example (fixed Tags must already exist in the configured repositories):
 
 ```ini
-UCM_SUPPORTED_VLLM_VERSIONS=0.26,0.27,0.28
-UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.23,0.24,0.25,0.26
-UCM_SUPPORTED_SGLANG_VERSIONS=0.5.18,0.5.19,0.5.20
+UCM_SUPPORTED_VLLM_VERSIONS=0.30,@v0.31.0
+UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=@nightly-releases-v0.30.0
+UCM_SUPPORTED_SGLANG_VERSIONS=
 ```
 
 ## Registry-only flow
@@ -163,28 +187,70 @@ never consume a mutable Builder Tag.
 
 The workflow accepts:
 
-| Git Tag | Selected Profile | Wheel version | Chart version | GitHub Release mode when enabled |
-| --- | --- | --- | --- | --- |
-| `vX.Y.Z` | Stable | `X.Y.Z` | `X.Y.Z` | public Release |
-| `vX.Y.ZrcN` | Prerelease | `X.Y.ZrcN` | `X.Y.Z-rc.N` | public prerelease |
-| `draft/vX.Y.Z` | Draft | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
-| `draft/vX.Y.Z-N` | Draft | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
-| `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
+| Git Tag | Selected Profile | Wheel version | Chart version | Image version | GitHub Release mode when enabled |
+| --- | --- | --- | --- | --- | --- |
+| `vX.Y.Z` | Stable | `X.Y.Z` | `X.Y.Z` | `X.Y.Z` | public Release |
+| `vX.Y.ZrcN` | Prerelease | `X.Y.ZrcN` | `X.Y.Z-rc.N` | `X.Y.ZrcN` | public prerelease |
+| `draft/v0.9.0` | Draft | `0.9.0.dev0` | `0.9.0-draft.0` | `0.9.0.dev0` | Draft |
+| `draft/v0.9.0-1` | Draft | `0.9.0.dev1` | `0.9.0-draft.1` | `0.9.0.dev1` | Draft |
+| `draft/v0.9.0-test` | Draft | `0.9.0.dev0+draft.test` | `0.9.0-draft.test` | `0.9.0.dev0.draft.test` | Draft |
+| `draft/v0.9.0-1-test` | Draft | `0.9.0.dev0+draft.1.test` | `0.9.0-draft.1.test` | `0.9.0.dev0.draft.1.test` | Draft |
+| `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | `X.Y.Z.devYYYYMMDDNNN` | public prerelease after success |
+
+An omitted Draft suffix still means `.dev0`; a numeric suffix must be a positive
+integer without leading zeros. A named suffix contains lowercase ASCII letters,
+digits and single separating hyphens, with at least one letter. Purely numeric
+segments may not have leading zeros: `test-0` and `1-test` are valid, while
+`test-01`, `-0`, `-01`, uppercase letters, periods, underscores, empty segments
+and leading/trailing hyphens are rejected. Inputs are not silently normalized.
+
+The complete named suffix identifies the build. Wheel versions preserve it in
+the `+draft.` local namespace; Chart `appVersion`, Meta/Toolkit versions and exact
+dependencies retain the complete Wheel version. Only these generated named Draft
+local versions are allowed for new releases. Other local forms are not enabled.
+The namespace avoids the known historical `+g<commit>` format, without claiming
+to exclude every manually created historical artifact coordinate.
 
 Automatic release image tags use `<upstream-tag>-ucm-<UCM-image-version>` for
 every product, with the existing repository-owner prefix on Forks. The UCM image
 version is the OCI-compatible package version selected by the Git Tag, such as
-`0.9.0rc2` or `0.9.0.dev1`. Multi-architecture members append `-amd64` or
+`0.9.0rc2` or `0.9.0.dev1`. A local `+` is replaced with `.`, so a named Draft
+uses `0.9.0.dev0.draft.test`. This keeps the label distinct from the
+multi-architecture member suffixes `-amd64` and
 `-arm64`; their index and single-architecture images use the bare tag. SGLang
-does not add a creation-time suffix.
+does not add a creation-time suffix. The final tag, including owner prefix and
+architecture suffix, must fit the OCI 128-character limit; it is never truncated.
 
-The tagged source owns the package model, and public versions must be canonical
-and non-local. Before opening or reusing a Release, the reusable core requires
+The tagged source owns the package model. Versions must be canonical and local
+versions are restricted to the named Draft mapping above. Before opening or
+reusing a Release, the reusable core requires
 the Tag's complete `X.Y.Z` base to match `UCM_VERSION`, then reclassifies the
 Tag and checks its release type, visibility, prerelease flag, Chart/image
 versions, target commit, requested source SHA, and checked-out commit. A Draft
 Tag always remains Draft. Exact Releases API lookup requires one Release for the
 Tag; duplicate Release records fail closed.
+
+Named Drafts cannot request PyPI or TestPyPI publication because those indexes
+do not accept local versions. Preflight checks the Draft profile's `pypi`
+request before building or creating a Release, even when a Fork has no token
+and would otherwise skip that channel. It does not silently turn the channel
+off; the upload layer also keeps its existing local-version rejection.
+See the [PyPA local-version specification](https://packaging.python.org/en/latest/specifications/version-specifiers/#local-version-identifiers).
+
+To install a named Draft from downloaded/local Wheels, collect the matching
+Meta, backend and Toolkit Wheels plus dependencies in `wheelhouse`, then use
+the complete version. For example, with the official distribution names:
+
+```bash
+python -m pip install --no-index --find-links ./wheelhouse \
+  'uc-manager[cu130]==0.9.0.dev0+draft.test'
+```
+
+On a Fork, use its existing owner-prefixed distribution name instead, for
+example `supermarioyl-uc-manager[cu130]==0.9.0.dev0+draft.test`. Named labels do
+not imply creation order. Draft retention keeps the existing Release ordering;
+new named Draft cleanup records must match the complete version, while old
+records retain historical local-version read compatibility.
 
 At 02:00 Asia/Shanghai (`18:00` UTC),
 `release-nightly.yml` reads the `X.Y.Z`
@@ -467,6 +533,10 @@ selected Release Profile. PyPI resolves as follows:
 | `true` | absent | `requested=true`, `enabled=false`, `scope-skipped` |
 | `true` | present | `requested=true`, `enabled=true`, `publish` |
 
+Named Draft local versions are an exception: `pypi: true` is a configuration
+error regardless of token availability. Use a numeric Draft or a normal
+prerelease when Python-index publication is required.
+
 Docker Hub uses the same explicit three-value contract as official publication:
 
 | Profile `dockerhub` | Fork Docker Hub configuration | Result |
@@ -485,8 +555,8 @@ Fork's GitHub identity and do not depend on the external credentials above.
 
 ### 3. Validate Profile decisions with a Fork Draft
 
-First update and commit `version.ini`, including `UCM_VERSION` and both
-supported Runtime selector lists. Use a fresh Draft sequence because published
+First update and commit `version.ini`, including `UCM_VERSION` and at least one
+supported Runtime selector list. Use a fresh Draft sequence because published
 Tag, Release, and OCI coordinates are immutable:
 
 ```bash
@@ -683,10 +753,11 @@ Assets section. Published Releases keep direct asset links.
 
 ## PR behavior
 
-An ordinary PR selects one latest Stable vLLM-Ascend A2 Ubuntu runtime, falling
-back to RC and release-nightly. Its actual architecture members determine the
-Wheel and image tasks. Explicit `/ucm-build image <repository:tag>` accepts one
-runtime reference, inspects its OCI config, pulls only metadata-incomplete
+The ordinary PR Native Wheel Gate reads the configured Runtime selectors and
+builds their amd64 Wheel matrix. It narrows SGLang's numeric ranges to the newest
+range while retaining every fixed `@Tag`; release builds use all configured
+ranges and supported architectures. Explicit `/ucm-build image <repository:tag>`
+accepts one runtime reference, inspects its OCI config, pulls only metadata-incomplete
 members for fallback probing, and publishes PR-scoped GHCR tags. Explicit image
 requests use the `pinned` channel independently of automatic release candidate
 selection, so a SGLang `main-cann*` image can still be requested this way.

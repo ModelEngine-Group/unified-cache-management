@@ -21,7 +21,7 @@ UCM 指标记录 KV 缓存的查找、加载、保存和存储状态，用来判
 
 比较时使用同一模型、服务和时间窗口。定位问题时保留 `instance`、`engine`、`worker_rank` 标签；同一个 KV 块经过 Connector 和多个 Store 时会在不同阶段分别计数，不能把这些阶段的字节数相加当作唯一数据量。
 
-指标名称默认使用 `ucm:` 前缀。只有启用的指标且相应路径执行后才可能看到序列；缺失不等于零。vLLM connector 路径还依赖推理期间同步统计，无请求时数值可能停留在上次上报结果。
+KVClient 及其传输层指标使用 `kv:` 前缀，其他指标默认使用 `ucm:` 前缀。只有启用的指标且相应路径执行后才可能看到序列；缺失不等于零。vLLM connector 路径还依赖推理期间同步统计，无请求时数值可能停留在上次上报结果。
 
 采集方式见[指标设置](metrics.md)，导出链路见[指标开发](../../developer-guide/add-metrics.md)，健康状态解释见[存储健康检查](health-metrics.md)。
 
@@ -252,7 +252,7 @@ Mooncake 指标用于判断**数据是否由 Mooncake 提供、是否下探后�
 
 ### 1.6 ASU / KV 指标
 
-ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 采集器。表中名称使用默认 `ucm:` 前缀。提交计数反映 KV API 调用及条目数量，不代表去重后的推理请求数，也不代表异步任务成功完成数。
+ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 采集器。以下 KV 指标使用 `kv:` 前缀。提交计数反映 KV API 调用及条目数量，不代表去重后的推理请求数，也不代表异步任务成功完成数。
 
 生成器的 `--check` 会校验英文、中文和旧版参考文档中 KV 表格的名称、类型分组、重复、遗漏和数量。说明文字与单位仍由人工维护；`--sync-ucm` 不会重写这些表格。
 
@@ -276,48 +276,48 @@ adapter 使用现有 UCM `UpdateStats()` 接口。采集器尚未初始化或指
 
 | 指标 | 单位 | 含义 |
 | --- | --- | --- |
-| `ucm:kv_client_query_requests_total` | 次 | KV client query 提交次数 |
-| `ucm:kv_client_query_entries_total` | 键 / 条目 | 提交给 query 的键数量 |
-| `ucm:kv_client_query_errors_total` | 次 | KV client query 提交失败次数 |
-| `ucm:kv_client_load_requests_total` | 次 | KV client load 提交次数 |
-| `ucm:kv_client_load_entries_total` | 键 / 条目 | 提交给 load 的条目数量 |
-| `ucm:kv_client_load_errors_total` | 次 | KV client load 提交失败次数 |
-| `ucm:kv_client_store_requests_total` | 次 | KV client store 提交次数 |
-| `ucm:kv_client_store_entries_total` | 键 / 条目 | 提交给 store 的条目数量 |
-| `ucm:kv_client_store_errors_total` | 次 | KV client store 提交失败次数 |
-| `ucm:kv_client_batch_load_requests_total` | 次 | KV client batch-load 提交次数 |
-| `ucm:kv_client_batch_load_entries_total` | 键 / 条目 | 提交给 batch-load 的条目数量 |
-| `ucm:kv_client_batch_load_errors_total` | 次 | KV client batch-load 提交失败次数 |
-| `ucm:kv_client_batch_store_requests_total` | 次 | KV client batch-store 提交次数 |
-| `ucm:kv_client_batch_store_entries_total` | 键 / 条目 | 提交给 batch-store 的条目数量 |
-| `ucm:kv_client_batch_store_errors_total` | 次 | KV client batch-store 提交失败次数 |
-| `ucm:kv_client_delete_requests_total` | 次 | KV client delete 提交次数 |
-| `ucm:kv_client_delete_entries_total` | 键 / 条目 | 提交给 delete 的键数量 |
-| `ucm:kv_client_delete_errors_total` | 次 | KV client delete 提交失败次数 |
-| `ucm:kv_client_wait_requests_total` | 次 | KV client wait 调用次数 |
-| `ucm:kv_client_wait_errors_total` | 次 | KV client wait 失败次数 |
-| `ucm:kv_transport_task_completion_timeouts_total` | 次 | KV transport 任务完成等待超时次数 |
-| `ucm:kv_transport_task_io_timeouts_total` | 次 | KV transport 子批次 IO 超时次数 |
-| `ucm:kv_transport_task_connection_errors_total` | 次 | KV transport 连接错误次数 |
+| `kv:kv_client_query_requests_total` | 次 | KV client query 提交次数 |
+| `kv:kv_client_query_entries_total` | 键 / 条目 | 提交给 query 的键数量 |
+| `kv:kv_client_query_errors_total` | 次 | KV client query 提交失败次数 |
+| `kv:kv_client_load_requests_total` | 次 | KV client load 提交次数 |
+| `kv:kv_client_load_entries_total` | 键 / 条目 | 提交给 load 的条目数量 |
+| `kv:kv_client_load_errors_total` | 次 | KV client load 提交失败次数 |
+| `kv:kv_client_store_requests_total` | 次 | KV client store 提交次数 |
+| `kv:kv_client_store_entries_total` | 键 / 条目 | 提交给 store 的条目数量 |
+| `kv:kv_client_store_errors_total` | 次 | KV client store 提交失败次数 |
+| `kv:kv_client_batch_load_requests_total` | 次 | KV client batch-load 提交次数 |
+| `kv:kv_client_batch_load_entries_total` | 键 / 条目 | 提交给 batch-load 的条目数量 |
+| `kv:kv_client_batch_load_errors_total` | 次 | KV client batch-load 提交失败次数 |
+| `kv:kv_client_batch_store_requests_total` | 次 | KV client batch-store 提交次数 |
+| `kv:kv_client_batch_store_entries_total` | 键 / 条目 | 提交给 batch-store 的条目数量 |
+| `kv:kv_client_batch_store_errors_total` | 次 | KV client batch-store 提交失败次数 |
+| `kv:kv_client_delete_requests_total` | 次 | KV client delete 提交次数 |
+| `kv:kv_client_delete_entries_total` | 键 / 条目 | 提交给 delete 的键数量 |
+| `kv:kv_client_delete_errors_total` | 次 | KV client delete 提交失败次数 |
+| `kv:kv_client_wait_requests_total` | 次 | KV client wait 调用次数 |
+| `kv:kv_client_wait_errors_total` | 次 | KV client wait 失败次数 |
+| `kv:kv_transport_task_completion_timeouts_total` | 次 | KV transport 任务完成等待超时次数 |
+| `kv:kv_transport_task_io_timeouts_total` | 次 | KV transport 子批次 IO 超时次数 |
+| `kv:kv_transport_task_connection_errors_total` | 次 | KV transport 连接错误次数 |
 
 #### Histograms
 
 | 指标 | 单位 | 含义 |
 | --- | --- | --- |
-| `ucm:kv_client_task_enqueue_duration_seconds` | 秒 | KV client 从 API 调用到入队的耗时 |
-| `ucm:kv_client_task_queue_duration_seconds` | 秒 | KV client 任务排队耗时 |
-| `ucm:kv_client_task_process_duration_seconds` | 秒 | KV client 任务处理耗时 |
-| `ucm:kv_client_task_send_duration_seconds` | 秒 | KV client 到所有 Send 调用返回的耗时 |
-| `ucm:kv_client_task_e2e_duration_seconds` | 秒 | KV client 任务端到端耗时 |
-| `ucm:kv_transport_task_pre_send_duration_seconds` | 秒 | KV transport 发送前耗时 |
-| `ucm:kv_transport_task_queue_duration_seconds` | 秒 | KV transport 任务排队耗时 |
-| `ucm:kv_transport_task_process_duration_seconds` | 秒 | KV transport 任务处理耗时 |
-| `ucm:kv_transport_task_send_duration_seconds` | 秒 | KV transport 到 Send 返回的耗时 |
-| `ucm:kv_transport_task_send_call_duration_seconds` | 秒 | KV transport provider Send 调用耗时 |
-| `ucm:kv_transport_task_completion_duration_seconds` | 秒 | KV transport 在 Send 后等待完成的耗时 |
-| `ucm:kv_transport_node_task_send_duration_seconds` | 秒 | KV transport 节点任务发送耗时；standalone 按 node_id 区分 |
-| `ucm:kv_transport_node_task_completion_duration_seconds` | 秒 | KV transport 节点任务完成耗时；standalone 按 node_id 区分 |
-| `ucm:kv_transport_task_e2e_duration_seconds` | 秒 | KV transport 任务从提交到完成的端到端耗时 |
+| `kv:kv_client_task_enqueue_duration_seconds` | 秒 | KV client 从 API 调用到入队的耗时 |
+| `kv:kv_client_task_queue_duration_seconds` | 秒 | KV client 任务排队耗时 |
+| `kv:kv_client_task_process_duration_seconds` | 秒 | KV client 任务处理耗时 |
+| `kv:kv_client_task_send_duration_seconds` | 秒 | KV client 到所有 Send 调用返回的耗时 |
+| `kv:kv_client_task_e2e_duration_seconds` | 秒 | KV client 任务端到端耗时 |
+| `kv:kv_transport_task_pre_send_duration_seconds` | 秒 | KV transport 发送前耗时 |
+| `kv:kv_transport_task_queue_duration_seconds` | 秒 | KV transport 任务排队耗时 |
+| `kv:kv_transport_task_process_duration_seconds` | 秒 | KV transport 任务处理耗时 |
+| `kv:kv_transport_task_send_duration_seconds` | 秒 | KV transport 到 Send 返回的耗时 |
+| `kv:kv_transport_task_send_call_duration_seconds` | 秒 | KV transport provider Send 调用耗时 |
+| `kv:kv_transport_task_completion_duration_seconds` | 秒 | KV transport 在 Send 后等待完成的耗时 |
+| `kv:kv_transport_node_task_send_duration_seconds` | 秒 | KV transport 节点任务发送耗时；standalone 按 node_id 区分 |
+| `kv:kv_transport_node_task_completion_duration_seconds` | 秒 | KV transport 节点任务完成耗时；standalone 按 node_id 区分 |
+| `kv:kv_transport_task_e2e_duration_seconds` | 秒 | KV transport 任务从提交到完成的端到端耗时 |
 
 KV 定义同步与自定义目录校验见[指标开发](../../developer-guide/add-metrics.md)。
 

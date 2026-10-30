@@ -28,12 +28,16 @@ def test_sglang_main_tag_is_outside_formal_runtime_grammar() -> None:
     )
 
 
-def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
+def _selector(version: str) -> dict[str, str | None]:
     return {
-        "raw": version if tag is None else f"{version}@{tag}",
+        "raw": version,
         "version": version,
-        "tag": tag,
+        "tag": None,
     }
+
+
+def _tag_selector(tag: str) -> dict[str, str | None]:
+    return {"raw": f"@{tag}", "version": None, "tag": tag}
 
 
 def _policy(
@@ -213,13 +217,16 @@ def test_sglang_candidates_fail_when_registry_only_has_main_tags() -> None:
         )
 
 
-def test_sglang_explicit_main_tag_cannot_bypass_formal_selection() -> None:
+def test_sglang_explicit_main_tag_is_an_opaque_pin() -> None:
     tag = "main-cann9.0.0-a3"
-    with pytest.raises(ValueError, match="explicit Runtime tag does not match"):
-        upstream.resolve_runtime_candidates(
-            _sglang_policy(_selector("0.0.0", tag)),
-            tag_loader=lambda _repository: [tag],
-        )
+    candidates = upstream.resolve_runtime_candidates(
+        _sglang_policy(_tag_selector(tag)),
+        tag_loader=lambda _repository: [tag],
+    )
+    assert [
+        (item["runtime_tag"], item["version"], item["channel"])
+        for item in candidates["runtimes"]
+    ] == [(tag, tag, "pinned")]
 
 
 @pytest.mark.parametrize(
@@ -297,6 +304,30 @@ def test_latest_only_selector_uses_the_newest_version() -> None:
         ["v0.23.0", "v0.24.0"],
         latest_only=True,
     ) == [{"runtime_tag": "v0.24.0", "version": "0.24.0", "channel": "stable"}]
+
+
+@pytest.mark.parametrize(
+    ("ranges", "expected_automatic_tags"),
+    [
+        ([_selector("0.5.18"), _selector("0.5.19")], ["v0.5.19-cu129"]),
+        ([], []),
+    ],
+)
+def test_latest_only_preserves_all_pins_with_or_without_numeric_ranges(
+    ranges: list[dict[str, str | None]], expected_automatic_tags: list[str]
+) -> None:
+    pinned_tags = ["custom-build", "v0.5.18rc1-cu129"]
+    selectors = ranges + [_tag_selector(tag) for tag in pinned_tags]
+    selected = upstream._select_runtime_tags(  # noqa: SLF001
+        {"id": "sglang", "runtime_selectors": selectors},
+        ["v0.5.19-cu129", *pinned_tags],
+        latest_only=True,
+    )
+
+    assert [item["runtime_tag"] for item in selected] == [
+        *expected_automatic_tags,
+        *pinned_tags,
+    ]
 
 
 def test_latest_per_product_narrows_only_the_named_product() -> None:
@@ -378,16 +409,12 @@ def test_latest_only_rejects_an_unparseable_selector_version() -> None:
         )
 
 
-def test_latest_only_rejects_two_selectors_sharing_the_newest_version() -> None:
+def test_latest_only_rejects_duplicate_numeric_ranges() -> None:
     product = {
         "id": "sglang",
-        "runtime_selectors": [
-            _selector("0.5.20", tag="cu129"),
-            _selector("0.5.20", tag="cu130"),
-        ],
+        "runtime_selectors": [_selector("0.5.20"), _selector("0.5.20")],
     }
 
-    # max() would silently keep whichever selector listed first.
     with pytest.raises(ValueError, match="the latest selector is ambiguous"):
         upstream._select_runtime_tags(  # noqa: SLF001
             product,
@@ -396,7 +423,7 @@ def test_latest_only_rejects_two_selectors_sharing_the_newest_version() -> None:
         )
 
 
-def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
+def test_shared_wheel_capability_is_retained_when_vllm_is_disabled() -> None:
     probe = next(
         item
         for item in _fixture()["runtime_probe"]["probes"]
@@ -413,19 +440,25 @@ def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
         }
     )
 
-    builds = builders.resolve_probe_builds(
-        _policy(), [probe, sglang_probe], tag_fixture=_fixture()
+    release = _policy()
+    shared = builders.resolve_probe_builds(
+        release, [probe, sglang_probe], tag_fixture=_fixture()
+    )
+    vllm = next(item for item in release["products"] if item["id"] == "vllm")
+    vllm["runtime_selectors"] = []
+    retained = builders.resolve_probe_builds(
+        release, [sglang_probe], tag_fixture=_fixture()
     )
 
-    assert len(builds) == 1
-    assert builds[0]["id"] == "cu129-cp312-amd64"
-    assert builds[0]["product_id"] == "shared"
+    assert len(shared) == len(retained) == 1
+    assert retained[0]["id"] == shared[0]["id"]
+    assert retained[0]["product_id"] == "shared"
 
 
 def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
     release = _policy()
     vllm = next(product for product in release["products"] if product["id"] == "vllm")
-    vllm["runtime_selectors"] = [_selector("0.29", "v0.29.0rc1-cu129")]
+    vllm["runtime_selectors"] = [_tag_selector("v0.29.0rc1-cu129")]
     tags = {
         "docker.io/vllm/vllm-openai": [
             "v0.29.0rc1-cu129",
@@ -442,8 +475,18 @@ def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
         item for item in candidates["runtimes"] if item["product_id"] == "vllm"
     )
     assert pinned["runtime_tag"] == "v0.29.0rc1-cu129"
-    assert pinned["version"] == "0.29.0rc1"
-    assert pinned["channel"] == "rc"
+    assert pinned["version"] == "v0.29.0rc1-cu129"
+    assert pinned["channel"] == "pinned"
+
+
+def test_opaque_candidate_version_must_equal_its_tag() -> None:
+    document = upstream.resolve_runtime_candidates(
+        _sglang_policy(_tag_selector("aaaaa-cc")),
+        tag_loader=lambda _repository: ["aaaaa-cc"],
+    )
+    document["runtimes"][0]["version"] = "1.0.0"
+    with pytest.raises(ValueError, match="pinned Runtime version must equal its tag"):
+        upstream.validate_runtime_candidates(document)
 
 
 def test_patch_selector_does_not_merge_rc_or_other_patch_versions() -> None:
@@ -553,19 +596,28 @@ def test_minor_selector_uses_highest_nightly_and_only_its_variants() -> None:
             "matches the version range",
         ),
         (
-            _selector("0.27.1", "v0.27.1"),
+            _tag_selector("v0.27.1"),
             [],
             "not published",
         ),
         (
-            _selector("0.27.1", "custom"),
-            ["custom"],
-            "does not match product grammar",
+            {
+                "raw": "0.27.1@v0.28.0",
+                "version": "0.27.1",
+                "tag": "v0.28.0",
+            },
+            ["v0.28.0"],
+            "must use @tag without a version range",
         ),
         (
-            _selector("0.27.1", "v0.28.0"),
+            _tag_selector("repository:tag"),
+            ["repository:tag"],
+            "not a valid OCI tag",
+        ),
+        (
+            {"raw": "@v0.27.0", "version": None, "tag": "v0.28.0"},
             ["v0.28.0"],
-            "outside its version range",
+            "raw selector is inconsistent",
         ),
     ],
 )
@@ -576,6 +628,74 @@ def test_runtime_selector_fails_closed(
         upstream._select_runtime_tags(  # noqa: SLF001
             {"id": "vllm", "runtime_selectors": [selector]}, tags
         )
+
+
+def test_direct_tag_selects_only_the_exact_opaque_name() -> None:
+    tag = "Release-build"
+    selected = upstream._select_runtime_tags(  # noqa: SLF001
+        {"id": "vllm", "runtime_selectors": [_tag_selector(tag)]},
+        [tag, tag.lower(), f"{tag}-extra"],
+    )
+    assert selected == [{"runtime_tag": tag, "version": tag, "channel": "pinned"}]
+
+
+def test_direct_tag_does_not_accept_a_prefix_or_change_case() -> None:
+    with pytest.raises(ValueError, match="not published"):
+        upstream._select_runtime_tags(  # noqa: SLF001
+            {"id": "vllm", "runtime_selectors": [_tag_selector("aaaaa-cc")]},
+            ["aaaaa-cc-dd", "AAAAA-CC"],
+        )
+
+
+@pytest.mark.parametrize("first", [_selector("0.30"), _tag_selector("v0.30.0")])
+def test_direct_tags_cannot_duplicate_another_selected_runtime(
+    first: dict[str, str | None],
+) -> None:
+    with pytest.raises(ValueError, match="Runtime tag is duplicated"):
+        upstream._select_runtime_tags(  # noqa: SLF001
+            {
+                "id": "vllm",
+                "runtime_selectors": [first, _tag_selector("v0.30.0")],
+            },
+            ["v0.30.0"],
+        )
+
+
+def test_direct_tag_does_not_infer_excluded_variants_from_its_name() -> None:
+    tag = "v0.30.0-310p"
+    selected = upstream._select_runtime_tags(  # noqa: SLF001
+        {"id": "vllm-ascend", "runtime_selectors": [_tag_selector(tag)]},
+        [tag],
+        excluded_variants=["310p"],
+    )
+    assert selected == [{"runtime_tag": tag, "version": tag, "channel": "pinned"}]
+
+
+def test_disabled_products_are_skipped_before_querying_the_registry() -> None:
+    enabled_product, tag = "sglang", "custom-build"
+    release = policy.resolve(repository="release-org/unified-cache-management")
+    for product in release["products"]:
+        product["runtime_selectors"] = (
+            [_tag_selector(tag)] if product["id"] == enabled_product else []
+        )
+    enabled = next(
+        product for product in release["products"] if product["id"] == enabled_product
+    )
+    queried = []
+
+    def load_tags(repository: str) -> list[str]:
+        queried.append(repository)
+        assert repository == enabled["runtime_repository"]
+        return [tag]
+
+    candidates = upstream.resolve_runtime_candidates(
+        release,
+        tag_loader=load_tags,
+        latest_per_product=[product["id"] for product in release["products"]],
+    )
+
+    assert queried == [enabled["runtime_repository"]]
+    assert {item["product_id"] for item in candidates["runtimes"]} == {enabled_product}
 
 
 def test_candidate_resolution_selects_each_minor_independently() -> None:
@@ -737,8 +857,10 @@ def test_pr_default_selects_one_latest_ascend_a2_ubuntu_runtime() -> None:
     assert candidates["problems"] == []
 
 
-def test_pr_default_does_not_require_unrelated_vllm_candidates() -> None:
+def test_pr_default_does_not_require_configured_runtime_selectors() -> None:
     release = _policy()
+    for product in release["products"]:
+        product["runtime_selectors"] = []
     tags = {
         "docker.io/vllm/vllm-openai": [],
         "quay.io/ascend/vllm-ascend": ["v0.27.0"],

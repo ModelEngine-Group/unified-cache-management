@@ -42,9 +42,9 @@ sequenceDiagram
         S1->>S1: Return scheduler metrics (worker_rank=scheduler)
         S1-->>A: Report connector stats (engine=engine-1)
     end
-    A->>M: Update ucm:* series by metric type
+    A->>M: Update ucm:* and kv:* series by metric type
     P->>M: GET /metrics
-    M-->>P: Return vllm:* and ucm:* metrics
+    M-->>P: Return vllm:*, ucm:* and kv:* metrics
 ```
 
 UCM accumulates Counters, Gauges, and Histograms in the process that performs each Lookup, Load, Save, or health probe. While processing requests, vLLM obtains the accumulated UCM metrics from the worker and scheduler connectors. These metrics return with each DP's engine stats, and vLLM Prometheus metrics write them to the corresponding series with the `model_name`, `engine`, and `worker_rank` labels.
@@ -85,7 +85,7 @@ The metrics file must exist and be readable by the vLLM process. Otherwise, UCM 
 Start vLLM with the UCM connector and send at least one inference request. Then verify that UCM metrics are available:
 
 ```bash
-curl http://<vllm-ip>:<vllm-port>/metrics | grep '^ucm:'
+curl http://<vllm-ip>:<vllm-port>/metrics | grep -E '^(ucm|kv):'
 ```
 
 Most UCM metrics appear only after their corresponding code path has run. When there is no external-storage hit, only a small subset of metrics may be present.
@@ -168,7 +168,7 @@ docker run -d \
   prom/prometheus
 ```
 
-Open `http://<prometheus-ip>:9090/targets` and verify that the `vllm` target is **UP**. Then search for `vllm:` and `ucm:` on the Prometheus query page to verify that both metric families are available.
+Open `http://<prometheus-ip>:9090/targets` and verify that the `vllm` target is **UP**. Then check `vllm:` and `ucm:` metrics on the Prometheus query page. When KVClient metrics are enabled and their operations run, also check `kv:` metrics.
 
 ### 3.2 Install Grafana
 
@@ -329,6 +329,21 @@ Check the following:
 2. A custom `metrics_config_path` exists, is readable, and contains the required metrics.
 3. vLLM has processed a request that exercises the corresponding UCM path.
 4. `curl http://<vllm-ip>:<vllm-port>/metrics` can reach the service endpoint.
+
+## Metric export names
+
+The configuration `name` is the internal collection key. Optional `prometheus_name` sets the public name for both vLLM and multiproc consumers. Names containing `:` are preserved; otherwise the consumer prefix is added (default `ucm:`). An explicit `vllm_connector_name` overrides the public name only for vLLM. Export naming does not change values, units, buckets, or labels.
+
+## KVClient metrics (`kv:`)
+
+KVClient and its transport layer use the `kv:` namespace. The default configuration sets their public names explicitly:
+
+- `kv:kv_client_*`: KVClient API counters and task duration histograms.
+- `kv:kv_transport_*`: transport error counters and task duration histograms.
+
+For example, the internal key `kv_client_query_requests_total` is exported as `kv:kv_client_query_requests_total`. Both the vLLM and multiproc consumers use these configured names. Other default UCM metrics continue to use `ucm:`.
+
+Custom YAML and inline configurations replace the defaults. Include the `prometheus_name` fields for KV metrics when using a custom configuration. To update the repository's example YAML and Python defaults, run `python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm`. Existing queries for `ucm:kv_*` must be updated to `kv:kv_*`.
 
 ## Related Documentation
 
