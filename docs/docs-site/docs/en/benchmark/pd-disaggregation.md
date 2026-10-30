@@ -72,16 +72,6 @@ In summary, UCM can effectively absorb evicted prefix caches under high-load sce
 
 ## Deployment Guide
 
-### Model Parameters
-
-| Parameter | Value | Description |
-|---|---|---|
-| `modelPath` | `/mnt/model/GLM-5.3-w8a8c8` | Model weight path |
-| `modelName` | `glm-53` | In-service model name |
-| `quantization` | `ascend` | Ascend quantization |
-| `max-model-len` | `262144` | Maximum context 256K |
-| `gpu-memory-utilization` | `0.92` | GPU memory utilization |
-
 ### KV-transfer Configuration
 
 1. **Prefill Nodes:**
