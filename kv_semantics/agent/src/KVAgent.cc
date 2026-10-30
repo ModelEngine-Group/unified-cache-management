@@ -17,11 +17,13 @@ struct kv_agent_handle {
     std::unique_ptr<agent::KVAgentImpl> impl;
 };
 
-extern "C" KV_AGENT_EXPORT uint32_t kv_agent_get_abi_version(void) {
+extern "C" KV_AGENT_EXPORT uint32_t kv_agent_get_abi_version(void)
+{
     return KV_OSD_AGENT_ABI_VERSION;
 }
 
-extern "C" KV_AGENT_EXPORT kv_agent_handle *kv_agent_create(void) {
+extern "C" KV_AGENT_EXPORT kv_agent_handle *kv_agent_create(void)
+{
     auto handle = std::unique_ptr<kv_agent_handle>(
         new (std::nothrow) kv_agent_handle
     );
@@ -78,8 +80,8 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_init(
         !config->osd_uuid || config->osd_uuid[0] == '\0' ||
         config->osd_mon_heartbeat_interval == 0 ||
         !config->addrs || config->addrs[0] == '\0') {
-            AGENT_LOG(&agent->logger, ::agent::LogLevel::ERROR, "invalid configuration: " + std::to_string(-EINVAL));
-            return -EINVAL;
+        AGENT_LOG(&agent->logger, ::agent::LogLevel::ERROR, "invalid configuration: " + std::to_string(-EINVAL));
+        return -EINVAL;
     }
 
     agent::KVAgentConfig impl_config{
@@ -111,11 +113,22 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_start_heartbeat(
     kv_agent_handle *agent)
 {
     if (!agent || !agent->impl) {
-        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle: " + std::to_string(INVALID_AGENT_HANDLE));
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle: " + std::to_string(-EINVAL));
         return -EINVAL;
     }
 
     return agent->impl->start_heartbeat();
+}
+
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_stop_heartbeat(
+    kv_agent_handle *agent)
+{
+    if (!agent || !agent->impl) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->stop_heartbeat();
 }
 
 extern "C" KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle *agent)
@@ -123,30 +136,50 @@ extern "C" KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle *agent)
     delete agent;
 }
 
-extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_crush_root(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_crush_root_async(
+    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data
 )
 {
-    return agent->impl->kv_agent_create_crush_root(kvPoolName, nameLen, osdIdList, listSize);
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_create_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
 }
 
-extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root_async(
+    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data
 )
 {
-    return agent->impl->kv_agent_delete_crush_root(kvPoolName, nameLen, osdIdList, listSize);
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_delete_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
 }
 
-extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool_async(
+    kv_agent_handle *agent, char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen, kv_agent_async_cb cb, void* user_data
 )
 {
-    return agent->impl->kv_agent_create_ceph_pool(kvPoolName, kvPoolLen, kvnsName, kvnsLen);
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_create_ceph_pool_async(kvPoolName, kvPoolLen, kvnsName, kvnsLen, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
 }
 
-extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool(
-    kv_agent_handle *agent, char* kvnsName, uint32_t nameLen
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(
+    kv_agent_handle *agent, char* kvnsName, uint32_t nameLen, kv_agent_async_cb cb, void* user_data
 )
 {
-    return agent->impl->kv_agent_delete_ceph_pool(kvnsName, nameLen);
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR, "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_delete_ceph_pool_async(kvnsName, nameLen, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
 }

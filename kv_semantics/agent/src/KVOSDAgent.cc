@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <set>
 #include <string>
 #include <system_error>
@@ -420,6 +421,7 @@ public:
     ~KVOSDAgent() override
     {
         shutdown();
+        async_worker_stop();
     }
 
     int init(const KVAgentConfig& config, AgentLogger *agent_logger) override
@@ -676,6 +678,7 @@ public:
         }
 
         heartbeat_running = true;
+        heartbeat_manually_stopped_= false;
         heartbeat_timer = std::make_unique<boost::asio::steady_timer>(
             poolctx->get_io_context());
         // 状态机初始化
@@ -697,10 +700,38 @@ public:
         return 0;
     }
 
+    int stop_heartbeat() override
+    {
+        std::lock_guard l(state_lock);
+        if (!initialized) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                        "agent is not initialized: " + cpp_strerror(-ENOTCONN));
+            return -ENOTCONN;
+        }
+        if (stopping) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                        "agent is stopping: " + cpp_strerror(-ESHUTDOWN));
+            return -ESHUTDOWN;
+        }
+        if (!heartbeat_running) {
+            // 已处于停止状态，幂等成功
+            return 0;
+        }
+        // cancel触发operation_aborted, handle_heartbeat提前返回且不再加入调度
+        heartbeat_timer->cancel();
+        heartbeat_running = false;
+        state = AgentState::DOWN;
+        // 标记手动停止： IP切换重启后不再自动恢复，需外部显式start_heartbeat
+        heartbeat_manually_stopped_ = true;
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                    "OSD heartneat sopped");
+        return 0;
+    }
+
     // 添加 root
     // CRUSH root创建含参数校验、OSDMap获取, CrushWrapper操作等完整流程
     // NOLINTBEGIN(huge_method)
-    int32_t kv_agent_create_crush_root(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize) override // NOLINT(g.STD.02-cpp)
+    int32_t kv_agent_create_crush_root_impl(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize) // NOLINT(g.STD.02-cpp)
     {
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
@@ -739,19 +770,15 @@ public:
         const auto t_root_start = std::chrono::steady_clock::now();
         // -------- 1. 创建 root bucket --------
         ret = mon_command_sync({std::string("{\"prefix\": \"osd crush add-bucket\", \"name\": \"") + rootName + "\", \"type\": \"root\"}"}, &outbl, &outs);
-        if (ret < 0) {
-            // 检查是否是 root 已存在的情况（EEXIST = 17）
-            // 如果 root 已存在, 可继续执行后续操作
-            bool root_exists = (outs.find("already exists") != std::string::npos ||
-                                outs.find("桶已存在") != std::string::npos ||
-                                ret == -17);    // EEXIST
+        bool root_exists = (outs.find("already exists") != std::string::npos ||
+                            outs.find("桶已存在") != std::string::npos ||
+                            ret == -17);    // EEXIST
 
-            if (root_exists) {
-                AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH root already exists, continuing: " + outs);
-            } else {
-                AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create CRUSH bucket: " + outs);
-                return ret;
-            }
+        if (root_exists) {
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH root already exists, continuing: " + outs);
+        } else if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create CRUSH bucket: " + outs);
+            return ret;
         } else {
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH root created: " + outs);
         }
@@ -767,16 +794,14 @@ public:
         outs.clear();
         // 命令格式: ceph osd crush rule create-simple <rule-name> <root> <type>
         ret = mon_command_sync({std::string("{\"prefix\": \"osd crush rule create-simple\", \"name\": \"") + ruleName + "\", \"root\": \"" + rootName + "\", \"type\": \"host\"}"}, &outbl, &outs);
-        if (ret < 0) {
-            bool rule_exists = (outs.find("already exists") != std::string::npos ||
-                                outs.find("规则已存在") != std::string::npos ||
-                                ret == -17);    // 检查是否是 rule 已存在的情况
-            if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了, 但 rule 没创建的情况
-                AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH rule already exists, continuing: " + outs);
-            } else {
-                AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create rule: " + outs);
-                return ret;
-            }
+        bool rule_exists = (outs.find("already exists") != std::string::npos ||
+                            outs.find("规则已存在") != std::string::npos ||
+                            ret == -17);    // 检查是否是 rule 已存在的情况
+        if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了, 但 rule 没创建的情况
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH rule already exists, continuing: " + outs);
+        } else if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create rule: " + outs);
+            return ret;
         } else {
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "Rule created: " + outs);
         }
@@ -808,7 +833,7 @@ public:
     // 删除 CRUSH Root 以及对应 Rule,  to do: 基于 int32_t* osdIdList, uint32_t listSize 进行缩容, 只有在root为空的情况进行删除。
     // CRUSH Root 删除含多层效验、OSDMap同步、CrushWrapper遍历删除等完成流程
     // NOLINTBEGIN(huge_method)
-    int32_t kv_agent_delete_crush_root(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize) override  // NOLINT(g.STD.02-cpp)
+    int32_t kv_agent_delete_crush_root_impl(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize)  // NOLINT(g.STD.02-cpp)
     {
         // -------- 输入合法性效验 --------
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
@@ -981,7 +1006,7 @@ public:
     // NOLINTEND(huge_method, huge_cyclomatic_complexity)
 
     // 创建cephpool
-    int32_t kv_agent_create_ceph_pool(char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen) override  // NOLINT(g.STD.02-cpp)
+    int32_t kv_agent_create_ceph_pool_impl(char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen)  // NOLINT(g.STD.02-cpp)
     {
         // -------- 输入合法性检测 --------
         if (kvnsName == nullptr || strnlen(kvnsName, kvnsLen + 1) != kvnsLen) {
@@ -1005,17 +1030,48 @@ public:
         // 命令格式: ceph osd pool create <pool> [<pg_num:int>] [<pgp_num:int>] [<pool_type:replicated|erasure>] [<rule>]
         // 创建ceph pool并绑定对应的规则
         int32_t ret = mon_command_sync({std::string("{\"prefix\": \"osd pool create\", \"pool\": \"") + kvnsNameString + "\", \"pg_num\": 4, \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"}, &outbl, &outs);
-        if (ret < 0) {
-            bool ceph_pool_exists = (outs.find("already exists") != std::string::npos ||
-                                     outs.find("桶已存在") != std::string::npos ||
-                                     ret == -17);    // EEXIST
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "kv_agent_create_ceph_pool: osd pool create ret=" + std::tp_string(ret) + ", pool=" + kvnsNameString + ", rule=" + ruleName + ", outs=" + outs);
+        bool ceph_pool_exists = (outs.find("already exists") != std::string::npos ||
+                                    outs.find("桶已存在") != std::string::npos ||
+                                    ret == -17);    // EEXIST
 
-            if (ceph_pool_exists) {
-                AGENT_LOG(logger, ::agent::LogLevel::INFO, "ceph pool already exists, continuing: " + outs);
-            } else {
-                AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create ceph pool: " + outs);
-                return ret;
+        if (ceph_pool_exists) {
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "ceph pool already exists, continuing: " + outs);
+            outbl.clear();
+            outs.clear();
+            int32_t getRuleRet = mon_command_sync({std::string("{\"prefix\": \"osd pool get\", \"pool\": \"") + kvnsNameString + "\", \"var\": \"crush rule\"}"}, &outbl, &outs);
+            if (getRuleRet < 0) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query crush rule of pool " + kvnsNameString + ": " + outs);
+                return getRuleRet;
             }
+
+            std::string ruleOut = outbl.to_str();
+            std::string boundRule;
+            size_t colonPos = ruleOut.rfind(':');
+            if (colonPos != std::string::npos) {
+                boundRule = ruleOut.substr(colonPos + 1);
+            }
+            size_t leadPos = boundRule.find_first_not_of(" \t\r\n");
+            if (leadPos == std::string::npos) {
+                boundRule.clear();
+            } else {
+                boundRule = boundRule.substr(leadPos);
+                size_t tailPos = boundRule.find_last_not_of(" \t\r\n");
+                if (tailPos != std::string::npos) {
+                    boundRule = boundRule.substr(0, tailPos + 1);
+                }
+            }
+            if (boundRule != ruleName) {
+                AGNET_LOG(logger, ::agent::LogLevel::ERROR,
+                          "ceph pool " + kvnsNameString + " already bound to another crush rule, expected: " +
+                          ruleName + ", actual: " + boundRule);
+                return -17;
+            }
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "ceph pool " + kvnsNameString + " bound to expected crush rule: " + ruleName);
+        } else if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create ceph pool: " + outs);
+            return ret;
         }
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "Ceph pool created: " + outs);
         // 打点计时: ceph pool 创建耗时
@@ -1027,7 +1083,7 @@ public:
     }
 
     // 删除ceph pool
-    int32_t kv_agent_delete_ceph_pool(char* kvnsName, uint32_t nameLen) override // NOLINT(g.STD.02-cpp)
+    int32_t kv_agent_delete_ceph_pool_impl(char* kvnsName, uint32_t nameLen) // NOLINT(g.STD.02-cpp)
     {
         // -------- 输入合法性检测 --------
         if (kvnsName == nullptr || strnlen(kvnsName, nameLen + 1) != nameLen) {
@@ -1068,6 +1124,45 @@ public:
         }
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "Ceph pool deleted: " + outs);
         return 0;
+    }
+
+    // ============= 异步变体 =============
+    // asycn方法将任务投递到单worker线程，完成后调用回调，单个worker线程足够 4个crush/pool操作共享
+    // g_crush_mutex 串行执行，多worker也不会并发
+    int32_t kv_agent_create_crush_root_async(char* kvPoolName, uint32_t nameLen,
+        int32_t* osdIdList, uint32_t listSize,
+        KVAgentAsyncCallback cb, void *user_data) override
+    {
+        return async_dispatch([this, kvPoolName, nameLen, osdIdList, listSize]() {
+            return kv_agent_create_crus_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+        }, std::move(cb), user_data);
+    }
+
+    int32_t kv_agent_delete_crush_root_async(char* kvPoolName, uint32_t nameLen,
+        int32_t* osdIdList, uint32_t listSize,
+        KVAgentAsyncCallback cb, void *user_data) override
+    {
+        return async_dispatch([this, kvPoolName, nameLen, osdIdList, listSize]() {
+            return kv_agent_delete_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+        }, std::move(cb), user_data);
+    }
+
+    int32_t kv_agent_create_ceph_pool_async(char* kvPoolName, uint32_t nameLen,
+        char* kvnsName, uint32_t kvnsLen,
+        KVAgentAsyncCallback cb, void *user_data) override
+    {
+        return async_dispatch([this, kvPoolName, nameLen, kvnsName, kvnsLen]() {
+            return kv_agent_create_ceph_pool_impl(kvPoolName, nameLen, kvnsName, kvnsLen);
+        }, std::move(cb), user_data);
+    }
+
+    int32_t kv_agent_delete_ceph_pool_async(char* kvPoolName, uint32_t nameLen,
+        char* kvnsName, uint32_t kvnsLen,
+        KVAgentAsyncCallback cb, void *user_data) override
+    {
+        return async_dispatch([this, kvPoolName, nameLen, kvnsName, kvnsLen]() {
+            return kv_agent_delete_ceph_pool_impl(kvPoolName, nameLen, kvnsName, kvnsLen);
+        }, std::move(cb), user_data);
     }
 
 private:
