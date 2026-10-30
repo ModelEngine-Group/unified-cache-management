@@ -330,6 +330,13 @@ def apply_all_patches() -> None:
         # when the GDN modules exist).
         import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch
 
+        # vllm-ascend suppresses the EAGLE last-block drop and the Mamba
+        # one-block backoff for a pure kv_producer. UCM always consumes
+        # external KV, so restore native vLLM behavior (see the module
+        # docstring for the measured impact). @when_imported is self-guarding
+        # (only fires when the vllm-ascend patch modules exist).
+        import ucm.integration.vllm.patch.v0300.restore_native_eagle_patch
+
         logger.info("UCM patch initialization completed!")
 
     except Exception as e:
