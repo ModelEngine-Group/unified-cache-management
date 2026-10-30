@@ -13,21 +13,21 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "Total Async API submission rate.",
+      "description": "Total Async API submission rate. Missing operation series are treated as zero; zero does not confirm scrape health.",
       "fieldConfig": {"defaults": {"color": {"fixedColor": "blue", "mode": "fixed"}, "decimals": 1, "unit": "ops"}, "overrides": []},
       "gridPos": {"h": 4, "w": 8, "x": 0, "y": 1},
       "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "text": {"valueSize": 32}, "textMode": "auto", "wideLayout": true},
-      "targets": [{"expr": "sum(rate(${metric_prefix:raw}kv_client_store_requests_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_load_requests_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_batch_store_requests_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_batch_load_requests_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_query_requests_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_delete_requests_total[$__rate_interval]))", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(${metric_prefix:raw}kv_client_store_requests_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_load_requests_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_batch_store_requests_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_batch_load_requests_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_query_requests_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_delete_requests_total[$__rate_interval])) or vector(0))", "refId": "A"}],
       "title": "Total Request Rate",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "Total entry and key submission rate.",
+      "description": "Total entry and key submission rate. Missing operation series are treated as zero; zero does not confirm scrape health.",
       "fieldConfig": {"defaults": {"color": {"fixedColor": "green", "mode": "fixed"}, "decimals": 1, "unit": "ops"}, "overrides": []},
       "gridPos": {"h": 4, "w": 8, "x": 8, "y": 1},
       "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "text": {"valueSize": 32}, "textMode": "auto", "wideLayout": true},
-      "targets": [{"expr": "sum(rate(${metric_prefix:raw}kv_client_store_entries_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_load_entries_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_batch_store_entries_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_batch_load_entries_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_query_entries_total[$__rate_interval])) + sum(rate(${metric_prefix:raw}kv_client_delete_entries_total[$__rate_interval]))", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(${metric_prefix:raw}kv_client_store_entries_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_load_entries_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_batch_store_entries_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_batch_load_entries_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_query_entries_total[$__rate_interval])) or vector(0)) + (sum(rate(${metric_prefix:raw}kv_client_delete_entries_total[$__rate_interval])) or vector(0))", "refId": "A"}],
       "title": "Entry / Key Throughput",
       "type": "stat"
     },
@@ -164,67 +164,97 @@
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 25},
       "panels": [],
-      "title": "③ Transport Latency by Node",
+      "title": "③ Transport Latency Details",
       "type": "row"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "Average TransportTask send latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 0, "y": 26},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "sum by (node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_sum{node_id!=\"\"}[$__rate_interval])) / clamp_min(sum by (node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_count{node_id!=\"\"}[$__rate_interval])), 1e-12)", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Send - Average",
+      "targets": [
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_sum{node_id!=\"\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_count{node_id!=\"\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_sum{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_count{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_sum{node_id=\"\",worker_rank=\"\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_count{node_id=\"\",worker_rank=\"\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_sum{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_count{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Send - Average",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "P50 TransportTask send latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 8, "y": 26},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "histogram_quantile(0.50, sum by (le, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Send - P50",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Send - P50",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "P99 TransportTask send latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 16, "y": 26},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "histogram_quantile(0.99, sum by (le, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Send - P99",
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_send_duration_seconds_bucket{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Send - P99",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "Average TransportTask completion latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 0, "y": 36},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "sum by (node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_sum{node_id!=\"\"}[$__rate_interval])) / clamp_min(sum by (node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_count{node_id!=\"\"}[$__rate_interval])), 1e-12)", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Completion - Average",
+      "targets": [
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_sum{node_id!=\"\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_count{node_id!=\"\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_sum{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_count{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_sum{node_id=\"\",worker_rank=\"\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_count{node_id=\"\",worker_rank=\"\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_sum{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])) / (sum by (job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_count{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])) > 0)", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Completion - Average",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "P50 TransportTask completion latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 8, "y": 36},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "histogram_quantile(0.50, sum by (le, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Completion - P50",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "histogram_quantile(0.50, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Completion - P50",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "P99 TransportTask completion latency by node.",
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": []},
+      "description": "TransportTask latency grouped by available job, instance, engine, worker_rank and node_id labels. Missing labels do not exclude samples. Worker rank is not a transport node ID.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 6, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never"}, "unit": "s"}, "overrides": [{"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, node ${__field.labels.node_id}"}]}, {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, worker ${__field.labels.worker_rank}"}]}, {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}"}]}, {"matcher": {"id": "byFrameRefID", "options": "D"}, "properties": [{"id": "displayName", "value": "${__field.labels.job}, ${__field.labels.worker_rank}"}]}]},
       "gridPos": {"h": 9, "w": 8, "x": 16, "y": 36},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "histogram_quantile(0.99, sum by (le, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "node {{node_id}}", "refId": "A"}],
-      "title": "Node Completion - P99",
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id!=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}, node {{node_id}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank=~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, worker {{worker_rank}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank=\"\"}[$__rate_interval])))", "legendFormat": "{{job}}", "refId": "C"},
+        {"expr": "histogram_quantile(0.99, sum by (le, job, instance, engine, worker_rank, node_id) (rate(${metric_prefix:raw}kv_transport_node_task_completion_duration_seconds_bucket{node_id=\"\",worker_rank!=\"\",worker_rank!~\"[0-9]+\"}[$__rate_interval])))", "legendFormat": "{{job}}, {{worker_rank}}", "refId": "D"}
+      ],
+      "title": "Transport Completion - P99",
       "type": "timeseries"
     },
     {
@@ -306,18 +336,18 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "description": "Submission error rates for each Async API and the ClientTask final error rate.",
+      "description": "Submission and final error rates. Missing error series are treated as zero only when matching request-rate data exists. Operations with no requests in the rate window remain without data.",
       "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 62},
       "options": {"legend": {"calcs": ["min", "mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi"}},
       "targets": [
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_store_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_store_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "store submit", "refId": "A"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_load_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_load_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "load submit", "refId": "B"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_batch_store_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_batch_store_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "batch-store submit", "refId": "C"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_batch_load_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_batch_load_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "batch-load submit", "refId": "D"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_query_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_query_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "query submit", "refId": "E"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_delete_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_delete_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "delete submit", "refId": "F"},
-        {"expr": "sum(rate(${metric_prefix:raw}kv_client_wait_errors_total[$__rate_interval])) / clamp_min(sum(rate(${metric_prefix:raw}kv_client_wait_requests_total[$__rate_interval])), 1e-12)", "legendFormat": "wait/final result", "refId": "G"}
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_store_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_store_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_store_requests_total[$__rate_interval])) > 0)", "legendFormat": "store submit", "refId": "A"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_load_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_load_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_load_requests_total[$__rate_interval])) > 0)", "legendFormat": "load submit", "refId": "B"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_batch_store_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_batch_store_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_batch_store_requests_total[$__rate_interval])) > 0)", "legendFormat": "batch-store submit", "refId": "C"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_batch_load_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_batch_load_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_batch_load_requests_total[$__rate_interval])) > 0)", "legendFormat": "batch-load submit", "refId": "D"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_query_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_query_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_query_requests_total[$__rate_interval])) > 0)", "legendFormat": "query submit", "refId": "E"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_delete_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_delete_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_delete_requests_total[$__rate_interval])) > 0)", "legendFormat": "delete submit", "refId": "F"},
+        {"expr": "(sum(rate(${metric_prefix:raw}kv_client_wait_errors_total[$__rate_interval])) or (0 * sum(rate(${metric_prefix:raw}kv_client_wait_requests_total[$__rate_interval])))) / (sum(rate(${metric_prefix:raw}kv_client_wait_requests_total[$__rate_interval])) > 0)", "legendFormat": "wait/final result", "refId": "G"}
       ],
       "title": "Client Submission and Final Error Rates",
       "type": "timeseries"
@@ -328,7 +358,7 @@
   "tags": ["kv", "kv-client"],
   "templating": {"list": [
     {"hide": 0, "includeAll": false, "label": "Prometheus", "multi": false, "name": "DS_PROMETHEUS", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"},
-    {"current": {"selected": true, "text": "kv:", "value": "kv:"}, "description": "Metric name prefix, including the separator (for example kv: or ucm:). Leave empty for unprefixed metrics.", "hide": 0, "label": "Metric prefix", "name": "metric_prefix", "options": [{"selected": true, "text": "kv:", "value": "kv:"}], "query": "kv:", "type": "textbox"}
+    {"current": {"selected": true, "text": "kv:", "value": "kv:"}, "description": "Metric name prefix, including the separator (for example kv: or ucm:). Leave empty for unprefixed metrics.", "hide": 2, "label": "Metric prefix", "name": "metric_prefix", "options": [{"selected": true, "text": "kv:", "value": "kv:"}], "query": "kv:", "type": "textbox"}
   ]},
   "time": {"from": "now-15m", "to": "now"},
   "timepicker": {},

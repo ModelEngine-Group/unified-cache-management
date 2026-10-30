@@ -1119,6 +1119,53 @@ def test_stats_reduce_skips_ucm_cli_summary():
     assert stats.reduce() == {}
 
 
+@pytest.mark.parametrize("name", ["plain", "kv:sample", "ucm:sample", "custom:sample"])
+@pytest.mark.parametrize("field", ["name", "prometheus_name", "vllm_connector_name"])
+def test_explicit_metric_namespace_is_preserved(name, field):
+    item = {"name": "internal", field: name}
+    config = {"counter": [item]}
+    expected = name if ":" in name else "ucm:" + name
+    definition = get_metric_definitions(config)[0]
+    assert definition.vllm_connector_name == expected
+    export_name = str(item.get("prometheus_name") or item["name"])
+    assert multiproc_metric_name(config, export_name) == (
+        "ucm:internal" if field == "vllm_connector_name" else expected
+    )
+
+
+def test_default_kv_export_names_keep_internal_snapshot_keys():
+    _reset_fakes()
+    from ucm.default_metrics_config import get_default_metrics_config
+
+    config = get_default_metrics_config()
+    definitions = setup_ucm_metrics(config)
+    kv_definitions = [
+        d for d in definitions if d.name.startswith(("kv_client_", "kv_transport_"))
+    ]
+    assert len(kv_definitions) == 37
+    for definition in definitions:
+        prefix = "kv:" if definition in kv_definitions else "ucm:"
+        assert definition.vllm_connector_name == prefix + definition.name
+        assert (
+            multiproc_metric_name(config, definition.vllm_connector_name)
+            == prefix + definition.name
+        )
+    prom = UCMPromMetrics(_vllm_config(config), _metric_types(), [], {0: []})
+    prom.observe(
+        {
+            "counters_by_rank": {"0": {"kv_client_query_requests_total": 3}},
+            "histograms_by_rank": {"0": {"kv_client_task_e2e_duration_seconds": [0.5]}},
+        }
+    )
+    assert FakeCounter.created["kv:kv_client_query_requests_total"].children[
+        ("0",)
+    ].increments == [3]
+    assert FakeHistogram.created["kv:kv_client_task_e2e_duration_seconds"].children[
+        ("0",)
+    ].observations == [0.5]
+    assert all(not name.startswith("kv:") for name, _, _ in fake_ucmmetrics.created)
+
+
 def test_prom_metrics_register_vllm_connector_prefixed_metrics():
     _reset_fakes()
     import ucm.integration.vllm.metrics as metrics_module
@@ -1757,11 +1804,16 @@ def test_request_async_poll_failure_unblocks_and_invalidates_blocks():
     assert connector._invalid_block_ids == {40, 41}
 
 
-def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path):
+@pytest.mark.parametrize("public_names", [False, True])
+def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path, public_names):
     _reset_fakes()
     import ucm.observability as observability
 
     config = _metrics_config()
+    if public_names:
+        for kind in ("counter", "gauge", "histogram"):
+            for item in config[kind]:
+                item["prometheus_name"] = "kv:" + item["name"]
     config["multiproc_dir"] = str(tmp_path)
     capture_logger = CaptureLogger()
     observability._metric_mappings.clear()
@@ -1782,9 +1834,10 @@ def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path):
     finally:
         observability.time.sleep = original_sleep
 
-    counter = FakeCounter.created["ucm_multiproc:load_bytes_total"]
-    gauge = FakeGauge.created["ucm_multiproc:test_health"]
-    histogram = FakeHistogram.created["ucm_multiproc:load_duration"]
+    prefix = "kv:" if public_names else "ucm_multiproc:"
+    counter = FakeCounter.created[prefix + "load_bytes_total"]
+    gauge = FakeGauge.created[prefix + "test_health"]
+    histogram = FakeHistogram.created[prefix + "load_duration"]
 
     assert logger.thread.started
     assert any(
