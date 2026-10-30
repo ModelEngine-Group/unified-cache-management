@@ -46,3 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     except ToolkitError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
