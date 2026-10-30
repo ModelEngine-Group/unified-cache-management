@@ -134,11 +134,11 @@ int main(int argc, const char** argv)
         // get_in_by_ns: 按 ns 查询 in 状态 OSD
         if (get_in_ns) {
             std::cout << "--- get_in_by_ns: " << get_in_ns << " ---" << std::endl;
-            auto in_ns_node = client.get_in_by_ns(get_in_ns);
-            if (in_ns_node.empty()) {
+            auto in_ns_nodes = client.get_in_by_ns(get_in_ns);
+            if (in_ns_nodes.empty()) {
                 std::cout << "get_in_by_ns: (none)" << std::endl;
             } else {
-                print_nodes("in_ns", in_ns_node);
+                print_nodes("in_ns", in_ns_nodes);
             }
         }
 

@@ -18,7 +18,7 @@
 typedef uint32_t (*kv_agent_get_abi_version_fn)(void);
 typedef kv_agent_handle *(*kv_agent_create_fn)(void);
 typedef int32_t (*kv_agent_init_fn)(
-    kv_agent_handle *, const kv_agent_config *, uint32_t, size_t,
+    kv_agent_handle *, const kv_osd_agent_config *, uint32_t, size_t,
     const char *);
 typedef int32_t (*kv_agent_start_heartbeat_fn)(kv_agent_handle *);
 typedef void (*kv_agent_destroy_fn)(kv_agent_handle *);
@@ -55,11 +55,11 @@ static int parse_u32(const char *value, uint32_t *result)
     return 0;
 }
 
-static int load_api(void *moudle, struct kv_agent_api **api)
+static int load_api(void *moudle, struct kv_agent_api *api)
 {
     dlerror();
-    api->get_abi_version = (kv_agent_get_api_version_fn)dlsym(
-        moudle, "kv_agent_get_api_version");
+    api->get_abi_version = (kv_agent_get_abi_version_fn)dlsym(
+        moudle, "kv_agent_get_abi_version");
     api->create = (kv_agent_create_fn)dlsym(moudle, "kv_agent_create");
     api->init = (kv_agent_init_fn)dlsym(moudle, "kv_agent_init");
     api->start_heartbeat = (kv_agent_start_heartbeat_fn)dlsym(
@@ -68,7 +68,7 @@ static int load_api(void *moudle, struct kv_agent_api **api)
 
     const char *error = dlerror();
     if (error != NULL) {
-        fprintf(stderr, "failed to load agent API: %S\n", error);
+        fprintf(stderr, "failed to load agent API: %s\n", error);
         return -1;
     }
     return 0;
@@ -82,7 +82,7 @@ static void usage(const char *program)
             "[--heartbeat-interval <seconds>] [--boot-beacon-delay <seconds>] "
             "--addrs <ip1[,ip2,...]> "
             "[--runtime <seconds>] [--restart-count <count>] "
-            "[--log-dir <directory>]\n"
+            "[--log-dir <directory>]\n",
             program);
 }
 
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     uint32_t runtime = 0;
     uint32_t restart_count = 1;
     const char *log_dir = NULL;
-    kv_osd_agent_config = {
+    kv_osd_agent_config config = {
         .dpu_id = 0,
         .mon_host = NULL,
         .osd_id = -1,
@@ -104,8 +104,8 @@ int main(int argc, char **argv)
     };
     static const struct option options[] = {
         {"library", required_argument, NULL, 'l'},
-        {"dpu-id", required_argument, NULL, 'd}
-        {"mon-host", required_argument, NULL, 'm'}
+        {"dpu-id", required_argument, NULL, 'd'},
+        {"mon-host", required_argument, NULL, 'm'},
         {"osd-id", required_argument, NULL, 'i'},
         {"heartbeat-interval", required_argument, NULL, 'h'},
         {"boot-beacon-delay", required_argument, NULL, 'b'},
@@ -114,8 +114,8 @@ int main(int argc, char **argv)
         {"runtime", required_argument, NULL, 'r'},
         {"restart_count", required_argument, NULL, 'n'},
         {"log_dir", required_argument, NULL, 'g'},
-        {"addrs", required_argument, NULL, 'a'}
-        {NULL, 0, NULL, 0}
+        {"addrs", required_argument, NULL, 'a'},
+        {NULL, 0, NULL, 0},
     };
 
     int option;
@@ -154,7 +154,7 @@ int main(int argc, char **argv)
                 config.dpu_id = number;
             }
             else if (option == 'h') {
-                config.osd_mon_heartbeat_interval = optarg;
+                config.osd_mon_heartbeat_interval = number;
             }
             else if (option == 'b') {
                 config.boot_beacon_delay = number;
@@ -163,7 +163,7 @@ int main(int argc, char **argv)
                 runtime = number;
             }
             else if (option == 'n') {
-                restart_count = optarg;
+                restart_count = number;
             }
             break;
         case 'i':
@@ -201,9 +201,9 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    void *module = dlopen(library, RTLD_NOW || RTLD_LOCAL);
+    void *module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
     if (!module) {
-        fprintf(stderr, "failed to load 5s: %s\n", library, dlerror());
+        fprintf(stderr, "failed to load %s: %s\n", library, dlerror());
         return EXIT_FAILURE;
     }
 
@@ -215,7 +215,7 @@ int main(int argc, char **argv)
     if (api.get_abi_version() != KV_OSD_AGENT_ABI_VERSION) {
         fprintf(stderr, "unsupported agent ABI: library=%u caller=%u\n",
                 api.get_abi_version(), KV_OSD_AGENT_ABI_VERSION);
-        dclose(module);
+        dlclose(module);
         return EXIT_FAILURE;
     }
 
@@ -257,6 +257,6 @@ int main(int argc, char **argv)
         }
     }
 
-    dclose(module);
+    dlclose(module);
     return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

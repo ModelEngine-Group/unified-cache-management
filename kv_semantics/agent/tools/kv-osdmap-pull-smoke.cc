@@ -1,7 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "KVAgentLogger.h"
+#include "AgentLogger.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -50,13 +50,13 @@ public:
 
         CephInitParameters params(CEPH_ENTITY_TYPE_CLIENT);
         if (!params.name.from_str(client_name)) {
-            std::cerr << "[trace] init: failed to parse client_name='" <<
+            std::cerr << "[trace] init: failed to parse client_name='"
                       << client_name << "'" << std::endl;
             return -EINVAL;
         }
         context = boost::intrusive_ptr<CephContext>(
             common_preinit(params, CODE_ENVIRONMENT_LIBRARY, 0), false);
-        std::cerr << "[trace] init: CephContest created" << std::endl;
+        std::cerr << "[trace] init: CephContext created" << std::endl;
         int r = context->_conf.set_val("mon_host", mon_host);
         if (r < 0) {
             std::cerr << "[trace] init: set_val(mon_host) failed r=" << r << std::endl;
@@ -107,7 +107,7 @@ public:
         }
         monc_started = true;
         std::cerr << "[trace] init: monc->authenticate(20)" << std::endl;
-        monc->authenticate(20);
+        r = monc->authenticate(20);
         if (r < 0) {
             std::cerr << "[trace] init: monc->authenticate() failed r=" << r << std::endl;
             return r;
@@ -125,7 +125,7 @@ public:
         return 0;
     }
 
-    int pull_osd_map(const std::string& target_addr_str,
+    int pull_osdmap(const std::string& target_addr_str,
                      epoch_t current_epoch,
                      unsigned wait_seconds)
     {
@@ -137,7 +137,7 @@ public:
             return -EINVAL;
         }
         addr.set_type(entity_addr_t::TYPE_MSGR2);
-        target_addrs.v = (addr);
+        target_addrs.v = {addr};
 
         std::cerr << "[trace] pull: ENTER - target=" << target_addr_str
                   << " current_epoch=" << current_epoch
@@ -150,7 +150,7 @@ public:
         auto conn = messenger->connect_to(CEPH_ENTITY_TYPE_OSD, target_addrs);
         if (!conn) {
             std::cerr << "[trace] pull: connect_to returned null" << std::endl;
-            AGENT_LOG(logger, LogLevel::ERROR,
+            AGENT_LOG(logger, agent::LogLevel::ERROR,
                       "failed to create connection to OSD agent at " + target_addr_str);
             return -ECONNREFUSED;
         }
@@ -170,7 +170,7 @@ public:
         // distinguishes pull requests from MON-pushed OSDMaps by checking
         // maps.empty() && incremental_maps.empty() && data_len > 0
         auto req = ceph::make_message<MOSDMap>();
-        ceph::bufferlist::list req_data;
+        ceph::buffer::list req_data;
         ceph::encode(current_epoch, req_data);
         req->set_data(req_data);
         std::cerr << "[trace] pull: sending MOSDMap pull request type="
@@ -194,7 +194,7 @@ public:
                              std::chrono::seconds(wait_seconds),
                              [this] { return reply_received || error_flag; })) {
                 std::cerr << "[trace] pull: cv.wait_for TIMED OUT" << std::endl;
-                AGENT_LOG(logger, AGENT_LOG_ERR,
+                AGENT_LOG(logger, agent::LogLevel::ERROR,
                          "timed out waiting for OSDMap response");
                 return -ETIMEDOUT;
             }
@@ -211,7 +211,7 @@ public:
         epoch_t epoch = osdmap.get_epoch();
         int max_osd = osdmap.get_max_osd();
         int count = 0;
-        for (int osd = 0; osd <= max_osd; ++osd) {
+        for (int osd = 0; osd < max_osd; ++osd) {
             if (!osdmap.exists(osd)) {
                 continue;
             }
@@ -222,10 +222,10 @@ public:
             for (const auto& a : addrs.v) {
                 std::cout << " addr=" << a.ip_only_to_str();
             }
-            coputs << std::endl;
+            std::cout << std::endl;
             ++count;
         }
-        std::cout << "epoch=" << epoch << " osd_count" << count << std::endl;
+        std::cout << "epoch=" << epoch << " osd_count=" << count << std::endl;
     }
 
     epoch_t get_epoch()
@@ -241,7 +241,7 @@ public:
 
     // Returns 0 if the actual reply type matches the expected type,
     // non-zero otherwise.  "full", "incremental", "empty" are accepted.
-    int check_expext(const std::string& expected) const
+    int check_expect(const std::string& expected) const
     {
         if (expected == "full" && is_full_reply()) return 0;
         if (expected == "incremental" && is_incremental_reply()) return 0;
@@ -264,14 +264,14 @@ public:
                   << " src=" << message->get_source()
                   << " payload_len=" << message->get_payload().length()
                   << std::endl;
-        if (message->get_type() == CEPH_MSG_OSD_MAP) {
+        if (message->get_type() != CEPH_MSG_OSD_MAP) {
             std::cerr << "[trace] ms_dispatch: unexpected type" << message->get_type()
                       << " name=" << message->get_type_name()
                       << " - dropping" << std::endl;
             message->put();
             return false;
         }
-        auto *reply static_cast<MOSDMap *>(message);
+        auto *reply = static_cast<MOSDMap *>(message);
         {
             std::lock_guard guard(osdmap_lock);
 
@@ -291,7 +291,7 @@ public:
                     osdmap.decode(bl);
                     reply_epoch = e;
                 }
-                AGENT_LOG(logger agent::LogLevel::INFO,
+                AGENT_LOG(logger, agent::LogLevel::INFO,
                           "received full OSD map epoch " +
                           std::to_string(reply_epoch));
             } else if (!reply->incremental_maps.empty()) {
@@ -306,13 +306,13 @@ public:
                     }
                     reply_epoch = e;
                 }
-                AGENT_LOG(logger agent::LogLevel::INFO,
+                AGENT_LOG(logger, agent::LogLevel::INFO,
                           "received incremental OSD map, applied up to epoch " +
                           std::to_string(reply_epoch));
             } else {
                 empty_reply = true;
                 reply_epoch = reply->newest_map;
-                AGENT_LOG(logger agent::LogLevel::INFO,
+                AGENT_LOG(logger, agent::LogLevel::INFO,
                           "already up todate at epoch " +
                           std::to_string(reply_epoch));
             }
@@ -427,7 +427,7 @@ int main(int argc, const char** argv)
 
     if (!mon_host || !client_name || !client_key || !target_addr ||
         !current_epoch_str) {
-        std::cerr << "usage: kv-osd-pull-smoke --mon-host <host> "
+        std::cerr << "usage: kv-osdmap-pull-smoke --mon-host <host> "
                      "--client-name <client.name> --client-key <cephx-key> "
                      "--target-addr <ip[:port]> --current-epoch <N> "
                      "[--log-dir <directory>] [--wait <seconds>] "
@@ -496,14 +496,14 @@ int main(int argc, const char** argv)
         std::cout << "result: already up to date at epoch "
                   << pull_agent.get_reply_epoch() << std::endl;
     } else {
-        std::cout << "result: unknow " << std::endl;
+        std::cout << "result: unknown " << std::endl;
     }
 
     // If --expect is specified, verify the reply type matches and return
     // a non-zero exit code on mismatch so scripts can automate pass/fail.
     if (expect_arg) {
         std::string expected(expect_arg);
-        if (pull_agent.check_expext(expected) != 0) {
+        if (pull_agent.check_expect(expected) != 0) {
             std::cerr << "FAIL: expected '" << expected
                       << "' but got '" << pull_agent.reply_type() << "'"
                       << std::endl;

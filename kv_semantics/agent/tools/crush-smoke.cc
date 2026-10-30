@@ -42,15 +42,15 @@ static int32_t AsyncWait(AsyncWaitCtx &ctx)
 
 #define ASYNC_CALL(call_expr)                               \
     do {                                                    \
-        AsyncWaitCtx ctx;                                   \
+        AsyncWaitCtx _ctx;                                  \
         int32_t _r = (call_expr);                           \
-        if (r != 0) {                                       \
+        if (_r != 0) {                                      \
             std::cerr << "async dispatch failed: " << _r    \
                       << std::endl;                         \
             result = _r;                                    \
             break;                                          \
         }                                                   \
-        result = AsyncWait(ctx);                            \
+        result = AsyncWait(_ctx);                           \
     } while (0)
 
 const char* get_arg(int argc, const char** argv, const std::string& name)
