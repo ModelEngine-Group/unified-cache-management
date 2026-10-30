@@ -23,18 +23,9 @@
  * */
 #include "hal_memory.h"
 #include <ascend_hal.h>
-#include <dlfcn.h>
 
 namespace UC::Trans::Hal {
 namespace {
-
-// libascend_hal.so belongs to the host driver, not to CANN. It is loaded at run time so
-// the wheel does not depend on it and can be built on machines without the driver.
-void* HalLibrary()
-{
-    static void* library = dlopen("libascend_hal.so", RTLD_NOW | RTLD_LOCAL);
-    return library;
-}
 
 drv_mem_prop HostMemoryProp(PageType pageType)
 {
@@ -53,76 +44,70 @@ Status FromHalError(const char* api, drvError_t ret)
             fmt::format("{} failed: ret={}", api, static_cast<int>(ret))};
 }
 
-template <typename Fn, typename... Args>
-Status CallHal(const char* api, Args... args)
-{
-    void* library = HalLibrary();
-    void* symbol = library != nullptr ? dlsym(library, api) : nullptr;
-    if (symbol != nullptr) {
-        return FromHalError(api, reinterpret_cast<Fn>(symbol)(args...));
-    } else {
-        return Status::OsApiError(fmt::format("cannot load {} from libascend_hal.so", api));
-    }
-}
-
-#define UC_HAL_CALL(fn, ...) CallHal<decltype(&fn)>(#fn, __VA_ARGS__)
-
 }  // namespace
 
 Status MemGetAllocationGranularity(PageType pageType, size_t* granularity)
 {
     const drv_mem_prop prop = HostMemoryProp(pageType);
-    return UC_HAL_CALL(halMemGetAllocationGranularity, &prop, MEM_ALLOC_GRANULARITY_RECOMMENDED,
-                       granularity);
+    return FromHalError(
+        "halMemGetAllocationGranularity",
+        halMemGetAllocationGranularity(&prop, MEM_ALLOC_GRANULARITY_RECOMMENDED, granularity));
 }
 
 Status MemAddressReserve(void** ptr, size_t size)
 {
-    return UC_HAL_CALL(halMemAddressReserve, ptr, size, 0, nullptr, 0);
+    return FromHalError("halMemAddressReserve", halMemAddressReserve(ptr, size, 0, nullptr, 0));
 }
 
-Status MemAddressFree(void* ptr) { return UC_HAL_CALL(halMemAddressFree, ptr); }
+Status MemAddressFree(void* ptr)
+{
+    return FromHalError("halMemAddressFree", halMemAddressFree(ptr));
+}
 
 Status MemCreate(MemHandle* handle, size_t size, PageType pageType)
 {
     const drv_mem_prop prop = HostMemoryProp(pageType);
     drv_mem_handle_t* nativeHandle = nullptr;
-    Status status = UC_HAL_CALL(halMemCreate, &nativeHandle, size, &prop, 0);
+    Status status = FromHalError("halMemCreate", halMemCreate(&nativeHandle, size, &prop, 0));
     if (status.Success()) { *handle = nativeHandle; }
     return status;
 }
 
 Status MemRelease(MemHandle handle)
 {
-    return UC_HAL_CALL(halMemRelease, static_cast<drv_mem_handle_t*>(handle));
+    return FromHalError("halMemRelease", halMemRelease(static_cast<drv_mem_handle_t*>(handle)));
 }
 
 Status MemMap(void* ptr, size_t size, MemHandle handle)
 {
-    return UC_HAL_CALL(halMemMap, ptr, size, 0, static_cast<drv_mem_handle_t*>(handle), 0);
+    return FromHalError("halMemMap",
+                        halMemMap(ptr, size, 0, static_cast<drv_mem_handle_t*>(handle), 0));
 }
 
-Status MemUnmap(void* ptr) { return UC_HAL_CALL(halMemUnmap, ptr); }
+Status MemUnmap(void* ptr) { return FromHalError("halMemUnmap", halMemUnmap(ptr)); }
 
 Status MemExportToShareableHandle(MemHandle handle, uint64_t* shareHandle)
 {
-    return UC_HAL_CALL(halMemExportToShareableHandle, static_cast<drv_mem_handle_t*>(handle),
-                       MEM_HANDLE_TYPE_NONE, 0, shareHandle);
+    return FromHalError("halMemExportToShareableHandle",
+                        halMemExportToShareableHandle(static_cast<drv_mem_handle_t*>(handle),
+                                                      MEM_HANDLE_TYPE_NONE, 0, shareHandle));
 }
 
 Status MemShareHandleDisableWhitelist(uint64_t shareHandle)
 {
     ShareHandleAttr attr{};
     attr.enableFlag = SHR_HANDLE_NO_WLIST_ENABLE;
-    return UC_HAL_CALL(halMemShareHandleSetAttribute, shareHandle,
-                       SHR_HANDLE_ATTR_NO_WLIST_IN_SERVER, attr);
+    return FromHalError(
+        "halMemShareHandleSetAttribute",
+        halMemShareHandleSetAttribute(shareHandle, SHR_HANDLE_ATTR_NO_WLIST_IN_SERVER, attr));
 }
 
 Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId, MemHandle* handle)
 {
     drv_mem_handle_t* nativeHandle = nullptr;
     Status status =
-        UC_HAL_CALL(halMemImportFromShareableHandle, shareHandle, deviceId, &nativeHandle);
+        FromHalError("halMemImportFromShareableHandle",
+                     halMemImportFromShareableHandle(shareHandle, deviceId, &nativeHandle));
     if (status.Success()) { *handle = nativeHandle; }
     return status;
 }

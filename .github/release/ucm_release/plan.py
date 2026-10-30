@@ -121,6 +121,19 @@ def _external_runtime_exclude_patterns(
     return sorted(patterns)
 
 
+def _host_driver_libraries(backend: Mapping[str, Any]) -> list[str]:
+    libraries = backend.get("host_driver_libraries", [])
+    if not isinstance(libraries, list) or any(
+        not isinstance(item, str) for item in libraries
+    ):
+        raise ValueError("backend host driver libraries must be a list of SONAMEs")
+    for soname in libraries:
+        wheel_audit.validate_external_soname(soname)
+    if len(libraries) != len(set(libraries)):
+        raise ValueError("backend host driver libraries contain duplicates")
+    return sorted(libraries)
+
+
 def _meta_package(
     wheels: list[Mapping[str, Any]], version: str, distribution: str
 ) -> dict[str, Any]:
@@ -221,6 +234,7 @@ def _wheel_task(
     external_runtime_exclude_patterns = _external_runtime_exclude_patterns(
         backend, build
     )
+    host_driver_libraries = _host_driver_libraries(backend)
     return {
         "id": str(build["id"]),
         "label": (f"{build['build_group']} · {build['python_abi']} · {architecture}"),
@@ -236,6 +250,7 @@ def _wheel_task(
         "manylinux": manylinux,
         "target_platform_tag": target_platform_tag,
         "external_runtime_exclude_patterns": external_runtime_exclude_patterns,
+        "host_driver_libraries": host_driver_libraries,
         "wheel_version": catalog["ucm_version"],
         "dist_name": _namespaced_distribution(
             distribution_prefix,
@@ -257,6 +272,7 @@ def _wheel_task(
             "version": _auditwheel_version(build_requirements),
             "target_platform": target_platform_tag,
             "excluded_patterns": external_runtime_exclude_patterns,
+            "host_driver_libraries": host_driver_libraries,
         },
         "runtime_requirements": copy.deepcopy(requirements["wheel_runtime"]),
     }

@@ -171,6 +171,7 @@
           "$ref": "#/$defs/uniqueStringList",
           "minItems": 1
         },
+        "host_driver_libraries": {"$ref": "#/$defs/uniqueStringList"},
         "reason": {"type": "string", "minLength": 1}
       }
     },
