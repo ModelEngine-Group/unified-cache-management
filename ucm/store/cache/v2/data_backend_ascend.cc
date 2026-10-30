@@ -25,6 +25,7 @@
 
 #if UCM_RUNTIME_ASCEND_HAL
 #include <fmt/format.h>
+#include <numeric>
 #include "logger/logger.h"
 #include "trans/device.h"
 
@@ -120,19 +121,21 @@ Status AscendHalDataBackend::ImportPeer(size_t rank, uint64_t handle)
         return {status.Underlying(),
                 fmt::format("HAL peer import failed: rank={} status={}", rank, status)};
     }
-    status = Hal::MemMap(RankAddr(rank), rankStride_, mappings_[rank].handle);
+    status = ReserveRankAddress(rank);
+    if (status.Failure()) { return status; }
+    void* addr = mappings_[rank].addr;
+    status = Hal::MemMap(addr, rankStride_, mappings_[rank].handle);
     if (status.Failure()) {
         UC_ERROR(
             "halMemMap failed: owner={} device={} rank={} addr={} rank_stride={} "
             "peer_handle={} status={}",
-            owner_, deviceId_, rank, static_cast<void*>(RankAddr(rank)), rankStride_, handle,
-            status);
+            owner_, deviceId_, rank, addr, rankStride_, handle, status);
         return {status.Underlying(),
                 fmt::format("HAL peer map failed: rank={} status={}", rank, status)};
     }
     mappings_[rank].mapped = true;
     UC_INFO("HAL peer mapping: owner={} device={} rank={} addr={} bytes={}", owner_, deviceId_,
-            rank, static_cast<void*>(RankAddr(rank)), rankStride_);
+            rank, addr, rankStride_);
     return Status::OK();
 }
 
@@ -141,13 +144,13 @@ void AscendHalDataBackend::FinalizeSetup() { /* Driver share handles have no nam
 void* AscendHalDataBackend::HostAddrOf(size_t rank) const
 {
     if (rank != owner_ || rank >= mappings_.size() || !mappings_[rank].mapped) { return nullptr; }
-    return RankAddr(rank);
+    return mappings_[rank].addr;
 }
 
 void* AscendHalDataBackend::DeviceAddrOf(size_t rank) const
 {
     if (rank == owner_ || rank >= mappings_.size() || !mappings_[rank].mapped) { return nullptr; }
-    return RankAddr(rank);
+    return mappings_[rank].addr;
 }
 
 void AscendHalDataBackend::Reset()
@@ -155,11 +158,11 @@ void AscendHalDataBackend::Reset()
     // reset for map
     for (size_t rank = 0; rank < mappings_.size(); ++rank) {
         if (!mappings_[rank].mapped) { continue; }
-        std::byte* addr = RankAddr(rank);
+        void* addr = mappings_[rank].addr;
         Status status = Hal::MemUnmap(addr);
         if (status.Failure()) {
             UC_ERROR("HAL unmap failed: owner={} device={} rank={} addr={} status={}", owner_,
-                     deviceId_, rank, static_cast<void*>(addr), status);
+                     deviceId_, rank, addr, status);
         }
     }
     auto release = [&](size_t rank) {
@@ -177,15 +180,15 @@ void AscendHalDataBackend::Reset()
     }
     // for owner, MemRelease is used to release physical memory
     if (owner_ < mappings_.size()) { release(owner_); }
-    if (base_ != nullptr) {
-        Status status = Hal::MemAddressFree(base_);
+    for (size_t rank = 0; rank < mappings_.size(); ++rank) {
+        if (mappings_[rank].addr == nullptr) { continue; }
+        Status status = Hal::MemAddressFree(mappings_[rank].addr);
         if (status.Failure()) {
-            UC_ERROR("HAL address free failed: owner={} device={} addr={} status={}", owner_,
-                     deviceId_, base_, status);
+            UC_ERROR("HAL address free failed: owner={} device={} rank={} addr={} status={}",
+                     owner_, deviceId_, rank, mappings_[rank].addr, status);
         }
     }
     mappings_.clear();
-    base_ = nullptr;
     rankStride_ = 0;
 }
 
@@ -209,32 +212,17 @@ Status AscendHalDataBackend::Allocate(Hal::PageType pageType)
         return Status::Error(fmt::format("invalid HAL granularity({}) for data size({})",
                                          allocGranularity, rankBytes_));
     }
-    rankStride_ = (rankBytes_ + allocGranularity - 1) / allocGranularity * allocGranularity;
-    const size_t nRanks = mappings_.size();
-    const size_t reserveBytes =
-        (rankStride_ * nRanks + vaAlignment - 1) / vaAlignment * vaAlignment;
+    // Reserve, create and map all use rankStride_, so it must fit both alignments.
+    const size_t allocAlignment = std::lcm(vaAlignment, allocGranularity);
+    rankStride_ = (rankBytes_ + allocAlignment - 1) / allocAlignment * allocAlignment;
     UC_INFO(
         "HAL host allocation: owner={} device={} ranks={} data_bytes={} "
-        "rank_stride={} reserve_bytes={} page_type={} alloc_granularity={}",
-        owner_, deviceId_, nRanks, rankBytes_, rankStride_, reserveBytes,
+        "rank_stride={} page_type={} alloc_granularity={}",
+        owner_, deviceId_, mappings_.size(), rankBytes_, rankStride_,
         static_cast<uint32_t>(pageType), allocGranularity);
 
-    status = Hal::MemAddressReserve(&base_, reserveBytes);
-    if (status.Failure()) {
-        UC_ERROR(
-            "halMemAddressReserve failed: owner={} device={} page_type={} ranks={} "
-            "rank_stride={} reserve_bytes={} status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), nRanks, rankStride_, reserveBytes,
-            status);
-        return status;
-    }
-    if (base_ == nullptr) {
-        UC_ERROR(
-            "Invalid HAL VA reservation: owner={} device={} page_type={} addr={} "
-            "va_alignment={} reserve_bytes={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), base_, vaAlignment, reserveBytes);
-        return Status::Error("HAL did not return a valid ptr");
-    }
+    status = ReserveRankAddress(owner_);
+    if (status.Failure()) { return status; }
     status = Hal::MemCreate(&mappings_[owner_].handle, rankStride_, pageType);
     if (status.Failure()) {
         UC_ERROR(
@@ -244,22 +232,38 @@ Status AscendHalDataBackend::Allocate(Hal::PageType pageType)
             status);
         return status;
     }
-    status = Hal::MemMap(RankAddr(owner_), rankStride_, mappings_[owner_].handle);
+    void* local = mappings_[owner_].addr;
+    status = Hal::MemMap(local, rankStride_, mappings_[owner_].handle);
     if (status.Failure()) {
         UC_ERROR(
             "halMemMap failed: owner={} device={} page_type={} addr={} rank_stride={} "
             "status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType),
-            static_cast<void*>(RankAddr(owner_)), rankStride_, status);
+            owner_, deviceId_, static_cast<uint32_t>(pageType), local, rankStride_, status);
         return status;
     }
     mappings_[owner_].mapped = true;
+    UC_INFO("HAL local mapping: owner={} device={} addr={} bytes={}", owner_, deviceId_, local,
+            rankStride_);
     return Status::OK();
 }
 
-std::byte* AscendHalDataBackend::RankAddr(size_t rank) const
+Status AscendHalDataBackend::ReserveRankAddress(size_t rank)
 {
-    return static_cast<std::byte*>(base_) + rank * rankStride_;
+    Status status = Hal::MemAddressReserve(&mappings_[rank].addr, rankStride_);
+    if (status.Failure()) {
+        UC_ERROR(
+            "halMemAddressReserve failed: owner={} device={} rank={} reserve_bytes={} status={}",
+            owner_, deviceId_, rank, rankStride_, status);
+        return status;
+    }
+    if (mappings_[rank].addr == nullptr) {
+        UC_ERROR("Invalid HAL VA reservation: owner={} device={} rank={} reserve_bytes={}",
+                 owner_, deviceId_, rank, rankStride_);
+        return Status::Error("HAL did not return a valid ptr");
+    }
+    UC_INFO("HAL VA reservation: owner={} device={} rank={} addr={} reserve_bytes={}", owner_,
+            deviceId_, rank, mappings_[rank].addr, rankStride_);
+    return Status::OK();
 }
 
 }  // namespace UC::Cache2
