@@ -27,46 +27,46 @@ meta = importlib.import_module("ucm_release.meta")
 VERSION = "0.9.1"
 
 
-def _plan() -> dict[str, object]:
+def _plan(version: str = VERSION) -> dict[str, object]:
     return {
         "kind": "ucm-release-plan",
         "repository": "ModelEngine-Group/unified-cache-management",
         "publication_scope": "official",
-        "version": VERSION,
+        "version": version,
         "publish": {"pypi": {"distribution_prefix": ""}},
         "meta_package": {
             "distribution": "uc-manager",
-            "version": VERSION,
+            "version": version,
             "extras": {
-                "cu130": f"uc-manager-cuda-cu130=={VERSION}",
-                "cann901-a2": f"uc-manager-cann901-a2=={VERSION}",
+                "cu130": f"uc-manager-cuda-cu130=={version}",
+                "cann901-a2": f"uc-manager-cann901-a2=={version}",
             },
         },
         "wheels": [
             {
                 "id": "cuda130-cp312-amd64",
                 "dist_name": "uc-manager-cuda-cu130",
-                "wheel_version": VERSION,
+                "wheel_version": version,
                 "runtime_variant": "cu130",
             },
             {
                 "id": "cuda130-cp312-arm64",
                 "dist_name": "uc-manager-cuda-cu130",
-                "wheel_version": VERSION,
+                "wheel_version": version,
                 "runtime_variant": "cu130",
             },
             {
                 "id": "cann901-a2-cp312-arm64",
                 "dist_name": "uc-manager-cann901-a2",
-                "wheel_version": VERSION,
+                "wheel_version": version,
                 "runtime_variant": "cann901-a2",
             },
         ],
     }
 
 
-def _fork_plan() -> dict[str, object]:
-    plan = copy.deepcopy(_plan())
+def _fork_plan(version: str = VERSION) -> dict[str, object]:
+    plan = copy.deepcopy(_plan(version))
     plan["repository"] = "SuperMarioYL/unified-cache-management"
     plan["publication_scope"] = "fork"
     plan["publish"]["pypi"]["distribution_prefix"] = "supermarioyl-"
@@ -78,6 +78,17 @@ def _fork_plan() -> dict[str, object]:
         extra: f"supermarioyl-{requirement}"
         for extra, requirement in meta_package["extras"].items()
     }
+    return plan
+
+
+def _named_draft_plan(version: str, git_tag: str) -> dict[str, object]:
+    plan = _fork_plan(version)
+    plan.update(git_tag=git_tag, release_type="draft")
+    plan["toolkit_package"] = {
+        "distribution": "supermarioyl-ucm-toolkit",
+        "version": version,
+    }
+    plan["meta_package"]["extras"]["toolkit"] = f"supermarioyl-ucm-toolkit=={version}"
     return plan
 
 
@@ -229,6 +240,22 @@ def test_materialized_source_build_is_reproducible(tmp_path: Path) -> None:
     assert wheels[0].read_bytes() == wheels[1].read_bytes()
 
 
+@pytest.mark.parametrize("version", ["0.9.0.dev0", "0.9.0.dev0+draft.other"])
+def test_named_draft_meta_rejects_a_lost_or_foreign_package_label(version: str) -> None:
+    plan = _named_draft_plan(version, "draft/v0.9.0-test")
+    with pytest.raises(ValueError, match="custom Draft package version differs"):
+        meta.validate_meta_package(plan)
+
+
+def test_named_draft_meta_requires_the_full_backend_dependency_version() -> None:
+    plan = _named_draft_plan("0.9.0.dev0+draft.test", "draft/v0.9.0-test")
+    plan["meta_package"]["extras"][
+        "cu130"
+    ] = "supermarioyl-uc-manager-cuda-cu130==0.9.0.dev0"
+    with pytest.raises(ValueError, match="must pin"):
+        meta.validate_meta_package(plan)
+
+
 def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> None:
     plan = _fork_plan()
     source = tmp_path / "source"
@@ -254,13 +281,24 @@ def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> N
     )
 
 
-def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> None:
-    plan = _fork_plan()
+def test_named_draft_meta_preserves_full_version_and_installs_extra_offline(
+    tmp_path: Path,
+) -> None:
+    version = "0.9.0.dev0+draft.1.test"
+    plan = _named_draft_plan(version, "draft/v0.9.0-1-test")
     meta_source = tmp_path / "meta-source"
-    meta_wheelhouse = tmp_path / "meta-wheelhouse"
+    meta_wheelhouse = tmp_path / "named-draft-meta-wheelhouse"
     meta_wheelhouse.mkdir()
     meta.materialize_meta_source(plan, meta_source)
     meta_wheel = _build_wheel(meta_source, meta_wheelhouse)
+    result = meta.record_meta_wheel(plan, meta_wheel)
+    assert meta_wheel.name == f"supermarioyl_uc_manager-{version}-py3-none-any.whl"
+    assert result["version"] == version
+    assert result["extras"] == plan["meta_package"]["extras"]
+    assert result["requires_dist"] == sorted(
+        f'{requirement}; extra == "{extra}"'
+        for extra, requirement in plan["meta_package"]["extras"].items()
+    )
 
     backend_source = tmp_path / "backend-source"
     backend_source.mkdir()
@@ -273,7 +311,7 @@ def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> N
                 "",
                 "[project]",
                 'name = "supermarioyl-uc-manager-cuda-cu130"',
-                f'version = "{VERSION}"',
+                f'version = "{version}"',
                 "",
                 "[tool.setuptools]",
                 "packages = []",
@@ -317,8 +355,8 @@ def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> N
         for distribution in importlib.metadata.distributions(path=[str(target)])
     }
     assert installed == {
-        "supermarioyl-uc-manager": VERSION,
-        "supermarioyl-uc-manager-cuda-cu130": VERSION,
+        "supermarioyl-uc-manager": version,
+        "supermarioyl-uc-manager-cuda-cu130": version,
     }
 
 
