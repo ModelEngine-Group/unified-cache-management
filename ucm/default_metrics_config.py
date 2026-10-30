@@ -15,29 +15,29 @@ from typing import Any
 # fmt: off
 _COUNTER_METRICS = [
     # BEGIN GENERATED KV counter
-    ("kv_client_query_requests_total", "Total KV client query submissions"),
-    ("kv_client_query_entries_total", "Total keys submitted to KV client query"),
-    ("kv_client_query_errors_total", "Total failed KV client query submissions"),
-    ("kv_client_load_requests_total", "Total KV client load submissions"),
-    ("kv_client_load_entries_total", "Total entries submitted to KV client load"),
-    ("kv_client_load_errors_total", "Total failed KV client load submissions"),
-    ("kv_client_store_requests_total", "Total KV client store submissions"),
-    ("kv_client_store_entries_total", "Total entries submitted to KV client store"),
-    ("kv_client_store_errors_total", "Total failed KV client store submissions"),
-    ("kv_client_batch_load_requests_total", "Total KV client batch-load submissions"),
-    ("kv_client_batch_load_entries_total", "Total entries submitted to KV client batch-load"),
-    ("kv_client_batch_load_errors_total", "Total failed KV client batch-load submissions"),
-    ("kv_client_batch_store_requests_total", "Total KV client batch-store submissions"),
-    ("kv_client_batch_store_entries_total", "Total entries submitted to KV client batch-store"),
-    ("kv_client_batch_store_errors_total", "Total failed KV client batch-store submissions"),
-    ("kv_client_delete_requests_total", "Total KV client delete submissions"),
-    ("kv_client_delete_entries_total", "Total keys submitted to KV client delete"),
-    ("kv_client_delete_errors_total", "Total failed KV client delete submissions"),
-    ("kv_client_wait_requests_total", "Total KV client wait calls"),
-    ("kv_client_wait_errors_total", "Total failed KV client wait calls"),
-    ("kv_transport_task_completion_timeouts_total", "Total KV transport task completion timeouts"),
-    ("kv_transport_task_io_timeouts_total", "Total KV transport sub-batch IO timeouts"),
-    ("kv_transport_task_connection_errors_total", "Total KV transport connection errors"),
+    ("kv_client_query_requests_total", "Total KV client query submissions", {"prometheus_name": "kv:kv_client_query_requests_total"}),
+    ("kv_client_query_entries_total", "Total keys submitted to KV client query", {"prometheus_name": "kv:kv_client_query_entries_total"}),
+    ("kv_client_query_errors_total", "Total failed KV client query submissions", {"prometheus_name": "kv:kv_client_query_errors_total"}),
+    ("kv_client_load_requests_total", "Total KV client load submissions", {"prometheus_name": "kv:kv_client_load_requests_total"}),
+    ("kv_client_load_entries_total", "Total entries submitted to KV client load", {"prometheus_name": "kv:kv_client_load_entries_total"}),
+    ("kv_client_load_errors_total", "Total failed KV client load submissions", {"prometheus_name": "kv:kv_client_load_errors_total"}),
+    ("kv_client_store_requests_total", "Total KV client store submissions", {"prometheus_name": "kv:kv_client_store_requests_total"}),
+    ("kv_client_store_entries_total", "Total entries submitted to KV client store", {"prometheus_name": "kv:kv_client_store_entries_total"}),
+    ("kv_client_store_errors_total", "Total failed KV client store submissions", {"prometheus_name": "kv:kv_client_store_errors_total"}),
+    ("kv_client_batch_load_requests_total", "Total KV client batch-load submissions", {"prometheus_name": "kv:kv_client_batch_load_requests_total"}),
+    ("kv_client_batch_load_entries_total", "Total entries submitted to KV client batch-load", {"prometheus_name": "kv:kv_client_batch_load_entries_total"}),
+    ("kv_client_batch_load_errors_total", "Total failed KV client batch-load submissions", {"prometheus_name": "kv:kv_client_batch_load_errors_total"}),
+    ("kv_client_batch_store_requests_total", "Total KV client batch-store submissions", {"prometheus_name": "kv:kv_client_batch_store_requests_total"}),
+    ("kv_client_batch_store_entries_total", "Total entries submitted to KV client batch-store", {"prometheus_name": "kv:kv_client_batch_store_entries_total"}),
+    ("kv_client_batch_store_errors_total", "Total failed KV client batch-store submissions", {"prometheus_name": "kv:kv_client_batch_store_errors_total"}),
+    ("kv_client_delete_requests_total", "Total KV client delete submissions", {"prometheus_name": "kv:kv_client_delete_requests_total"}),
+    ("kv_client_delete_entries_total", "Total keys submitted to KV client delete", {"prometheus_name": "kv:kv_client_delete_entries_total"}),
+    ("kv_client_delete_errors_total", "Total failed KV client delete submissions", {"prometheus_name": "kv:kv_client_delete_errors_total"}),
+    ("kv_client_wait_requests_total", "Total KV client wait calls", {"prometheus_name": "kv:kv_client_wait_requests_total"}),
+    ("kv_client_wait_errors_total", "Total failed KV client wait calls", {"prometheus_name": "kv:kv_client_wait_errors_total"}),
+    ("kv_transport_task_completion_timeouts_total", "Total KV transport task completion timeouts", {"prometheus_name": "kv:kv_transport_task_completion_timeouts_total"}),
+    ("kv_transport_task_io_timeouts_total", "Total KV transport sub-batch IO timeouts", {"prometheus_name": "kv:kv_transport_task_io_timeouts_total"}),
+    ("kv_transport_task_connection_errors_total", "Total KV transport connection errors", {"prometheus_name": "kv:kv_transport_task_connection_errors_total"}),
     # END GENERATED KV counter
     (
         "cache_lookup_hit_blocks_total",
@@ -800,20 +800,20 @@ _CONNECTOR_INTERFACE_DURATION_BUCKETS = [
 ]
 _HISTOGRAM_METRICS = [
     # BEGIN GENERATED KV histogram
-    ("kv_client_task_enqueue_duration_seconds", "KV client API-to-enqueue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_client_task_queue_duration_seconds", "KV client task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_client_task_process_duration_seconds", "KV client task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_client_task_send_duration_seconds", "KV client duration until all Send calls return", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_client_task_e2e_duration_seconds", "KV client task end-to-end duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_pre_send_duration_seconds", "KV transport duration before Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_queue_duration_seconds", "KV transport task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_process_duration_seconds", "KV transport task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_send_duration_seconds", "KV transport duration until Send returns", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_send_call_duration_seconds", "KV transport provider Send call duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_completion_duration_seconds", "KV transport completion duration after Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_node_task_send_duration_seconds", "KV transport node task send duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_node_task_completion_duration_seconds", "KV transport node task completion duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
-    ("kv_transport_task_e2e_duration_seconds", "KV transport task end-to-end duration from submit to completion", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+    ("kv_client_task_enqueue_duration_seconds", "KV client API-to-enqueue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_enqueue_duration_seconds"}),
+    ("kv_client_task_queue_duration_seconds", "KV client task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_queue_duration_seconds"}),
+    ("kv_client_task_process_duration_seconds", "KV client task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_process_duration_seconds"}),
+    ("kv_client_task_send_duration_seconds", "KV client duration until all Send calls return", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_send_duration_seconds"}),
+    ("kv_client_task_e2e_duration_seconds", "KV client task end-to-end duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_e2e_duration_seconds"}),
+    ("kv_transport_task_pre_send_duration_seconds", "KV transport duration before Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_pre_send_duration_seconds"}),
+    ("kv_transport_task_queue_duration_seconds", "KV transport task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_queue_duration_seconds"}),
+    ("kv_transport_task_process_duration_seconds", "KV transport task processing duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_process_duration_seconds"}),
+    ("kv_transport_task_send_duration_seconds", "KV transport duration until Send returns", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_send_duration_seconds"}),
+    ("kv_transport_task_send_call_duration_seconds", "KV transport provider Send call duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_send_call_duration_seconds"}),
+    ("kv_transport_task_completion_duration_seconds", "KV transport completion duration after Send", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_completion_duration_seconds"}),
+    ("kv_transport_node_task_send_duration_seconds", "KV transport node task send duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_node_task_send_duration_seconds"}),
+    ("kv_transport_node_task_completion_duration_seconds", "KV transport node task completion duration; standalone labels by node_id", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_node_task_completion_duration_seconds"}),
+    ("kv_transport_task_e2e_duration_seconds", "KV transport task end-to-end duration from submit to completion", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_transport_task_e2e_duration_seconds"}),
     # END GENERATED KV histogram
     (
         "save_duration",
@@ -1346,9 +1346,9 @@ def _metric(name: str, documentation: str, **extra: Any) -> dict[str, Any]:
 
 
 def _histogram_metric(
-    name: str, documentation: str, buckets: list[int | float]
+    name: str, documentation: str, buckets: list[int | float], **extra: Any
 ) -> dict[str, Any]:
-    return _metric(name, documentation, buckets=buckets)
+    return _metric(name, documentation, buckets=buckets, **extra)
 
 
 DEFAULT_METRICS_CONFIG: dict[str, Any] = {
@@ -1356,15 +1356,16 @@ DEFAULT_METRICS_CONFIG: dict[str, Any] = {
     "vllm_connector_prefix": "ucm:",
     "consumers": {"vllm_connector": True},
     "counter": [
-        _metric(name, documentation) for name, documentation in _COUNTER_METRICS
+        _metric(name, documentation, **(extra[0] if extra else {}))
+        for name, documentation, *extra in _COUNTER_METRICS
     ],
     "gauge": [
         _metric(name, documentation, **extra)
         for name, documentation, extra in _GAUGE_METRICS
     ],
     "histogram": [
-        _histogram_metric(name, documentation, buckets)
-        for name, documentation, buckets in _HISTOGRAM_METRICS
+        _histogram_metric(name, documentation, buckets, **(extra[0] if extra else {}))
+        for name, documentation, buckets, *extra in _HISTOGRAM_METRICS
     ],
 }
 
