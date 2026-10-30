@@ -41,6 +41,7 @@ private:
     std::vector<std::string> shards_;
     bool dataDirShard_;
     size_t dataDirShardBytes_;
+    std::string activatedExt_{".tmp"};
 
 public:
     Status Setup(const Config& config);

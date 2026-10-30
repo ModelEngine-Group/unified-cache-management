@@ -30,6 +30,7 @@
 #include <random>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "gc_liveness.h"
 #include "posix_file.h"
 #include "template/topn_heap.h"
 
@@ -74,6 +75,11 @@ Status SpaceLayout::Setup(const Config& config)
     dataDirShardBytes_ = config.dataDirShardBytes;
     dataDirShard_ = dataDirShardBytes_ > 0;
     shards_ = RelativeRoots();
+    // Writers on different hosts or processes share the backend, so each gets its own temp file
+    // name instead of racing on a single "<block>.tmp".
+    activatedExt_ = fmt::format("{}.{}.{}.{:08x}", ACTIVATED_FILE_EXTENSION,
+                                GcClock::LocalHostName(), static_cast<long>(getpid()),
+                                GcClock::Nonce());
     return Status::OK();
 }
 
@@ -101,7 +107,7 @@ std::string SpaceLayout::ArchivedFilePath(const std::string& backend,
 std::string SpaceLayout::ActivatedFilePath(const std::string& backend,
                                            const Detail::BlockId& blockId) const
 {
-    return ArchivedFilePath(backend, blockId) + ACTIVATED_FILE_EXTENSION;
+    return ArchivedFilePath(backend, blockId) + activatedExt_;
 }
 
 Status SpaceLayout::CommitFile(const std::string& backend, const Detail::BlockId& blockId,
