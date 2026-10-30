@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "load_queue.h"
+#include <cstring>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -42,6 +43,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
+    shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
@@ -187,8 +189,45 @@ void LoadQueue::TransferStage(std::promise<Status>& started)
     running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream);
 }
 
+void LoadQueue::TransferDdrLoad(ShardTask&& task)
+{
+    auto parentTask = task.task;
+    const auto taskHandle = parentTask->id;
+    auto waiter = std::move(task.waiter);
+    if (failureSet_->Contains(taskHandle)) {
+        RecordFailedShards(1);
+        task.bufferHandle = TransBuffer::Handle{};
+        if (waiter) { waiter->Done(); }
+        return;
+    }
+    auto s = WaitBackendTaskReady(task);
+    if (s.Success()) {
+        auto* src = task.bufferHandle.Data();
+        auto* dst = task.shard.addrs.empty() ? nullptr : task.shard.addrs.front();
+        if (src == nullptr || dst == nullptr || task.shard.addrs.size() != 1) [[unlikely]] {
+            s = Status::InvalidParam();
+            UC_ERROR("DDR load shard({}) requires one host address.", task.shard.index);
+        } else {
+            std::memcpy(dst, src, shardSize_);
+        }
+    }
+    if (s.Failure()) [[unlikely]] {
+        RecordShardResults({}, &task, false);
+        parentTask->Fail(s);
+        failureSet_->Insert(taskHandle);
+    } else {
+        RecordShardResults({}, &task, true);
+    }
+    task.bufferHandle = TransBuffer::Handle{};
+    if (waiter) { waiter->Done(); }
+}
+
 void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
+    if (task.task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+        TransferDdrLoad(std::move(task));
+        return;
+    }
     auto parentTask = task.task;
     const auto taskHandle = parentTask->id;
     if (failureSet_->Contains(taskHandle)) {
