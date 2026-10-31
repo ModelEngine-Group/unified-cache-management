@@ -132,6 +132,7 @@ def _load_layout_symbols():
         "_get_store_io_sizes",
         "_is_minimax_m3",
         "_has_shared_indexer_layers",
+        "_num_mtp_layers",
         "KVCacheSegment",
         "KVCacheTensorInfo",
         "SharedIndexerLayerInfo",
@@ -176,6 +177,9 @@ def _build_layout(
     shared_indexer: bool = False,
     enable_sparse_sfa_c8: bool = False,
     enable_sparse_li_c8: bool = False,
+    num_hidden_layers: int | None = None,
+    pipeline_parallel_size: int = 1,
+    speculative_config=None,
 ):
     next_ptr = 0x100000
     kvcaches = {}
@@ -186,7 +190,9 @@ def _build_layout(
             next_ptr += 0x100000
         kvcaches[f"model.layers.{layer_id}.self_attn"] = tuple(tensors)
 
-    hf_text_config = SimpleNamespace(num_hidden_layers=len(row_strides))
+    if num_hidden_layers is None:
+        num_hidden_layers = len(row_strides)
+    hf_text_config = SimpleNamespace(num_hidden_layers=num_hidden_layers)
     if shared_indexer:
         hf_text_config.indexer_types = ["full", "shared"]
     vllm_config = SimpleNamespace(
@@ -194,9 +200,11 @@ def _build_layout(
             "enable_sparse_sfa_c8": enable_sparse_sfa_c8,
             "enable_sparse_li_c8": enable_sparse_li_c8,
         },
-        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
+        parallel_config=SimpleNamespace(pipeline_parallel_size=pipeline_parallel_size),
         model_config=SimpleNamespace(hf_text_config=hf_text_config),
     )
+    if speculative_config is not None:
+        vllm_config.speculative_config = speculative_config
     kv_cache_config = SimpleNamespace(num_blocks=2)
     ucm_config = {"use_layerwise": use_layerwise}
     layout_cls = (
@@ -355,6 +363,77 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(block_size, 9383936)
+
+    def test_pp_block_size_includes_mtp_layers(self):
+        layout = _build_layout(
+            [[8], [8], [8]],
+            use_layerwise=True,
+            num_hidden_layers=2,
+            pipeline_parallel_size=2,
+            speculative_config=SimpleNamespace(
+                method="mtp",
+                draft_model_config=SimpleNamespace(
+                    hf_config=SimpleNamespace(n_predict=1)
+                ),
+            ),
+        )
+
+        self.assertEqual(layout.shard_size, 8)
+        self.assertEqual(layout.block_size, 8 * 3)
+
+    def test_pp_block_size_uses_multiple_mtp_layers(self):
+        layout = _build_layout(
+            [[8], [8], [8], [8]],
+            use_layerwise=True,
+            num_hidden_layers=2,
+            pipeline_parallel_size=2,
+            speculative_config=SimpleNamespace(
+                method="mtp",
+                draft_model_config=SimpleNamespace(
+                    hf_config=SimpleNamespace(n_predict=2)
+                ),
+            ),
+        )
+
+        self.assertEqual(layout.block_size, 8 * 4)
+
+    def test_pp_block_size_defaults_to_one_mtp_layer(self):
+        layout = _build_layout(
+            [[8], [8], [8]],
+            use_layerwise=True,
+            num_hidden_layers=2,
+            pipeline_parallel_size=2,
+            speculative_config=SimpleNamespace(
+                method="mtp",
+                draft_model_config=SimpleNamespace(hf_config=SimpleNamespace()),
+            ),
+        )
+
+        self.assertEqual(layout.block_size, 8 * 3)
+
+    def test_pp_block_size_ignores_non_mtp_speculation(self):
+        layout = _build_layout(
+            [[8], [8]],
+            use_layerwise=True,
+            num_hidden_layers=2,
+            pipeline_parallel_size=2,
+            speculative_config=SimpleNamespace(
+                method="eagle",
+                draft_model_config=None,
+            ),
+        )
+
+        self.assertEqual(layout.block_size, 8 * 2)
+
+    def test_pp_block_size_without_speculative_config(self):
+        layout = _build_layout(
+            [[8], [8]],
+            use_layerwise=True,
+            num_hidden_layers=2,
+            pipeline_parallel_size=2,
+        )
+
+        self.assertEqual(layout.block_size, 8 * 2)
 
     def test_direct_layout_flattens_only_real_tensors(self):
         layout = _build_layout(
