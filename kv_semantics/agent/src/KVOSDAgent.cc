@@ -678,7 +678,7 @@ public:
         }
 
         heartbeat_running = true;
-        // 外部显示 start 即视为恢复, 清除"手动停止"标志 (IP 切换后不再被跳过)
+        // 外部显式 start 即视为恢复, 清除"手动停止"标志 (IP 切换后不再被跳过)
         heartbeat_manually_stopped_ = false;
         heartbeat_timer = std::make_unique<boost::asio::steady_timer>(
             poolctx->get_io_context());
@@ -801,7 +801,7 @@ public:
         bool rule_exists = (outs.find("already exists") != std::string::npos ||
                             outs.find("规则已存在") != std::string::npos ||
                             ret == -17);    // EEXIST 兜底
-        if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了, 但 rule 没创建的情况.
+        if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了 rule 没创建的情况.
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH rule already exists, continuing: " + outs);
         } else if (ret < 0) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create rule: " + outs);
@@ -834,9 +834,9 @@ public:
     }
     // NOLINTEND(huge_method)
 
-    // 删除 CRUSH Root 以及对应 Rule,  to do: 基于 int32_t* osdIdList, uint32_t listSize 进行缩容, 只有在root为空的情况进行删除。
+    // 删除 CRUSH Root 及对应 Rule,  to do: 基于 int32_t* osdIdList, uint32_t listSize 进行缩容, 只有在root为空的情况进行删除。
     // CRUSH Root 删除含多层效验、OSDMap同步、CrushWrapper遍历删除等完整流程
-    // NOLINTBEGIN(huge_metho, huge_cycle_complexity)
+    // NOLINTBEGIN(huge_method, huge_cyclomatic_complexity)
     int32_t kv_agent_delete_crush_root_impl(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize)  // NOLINT(g.STD.02-cpp)
     {
         // -------- 输入合法性检测 --------
@@ -1136,8 +1136,8 @@ public:
         return 0;
     }
 
-    // ============= 异步变体 =============
-    // 四个 _asycn 方法将任务投递到单 worker 线程, 在 worker 内执行对应sync
+    // ============== 异步变体 ==============
+    // 4个 _async 方法将任务投递到单 worker 线程, 在 worker 内执行对应sync
     // 实现, 完成后调用回调. 单 worker 足够: 4个 crush/pool 操作共享
     // g_crush_mutex 串行执行, 多 worker 也不会并发, 反而增加资源开销.
     int32_t kv_agent_create_crush_root_async(char* kvPoolName, uint32_t nameLen,
@@ -1183,7 +1183,7 @@ private:
     struct AsyncTask {
         std::function<int32_t()> fn;    // 包装的 sync 调用
         KVAgentAsyncCallback cb;        // 完成回调
-        void *user_data;                // 透传参数
+        void *user_data;                // 透传指针
     };
 
     std::mutex async_mtx_;
@@ -1291,6 +1291,7 @@ private:
         return 0;
     }
 
+private:
     // ---- DPU IP 切换: MON 连接监控 ----
     // 独立于状态机的定时器, 周期检查 monc->is_connected().
     // 一旦从 connected 变为 disconnected, 说明当前 DPU 心跳 IP (myaddrs 第一
@@ -1389,7 +1390,7 @@ private:
     }
 
     // 销毁 messenger/monc 等通信层, 用新顺序 addrs 重新走 BOOT 流程.
-    // 重新 init 时 bindv(新顺序 addrs) -> _finish_bind -> set_myaddrs(新顺序)
+    // 重新 init 时 bindv(新顺序 addrs) -> _finish_bind -> set_myaddrs(新顺序),
     // 因此出站心跳源 IP (get_myaddrs().front()) 与 client_ident 上报顺序
     // 都会切换到新 IP, MON 更新 osdmap 后 client agent 自动连新 IP.
     // 调用前 current_addrs_ 必须已被 rotate 为新顺序 (见 handle_mon_watch).
