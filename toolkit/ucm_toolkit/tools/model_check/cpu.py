@@ -120,7 +120,7 @@ def make_config() -> Any:
         use_layerwise,
         "cpu",
         connector_module_path,
-        tokens_per_chunk=config.tokens_per_chunk,
+        chunk_size=config.chunk_size,
     )
     # CPU 平台对 MLA 模型强制禁用 chunked prefill（vllm/platforms/cpu.py），
     # prefix caching 需与 UCM 的部署形态一致（UCM 接管前缀查找，本地 HBM

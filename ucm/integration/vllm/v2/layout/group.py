@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from math import lcm
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -20,6 +21,16 @@ if TYPE_CHECKING:
     import torch
 
     from .kv_cache import UCMLayerSpec
+
+
+@dataclass(frozen=True)
+class GroupLayoutMetadata:
+    """Registration-only facts about one complete local group block; no pointers."""
+
+    sizes: tuple[int, ...]
+    states_per_block: tuple[int, ...]
+    supports_partial_tokens: bool
+    tp_shards: int
 
 
 @dataclass(frozen=True)
@@ -127,11 +138,27 @@ class KVCacheGroupLayout:
         self.states_per_block = np.asarray(states_per_block, dtype=np.uint64)
         self.payload_bytes = np.asarray(payload_bytes, dtype=np.uint64)
         self.supports_partial_tokens = all(
-            component.supports_partial_tokens
+            layer_view.supports_partial_tokens
             for layer_view in self.layer_views.values()
-            for component in layer_view.components
         )
         self.block_first = self._block_first_span() if block_first_layout else None
+
+    def export_metadata(self, tp_size: int) -> GroupLayoutMetadata:
+        """Export one complete local block's format/size facts for PP assembly."""
+        from .kv_cache import _spec_tp_shards
+
+        tp_shards = lcm(
+            *(
+                _spec_tp_shards(layer.kv_cache_spec, tp_size)
+                for layer in self.layer_specs
+            )
+        )
+        return GroupLayoutMetadata(
+            sizes=tuple(map(int, self.payload_bytes)),
+            states_per_block=tuple(map(int, self.states_per_block)),
+            supports_partial_tokens=self.supports_partial_tokens,
+            tp_shards=tp_shards,
+        )
 
     def _block_first_span(self) -> BlockFirstView | None:
         """Use CUDA/CPU BLHNC/BLNHC placement declarations directly.

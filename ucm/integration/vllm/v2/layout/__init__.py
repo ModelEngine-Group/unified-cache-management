@@ -13,8 +13,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from .group import BlockFirstView, KVCacheGroupLayout, TensorDescriptor
+from .group import (
+    BlockFirstView,
+    GroupLayoutMetadata,
+    KVCacheGroupLayout,
+    TensorDescriptor,
+)
 from .kv_cache import (
+    RestorePolicy,
     UCMKVCacheGroupSpec,
     UCMKVCacheLayout,
     UCMKVCacheSpec,
@@ -151,8 +157,10 @@ def build_group_layouts(
 
 
 __all__ = [
+    "RestorePolicy",
     "BlockFirstView",
     "ComponentView",
+    "GroupLayoutMetadata",
     "GroupStoreLayout",
     "KVCacheGroupLayout",
     "LayerView",

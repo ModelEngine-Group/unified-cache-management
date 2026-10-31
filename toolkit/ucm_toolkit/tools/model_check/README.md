@@ -96,10 +96,12 @@ ucm-toolkit run model-check \
     --storage-backends /path/to/ucm_storage
 ```
 
-For connector v2, `--tokens-per-chunk` sets the token span of each UCM key,
+For connector v2, `--chunk-size` sets the token span of each UCM key,
 independently of the native `--block-size`. Omit it to use the connector's
-default. Explicit values must satisfy the connector's shared scheduler/group
-alignment rules. The environment equivalent is `UCM_MODEL_CHECK_TOKENS_PER_CHUNK`.
+default: the LCM of all stored groups' effective block token spans after DCP
+resolution. Smaller explicit non-DCP FA chunks must tile each block, align to
+compressed entries, and be supported by the actual HBM views; State/SWA and DCP
+require whole-block boundary alignment. The environment equivalent is `UCM_MODEL_CHECK_CHUNK_SIZE`.
 
 On vLLM 0.30 / current Ascend, scheduler configuration conversion and manager
 selection use the native APIs. The checker no longer installs the obsolete

@@ -8,21 +8,9 @@ semantics. No KV storage is allocated or copied here.
 
 from __future__ import annotations
 
-import os
-import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
-
-# Debug trace for the v2 layout: set UCM_V2_LAYOUT_DEBUG=1 to log, on
-# stderr, the group layout each group compiled to and which pointer each
-# dispatched vLLM block resolves to.  Zero cost when disabled.
-LAYOUT_DEBUG = os.environ.get("UCM_V2_LAYOUT_DEBUG", "0") not in ("", "0")
-
-
-def layout_debug(message: str) -> None:
-    if LAYOUT_DEBUG:
-        print(f"[ucm-v2-layout] {message}", file=sys.stderr, flush=True)
-
 
 if TYPE_CHECKING:
     import torch
@@ -39,7 +27,8 @@ class MemorySegment:
     content as ``states_per_block`` states of ``bytes_per_state`` bytes.
     The group's partial-token policy determines whether token offsets
     can use that byte ratio. Compact multi-head HNC pages retain their
-    physical head-major order and require whole-block IO.
+    physical head-major order and require whole-block IO. ``storage_base_ptr``
+    identifies the backing for registration-time range merging only.
     """
 
     base_ptr: int
@@ -47,6 +36,7 @@ class MemorySegment:
     states_per_block: int
     bytes_per_state: int
     payload_bytes: int
+    storage_base_ptr: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,17 +55,51 @@ class ComponentView:
 
 @dataclass(frozen=True, slots=True)
 class LayerView:
-    """Logical layer-name view; components may alias the same storage."""
+    """One layer name's original components and final unique IO segments."""
 
     layer_name: str
     layer_id: int
     components: tuple[ComponentView, ...]
 
-    @property
-    def segments(self) -> tuple[MemorySegment, ...]:
-        return tuple(
-            segment for component in self.components for segment in component.segments
-        )
+    segments: tuple[MemorySegment, ...]
+    supports_partial_tokens: bool
+
+
+def _merge_segments(
+    segments: Sequence[MemorySegment],
+) -> tuple[tuple[MemorySegment, ...], bool]:
+    """Union overlapping/adjacent spans of one layer name's registered views.
+
+    Backings keep first-component order; offsets within a backing use physical
+    order. Joined ranges are indivisible, so token slicing is disabled.
+    """
+    by_backing: dict[tuple[int, int], list[MemorySegment]] = {}
+    for segment in segments:
+        identity = (segment.storage_base_ptr, segment.block_stride_bytes)
+        by_backing.setdefault(identity, []).append(segment)
+
+    merged: list[MemorySegment] = []
+    whole_block_only = False
+    for entries in by_backing.values():
+        spans: list[MemorySegment] = []
+        for segment in sorted(entries, key=lambda item: item.base_ptr):
+            if spans:
+                previous = spans[-1]
+                previous_end = previous.base_ptr + previous.payload_bytes
+                if segment.base_ptr <= previous_end:
+                    end = max(previous_end, segment.base_ptr + segment.payload_bytes)
+                    size = end - previous.base_ptr
+                    spans[-1] = replace(
+                        previous,
+                        payload_bytes=size,
+                        states_per_block=1,
+                        bytes_per_state=size,
+                    )
+                    whole_block_only = True
+                    continue
+            spans.append(segment)
+        merged.extend(spans)
+    return tuple(merged), whole_block_only
 
 
 def build_layer_view(
@@ -124,7 +148,17 @@ def build_layer_view(
             )
         strides = tuple(tensor.stride())
         components.append(_build_bhnc_view(tensor, layer, shape, strides))
-    return LayerView(layer.layer_name, layer.layer_index, tuple(components))
+    segments, whole_block_only = _merge_segments(
+        tuple(segment for component in components for segment in component.segments)
+    )
+    return LayerView(
+        layer_name=layer.layer_name,
+        layer_id=layer.layer_index,
+        components=tuple(components),
+        segments=segments,
+        supports_partial_tokens=not whole_block_only
+        and all(component.supports_partial_tokens for component in components),
+    )
 
 
 def _as_byte_page(tensor: "torch.Tensor") -> "torch.Tensor":
@@ -167,8 +201,8 @@ def _build_bhnc_view(
     Physical NHC and singleton-head views support partial-token IO.
     Multi-head HNC requires whole blocks, including the separated-head
     layouts LHBNC/BHLNC. Compact HNC stays one segment without repacking.
-    Tiled separated-head views contribute one span per kernel row/head;
-    adjacent spans are merged in physical byte order at initialization.
+    Tiled separated-head views contribute one span per kernel row/head.
+    LayerView initialization deduplicates and merges spans of this layer name.
     """
     if shape[0] % layer.num_blocks:
         raise ValueError("BHNC view does not tile logical blocks")
@@ -180,6 +214,7 @@ def _build_bhnc_view(
         raise ValueError("BHNC components require dense channels")
     element_size = int(tensor.element_size())
     base_ptr = int(tensor.data_ptr())
+    storage_base_ptr = int(tensor.untyped_storage().data_ptr())
     token_contiguous = strides[2] == heads * channels and (
         heads == 1 or strides[1] == channels
     )
@@ -203,6 +238,7 @@ def _build_bhnc_view(
                     states_per_block=rows_per_block * states,
                     bytes_per_state=heads * channels * element_size,
                     payload_bytes=rows_per_block * row_payload,
+                    storage_base_ptr=storage_base_ptr,
                 ),
             ),
             supports_partial_tokens=token_contiguous,
@@ -214,26 +250,13 @@ def _build_bhnc_view(
             states_per_block=states,
             bytes_per_state=channels * element_size,
             payload_bytes=states * channels * element_size,
+            storage_base_ptr=storage_base_ptr,
         )
         for row in range(rows_per_block)
         for head in range(heads)
     )
-    segments: list[MemorySegment] = []
-    for fragment in sorted(fragments, key=lambda segment: segment.base_ptr):
-        if segments and (
-            segments[-1].base_ptr + segments[-1].payload_bytes == fragment.base_ptr
-        ):
-            previous_segment = segments[-1]
-            # All fragments have the same block stride and bytes/state.
-            segments[-1] = replace(
-                previous_segment,
-                states_per_block=previous_segment.states_per_block
-                + fragment.states_per_block,
-                payload_bytes=previous_segment.payload_bytes + fragment.payload_bytes,
-            )
-        else:
-            segments.append(fragment)
-    return ComponentView(shape, strides, tuple(segments), supports_partial_tokens=False)
+    segments = tuple(sorted(fragments, key=lambda segment: segment.base_ptr))
+    return ComponentView(shape, strides, segments, supports_partial_tokens=False)
 
 
 def row_payload_bytes(
