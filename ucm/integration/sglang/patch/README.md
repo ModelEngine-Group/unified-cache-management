@@ -49,7 +49,7 @@ python -m sglang.launch_server \
   "linker": "UcmDirectLinker",
   "linker_module_path": "ucm.integration.sglang.ucm_direct_linker",
   "linker_extra_config": {
-    "config_file": "/path/to/ucm-sglang.yaml"
+    "UCM_CONFIG_FILE": "/path/to/ucm-sglang.yaml"
   }
 }'
 ```
@@ -59,7 +59,7 @@ a warning if a config is supplied without
 `--enable-unified-cache-external-linker`; the config does not enable the linker
 by itself. Config validation still applies in that case. The linker class is
 imported and constructed in the cache-owning worker. Set
-`linker_extra_config.config_file` in the JSON object to provide the YAML path.
+`linker_extra_config.UCM_CONFIG_FILE` in the JSON object to provide the YAML path.
 SGLang 0.5.20 also keeps
 its legacy `ucm` backend selector. This release backport uses the new config
 flag for `dynamic` only; Mooncake and MORI retain their existing configuration
