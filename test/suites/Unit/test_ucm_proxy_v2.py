@@ -77,7 +77,7 @@ def test_scheduler_can_repeat_planning_without_mutating_request_state():
     second = scheduler._build_request_plan("r", state, block_tables, 4)
 
     assert asdict(state) == before
-    assert state.load_pending and state.token_processed == 4
+    assert state.need_load and state.token_processed == 4
     assert block_tables == ([1, 2, 3],)
     assert first.load_plans and first.dump_plans
     for actual, repeated in zip(
@@ -143,7 +143,7 @@ def test_scheduler_does_not_consume_load_or_progress_when_any_plan_fails():
     assert set(metadata.requests) == {"first", "second"}
     for request_id, state in scheduler.requests.items():
         assert metadata.requests[request_id].load_plans
-        assert not state.load_pending
+        assert not state.need_load
         assert state.token_processed == 8
         plan = metadata.requests[request_id].dump_plans[0]
         assert plan.vllm_block_ids_by_group[0].tolist() == [5]
@@ -374,6 +374,7 @@ def test_restore_policy_is_derived_from_native_kinds_and_persistence():
             ),
         ),
         scheduler_block_size=4,
+        chunk_size=8,
     )
     assert [group.tail_tokens for group in spec.groups] == [None, None, 8, None, None]
     assert [group.restore_policy for group in spec.groups] == [
@@ -1087,8 +1088,6 @@ def test_connector_save_commits_to_original_route_and_shutdown_drains(layerwise)
     ]
     adapter = UCMProxyAdapter(ParallelProxy(stores, [12, None], 4))
     worker = UCMConnectorWorker.__new__(UCMConnectorWorker)
-    worker.defer_mamba_state_copy = False
-    worker._mamba_copy_bufs = None
     worker.select_dump_rows = lambda group_id, indices: np.arange(len(indices))
     worker.layout = layout
     worker.spec = layout.spec
@@ -1182,8 +1181,6 @@ def test_connector_failed_dump_drains_and_aborts_pending(layerwise):
     ]
     stores[1].fail_submit = True
     worker = UCMConnectorWorker.__new__(UCMConnectorWorker)
-    worker.defer_mamba_state_copy = False
-    worker._mamba_copy_bufs = None
     worker.select_dump_rows = lambda group_id, indices: np.arange(len(indices))
     worker.layout = layout
     worker.spec = layout.spec
@@ -1311,8 +1308,6 @@ def test_late_load_failure_discards_already_enqueued_layer_dumps():
     layout, _, _ = make_layout()
     store = DeferredTestStore(MemoryTestStore(MemoryByteAccess(ByteMemory())))
     worker = UCMConnectorWorker.__new__(UCMConnectorWorker)
-    worker.defer_mamba_state_copy = False
-    worker._mamba_copy_bufs = None
     worker.select_dump_rows = lambda group_id, indices: np.arange(len(indices))
     worker.layout = layout
     worker.spec = layout.spec
@@ -1368,15 +1363,13 @@ def test_lookup_io_failures_are_misses_but_contract_errors_are_fatal(policy, fai
         else:
             result = scheduler.lookup(FakeRequest("r", 16), 0)
             assert result.external_hit_tokens == 0
-            assert not scheduler.requests["r"].load_pending
+            assert not scheduler.requests["r"].need_load
             assert scheduler.requests["r"].common_ucm_chunk_ids
 
 
 def test_fatal_wait_drains_other_tasks_and_preserves_unsafe_descriptors():
     layout, _, _ = make_layout()
     worker = UCMConnectorWorker.__new__(UCMConnectorWorker)
-    worker.defer_mamba_state_copy = False
-    worker._mamba_copy_bufs = None
     worker._failed_dump_attempts = set()
     worker._layer_load_tasks = {}
     worker._dump_tasks = [object(), object(), object()]
@@ -1400,8 +1393,6 @@ def test_best_effort_save_finalizes_after_terminal_storage_failure(failure_at):
     layout, _, _ = make_layout()
     store = DeferredTestStore(MemoryTestStore(MemoryByteAccess(ByteMemory())))
     worker = UCMConnectorWorker.__new__(UCMConnectorWorker)
-    worker.defer_mamba_state_copy = False
-    worker._mamba_copy_bufs = None
     worker.layout, worker.spec = layout, layout.spec
     worker.transfer_builder = UCMTransferBuilder(layout)
     worker._proxy = UCMProxyAdapter(PipelineProxy(store))
@@ -1611,10 +1602,21 @@ def test_fingerprint_hashes_all_configuration_in_one_schema(change):
     assert (before.fingerprint != after.fingerprint) == (change != "json_order")
 
 
-@pytest.mark.parametrize("direct", [False, True])
-@pytest.mark.parametrize("layerwise", [False, True])
-def test_state_restore_populates_boundary_and_running_slots(direct, layerwise):
-    """CPU byte-copy test with explicit before/after runner-copy ordering."""
+@pytest.mark.parametrize(
+    "layerwise,copy_before_load,fail_load",
+    [
+        (False, False, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, False),
+        (False, True, True),
+        (True, True, True),
+    ],
+)
+def test_state_restore_populates_boundary_and_running_slots(
+    layerwise, copy_before_load, fail_load
+):
+    """Both State destinations finish loading, or both report terminal IO failure."""
     import torch
     from test_ucm_connector_v2 import MambaSpec
 
@@ -1623,9 +1625,7 @@ def test_state_restore_populates_boundary_and_running_slots(direct, layerwise):
 
     native = config(group(["model.layers.0.mixer"], MambaSpec(4)))
     spec = parse_spec(native, scheduler_block_size=4, device_type="npu")
-    scheduler = make_connector_scheduler(
-        spec, MemoryTestStore(), load_running_state_directly=direct
-    )
+    scheduler = make_connector_scheduler(spec, MemoryTestStore())
     context = replace(
         scheduler.context,
         role=KVConnectorRole.WORKER,
@@ -1633,7 +1633,7 @@ def test_state_restore_populates_boundary_and_running_slots(direct, layerwise):
         global_rank=0,
         use_layerwise=layerwise,
     )
-    store = MemoryTestStore(TorchTensorByteAccess())
+    store = DeferredTestStore(MemoryTestStore(TorchTensorByteAccess()))
     adapter = UCMProxyAdapter(PipelineProxy(store))
     with patch(
         "ucm.integration.vllm.v2.connector_worker.create_proxy", return_value=adapter
@@ -1651,251 +1651,22 @@ def test_state_restore_populates_boundary_and_running_slots(direct, layerwise):
         state = seed_request_state(scheduler, FakeRequest("r", 12), 8, common_ids)
         request = scheduler._build_request_plan("r", state, ((0, 1, 2, 0),), 4)
         worker.bind_connector_metadata(UCMConnectorMetadata(requests={"r": request}))
-        if direct:
+        if copy_before_load:
             pages[2].copy_(pages[1])  # Runner copy occurred before the external load.
+        store.fail_wait = fail_load
         worker.start_load_kv(None)
+        if fail_load:
+            assert worker.get_block_ids_with_load_errors() == {1, 2}
+            assert worker.build_connector_worker_meta().load_failed_reqs == {"r"}
+            assert not worker._layer_load_tasks
+            return
         assert pages[1].numpy().tobytes() == checkpoint
-        if not direct:
-            assert pages[2].numpy().tobytes() == bytes((29,)) * 256
-            pages[2].copy_(
-                pages[1]
-            )  # Ascend MRV1 runner completes boundary -> running.
         assert pages[2].numpy().tobytes() == checkpoint
+        if not copy_before_load:
+            pages[2].copy_(pages[1])
+            assert pages[2].numpy().tobytes() == checkpoint
         assert not pages[0].any() and not pages[3:].any()
         assert not worker._layer_load_tasks
     finally:
         worker.shutdown()
         scheduler.shutdown()
-
-
-@pytest.fixture
-def ascend_state_copy_case(monkeypatch):
-    """Real transfers, deferred CPU IO and an engine-copy protocol substitute."""
-    from types import ModuleType
-
-    import torch
-    from test_ucm_connector_v2 import MambaSpec
-
-    from ucm.integration.vllm.v2.runtime import ParallelRank, UCMRuntimeContext
-    from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
-
-    names = ("model.layers.0.mixer", "model.layers.1.mixer")
-    native = config(group(list(names), MambaSpec(4)))
-    spec = parse_spec(native, scheduler_block_size=4, device_type="npu")
-    scheduler = make_connector_scheduler(
-        spec, MemoryTestStore(), load_running_state_directly=False
-    )
-    context = replace(
-        scheduler.context,
-        role=KVConnectorRole.WORKER,
-        rank=ParallelRank(),
-        global_rank=0,
-        use_layerwise=True,
-    )
-    pages = {name: torch.zeros((8, 64, 4), dtype=torch.uint8) for name in names}
-    for index, tensor in enumerate(pages.values()):
-        tensor[1].fill_(17)  # Imported boundary, not loaded yet.
-        tensor[2].fill_(29)  # Running destination.
-        tensor[3].fill_(80 + index)  # A separate HBM-hit request's boundary.
-    store = DeferredTestStore(MemoryTestStore(TorchTensorByteAccess()))
-    adapter = UCMProxyAdapter(PipelineProxy(store))
-    with (
-        patch.object(UCMRuntimeContext, "from_vllm_config", return_value=context),
-        patch(
-            "ucm.integration.vllm.v2.connector_worker.create_proxy",
-            return_value=adapter,
-        ),
-    ):
-        connector = UCMConnector(vllm_config(), KVConnectorRole.WORKER, native)
-    connector.register_kv_caches(pages)
-    common_ids = (b"a" * 15, b"b" * 15, b"c" * 15)
-    (key,) = make_ucm_chunk_ids((common_ids[1],), RestorePolicy.STATE)
-    checkpoints = (bytes(range(256)), bytes(reversed(range(256))))
-    store.write_record(key, b"".join(checkpoints), "{}")
-    state = seed_request_state(scheduler, FakeRequest("r", 12), 8, common_ids)
-    request = scheduler._build_request_plan("r", state, ((0, 1, 2, 0),), 4)
-    connector.bind_connector_metadata(UCMConnectorMetadata(requests={"r": request}))
-    events = []
-
-    def prepare(bufs):
-        events.append("prepare")
-
-    def copy_layer(bufs, name):
-        for src, dst in bufs.pending.pop(name, ()):
-            dst.copy_(src)
-        events.append(("copy", name))
-
-    def finish(bufs):
-        if bufs.pending:
-            raise RuntimeError("Mamba state copy was not executed")
-        events.append("finish")
-
-    helpers = SimpleNamespace(
-        prepare_mamba_copy_by_layer=prepare,
-        do_mamba_copy_block_for_layer=copy_layer,
-        finish_mamba_copy_by_layer=finish,
-    )
-    module = ModuleType("vllm.v1.worker")
-    module.mamba_utils = helpers
-    monkeypatch.setitem(sys.modules, "vllm.v1.worker", module)
-    bufs = SimpleNamespace(
-        pending={
-            name: [(tensor[1], tensor[2]), (tensor[3], tensor[4])]
-            for name, tensor in pages.items()
-        }
-    )
-    try:
-        yield SimpleNamespace(
-            connector=connector,
-            worker=connector.connector_worker,
-            pages=pages,
-            names=names,
-            store=store,
-            bufs=bufs,
-            events=events,
-            checkpoints=checkpoints,
-            helpers=helpers,
-        )
-    finally:
-        connector.shutdown()
-        scheduler.shutdown()
-
-
-def test_ascend_state_copy_waits_only_for_current_layer(ascend_state_copy_case):
-    case = ascend_state_copy_case
-    connector = case.connector
-    connector.start_load_kv(None)
-    assert case.store.waited == 0
-    assert connector.prepare_mamba_state_copy(case.bufs)
-    assert case.events == ["prepare"]
-    first, second = case.names
-    connector.wait_for_layer_load(first)
-    assert case.pages[first][1].numpy().tobytes() == case.checkpoints[0]
-    assert case.pages[first][2].numpy().tobytes() == case.checkpoints[0]
-    assert case.pages[first][4].numpy().tobytes() == bytes((80,)) * 256
-    assert case.pages[second][1].numpy().tobytes() == bytes((17,)) * 256
-    assert case.pages[second][2].numpy().tobytes() == bytes((29,)) * 256
-    # Repeated layer waits must not overwrite state already advanced by compute.
-    case.pages[first][2].fill_(99)
-    connector.wait_for_layer_load(first)
-    assert case.pages[first][2].numpy().tobytes() == bytes((99,)) * 256
-    connector.wait_for_layer_load(second)
-    assert case.pages[second][2].numpy().tobytes() == case.checkpoints[1]
-    connector.finish_mamba_state_copy()
-    assert not case.worker._layer_load_tasks
-    assert case.worker._mamba_copy_bufs is None
-    assert case.events[-1] == "finish"
-
-
-def test_ascend_state_copy_runs_without_external_loads(ascend_state_copy_case):
-    case = ascend_state_copy_case
-    case.connector.bind_connector_metadata(UCMConnectorMetadata())
-    case.connector.start_load_kv(None)
-    assert case.connector.prepare_mamba_state_copy(case.bufs)
-    for name in case.names:
-        case.connector.wait_for_layer_load(name)
-        assert case.pages[name][2].numpy().tobytes() == bytes((17,)) * 256
-        assert case.pages[name][4].equal(case.pages[name][3])
-    case.connector.finish_mamba_state_copy()
-    assert case.store.waited == 0
-
-
-def test_ascend_state_copy_reports_missing_layer_and_clears_handle(
-    ascend_state_copy_case,
-):
-    case = ascend_state_copy_case
-    case.connector.start_load_kv(None)
-    case.connector.prepare_mamba_state_copy(case.bufs)
-    case.connector.wait_for_layer_load(case.names[0])
-    with pytest.raises(RuntimeError, match="copy was not executed"):
-        case.connector.finish_mamba_state_copy()
-    assert case.worker._mamba_copy_bufs is None
-    assert case.names[1] in case.bufs.pending
-
-
-def test_ascend_state_copy_does_not_run_after_unknown_io_completion(
-    ascend_state_copy_case,
-):
-    case = ascend_state_copy_case
-    case.connector.start_load_kv(None)
-    case.connector.prepare_mamba_state_copy(case.bufs)
-    with patch.object(
-        case.worker._proxy, "wait", side_effect=ValueError("unknown completion")
-    ):
-        with pytest.raises(ValueError, match="unknown completion"):
-            case.connector.wait_for_layer_load(case.names[0])
-    assert case.events == ["prepare"]
-    assert case.worker._layer_load_tasks
-    # Once completion is established, normal load/copy may finish.
-    for name in case.names:
-        case.connector.wait_for_layer_load(name)
-    case.connector.finish_mamba_state_copy()
-
-
-def test_ascend_outer_connector_can_own_state_copy(ascend_state_copy_case):
-    case = ascend_state_copy_case
-    assert case.connector.requires_mamba_state_copy_after_layer_load
-    case.connector.start_load_kv(None)
-    # AscendMultiConnector owns prepare/copy/finish; child UCM only waits.
-    case.helpers.prepare_mamba_copy_by_layer(case.bufs)
-    for index, name in enumerate(case.names):
-        case.connector.wait_for_layer_load(name)
-        assert case.pages[name][1].numpy().tobytes() == case.checkpoints[index]
-        assert case.pages[name][2].numpy().tobytes() == bytes((29,)) * 256
-        case.helpers.do_mamba_copy_block_for_layer(case.bufs, name)
-    case.helpers.finish_mamba_copy_by_layer(case.bufs)
-    assert case.worker._mamba_copy_bufs is None
-
-
-@pytest.mark.parametrize(
-    "device,layerwise,runner_v2",
-    [
-        ("npu", False, False),
-        ("cpu", True, False),
-        ("npu", True, True),
-    ],
-)
-def test_state_copy_hook_keeps_other_execution_paths(device, layerwise, runner_v2):
-    from ucm.integration.vllm.v2.runtime import ParallelRank, UCMRuntimeContext
-
-    native = config(group(["model.layers.0.attn"], FullAttentionSpec(4)))
-    spec = parse_spec(native, scheduler_block_size=4, device_type=device)
-    scheduler = make_connector_scheduler(spec, MemoryTestStore())
-    context = replace(
-        scheduler.context,
-        role=KVConnectorRole.WORKER,
-        rank=ParallelRank(),
-        global_rank=0,
-        use_layerwise=layerwise,
-    )
-    cfg = vllm_config()
-    cfg.use_v2_model_runner = runner_v2
-    adapter = UCMProxyAdapter(PipelineProxy(MemoryTestStore()))
-    with (
-        patch.object(UCMRuntimeContext, "from_vllm_config", return_value=context),
-        patch(
-            "ucm.integration.vllm.v2.connector_worker.create_proxy",
-            return_value=adapter,
-        ),
-    ):
-        connector = UCMConnector(cfg, KVConnectorRole.WORKER, native)
-    try:
-        assert not connector.requires_mamba_state_copy_after_layer_load
-        assert not connector.prepare_mamba_state_copy(object())
-        connector.finish_mamba_state_copy()
-    finally:
-        connector.shutdown()
-        scheduler.shutdown()
-
-
-def test_ascend_state_load_failure_still_reports_invalid_blocks(ascend_state_copy_case):
-    case = ascend_state_copy_case
-    case.store.fail_wait = True
-    case.connector.start_load_kv(None)
-    case.connector.prepare_mamba_state_copy(case.bufs)
-    for name in case.names:
-        case.connector.wait_for_layer_load(name)
-    case.connector.finish_mamba_state_copy()
-    assert case.connector.get_block_ids_with_load_errors() == {1}
-    assert case.connector.build_connector_worker_meta().load_failed_reqs == {"r"}
-    assert not case.worker._layer_load_tasks

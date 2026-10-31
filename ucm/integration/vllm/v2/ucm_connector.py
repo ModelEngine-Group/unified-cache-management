@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.outputs import KVConnectorOutput
     from vllm.v1.request import Request
-    from vllm.v1.worker.mamba_utils import MambaCopyBuffers
 
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
@@ -40,20 +39,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.context = UCMRuntimeContext.from_vllm_config(
             vllm_config, role, kv_cache_config
         )
-        self.requires_mamba_state_copy_after_layer_load = (
-            self.context.device_type == "npu"
-            and self.context.use_layerwise
-            and not vllm_config.use_v2_model_runner
-        )
         self.connector_scheduler = (
-            UCMConnectorScheduler(
-                self.context,
-                # Ascend MRV1 fills the running slot from the imported boundary
-                # after load. CUDA MRV1 has already copied, so load both slots.
-                load_running_state_directly=(
-                    self.context.device_type != "npu" or vllm_config.use_v2_model_runner
-                ),
-            )
+            UCMConnectorScheduler(self.context)
             if role == KVConnectorRole.SCHEDULER
             else None
         )
@@ -62,7 +49,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 self.context,
                 kv_cache_config,
                 num_hidden_layers=vllm_config.model_config.hf_text_config.num_hidden_layers,
-                defer_mamba_state_copy=self.requires_mamba_state_copy_after_layer_load,
             )
             if role == KVConnectorRole.WORKER
             else None
@@ -126,12 +112,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
     def wait_for_layer_load(self, layer_name):
         self.connector_worker.wait_for_layer_load(layer_name)
-
-    def prepare_mamba_state_copy(self, copy_bufs: MambaCopyBuffers) -> bool:
-        return self.connector_worker.prepare_mamba_state_copy(copy_bufs)
-
-    def finish_mamba_state_copy(self) -> None:
-        self.connector_worker.finish_mamba_state_copy()
 
     def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
         self.connector_worker.save_kv_layer(

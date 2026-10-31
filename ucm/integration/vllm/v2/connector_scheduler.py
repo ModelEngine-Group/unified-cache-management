@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -103,13 +104,12 @@ class RequestState:
     num_token_ids: int = 0
     token_processed: int = 0
     common_ucm_chunk_ids: tuple[bytes, ...] = ()
-    load_pending: bool = False
+    # Cleared when the initial external-load plans have been built.
+    need_load: bool = False
 
 
 class UCMConnectorScheduler:
-    def __init__(
-        self, context: UCMRuntimeContext, *, load_running_state_directly: bool = True
-    ) -> None:
+    def __init__(self, context: UCMRuntimeContext) -> None:
         self.context = context
         self.spec = context.spec
         self.parallel_topology = context.parallel_topology
@@ -118,7 +118,6 @@ class UCMConnectorScheduler:
         )
         self.groups_by_policy = groups_by_restore_policy(self.spec)
         self._recompute_tokens = 1
-        self.load_running_state_directly = load_running_state_directly
         self._chunk_hasher: Callable[[Request], list[bytes]] | None = None
         self.load_threshold_tokens = max(
             int(context.launch_config.get("load_tokens_threshold", 0)), 0
@@ -172,7 +171,7 @@ class UCMConnectorScheduler:
             num_token_ids=len(request.all_token_ids),
             token_processed=num_computed_tokens + external_hit_tokens,
             common_ucm_chunk_ids=common_ids,
-            load_pending=external_hit_tokens > 0,
+            need_load=external_hit_tokens > 0,
         )
         return UCMLookupResult(external_hit_tokens, common_ids)
 
@@ -237,30 +236,31 @@ class UCMConnectorScheduler:
         )
         updates = []
         for request_id in block_state.req_ids:
-            state = self.requests.get(request_id)
-            if state is None:
+            request_state = self.requests.get(request_id)
+            if request_state is None:
                 continue
             block_tables = block_state.get_block_ids(request_id)
             scheduled_tokens = scheduler_output.num_scheduled_tokens.get(request_id, 0)
             request_plan = self._build_request_plan(
                 request_id,
-                state,
+                request_state,
                 block_tables,
                 scheduled_tokens,
                 block_state.boundary_state_offloads.get(request_id, ()),
             )
             metadata.requests[request_id] = request_plan
-            updates.append((state, scheduled_tokens))
+            updates.append((request_state, scheduled_tokens))
         # Allocate attempts only after every request's plan is valid.
         for request_id, plan in tuple(metadata.requests.items()):
             metadata.requests[request_id] = self._attach_save_jobs(plan)
         # Commit progress only after every request's plan has been built.
-        for state, scheduled_tokens in updates:
-            state.token_processed = min(
-                state.token_processed + scheduled_tokens, state.num_token_ids
+        for request_state, scheduled_tokens in updates:
+            request_state.token_processed = min(
+                request_state.token_processed + scheduled_tokens,
+                request_state.num_token_ids,
             )
             if scheduled_tokens > 0:
-                state.load_pending = False
+                request_state.need_load = False
         for request_id in metadata.finished_req_ids:
             self.request_finished(request_id)
         for request_id in metadata.preempted_req_ids:
@@ -358,47 +358,51 @@ class UCMConnectorScheduler:
         self._proxy.close()
 
     def _state_dump_plans(
-        self, state: RequestState, offloads: Sequence[tuple[int, int, int]]
+        self, request_state: RequestState, offloads: Sequence[tuple[int, int, int]]
     ) -> tuple[UCMGroupDispatchPlan, ...]:
-        """Publish complete checkpoints beyond the initially matched prefix."""
-        if not self.spec.state_groups:
+        """Build one dump plan per complete State checkpoint boundary."""
+        state_groups = self.groups_by_policy.get(RestorePolicy.STATE, ())
+        if not state_groups:
             return ()
-        state_groups = self.groups_by_policy[RestorePolicy.STATE]
+        group_ids = tuple(group.group_id for group in state_groups)
         chunk_size = self.spec.chunk_size
-        matched_prefix_tokens = state.hbm_hit_tokens + state.external_hit_tokens
-        vllm_block_ids_by_boundary: dict[int, dict[int, int]] = {}
-        for group_id, vllm_block_id, boundary_token in offloads:
-            # Engine offers include newly hashed imported State blocks. Their
-            # prefix is already cached; do not dump it back to the store.
-            # Use the initial hit boundary, not token_processed: a checkpoint
-            # computed after that hit can be offered on a later step.
+        matched_prefix_tokens = (
+            request_state.hbm_hit_tokens + request_state.external_hit_tokens
+        )
+        blocks_by_boundary: dict[int, dict[int, int]] = defaultdict(dict)
+        for group_id, block_id, boundary_token in offloads:
+            # Exclude imported snapshots using the initial hit boundary:
+            # engine hand-offs can arrive after token_processed advances.
             if (
-                matched_prefix_tokens < boundary_token <= state.num_token_ids
-                and boundary_token % chunk_size == 0
-            ):
-                vllm_block_ids_by_boundary.setdefault(boundary_token, {})[
-                    group_id
-                ] = vllm_block_id
-        plans = []
-        for boundary_token, vllm_block_id_by_group in sorted(
-            vllm_block_ids_by_boundary.items()
-        ):
-            if not all(
-                group.group_id in vllm_block_id_by_group for group in state_groups
+                boundary_token <= matched_prefix_tokens
+                or boundary_token > request_state.num_token_ids
             ):
                 continue
+            # Native State checkpoints may be finer than the UCM key stride.
+            if boundary_token % chunk_size:
+                continue
+            blocks_by_boundary[boundary_token][group_id] = block_id
+
+        plans = []
+        for boundary_token, blocks_by_group in sorted(blocks_by_boundary.items()):
+            # One State object contains every participating State group.
+            if any(group_id not in blocks_by_group for group_id in group_ids):
+                continue
+            chunk_index = boundary_token // chunk_size - 1
             plans.append(
                 UCMGroupDispatchPlan(
-                    RestorePolicy.STATE,
-                    (state.common_ucm_chunk_ids[boundary_token // chunk_size - 1],),
-                    np.array([boundary_token - chunk_size], dtype=np.uint64),
-                    tuple(
-                        np.asarray(
-                            [vllm_block_id_by_group[group.group_id]], dtype=np.uint64
-                        )
-                        for group in state_groups
+                    restore_policy=RestorePolicy.STATE,
+                    common_ucm_chunk_ids=(
+                        request_state.common_ucm_chunk_ids[chunk_index],
                     ),
-                    tuple(group.group_id for group in state_groups),
+                    token_starts=np.asarray(
+                        [chunk_index * chunk_size], dtype=np.uint64
+                    ),
+                    vllm_block_ids_by_group=tuple(
+                        np.asarray([blocks_by_group[group_id]], dtype=np.uint64)
+                        for group_id in group_ids
+                    ),
+                    group_ids=group_ids,
                 )
             )
         return tuple(plans)
@@ -406,60 +410,60 @@ class UCMConnectorScheduler:
     def _build_request_plan(
         self,
         request_id: str,
-        state: RequestState,
+        request_state: RequestState,
         block_tables: Sequence[Sequence[int]],
         scheduled_tokens: int,
         state_offloads: Sequence[tuple[int, int, int]] = (),
     ) -> RequestDispatchMeta:
         """Calculate plans without advancing the request state."""
         step_end_token = min(
-            state.token_processed + scheduled_tokens, state.num_token_ids
+            request_state.token_processed + scheduled_tokens,
+            request_state.num_token_ids,
         )
-        should_load = state.load_pending and scheduled_tokens > 0
-        load_end_token = state.hbm_hit_tokens + state.external_hit_tokens
-        load_start_token = state.hbm_hit_tokens if should_load else load_end_token
-        dump_start_token = state.token_processed
+        should_load = request_state.need_load and scheduled_tokens > 0
+        load_end_token = (
+            request_state.hbm_hit_tokens + request_state.external_hit_tokens
+        )
+        load_start_token = (
+            request_state.hbm_hit_tokens if should_load else load_end_token
+        )
+        dump_start_token = request_state.token_processed
         dump_end_token = step_end_token
-        # Load the running block when the runner's precopy already ran, plus
-        # (below) the imported boundary block, which the engine registers as a
-        # reusable local checkpoint. Otherwise load only the boundary block the
-        # runner copies from after loads. Imported boundaries are not dumped.
-        state_target_tokens = (
-            load_end_token + scheduled_tokens
-            if self.load_running_state_directly
-            else load_end_token
-        )
-        load_plans = self._plans(
-            state,
+        load_plans = self.build_dispatch_plans(
+            request_state,
             block_tables,
             load_start_token,
             load_end_token,
-            state_target_tokens=state_target_tokens,
+            is_load=True,
+            scheduled_tokens=scheduled_tokens,
         )
-        dump_plans = self._plans(state, block_tables, dump_start_token, dump_end_token)
+        dump_plans = self.build_dispatch_plans(
+            request_state, block_tables, dump_start_token, dump_end_token, is_load=False
+        )
         return RequestDispatchMeta(
             request_id,
             load_plans,
-            dump_plans + self._state_dump_plans(state, state_offloads),
+            dump_plans + self._state_dump_plans(request_state, state_offloads),
         )
 
-    def _plans(
+    def build_dispatch_plans(
         self,
-        state: RequestState,
+        request_state: RequestState,
         block_tables: Sequence[Sequence[int]],
         token_start: int,
         token_end: int,
         *,
-        state_target_tokens: int | None = None,
+        is_load: bool,
+        scheduled_tokens: int = 0,
     ) -> tuple[UCMGroupDispatchPlan, ...]:
-        """FA/WA plans and runner-specific State load destinations.
+        """FA/WA plans and both State load destinations.
 
         FA gets every complete UCM chunk the range touches; WA gets the newest
         complete boundary. State loads use that restore boundary's UCM chunk
-        and its load destinations: the running block and imported checkpoint
-        when load_running_state_directly, else only the checkpoint the runner
-        copies from. State dumps are built separately
-        from the engine's exact boundary_state_offloads.
+        and restore it into both the running block and imported checkpoint.
+        is_load selects the operation; scheduled_tokens selects the running
+        destination on loads. State dumps are built from the engine's exact
+        boundary_state_offloads.
         """
         plans: list[UCMGroupDispatchPlan] = []
         if token_end <= token_start:
@@ -474,7 +478,7 @@ class UCMConnectorScheduler:
         if end_chunk_index <= first_chunk_index:
             return ()
         for restore_policy, groups in self.groups_by_policy.items():
-            if restore_policy is RestorePolicy.STATE and state_target_tokens is None:
+            if restore_policy is RestorePolicy.STATE and not is_load:
                 continue
             if restore_policy in (RestorePolicy.WA, RestorePolicy.STATE):
                 # WA keeps the newest completed boundary; a State load
@@ -487,43 +491,30 @@ class UCMConnectorScheduler:
                 # just the newest boundary.
                 start_chunk = first_chunk_index
                 end_chunk = end_chunk_index
-            if restore_policy is RestorePolicy.WA:
-                # A tail window is only worth storing once it is
-                # complete: an early boundary shorter than its groups'
-                # largest tail would clamp the window head to token 0 --
-                # the request's own prefix, which a restore recomputes
-                # anyway.  Skipping keeps every dumped UCM chunk's record
-                # complete, so reverse lookup never selects a partial
-                # one (the load branch above cannot select one either).
-                if end_chunk * chunk_size < max(
-                    group.tail_tokens or 0 for group in groups
-                ):
-                    continue
             plans.append(
-                self._plan(
+                self.make_dispatch_plan(
                     restore_policy,
                     groups,
-                    state,
+                    request_state,
                     block_tables,
                     start_chunk,
                     end_chunk,
-                    state_target_tokens,
+                    # State loads fill the running slot for this step first.
+                    # The snapshot itself still belongs to token_end.
+                    state_target_tokens=token_end + scheduled_tokens,
                 )
             )
-            if (
-                restore_policy is RestorePolicy.STATE
-                and self.load_running_state_directly
-            ):
+            if restore_policy is RestorePolicy.STATE:
                 # Precopy has already run, so restoring only the imported
                 # boundary cannot initialize the running state. Restoring
                 # only the running block leaves a local cached boundary unfilled.
                 # Complete restore boundaries and a positive scheduled span
                 # place these in distinct slots for every State group.
                 plans.append(
-                    self._plan(
+                    self.make_dispatch_plan(
                         restore_policy,
                         groups,
-                        state,
+                        request_state,
                         block_tables,
                         start_chunk,
                         end_chunk,
@@ -532,11 +523,11 @@ class UCMConnectorScheduler:
                 )
         return tuple(plans)
 
-    def _plan(
+    def make_dispatch_plan(
         self,
         restore_policy: RestorePolicy,
         groups: Sequence[UCMKVCacheGroupSpec],
-        state: RequestState,
+        request_state: RequestState,
         block_tables: Sequence[Sequence[int]],
         start_chunk: int,
         end_chunk: int,
@@ -546,7 +537,7 @@ class UCMConnectorScheduler:
         chunk_size = self.spec.chunk_size
         return UCMGroupDispatchPlan(
             restore_policy,
-            tuple(state.common_ucm_chunk_ids[start_chunk:end_chunk]),
+            tuple(request_state.common_ucm_chunk_ids[start_chunk:end_chunk]),
             np.arange(start_chunk, end_chunk, dtype=np.uint64) * np.uint64(chunk_size),
             tuple(
                 self._group_blocks(
@@ -578,16 +569,14 @@ class UCMConnectorScheduler:
         containing the window's last token -- HMA's boundary indices: FA UCM
         chunk k's last token is (k + 1) * chunk_size - 1; a WA UCM chunk
         anchors its window at the restore boundary. State uses a platform
-        load slot. The _plans clamp gate keeps the WA gather non-negative and
-        the parse-time divisibility checks keep an FA UCM chunk inside one
-        shared vLLM block.  Block-major per UCM chunk.
+        load slot. Parse-time chunk/tail and divisibility checks keep the
+        block-table windows valid. Block-major per UCM chunk.
         """
 
         chunk_size = self.spec.chunk_size
         blocks_per_chunk = self.spec.blocks_per_chunk[group.group_id]
         if restore_policy is RestorePolicy.STATE:
-            # The caller picks the running or boundary slot from the
-            # runner's load/copy ordering.
+            # The caller selects one of the two State load destinations.
             table_index = (state_target_tokens - 1) // group.block_token_span
             vllm_block_id = vllm_block_table[table_index]
             assert vllm_block_id != 0
@@ -603,7 +592,7 @@ class UCMConnectorScheduler:
         boundary_table_indices = boundary_tokens // group.block_token_span
         # Convert only the table range the windows touch -- a WA group's
         # table spans the whole request while its window holds a couple
-        # of blocks.  The clamp gate and the FA divisibility checks keep
+        # of blocks. The parse-time chunk/tail and divisibility checks keep
         # first_table_index non-negative.
         first_table_index = int(boundary_table_indices.min()) - (blocks_per_chunk - 1)
         last_table_index = int(boundary_table_indices.max())

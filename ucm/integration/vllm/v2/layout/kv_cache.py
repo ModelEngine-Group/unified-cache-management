@@ -309,14 +309,15 @@ def _select_chunk_size(
     if requested_chunk_size is None:
         # Choose once, after resolving DCP spans. Scratch/zero-tail groups
         # do not constrain an object that never stores them.
-        return (
+        chunk_size = (
             lcm(*(group.block_token_span for group in stored_groups))
             if stored_groups
             else scheduler_block_size
         )
-    chunk_size = requested_chunk_size
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
+    else:
+        chunk_size = requested_chunk_size
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
     for group in stored_groups:
         span = group.block_token_span
         if (
@@ -337,6 +338,11 @@ def _select_chunk_size(
                 )
             raise ValueError(
                 f"Group {group.group_id} block span {span} must divide chunk_size {chunk_size}"
+            )
+        if group.restore_policy is RestorePolicy.WA and chunk_size < group.tail_tokens:
+            raise ValueError(
+                f"WA group {group.group_id}: chunk_size {chunk_size} "
+                f"must cover its tail_tokens {group.tail_tokens}"
             )
     return chunk_size
 

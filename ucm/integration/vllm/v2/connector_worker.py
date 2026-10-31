@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from vllm.forward_context import ForwardContext
     from vllm.v1.attention.backend import AttentionMetadata
     from vllm.v1.kv_cache_interface import KVCacheConfig
-    from vllm.v1.worker.mamba_utils import MambaCopyBuffers
 
     from .connector_scheduler import UCMGroupDispatchPlan
     from .runtime import ParallelTopology, UCMRuntimeContext
@@ -94,14 +93,11 @@ class UCMConnectorWorker:
         kv_cache_config: KVCacheConfig,
         *,
         num_hidden_layers: int,
-        defer_mamba_state_copy: bool = False,
     ) -> None:
         self.context = context
         self.spec = context.spec
         self.parallel_topology = context.parallel_topology
         self.use_layerwise = context.use_layerwise
-        self.defer_mamba_state_copy = defer_mamba_state_copy
-        self._mamba_copy_bufs: MambaCopyBuffers | None = None
         self.fingerprint = context.fingerprint
         self._kv_cache_config = kv_cache_config
         self._num_hidden_layers = num_hidden_layers
@@ -256,9 +252,8 @@ class UCMConnectorWorker:
                         self._wait_layer_load(-1)
             except UCMProxyError:
                 self._mark_load_failed(request_id, request)
-        if self.use_layerwise and not self.defer_mamba_state_copy:
-            # Without Ascend layerwise copy ownership, the runner needs all
-            # State loads complete before its batched copy/forward.
+        if self.use_layerwise:
+            # State restores fill checkpoint and running slots before forward.
             state_layer_ids = {
                 layer.layer_index
                 for group in self.spec.state_groups
@@ -311,29 +306,6 @@ class UCMConnectorWorker:
         if layer_id is not None:
             # An attention hook also waits for indexer caches of the same layer.
             self._wait_layer_load(layer_id)
-        if self._mamba_copy_bufs is not None:
-            from vllm.v1.worker import mamba_utils
-
-            # Use the engine's exact layer name, including HBM-only requests.
-            mamba_utils.do_mamba_copy_block_for_layer(self._mamba_copy_bufs, layer_name)
-
-    def prepare_mamba_state_copy(self, copy_bufs: MambaCopyBuffers) -> bool:
-        if not self.defer_mamba_state_copy:
-            return False
-        from vllm.v1.worker import mamba_utils
-
-        mamba_utils.prepare_mamba_copy_by_layer(copy_bufs)
-        self._mamba_copy_bufs = copy_bufs
-        return True
-
-    def finish_mamba_state_copy(self) -> None:
-        if self._mamba_copy_bufs is not None:
-            from vllm.v1.worker import mamba_utils
-
-            try:
-                mamba_utils.finish_mamba_copy_by_layer(self._mamba_copy_bufs)
-            finally:
-                self._mamba_copy_bufs = None
 
     def _dump_metadata(self) -> UCMConnectorMetadata:
         metadata = self._get_connector_metadata()

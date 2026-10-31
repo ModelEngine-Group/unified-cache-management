@@ -71,6 +71,8 @@ HBM注册阶段仅在单个layer_name的LayerView内归并segments：只在同ba
 
 未指定时，默认值为**所有实际参与存储的 group 的 block_token_span 的最小公倍数**。非持久化、零 tail 不存储的 group 不参与；没有存储对象时沿用引擎 scheduler 粒度。State 自身 block span 参与共同边界对齐，每 chunk 仍仅存一个精确边界快照。
 
+选定的 chunk size 必须覆盖每个参与持久化的 WA group 的 `tail_tokens`（解析后的有效保留窗口）。默认值和显式值都在 parser 初始化时检查；过小直接报错，不自动放大。每个完成的 chunk 因此都足以形成完整 WA tail，scheduler 不再跳过早期不足窗口的边界。
+
 显式 C=chunk_size、S=group.block_token_span：
 
 | 条件 | 逻辑约束 |
@@ -130,11 +132,11 @@ Lookup按策略查询完整、已发布对象；FA连续前缀、WA/State共同�
 
 ## State 加载与引擎拷贝
 
-参数改名为 `load_running_state_directly`，表达是否由外存加载直接填running槽。两条路径最终都要填好boundary与running：CUDA MRV1先执行引擎copy，因此UCM再加载两处；Ascend MRV1在UCM加载boundary后由runner执行boundary→running copy。
+State 恢复统一把同一份外存快照加载到 checkpoint 和 running 两个槽，删除 `load_running_state_directly` 参数及设备/runner 分支。命中边界决定外存 key，`load_end_token + scheduled_tokens` 仅用于选择本轮 running 的 HBM 目标；checkpoint 目标按 `load_end_token` 选择。MRV2 使用这条统一路径，不额外接入 Ascend MRV2 延迟 State copy 钩子。`boundary_state_offloads` 只用于保存，由引擎明确交出 `(group_id, block_id, boundary_tokens)`，不用于决定读取目标。
 
-Ascend MRV1 + layerwise 已接入 prepare_mamba_state_copy / finish_mamba_state_copy。门面声明 requires_mamba_state_copy_after_layer_load，Worker 复用原生 mamba_utils 的 prepare/do_for_layer/finish。提交加载后不再统一等待 State；每层先完成 load，再按引擎原始 layer_name 执行 copy，最后由原生 finish 检查遗漏。copy 包含纯 HBM 命中请求，与本层是否有外存 IO 无关。重复层回调由原生 helper 消耗式处理，未知 IO 终态仍保留任务并报错，不执行 copy。
+`build_dispatch_plans` 用必填 `is_load` 区分加载与保存，加载时的 `scheduled_tokens` 用于定位 running 槽。内部 `state_target_tokens` 仅表示 HBM 目标位置。原生 State 快照边界可以比 UCM chunk 更细；当前按共同 chunk 边界生成 key 和 lookup，因此只保存对齐 `chunk_size` 的快照，不把其他边界向前或向后取整。
 
-使用 AscendMultiConnector 时，由外层接管 copy，UCM 子 Connector 只等待本层 load。bulk、CUDA 及未接管路径保留原有等待顺序。本次仅接入 MRV1；MRV2 不声明接管能力，未新增支持或验证。旧文档“State+MRV2 显式拒绝”不符合当前源码（没有对应 guard），不能据此推断已支持。真实 NPU/Triton、forward 及性能重叠仍待验证。
+State copy 由引擎管理，UCM 已删除 prepare/finish 钩子、copy 能力声明、缓冲区及按层 copy 调用。当前 CUDA 与 Ascend 默认 MRV2 Mamba 路径均在 connector load 前执行 precopy；UCM 随后恢复两个槽。bulk 等待实际 load 完成；layerwise 在 start_load_kv 返回前等待全部 State 层的 load，其他缓存仍由 wait_for_layer_load 等待。未知 IO 终态保留任务并报错，不能提前释放源/目标描述符。既有 MRV1 copy 钩子记录仅作历史资料，不能作为当前接线说明。
 
 ## 保存与 commit
 
@@ -166,10 +168,10 @@ FileTestStore 共享确定性的隐藏 attempt 文件，各 rank O_CREAT/O_RDWR 
 
 lookup IO 错误按 miss；load 失败反馈无效 blocks 并抑制保存；dump/commit 的终态存储错误 best effort。未知 IO 完成状态仍 fatal，保留任务/描述符，阻止 metadata 清理或下一步绑定。Scheduler shutdown 不强删未确认终止的 staging。
 
-这版没有新增崩溃 staging 自动 GC/恢复、fsync 耐久性、跨对象事务或生产 Store。Ascend MRV1 State 按层 load→copy 接线已实现，其他 State 路径和 MRV2 没有扩大支持。设备、真实引擎 forward、模型和生产代理仍待验证。
+这版没有新增崩溃 staging 自动 GC/恢复、fsync 耐久性、跨对象事务或生产 Store。State copy 接管已移除；设备、MRV2真实引擎 forward、模型和生产代理仍待验证。
 
 ## 验证
 
-本轮钩子接入后组件**343 PASS + 47 subtests**，toolkit**102 PASS**。新增9项参数组合覆盖按层延迟IO、纯HBM、重复hook、遗漏copy、未知终态、加载失败、外层接管和不接管路径。此前Scheduler简化为334项。保留此前321项组件覆盖，新增13项参数组合：WA/State错位边界4项、统一fingerprint配置与JSON顺序5项、State两槽CPU恢复4项。此前长度guard的子断言删除，零tail SWA断言保留。
+本轮组件**352 PASS + 50 subtests**，toolkit**102 PASS**。包括State两槽CPU恢复、延迟IO等待和两槽加载失败上报，以及WA chunk覆盖有效窗口的初始化约束。删除已移除copy接管接口对应的9项旧测试组合，保留4项两槽恢复组合并增加2项bulk/layerwise加载失败检查。测试包含真实8进程Gloo，未执行设备/模型forward。
 
 真实8进程Gloo继续覆盖TP2×PP2×DP2及TP2×PP2×PCP2的PP通信、不等/空组/错误传播。未验真实引擎/设备/模型forward或生产Store。投机解码的恢复边界、确认范围及draft身份仍待后续处理，本轮没有扩大支持声明。实施记录见工作区 `reports/connector-v2-design-review-20261023/SCHEDULER-SIMPLIFICATION.md`。

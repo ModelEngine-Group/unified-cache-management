@@ -111,6 +111,28 @@ def test_boundary_group_forbids_smaller_fa_chunk(native):
         )
 
 
+@pytest.mark.parametrize("chunk", [None, 128, 256])
+def test_selected_chunk_must_cover_every_wa_tail(chunk):
+    native = config(
+        group(["model.layers.0.attn"], FullAttentionSpec(128)),
+        group(["model.layers.1.swa_cache"], AscendSlidingWindowMLASpec(128, 1, 256)),
+        group(["model.layers.2.swa_cache"], AscendSlidingWindowMLASpec(128, 1, 512)),
+    )
+    with pytest.raises(ValueError, match="chunk_size .* must cover its tail_tokens"):
+        parse_spec(native, scheduler_block_size=128, chunk_size=chunk)
+
+
+@pytest.mark.parametrize("chunk", [512, 1024])
+def test_chunk_covering_wa_tail_keeps_the_tail_window_size(chunk):
+    native = config(
+        group(["model.layers.0.attn"], FullAttentionSpec(128)),
+        group(["model.layers.1.swa_cache"], AscendSlidingWindowMLASpec(128, 1, 512)),
+    )
+    spec = parse_spec(native, scheduler_block_size=128, chunk_size=chunk)
+    assert spec.chunk_size == chunk
+    assert spec.blocks_per_chunk == (chunk // 128, 4)
+
+
 def test_slice_aligns_all_compressed_members_in_the_same_group():
     native = config(
         group(

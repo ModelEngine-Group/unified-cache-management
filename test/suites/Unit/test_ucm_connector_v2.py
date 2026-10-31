@@ -682,7 +682,6 @@ def make_connector_scheduler(
     recompute_tokens=1,
     parallel=None,
     load_threshold_tokens=0,
-    load_running_state_directly=True,
 ):
     """Real scheduler with explicit synthetic seed; handshake tested separately."""
     from ucm.integration.vllm.v2.runtime import ParallelTopology, UCMRuntimeContext
@@ -704,9 +703,7 @@ def make_connector_scheduler(
     with mock.patch(
         "ucm.integration.vllm.v2.connector_scheduler.create_proxy", return_value=adapter
     ):
-        scheduler = UCMConnectorScheduler(
-            context, load_running_state_directly=load_running_state_directly
-        )
+        scheduler = UCMConnectorScheduler(context)
     scheduler._recompute_tokens = recompute_tokens
     scheduler._chunk_hasher = hasher.make_request_block_hasher(
         parsed.chunk_size, b"seed"
@@ -742,7 +739,7 @@ def seed_request_state(
         num_token_ids=len(request.all_token_ids),
         token_processed=hbm_hit_tokens + external_hit_tokens,
         common_ucm_chunk_ids=tuple(common_ucm_chunk_ids),
-        load_pending=external_hit_tokens > 0,
+        need_load=external_hit_tokens > 0,
     )
     scheduler.requests[str(request.request_id)] = state
     return state
@@ -1352,9 +1349,9 @@ class KVCacheSpecTest(unittest.TestCase):
 
 
 class StateLoadTargetTest(unittest.TestCase):
-    """State load slots follow the runner's precopy/load order, not the device."""
+    """Every device restores both the running and checkpoint State slots."""
 
-    def _state_load_blocks(self, load_running_state_directly):
+    def _state_load_blocks(self, device_type):
         from ucm.integration.vllm.v2.layout import (
             UCMKVCacheGroupSpec,
             UCMKVCacheSpec,
@@ -1370,11 +1367,9 @@ class StateLoadTargetTest(unittest.TestCase):
                 UCMKVCacheGroupSpec(1, 128, frozenset({KVCacheSpecKind.MAMBA})),
             ),
             chunk_size=128,
-            device_type="npu",
+            device_type=device_type,
         )
-        scheduler = make_connector_scheduler(
-            spec, load_running_state_directly=load_running_state_directly
-        )
+        scheduler = make_connector_scheduler(spec)
         request = FakeRequest("r", 1024)
         fa_keys = tuple(bytes([index]) * 15 for index in range(8))
         state = seed_request_state(
@@ -1385,7 +1380,7 @@ class StateLoadTargetTest(unittest.TestCase):
         )
         # Restore boundary 256 lives in block 11; this step's running block
         # for tokens [256, 384) is block 12.
-        block_tables = ([1, 2, 3, 4], [0, 11, 12, 0])
+        block_tables = ([1, 2, 3, 4], [0, 11, 12])
 
         meta = scheduler._build_request_plan("r", state, block_tables, 128)
         state_plans = [
@@ -1395,13 +1390,11 @@ class StateLoadTargetTest(unittest.TestCase):
             self.assertEqual(plan.common_ucm_chunk_ids, (fa_keys[1],))
         return [plan.vllm_block_ids_by_group[0].tolist() for plan in state_plans]
 
-    def test_copy_after_load_restores_only_the_boundary_block(self):
-        # Ascend V1 runner: its A->B copy runs after the connector load.
-        self.assertEqual(self._state_load_blocks(False), [[11]])
+    def test_cuda_restores_running_and_checkpoint_blocks(self):
+        self.assertEqual(self._state_load_blocks("cuda"), [[12], [11]])
 
-    def test_precopy_before_load_restores_running_and_boundary_blocks(self):
-        # CUDA V1 copies A->B before the load; State + runner V2 is not supported.
-        self.assertEqual(self._state_load_blocks(True), [[12], [11]])
+    def test_ascend_restores_running_and_checkpoint_blocks(self):
+        self.assertEqual(self._state_load_blocks("npu"), [[12], [11]])
 
 
 class RequestAwareKeyTest(unittest.TestCase):
@@ -2838,8 +2831,6 @@ class ProxyAdapterTest(unittest.TestCase):
 
     def test_bulk_save_waits_without_publishing_and_handles_terminal_failure(self):
         connector = UCMConnectorWorker.__new__(UCMConnectorWorker)
-        connector.defer_mamba_state_copy = False
-        connector._mamba_copy_bufs = None
         connector.select_dump_rows = lambda group_id, indices: np.arange(len(indices))
         connector.use_layerwise = False
         connector._step_save_finalized = False
@@ -3211,7 +3202,7 @@ class ConnectorSchedulerLifecycleTest(unittest.TestCase):
         state = self.add_state()
         state.external_hit_tokens = 128
         state.token_processed = 128
-        state.load_pending = True
+        state.need_load = True
         block_tables = ([3, 4, 5, 6],)
 
         first = _scheduler_metadata(
@@ -3338,11 +3329,7 @@ class ConnectorSchedulerLifecycleTest(unittest.TestCase):
             ([7], [127]),
         )
 
-    def test_wa_dump_skips_incomplete_tail_windows(self):
-        # A tail window longer than the cache block clamps at the request
-        # head on early boundaries; those partial windows are the
-        # request's own prefix (restored with it), so nothing is dumped
-        # until the boundary outgrows the tail.
+    def test_first_wa_chunk_already_contains_a_full_tail(self):
         parsed = parse_spec(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
@@ -3352,24 +3339,24 @@ class ConnectorSchedulerLifecycleTest(unittest.TestCase):
                 ),
             ),
             scheduler_block_size=128,
+            chunk_size=512,
         )
         scheduler = make_connector_scheduler(parsed)
         request = FakeRequest("r", 1024)
-        fa_keys = tuple(bytes([index]) * 15 for index in range(8))
+        fa_keys = tuple(bytes([index]) * 15 for index in range(2))
         seed_request_state(scheduler, request, common_ucm_chunk_ids=fa_keys)
         block_tables = (
             list(range(8)),
             list(range(8)),
         )
 
-        # [0, 384): every completed boundary (128..384) is shorter than
-        # the 512-token tail -- no WA record.
+        # Before the first complete chunk neither FA nor WA has a record.
         early = _scheduler_metadata(
             scheduler,
             {"r": 384},
             block_tables={"r": block_tables},
         )
-        self.assertTrue(
+        self.assertFalse(
             any(
                 plan.restore_policy is RestorePolicy.FA
                 for plan in early.requests["r"].dump_plans
@@ -3382,8 +3369,7 @@ class ConnectorSchedulerLifecycleTest(unittest.TestCase):
             )
         )
 
-        # [384, 640): the newest boundary 640 outgrows the tail -- the
-        # full window [128, 640) is one WA record at that boundary.
+        # Completing the first chunk produces the full WA window [0, 512).
         later = _scheduler_metadata(
             scheduler,
             {"r": 256},
@@ -3394,8 +3380,8 @@ class ConnectorSchedulerLifecycleTest(unittest.TestCase):
             for plan in later.requests["r"].dump_plans
             if plan.restore_policy is RestorePolicy.WA
         )
-        self.assertEqual(wa_plan.common_ucm_chunk_ids, (fa_keys[4],))
-        self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [1, 2, 3, 4])
+        self.assertEqual(wa_plan.common_ucm_chunk_ids, (fa_keys[0],))
+        self.assertEqual(wa_plan.vllm_block_ids_by_group[0].tolist(), [0, 1, 2, 3])
 
     def test_wa_window_not_dividing_block_keeps_partial_head(self):
         # ceil, not HMA's floor: a 96-token window over 64-token blocks
@@ -3762,6 +3748,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=128,
+            chunk_size=256,
         )
         layout = make_cache_layout(
             parsed,
@@ -3819,6 +3806,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=128,
+            chunk_size=256,
         )
         layout = make_cache_layout(
             parsed,
@@ -4145,7 +4133,7 @@ class RaggedLayoutTest(unittest.TestCase):
         state = scheduler.requests["r"]
         block_tables = ([2, 5],)
         state.external_hit_tokens = 256
-        state.load_pending = True
+        state.need_load = True
         metadata = _scheduler_metadata(
             scheduler,
             {"r": 1},
@@ -4960,7 +4948,7 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(batch.sizes[-1], 4096)
         self.assertEqual(batch.ptrs[-1], 0x5000 + 2 * 131072 + 4 * 1024)
 
-    def test_hybrid_state_uses_one_complete_checkpoint_block(self):
+    def test_hybrid_state_loads_complete_checkpoint_into_both_slots(self):
         raw_config = config(
             group(["model.layers.0.attn"], FullAttentionSpec(128)),
             group(["model.layers.1.mixer"], MambaSpec(128)),
@@ -4979,12 +4967,11 @@ class RaggedLayoutTest(unittest.TestCase):
         layout = make_cache_layout(
             parsed, caches, kv_cache_config=raw_config, num_hidden_layers=4
         )
-        # Ascend V1 copies State after the load: only the boundary block loads.
-        scheduler = make_connector_scheduler(parsed, load_running_state_directly=False)
-        request = FakeRequest("r", 512)
-        common_ids = tuple(bytes([index]) * 15 for index in range(4))
+        scheduler = make_connector_scheduler(parsed)
+        request = FakeRequest("r", 640)
+        common_ids = tuple(bytes([index]) * 15 for index in range(5))
         seed_request_state(scheduler, request, 512, common_ids)
-        block_tables = ([1, 2, 3, 4], [0, 1, 2, 6])
+        block_tables = ([1, 2, 3, 4, 5], [0, 1, 2, 6, 7])
 
         metadata = _scheduler_metadata(
             scheduler,
@@ -4998,7 +4985,13 @@ class RaggedLayoutTest(unittest.TestCase):
             for key, ptr, size in zip(batch.block_ids, batch.ptrs, batch.sizes)
             if key in ucm_ids(common_ids, RestorePolicy.STATE)
         ]
-        self.assertEqual(state_segments, [(state_page.data_ptr() + 6 * 256, 256)])
+        self.assertEqual(
+            state_segments,
+            [
+                (state_page.data_ptr() + 7 * 256, 256),
+                (state_page.data_ptr() + 6 * 256, 256),
+            ],
+        )
 
     def test_synchronous_proxy_dump_load_to_different_blocks_is_byte_exact(self):
         raw_config = config(group(["model.layers.0.attn"], FullAttentionSpec(4)))
@@ -5704,6 +5697,7 @@ class LayerViewSegmentsTest(unittest.TestCase):
         parsed = parse_spec(
             raw_config,
             scheduler_block_size=8,
+            chunk_size=16,
             device_type="cpu",
         )
         with self.assertRaisesRegex(ValueError, "group 1 requires whole-block access"):
