@@ -15,13 +15,6 @@ AUDITWHEEL_ELF_TREE_MARKER = "DEBUG:auditwheel.wheel_abi:full_elftree:\n"
 SONAME_PATTERN = r"lib[a-zA-Z0-9_.+-]+\.so(?:\.[0-9]+)*"
 
 
-def deferred_policy_for_distribution(distribution: str) -> set[str]:
-    """Return runtime libraries intentionally supplied by CANN 9.0 hosts."""
-    if "cann900-" in distribution.lower():
-        return {"libascend_hal.so"}
-    return set()
-
-
 def validate_external_soname(soname: str) -> None:
     if re.fullmatch(SONAME_PATTERN, soname) is None or soname == "libmetrics.so":
         raise ValueError(f"invalid external runtime SONAME: {soname!r}")
@@ -123,15 +116,23 @@ def validate_external_library_closure(
     report_text: str,
     *,
     expected_patterns: Sequence[str],
-    deferred_sonames: set[str] | None = None,
+    host_driver_sonames: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Require every auditwheel external to descend from a matched provider root."""
+    """Require every auditwheel external to descend from a matched provider root.
+
+    Host driver libraries come from the NPU driver on the target host. They are
+    missing from Builder and Runtime images, or only exist there as stubs, so they
+    are always deferred and never treated as provider roots.
+    """
     patterns = sorted(set(expected_patterns))
     for pattern in patterns:
         validate_exclude_pattern(pattern)
+    for soname in host_driver_sonames:
+        validate_external_soname(soname)
     external = parse_external_libraries(report_text)
     if "libmetrics.so" in external:
         raise ValueError("UCM-owned libmetrics.so remains external after repair")
+    host_drivers = set(host_driver_sonames) & set(external)
 
     direct, dependencies = _elf_dependency_graph(report_text)
     boundary_external = (set(external) & direct) | {
@@ -141,6 +142,7 @@ def validate_external_library_closure(
         for dependency in required
         if dependency in external
     }
+    boundary_external -= host_drivers
 
     def matches_boundary(soname: str) -> bool:
         path = external[soname]
@@ -161,29 +163,23 @@ def validate_external_library_closure(
             "auditwheel found direct external libraries outside the provider boundary: "
             f"{unmatched_direct}"
         )
-    unrooted = sorted(set(external) - _reachable_libraries(roots, dependencies))
+    reachable = _reachable_libraries([*roots, *sorted(host_drivers)], dependencies)
+    unrooted = sorted(set(external) - reachable)
     if unrooted:
         raise ValueError(
             "auditwheel found external libraries outside the provider closure: "
             f"{unrooted}"
         )
-    unresolved_non_roots = sorted(
+    deferred = {
         soname
         for soname, path in external.items()
         if path is None and soname not in roots
-    )
-    for soname in sorted(deferred_sonames or set()):
-        if (
-            soname in external
-            and soname not in roots
-            and soname not in unresolved_non_roots
-        ):
-            unresolved_non_roots.append(soname)
-    unresolved_non_roots.sort()
-    for soname in unresolved_non_roots:
+    }
+    deferred |= host_drivers
+    for soname in deferred:
         validate_external_soname(soname)
     return {
         "external_library_roots": roots,
         "external_libraries": sorted(external),
-        "deferred_external_libraries": unresolved_non_roots,
+        "deferred_external_libraries": sorted(deferred),
     }

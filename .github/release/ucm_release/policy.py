@@ -367,7 +367,14 @@ def _validate_platform_semantics(
                 raise ValueError(
                     f"platform backend {backend!r} cannot use accelerator_major"
                 )
-        elif patterns is not None:
+            for soname in config.get("host_driver_libraries", []):
+                try:
+                    wheel_audit.validate_external_soname(soname)
+                except ValueError as error:
+                    raise ValueError(
+                        f"platform backend {backend!r} has invalid host driver library"
+                    ) from error
+        elif patterns is not None or "host_driver_libraries" in config:
             raise ValueError(
                 f"blocked platform backend {backend!r} cannot declare runtime library policy"
             )
