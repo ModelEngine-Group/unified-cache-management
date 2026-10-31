@@ -16,11 +16,15 @@ drops GPQA accuracy to 73.2 and decays MTP acceptance from ~55% to 0%, while
 restoring the backoff keeps it at 86-88 (with or without the drop).
 
 The override only applies to processes that have a kv connector, so the
-standalone (HBM-only) path keeps vllm-ascend's current behavior. This module is
-imported from ``apply_patch()``, i.e. it is enabled by ``ENABLE_UCM_PATCH``
-together with every other UCM patch and adds no environment variable of its own.
+standalone (HBM-only) path keeps vllm-ascend's current behavior. It assumes any
+process holding a ``kv_transfer_config`` while ``ENABLE_UCM_PATCH`` is on runs a
+UCM connector: the exemption is intentional for a native PD prefill producer
+that never loads, which such a process is not. This module is imported from
+``apply_patch()``, i.e. it is enabled by ``ENABLE_UCM_PATCH`` together with every
+other UCM patch and adds no environment variable of its own.
 """
 
+import functools
 import sys
 
 from ucm.integration.vllm.patch.utils import when_imported
@@ -71,11 +75,13 @@ def _install_coordinator_probe(mod) -> None:
         return
     original_init = cls.__init__
 
+    @functools.wraps(original_init)
     def __init__(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         logger.info(
             "UCM native eagle: coordinator.skips_eagle_block_drop="
-            f"{getattr(self, 'skips_eagle_block_drop', None)} (expected False)"
+            f"{getattr(self, 'skips_eagle_block_drop', None)} "
+            "(connector runs expect False; standalone keeps the vllm-ascend default)"
         )
 
     cls.__init__ = __init__

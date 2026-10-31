@@ -333,9 +333,18 @@ def apply_all_patches() -> None:
         # vllm-ascend suppresses the EAGLE last-block drop and the Mamba
         # one-block backoff for a pure kv_producer. UCM always consumes
         # external KV, so restore native vLLM behavior (see the module
-        # docstring for the measured impact). @when_imported is self-guarding
-        # (only fires when the vllm-ascend patch modules exist).
-        import ucm.integration.vllm.patch.v0300.restore_native_eagle_patch
+        # docstring for the measured impact). Scoped to vllm-ascend >= 0.30:
+        # `_skips_eagle_block_drop` only exists from that revision, and older
+        # versions eagerly import both target modules, which would turn every
+        # startup into a pair of "nothing to override" warnings.
+        if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (
+            0,
+            30,
+        ):
+            logger.info(
+                "UCM patching vllm-ascend native EAGLE verdict for hybrid cache..."
+            )
+            import ucm.integration.vllm.patch.v0300.restore_native_eagle_patch
 
         logger.info("UCM patch initialization completed!")
 
