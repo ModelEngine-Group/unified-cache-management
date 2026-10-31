@@ -187,3 +187,31 @@ TEST_F(UCPosixTransQueueTest, TransBlockLayerWise)
     waiter2->Wait();
     for (size_t i = 0; i < nShards; i++) { ASSERT_EQ(data1[i].Compare(data2[i]), 0); }
 }
+
+TEST_F(UCPosixTransQueueTest, DumpWithoutDataDirFailsAsBackendError)
+{
+    using namespace UC::PosixStore;
+    Config config;
+    config.tensorSize = 4096;
+    config.shardSize = config.tensorSize;
+    config.blockSize = config.shardSize;
+    config.ioDirect = false;
+    config.storageBackends.push_back(Path());
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    UC::PosixStore::SpaceLayout layout;
+    ASSERT_TRUE(layout.Setup(config).Success());
+    // Skip InitBackend, so the data directory is missing as if the mount had disappeared.
+    const std::vector<std::string> backends{Path()};
+    TransQueue queue;
+    ASSERT_EQ(queue.Setup(config, &failureSet, &layout, &backends), UC::Status::OK());
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.GenerateRandom();
+    UC::Detail::TaskDesc desc;
+    desc.push_back(UC::Detail::Shard{
+        UC::Test::Detail::TypesHelper::MakeBlockIdRandomly(), 0, {data.Buffer()}});
+    auto task = std::make_shared<TransTask>(TransTask::Type::DUMP, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    queue.Push(task, waiter);
+    waiter->Wait();
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
+}
