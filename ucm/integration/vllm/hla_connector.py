@@ -132,6 +132,51 @@ def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
     )
 
 
+def kv_cache_layout_name(kv_cache_config) -> str:
+    """Return the resolved layout name, without an enum class prefix."""
+    raw = getattr(kv_cache_config, "kv_cache_layout", None)
+    return str(raw or "").split(".")[-1]
+
+
+def is_cuda_blnhc_layout(kv_cache_config) -> bool:
+    """CUDA qwen3-flash-next block-first layout. NPU keeps its current path."""
+    return (
+        current_platform.is_cuda_alike()
+        and kv_cache_layout_name(kv_cache_config) == "BLNHC"
+    )
+
+
+def blnhc_layer_role(layer_name: str) -> str:
+    """Classify one flash-next layer as raw_key, compressed, ple, or plain."""
+    parts = [part for part in layer_name.lower().replace("-", "_").split(".") if part]
+    tokens: list[str] = []
+    for part in parts:
+        tokens.append(part)
+        tokens.extend(piece for piece in part.split("_") if piece)
+    if "raw_key" in parts or "raw_key" in tokens:
+        return "raw_key"
+    if any("compress" in token for token in tokens):
+        return "compressed"
+    if "ple" in tokens:
+        return "ple"
+    return ""
+
+
+# Groups and tensors with these roles are recomputed. They do not take a hash
+# or a store column.
+_BLNHC_UNHASHED_ROLES = ("compressed", "raw_key")
+
+
+def blnhc_group_role(layer_names) -> str:
+    """Return a role only when every layer in the group has that same role."""
+    roles = [blnhc_layer_role(name) for name in layer_names]
+    if not roles or any(role == "" for role in roles):
+        return ""
+    if len(set(roles)) == 1:
+        return roles[0]
+    return ""
+
+
 def extend_non_null(
     dst_ucm_block_ids: list[bytes],
     dst_vllm_block_ids: list[int],
@@ -167,12 +212,26 @@ class GroupInfo:
     # Independent hash chain seed per group (see ``KVCacheGroupManager``).
     seed: bytes
     is_mamba_align: bool = False
+    is_ple: bool = False
+    is_compressed: bool = False
+    is_raw_key: bool = False
     block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
     participates_in_prefix_caching: bool = True
 
     @property
+    def is_state_hash(self) -> bool:
+        """Mamba-align and flash-next PLE share the state-hash lookup."""
+        return self.is_mamba_align or self.is_ple
+
+    @property
     def is_full_attention(self) -> bool:
-        return self.participates_in_prefix_caching and not self.is_mamba_align
+        return (
+            self.participates_in_prefix_caching
+            and not self.is_mamba_align
+            and not self.is_ple
+            and not self.is_compressed
+            and not self.is_raw_key
+        )
 
 
 class KVCacheGroupManager:
@@ -194,23 +253,33 @@ class KVCacheGroupManager:
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
             is_mamba_align = is_mamba_align_kv_cache_spec(spec)
+            role = (
+                blnhc_group_role(group.layer_names)
+                if is_cuda_blnhc_layout(kv_cache_config)
+                else ""
+            )
             seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
                 block_size=block_size,
                 layer_names=tuple(group.layer_names),
                 seed=seed,
-                is_mamba_align=is_mamba_align,
-                participates_in_prefix_caching=participates_in_prefix_caching(spec),
+                is_mamba_align=is_mamba_align
+                and role not in ("ple", *_BLNHC_UNHASHED_ROLES),
+                is_ple=role == "ple",
+                is_compressed=role == "compressed",
+                is_raw_key=role == "raw_key",
+                participates_in_prefix_caching=participates_in_prefix_caching(spec)
+                and role not in _BLNHC_UNHASHED_ROLES,
             )
-            if not is_mamba_align:
+            if not info.is_state_hash and info.participates_in_prefix_caching:
                 info.block_hasher = request_hasher.make_request_block_hasher(
                     block_size, seed
                 )
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
-            elif info.is_mamba_align:
+            elif info.is_state_hash:
                 self.state_groups.append(info)
             else:
                 self.non_prefix_groups.append(info)
@@ -232,9 +301,9 @@ class KVCacheGroupManager:
                 f"divide LCM={self.lcm_block_size}"
             )
         for sg in self.state_groups:
-            assert sg.is_mamba_align, (
-                f"state group {sg.group_id} is not mamba-align; "
-                f"UCMHybridLinearAttentionConnector only supports mamba-align "
+            assert sg.is_state_hash, (
+                f"state group {sg.group_id} is not mamba-align or PLE; "
+                f"UCMHybridLinearAttentionConnector only supports those "
                 f"state groups."
             )
 
@@ -257,8 +326,8 @@ class KVCacheGroupManager:
         """Hash a request at one group's block boundaries and chain seed."""
         if not group.participates_in_prefix_caching:
             return []
-        if group.is_mamba_align:
-            # mamba-align pads block table with null blocks; no per-block hash.
+        if group.is_state_hash:
+            # mamba-align and PLE pad the block table with null blocks; no per-block hash.
             return [b""] * (len(request.all_token_ids) // group.block_size)
 
         assert group.block_hasher is not None
@@ -310,8 +379,8 @@ class KVCacheGroupManager:
 
         Stage 1: min of full-attn groups' ``lookup_on_prefix`` hits, rounded
         down to ``lcm_block_size``. Stage 2: ``lookup_on_reverse`` over the
-        mamba state hashes at candidate LCM boundaries; any state group with
-        no hit downgrades the external hit to zero. Returns
+        mamba and PLE state hashes at candidate LCM boundaries; any state
+        group with no hit downgrades the external hit to zero. Returns
         (external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes
         for GC heat update).
         """
@@ -444,10 +513,211 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
 
     def _build_layout(self, kvcaches) -> None:
+        if is_cuda_blnhc_layout(self.kv_cache_config):
+            self._build_cuda_blnhc_layout(kvcaches)
+            return
         specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
         self._map_layers_to_slots()
         self._build_layer_anchors(kvcaches, specs)
         self._finalize_layer_arrays()
+
+    def _tensor_block0(self, tensor: torch.Tensor, offset: int) -> int:
+        """Block start. Storage-base views still need the descriptor offset."""
+        ptr = int(tensor.data_ptr())
+        storage_ptr = int(tensor.untyped_storage().data_ptr())
+        if ptr == storage_ptr:
+            return ptr + int(offset)
+        return ptr
+
+    def _iter_kv_tensors(self, kv_layer):
+        if isinstance(kv_layer, torch.Tensor):
+            if kv_layer.numel() > 0:
+                yield kv_layer
+            return
+        if isinstance(kv_layer, (tuple, list)):
+            for item in kv_layer:
+                yield from self._iter_kv_tensors(item)
+
+    def _descriptor_block0(self, names: list[str], offset: int, kvcaches) -> int:
+        origins: list[int] = []
+        for name in names:
+            kv_layer = kvcaches.get(name)
+            if kv_layer is None:
+                continue
+            for tensor in self._iter_kv_tensors(kv_layer):
+                origins.append(self._tensor_block0(tensor, offset))
+        if not origins:
+            raise ValueError(
+                "BLNHC KV tensor has no live layer view: "
+                f"layers={_short_list(names)}"
+            )
+        return min(origins)
+
+    def _build_cuda_blnhc_layout(self, kvcaches) -> None:
+        """One column per physical block_stride segment on CUDA BLNHC.
+
+        Linear tensors each own a column. full and compressed share a column
+        when their block starts fall inside one block_stride; the full-attn
+        group owns that column. PLE owns its own column. raw_key is omitted.
+        """
+        self.layer_name_to_slot = {}
+        self.layer_name_to_group = {}
+        self.layer_anchors = {}
+        for gid, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            for name in group.layer_names:
+                self.layer_name_to_group[name] = gid
+
+        records = []
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            if not names:
+                continue
+            role = blnhc_group_role(names)
+            if role == "raw_key":
+                continue
+            block_stride = int(getattr(raw, "block_stride", 0) or 0)
+            if block_stride <= 0:
+                raise ValueError(
+                    "BLNHC KV tensor is missing block_stride: "
+                    f"layers={_short_list(names)}"
+                )
+            offset = int(getattr(raw, "offset", 0) or 0)
+            gid = self.layer_name_to_group.get(names[0])
+            if gid is None:
+                raise ValueError(
+                    "BLNHC KV tensor layers are not in a cache group: "
+                    f"layers={_short_list(names)}"
+                )
+            if any(self.layer_name_to_group.get(name) != gid for name in names):
+                raise ValueError(
+                    "BLNHC KV tensor spans multiple cache groups: "
+                    f"layers={_short_list(names)}"
+                )
+            records.append(
+                {
+                    "names": names,
+                    "role": role,
+                    "gid": gid,
+                    "block_stride": block_stride,
+                    "block0": self._descriptor_block0(names, offset, kvcaches),
+                }
+            )
+        if not records:
+            raise ValueError("CUDA BLNHC layout found no copyable KV tensors.")
+
+        full_rows = [row for row in records if row["role"] == ""]
+        full_rows = [
+            row
+            for row in full_rows
+            if not is_mamba_align_kv_cache_spec(
+                self.kv_cache_config.kv_cache_groups[row["gid"]].kv_cache_spec
+            )
+            and blnhc_group_role(
+                self.kv_cache_config.kv_cache_groups[row["gid"]].layer_names
+            )
+            != "ple"
+        ]
+        compressed_rows = [row for row in records if row["role"] == "compressed"]
+        owned_rows = [row for row in records if row["role"] != "compressed"]
+
+        columns: list[dict] = []
+        for row in owned_rows:
+            columns.append(
+                {
+                    "block0": row["block0"],
+                    "block_stride": row["block_stride"],
+                    "gid": row["gid"],
+                    "names": list(row["names"]),
+                }
+            )
+        for row in compressed_rows:
+            match = None
+            for column in columns:
+                if column["gid"] not in {item["gid"] for item in full_rows}:
+                    continue
+                if abs(column["block0"] - row["block0"]) < row["block_stride"]:
+                    match = column
+                    break
+            if match is None:
+                owner = full_rows[0]["gid"] if full_rows else row["gid"]
+                columns.append(
+                    {
+                        "block0": row["block0"],
+                        "block_stride": row["block_stride"],
+                        "gid": owner,
+                        "names": list(row["names"]),
+                    }
+                )
+                continue
+            match["block0"] = min(match["block0"], row["block0"])
+            match["names"].extend(row["names"])
+
+        self.page_types = [int(column["block_stride"]) for column in columns]
+        self.num_slots = 1
+        self.width = len(self.page_types)
+        self.pair_bases = {
+            (type_id, 0): int(column["block0"])
+            for type_id, column in enumerate(columns)
+        }
+        self.group_owns_type = {
+            (int(column["gid"]), type_id): True
+            for type_id, column in enumerate(columns)
+        }
+        self.group_pairs = defaultdict(set)
+        for gid, _type_id in self.group_owns_type:
+            self.group_pairs[gid].add(0)
+        self.direct_group_bytes = {
+            gid: sum(
+                self.page_types[type_id]
+                for pair in pairs
+                for type_id in range(len(self.page_types))
+                if self.group_owns_type.get((gid, type_id))
+                and (type_id, pair) in self.pair_bases
+            )
+            for gid, pairs in self.group_pairs.items()
+        }
+        tensor_size_list = list(self.page_types)
+        self.tensor_size_lists = np.asarray([tensor_size_list], dtype=np.uint64)
+        self.slot_shard_size = int(sum(tensor_size_list))
+        pairs = sorted(self.pair_bases)
+        self.base_ptrs = np.asarray(
+            [self.pair_bases[key] for key in pairs], dtype=np.uint64
+        )
+        self.buffer_sizes = np.asarray(
+            [self.page_types[key[0]] * self.num_blocks for key in pairs],
+            dtype=np.uint64,
+        )
+        self.block_stride_lists = np.asarray(
+            [self.page_types[key[0]] for key in pairs], dtype=np.uint64
+        )
+        self.layer_column_bytes = {}
+        for column in columns:
+            segment = KVCacheSegment(
+                ptr=int(column["block0"]),
+                copy_size=int(column["block_stride"]),
+                block_stride=int(column["block_stride"]),
+                buffer_size=self.num_blocks * int(column["block_stride"]),
+            )
+            for name in column["names"]:
+                if name not in self.layer_name_to_id:
+                    continue
+                self.layer_anchors[name] = [segment]
+                self.layer_name_to_slot[name] = 0
+                self.layer_column_bytes[name] = int(column["block_stride"])
+        if not self.layer_anchors:
+            raise ValueError("CUDA BLNHC layout found no cacheable layers.")
+        logger.info(
+            "CUDA BLNHC block-first layout: columns=%s",
+            [
+                {
+                    "group": column["gid"],
+                    "block0": column["block0"],
+                    "block_stride": column["block_stride"],
+                    "layers": _short_list(column["names"]),
+                }
+                for column in columns
+            ],
+        )
 
     def _map_layers_to_slots(self) -> None:
         """Assign every cached layer its pair index and page type.
@@ -1212,9 +1482,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             load_full_attn_count = len(load_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba state blocks
+            # Pass 2: mamba and PLE state blocks
             for gid, group in enumerate(groups_by_id):
-                if not group.is_mamba_align:
+                if not group.is_state_hash:
                     continue
                 self._append_mamba_align_state_block(
                     load_ucm_block_ids,
@@ -1255,22 +1525,25 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba state blocks
-            for gid, group in enumerate(groups_by_id):
-                if not group.is_mamba_align:
-                    continue
-                if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
-                    continue
-                self._append_mamba_align_state_block(
-                    dump_ucm_block_ids,
-                    dump_vllm_block_ids,
-                    dump_group_ids,
-                    req_meta,
-                    request_id,
-                    gid,
-                    last_lcm_b,
-                    "dump",
-                )
+            # Pass 2: mamba and PLE state at every LCM boundary this step
+            # has fully crossed. The step end does not have to sit on the
+            # boundary; otherwise a chunk that passes 64 and stops at 100
+            # never stores the state lookup will ask for.
+            state_boundaries = list(range(first_lcm_b, last_lcm_b + 1, lcm_block_size))
+            for seq_len in state_boundaries:
+                for gid, group in enumerate(groups_by_id):
+                    if not group.is_state_hash:
+                        continue
+                    self._append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        dump_group_ids,
+                        req_meta,
+                        request_id,
+                        gid,
+                        seq_len,
+                        "dump",
+                    )
         else:
             dump_full_attn_count = 0
 
@@ -1498,11 +1771,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         Returns ``(layout, worker_cores, store_cores)``; the store itself is
         mode-specific and created by each subclass's ``register_kv_caches``.
         """
-        # Block-first: whole-page copy overruns the last block. Not supported yet.
-        layout_name = str(
-            getattr(self._kv_cache_config, "kv_cache_layout", "") or ""
-        ).split(".")[-1]
-        if layout_name.startswith("B"):
+        # Block-first whole-page copy overruns the last block, except CUDA
+        # BLNHC, which copies one full block_stride segment per column.
+        layout_name = kv_cache_layout_name(self._kv_cache_config)
+        if layout_name.startswith("B") and not is_cuda_blnhc_layout(
+            self._kv_cache_config
+        ):
             raise ValueError(
                 f"Block-first KV cache layout '{layout_name}' is not supported"
             )

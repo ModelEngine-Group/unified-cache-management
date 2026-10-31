@@ -3632,6 +3632,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         from ucm.integration.vllm.hla_connector import (
             UCMHybridLinearAttentionConnector,
             UCMHybridLinearAttentionLayerWiseConnector,
+            is_cuda_blnhc_layout,
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
@@ -3647,10 +3648,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     kv_cache_config
                 )
             )
+        cuda_blnhc = is_cuda_blnhc_layout(kv_cache_config)
+        layerwise_requested = bool(
+            use_layerwise
+            and self.launch_config.get("hybrid_linear_attention_layerwise", True)
+        )
+        if cuda_blnhc and use_hybrid_linear_attention and layerwise_requested:
+            logger.warning(
+                "BLNHC block-first KV cache on CUDA does not support layerwise; "
+                "layerwise is disabled."
+            )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
-            and use_layerwise
-            and self.launch_config.get("hybrid_linear_attention_layerwise", True)
+            and layerwise_requested
+            and not cuda_blnhc
         )
         if use_hybrid_linear_attention_layerwise:
             layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
