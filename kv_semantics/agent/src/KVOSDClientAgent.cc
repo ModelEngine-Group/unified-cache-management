@@ -848,7 +848,7 @@ private:
                         " is_connected=" +
                             std::to_string(conn->is_connected()));
             // 检查是否超时 (pending 仍为 osd_id 说明未收到响应)
-            if (pending_after == osd_id){
+            if (pending_after == osd_id) {
                 timed_out = true;
             }
         }

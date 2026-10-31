@@ -19,7 +19,7 @@
 #include <system_error>
 #include <vector>
 
-// Weak stdb: when the agent is loaded into a process that already provides
+// Weak stub: when the agent is loaded into a process that already provides
 // GetAgentLogFunc (e.g. kvcache_pool linked into the host), the strong
 // definition there overrides this one. When the agent runs standalone
 // (smoke tests), this returns nullptr and AGENT_LOG falls back to the
