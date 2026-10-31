@@ -562,6 +562,19 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 创建可写的持久目录 `/workspace/storage`。适配器要求 `page_first` 主机内存布局和 `interface_v1`，请勿改成旧版需要拷贝的存储 API。
 
+在容器内创建 `/workspace/ucm_config.yaml`，使用与 vLLM 相同的 YAML 格式，且只配置一个 Store：
+
+```yaml
+ucm_connectors:
+  - ucm_connector_name: UcmPipelineStore
+    ucm_connector_config:
+      store_pipeline: Posix
+      storage_backends: /workspace/storage
+      posix_io_engine: psync
+```
+
+通过 `kv_connector_extra_config.UCM_CONFIG_FILE` 指定该文件：
+
 ```bash
 export MODEL_ID=/workspace/model
 HICACHE_CONFIG='{
@@ -570,10 +583,7 @@ HICACHE_CONFIG='{
   "class_name": "UnifiedCacheStore",
   "interface_v1": 1,
   "kv_connector_extra_config": {
-    "ucm_connector_name": "UcmPipelineStore",
-    "ucm_connector_config": {
-      "storage_backends": "/workspace/storage"
-    }
+    "UCM_CONFIG_FILE": "/workspace/ucm_config.yaml"
   }
 }'
 ```
@@ -598,7 +608,7 @@ python3 -m sglang.launch_server \
   --hicache-storage-backend-extra-config "$HICACHE_CONFIG"
 ```
 
-按可用 GPU 调整模型与并行度。适配器负责提供块布局参数并选择 `Posix`；这套输入接口与包含 `ucm_connectors` 的 vLLM YAML 配置不同。
+按可用 GPU 调整模型与并行度。适配器负责提供块布局参数；UCM 存储参数从上述 YAML 文件读取。未设置 `store_pipeline` 时默认使用 `Posix`；配置其他管线时会原样传给 Store，并打印 warning，提示不兼容可能导致启动失败。
 
 ### 验证服务与外部缓存 {#sglang-verify-the-service-and-external-cache}
 

@@ -164,11 +164,10 @@ class UcmDirectStoreAdapter:
     def from_config(
         cls, config: dict[str, Any], identity: dict[str, Any]
     ) -> "UcmDirectStoreAdapter":
-        config_file = config.get("config_file")
+        config_file = config.get("UCM_CONFIG_FILE")
         if not config_file:
             raise ValueError(
-                "SGLang UCM linker requires linker_extra_config.config_file "
-                "or UNIFIEDCACHE_CONFIG_FILE."
+                "SGLang UCM linker requires linker_extra_config.UCM_CONFIG_FILE."
             )
         path = Path(config_file)
         with path.open("r", encoding="utf-8") as stream:
