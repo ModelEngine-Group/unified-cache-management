@@ -48,10 +48,8 @@ UcmSparseFactory.register_sparse_method("ESA", "ucm.sparse.esa.esa", "ESA")
 UcmSparseFactory.register_sparse_method(
     "GSAOnDevice", "ucm.sparse.gsa_on_device.gsa_on_device", "GSAOnDevice"
 )
+# GSA 同时支持 PD 混合与 PD 分离模式（内部依据 PD 模式自作分支）。
 UcmSparseFactory.register_sparse_method("GSA", "ucm.sandbox.sparse.gsav2.gsa", "GSA")
-UcmSparseFactory.register_sparse_method(
-    "GSAPD", "ucm.sandbox.sparse.gsav2.gsa_for_pd", "GSAforPD"
-)
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.sparse.kvstar.multistep", "KVStarMultiStep"
 )

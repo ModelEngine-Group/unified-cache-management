@@ -49,9 +49,9 @@ from ucm.sandbox.sparse.gsav2.gsa_log import GSALogger, Logger
 from ucm.sandbox.sparse.gsav2.gsa_shared_memory import (
     SharedBlockTable,
     SharedTensorManager,
-    SharedTensorPool,
     SharedTensorVersion,
 )
+from ucm.sandbox.sparse.gsav2.prefetch import gsa_prefetch
 from ucm.sandbox.sparse.gsav2.prefetch.prefetch_engine import (
     GSAPrefetchBase,
     SequenceStage,
@@ -98,6 +98,8 @@ logger = init_logger(__name__)
 
 GSA_INSTANCE = None
 _pending_store_ptr = 0
+UCM_LOOKUP_MAX_RETRY = 10000
+UCM_LOOKUP_TIME_SPACE = 0.001
 
 
 def inject_store_v1_ptr(store_ptr):
@@ -212,6 +214,14 @@ class GSAReqStat:
         self._vllm_config = vllm_config
         self.use_mla = vllm_config.model_config.use_mla
 
+        # 判断当前是否为 PD 分离模式（仅 decode 节点）：
+        # PD 混合：kv_transfer_config 为 None，或同时为 consumer 与 producer。
+        # PD 分离：kv_transfer_config 仅 is_kv_consumer 为 True。
+        kv_transfer_config = vllm_config.kv_transfer_config
+        self.is_pd_mix = kv_transfer_config is None or (
+            kv_transfer_config.is_kv_producer and kv_transfer_config.is_kv_consumer
+        )
+
         self.request_hasher = RequestHasher(vllm_config, 0)
 
         if IS_INDEXER_OFFLOAD:
@@ -270,10 +280,25 @@ class GSAReqStat:
         )
 
     def is_last_chunk(self) -> bool:
-        return (
-            self.num_computed_tokens + self.num_scheduled_tokens
-            == self.num_prompt_tokens
-        )
+        # 区分 PD 分离与 PD 混合模式：
+        # - PD 混合：当前为 prefill 的最后一块
+        #   （num_computed_tokens + num_scheduled_tokens == num_prompt_tokens）。
+        # - PD 分离：decode 节点上请求刚到达，尚未生成任何 output token
+        #   （num_output_tokens == 0）。
+        if self.is_pd_mix:
+            return (
+                self.num_computed_tokens + self.num_scheduled_tokens
+                == self.num_prompt_tokens
+            )
+        return self.num_output_tokens == 0
+
+    def is_decode_only(self) -> bool:
+        # 判断当前请求是否已进入稳态 decode 阶段（prefill 已完成）。
+        # - PD 混合：stage() == DECODE，即 num_prompt_tokens <= num_computed_tokens。
+        # - PD 分离：decode 节点上已生成至少 1 个 output token。
+        if self.is_pd_mix:
+            return self.stage() == SequenceStage.DECODE
+        return self.num_output_tokens >= 1
 
     def get_seq_len(self) -> int:
         return self.num_computed_tokens + self.num_scheduled_tokens
@@ -467,7 +492,11 @@ class GSA(UcmSparseBase):
         self._init_runtime_state()
         self._init_speculative_config(vllm_config)
         self._init_slots_num_manager(role)
-        if role == UcmSparseRole.WORKER and PTOPK_PREFETCH_ENABLE:
+        if (
+            role == UcmSparseRole.WORKER
+            and PTOPK_PREFETCH_ENABLE
+            and self.is_decode_node
+        ):
             self._init_worker_shared_tables()
             self._init_worker_logger_and_pools(vllm_config)
             self._init_worker_indexer_state(vllm_config)
@@ -495,6 +524,7 @@ class GSA(UcmSparseBase):
         self.max_model_len = vllm_config.model_config.max_model_len
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
+        self.is_decode_node = vllm_config.kv_transfer_config.is_kv_consumer
 
     def _init_sparse_c8_config(self, vllm_config: VllmConfig):
         additional_config = (
@@ -547,12 +577,17 @@ class GSA(UcmSparseBase):
         if speculative_config:
             self.num_spec_tokens += speculative_config.num_speculative_tokens
 
+        kv_transfer_config = vllm_config.kv_transfer_config
+        self.is_pd_mix = kv_transfer_config is None or (
+            kv_transfer_config.is_kv_producer and kv_transfer_config.is_kv_consumer
+        )
+
     def _init_slots_num_manager(self, role: UcmSparseRole):
         if role == UcmSparseRole.SCHEDULER and PTOPK_PREFETCH_ENABLE:
             self.slots_num_manager = SharedTensorManager(
                 "gsa_glm52_slots_num_dp" + str(self.dp_rank), False
             )
-        elif self.rank == 0:
+        elif self.rank == 0 and self.is_decode_node:
             self.slots_num_manager = SharedTensorManager(
                 "gsa_glm52_slots_num_dp" + str(self.dp_rank),
                 True,
@@ -589,6 +624,7 @@ class GSA(UcmSparseBase):
                 self.tp_size,
                 False,
             )
+        self.ucm_prefetch_engine = gsa_prefetch.UCMKVPrefetch()
 
     def _init_worker_logger_and_pools(self, vllm_config: VllmConfig):
         self.topk_layer_info, self.topk_layer_map, self.topk_layer_num = (
@@ -715,6 +751,8 @@ class GSA(UcmSparseBase):
             ).contiguous()
 
     def init_gsa_metadata(self, vllm_config):
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+            return
         self.cudagraph_capture_sizes = (
             vllm_config.compilation_config.cudagraph_capture_sizes
         )
@@ -814,29 +852,53 @@ class GSA(UcmSparseBase):
     def print_log(self, msg):
         self.log.info(msg)
 
-    def _resolve_store_connector(self):
-        """获取 kv_transfer_group，并解析到真正持有 store 的 connector"""
-        kv_group = get_kv_transfer_group()
-        logger.info(
-            "[GSA Store Inject] kv_group_type=%s, has_store=%s, has_connector=%s",
-            type(kv_group).__name__,
-            hasattr(kv_group, "store"),
-            hasattr(kv_group, "connector"),
-        )
-        connector = kv_group
-        if not hasattr(connector, "store") and hasattr(connector, "connector"):
-            connector = connector.connector
+    def _find_store_connector(self, kv_group):
+        """定位持有有效 store 的 connector 对象，未找到则返回 None。
+        兼容 PD 混合（普通 connector）与 PD 分离（AscendMultiConnector）两种模式。"""
+        if type(kv_group).__name__ != "AscendMultiConnector":
+            connector = kv_group
+            if not hasattr(connector, "store") and hasattr(connector, "connector"):
+                connector = connector.connector
+                logger.info(
+                    "[GSA Store Inject] using kv_transfer_group.connector, connector_type=%s",
+                    type(connector).__name__,
+                )
+            return connector
+        if not hasattr(kv_group, "_connectors"):
             logger.info(
-                "[GSA Store Inject] using kv_transfer_group.connector, connector_type=%s",
-                type(connector).__name__,
+                "[GSA Store Inject] _connectors missing in AscendMultiConnector, ERROR"
             )
-        return connector
+            return None
+        for one_connect in kv_group._connectors:
+            if hasattr(one_connect, "store"):
+                logger.info(
+                    "[GSA Store Inject] AscendMultiConnector get store. connector_type=%s",
+                    type(one_connect).__name__,
+                )
+                return one_connect
+            if hasattr(one_connect, "connector") and one_connect.connector is not None:
+                connector = one_connect.connector
+                if hasattr(connector, "store"):
+                    return connector
+                logger.info(
+                    "[GSA Store Inject] connector has no store, keep searching. connector_type=%s",
+                    type(connector).__name__,
+                )
+        return None
 
-    def _inject_and_verify_store(self, store_ptr):
-        """注入 store 指针到 C++ 预取引擎，并做指针一致性校验"""
+    def _inject_store_v1(self, connector) -> bool:
+        """将 C++ store 指针注入 prefetch engine 并校验，失败返回 False"""
+        store_ptr = connector.store.cc_store()
+        if store_ptr == 0:
+            logger.info(
+                "[GSA Store Inject] cc_store() returned 0 (null pointer), "
+                "C++ backend not ready, will retry later"
+            )
+            return False
         self.prefetch_engine.prefetch_engine_c.set_store_v1(store_ptr)
         actual_store_ptr = self.prefetch_engine.prefetch_engine_c.get_store_v1_ptr()
         cpp_self_ptr = self.prefetch_engine.prefetch_engine_c.get_self_ptr()
+        self.ucm_prefetch_engine.store_init(store_ptr, self.layer_num)
         logger.info(
             "[GSA Store Inject] C++ verify cpp_self=%s, expected_store=%s, actual_store=%s",
             hex(cpp_self_ptr),
@@ -854,6 +916,7 @@ class GSA(UcmSparseBase):
             hex(store_ptr),
             hex(cpp_self_ptr),
         )
+        return True
 
     def _log_store_inject_retry(self, reason: str) -> None:
         """Log a store-injection retry and escalate to an error after
@@ -881,9 +944,18 @@ class GSA(UcmSparseBase):
             return
         self._store_inject_retries += 1
         try:
-            connector = self._resolve_store_connector()
+            kv_group = get_kv_transfer_group()
+            logger.info(
+                "[GSA Store Inject] kv_group_type=%s, has_store=%s, has_connector=%s",
+                type(kv_group).__name__,
+                hasattr(kv_group, "store"),
+                hasattr(kv_group, "connector"),
+            )
+            connector = self._find_store_connector(kv_group)
             if connector is None:
-                self._log_store_inject_retry("connector is None")
+                self._log_store_inject_retry(
+                    "no connector with a store (PD-separated multi-connector?)"
+                )
                 return
             if not hasattr(connector, "store"):
                 self._log_store_inject_retry(
@@ -895,13 +967,11 @@ class GSA(UcmSparseBase):
                     "connector.store is None (Worker role before register_kv_caches?)"
                 )
                 return
-            store_ptr = connector.store.cc_store()
-            if store_ptr == 0:
+            if not self._inject_store_v1(connector):
                 self._log_store_inject_retry(
                     "cc_store() returned 0 (null pointer), C++ backend not ready"
                 )
                 return
-            self._inject_and_verify_store(store_ptr)
         except Exception as e:
             if self._store_inject_retries >= self._store_inject_max_retries:
                 logger.error(
@@ -1029,7 +1099,7 @@ class GSA(UcmSparseBase):
         has_indexer: Optional[bool] = True,
         use_li_c8: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return query, key, value, output
         if IS_PERFORMANCE_LOG:
             start = time.perf_counter()
@@ -1074,6 +1144,7 @@ class GSA(UcmSparseBase):
         self.dsa_block_table.np[:] = 0  # 保证长度一致
         self.dsa_slot_mapping.np[:] = -1
         self.dsa_seq_len.np[:] = 1
+        self.indexer_pc_hit_index.np[:] = 0
         return dsa_seq_len, slot_mapping, dump_vllm_id, dump_gsa_id
 
     def _update_dsa_block_table(self, req_id, dsa_seq_len):
@@ -1205,7 +1276,10 @@ class GSA(UcmSparseBase):
         self.indexer_pc_hit_num[index_in_batch] = 0
         dump_vllm_id[index_in_batch] = []
         dump_gsa_id[index_in_batch] = []
-        if req_meta.stage() == SequenceStage.DECODE:
+        # 区分 PD 分离与 PD 混合模式：
+        # - PD 混合：stage() == DECODE 表示已进入 decode 阶段。
+        # - PD 分离：num_output_tokens >= 1 表示已生成首个 output token。
+        if req_meta.is_decode_only():
             self._calc_decode_slot_mapping(
                 req_meta, slots, index_in_batch, slot_mapping
             )
@@ -1583,16 +1657,14 @@ class GSA(UcmSparseBase):
         has_indexer: Optional[bool] = True,
         use_li_c8: Optional[bool] = False,
     ) -> None:
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_pd_mix:
             return
         if IS_PERFORMANCE_LOG:
             start = time.perf_counter()
         layer_id = int(layer_name.split(".")[2])
-        if (
-            layer_id >= self.layer_num
-            or not has_indexer
-            or self.indexer_pc_dump_num <= 0
-        ):
+        if layer_id >= self.layer_num:
+            return
+        if not has_indexer or self.indexer_pc_dump_num <= 0:
             return
         if use_li_c8:
             indexer_tmp = self.indexer_pc_dump_tmp_c8
@@ -1688,11 +1760,10 @@ class GSA(UcmSparseBase):
     # @time_us
     def execute_begin(self, scheduler_output: SchedulerOutput, attn_metadata):
         """每步推理前的 GSA 预取准备：注入 store、处理请求、同步块表、构造输入"""
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         if IS_PERFORMANCE_LOG:
             start_total = time.perf_counter()
-        self._ensure_store_injected()
         self.prefetch_engine.step_time += 1
         batch_size = len(scheduler_output.num_scheduled_tokens.items())
         req_ids = [0] * batch_size
@@ -2147,7 +2218,7 @@ class GSA(UcmSparseBase):
                     )
 
     def warmup(self):
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         if len(self.warmup_topk) == 0:
             return
@@ -2175,7 +2246,7 @@ class GSA(UcmSparseBase):
     # @time_us
     def execute_finished(self, rec_result=None):
         """rec_result 代表当前每个 req 接受了多少个 token"""
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         if IS_PERFORMANCE_LOG:
             time_prepare = 0
@@ -2289,7 +2360,7 @@ class GSA(UcmSparseBase):
     def build_sparse_meta(
         self, scheduler_output: SchedulerOutput, requests, input_batch, attn_metadata
     ) -> None:
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         self.gsa_metadata = self.build_gsa_metadata(
             scheduler_output, requests, input_batch
@@ -2306,8 +2377,17 @@ class GSA(UcmSparseBase):
             if self.gsa_metadata.gsa_stats[rid].is_gsa()
         ]
         stats = self.gsa_metadata.gsa_stats
+        self._ensure_store_injected()
+        for req_id in scheduler_output.scheduled_cached_reqs.resumed_req_ids:
+            self._load_kv_dram(req_id)
+        for req_id in scheduler_output.scheduled_new_reqs:
+            self._load_kv_dram(req_id)
+
+        prefetch_trigger_output = 1 if self.is_pd_mix else 0
         num_output_one = [
-            rid for rid in req_ids if self.get_num_output_tokens(rid) == 1
+            rid
+            for rid in req_ids
+            if self.get_num_output_tokens(rid) == prefetch_trigger_output
         ]
         self.need_prefetch_index = [
             stats[rid].index_in_batch
@@ -2324,14 +2404,14 @@ class GSA(UcmSparseBase):
         pass
 
     def request_finished_in_scheduler(self, request_id: ReqType):
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         if request_id in self.preempt_req_output_tokens:
             del self.preempt_req_output_tokens[request_id]
         pass
 
     def request_finished_in_worker(self, request_id: ReqType):
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return
         while self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
             time.sleep(0.001)
@@ -2366,6 +2446,8 @@ class GSA(UcmSparseBase):
     def estimate_free_slots_sparse(
         self, request: Request, num_blocks_to_allocate, num_new_computed_tokens=0
     ):
+        if not self.is_decode_node:
+            return False
         num_blocks_to_allocate_total = (
             num_blocks_to_allocate + num_new_computed_tokens // self.block_size
         )
@@ -2388,7 +2470,7 @@ class GSA(UcmSparseBase):
         return gsa_preempted_flag
 
     def estimate_num_slots_sparsed(self, request: Request, num_spec_slots=3) -> int:
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return INVALID_SLOT
         if request.status == RequestStatus.PREEMPTED:
             self.preempt_req_output_tokens[request.request_id] = (
@@ -2410,7 +2492,7 @@ class GSA(UcmSparseBase):
         return num_tokens_sparsed
 
     def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
-        if not PTOPK_PREFETCH_ENABLE:
+        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
             return None
         coordinator = kv_cache_manager.coordinator
         block_pool = kv_cache_manager.block_pool
@@ -2464,6 +2546,57 @@ class GSA(UcmSparseBase):
         coordinator.allocate_new_blocks(request.request_id, num_slots_sparsed, 0)
         blocks = coordinator.single_type_managers[0].req_to_blocks[request.request_id]
         return KVCacheBlocks(tuple([blocks]))
+
+    def _get_rank_load_hash(self, req_id):
+        req_meta = self.gsa_metadata.gsa_stats[req_id]
+        block_hashes = req_meta.block_hashes
+        num_per_rank = math.ceil(len(block_hashes) / self.tp_size)
+        start = num_per_rank * self.rank
+        end = min(num_per_rank * (self.rank + 1), len(block_hashes))
+        return block_hashes[start:end]
+
+    def _load_kv_dram(self, req_id):
+        # PD 分离模式下，decode 节点在请求到达时按 rank 分片做 UCM lookup，
+        # 命中部分提交 DRAM 加载任务；PD 混合模式无需此路径。
+        if not PTOPK_PREFETCH_ENABLE or self.is_pd_mix:
+            return
+        if not self.is_decode_node:
+            return
+        req_meta = self.gsa_metadata.gsa_stats[req_id]
+        if req_meta.num_prompt_tokens <= SEG_PREFILL_THRESHOLD:
+            return
+        block_hashes = self._get_rank_load_hash(req_id)
+        ids = np.ascontiguousarray(
+            np.frombuffer(b"".join(block_hashes), dtype=np.uint8)
+        )
+        lookup_ids = ids
+        retry = 0
+        start = time.perf_counter()
+        while True:
+            result = self.ucm_prefetch_engine.ucm_lookup(lookup_ids)
+            if all(result):
+                break
+            miss_pos = [i for i, hit in enumerate(result) if not hit]
+            retry += 1
+            if retry > UCM_LOOKUP_MAX_RETRY:
+                self.log.error(f"[GSA] ERROR look up timeout for req_id {req_id}\n")
+                return
+            lookup_ids = np.ascontiguousarray(
+                lookup_ids.reshape(-1, 16)[miss_pos].reshape(-1)
+            )
+            time.sleep(UCM_LOOKUP_TIME_SPACE)
+        if IS_PERFORMANCE_LOG:
+            self.log.info(
+                f"[GSA] ucm lookup time for req_id {req_id}: "
+                f"{(time.perf_counter() - start) * 1_000_000}\n"
+            )
+            start = time.perf_counter()
+        _ = self.ucm_prefetch_engine.ucm_load_ssd(ids)
+        if IS_PERFORMANCE_LOG:
+            self.log.info(
+                f"[GSA] submit load task for req_id {req_id}: "
+                f"{(time.perf_counter() - start) * 1_000_000}\n"
+            )
 
     def _init_slab_preempt_kv(self):
         k_shape = (
