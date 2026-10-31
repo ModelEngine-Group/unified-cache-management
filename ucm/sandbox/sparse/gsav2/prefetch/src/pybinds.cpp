@@ -130,12 +130,12 @@ PYBIND11_MODULE(gsa_prefetch, m)
 {
     pybind11::class_<ucmprefetch::UCMKVPrefetch>(m, "UCMKVPrefetch")
         .def(pybind11::init<>())
-        .def("store_init", &ucmprefetch::UCMKVPrefetch::StoreInit, pybind11::arg("store_ptr"))
+        .def("store_init", &ucmprefetch::UCMKVPrefetch::StoreInit, pybind11::arg("store_ptr"),
+             pybind11::arg("layer_num"))
         .def("ucm_load_ssd", &ucmprefetch::UCMLoadSSDFromBuffer,
              pybind11::arg("block_ids").noconvert())
         .def("ucm_lookup", &ucmprefetch::UCMLookupFromBuffer,
-             pybind11::arg("block_ids").noconvert())
-        .def("ucm_wait", &ucmprefetch::UCMKVPrefetch::UCMWait, pybind11::arg("task_id"));
+             pybind11::arg("block_ids").noconvert());
 
     pybind11::class_<ucmprefetch::GSAPrefetchEngineC>(m, "GSAPrefetchEngineC")
         .def(pybind11::init<std::vector<int>&, std::vector<int>&, bool, int, int, std::vector<int>,

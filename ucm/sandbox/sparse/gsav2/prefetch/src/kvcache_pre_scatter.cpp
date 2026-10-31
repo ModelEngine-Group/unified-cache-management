@@ -45,19 +45,12 @@
 #include "securec.h"
 
 #define H2D_INFO_SIZE 6
-// 0表示使用原来的HOST预取、组合，1表示优化后的UCM统一管理
-#define IS_UCM_BUFFER_OPEN 1
 
 namespace ucmprefetch {
 
 void GSAPrefetchEngineC::KVCacheInplaceScatter(std::string type, int layerID, aclrtStream stream,
                                                aclrtContext context)
 {
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start KVCacheInplaceScatter "
-                "type: %s, load num: %d \n",
-                mDecodeStep, type.c_str(), mLoadNum[layerID]);
-
     int lastDim = 0;
     int streamIdx = layerID % mStreamNum;
     torch::Tensor hbmBufferND;
@@ -92,11 +85,6 @@ void GSAPrefetchEngineC::KVCacheInplaceScatter(std::string type, int layerID, ac
 
     RunInplaceScatter(type, layerID, streamIdx, dstTensor, dstIndexTensor, dstHBMBufferTensor,
                       stream);
-
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| End KVCacheInplaceScatter "
-                "type: %s \n",
-                mDecodeStep, type.c_str());
 }
 
 void GSAPrefetchEngineC::PrepareScatterAclTensor(const std::string& type, int streamIdx,
@@ -409,7 +397,6 @@ void GSAPrefetchEngineC::MergeAndCopyPrefetchLayer(const TaskInfo& taskInfo, Thr
         std::string oneReqID = taskInfo.reqIdList[i];
         int oneTopkLen = taskInfo.topkLenList[i];
         if (oneTopkLen <= 0) { continue; }
-        mLogger.log(LogLevel::DEBUG, "IS_UCM_BUFFER_OPEN is: %d\n", IS_UCM_BUFFER_OPEN);
         UCMTensorMerge(layerID, streamIdx, hbmSlotIndex, oneReqID, static_cast<uint32_t>(i));
     }
     if (FinishKVPack(streamIdx, epoch) != 0) { KVPackAbort(mKVPackControl); }
@@ -425,9 +412,6 @@ void GSAPrefetchEngineC::MergeAndCopyPrefetchLayer(const TaskInfo& taskInfo, Thr
                     1, mLogger) != 0) {
         KVPackAbort(mKVPackControl);
     }
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| H2D size for all request %d for layer: %d\n",
-                mDecodeStep, mLoadNum[layerID], layerID);
     auto syncEnd = std::chrono::high_resolution_clock::now();
     timing.sync +=
         std::chrono::duration_cast<std::chrono::microseconds>(syncEnd - memcpyEnd).count();
@@ -815,11 +799,20 @@ bool GSAPrefetchEngineC::SubmitIndexerInitLoadTask(UC::Detail::TaskDesc& task,
         return false;
     }
     const size_t loadNumber = task.size();
-    auto status = mStoreV1_->LoadToDevice(std::move(task));
-    if (status.Failure()) {
-        const std::string error = status.ToString();
+    auto loadResult = mStoreV1_->Load(std::move(task));
+    if (!loadResult) {
+        const std::string error = loadResult.Error().ToString();
         mLogger.log(LogLevel::ERROR,
                     "[ERROR] IndexerInitLoad LoadToDevice failed, "
+                    "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
+                    reqID.c_str(), layerID, loadNumber, error.c_str());
+        return false;
+    }
+    auto waitStatus = mStoreV1_->Wait(loadResult.Value());
+    if (waitStatus.Failure()) {
+        const std::string error = waitStatus.ToString();
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] IndexerInitLoad Wait failed, "
                     "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
                     reqID.c_str(), layerID, loadNumber, error.c_str());
         return false;
@@ -1044,11 +1037,20 @@ bool GSAPrefetchEngineC::LoadIndexerTask(const std::string& reqID, int layerID,
         return false;
     }
     const size_t loadNumber = task.size();
-    auto status = mStoreV1_->LoadToDevice(std::move(task));
-    if (status.Failure()) {
-        const std::string error = status.ToString();
+    auto loadResult = mStoreV1_->Load(std::move(task));
+    if (!loadResult) {
+        const std::string error = loadResult.Error().ToString();
         mLogger.log(LogLevel::ERROR,
                     "[ERROR] UCMIndexerLoadAsync LoadToDevice failed, "
+                    "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
+                    reqID.c_str(), layerID, loadNumber, error.c_str());
+        return false;
+    }
+    auto waitStatus = mStoreV1_->Wait(loadResult.Value());
+    if (waitStatus.Failure()) {
+        const std::string error = waitStatus.ToString();
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] UCMIndexerLoadAsync Wait failed, "
                     "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
                     reqID.c_str(), layerID, loadNumber, error.c_str());
         return false;
@@ -1061,10 +1063,6 @@ void GSAPrefetchEngineC::SetKvTensor(torch::Tensor kCachesTensor, torch::Tensor 
                                      torch::Tensor lastChunkKBuffer, torch::Tensor lastChunkvBuffer,
                                      int layerID)
 {
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start SetKvTensor layerID: %u\n", mDecodeStep,
-                layerID);
-
     // init token an block tensor size
     if (mKVHBMBlockLen == 0) { mKVHBMBlockLen = kCachesTensor.sizes()[0]; }
     mKcacheTensor[layerID] = kCachesTensor;
@@ -1088,9 +1086,6 @@ void GSAPrefetchEngineC::SetKvTensor(torch::Tensor kCachesTensor, torch::Tensor 
 
 void GSAPrefetchEngineC::SetKvTensorIndex(int layerID, torch::Tensor indexCache)
 {
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start SetKvTensorIndex layerID: %u\n",
-                mDecodeStep, layerID);
     if (!mOpenIndexerOffload) { return; }
     if (mDeviceIndexerLen == 0) {
         mDeviceIndexerLen = indexCache.sizes()[0];
@@ -1121,8 +1116,6 @@ void GSAPrefetchEngineC::SetKvBuffer(torch::Tensor kBufferHost, torch::Tensor vB
                                      torch::Tensor kBufferDevice, torch::Tensor vBufferDevice,
                                      torch::Tensor loadIndexHost, torch::Tensor loadIndexDevice)
 {
-    mLogger.log(LogLevel::DEBUG, "Decode step: %u, |KVCache Prefetch| Start SetKvBuffer\n",
-                mDecodeStep);
     mKBufferHost = kBufferHost;
     mKBufferDevice = kBufferDevice;
     mLoadIndexHost = loadIndexHost;
@@ -1166,9 +1159,6 @@ void GSAPrefetchEngineC::SubmitTask(std::vector<int>& topkLensInput, std::vector
                                     std::vector<bool>& isIndexerOffload, std::vector<int>& seqLens,
                                     uint32_t stepTime)
 {
-    mLogger.log(LogLevel::INFO,
-                "Decode step: %u, |KVCache Prefetch| start SubmitTask batch size: %lu\n",
-                mDecodeStep, reqIDList.size());
     auto start = std::chrono::high_resolution_clock::now();
     mDecodeStep = stepTime;
     TaskInfo inputInfo(totalTaskNum, -1, topkLists, topkLensInput, bsIndexInput, reqIDList);
@@ -1203,9 +1193,6 @@ void GSAPrefetchEngineC::SubmitTaskIndexer(std::vector<int>& topkLensInput,
                                            std::vector<torch::Tensor>& topkLists, uint32_t stepTime)
 {
     if (!mOpenIndexerOffload) { return; }
-    mLogger.log(LogLevel::INFO,
-                "Decode step: %u, |KVCache Prefetch| start SubmitTaskIndexer batch size: %lu\n",
-                mDecodeStep, reqIDList.size());
     auto start = std::chrono::high_resolution_clock::now();
     for (uint32_t i = 0; i < reqIDList.size(); i++) {
         for (int layerID = 0; layerID < mLayerNum; layerID++) {
@@ -1233,13 +1220,7 @@ void GSAPrefetchEngineC::SubmitTaskIndexer(std::vector<int>& topkLensInput,
 
 void GSAPrefetchEngineC::SetTopkIndices(std::string reqID, torch::Tensor& topIndices)
 {
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start SetTopkIndices reqID: %s\n", mDecodeStep,
-                reqID.c_str());
     mAllTopkIndicesTensor[reqID] = topIndices;
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| End SetTopkIndices reqID: %s\n", mDecodeStep,
-                reqID.c_str());
 }
 
 void GSAPrefetchEngineC::CopyPreSwapTokens(uintptr_t useTokenBase, uintptr_t spaTokenBase,
@@ -1323,24 +1304,16 @@ void GSAPrefetchEngineC::PreSwapTokens(std::vector<uintptr_t>& useTokenPtrs,
 
 void GSAPrefetchEngineC::DelBlocksMap(std::string reqID)
 {
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| Start DelBlocksMap, reqID: %s\n", mDecodeStep,
-                reqID.c_str());
     mUpdateReqMutex.lock();
     mDelSeqIds.insert(reqID);
     // Only run the deletion when neither prefetch nor indexer load is running,
     // so that the shared per-request maps are not erased mid-update.
     if (!GetPrefetchStatus() && !GetIndexerStatus()) { DelReqIDRun(); }
     mUpdateReqMutex.unlock();
-    mLogger.log(LogLevel::DEBUG,
-                "Decode step: %u, |KVCache Prefetch| End DelBlocksMap, reqID: %s\n", mDecodeStep,
-                reqID.c_str());
 }
 
 void GSAPrefetchEngineC::DelReqIDRun()
 {
-    mLogger.log(LogLevel::DEBUG, "Decode step: %u, |KVCache Prefetch| Start DelReqIDRun\n",
-                mDecodeStep);
     for (auto it = mDelSeqIds.begin(); it != mDelSeqIds.end(); it++) {
         if (mSparseSeqLen.find(*it) == mSparseSeqLen.end()) {
             mLogger.log(LogLevel::INFO,
@@ -1373,8 +1346,6 @@ void GSAPrefetchEngineC::DelReqIDRun()
         }
     }
     mDelSeqIds.clear();
-    mLogger.log(LogLevel::DEBUG, "Decode step: %u, |KVCache Prefetch| End DelReqIDRun\n",
-                mDecodeStep);
 }
 
 bool GSAPrefetchEngineC::GetPrefetchStatus()

@@ -250,6 +250,7 @@ public:
     int mKVPackDpRank{-1};
     std::vector<uint64_t> mSharedKBufferHostPtr;
     std::vector<uint64_t> mSharedVBufferHostPtr;
+    std::byte* mUCMMergeLoadBuffer{nullptr};
     int mMaxLoadNum = 2048;
 
     // kv_load_info
@@ -291,6 +292,9 @@ public:
     std::vector<torch::Tensor> mLastCHunkVBuffer;
     std::vector<uint64_t> mLastCHunkKPtr;
     std::vector<uint64_t> mLastCHunkVPtr;
+    void* mLastChunkLoadBuffer{nullptr};
+    size_t mLastChunkLoadBufferSize{0};
+    size_t mShardSize{0};
     std::vector<torch::Tensor> mIndexerTensor;
     std::vector<uint64_t> mIndexerPtr;
     uint32_t mIndexerSizeBytesBlock = 0;
@@ -371,7 +375,7 @@ public:
                                           size_t bytes, int& fd);
     void InitKVPackSharedStates(size_t stateCount);
     void SetupKVPackSharedBuffers(size_t controlBytes, size_t streamCount, size_t kBytes,
-                                  size_t vBytes);
+                                  size_t vBytes, size_t stagingBytes);
 
     // CopyUCMMergeTokensParallel 分解辅助（huge_method 序号48）
     void BuildTokenCopyTasks(const std::vector<UCMMergeBlockContext>& blockContexts,
@@ -385,6 +389,7 @@ public:
     void InitBufferInfo(std::vector<int>& sizeinfo);
     void InitAclRuntime();
     void InitPrefetchResultShm(std::vector<int>& modelInfo);
+    void InitLastChunkLoadBuffer();
     void CreatePrefetchResultShm();
     void AttachPrefetchResultShm();
 
@@ -433,7 +438,8 @@ public:
     void BuildUCMMergeBlockContexts(int layerID, const std::string& reqID, uint32_t requestIndex,
                                     std::vector<UCMMergeBlockContext>& blockContexts,
                                     UC::Detail::TaskDesc& task,
-                                    std::map<int, std::vector<size_t>>& blockIdxToTokenIdx);
+                                    std::map<int, std::vector<size_t>>& blockIdxToTokenIdx,
+                                    std::byte* bufferBase, size_t shardSize);
     // IndexerInitLoad
     bool ProcessIndexerInitLoadLayer(std::vector<std::vector<int>>& blockTable,
                                      std::vector<std::vector<int>>& slabIdx,
@@ -447,16 +453,15 @@ public:
                                  const std::vector<int>& moveMap,
                                  const std::vector<int>& blockTable,
                                  std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                 UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+                                 UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices,
+                                 std::byte* bufferBase, size_t shardSize);
 
     bool LoadLastChunkSources(int layerID, const std::string& reqID, UC::Detail::TaskDesc& task,
                               const std::vector<int>& loadedBlockIndices,
-                              std::vector<LastChunkSourceBlock>& sourceBlocks,
-                              UC::Detail::TaskHandle& hostTaskId, bool& hasHostTask);
+                              std::vector<LastChunkSourceBlock>& sourceBlocks);
 
     void CopyLastChunkTokens(int layerID, const std::string& reqID, const std::vector<int>& moveMap,
-                             const std::vector<LastChunkSourceBlock>& sourceBlocks,
-                             UC::Detail::TaskHandle hostTaskId, bool hasHostTask);
+                             const std::vector<LastChunkSourceBlock>& sourceBlocks);
 
     // CallPrefetchProcess
     void PreparePrefetchResults(const TaskInfo& taskInfo);
@@ -512,7 +517,8 @@ public:
     bool BuildLastChunkSources(int layerID, const std::string& reqID,
                                const std::vector<int>& moveMap,
                                std::vector<LastChunkSourceBlock>& sourceBlocks,
-                               UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+                               UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices,
+                               std::byte* bufferBase, size_t shardSize);
 
     void AddIndexerMapForRequest(const std::string& reqID);
 

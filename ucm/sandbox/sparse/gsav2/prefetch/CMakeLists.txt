@@ -129,3 +129,10 @@ file(RELATIVE_PATH INSTALL_REL_PATH
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
 install(TARGETS gsa_prefetch LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
+
+# 单元/模块/端到端测试套件：仅在开启 BUILD_UNIT_TESTS 时构建，使用 ACL stub + mock store，
+# 不依赖 Ascend NPU / torch_npu 环境。
+if(BUILD_UNIT_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

@@ -45,9 +45,16 @@ inline int KVPackFail(SharedKVPackHeader* header)
     return -1;
 }
 
+// Coverage flush helper: flushes gcov data before abort (for death-test coverage).
+// Declared without weak so the linker pulls __gcov_dump from libgcov.a; the
+// -lgcov link flag is added by run_tests.sh only in COVERAGE mode.
+extern "C" void __gcov_dump(void);
+
 [[noreturn]] inline void KVPackAbort(SharedKVPackHeader* header)
 {
     if (header != nullptr) { header->fatalError.store(-1, std::memory_order_release); }
+    // Flush coverage data before abort so death-test lines are counted.
+    __gcov_dump();
     std::abort();
 }
 
@@ -77,7 +84,7 @@ struct UCMMergeTimeStatus {
 };
 
 // address[i] 是 task[i] 对应 shard 的起始地址，布局仍为 [K block][V block]。
-// 对象不允许复制或移动；析构时释放对应的 HostBuffer task。
+// 对象不允许复制或移动；析构时通知 owner 释放资源。
 struct UCMMergeHostAddress {
     explicit UCMMergeHostAddress(GSAPrefetchEngineC& owner) : owner(owner) {}
     ~UCMMergeHostAddress();
@@ -86,9 +93,7 @@ struct UCMMergeHostAddress {
     UCMMergeHostAddress(UCMMergeHostAddress&&) = delete;
     UCMMergeHostAddress& operator=(UCMMergeHostAddress&&) = delete;
     GSAPrefetchEngineC& owner;
-    UC::Detail::TaskHandle taskId{};
     bool hasHostTask = false;
-    std::vector<UC::Detail::HostBufferView> views;
     std::vector<const std::byte*> addresses;
 };
 
