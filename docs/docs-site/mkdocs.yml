@@ -11,7 +11,6 @@ edit_uri: edit/develop/docs/docs-site/docs/
 docs_dir: docs
 
 exclude_docs: |
-  **/benchmark/**
   **/developer-guide/cache-configuration/drampool.md
 
 hooks:
@@ -122,6 +121,9 @@ plugins:
             Configuration Parameters: 配置参数
             Metrics Reference: 指标清单
             Error Codes: 错误码
+            Benchmark: 基准测试
+            AISBench: AISBench
+            GLM-5.3 on A2-8 with PD Disaggregation: GLM-5.3 + A2-8机PD分离
             Toolkit: 工具集
             Precheck: 环境预检
             POSIX AIO: 存储读写测试
@@ -227,6 +229,9 @@ nav:
       - Configuration Parameters: reference/config-parameters.md
       - Metrics Reference: user-guide/observability/metrics-reference.md
       - Error Codes: reference/error-codes.md
+  - Benchmark:
+      - AISBench: benchmark/aisbench.md
+      - GLM-5.3 on A2-8 with PD Disaggregation: benchmark/pd-disaggregation.md
   - Toolkit:
       - toolkit/index.md
       - Precheck: toolkit/user/precheck.md
