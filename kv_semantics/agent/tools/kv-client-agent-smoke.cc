@@ -54,7 +54,7 @@ int main(int argc, const char **argv)
         .client_name = get_arg(argc, argv, "--client-name"),
         .client_key = get_arg(argc, argv, "--client-key"),
         .view_refresh_interval = 0, // 使用默认值 KV_VIEW_REFRESH_INTERVAL_DEFAULT
-        .view_fetch_timeout = 0     // 使用默认值 KV_VIEW_FETCH_TIMEOUT_DEFAULT
+        .view_fetch_timeout = 0,    // 使用默认值 KV_VIEW_FETCH_TIMEOUT_DEFAULT
     };
     const char *log_dir = get_arg(argc, argv, "--log-dir");
     const char *wait_arg = get_arg(argc, argv, "--wait");

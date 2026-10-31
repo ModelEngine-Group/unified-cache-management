@@ -78,7 +78,7 @@ public:
         shutdown();
     }
 
-    // Client Agent 初始化含 MonClient/OSD 连接缓存等完整流程
+    // Client Agent 初始化含 MonClient 连接, OSD 连接缓存等完整流程
     // NOLINTBEGIN(huge_method)
     int init(const KVClientAgentConfig& config,
              AgentLogger *agent_logger) override
@@ -145,7 +145,7 @@ public:
             return r;
         }
 
-        // 保存配置参数供 view_refresher 使用
+        // 保存配置参数供 view refresher 使用
         view_refresh_interval_cfg = 
             std::chrono::seconds(config.view_refresh_interval);
         view_fetch_timeout_cfg = 
@@ -387,7 +387,7 @@ public:
         if (view_refresher && view_refresher->running.load()) {
             return -EALREADY;
         }
-        // 正常流程中 start() 已调用 start_view_refresher(), 此处不应再调
+        // 正常流程中 start() 已调用 start_view_refresher, 此处不应再调
         return 0;
     }
 
@@ -403,8 +403,8 @@ public:
     {
         AGENT_LOG(logger, LogLevel::INFO,
                     "ms_dispatch: type=" + std::to_string(message->get_type()) +
-                    " name: " + std::string(message->get_type_name()) +
-                    " src: " + std::string(message->get_source().type_str()) + "." + std::to_string(message->get_source().num()) +
+                    " name=" + std::string(message->get_type_name()) +
+                    " src=" + std::string(message->get_source().type_str()) + "." + std::to_string(message->get_source().num()) +
                     " pending_fetch_osd=" + 
                         std::to_string(view_refresher ? 
                             view_refresher->pending_fetch_osd.load() : -2));
@@ -442,7 +442,7 @@ private:
         if (osd_id < 0) return;
         AGENT_LOG(logger, LogLevel::WARNING,
                     "connection to OSD " + std::to_string(osd_id) +
-                    " reset/refused (peer" +
+                    " reset/refused (peer=" +
                     c->get_peer_addr().ip_only_to_str() + ")");
         view_refresher->pending_fetch_osd.store(-1);
         {
@@ -516,7 +516,7 @@ private:
         }
 
         // ③ 应用 OSDMap (apply_osdmap_message 内部持 lock)
-        //    注意: 若 apply_osdmap_message() 内部 decode/apply_incremental 异常
+        //    注意: 若 apply_osdmap_message 内部 decode/apply_incremental 异常
         //    导致未返回, 则 ④ 的 CAS 不会执行, fetch_view_from_dpu 会超时.
         //    因此 CAS 清除 pending 的逻辑不依赖 apply 结果, 放在 put() 之后.
         uint64_t new_epoch = apply_osdmap_message(message);
@@ -528,7 +528,7 @@ private:
                     " new_epoch=" + std::to_string(new_epoch) +
                     " from_dpu=" + std::to_string(from_dpu));
         
-        // ④ 如果是 DPU 粒度响应, 清除 pending 并唤醒 refresh thread
+        // ④ 如果是 DPU 拉取响应, 清除 pending 并唤醒 refresh thread
         //    (无论 epoch 是否推进, "up to date" 响应也算成功)
         if (from_dpu && view_refresher) {
             int expected = source_osd;
@@ -540,7 +540,7 @@ private:
                 view_refresher->cv.notify_all();
             } else {
                 AGENT_LOG(logger, LogLevel::WARNING,
-                            "handle_osdmap_message: CAS FAILED, "
+                            "handle_osdmap_message: CAS FAILED"
                             " (expected pending=" + std::to_string(source_osd) +
                             ", actual=" +
                                 std::to_string(expected) +
@@ -614,7 +614,7 @@ private:
                     lk, view_refresher->refresh_interval,
                     [this] { return view_refresher->stop_requested.load(); });
                 AGENT_LOG(logger, LogLevel::DEBUG,
-                            "refresh loop woken, pending=" +
+                            "refresh loop woke, pending=" +
                             std::to_string(
                                 view_refresher->pending_fetch_osd.load()));
             }
@@ -806,7 +806,7 @@ private:
         }
 
         // ③ 设置 pending_fetch_osd 标记 (必须在发送请求之前,否则若响应
-        //    在设置前达到, handle_osdmsp_message 的 CAS 会因 pending 仍为
+        //    在设置前到达, handle_osdmap_message 的 CAS 会因 pending 仍为
         //    -1 而失败, 导致 notify 丢失, wait_for 死等到超时)
         view_refresher->pending_fetch_osd.store(osd_id);
 
@@ -939,7 +939,7 @@ private:
     std::chrono::seconds view_fetch_timeout_cfg{KV_VIEW_FETCH_TIMEOUT_DEFAULT};
 };
 
-} // namespace agent
+} // namespace
 
 std::unique_ptr<KVClientAgentImpl> create_kv_client_agent()
 {

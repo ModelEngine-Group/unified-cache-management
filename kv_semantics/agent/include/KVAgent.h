@@ -62,10 +62,18 @@ KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle *agent);
 */
 typedef void (*kv_agent_async_cb)(int32_t result, void *user_data);
 
-KV_AGENT_EXPORT int32_t kv_agent_create_crush_root(kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data);
-KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root(kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data);
-KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool(kv_agent_handle *agent, char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen, kv_agent_async_cb cb, void* user_data);
-KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool(kv_agent_handle *agent, char* kvnsName, uint32_t nameLen, kv_agent_async_cb cb, void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_create_crush_root_async(kv_agent_handle *agent,
+    char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize,
+    kv_agent_async_cb cb, void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root_async(kv_agent_handle *agent,
+    char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize,
+    kv_agent_async_cb cb, void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool_async(kv_agent_handle *agent,
+    char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen,
+    kv_agent_async_cb cb, void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(kv_agent_handle *agent,
+    char* kvnsName, uint32_t nameLen,
+    kv_agent_async_cb cb, void* user_data);
 #ifdef __cplusplus
 }
 #endif

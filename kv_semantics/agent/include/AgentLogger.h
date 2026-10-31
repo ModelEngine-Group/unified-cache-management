@@ -162,7 +162,7 @@ void log(AgentLogger *logger, LogLevel level, const char *module,
 // NOLINTEND(g.PRE.06-cpp)
 
 // 带限频的 AGENT_LOG 宏
-// interval_sec: 时间间隔（秒）, 每隔 interval_sec 秒可打印一次）
+// interval_sec: 时间间隔（秒）, 每隔 interval_sec 秒可打印一次
 // burst_count: 初始允许打印次数（一个周期内最多打印 burst_count 次）
 // 注意: 每个不同的 interval_sec 和 burst_count 组合有独立的限频状态
 #define AGENT_LOG_LIMITED(logger, level, interval_sec, burst_count, message) \

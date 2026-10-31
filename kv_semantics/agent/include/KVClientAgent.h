@@ -52,12 +52,11 @@ public:
     int start_view_refresh();
     int stop_view_refresh();
 
-    // 按照ns（Ceph pool name）查询指定状态的OSD视图
+    // 按照ns (Ceph pool name) 查询指定状态的OSD视图
     std::vector<KVClientNodeView> get_view_by_ns(
-        const std::string& ns, bool up, bool in
-    ) const;
+        const std::string& ns, bool up, bool in) const;
 
-    // 按照ns（Ceph pool name）查询对应状态的OSD视图
+    // 按 ns（Ceph pool name）查询对应状态的OSD视图
     std::vector<KVClientNodeView> get_up_in_by_ns(const std::string& ns) const;
     std::vector<KVClientNodeView> get_down_in_by_ns(const std::string& ns) const;
     std::vector<KVClientNodeView> get_up_out_by_ns(const std::string& ns) const;
@@ -65,10 +64,10 @@ public:
 
     // 查询所有in状态的OSD视图
     std::vector<KVClientNodeView> get_in() const;
-    // 按照ns（Ceph pool name）查询所有in状态的OSD视图
+    // 按 ns（Ceph pool name）查询所有in状态的OSD视图
     std::vector<KVClientNodeView> get_in_by_ns(const std::string& ns) const;
 
-    // 获取所有ns（Ceph pool name）的name列表
+    // 获取所有 ns（Ceph pool name）的name列表
     std::vector<std::string> get_all_ns_name() const;
 
 private:

@@ -19,6 +19,11 @@
 #include <system_error>
 #include <vector>
 
+// Weak stdb: when the agent is loaded into a process that already provides
+// GetAgentLogFunc (e.g. kvcache_pool linked into the host), the strong
+// definition there overrides this one. When the agent runs standalone
+// (smoke tests), this returns nullptr and AGENT_LOG falls back to the
+// file/console logger.
 extern "C" __attribute__((weak)) AgentlogFunc GetAgentLogFunc(void)
 {
 	return nullptr;
@@ -29,7 +34,7 @@ namespace agent {
 // 动态获取 GetDplogFunc 函数指针
 AgentlogFunc get_agentlog_func_impl(void)
 {
-	return GetAgentLogFunc();
+	return GetAgentLogFunc();   // 返回 dplog
 }
 
 namespace {

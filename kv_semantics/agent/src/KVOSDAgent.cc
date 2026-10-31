@@ -47,11 +47,11 @@ namespace agent {
 
 namespace {
 
-// Boot 指数退避函数（编译期宏常量, 不通过C ABI配置传入）
+// Boot 指数退避参数（编译期宏常量, 不通过C ABI配置传入）
 constexpr int BOOT_RETRY_DELAY = 5;     // 秒, Boot 重试初始等待时间
 constexpr int BOOT_RETRY_MAX_DELAY =60; // 秒, Boot 重试等待上限
 // OSD Agent 固定监听端口, 配置未指定端口时使用此值
-// constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800
+// constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 65536;
 
 int parse_public_addrs(const std::string& value, entity_addrvec_t *result,
@@ -80,7 +80,7 @@ int parse_public_addrs(const std::string& value, entity_addrvec_t *result,
         }
         address.set_type(entity_addr_t::TYPE_MSGR2);
         // 配置未指定端口时固定使用 6800, 确保 Client Agent 能从 OSDMap
-        // 中获取到可连接的地址
+        // 中获取到可连接的地址.
         if (address.get_port() == 0) {
             address.set_port(KV_OSD_AGENT_DEFAULT_PORT);
         }
@@ -409,7 +409,7 @@ private:
     // Used to build incremental responses for Compute Agent requests.
     std::map<epoch_t, ceph::buffer::list> cached_incrementals;
 
-    // Cached full OSDMap encoding to avoid repeated encode() calls;
+    // Cached full OSDMap encoding to avoid repeated encode() calls.
     struct {
         epoch_t epoch = 0;
         ceph::buffer::list bl;
@@ -439,11 +439,11 @@ public:
                 return -EINVAL;
             }
 
-        // 保存完整配置副本, 供 mon断链后重建通信层（messenger/monc）时复用.
+        // 保存完整配置副本, 供 mon断链后重建通信层 (messenger/monc) 时复用.
         // 切换 DPU IP 时仅更新 addrs 字段, 其余保持不变.
         saved_config_ = config;
-        // 首次 init 时以配置的 addrs 顺序为起点; 重新 init（IP切换）时保存
-        // current_addrs_ 已被 rotate）不变.
+        // 首次 init 时以配置的 addrs 顺序为起点; 重新 init (IP切换) 时保持
+        // current_addrs_ (已被 rotate）不变.
         if (!reinitializing_) {
             current_addrs_ = config.addrs;
         }
@@ -511,7 +511,7 @@ public:
         pool_started = true;
 
         // 独立于心跳定时器的 MON 连接监控定时器: 无论状态机处于何种状态, 
-        // 都周期检查 monc->is_connected(), 一旦发现断链立即触发 DPU IP 切换
+        // 都周期检查 monc->is_connected(), 一旦发现断链立即触发 DPU IP 切换.
         mon_watch_timer = std::make_unique<boost::asio::steady_timer>(
             poolctx->get_io_context());
         
@@ -584,7 +584,7 @@ public:
                     "messenger started, listening for client connections");
         
         monc->set_want_keys(CEPH_ENTITY_TYPE_MON | CEPH_ENTITY_TYPE_OSD);
-        // Register the dispatcher to MonClient::handle_auth_request can call
+        // Register the dispatcher so MonClient::handle_auth_request can call
         // ms_handle_fast_authentication after verifying the authorizer.
         monc->set_handle_authentication_dispatcher(dispatcher.get());
         r = monc->init();
@@ -656,7 +656,7 @@ public:
         return externally_initialized_;
     }
 
-    // after MOSDBoot sent, and revived OSDMap from MON will the hb start.
+    // after MOSDBoot sent, and revieved OSDMap from MON will the hb start.
     int start_heartbeat() override
     {
         std::lock_guard l(state_lock);
@@ -678,6 +678,7 @@ public:
         }
 
         heartbeat_running = true;
+        // 外部显示 start 即视为恢复, 清除"手动停止"标志 (IP 切换后不再被跳过)
         heartbeat_manually_stopped_= false;
         heartbeat_timer = std::make_unique<boost::asio::steady_timer>(
             poolctx->get_io_context());
@@ -685,11 +686,11 @@ public:
         state = AgentState::DOWN;
         current_retry_delay = std::chrono::seconds{0};
         // 首次启动 / IP 切换后重启: 都要尽快发 boot.
-        // boot_beacon_delay 在切换时被置为 0, 保证重新 boot 无 delay.
+        // boot_beacon_delay 在切换时被置 0, 保证重新 boot 无 delay.
         if (boot_beacon_delay.count() > 0 && !ip_switch_pending_) {
             arm_boot();
         } else {
-            // 直接进入 boot 发送路径（不等待 boot_beacon_delay)
+            // 直接进入 boot 发送路径 (不等待 boot_beacon_delay)
             send_boot();
         }
         // 启动 MON 连接监控, 检测断链并触发 IP 切换
@@ -721,10 +722,10 @@ public:
         heartbeat_timer->cancel();
         heartbeat_running = false;
         state = AgentState::DOWN;
-        // 标记手动停止： IP切换重启后不再自动恢复，需外部显式start_heartbeat
+        // 标记手动停止: IP切换重启后不再自动恢复，需外部显式start_heartbeat
         heartbeat_manually_stopped_ = true;
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
-                    "OSD heartneat sopped");
+                    "OSD heartbeat stopped");
         return 0;
     }
 
@@ -770,9 +771,11 @@ public:
         const auto t_root_start = std::chrono::steady_clock::now();
         // -------- 1. 创建 root bucket --------
         ret = mon_command_sync({std::string("{\"prefix\": \"osd crush add-bucket\", \"name\": \"") + rootName + "\", \"type\": \"root\"}"}, &outbl, &outs);
+        // 已存在判断以 outs 为准, 移出 if (ret < 0):mon 对已存在 bucket 可能返回 0
+        // 但 outs 带 "already exists", 仅凭 ret < 0 会漏判.
         bool root_exists = (outs.find("already exists") != std::string::npos ||
                             outs.find("桶已存在") != std::string::npos ||
-                            ret == -17);    // EEXIST
+                            ret == -17);    // EEXIST 兜底
 
         if (root_exists) {
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH root already exists, continuing: " + outs);
@@ -794,10 +797,11 @@ public:
         outs.clear();
         // 命令格式: ceph osd crush rule create-simple <rule-name> <root> <type>
         ret = mon_command_sync({std::string("{\"prefix\": \"osd crush rule create-simple\", \"name\": \"") + ruleName + "\", \"root\": \"" + rootName + "\", \"type\": \"host\"}"}, &outbl, &outs);
+        // 已存在判断以 outs 为准, 移出 if (ret < 0), 与 add-bucket 处理保持一致.
         bool rule_exists = (outs.find("already exists") != std::string::npos ||
                             outs.find("规则已存在") != std::string::npos ||
-                            ret == -17);    // 检查是否是 rule 已存在的情况
-        if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了, 但 rule 没创建的情况
+                            ret == -17);    // EEXIST 兜底
+        if (rule_exists) {  // 每次都检查一遍, 避免出现 root 创建了, 但 rule 没创建的情况.
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "CRUSH rule already exists, continuing: " + outs);
         } else if (ret < 0) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create rule: " + outs);
@@ -831,11 +835,11 @@ public:
     // NOLINTEND(huge_method)
 
     // 删除 CRUSH Root 以及对应 Rule,  to do: 基于 int32_t* osdIdList, uint32_t listSize 进行缩容, 只有在root为空的情况进行删除。
-    // CRUSH Root 删除含多层效验、OSDMap同步、CrushWrapper遍历删除等完成流程
-    // NOLINTBEGIN(huge_method)
+    // CRUSH Root 删除含多层效验、OSDMap同步、CrushWrapper遍历删除等完整流程
+    // NOLINTBEGIN(huge_metho, huge_cycle_complexity)
     int32_t kv_agent_delete_crush_root_impl(char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize)  // NOLINT(g.STD.02-cpp)
     {
-        // -------- 输入合法性效验 --------
+        // -------- 输入合法性检测 --------
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
             return -1;
@@ -1031,21 +1035,27 @@ public:
         // 创建ceph pool并绑定对应的规则
         int32_t ret = mon_command_sync({std::string("{\"prefix\": \"osd pool create\", \"pool\": \"") + kvnsNameString + "\", \"pg_num\": 4, \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"}, &outbl, &outs);
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
-                  "kv_agent_create_ceph_pool: osd pool create ret=" + std::tp_string(ret) + ", pool=" + kvnsNameString + ", rule=" + ruleName + ", outs=" + outs);
+                  "kv_agent_create_ceph_pool: osd pool create ret=" +
+                  std::tp_string(ret) + ", pool=" + kvnsNameString +
+                  ", rule=" + ruleName + ", outs=" + outs);
+        // 判断"已存在"以 outs 内容为准, 不依赖 ret < 0: mon 对已存在的 pool 执行
+        // create 可能返回 0 但 outs 带 "already exists" (见日志 ret = 0, outs = pool 'kvns'
+        // already exists 场景), 故将其移出 if (ret < 0).
         bool ceph_pool_exists = (outs.find("already exists") != std::string::npos ||
                                     outs.find("桶已存在") != std::string::npos ||
-                                    ret == -17);    // EEXIST
+                                    ret == -17);    // EEXIST 兜底
 
         if (ceph_pool_exists) {
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "ceph pool already exists, continuing: " + outs);
             outbl.clear();
             outs.clear();
-            int32_t getRuleRet = mon_command_sync({std::string("{\"prefix\": \"osd pool get\", \"pool\": \"") + kvnsNameString + "\", \"var\": \"crush rule\"}"}, &outbl, &outs);
+            // ceph osd pool get <pool> crush rule -> "crush_rule: <rule-name>"
+            int32_t getRuleRet = mon_command_sync({std::string("{\"prefix\": \"osd pool get\", \"pool\": \"") + kvnsNameString + "\", \"var\": \"crush_rule\"}"}, &outbl, &outs);
             if (getRuleRet < 0) {
                 AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query crush rule of pool " + kvnsNameString + ": " + outs);
                 return getRuleRet;
             }
-
+            // 解析返回的 rule 名: 取最后一个 ':' 之后的字段并去除空白
             std::string ruleOut = outbl.to_str();
             std::string boundRule;
             size_t colonPos = ruleOut.rfind(':');
@@ -1063,10 +1073,10 @@ public:
                 }
             }
             if (boundRule != ruleName) {
-                AGNET_LOG(logger, ::agent::LogLevel::ERROR,
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
                           "ceph pool " + kvnsNameString + " already bound to another crush rule, expected: " +
                           ruleName + ", actual: " + boundRule);
-                return -17;
+                return -17; // EEXIST: pool 已存在但绑定 rule 与期望不一致
             }
             AGENT_LOG(logger, ::agent::LogLevel::INFO, "ceph pool " + kvnsNameString + " bound to expected crush rule: " + ruleName);
         } else if (ret < 0) {
@@ -1114,7 +1124,7 @@ public:
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "Ceph pool " + kvnsNameString + " exists, proceeding to delete");
 
         // -------- 删除 ceph pool --------
-        // 命令格式: ceph osd pool delete <pool-name> <pool-name> --yes_i_really_really_mean_it
+        // 命令格式: ceph osd pool delete <pool-name> <pool-name> --yes-i-really-really-mean-it
         outbl.clear();
         outs.clear();
         ret = mon_command_sync({std::string("{\"prefix\": \"osd pool delete\", \"pool\": \"") + kvnsNameString + "\", \"pool2\": \"" + kvnsNameString + "\", \"yes_i_really_really_mean_it\": true}"}, &outbl, &outs);
@@ -1127,14 +1137,15 @@ public:
     }
 
     // ============= 异步变体 =============
-    // asycn方法将任务投递到单worker线程，完成后调用回调，单个worker线程足够 4个crush/pool操作共享
-    // g_crush_mutex 串行执行，多worker也不会并发
+    // 四个 _asycn 方法将任务投递到单 worker 线程, 在 worker 内执行对应sync
+    // 实现, 完成后调用回调. 单 worker 足够: 4个 crush/pool 操作共享
+    // g_crush_mutex 串行执行, 多 worker 也不会并发, 反而增加资源开销.
     int32_t kv_agent_create_crush_root_async(char* kvPoolName, uint32_t nameLen,
         int32_t* osdIdList, uint32_t listSize,
         KVAgentAsyncCallback cb, void *user_data) override
     {
         return async_dispatch([this, kvPoolName, nameLen, osdIdList, listSize]() {
-            return kv_agent_create_crus_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+            return kv_agent_create_cruh_root_impl(kvPoolName, nameLen, osdIdList, listSize);
         }, std::move(cb), user_data);
     }
 
@@ -1147,36 +1158,150 @@ public:
         }, std::move(cb), user_data);
     }
 
-    int32_t kv_agent_create_ceph_pool_async(char* kvPoolName, uint32_t nameLen,
+    int32_t kv_agent_create_ceph_pool_async(char* kvPoolName, uint32_t kvpoolLen,
         char* kvnsName, uint32_t kvnsLen,
         KVAgentAsyncCallback cb, void *user_data) override
     {
-        return async_dispatch([this, kvPoolName, nameLen, kvnsName, kvnsLen]() {
-            return kv_agent_create_ceph_pool_impl(kvPoolName, nameLen, kvnsName, kvnsLen);
+        return async_dispatch([this, kvPoolName, kvpoolLen, kvnsName, kvnsLen]() {
+            return kv_agent_create_ceph_pool_impl(kvPoolName, kvpoolLen, kvnsName, kvnsLen);
         }, std::move(cb), user_data);
     }
 
-    int32_t kv_agent_delete_ceph_pool_async(char* kvPoolName, uint32_t nameLen,
-        char* kvnsName, uint32_t kvnsLen,
+    int32_t kv_agent_delete_ceph_pool_async(char* kvnsName, uint32_t nameLen,
         KVAgentAsyncCallback cb, void *user_data) override
     {
-        return async_dispatch([this, kvPoolName, nameLen, kvnsName, kvnsLen]() {
-            return kv_agent_delete_ceph_pool_impl(kvPoolName, nameLen, kvnsName, kvnsLen);
+        return async_dispatch([this, kvnsName, nameLen]() {
+            return kv_agent_delete_ceph_pool_impl(kvnsName, nameLen);
         }, std::move(cb), user_data);
     }
 
 private:
+    // ============== async worker thread pool ==============
+    // 单 worker 线程 + FIFO 任务队列. 任务在 worker 线程内执行 sync 实现,
+    // 完成后调用回调. 调用方 (service 侧) 通过回调里的 LWT 信号量 UP 唤醒
+    // LWT 任务, 避免 LWT 任务直接 pthread_cond_wait 阻塞 OS 线程.
+    struct AsyncTask {
+        std::function<int32_t()> fn;    // 包装的 sync 调用
+        KVAgentAsyncCallback cb;        // 完成回调
+        void *user_data;                // 透传参数
+    };
+
+    std::mutex async_mtx_;
+    std::condition_variable async_cv_;
+    std::queue<AsyncTask> async_queue_;
+    std::thread async_worker_;
+    bool async_worker_started_ = false;
+    bool async_stop_ = false;
+
+    void async_worker_start()
+    {
+        std::lock_guard<std::mutex> lock(async_mtx_);
+        if (async_worker_started_) {
+            return;
+        }
+        async_stop_ = false;
+        async_worker_ = std::thread([this] { async_worker_loop(); });
+        async_worker_started_ = true;
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "async worker thread started");
+    }
+
+    void async_worker_stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock(async_mtx_);
+            if (!async_worker_started_) {
+                return;
+            }
+            async_stop_ = true;
+            async_cv_.notify_all();
+        }
+        if (async_worker_.joinable()) {
+            async_worker_.join();
+        }
+        {
+            std::lock_guard<std::mutex> lock(async_mtx_);
+            async_worker_started_ = false;
+            std::queue<AsyncTask> empty;
+            async_queue_.swap(empty);
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "async worker thread stopped");
+    }
+
+    void async_worker_loop()
+    {
+        for (;;) {
+            AsyncTask task;
+            {
+                std::unique_lock<std::mutex> lock(async_mtx_);
+                async_cv_.wait(lock, [this] {
+                    return async_stop_ || !async_queue_.empty();
+                });
+                if (async_stop_ && async_queue_.empty()) {
+                    return;
+                }
+                tesk = std::move(async_queue_.front());
+                async_queue_.pop();
+            }
+            int32_t result = -EINVAL;
+            try {
+                result = task.fn();
+            } catch (const std::exception& e) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          std::string("async task exception: ") + e.what());
+                result = -EIO;
+            } catch (...) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          "async task unknown exception");
+                result = -EIO;
+            }
+            try {
+                if (task.cb) {
+                    task.cb(result, task.user_data);
+                }
+            } catch (...) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          "async callback exception swallowed");
+            }
+        }
+    }
+
+    // 投递任务到 worker. cb/user_data 在 worker 完成后被调用.
+    // 返回 0 表示已投递; 负数表示失败 (worker 未启动 / 投递异常).
+    int32_t async_dispatch(std::function<int32_t()> fn,
+                           KVAgentAsyncCallback cb, void *user_data)
+    {
+        if (!cb) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                      "async_dispatch: callback is null");
+            return -EINVAL;
+        }
+        async_worker_start();
+        {
+            std::lock_guard<std::mutex> lock(async_mutex_);
+            if (async_stop_) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          "async_dispatch: worker is stopping");
+                return -ESHUTDOWN;
+            }
+            async_queue_.push(AsyncTask{std::move(fn), std::move(cb), user_data});
+        }
+        async_cv_.notify_one();
+        return 0;
+    }
+
     // ---- DPU IP 切换: MON 连接监控 ----
     // 独立于状态机的定时器, 周期检查 monc->is_connected().
-    // 一旦从 connected 变为 disconnected, 说明当前 DPU 心跳 IP（myaddrs 第一
-    // 个）不可达, 立刻切换下一个 IP 并重新走 BOOT 流程
+    // 一旦从 connected 变为 disconnected, 说明当前 DPU 心跳 IP (myaddrs 第一
+    // 个) 不可达, 立即切换下一个 IP 并重新走 BOOT 流程
     void arm_mon_watch()
     {
         if (!mon_watch_timer) {
             return;
         }
-        // 断链轮训间隔与心跳间隔（osd_mon_heartbeat_interval）保持一致: 
-        // 正常情况下每心跳周期检查一次 MON 连接; 断链切换时也按此节奏轮训.
+        // 断链轮询间隔与心跳间隔 (osd_mon_heartbeat_interval) 保持一致: 
+        // 正常情况下每心跳周期检查一次 MON 连接; 断链切换时也按此节奏轮询.
         mon_watch_timer->expires_after(
             std::chrono::seconds(std::max(1, heartbeat_interval)));
         mon_watch_timer->async_wait(
@@ -1201,7 +1326,7 @@ private:
             if (monc && monc->is_connected()) {
                 mon_was_connected_ = true;
             } else if (mon_was_connected_ && !ip_switch_pending_) {
-                // 曾经连上过 MON, 现在断了: 当心跳 IP 不可达, 触发切换
+                // 曾经连上过 MON, 现在断了: 当前心跳 IP 不可达, 触发切换
                 mon_was_connected_ = false;
                 ip_switch_pending_ = true;
                 need_restart = true;
@@ -1211,10 +1336,10 @@ private:
         if (need_restart) {
             AGENT_LOG(logger, ::agent::LogLevel::WARNING,
                         "MON connection lost, switching DPU IP and rebooting");
-            // 完整重建（shutdown + re-init）会 stop 并销毁当前 io_context
-            // (poolctx). 不能在本回调线程（poolctx 的 io_context 线程）内销毁
+            // 完整重建 (shutdown + re-init) 会 stop 并销毁当前 io_context
+            // (poolctx). 不能在本回调线程 (poolctx 的 io_context 线程) 内销毁
             // 自己所在的 io_context, 因此切换到独立线程执行重启, 由重启后的
-            // start_heartbeat 重新 arm_mon_watch
+            // start_heartbeat 重新 arm_mon_watch.
             std::thread restart_thread([this] {
                 restart_for_ip_switch();
                 std::lock_guard l(state_lock);
@@ -1267,8 +1392,8 @@ private:
     // 重新 init 时 bindv(新顺序 addrs) -> _finish_bind -> set_myaddrs(新顺序)
     // 因此出站心跳源 IP (get_myaddrs().front()) 与 client_ident 上报顺序
     // 都会切换到新 IP, MON 更新 osdmap 后 client agent 自动连新 IP.
-    // 调用前 current_addrs_ 必须已被 ratate 为新顺序 (见 handle_mon_watch).
-    // init() 时单次尝试 (失败返回错误码), 此处循环尝试每个候选 IP 直到成功:
+    // 调用前 current_addrs_ 必须已被 rotate 为新顺序 (见 handle_mon_watch).
+    // init() 是单次尝试 (失败返回错误码), 此处循环尝试每个候选 IP 直到成功:
     // 首个候选 IP 认证超时失败后 rotate 到下一个 IP 重新 init, 所有 IP 都
     // 不可达时也按心跳间隔轮询等待, 待 MON 恢复后自动建立连接.
     void restart_for_ip_switch()
@@ -1278,7 +1403,7 @@ private:
         // 重建配置: 仅替换 addrs 为当前顺序 (首个 IP 为候选心跳 IP)
         KVAgentConfig cfg = saved_config_;
 
-        // 当前第一个 IP 已断链 (触发本次切换), 先 rotate 把移到末尾,
+        // 当前第一个 IP 已断链 (触发本次切换), 先 rotate 把它移到末尾,
         // 让下一个 IP 成为候选, 然后循环尝试直到成功.
         if (!rotate_addrs()) {
             AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
@@ -1298,7 +1423,7 @@ private:
                 AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
                             "re-init with addrs " + current_addrs_ + " failed: " + 
                             cpp_strerror(r) + ", rotating to next IP");
-                // 多 IP 时已 rotate 到下一个候选; 单 IP 时 ratate 返回 false, 但
+                // 多 IP 时已 rotate 到下一个候选; 单 IP 时 rotate 返回 false, 但
                 // 仍按心跳间隔等待 MON 恢复后重试, 保证 agent 不会进入死状态.
                 rotate_addrs();
                 std::this_thread::sleep_for(
@@ -1308,6 +1433,14 @@ private:
 
             // init 成功: 重新走 BOOT 流程, 不等待 boot_beacon_delay
             boot_beacon_delay = std::chrono::seconds{0};
+            // 若曾主动停止发心跳 (stop_heartbeat), IP 切换重启后保持静默,
+            // 不自动恢复发心跳, 需外部显式 start_heartbeat() 恢复
+            if (heartbeat_manually_stopped_) {
+                AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                            "IP switch finished but heartbeat was manually stopped, " + 
+                            "staying silent until kv_agent_start_heartbeat");
+                return;
+            }
             const int hb = start_heartbeat();
             if (hb < 0) {
                 AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
@@ -1406,7 +1539,7 @@ private:
             });
     }
 
-    // retry 定时器回调, 指针退避.
+    // retry 定时器回调, 指数退避.
     // state 已被 OSDMap 转移时静默返回; 否则翻倍 current_retry_delay
     // (封顶 BOOT_RETRY_MAX_DELAY) 并重发 boot.
     void handle_boot_retry(const boost::system::error_code& error)
@@ -1461,7 +1594,7 @@ private:
                 // cancel retry 定时器 (expires_after 自动取消旧 pending)
                 // 重置退避
                 current_retry_delay = std::chrono::seconds{0};
-                // 发送首个 beacon 并填装心跳定时器
+                // 发送首个 beacon 并装填心跳定时器
                 send_heartbeat(epoch);
                 arm_heartbeat();
             }
@@ -1654,7 +1787,7 @@ private:
     }
 
 
-    // 将查询结果字符转变为osd列表
+    // 将查询结果字符串转变为osd列表
     std::vector<int32_t> getOsds(std::string osd_list_str)
     {
         std::vector<int32_t> existing_osds;
@@ -1721,6 +1854,9 @@ private:
     // true on the first successful init and never reset.
     bool externally_initialized_ = false;
     bool heartbeat_running = false;
+    // 主动停止发心跳 (stop_heartbeat) 标记: 为 true 时 IP 切换重启后不自动
+    // 恢复发心跳, 需外部显式 start_heartbeat() 恢复
+    bool heartbeat_manually_stopped_ = false;
     AgentState state = AgentState::DOWN;
     std::chrono::seconds current_retry_delay{0};    // 0 = 哨兵值, send_boot 中初始化为 BOOT_RETRY_DELAY
     bool stopping = false;
@@ -1735,7 +1871,7 @@ private:
     std::chrono::seconds boot_beacon_delay{0};
     AgentLogger *logger = nullptr;
 
-    // -------- DPU IP 切换 feature 状态 --------
+    // ---- DPU IP 切换 feature 状态 ----
     KVAgentConfig saved_config_;                // init时保存的完整配置副本
     std::string current_addrs_;                 // 当前 addrs 字符串 (可被 rotate)
     std::unique_ptr<boost::asio::steady_timer> mon_watch_timer; // MON断链监控定时器
