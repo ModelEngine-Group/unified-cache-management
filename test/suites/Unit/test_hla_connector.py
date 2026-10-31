@@ -73,6 +73,9 @@ def hla():
         "is_mamba_align_kv_cache_spec",
         "participates_in_prefix_caching",
         "extend_non_null",
+        "kv_cache_layout_name",
+        "blnhc_layer_role",
+        "blnhc_group_role",
     }
     methods = {
         "KVCacheGroupManager": {
@@ -195,6 +198,32 @@ def test_tensor_layer_names_preserve_values_and_handle_none(hla, fields, expecte
     result = hla._kv_cache_tensor_layers(SimpleNamespace(**fields))
     assert result == expected
     assert isinstance(result, type(expected))
+
+
+@pytest.mark.parametrize(
+    "layer_name,expected",
+    [
+        ("model.layers.0.linear_attn.raw_key", "raw_key"),
+        ("model.layers.0.linear_attn.k_compress", "compressed"),
+        ("model.layers.0.linear_attn.ple_state", "ple"),
+        ("model.layers.0.self_attn.attn", ""),
+    ],
+)
+def test_blnhc_layer_role(hla, layer_name, expected):
+    assert hla.blnhc_layer_role(layer_name) == expected
+
+
+def test_blnhc_group_role_requires_every_layer(hla):
+    assert hla.blnhc_group_role(["model.layers.0.linear_attn.ple_state"]) == "ple"
+    assert (
+        hla.blnhc_group_role(
+            [
+                "model.layers.0.self_attn.attn",
+                "model.layers.0.linear_attn.k_compress",
+            ]
+        )
+        == ""
+    )
 
 
 @pytest.mark.parametrize(
@@ -622,8 +651,18 @@ def state_connector(hla):
         num_groups=2,
         lcm_block_size=4,
         groups_by_id=[
-            SimpleNamespace(block_size=4, is_full_attention=True, is_mamba_align=False),
-            SimpleNamespace(block_size=4, is_full_attention=False, is_mamba_align=True),
+            SimpleNamespace(
+                block_size=4,
+                is_full_attention=True,
+                is_mamba_align=False,
+                is_state_hash=False,
+            ),
+            SimpleNamespace(
+                block_size=4,
+                is_full_attention=False,
+                is_mamba_align=True,
+                is_state_hash=True,
+            ),
         ],
         compute_mamba_align_state_hash=MagicMock(return_value=b"checkpoint"),
     )
@@ -795,6 +834,20 @@ def test_new_request_restores_only_external_hit_increment(
     else:
         assert dispatch.load_block_ids == ([], [])
         state_connector.group_manager.compute_mamba_align_state_hash.assert_not_called()
+
+
+def test_dump_writes_state_at_every_crossed_lcm_boundary(hla, state_connector):
+    req_meta = _restore_request_meta(hla)
+    state_connector._generate_hla_dispatch_meta(
+        req_meta, 16, ([], []), request_id="req", need_load=False
+    )
+    seq_lens = [
+        call.args[1]
+        for call in (
+            state_connector.group_manager.compute_mamba_align_state_hash.call_args_list
+        )
+    ]
+    assert seq_lens == [12, 16, 20]
 
 
 @pytest.mark.parametrize("row_count", [2, 3])
