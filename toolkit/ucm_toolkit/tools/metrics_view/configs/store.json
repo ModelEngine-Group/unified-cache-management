@@ -1774,6 +1774,270 @@
       "group_by": [
         "le"
       ]
+    },
+    {
+      "name": "AsuStore Lookup Request / Error Rate: requests",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Lookup Request / Error Rate: errors",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Lookup Request / Error Rate: timeout fallback",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_timeout_fallback_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Lookup Duration: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_lookup_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Lookup Duration: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:asu_lookup_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Load Request / Error Rate: requests",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_load_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Load Request / Error Rate: submit errors",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_load_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Load Submit Duration: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_load_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_load_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Load Submit Duration: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:asu_load_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Dump Request / Error Rate: requests",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_dump_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Dump Request / Error Rate: submit errors",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_dump_submit_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Dump Submit Duration: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_dump_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_dump_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Dump Submit Duration: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:asu_dump_submit_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Bandwidth - Submitted Throughput: load submitted",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_load_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "Bps"
+    },
+    {
+      "name": "AsuStore Bandwidth - Submitted Throughput: dump submitted",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_dump_submitted_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "Bps"
+    },
+    {
+      "name": "AsuStore Cache Activity - Queried Block Rate: lookup",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: blocks/s"
+    },
+    {
+      "name": "AsuStore Cache Activity - Queried Block Rate: prefix",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: blocks/s"
+    },
+    {
+      "name": "AsuStore Cache Activity - Hit Ratio: lookup",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_lookup_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "percentunit"
+    },
+    {
+      "name": "AsuStore Cache Activity - Hit Ratio: prefix",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_lookup_prefix_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_lookup_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "percentunit"
+    },
+    {
+      "name": "AsuStore Load / Dump Wait Rate: wait calls",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_wait_requests_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Load / Dump Wait Rate: wait errors",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_wait_errors_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Load / Dump Wait Rate: wait timeouts",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_wait_timeouts_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "suffix: calls/s"
+    },
+    {
+      "name": "AsuStore Load / Dump Wait Duration: wait avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:asu_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / (sum by (model_name) (rate(ucm:asu_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "AsuStore Load / Dump Wait Duration: wait P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:asu_wait_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
     }
   ]
 }

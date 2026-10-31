@@ -264,9 +264,9 @@ ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 
 
 ASU backend 安装仅由 store 级 `ucm_connectors[].ucm_connector_config.enable_metrics` 开关控制（默认 `true`）。Direct、HMA、HLA 和 HLA LayerWise connector 原样传递 store 配置，不再重写该开关。顶层 `enable_metrics`、有效指标目录及 consumer 配置仍按 UCM 原有逻辑控制初始化与导出，不阻止 ASU backend 安装。自定义指标目录需包含 KV 定义，才能采集这些指标。
 
-安装 backend 不会初始化 UCM 采集器，也不会启动导出器。采集器未初始化时，UCM 会忽略转发的更新。如果其他组件已初始化进程级采集器和导出链路，这些样本仍可能被采集和导出。store 安装开关不提供逐 store 的数据过滤。
+安装 backend 不会初始化 UCM 采集器，也不会启动导出器。采集器未初始化时，UCM 会忽略转发的更新。如果其他组件已初始化进程级采集器和导出链路，这些样本仍可能被采集和导出。store 安装开关不提供逐 store 的 KV 数据过滤。
 
-若要让某个 ASU store 不触发安装，在其已有的 `ucm_connector_config` 中、与 `store_pipeline: "ASU"` 同级添加 `enable_metrics: false`。该键控制安装，不是逐 store 的数据过滤或关闭开关：backend 是进程级的，设为 `false` 不会卸载其他 store 已安装的 backend。直接调用 C++ 的使用者只有 store 安装开关，需自行安排 UCM 指标注册和数据读取。
+若要让某个 ASU store 不触发安装，在其已有的 `ucm_connector_config` 中、与 `store_pipeline: "ASU"` 同级添加 `enable_metrics: false`。对于 KV 指标，该键控制安装，不是逐 store 的数据过滤或关闭开关：backend 是进程级的，设为 `false` 不会卸载其他 store 已安装的 backend。直接调用 C++ 的使用者需自行安排 UCM 指标注册和数据读取。
 
 指标安装失败时记录限速的 UCM ERROR 日志，Store 继续初始化，但不安装 UCM 指标后端；已有 backend 保持不变。安装失败不会被永久缓存，后续 Store `Setup()` 可以重试。所有指标写入线程停止且 `kv::metrics::Shutdown()` 完成后，后续 setup 可以重新安装保留的 UCM adapter。仍不支持并发执行 shutdown 与指标写入，也不支持在存在活跃缓存绑定时切换 backend 类型。不兼容的缓存绑定和失败的指标更新会被跳过，并持续通过限速 ERROR 日志报告。adapter 捕获安装和更新异常；日志直接使用 UCM 日志框架，不再提供独立的日志失败兜底。
 
@@ -320,6 +320,44 @@ adapter 使用现有 UCM `UpdateStats()` 接口。采集器尚未初始化或指
 | `kv:kv_transport_task_e2e_duration_seconds` | 秒 | KV transport 任务从提交到完成的端到端耗时 |
 
 KV 定义同步与自定义目录校验见[指标开发](../../developer-guide/add-metrics.md)。
+
+### 1.7 AsuStore 原生指标
+
+这 20 项指标（16 个 Counter、4 个 Histogram）在 AsuStore 接口层通过 UCM 原生 `UpdateStats()` 采集，独立于上面的 37 项 KV 指标。现有 Store 级 `enable_metrics` 开关控制本实例的 `asu_*` 埋点；它对共享 KV backend 的安装语义保持不变。指标注册和导出仍由上层 UCM 配置控制，自定义配置需要显式包含所需指标。
+
+三种查询共用调用次数、错误和耗时。普通查询按返回向量统计命中，前缀查询统计连续命中的块数，即接口返回下标加 1；两种命中率分别计算。查询返回错误时不累计查询 block 或命中 block，超时回退则累计查询 block、命中为零。反向查询只统计调用结果和耗时，不将返回的位置换算成命中数量。
+
+Load/Dump 成功返回句柄只表示提交成功，字节数为经过 ASU 对齐后提交给 KV 的 buffer 大小之和。Wait 指标按每次调用统计；等待超时是等待错误的子集，不能相加。这些指标不表示任务最终完成数、成功完成字节或完整异步任务耗时。所有耗时单位为毫秒，包含正常返回的错误路径；不新增资源采样线程。
+
+#### Counters
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:asu_lookup_requests_total` | count | AsuStore 普通、前缀及反向查询调用次数 |
+| `ucm:asu_lookup_errors_total` | count | 查询返回错误的次数；不含超时回退为未命中 |
+| `ucm:asu_lookup_query_blocks_total` | blocks | 普通 Lookup 正常返回时查询的 block 数；包含超时回退 |
+| `ucm:asu_lookup_hit_blocks_total` | blocks | 普通 Lookup 返回的命中 block 数；超时回退为零 |
+| `ucm:asu_lookup_prefix_query_blocks_total` | blocks | 前缀查询正常返回时查询的 block 数；包含超时回退 |
+| `ucm:asu_lookup_prefix_hit_blocks_total` | blocks | 连续前缀命中块数，按返回下标加 1 计算；超时回退为零 |
+| `ucm:asu_lookup_timeout_fallback_total` | count | 三种查询因超时回退为未命中的调用次数 |
+| `ucm:asu_load_requests_total` | count | Load 调用次数，包含校验失败及提交失败 |
+| `ucm:asu_load_submit_errors_total` | count | Load 提交失败次数，包含 buffer 校验失败 |
+| `ucm:asu_load_submitted_bytes_total` | bytes | Load 成功提交的负载字节数，不代表已完成字节数 |
+| `ucm:asu_dump_requests_total` | count | Dump 调用次数，包含校验失败及提交失败 |
+| `ucm:asu_dump_submit_errors_total` | count | Dump 提交失败次数，包含 buffer 校验失败 |
+| `ucm:asu_dump_submitted_bytes_total` | bytes | Dump 成功提交的负载字节数，不代表已完成字节数 |
+| `ucm:asu_wait_requests_total` | count | Wait 调用次数；重复等待分别计数 |
+| `ucm:asu_wait_errors_total` | count | Wait 返回错误次数，包含超时及任务失败 |
+| `ucm:asu_wait_timeouts_total` | count | Wait 返回超时次数；是等待错误的子集 |
+
+#### Histograms
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `ucm:asu_lookup_duration_ms` | ms | 查询接口耗时，包含 key 转换、查询等待及结果处理 |
+| `ucm:asu_load_submit_duration_ms` | ms | Load 提交耗时，包含 buffer 转换和失败调用 |
+| `ucm:asu_dump_submit_duration_ms` | ms | Dump 提交耗时，包含 buffer 转换和失败调用 |
+| `ucm:asu_wait_duration_ms` | ms | Wait 调用耗时，包含失败和超时 |
 
 ## 2. 原始指标的使用
 
