@@ -1,4 +1,4 @@
-"""Compatibility counter for SGLang 0.5.20, which lacks the linker counter."""
+"""Compatibility counter for SGLang 0.5.20 and 0.5.21."""
 
 from __future__ import annotations
 
@@ -48,12 +48,20 @@ class LayerWiseLoadCounter:
 
     def wait_until(self, threshold: int) -> None:
         with self._lock:
-            futures = self.futures.get(self.consumer_index)
+            index = self.consumer_index
+            futures = self.futures.get(index)
         if futures is None:
             return
         if not 0 <= threshold < len(futures):
             raise IndexError(f"UCM wait has invalid layer {threshold}.")
-        futures[threshold].result()
+        try:
+            futures[threshold].result()
+        finally:
+            # These releases do not call finish_layer_wise_loading(). Reclaim
+            # the batch after its final layer wait, as their built-in linkers do.
+            if threshold == self.num_layers - 1:
+                with self._lock:
+                    self.futures.pop(index, None)
 
     def finish(self, index: int) -> bool:
         with self._lock:

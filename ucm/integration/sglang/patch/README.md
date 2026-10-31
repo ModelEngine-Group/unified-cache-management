@@ -38,7 +38,6 @@ mkdir -p /mnt/ucm-cache
 # Required for the 0.5.20/0.5.21/0.5.22 compatibility patches.
 # Native releases may leave ENABLE_UCM_PATCH unset.
 export ENABLE_UCM_PATCH=1
-export UNIFIEDCACHE_CONFIG_FILE=/path/to/ucm-sglang.yaml
 
 python -m sglang.launch_server \
 --model-path /path/to/model \
@@ -48,7 +47,10 @@ python -m sglang.launch_server \
 --unified-cache-external-linker-backend dynamic \
 --unified-cache-external-linker-config '{
   "linker": "UcmDirectLinker",
-  "linker_module_path": "ucm.integration.sglang.ucm_direct_linker"
+  "linker_module_path": "ucm.integration.sglang.ucm_direct_linker",
+  "linker_extra_config": {
+    "config_file": "/path/to/ucm-sglang.yaml"
+  }
 }'
 ```
 
@@ -56,9 +58,9 @@ The JSON config is validated during CLI parsing. The compatibility patch logs
 a warning if a config is supplied without
 `--enable-unified-cache-external-linker`; the config does not enable the linker
 by itself. Config validation still applies in that case. The linker class is
-imported and constructed in the cache-owning worker. Alternatively, set
-`linker_extra_config.config_file` in the JSON object instead of exporting
-`UNIFIEDCACHE_CONFIG_FILE`. SGLang 0.5.20 also keeps
+imported and constructed in the cache-owning worker. Set
+`linker_extra_config.config_file` in the JSON object to provide the YAML path.
+SGLang 0.5.20 also keeps
 its legacy `ucm` backend selector. This release backport uses the new config
 flag for `dynamic` only; Mooncake and MORI retain their existing configuration
 flags.
@@ -72,7 +74,9 @@ versions share the CLI and linker factory backports in `v0520`.
 releases, the import hook leaves SGLang unchanged. A failure applying a patch to
 a supported release remains an error, rather than continuing with a partial patch.
 
-SGLang 0.5.20 and 0.5.21 use the older load-completion API. A Store load
+SGLang 0.5.20 and 0.5.21 use the older load-completion API. Their compatibility
+counter releases each batch's layer futures after the final layer wait, matching
+the built-in Mooncake and UMBP linkers. A Store load
 failure can therefore surface through the layer wait instead of the newer
 request-level load-failure path available from 0.5.22 onward.
 

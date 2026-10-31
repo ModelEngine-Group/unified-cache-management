@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import threading
 import time
 from collections import OrderedDict, deque
@@ -266,9 +265,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             "rank_replicated": self.pool_group.rank_replicated,
             "device_id": int(device_module.current_device()),
         }
-        config = dict(extra_config or {})
-        config.setdefault("config_file", os.environ.get("UNIFIEDCACHE_CONFIG_FILE"))
-        return UcmDirectStoreAdapter.from_config(config, identity)
+        return UcmDirectStoreAdapter.from_config(extra_config or {}, identity)
 
     def _pool_metadata(self) -> list[UcmPoolMetadata]:
         metadata = []
