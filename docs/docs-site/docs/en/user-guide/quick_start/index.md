@@ -585,7 +585,7 @@ ucm_connectors:
       posix_io_engine: psync
 ```
 
-Select this file through `kv_connector_extra_config.config_file`:
+Select this file through `kv_connector_extra_config.UCM_CONFIG_FILE`:
 
 ```bash
 export MODEL_ID=/workspace/model
@@ -595,7 +595,7 @@ HICACHE_CONFIG='{
   "class_name": "UnifiedCacheStore",
   "interface_v1": 1,
   "kv_connector_extra_config": {
-    "config_file": "/workspace/ucm_config.yaml"
+    "UCM_CONFIG_FILE": "/workspace/ucm_config.yaml"
   }
 }'
 ```

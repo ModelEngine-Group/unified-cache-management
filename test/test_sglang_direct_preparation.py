@@ -107,11 +107,11 @@ class LayoutPreparationTest(unittest.TestCase):
         ):
             linker._create_adapter(params, None)
             self.assertEqual(factory.call_args.args[0], {})
-            linker._create_adapter(params, {"config_file": "explicit.yaml"})
+            linker._create_adapter(params, {"UCM_CONFIG_FILE": "explicit.yaml"})
             self.assertEqual(
-                factory.call_args.args[0], {"config_file": "explicit.yaml"}
+                factory.call_args.args[0], {"UCM_CONFIG_FILE": "explicit.yaml"}
             )
-        with self.assertRaisesRegex(ValueError, "linker_extra_config.config_file"):
+        with self.assertRaisesRegex(ValueError, "linker_extra_config.UCM_CONFIG_FILE"):
             adapter_module.UcmDirectStoreAdapter.from_config({}, {})
 
     def test_registered_backend_paths_preserve_pool_and_layout_names(self):

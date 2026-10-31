@@ -69,8 +69,8 @@ class UnifiedCacheStoreConfig:
             raise ValueError(
                 "Missing config: extra_config['kv_connector_extra_config']"
             )
-        if "config_file" in kvc:
-            kvc = _load_extra_config_from_yaml(kvc["config_file"])
+        if "UCM_CONFIG_FILE" in kvc:
+            kvc = _load_extra_config_from_yaml(kvc["UCM_CONFIG_FILE"])
             # Keep existing YAML files wrapping the legacy single-store config.
             kvc = kvc.get("kv_connector_extra_config", kvc)
         if "ucm_connectors" in kvc:

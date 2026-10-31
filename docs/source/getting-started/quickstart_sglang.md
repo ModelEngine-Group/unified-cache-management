@@ -115,7 +115,7 @@ ucm_connectors:
 ```
 
 Replace `/mnt/test` with your actual storage directory. Pass the YAML path through
-`kv_connector_extra_config.config_file`, using the same field name as the linker:
+`kv_connector_extra_config.UCM_CONFIG_FILE`, using the same field name as the linker:
 
 ```bash
 HICACHE_CONFIG='{
@@ -124,7 +124,7 @@ HICACHE_CONFIG='{
   "class_name":"UnifiedCacheStore",
   "interface_v1":1,
   "kv_connector_extra_config":{
-    "config_file":"/path/to/ucm_config.yaml"
+    "UCM_CONFIG_FILE":"/path/to/ucm_config.yaml"
   }
 }'
 ```

@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import yaml
 
-
 source_path = (
     Path(__file__).resolve().parents[1] / "ucm/integration/sglang/ucm_connector.py"
 )
@@ -79,7 +78,7 @@ class HiCacheConfigTest(unittest.TestCase):
 
     def test_yaml_file_preserves_hicache_sizing(self):
         path = self.write_yaml({"ucm_connectors": [self.connector]})
-        config = self.load({"kv_connector_extra_config": {"config_file": path}})
+        config = self.load({"kv_connector_extra_config": {"UCM_CONFIG_FILE": path}})
         self.assertEqual(config.name, "UcmPipelineStore")
         self.assertEqual(config.module_path, "custom.store")
         self.assertEqual(config.config["storage_backends"], ["/cache-a", "/cache-b"])
@@ -95,7 +94,7 @@ class HiCacheConfigTest(unittest.TestCase):
         config = self.load(
             {
                 "kv_connector_extra_config": {
-                    "config_file": path,
+                    "UCM_CONFIG_FILE": path,
                     "ucm_connectors": [],
                 }
             }
@@ -124,7 +123,7 @@ class HiCacheConfigTest(unittest.TestCase):
                 self.connector["ucm_connector_config"]["store_pipeline"] = pipeline
                 document = {"ucm_connectors": [self.connector]}
                 path = self.write_yaml(document)
-                for extra in (document, {"config_file": path}):
+                for extra in (document, {"UCM_CONFIG_FILE": path}):
                     with self.assertLogs(config_module.logger, level="WARNING") as logs:
                         config = self.load({"kv_connector_extra_config": extra})
                     self.assertEqual(config.config["store_pipeline"], pipeline)
@@ -137,7 +136,7 @@ class HiCacheConfigTest(unittest.TestCase):
     def test_legacy_yaml_and_logical_pool_remain_supported(self):
         path = self.write_yaml({"kv_connector_extra_config": self.connector})
         config = self.load(
-            {"kv_connector_extra_config": {"config_file": path}}, logical=True
+            {"kv_connector_extra_config": {"UCM_CONFIG_FILE": path}}, logical=True
         )
         self.assertEqual(config.name, "UcmPipelineStore")
         self.assertEqual(config.config["tensor_size"], 0)
@@ -148,7 +147,7 @@ class HiCacheConfigTest(unittest.TestCase):
             with self.subTest(connectors=connectors):
                 path = self.write_yaml({"ucm_connectors": connectors})
                 for config in (
-                    {"config_file": path},
+                    {"UCM_CONFIG_FILE": path},
                     {"ucm_connectors": connectors},
                 ):
                     with self.assertRaises(ValueError):
@@ -157,7 +156,7 @@ class HiCacheConfigTest(unittest.TestCase):
     def test_environment_and_top_level_config_file_are_not_used(self):
         path = self.write_yaml({"ucm_connectors": [self.connector]})
         os.environ["UNIFIEDCACHE_CONFIG_FILE"] = path
-        for extra in (None, {"config_file": path}):
+        for extra in (None, {"UCM_CONFIG_FILE": path}):
             with self.subTest(extra=extra):
                 with self.assertRaisesRegex(ValueError, "kv_connector_extra_config"):
                     self.load(extra)
@@ -165,7 +164,7 @@ class HiCacheConfigTest(unittest.TestCase):
     def test_missing_file_reports_the_path(self):
         path = str(self.root / "missing.yaml")
         with self.assertRaises(FileNotFoundError) as error:
-            self.load({"kv_connector_extra_config": {"config_file": path}})
+            self.load({"kv_connector_extra_config": {"UCM_CONFIG_FILE": path}})
         self.assertEqual(error.exception.filename, path)
 
 
