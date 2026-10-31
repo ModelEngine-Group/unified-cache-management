@@ -48,8 +48,8 @@ namespace agent {
 namespace {
 
 // Boot 指数退避参数（编译期宏常量, 不通过C ABI配置传入）
-constexpr int BOOT_RETRY_DELAY = 5;     // 秒, Boot 重试初始等待时间
-constexpr int BOOT_RETRY_MAX_DELAY =60; // 秒, Boot 重试等待上限
+constexpr int BOOT_RETRY_DELAY = 5;         // 秒, Boot 重试初始等待时间
+constexpr int BOOT_RETRY_MAX_DELAY = 60;    // 秒, Boot 重试等待上限
 // OSD Agent 固定监听端口, 配置未指定端口时使用此值
 // constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 65536;
@@ -679,7 +679,7 @@ public:
 
         heartbeat_running = true;
         // 外部显示 start 即视为恢复, 清除"手动停止"标志 (IP 切换后不再被跳过)
-        heartbeat_manually_stopped_= false;
+        heartbeat_manually_stopped_ = false;
         heartbeat_timer = std::make_unique<boost::asio::steady_timer>(
             poolctx->get_io_context());
         // 状态机初始化
@@ -1036,7 +1036,7 @@ public:
         int32_t ret = mon_command_sync({std::string("{\"prefix\": \"osd pool create\", \"pool\": \"") + kvnsNameString + "\", \"pg_num\": 4, \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"}, &outbl, &outs);
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
                   "kv_agent_create_ceph_pool: osd pool create ret=" +
-                  std::tp_string(ret) + ", pool=" + kvnsNameString +
+                  std::to_string(ret) + ", pool=" + kvnsNameString +
                   ", rule=" + ruleName + ", outs=" + outs);
         // 判断"已存在"以 outs 内容为准, 不依赖 ret < 0: mon 对已存在的 pool 执行
         // create 可能返回 0 但 outs 带 "already exists" (见日志 ret = 0, outs = pool 'kvns'
@@ -1145,7 +1145,7 @@ public:
         KVAgentAsyncCallback cb, void *user_data) override
     {
         return async_dispatch([this, kvPoolName, nameLen, osdIdList, listSize]() {
-            return kv_agent_create_cruh_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+            return kv_agent_create_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
         }, std::move(cb), user_data);
     }
 
@@ -1158,12 +1158,12 @@ public:
         }, std::move(cb), user_data);
     }
 
-    int32_t kv_agent_create_ceph_pool_async(char* kvPoolName, uint32_t kvpoolLen,
+    int32_t kv_agent_create_ceph_pool_async(char* kvPoolName, uint32_t kvPoolLen,
         char* kvnsName, uint32_t kvnsLen,
         KVAgentAsyncCallback cb, void *user_data) override
     {
-        return async_dispatch([this, kvPoolName, kvpoolLen, kvnsName, kvnsLen]() {
-            return kv_agent_create_ceph_pool_impl(kvPoolName, kvpoolLen, kvnsName, kvnsLen);
+        return async_dispatch([this, kvPoolName, kvPoolLen, kvnsName, kvnsLen]() {
+            return kv_agent_create_ceph_pool_impl(kvPoolName, kvPoolLen, kvnsName, kvnsLen);
         }, std::move(cb), user_data);
     }
 
@@ -1241,7 +1241,7 @@ private:
                 if (async_stop_ && async_queue_.empty()) {
                     return;
                 }
-                tesk = std::move(async_queue_.front());
+                task = std::move(async_queue_.front());
                 async_queue_.pop();
             }
             int32_t result = -EINVAL;
@@ -1279,7 +1279,7 @@ private:
         }
         async_worker_start();
         {
-            std::lock_guard<std::mutex> lock(async_mutex_);
+            std::lock_guard<std::mutex> lock(async_mtx_);
             if (async_stop_) {
                 AGENT_LOG(logger, ::agent::LogLevel::ERROR,
                           "async_dispatch: worker is stopping");
@@ -1437,7 +1437,7 @@ private:
             // 不自动恢复发心跳, 需外部显式 start_heartbeat() 恢复
             if (heartbeat_manually_stopped_) {
                 AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
-                            "IP switch finished but heartbeat was manually stopped, " + 
+                            "IP switch finished but heartbeat was manually stopped, "
                             "staying silent until kv_agent_start_heartbeat");
                 return;
             }

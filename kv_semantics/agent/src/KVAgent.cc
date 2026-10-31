@@ -136,8 +136,12 @@ extern "C" KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle *agent)
     delete agent;
 }
 
+// ============== 异步调用 API ==============
+// 回调签名: void cb(int32_t result, void *user_data)
+// result 为操作返回值; user_data 由调用方透传.
+// agent 内部线程池执行 sync 实现, 完成后在 worker 线程内调用 cb.
 extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_crush_root_async(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data
+    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void *user_data
 )
 {
     if (!agent || !agent->impl || !cb) {
@@ -145,11 +149,11 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_crush_root_async(
         return -EINVAL;
     }
 
-    return agent->impl->kv_agent_create_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+    return agent->impl->kv_agent_create_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void *ud) { cb(result, ud); }, user_data);
 }
 
 extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root_async(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void* user_data
+    kv_agent_handle *agent, char* kvPoolName, uint32_t nameLen, int32_t* osdIdList, uint32_t listSize, kv_agent_async_cb cb, void *user_data
 )
 {
     if (!agent || !agent->impl || !cb) {
@@ -157,11 +161,11 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_crush_root_async(
         return -EINVAL;
     }
 
-    return agent->impl->kv_agent_delete_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+    return agent->impl->kv_agent_delete_crush_root_async(kvPoolName, nameLen, osdIdList, listSize, [cb](int32_t result, void *ud) { cb(result, ud); }, user_data);
 }
 
 extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool_async(
-    kv_agent_handle *agent, char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen, kv_agent_async_cb cb, void* user_data
+    kv_agent_handle *agent, char* kvPoolName, uint32_t kvPoolLen, char* kvnsName, uint32_t kvnsLen, kv_agent_async_cb cb, void *user_data
 )
 {
     if (!agent || !agent->impl || !cb) {
@@ -169,11 +173,11 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool_async(
         return -EINVAL;
     }
 
-    return agent->impl->kv_agent_create_ceph_pool_async(kvPoolName, kvPoolLen, kvnsName, kvnsLen, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+    return agent->impl->kv_agent_create_ceph_pool_async(kvPoolName, kvPoolLen, kvnsName, kvnsLen, [cb](int32_t result, void *ud) { cb(result, ud); }, user_data);
 }
 
 extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(
-    kv_agent_handle *agent, char* kvnsName, uint32_t nameLen, kv_agent_async_cb cb, void* user_data
+    kv_agent_handle *agent, char* kvnsName, uint32_t nameLen, kv_agent_async_cb cb, void *user_data
 )
 {
     if (!agent || !agent->impl || !cb) {
@@ -181,5 +185,5 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(
         return -EINVAL;
     }
 
-    return agent->impl->kv_agent_delete_ceph_pool_async(kvnsName, nameLen, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+    return agent->impl->kv_agent_delete_ceph_pool_async(kvnsName, nameLen, [cb](int32_t result, void *ud) { cb(result, ud); }, user_data);
 }
