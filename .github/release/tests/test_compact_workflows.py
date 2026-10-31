@@ -675,7 +675,11 @@ def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
     assert "github.event.pull_request.draft == false" in pc_e2e_if
     sglang_e2e = jobs["test-e2e-sglang-a2"]
     assert sglang_e2e["runs-on"] == ["self-hosted", "npu", "a2"]
-    assert set(sglang_e2e["needs"]) == {"lint-and-unit-tests", "test-e2e-pc-a2"}
+    assert set(sglang_e2e["needs"]) == {
+        "pre-check",
+        "lint-and-unit-tests",
+        "test-e2e-pc-a2",
+    }
     assert "always()" in sglang_e2e["if"]
     assert "needs.lint-and-unit-tests.result == 'success'" in sglang_e2e["if"]
     assert "github.repository == 'ModelEngine-Group/unified-cache-management'" in (
@@ -720,15 +724,43 @@ def test_pr_gate_skips_work_per_job_instead_of_filtering_the_workflow() -> None:
     )
     assert "code_changed=${code_changed}" in impact["run"]
 
-    assert jobs["lint-and-unit-tests"]["if"] == (
-        "needs.pre-check.outputs.code_changed == 'true'"
+    lint = jobs["lint-and-unit-tests"]
+    # Skipping the reusable workflow call suppresses its required child checks.
+    assert "if" not in lint
+    assert lint["needs"] == "pre-check"
+    assert lint["uses"] == "./.github/workflows/lint-and-test.yml"
+    assert lint["with"]["run_checks"] == (
+        "${{ needs.pre-check.outputs.code_changed == 'true' }}"
     )
+    for name in ("test-e2e-pc-a2", "test-e2e-sglang-a2"):
+        assert "pre-check" in jobs[name]["needs"], name
+        assert (
+            "needs.pre-check.outputs.code_changed == 'true'" in jobs[name]["if"]
+        ), name
     for name in (
         "native-wheel-build",
         "test-e2e-pc-a2",
         "test-e2e-sglang-a2",
     ):
         assert "github.event.pull_request.draft == false" in jobs[name]["if"], name
+
+
+def test_lint_workflow_reports_required_checks_when_work_is_skipped() -> None:
+    workflow = _load("lint-and-test.yml")
+    run_checks = workflow["on"]["workflow_call"]["inputs"]["run_checks"]
+    assert run_checks["type"] == "boolean"
+    assert run_checks["default"] is True
+    jobs = workflow["jobs"]
+    # These names are required by the repository's merge rules.
+    for name in ("cpp-linter", "py-linter", "cpp_gtest"):
+        assert jobs[name].get("name", name) == name
+    for name, job in jobs.items():
+        assert job["if"] == "${{ inputs.run_checks }}", name
+
+    # Push checks keep running without having to provide the new input.
+    push = _load("push-check.yml")["jobs"]["lint-and-unit-tests"]
+    assert push["uses"] == "./.github/workflows/lint-and-test.yml"
+    assert "run_checks" not in push.get("with", {})
 
 
 def test_bilingual_check_runs_without_a_path_filter() -> None:
