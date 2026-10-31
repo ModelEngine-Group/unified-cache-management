@@ -167,8 +167,7 @@ class UcmDirectStoreAdapter:
         config_file = config.get("config_file")
         if not config_file:
             raise ValueError(
-                "SGLang UCM linker requires linker_extra_config.config_file "
-                "or UNIFIEDCACHE_CONFIG_FILE."
+                "SGLang UCM linker requires linker_extra_config.config_file."
             )
         path = Path(config_file)
         with path.open("r", encoding="utf-8") as stream:

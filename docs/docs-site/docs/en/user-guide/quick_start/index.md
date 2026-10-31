@@ -573,6 +573,20 @@ Create a writable, persistent `/workspace/storage` directory. The adapter requir
 `page_first` host layout and `interface_v1`; do not change them to the older
 copy-based storage API.
 
+Create `/workspace/ucm_config.yaml` inside the container, using the same YAML
+format as vLLM and configuring exactly one Store:
+
+```yaml
+ucm_connectors:
+  - ucm_connector_name: UcmPipelineStore
+    ucm_connector_config:
+      store_pipeline: Posix
+      storage_backends: /workspace/storage
+      posix_io_engine: psync
+```
+
+Select this file through `kv_connector_extra_config.config_file`:
+
 ```bash
 export MODEL_ID=/workspace/model
 HICACHE_CONFIG='{
@@ -581,10 +595,7 @@ HICACHE_CONFIG='{
   "class_name": "UnifiedCacheStore",
   "interface_v1": 1,
   "kv_connector_extra_config": {
-    "ucm_connector_name": "UcmPipelineStore",
-    "ucm_connector_config": {
-      "storage_backends": "/workspace/storage"
-    }
+    "config_file": "/workspace/ucm_config.yaml"
   }
 }'
 ```
@@ -611,8 +622,10 @@ python3 -m sglang.launch_server \
 ```
 
 Adjust the model and parallelism to the available GPUs. The adapter supplies
-block geometry and selects `Posix`; a vLLM YAML file with `ucm_connectors` is not
-the same configuration interface.
+block geometry; UCM storage settings are read from the YAML file above. HiCache
+defaults to `Posix` when `store_pipeline` is omitted. Other configured pipelines
+are passed to the Store unchanged, with a warning that incompatibility may cause
+startup to fail.
 
 ### Verify the service and external cache {#sglang-verify-the-service-and-external-cache}
 

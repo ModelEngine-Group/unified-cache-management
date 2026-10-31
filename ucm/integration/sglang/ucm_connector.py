@@ -1,6 +1,5 @@
 import hashlib
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,21 +22,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
-    cfg_path = os.environ.get("UNIFIEDCACHE_CONFIG_FILE")
-    if not cfg_path:
-        return None
-
-    p = Path(cfg_path)
-    if not p.is_file():
-        return None
-
-    with p.open("r", encoding="utf-8") as f:
+def _load_extra_config_from_yaml(config_file: str) -> Dict[str, Any]:
+    with Path(config_file).open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
     if not isinstance(data, dict):
         raise ValueError(
-            f"UNIFIEDCACHE_CONFIG_FILE YAML root must be a dict, got {type(data)}"
+            f"UCM configuration YAML root must be a dict, got {type(data)}"
         )
     return data
 
@@ -73,21 +64,24 @@ class UnifiedCacheStoreConfig:
         storage_config: "HiCacheStorageConfig", mem_pool_host: "HostKVCache"
     ) -> "UnifiedCacheStoreConfig":
         extra = dict(getattr(storage_config, "extra_config", None) or {})
-        if "kv_connector_extra_config" not in extra:
-            yaml_extra = _load_extra_config_from_yaml_env()
-            if yaml_extra is not None:
-                extra.update(yaml_extra)
-        if not extra:
-            raise ValueError(
-                "Missing extra_config: storage_config.extra_config is None and "
-                "UNIFIEDCACHE_CONFIG_FILE is not set or cannot be loaded"
-            )
-
         kvc = extra.get("kv_connector_extra_config")
         if kvc is None:
             raise ValueError(
                 "Missing config: extra_config['kv_connector_extra_config']"
             )
+        if "config_file" in kvc:
+            kvc = _load_extra_config_from_yaml(kvc["config_file"])
+            # Keep existing YAML files wrapping the legacy single-store config.
+            kvc = kvc.get("kv_connector_extra_config", kvc)
+        if "ucm_connectors" in kvc:
+            connectors = kvc["ucm_connectors"]
+            if not isinstance(connectors, list) or len(connectors) != 1:
+                raise ValueError(
+                    "SGLang UCM HiCache requires exactly one ucm_connectors entry."
+                )
+            if not isinstance(connectors[0], dict):
+                raise ValueError("UCM connector entry must be a mapping.")
+            kvc = connectors[0]
 
         is_logical_pool = getattr(mem_pool_host, "kv_buffer", None) is None
         if is_logical_pool:
@@ -116,7 +110,14 @@ class UnifiedCacheStoreConfig:
             )
 
         cfg = dict(ucm_cfg)
-        cfg["store_pipeline"] = "Posix"
+        store_pipeline = cfg.setdefault("store_pipeline", "Posix")
+        if store_pipeline != "Posix":
+            logger.warning(
+                "SGLang UCM HiCache is configured with store_pipeline=%r; "
+                "pipelines other than 'Posix' may be incompatible and cause "
+                "startup to fail.",
+                store_pipeline,
+            )
         storage_backends = [path for path in cfg["storage_backends"].split(":") if path]
         pp_rank = int(getattr(storage_config, "pp_rank", 0))
         pp_size = int(getattr(storage_config, "pp_size", 1))

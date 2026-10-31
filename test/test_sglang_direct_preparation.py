@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -78,6 +79,41 @@ pipeline_module = load_source(
 
 
 class LayoutPreparationTest(unittest.TestCase):
+    def test_linker_yaml_path_requires_explicit_config(self):
+        linker = object.__new__(linker_module.UcmDirectLinker)
+        linker._tp_rank = linker._dp_rank = linker._attn_dp_rank = 0
+        linker._tp_size = 1
+        linker.pool_group = types.SimpleNamespace(rank_replicated=True)
+        params = types.SimpleNamespace(
+            pp_rank=0, pp_size=1, attn_cp_rank=0, attn_cp_size=1
+        )
+        with (
+            patch.dict(os.environ, {"UNIFIEDCACHE_CONFIG_FILE": "environment.yaml"}),
+            patch.object(linker_module, "os", os, create=True),
+            patch.object(
+                linker_module,
+                "get_model",
+                lambda: types.SimpleNamespace(model_path="model"),
+                create=True,
+            ),
+            patch.object(
+                linker_module,
+                "device_module",
+                types.SimpleNamespace(current_device=lambda: 0),
+            ),
+            patch.object(
+                adapter_module.UcmDirectStoreAdapter, "from_config"
+            ) as factory,
+        ):
+            linker._create_adapter(params, None)
+            self.assertEqual(factory.call_args.args[0], {})
+            linker._create_adapter(params, {"config_file": "explicit.yaml"})
+            self.assertEqual(
+                factory.call_args.args[0], {"config_file": "explicit.yaml"}
+            )
+        with self.assertRaisesRegex(ValueError, "linker_extra_config.config_file"):
+            adapter_module.UcmDirectStoreAdapter.from_config({}, {})
+
     def test_registered_backend_paths_preserve_pool_and_layout_names(self):
         adapter = self.adapter()
         del adapter._ensure_store_schema
