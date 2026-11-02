@@ -33,6 +33,11 @@ from .cleanup_remote import ProductionRemote, RemoteError
 from .manifest import RELEASE_MANIFEST_FILENAME as MANIFEST_FILENAME
 
 CLEANUP_RECORD_PREFIX = "release-cleanup-"
+_RECOVERY_DRAFT_BODY = (
+    "<!-- ucm-release:begin -->\n"
+    "Temporary Draft holding verified UCM cleanup records until deletion completes.\n"
+    "<!-- ucm-release:end -->"
+)
 _SOURCE_WORKFLOWS = domain.RELEASE_WORKFLOW_EVENTS
 _ARTIFACT = re.compile(
     r"ucm-(?:release|nightly)-cleanup(?:-(?:open|plan))?-run-(?P<run>[1-9][0-9]*)"
@@ -51,6 +56,7 @@ class ReleaseCatalog:
     orphans: tuple[dict[str, Any], ...]
     active_tags: frozenset[str]
     blocked: dict[str, str]
+    recovery_draft_ids: frozenset[int] = frozenset()
 
 
 def _tag(value: object) -> str | None:
@@ -577,6 +583,7 @@ class ReleaseInventory:
         """Resolve every source format to the same frozen deletion target."""
         record = domain.validate_record(record, self.repository)
         tag = record["tag"]
+        is_draft = version_config.classify_tag(tag)["release_type"] == "draft"
         references = [(r["kind"], r["reference"]) for r in record["resources"]]
         runs = {r["id"] for r in record["runs"]}
         releases = self._matching_releases(tag)
@@ -601,7 +608,19 @@ class ReleaseInventory:
                 )
             releases.append(release)
         pending = []
+        missing_draft_sha = None
         commit = self._tag_commit(tag)
+        recovery_drafts = [r for r in releases if r.get("body") == _RECOVERY_DRAFT_BODY]
+        if recovery_drafts and (
+            len(releases) != 1
+            or not is_draft
+            or recovery_drafts[0].get("draft") is not True
+            or (
+                commit is not None
+                and recovery_drafts[0].get("target_commitish") != commit
+            )
+        ):
+            raise CleanupError("recovery Draft is no longer bound to the selected Tag")
         if commit is not None:
             for run_id, plan in self._legacy_plans(
                 tag, commit, recorded_runs=sorted(runs)
@@ -624,6 +643,17 @@ class ReleaseInventory:
                     (r["kind"], r["reference"]) for r in snapshot["resources"]
                 )
                 runs.add(run_id)
+                if (
+                    is_draft
+                    and (not releases or recovery_drafts)
+                    and source_sha != commit
+                ):
+                    raise CleanupError(
+                        "Draft recovery run does not match the live Tag commit"
+                    )
+                if not releases and is_draft:
+                    missing_draft_sha = commit
+                    continue
                 if len(releases) != 1:
                     raise CleanupError(
                         "recording cleanup requires one exact Tag Release"
@@ -631,6 +661,8 @@ class ReleaseInventory:
                 pending.append(
                     PendingRecovery(tag, run, source_sha, plan, releases[0]["id"])
                 )
+        if is_draft and not releases and not runs and not references:
+            raise CleanupError("no Draft cleanup evidence remains for this Tag")
         expected = set(references)
         expected_runs = {
             (binding["id"], binding["attempt"]) for binding in record["runs"]
@@ -688,15 +720,70 @@ class ReleaseInventory:
                     "github-release",
                     f"{tag}#{r['id']}",
                     r["id"],
-                    holds_recovery_data=r["id"] in holders,
+                    # A restored Draft may hold legacy plans while newer attempt
+                    # snapshots live only on Actions. Preserve both on a GHCR skip.
+                    holds_recovery_data=r["id"] in holders or r in recovery_drafts,
                 )
                 for r in sorted(releases, key=lambda r: r["id"])
             ),
         )
-        return CleanupResolution(target, tuple(pending))
+        return CleanupResolution(target, tuple(pending), missing_draft_sha)
 
-    def persist_recovery(self, resolution: CleanupResolution) -> None:
-        """Save and read back recovered attempt evidence before destructive work."""
+    def _restore_draft(self, tag: str, commit: str) -> int:
+        """Create a cleanup-only Draft for the same live Git ref."""
+        if self._tag_commit(tag) != commit or self._matching_releases(tag):
+            raise CleanupError("Draft Tag or Release changed before cleanup recovery")
+        raw = self.remote.request(
+            "POST",
+            f"/repos/{self.repository}/releases",
+            data=json.dumps(
+                {
+                    "tag_name": tag,
+                    "target_commitish": commit,
+                    "name": tag,
+                    "draft": True,
+                    "prerelease": True,
+                    "body": _RECOVERY_DRAFT_BODY,
+                }
+            ).encode(),
+        )
+        try:
+            created = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise CleanupError(
+                "GitHub returned an invalid recovery Draft response"
+            ) from error
+        if (
+            not isinstance(created, dict)
+            or created.get("draft") is not True
+            or created.get("body") != _RECOVERY_DRAFT_BODY
+            or release_tag(created) != tag
+        ):
+            raise CleanupError("created recovery Draft does not match the selected Tag")
+        return _positive(created.get("id"), "recovery Draft ID")
+
+    def prepare_cleanup(
+        self, record: object, resolution: CleanupResolution
+    ) -> CleanupTarget:
+        """Bind any missing Draft and read back its recovery snapshots before deletion."""
+        commit = resolution.missing_draft_sha
+        if commit is not None:
+            self.remote.ensure_idle(resolution.target.run_ids)
+            preview = resolution.target
+            tag = preview.tag
+            release_id = self._restore_draft(tag, commit)
+            resolution = self.resolve_record(record)
+            if (
+                resolution.missing_draft_sha is not None
+                or self._tag_commit(tag) != commit
+                or [r.identifier for r in resolution.target.releases] != [release_id]
+                or resolution.target.run_ids != preview.run_ids
+                or resolution.target.registry != preview.registry
+                or not resolution.pending_recovery
+            ):
+                raise CleanupError(
+                    "recovery Draft or publication evidence changed before cleanup"
+                )
         if resolution.pending_recovery:
             self.remote.ensure_idle(resolution.target.run_ids)
         for pending in resolution.pending_recovery:
@@ -708,6 +795,7 @@ class ReleaseInventory:
                 release_id=pending.release_id,
                 output_dir=Path("out/cleanup"),
             )
+        return resolution.target
 
 
 class _Collector:
@@ -1292,6 +1380,12 @@ class _Collector:
                 for tag, reason in self.blocked.items()
                 if tag in self.records
             },
+            frozenset(
+                rid
+                for rid, release in self.releases.items()
+                if release.get("draft") is True
+                and release.get("body") == _RECOVERY_DRAFT_BODY
+            ),
         )
 
 
