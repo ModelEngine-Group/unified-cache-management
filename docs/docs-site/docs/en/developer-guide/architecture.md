@@ -37,6 +37,6 @@ A health wrapper can prevent unhealthy stages from accepting new operations. Eng
 | Engine | Entry point | Important difference |
 | --- | --- | --- |
 | vLLM / vLLM-Ascend | `ucm/integration/vllm/ucm_connector.py` | Scheduler/Worker roles; direct, layerwise or model-specific Connector selected by layout |
-| SGLang | `ucm/integration/sglang/unifiedcache_store.py` | HiCache owns host caching; the adapter uses Posix directly |
+| SGLang | `ucm/integration/sglang/unifiedcache_store.py` | HiCache owns host caching; the adapter defaults to Posix, preserves other configured pipelines and warns about possible incompatibility |
 
 A common Store interface does not give these engines identical hooks or configuration formats. A backend extension owns storage resources; an engine or cache-layout extension belongs in integration. Continue with [how caching works](capability-principles.md) and [Store extension](extending-store.md).

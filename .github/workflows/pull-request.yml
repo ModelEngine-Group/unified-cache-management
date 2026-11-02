@@ -95,8 +95,10 @@ jobs:
 
   lint-and-unit-tests:
     needs: pre-check
-    if: needs.pre-check.outputs.code_changed == 'true'
+    # Keep the call so required child checks report Skipped on docs-only PRs.
     uses: ./.github/workflows/lint-and-test.yml
+    with:
+      run_checks: ${{ needs.pre-check.outputs.code_changed == 'true' }}
 
   native-wheel-build:
     name: Native Wheel Matrix
@@ -150,10 +152,11 @@ jobs:
   test-e2e-sglang-a2:
     timeout-minutes: 30
     runs-on: [self-hosted, npu, a2]
-    needs: [lint-and-unit-tests, test-e2e-pc-a2]
+    needs: [pre-check, lint-and-unit-tests, test-e2e-pc-a2]
     if: >-
       ${{
         always() &&
+        needs.pre-check.outputs.code_changed == 'true' &&
         needs.lint-and-unit-tests.result == 'success' &&
         github.repository == 'ModelEngine-Group/unified-cache-management' &&
         github.event.pull_request.draft == false
@@ -289,8 +292,9 @@ jobs:
   test-e2e-pc-a2:
     timeout-minutes: 20
     runs-on: [self-hosted, npu, a2]
-    needs: lint-and-unit-tests
+    needs: [pre-check, lint-and-unit-tests]
     if: >-
+      needs.pre-check.outputs.code_changed == 'true' &&
       github.repository == 'ModelEngine-Group/unified-cache-management' &&
       github.event.pull_request.draft == false
     permissions:
