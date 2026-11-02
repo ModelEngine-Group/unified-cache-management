@@ -1,10 +1,8 @@
 """HiCache YAML configuration without SGLang or native UCM dependencies."""
 
-import ast
 import logging
 import os
 import re
-import sys
 import tempfile
 import types
 import unittest
@@ -14,19 +12,11 @@ from typing import Any, Dict, Optional
 from unittest.mock import patch
 
 import yaml
+from common.sglang_utils import load_source
 
-source_path = (
-    Path(__file__).resolve().parents[1] / "ucm/integration/sglang/ucm_connector.py"
-)
-tree = ast.parse(source_path.read_text(encoding="utf-8"))
-tree.body = [
-    node
-    for node in tree.body
-    if getattr(node, "name", None)
-    in {"_load_extra_config_from_yaml", "UnifiedCacheStoreConfig"}
-]
-config_module = types.ModuleType("_test_hicache_config")
-config_module.__dict__.update(
+config_module = load_source(
+    "ucm/integration/sglang/ucm_connector.py",
+    definitions={"_load_extra_config_from_yaml", "UnifiedCacheStoreConfig"},
     re=re,
     dataclass=dataclass,
     Path=Path,
@@ -37,8 +27,6 @@ config_module.__dict__.update(
     logger=logging.getLogger("test_hicache_config"),
     get_world_group=lambda: types.SimpleNamespace(local_rank=3),
 )
-sys.modules[config_module.__name__] = config_module
-exec(compile(tree, str(source_path), "exec"), config_module.__dict__)
 
 
 class HiCacheConfigTest(unittest.TestCase):
@@ -141,6 +129,16 @@ class HiCacheConfigTest(unittest.TestCase):
         self.assertEqual(config.name, "UcmPipelineStore")
         self.assertEqual(config.config["tensor_size"], 0)
         self.assertEqual(config.config["block_size"], 0)
+
+    def test_invalid_legacy_yaml_wrapper_reports_mapping_error(self):
+        for value in (None, "invalid", [], 1, False):
+            with self.subTest(value=value):
+                path = self.write_yaml({"kv_connector_extra_config": value})
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "kv_connector_extra_config in UCM YAML must be a mapping",
+                ):
+                    self.load({"kv_connector_extra_config": {"UCM_CONFIG_FILE": path}})
 
     def test_rejects_ambiguous_or_invalid_connector_entries(self):
         for connectors in ([], [self.connector, self.connector], {}, ["invalid"]):

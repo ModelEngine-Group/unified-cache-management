@@ -7,7 +7,7 @@ import time
 import types
 import unittest
 
-from test_sglang_direct_preparation import linker_module
+from common.sglang_utils import linker_module
 
 linker_module.deque = collections.deque
 linker_module.Empty = queue.Empty

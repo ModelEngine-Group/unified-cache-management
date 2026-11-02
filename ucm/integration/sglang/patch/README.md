@@ -65,6 +65,12 @@ its legacy `ucm` backend selector. This release backport uses the new config
 flag for `dynamic` only; Mooncake and MORI retain their existing configuration
 flags.
 
+When upgrading, rename `linker_extra_config.config_file` to
+`linker_extra_config.UCM_CONFIG_FILE`. The old key and the
+`UNIFIEDCACHE_CONFIG_FILE` environment-variable fallback are no longer supported.
+HiCache reads its YAML path from `kv_connector_extra_config.UCM_CONFIG_FILE`;
+existing inline HiCache Store configurations remain supported.
+
 The shared config parser, CLI hook, and dynamic linker factory live in `v0520`.
 The `v0521` package reuses them for SGLang 0.5.21 and 0.5.22, with a registry
 hook for the public factory signature. It also adds the shared

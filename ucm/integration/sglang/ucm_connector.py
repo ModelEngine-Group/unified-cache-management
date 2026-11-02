@@ -73,6 +73,10 @@ class UnifiedCacheStoreConfig:
             kvc = _load_extra_config_from_yaml(kvc["UCM_CONFIG_FILE"])
             # Keep existing YAML files wrapping the legacy single-store config.
             kvc = kvc.get("kv_connector_extra_config", kvc)
+            if not isinstance(kvc, dict):
+                raise ValueError(
+                    "kv_connector_extra_config in UCM YAML must be a mapping."
+                )
         if "ucm_connectors" in kvc:
             connectors = kvc["ucm_connectors"]
             if not isinstance(connectors, list) or len(connectors) != 1:

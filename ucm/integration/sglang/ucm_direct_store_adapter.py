@@ -166,6 +166,11 @@ class UcmDirectStoreAdapter:
     ) -> "UcmDirectStoreAdapter":
         config_file = config.get("UCM_CONFIG_FILE")
         if not config_file:
+            if "config_file" in config:
+                raise ValueError(
+                    "linker_extra_config.config_file has been renamed to "
+                    "linker_extra_config.UCM_CONFIG_FILE; update the linker config."
+                )
             raise ValueError(
                 "SGLang UCM linker requires linker_extra_config.UCM_CONFIG_FILE."
             )

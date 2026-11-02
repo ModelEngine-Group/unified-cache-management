@@ -59,6 +59,8 @@ class LayerWiseLoadCounter:
         finally:
             # These releases do not call finish_layer_wise_loading(). Reclaim
             # the batch after its final layer wait, as their built-in linkers do.
+            # This assumes every batch reaches its final layer wait. Skipped
+            # batches (for example, cancellation) remain until reset().
             if threshold == self.num_layers - 1:
                 with self._lock:
                     self.futures.pop(index, None)
