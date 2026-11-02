@@ -307,6 +307,21 @@ def apply_all_patches() -> None:
                     "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
                 )
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
+
+                # Fix: with hybrid GDN (mamba "align") + MTP + async, the
+                # accepted count is the address of the request's settled
+                # recurrent state (slot = state_idx + accepted - 1) but only
+                # lives in batch-row-indexed transients.  A defer_block_free
+                # scheduling pause drops the paused request's row/mapping
+                # while its state stays parked; on return the count defaults
+                # to 1 and the next forward reads a stale state (garbled
+                # output).  The patch preserves the counts per request id
+                # across pauses; see its docstring.
+                logger.info(
+                    "UCM patching vllm-ascend 0.30.0 for request-accepted state "
+                    "preservation ..."
+                )
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.request_accepted_state_patch
             case _:
                 pass
 
