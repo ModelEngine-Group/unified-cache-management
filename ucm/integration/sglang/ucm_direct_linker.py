@@ -170,12 +170,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self.adapter = adapter or self._create_adapter(params, extra_config)
             self.adapter.register_device_pools(self._pool_metadata())
             self._select_lookup_owner(tp_group, params.attn_cp_size)
-            self._load_prefetch_layers = getattr(
-                self.adapter, "load_prefetch_layers", 2
-            )
-            logger.info(
-                "UCM linker load prefetch layers=%d", self._load_prefetch_layers
-            )
         except Exception:
             logger.exception(
                 "UCM linker initialization failed: layers=%d tp=%d/%d replicated=%s.",
@@ -471,9 +465,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
         transfers: list[PoolTransfer],
         *,
         for_io: bool,
+        lazy_addresses: bool = False,
     ) -> list[UcmLayerTransfer]:
         by_name = {transfer.name: transfer for transfer in transfers}
         result: list[UcmLayerTransfer] = []
+        locations_by_pool: dict[PoolName, np.ndarray] = {}
         for bundle in self._bundles:
             members = [(entry, by_name.get(entry.name)) for entry in bundle.entries]
             if any(transfer is None or not transfer.keys for _, transfer in members):
@@ -490,6 +486,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
             fragments = bundle.fragments
             layer_tensor_size_list = bundle.tensor_size_list
+            addresses = None
+            address_builder = None
             if for_io:
                 prepared_locations = []
                 for entry, transfer in members:
@@ -497,37 +495,53 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         raise ValueError(
                             f"UCM {entry.name} transfer has no device indices."
                         )
-                    prepared_locations.append(
-                        np.asarray(
+                    if entry.name not in locations_by_pool:
+                        locations_by_pool[entry.name] = np.asarray(
                             entry.prepare_locations(transfer.host_indices),
                             dtype=np.uint64,
                         )
-                    )
-                # Each layer slice is contiguous and can be passed to Store
-                # without converting every page's pointers to Python lists.
-                tensor_count = len(layer_tensor_size_list)
-                addresses = np.empty(
-                    (len(bundle.layers), len(page_keys), tensor_count),
-                    dtype=np.uint64,
-                )
-                for layer_index, layer in enumerate(bundle.layers):
-                    column = 0
-                    for (entry, transfer), locations in zip(
-                        members, prepared_locations
-                    ):
-                        entry_rows, schema = self._entry_layer_rows(
-                            entry, layer, locations
+                    prepared_locations.append(locations_by_pool[entry.name])
+
+                def build_addresses(
+                    layer_index,
+                    rows=None,
+                    bundle=bundle,
+                    locations=tuple(prepared_locations),
+                    page_count=len(page_keys),
+                ):
+                    layer = bundle.layers[layer_index]
+                    if rows is None:
+                        rows = np.empty(
+                            (page_count, len(bundle.tensor_size_list)), dtype=np.uint64
                         )
-                        if entry_rows.shape != (len(page_keys), len(schema)):
+                    column = 0
+                    for entry, pool_locations in zip(bundle.entries, locations):
+                        entry_rows, schema = self._entry_layer_rows(
+                            entry, layer, pool_locations
+                        )
+                        if entry_rows.shape != (page_count, len(schema)):
                             raise ValueError(
                                 f"UCM bundle {bundle.name} is missing "
                                 f"{entry.name} layer={layer}."
                             )
                         next_column = column + len(schema)
-                        addresses[layer_index, :, column:next_column] = entry_rows
+                        rows[:, column:next_column] = entry_rows
                         column = next_column
-            else:
-                addresses = None
+                    return rows
+
+                if lazy_addresses:
+                    address_builder = build_addresses
+                else:
+                    addresses = np.empty(
+                        (
+                            len(bundle.layers),
+                            len(page_keys),
+                            len(layer_tensor_size_list),
+                        ),
+                        dtype=np.uint64,
+                    )
+                    for i in range(len(bundle.layers)):
+                        build_addresses(i, rows=addresses[i])
             result.append(
                 UcmLayerTransfer(
                     store_group=bundle.name,
@@ -538,6 +552,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     tensor_size_list=layer_tensor_size_list,
                     page_keys=page_keys,
                     addresses=addresses,
+                    address_builder=address_builder,
                     fragments=fragments,
                     hit_policy=str(getattr(hit_policy, "value", hit_policy)),
                 )
@@ -665,35 +680,39 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     page_transfers = [
                         transfer
                         for request in pending.values()
-                        for transfer in self._page_transfers(request, for_io=True)
+                        for transfer in self._page_transfers(
+                            request, for_io=True, lazy_addresses=True
+                        )
                     ]
                     prepared_transfers = self.adapter.prepare_load(page_transfers)
-                    # Submit a bounded number of future layers, but publish
-                    # readiness in logical-layer order. CacheStore can progress
-                    # queued tasks in C++ while Python waits for this layer.
+                    # Keep submitting without blocking on an earlier layer.
+                    # Reap ready layers between submissions so the first layer
+                    # can start computing before the entire batch is submitted.
                     in_flight: dict[int, list[Any]] = {}
-                    next_layer = 0
+                    next_complete = 0
                     try:
                         for layer in range(self.num_layers):
                             active_layer = layer
-                            if page_transfers:
-                                limit = min(
-                                    self.num_layers,
-                                    layer + self._load_prefetch_layers + 1,
+                            in_flight[layer] = self.adapter.submit_prepared_load_layer(
+                                prepared_transfers, layer
+                            )
+                            while next_complete <= layer:
+                                tasks = in_flight[next_complete]
+                                if not all(self.adapter.check(t) for t in tasks):
+                                    break
+                                self.adapter.wait(in_flight.pop(next_complete))
+                                self.layer_done_counter.complete(
+                                    counter_index, next_complete
                                 )
-                                while next_layer < limit:
-                                    tasks = self.adapter.submit_prepared_load_layer(
-                                        prepared_transfers, next_layer
-                                    )
-                                    in_flight[next_layer] = tasks
-                                    next_layer += 1
+                                next_complete += 1
 
-                                # A logical layer can span several pool bundles
-                                # and requests; release it only after every task
-                                # for that layer has finished.
-                                tasks = in_flight.pop(layer)
-                                self.adapter.wait(tasks)
-                            self.layer_done_counter.complete(counter_index, layer)
+                        while next_complete < self.num_layers:
+                            active_layer = next_complete
+                            self.adapter.wait(in_flight.pop(next_complete))
+                            self.layer_done_counter.complete(
+                                counter_index, next_complete
+                            )
+                            next_complete += 1
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.

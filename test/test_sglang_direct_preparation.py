@@ -212,6 +212,29 @@ class LayoutPreparationTest(unittest.TestCase):
         lookup = linker._page_transfers(transfers, for_io=False)[0]
         self.assertIs(lookup.fragments, result.fragments)
         self.assertIsNone(lookup.addresses)
+
+        calls = []
+        original = linker._entry_layer_rows
+
+        def rows(entry, layer, locations):
+            calls.append((entry.name, layer))
+            return original(entry, layer, locations)
+
+        linker._entry_layer_rows = rows
+        lazy = linker._page_transfers(transfers, for_io=True, lazy_addresses=True)[0]
+        self.assertIsNone(lazy.addresses)
+        self.assertEqual(calls, [])
+        adapter = self.adapter()
+        prepared = adapter.prepare_load([lazy])
+        self.assertEqual(calls, [])
+        submitted = []
+        self.load_data = lambda ids, indexes, addresses: submitted.append(addresses)
+        for i, layer in enumerate(lazy.layers):
+            tasks = adapter.submit_prepared_load_layer(prepared, layer)
+            np.testing.assert_array_equal(submitted[-1], result.addresses[i])
+            self.assertIs(tasks[0].addresses, submitted[-1])
+        self.assertEqual(len(calls), len(linker.pools) * len(lazy.layers))
+
         linker.pools["kv"].prepare_locations = lambda indices: indices[:1]
         with self.assertRaisesRegex(ValueError, "missing kv layer"):
             linker._page_transfers(transfers, for_io=True)

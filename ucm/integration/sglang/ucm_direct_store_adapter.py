@@ -10,7 +10,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import yaml
@@ -42,17 +42,20 @@ class UcmLayerTransfer:
     shard_size: int
     tensor_size_list: tuple[int, ...]
     page_keys: tuple[str, ...]
-    # I/O uses a contiguous (layer, page, fragment) uint64 array.
-    # Lookup does not materialize pointers.
+    # Eager I/O uses a contiguous (layer, page, fragment) uint64 array.
+    # Loads can instead build one layer on submission; lookup needs no pointers.
     addresses: np.ndarray | None
     fragments: tuple[tuple[int, int], ...]
     hit_policy: str = "all_pages"
+    address_builder: Callable[[int], np.ndarray] | None = None
 
 
 @dataclass(frozen=True)
 class _StoreTask:
     store: UcmKVStoreBaseV1
     task: Task
+    # Keep lazily generated address arrays alive until the native task is reaped.
+    addresses: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -140,17 +143,8 @@ class UcmDirectStoreAdapter:
             connector_name == "UcmPipelineStore"
             and self._store_config.get("store_pipeline") == "Cache|Posix"
         )
-        prefetch_layers_config = self._store_config.pop(
-            "sglang_load_prefetch_layers", 2
-        )
-        try:
-            self.load_prefetch_layers = min(8, max(0, int(prefetch_layers_config)))
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid sglang_load_prefetch_layers=%r; fallback to 2.",
-                prefetch_layers_config,
-            )
-            self.load_prefetch_layers = 2
+        # Accepted for compatibility; loads now submit beyond the old window.
+        self._store_config.pop("sglang_load_prefetch_layers", None)
         self._stores: dict[str, UcmKVStoreBaseV1] = {}
         self._lookup_store_signatures: dict[str, tuple[str, tuple[str, ...]]] = {}
         self._schemas: dict[str, tuple[tuple[int, int], ...]] = {}
@@ -765,7 +759,11 @@ class UcmDirectStoreAdapter:
             try:
                 layout = self._transfer_layout(transfer)
                 addresses = transfer.addresses
-                if (
+                if not (
+                    not is_offload
+                    and addresses is None
+                    and transfer.address_builder is not None
+                ) and (
                     not isinstance(addresses, np.ndarray)
                     or addresses.shape
                     != (
@@ -834,7 +832,11 @@ class UcmDirectStoreAdapter:
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
-                    addresses = transfer.addresses[shard_index]
+                    addresses = (
+                        transfer.address_builder(shard_index)
+                        if transfer.address_builder is not None and not is_offload
+                        else transfer.addresses[shard_index]
+                    )
                     args = (
                         (shard_index, addresses)
                         if item.prepared_io is not None
@@ -849,7 +851,7 @@ class UcmDirectStoreAdapter:
                         if is_offload and prerequisite_handle
                         else operation(*args)
                     )
-                    tasks.append(_StoreTask(item.store, task))
+                    tasks.append(_StoreTask(item.store, task, addresses))
             except Exception:
                 # A later shard may fail to submit after earlier shards have
                 # started. Reap those handles before their device buffers can
