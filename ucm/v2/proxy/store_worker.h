@@ -50,9 +50,10 @@ public:
                              AddressedToken token, const IoContext& ctx) = 0;
     virtual Status SubmitPut(std::size_t jobId, std::vector<BlockPayload> payloads,
                              AddressedToken token, const IoContext& ctx) = 0;
+    virtual Status SubmitOffload(std::size_t jobId, AddressedToken plan) = 0;
 
     virtual std::vector<IoResult> GetFinished() = 0;
-    virtual std::vector<IoResult> Wait(const std::vector<std::size_t>& jobIds) = 0;
+    virtual Status Wait(std::size_t jobId) = 0;
 };
 
 }  // namespace UC::Proxy

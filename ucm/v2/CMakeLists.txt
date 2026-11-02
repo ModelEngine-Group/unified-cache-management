@@ -10,6 +10,14 @@ target_link_options(ucm_build_options INTERFACE
     -Wl,-z,relro,-z,now
     $<$<CONFIG:Release>:-s>)
 
+add_library(ucm_include INTERFACE)
+target_include_directories(ucm_include INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/transfer
+    ${CMAKE_CURRENT_SOURCE_DIR}/store
+    ${CMAKE_CURRENT_SOURCE_DIR}/proxy
+)
+
 add_subdirectory(vendor)
 add_subdirectory(common)
 add_subdirectory(transfer)

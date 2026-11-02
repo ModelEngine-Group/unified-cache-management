@@ -48,6 +48,7 @@ Status ValidateTransfer(std::size_t jobId, const std::vector<BlockPayload>& payl
 StoreEntry::StoreEntry(std::unique_ptr<LoadedStore> loaded) : loaded_(std::move(loaded))
 {
     prefetchable_ = loaded_->Store()->AsPrefetchable();
+    offloadable_ = loaded_->Store()->AsOffloadable();
 }
 
 Status StoreEntry::OnNewRequest(const RequestContext& request)
@@ -78,7 +79,7 @@ void StoreEntry::OnRequestFinished(const RequestId& requestId)
     requests_.erase(it);
 }
 
-Expected<std::optional<std::vector<std::uint8_t>>> StoreEntry::Lookup(
+Expected<std::pair<std::vector<std::uint8_t>, bool>> StoreEntry::Lookup(
     const RequestId& requestId, const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
@@ -86,29 +87,29 @@ Expected<std::optional<std::vector<std::uint8_t>>> StoreEntry::Lookup(
     if (prefetchable_) { return prefetchable_->Lookup(requestId, keys); }
     auto res = loaded_->Store()->Lookup(keys);
     if (!res) { return res.Error(); }
-    return std::move(res).Value();
+    return std::make_pair(std::move(res).Value(), false);
 }
 
-Expected<std::optional<std::int64_t>> StoreEntry::LookupOnPrefix(const RequestId& requestId,
-                                                                 const std::vector<BlockId>& keys)
+Expected<std::pair<std::int64_t, bool>> StoreEntry::LookupOnPrefix(const RequestId& requestId,
+                                                                   const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
     if (prefetchable_) { return prefetchable_->LookupOnPrefix(requestId, keys); }
     auto res = loaded_->Store()->LookupOnPrefix(keys);
     if (!res) { return res.Error(); }
-    return res.Value();
+    return std::make_pair(res.Value(), false);
 }
 
-Expected<std::optional<std::int64_t>> StoreEntry::LookupOnReverse(const RequestId& requestId,
-                                                                  const std::vector<BlockId>& keys)
+Expected<std::pair<std::int64_t, bool>> StoreEntry::LookupOnReverse(
+    const RequestId& requestId, const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
     if (prefetchable_) { return prefetchable_->LookupOnReverse(requestId, keys); }
     auto res = loaded_->Store()->LookupOnReverse(keys);
     if (!res) { return res.Error(); }
-    return res.Value();
+    return std::make_pair(res.Value(), false);
 }
 
 void StoreEntry::Touch(const RequestId& requestId, const std::vector<BlockId>& keys)
@@ -185,6 +186,21 @@ void StoreEntry::CompletePut(const RequestId& requestId, bool success)
     guard.Value()->reservedBlocks.clear();
 }
 
+std::vector<AddressedToken> StoreEntry::PrepareOffload()
+{
+    std::vector<AddressedToken> plans;
+    if (offloadable_ == nullptr) { return plans; }
+    AddressedToken plan = offloadable_->PrepareOffload();
+    /* An idle store mints an empty token (no keys): nothing to drain. */
+    if (!plan.keys.empty()) { plans.push_back(std::move(plan)); }
+    return plans;
+}
+
+void StoreEntry::CompleteOffload(const AddressedToken& plan)
+{
+    if (offloadable_ != nullptr) { offloadable_->CompleteOffload(plan); }
+}
+
 Status StoreEntry::SubmitPrefetch(std::size_t jobId, AddressedToken token)
 {
     if (inFlightJobs_.count(jobId) != 0) {
@@ -228,6 +244,22 @@ Status StoreEntry::SubmitPut(std::size_t jobId, std::vector<BlockPayload> payloa
     return status;
 }
 
+Status StoreEntry::SubmitOffload(std::size_t jobId, AddressedToken plan)
+{
+    if (inFlightJobs_.count(jobId) != 0) {
+        return Status::InvalidParam("job '{}' is already in flight", jobId);
+    }
+    /* A store that never could have minted the plan cannot execute it:
+     * a synthesized success here would falsely license the plan's
+     * pin release. */
+    if (offloadable_ == nullptr) {
+        return Status::InvalidParam("store cannot execute offload plans");
+    }
+    auto status = offloadable_->Offload(jobId, std::move(plan));
+    if (status.Success()) { inFlightJobs_.insert(jobId); }
+    return status;
+}
+
 std::vector<IoResult> StoreEntry::GetFinished()
 {
     /* Completions -- synthesized or store-reported -- only exist for
@@ -249,42 +281,25 @@ std::vector<IoResult> StoreEntry::GetFinished()
     return results;
 }
 
-std::vector<IoResult> StoreEntry::Wait(const std::vector<std::size_t>& jobIds)
+Status StoreEntry::Wait(std::size_t jobId)
 {
-    std::vector<IoResult> results;
-    std::vector<std::size_t> remaining;
-    if (completedJobs_.empty()) {
-        remaining = jobIds;
-    } else {
-        /* Pending ids are unique, so an index gives O(1) hits while the
-         * jobIds loop keeps the results in waited order. */
-        std::unordered_map<std::size_t, IoResult*> pending;
-        pending.reserve(completedJobs_.size());
-        for (auto& result : completedJobs_) { pending.emplace(result.jobId, &result); }
-        for (const auto& jobId : jobIds) {
-            auto it = pending.find(jobId);
-            if (it == pending.end()) {
-                remaining.push_back(jobId);
-                continue;
-            }
-            inFlightJobs_.erase(jobId);
-            results.push_back(std::move(*it->second));
-            pending.erase(it);
-        }
-        completedJobs_.erase(std::remove_if(completedJobs_.begin(), completedJobs_.end(),
-                                            [&pending](const IoResult& result) {
-                                                return pending.count(result.jobId) == 0;
-                                            }),
-                             completedJobs_.end());
+    /* Ids unknown here or already consumed are rejected: only in-flight
+     * jobs reach the store, so the store never sees a Wait for a foreign
+     * id. */
+    if (inFlightJobs_.count(jobId) == 0) {
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
-    if (remaining.empty()) { return results; }
-    auto finished = loaded_->Store()->Wait(remaining);
-    results.reserve(results.size() + finished.size());
-    for (const auto& [jobId, success] : finished) {
-        inFlightJobs_.erase(jobId);
-        results.push_back(IoResult{jobId, success});
+    inFlightJobs_.erase(jobId);
+    /* Synthetic completions (submits the store never saw) are served from
+     * the pending queue without a store round trip. */
+    auto it = std::find_if(completedJobs_.begin(), completedJobs_.end(),
+                           [jobId](const IoResult& result) { return result.jobId == jobId; });
+    if (it != completedJobs_.end()) {
+        const bool success = it->success;
+        completedJobs_.erase(it);
+        return success ? Status::Ok() : Status::General("job '{}' failed", jobId);
     }
-    return results;
+    return loaded_->Store()->Wait(jobId);
 }
 
 Expected<StoreEntry::RequestState*> StoreEntry::RequireRequest(const RequestId& requestId)

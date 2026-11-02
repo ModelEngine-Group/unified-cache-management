@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "routing/strategy.h"
 #include "store_entry.h"
@@ -43,11 +44,11 @@ public:
     /*== Scheduler ==*/
     Status OnNewRequest(const RequestContext& request) override;
     void OnRequestFinished(const RequestId& requestId) override;
-    Expected<std::optional<std::vector<std::uint8_t>>> Lookup(
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
         const RequestId& requestId, const std::vector<BlockId>& keys) override;
-    Expected<std::optional<std::int64_t>> LookupOnPrefix(const RequestId& requestId,
-                                                         const std::vector<BlockId>& keys) override;
-    Expected<std::optional<std::int64_t>> LookupOnReverse(
+    Expected<std::pair<std::int64_t, bool>> LookupOnPrefix(
+        const RequestId& requestId, const std::vector<BlockId>& keys) override;
+    Expected<std::pair<std::int64_t, bool>> LookupOnReverse(
         const RequestId& requestId, const std::vector<BlockId>& keys) override;
     void Touch(const RequestId& requestId, const std::vector<BlockId>& keys) override;
     Expected<AddressedToken> PreparePrefetch(const RequestId& requestId) override;
@@ -58,6 +59,8 @@ public:
     Expected<AddressedToken> PreparePut(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;
     void CompletePut(const RequestId& requestId, bool success) override;
+    std::vector<AddressedToken> PrepareOffload() override;
+    void CompleteOffload(const AddressedToken& plan) override;
 
     /*== Worker ==*/
     Status SubmitPrefetch(std::size_t jobId, AddressedToken token) override;
@@ -65,8 +68,9 @@ public:
                      const IoContext& ctx) override;
     Status SubmitPut(std::size_t jobId, std::vector<BlockPayload> payloads, AddressedToken token,
                      const IoContext& ctx) override;
+    Status SubmitOffload(std::size_t jobId, AddressedToken plan) override;
     std::vector<IoResult> GetFinished() override;
-    std::vector<IoResult> Wait(const std::vector<std::size_t>& jobIds) override;
+    Status Wait(std::size_t jobId) override;
 
 private:
     struct RequestState {

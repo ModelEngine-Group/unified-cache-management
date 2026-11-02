@@ -384,12 +384,12 @@ Load 方向 `payloads[i]` 是目的地（推理侧），Dump 方向 `payloads[i]
 | `Load(jobId, job, token)` | 重载：Store → 推理侧 | 异步；token 为匹配 Pin 铸造的读端凭据；Status 仅表示受理 |
 | `Dump(jobId, job, token)` | 卸载：推理侧 → Store | 异步；token 为匹配 Alloc 铸造的写端凭据；真实准入 store 的数据在 Commit 前不可见 |
 | `GetFinished()` | 取走自上次调用以来的完成事件 | 恰好一次；消费即清除 |
-| `Wait(jobIds)` | 阻塞等待指定作业 | 未知 / 已消费的 id 被忽略 |
+| `Wait(jobId)` | 阻塞等待指定作业 | Ok 表示传输成功，错误状态携带失败详情；未知 / 已消费的 id 返回 InvalidParam |
 
 **异步作业模型**要点：
 
 - jobId 由调用方分配，在飞行作业中必须唯一（`v2/store/store.h` `Load`）；
-- `Load/Dump` 返回的 Status 只表示“受理并已启动”，传输成败由完成事件的 `success` 位携带（`v2/store/store.h` `Load`）；
+- `Load/Dump` 返回的 Status 只表示“受理并已启动”，传输成败由完成事件携带：`GetFinished` 的 `success` 位、`Wait` 的 Status（`v2/store/store.h` `Load`）；
 - **线程契约**：控制面方法须单线程调用或外部串行；完成事件的恰好一次语义隐含单消费者（`v2/store/store.h` `Store` 线程契约注释）；
 - **析构契约**：销毁 Store 前必须 Wait 所有在途作业，否则行为未定义（`v2/store/store.h` `Store` 析构契约注释）。
 
@@ -485,7 +485,7 @@ struct IoResult {
 };
 ```
 
-`SubmitPrefetch(jobId, token)` / `SubmitGet(jobId, payloads, token, ctx)` / `SubmitPut(...)` 提交作业；`GetFinished()` / `Wait(jobIds)` 回收完成。Worker 只认 jobId 与 token，不感知请求——这是 Peer 分流能在数据面工作的前提（定义见 `v2/proxy/store_worker.h` `IoContext`/`IoResult`/`StoreWorker`）。
+`SubmitPrefetch(jobId, token)` / `SubmitGet(jobId, payloads, token, ctx)` / `SubmitPut(...)` 提交作业；`GetFinished()` / `Wait(jobId)` 回收完成。Worker 只认 jobId 与 token，不感知请求——这是 Peer 分流能在数据面工作的前提（定义见 `v2/proxy/store_worker.h` `IoContext`/`IoResult`/`StoreWorker`）。
 
 ### 6.3 StoreEntry —— 单存储适配
 
@@ -515,7 +515,7 @@ class StorePipe : private StorePipeTailsHolder, public StoreEntry { ... };
 - **路由时机**：仅在 `OnNewRequest` 时调用 `RoutingStrategy::Select` 一次并缓存在请求状态，该请求所有后续窗口固定路由到该分支（`v2/proxy/store_peer.cc` `OnNewRequest`）；
 - **token 加帧 / 解帧**：见 [3.4](#34-层间契约与信息传递)。解帧失败（无 magic / 帧截断 / 分支越界）返回 InvalidParam（`v2/proxy/store_peer.cc` `UnwrapToken`）；
 - **jobId 跨分支唯一**：Peer 级在途表统一查重（`v2/proxy/store_peer.cc` `SubmitPrefetch` jobId 查重）；
-- **完成聚合**：`GetFinished` 汇聚全部分支；`Wait` 按分支分组下发（`v2/proxy/store_peer.cc` `GetFinished`/`Wait`）。
+- **完成聚合**：`GetFinished` 汇聚全部分支；`Wait` 按作业路由到所属分支（`v2/proxy/store_peer.cc` `GetFinished`/`Wait`）。
 
 ### 6.6 StoreLoader —— 插件加载
 
@@ -614,7 +614,7 @@ branch   := store 节点 | pipe 节点
 | 关窗时机 | CompleteX 须在所提交作业完成事件被消费之后 | `v2/proxy/store_scheduler.h` 窗口协议注释（时序约束） |
 | 作业唯一 | jobId 在途不可重复提交（Entry 内、Peer 跨分支） | `v2/proxy/store_entry.cc` `ValidateTransfer` jobId 查重；`v2/proxy/store_peer.cc` `SubmitPrefetch` jobId 查重 |
 | 输入校验 | payloads 数 = token.keys 数 | `v2/proxy/store_entry.cc` `ValidateTransfer` |
-| 完成合并 | GetFinished 聚合各分支与合成事件；Wait 按分支分组、未知 id 忽略 | `v2/proxy/store_peer.cc` `GetFinished`/`Wait`；`v2/proxy/store_entry.cc` `GetFinished`/`Wait` |
+| 完成合并 | GetFinished 聚合各分支与合成事件；Wait 按作业路由、未知 id 返回 InvalidParam | `v2/proxy/store_peer.cc` `GetFinished`/`Wait`；`v2/proxy/store_entry.cc` `GetFinished`/`Wait` |
 | 兜底收尾 | OnRequestFinished 对未关窗口：Unpin / Commit（false） / CompletePrefetch（false） | `v2/proxy/store_entry.cc` `OnRequestFinished` |
 
 ### 7.6 组装校验（StoreAssembler）
@@ -724,8 +724,8 @@ sequenceDiagram
     W->>N: 校验后转发
     N->>T: Load(jobId, JobDescriptor, token)
     T-->>E: Status(受理)
-    E->>W: Wait([jobId])
-    W->>T: Wait([jobId])
+    E->>W: Wait(jobId)
+    W->>T: Wait(jobId)
     T-->>E: (jobId, success) 恰好一次
     E->>S: CompleteGet(requestId)
     S->>N: 转发
@@ -753,8 +753,8 @@ sequenceDiagram
     E->>W: SubmitPut(jobId, payloads, token, IoContext)
     W->>N: 转发
     N->>T: Dump(jobId, JobDescriptor, token)
-    E->>W: Wait([jobId])
-    W->>T: Wait([jobId])
+    E->>W: Wait(jobId)
+    W->>T: Wait(jobId)
     T-->>E: (jobId, success)
     E->>S: CompletePut(requestId, success=true)
     S->>N: 转发
@@ -789,8 +789,8 @@ sequenceDiagram
     W->>N: 转发
     N->>P: Prefetch(jobId, plan)
     Note over P: 消费 plan.payload,驱动下层 Load 至本层目的
-    E->>W: Wait([jobId])
-    W->>P: Wait([jobId])
+    E->>W: Wait(jobId)
+    W->>P: Wait(jobId)
     P-->>E: (jobId, success)
     E->>S: CompletePrefetch(requestId, success=true)
     S->>N: 转发
@@ -845,13 +845,13 @@ sequenceDiagram
 
 ```bash
 # 配置(仓库根 CMakeLists.txt)
-cmake -B build -DUCM_MAJOR_VERSION=2 -DUCM_BUILD_UNIT_TESTS=ON
+cmake -B build -DUCM_MAJOR_VERSION=2 -DBUILD_UNIT_TESTS=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build        # 157 个用例
 ```
 
 - `UCM_MAJOR_VERSION=2`：仅构建 v2（为空走 legacy 流程）；
-- `UCM_DOWNLOAD_DEPENDENCE=ON`（默认）：经 FetchContent 拉取 fmt 11.2.0 / pybind11 v3.0.1 / googletest，支持 gitcode 镜像自动回退（`v2/vendor/helper.cmake`）；
+- `DOWNLOAD_DEPENDENCE=ON`（默认）：经 FetchContent 拉取 fmt 11.2.0 / pybind11 v3.0.1 / googletest，支持 gitcode 镜像自动回退（`v2/vendor/helper.cmake`）；
 - 产物：`ucm_proxy.cpython-*.so`（Python 模块）、`libucm_store_cache.so`、`libucm_store_posix.so`（插件）。
 
 ### 10.2 扩展点总览
@@ -895,8 +895,7 @@ public:
     UC::Status Dump(std::size_t jobId, const UC::JobDescriptor& job,
                     UC::AddressedToken token) override;
     std::vector<std::pair<std::size_t, bool>> GetFinished() override;
-    std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& ids) override;
+    UC::Status Wait(std::size_t jobId) override;
 
     // 可选能力:按需 override(基类提供退化默认实现)
     UC::Expected<UC::AddressedToken> Pin(const std::vector<UC::BlockId>& ids) override;

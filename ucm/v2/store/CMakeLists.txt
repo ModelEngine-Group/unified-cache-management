@@ -1,13 +1,10 @@
-add_library(ucm_store INTERFACE)
-target_include_directories(ucm_store INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
-
 set(UCM_STORE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 function(ucm_add_store NAME)
     file(GLOB_RECURSE UCM_STORE_CC_SOURCES CONFIGURE_DEPENDS "*.h" "*.cc")
     add_library(ucm_store_${NAME}_core OBJECT ${UCM_STORE_CC_SOURCES})
     target_include_directories(ucm_store_${NAME}_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(ucm_store_${NAME}_core PUBLIC ucm_build_options ucm_common ucm_store)
+    target_link_libraries(ucm_store_${NAME}_core PUBLIC ucm_build_options ucm_include ucm_common)
 
     set(UCM_STORE_FACTORY_SOURCES "")
     list(LENGTH ARGN UCM_STORE_ARGN_COUNT)

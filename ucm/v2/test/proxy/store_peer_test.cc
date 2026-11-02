@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <gtest/gtest.h>
 #include <memory>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -67,6 +68,23 @@ PeerHandle MakePeer(std::initializer_list<std::pair<bool, bool>> configs, std::s
     std::vector<std::unique_ptr<StoreEntry>> branches;
     for (const auto& [prefetchable, tokened] : configs) {
         auto entry = MakeEntry(prefetchable, tokened);
+        handle.fakes.push_back(entry.fake);
+        branches.push_back(std::move(entry.entry));
+    }
+    handle.peer = std::make_unique<StorePeer>(std::move(branches), std::move(routing));
+    return handle;
+}
+
+PeerHandle MakePeer(std::initializer_list<std::tuple<bool, bool, bool>> configs,
+                    std::size_t fallback = 0)
+{
+    auto routing = std::make_unique<FakeRoutingStrategy>();
+    routing->fallback = fallback;
+    PeerHandle handle;
+    handle.routing = routing.get();
+    std::vector<std::unique_ptr<StoreEntry>> branches;
+    for (const auto& [prefetchable, tokened, offloadable] : configs) {
+        auto entry = MakeEntry(prefetchable, tokened, offloadable);
         handle.fakes.push_back(entry.fake);
         branches.push_back(std::move(entry.entry));
     }
@@ -198,7 +216,10 @@ TEST(StorePeerTest, PreparePrefetchWrapsPlanForRouting)
     handle.peer->OnNewRequest(MakeContext("r"));
     handle.fakes[0]->signalPrefetchable = true;
     const std::vector<BlockId> keys = MakeKeys(1, 2);
-    ASSERT_FALSE(handle.peer->Lookup("r", keys).Value().has_value());
+    auto signal = handle.peer->Lookup("r", keys);
+    ASSERT_TRUE(signal);
+    EXPECT_TRUE(signal.Value().second);
+    EXPECT_EQ(signal.Value().first, std::vector<std::uint8_t>(2, 1));
     auto plan = handle.peer->PreparePrefetch("r");
     ASSERT_TRUE(plan);
     EXPECT_EQ(plan.Value().keys, keys);
@@ -355,7 +376,7 @@ TEST(StorePeerTest, GetFinishedAggregatesAllBranches)
         handle.peer->SubmitGet(1, {MakePayload(16)}, token1.Value(), IoContext{0}).Success());
 }
 
-TEST(StorePeerTest, WaitRoutesByBranchAndIgnoresUnknownIds)
+TEST(StorePeerTest, WaitRoutesByBranchAndRejectsUnknownIds)
 {
     auto handle = MakePeer({
         {true, true},
@@ -380,15 +401,17 @@ TEST(StorePeerTest, WaitRoutesByBranchAndIgnoresUnknownIds)
     handle.fakes[1]->finishedQueue = {
         {2, false}
     };
-    auto results = handle.peer->Wait({1, 2, 404});
-    EXPECT_EQ(results.size(), 2);
-    EXPECT_TRUE(Contains(results, 1, true));
-    EXPECT_TRUE(Contains(results, 2, false));
-    ASSERT_EQ(handle.fakes[0]->waits.size(), 1);
-    EXPECT_EQ(handle.fakes[0]->waits[0], std::vector<std::size_t>{1});
-    ASSERT_EQ(handle.fakes[1]->waits.size(), 1);
-    EXPECT_EQ(handle.fakes[1]->waits[0], std::vector<std::size_t>{2});
-    EXPECT_TRUE(handle.peer->Wait({1, 2}).empty());
+    EXPECT_TRUE(handle.peer->Wait(1).Success());
+    auto storeFailed = handle.peer->Wait(2);
+    ASSERT_TRUE(storeFailed.Failure());
+    EXPECT_EQ(storeFailed, Status::General());
+    EXPECT_EQ(handle.peer->Wait(404), Status::InvalidParam());
+    ASSERT_EQ(handle.fakes[0]->waits.size(), 1u);
+    EXPECT_EQ(handle.fakes[0]->waits[0], 1u);
+    ASSERT_EQ(handle.fakes[1]->waits.size(), 1u);
+    EXPECT_EQ(handle.fakes[1]->waits[0], 2u);
+    EXPECT_EQ(handle.peer->Wait(1), Status::InvalidParam());
+    EXPECT_EQ(handle.peer->Wait(2), Status::InvalidParam());
     EXPECT_TRUE(handle.peer->GetFinished().empty());
 }
 
@@ -533,6 +556,94 @@ TEST(StorePeerTest, SubmitRejectsTruncatedFrame)
     ASSERT_TRUE(rejected.Failure());
     EXPECT_EQ(rejected, Status::InvalidParam());
     EXPECT_TRUE(handle.fakes[0]->prefetches.empty());
+}
+
+TEST(StorePeerTest, PrepareOffloadFansOutPendingBranchPlans)
+{
+    auto handle = MakePeer({
+        {true, true, true },
+        {true, true, false},
+        {true, true, true }
+    });
+    handle.fakes[0]->offloadPending = true;
+    handle.fakes[0]->offloadKeys = MakeKeys(1, 2);
+    auto plans = handle.peer->PrepareOffload();
+    ASSERT_EQ(plans.size(), 1u);
+    EXPECT_EQ(plans[0].keys, MakeKeys(1, 2));
+    EXPECT_NE(plans[0].payload, (std::vector<std::byte>{std::byte{0xA}, std::byte{0xB}}));
+    EXPECT_EQ(handle.fakes[0]->prepareOffloadCalls, 1u);  // pending: contributed one plan
+    EXPECT_EQ(handle.fakes[1]->prepareOffloadCalls, 0u);  // non-offloadable: never consulted
+    EXPECT_EQ(handle.fakes[2]->prepareOffloadCalls, 1u);  // idle: consulted, contributed nothing
+}
+
+TEST(StorePeerTest, CompleteOffloadRoutesByFrameAndStaysSilentOnForeignTokens)
+{
+    auto handle = MakePeer({
+        {true, true, true},
+        {true, true, true}
+    });
+    handle.fakes[1]->offloadPending = true;
+    handle.fakes[1]->offloadKeys = MakeKeys(1, 2);
+    auto plans = handle.peer->PrepareOffload();
+    ASSERT_EQ(plans.size(), 1u);
+
+    handle.peer->CompleteOffload(plans[0]);
+    ASSERT_EQ(handle.fakes[1]->completedOffloads.size(), 1u);
+    // The minting branch saw the plan exactly as it minted it: the peer's
+    // routing frame never reaches the store.
+    EXPECT_EQ(handle.fakes[1]->completedOffloads[0].payload,
+              (std::vector<std::byte>{std::byte{0xA}, std::byte{0xB}}));
+    EXPECT_TRUE(handle.fakes[0]->completedOffloads.empty());
+
+    handle.peer->CompleteOffload(AddressedToken{});
+    EXPECT_EQ(handle.fakes[1]->completedOffloads.size(), 1u);
+    EXPECT_TRUE(handle.fakes[0]->completedOffloads.empty());
+}
+
+TEST(StorePeerTest, SubmitOffloadRoutesByFrameAndJoinsUnifiedStream)
+{
+    auto handle = MakePeer({
+        {true, true, true},
+        {true, true, true}
+    });
+    handle.fakes[1]->offloadPending = true;
+    handle.fakes[1]->offloadKeys = MakeKeys(1, 2);
+    auto plans = handle.peer->PrepareOffload();
+    ASSERT_EQ(plans.size(), 1u);
+
+    EXPECT_TRUE(handle.peer->SubmitOffload(7, plans[0]).Success());
+    ASSERT_EQ(handle.fakes[1]->offloads.size(), 1u);
+    EXPECT_EQ(handle.fakes[1]->offloads[0].first, 7u);
+    EXPECT_EQ(handle.fakes[1]->offloads[0].second.payload,
+              (std::vector<std::byte>{std::byte{0xA}, std::byte{0xB}}));
+    EXPECT_TRUE(handle.fakes[0]->offloads.empty());
+
+    auto duplicate = handle.peer->SubmitOffload(7, plans[0]);
+    ASSERT_TRUE(duplicate.Failure());
+    EXPECT_EQ(duplicate, Status::InvalidParam());
+
+    handle.fakes[1]->finishedQueue = {
+        {7, false}
+    };
+    auto finished = handle.peer->GetFinished();
+    ASSERT_EQ(finished.size(), 1u);
+    EXPECT_EQ(finished[0].jobId, 7);
+    EXPECT_FALSE(finished[0].success);
+    EXPECT_TRUE(handle.peer->GetFinished().empty());
+    EXPECT_TRUE(handle.peer->SubmitOffload(7, plans[0]).Success());
+}
+
+TEST(StorePeerTest, SubmitOffloadRejectsForeignTokens)
+{
+    auto handle = MakePeer({
+        {true, true, true}
+    });
+    AddressedToken foreign;
+    foreign.keys = MakeKeys(1, 1);
+    auto rejected = handle.peer->SubmitOffload(7, foreign);
+    ASSERT_TRUE(rejected.Failure());
+    EXPECT_EQ(rejected, Status::InvalidParam());
+    EXPECT_TRUE(handle.fakes[0]->offloads.empty());
 }
 
 }  // namespace
