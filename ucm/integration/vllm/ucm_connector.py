@@ -2981,9 +2981,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
+        logger.info("[UCM_DIAG_WAIT_ENTRY] pid=%s rank=%s batch=%s object=%s layer=%s has_meta=%s need_load=%s pending=%s",
+                    os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0), id(self), layer_name,
+                    bool(self._connector_metadata), self.need_load, list(self.load_tasks))
         if not self._connector_metadata:
+            logger.info("[UCM_DIAG_WAIT_SKIP] pid=%s rank=%s layer=%s reason=no_metadata", os.getpid(), self.tp_rank, layer_name)
             return
         if not self.need_load:
+            logger.info("[UCM_DIAG_WAIT_SKIP] pid=%s rank=%s layer=%s reason=need_load_false", os.getpid(), self.tp_rank, layer_name)
             return
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
@@ -3884,6 +3889,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             the same.
 
         """
+        logger.info("[UCM_DIAG_START_DISPATCH] pid=%s impl=%s object=%s batch=%s has_meta=%s",
+                    os.getpid(), type(self.connector).__qualname__, id(self.connector),
+                    getattr(self.connector, "_diag_batch", 0), self.connector.has_connector_metadata())
         self.connector.start_load_kv(forward_context, **kwargs)
 
     @_record_connector_interface_duration
@@ -3898,6 +3906,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             layer_name: the name of that layer
         """
+        logger.info("[UCM_DIAG_WAIT_DISPATCH] pid=%s layer=%s impl=%s object=%s has_meta=%s need_load=%s",
+                    os.getpid(), layer_name, type(self.connector).__qualname__, id(self.connector),
+                    self.connector.has_connector_metadata(), getattr(self.connector, "need_load", None))
         self.connector.wait_for_layer_load(layer_name)
 
     @_record_connector_interface_duration
@@ -3975,6 +3986,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         This function should be called by the model runner every time
         after the model execution.
         """
+        logger.info("[UCM_DIAG_CLEAR] pid=%s impl=%s object=%s batch=%s need_load=%s pending=%s",
+                    os.getpid(), type(self.connector).__qualname__, id(self.connector),
+                    getattr(self.connector, "_diag_batch", 0), getattr(self.connector, "need_load", None),
+                    list(getattr(self.connector, "load_tasks", {})))
         self.connector.clear_connector_metadata()
 
     @_record_connector_interface_duration
