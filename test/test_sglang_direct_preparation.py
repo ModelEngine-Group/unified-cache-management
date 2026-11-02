@@ -1,83 +1,59 @@
 """Exercise Python preparation without SGLang, torch or native UCM libraries."""
 
-import ast
-import copy
 import hashlib
-import json
-import logging
-import re
+import os
 import sys
-import threading
 import types
 import unittest
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, List
 from unittest.mock import patch
 
 import numpy as np
-
-
-def load_source(relative_path, definitions=None, **dependencies):
-    path = Path(__file__).resolve().parents[1] / relative_path
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
-    if definitions is not None:
-        tree.body = [
-            node for node in tree.body if getattr(node, "name", None) in definitions
-        ]
-    name = "_test_" + path.stem
-    module = types.ModuleType(name)
-    module.__dict__.update(
-        dataclass=dataclass,
-        np=np,
-        copy=copy,
-        hashlib=hashlib,
-        json=json,
-        logging=logging,
-        re=re,
-        threading=threading,
-        Path=Path,
-        UnifiedCacheLinker=object,
-        get_device_module=lambda: None,
-        Any=Any,
-        List=List,
-        Task=object,
-        UcmKVStoreBaseV1=object,
-        torch=types.SimpleNamespace(Tensor=object),
-    )
-    module.__dict__.update(dependencies)
-    sys.modules[name] = module
-    code = compile(
-        tree,
-        str(path),
-        "exec",
-        flags=__import__("__future__").annotations.compiler_flag,
-    )
-    exec(code, module.__dict__)
-    return module
-
-
-adapter_module = load_source("ucm/integration/sglang/ucm_direct_store_adapter.py")
-linker_module = load_source(
-    "ucm/integration/sglang/ucm_direct_linker.py",
-    **{
-        name: getattr(adapter_module, name)
-        for name in ("UcmDirectStoreAdapter", "UcmLayerTransfer", "UcmPoolMetadata")
-    },
-)
-pipeline_module = load_source(
-    "ucm/store/pipeline/connector.py",
-    definitions={
-        "UcmPipelineStoreTransTask",
-        "UcmPipelineStore",
-    },
-)
+from common.sglang_utils import adapter_module, linker_module, pipeline_module
 
 
 class LayoutPreparationTest(unittest.TestCase):
+    def test_linker_yaml_path_requires_explicit_config(self):
+        linker = object.__new__(linker_module.UcmDirectLinker)
+        linker._tp_rank = linker._dp_rank = linker._attn_dp_rank = 0
+        linker._tp_size = 1
+        linker.pool_group = types.SimpleNamespace(rank_replicated=True)
+        params = types.SimpleNamespace(
+            pp_rank=0, pp_size=1, attn_cp_rank=0, attn_cp_size=1
+        )
+        with (
+            patch.dict(os.environ, {"UNIFIEDCACHE_CONFIG_FILE": "environment.yaml"}),
+            # Let a regression reading os.environ reach the assertions below.
+            patch.object(linker_module, "os", os, create=True),
+            patch.object(
+                linker_module,
+                "get_model",
+                lambda: types.SimpleNamespace(model_path="model"),
+                create=True,
+            ),
+            patch.object(
+                linker_module,
+                "device_module",
+                types.SimpleNamespace(current_device=lambda: 0),
+            ),
+            patch.object(
+                adapter_module.UcmDirectStoreAdapter, "from_config"
+            ) as factory,
+        ):
+            linker._create_adapter(params, None)
+            self.assertEqual(factory.call_args.args[0], {})
+            linker._create_adapter(params, {"UCM_CONFIG_FILE": "explicit.yaml"})
+            self.assertEqual(
+                factory.call_args.args[0], {"UCM_CONFIG_FILE": "explicit.yaml"}
+            )
+        with self.assertRaisesRegex(ValueError, "linker_extra_config.UCM_CONFIG_FILE"):
+            adapter_module.UcmDirectStoreAdapter.from_config({}, {})
+        with self.assertRaisesRegex(ValueError, "renamed to.*UCM_CONFIG_FILE"):
+            adapter_module.UcmDirectStoreAdapter.from_config(
+                {"config_file": "legacy.yaml"}, {}
+            )
+
     def test_registered_backend_paths_preserve_pool_and_layout_names(self):
         adapter = self.adapter()
         del adapter._ensure_store_schema
