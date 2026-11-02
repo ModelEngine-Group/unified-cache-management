@@ -226,7 +226,7 @@ def setup_ucm_metrics(config: dict[str, Any] | None) -> list[MetricDefinition]:
 def multiproc_metric_name(
     config: dict[str, Any] | None, metric_name: str, default_prefix: str = "ucm:"
 ) -> str:
-    return f"{multiproc_prefix(config, default_prefix)}{metric_name}"
+    return _ensure_prefix(metric_name, multiproc_prefix(config, default_prefix))
 
 
 def multiproc_prefix(
@@ -276,15 +276,14 @@ def _vllm_connector_value_scale(name: str, item: dict[str, Any]) -> float:
 
 
 def _vllm_connector_metric_name(name: str, item: dict[str, Any], prefix: str) -> str:
-    configured = item.get("vllm_connector_name")
+    configured = item.get("vllm_connector_name") or item.get("prometheus_name")
     if configured:
         return _ensure_prefix(str(configured), prefix)
-    return f"{prefix}{name}"
+    return _ensure_prefix(name, prefix)
 
 
 def _ensure_prefix(name: str, prefix: str) -> str:
-    if name.startswith(prefix):
-        return name
+    """Explicit namespaces take precedence over a consumer's default prefix."""
     if ":" in name:
-        name = name.split(":", 1)[1]
+        return name
     return f"{prefix}{name}"

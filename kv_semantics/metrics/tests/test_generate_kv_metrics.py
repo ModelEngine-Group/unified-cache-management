@@ -60,7 +60,7 @@ def document(definitions, language, totals):
             ]
         )
         for metric in definitions[section]:
-            lines.append(f"| `ucm:{metric['name']}` | unit | Translated description |")
+            lines.append(f"| `kv:{metric['name']}` | unit | Translated description |")
     lines.append("## 2. Examples")
     return "\n".join(lines) + "\n"
 
@@ -77,14 +77,13 @@ def test_render_block_round_trips_types_escaping_and_small_buckets(
     if python:
         values = ast.literal_eval("[\n" + block + "\n]")
         expected = (metric["name"], metric["documentation"])
-        if section == "gauge":
-            expected += ({},)
-        elif section == "histogram":
+        if section == "histogram":
             expected += ([0.00001, 0.5],)
+        expected += ({"prometheus_name": "kv:" + metric["name"]},)
         assert values == [expected]
     else:
         values = yaml.safe_load(f"{section}:\n{block}\n")[section]
-        assert values == [metric]
+        assert values == [{**metric, "prometheus_name": "kv:" + metric["name"]}]
         if section == "histogram":
             assert all(
                 isinstance(value, (int, float)) for value in values[0]["buckets"]
@@ -141,6 +140,7 @@ def test_default_header_renders_all_types_and_buckets(definitions):
 
 
 FAILURES = [
+    ("export_name", "export name mismatch for kv_count"),
     ("missing", "missing KV metric: kv_count"),
     ("duplicate", "duplicate KV metric: kv_count"),
     ("cross_duplicate", "duplicate KV metric: kv_count"),
@@ -152,8 +152,13 @@ FAILURES = [
 
 def incompatible_config(definitions, failure):
     config = copy.deepcopy(definitions)
+    for metrics in config.values():
+        for metric in metrics:
+            metric["prometheus_name"] = "kv:" + metric["name"]
     if failure == "missing":
         config["counter"] = []
+    elif failure == "export_name":
+        config["counter"][0].pop("prometheus_name")
     elif failure == "duplicate":
         config["counter"].append(copy.deepcopy(config["counter"][0]))
     elif failure == "cross_duplicate":
@@ -176,6 +181,9 @@ def test_check_definitions_reports_each_incompatibility(definitions, failure, ex
 
 def test_check_allows_custom_metrics_and_does_not_mutate_config(definitions):
     config = copy.deepcopy(definitions)
+    for metrics in config.values():
+        for metric in metrics:
+            metric["prometheus_name"] = "kv:" + metric["name"]
     config["counter"].append({"name": "custom", "documentation": "User metric"})
     config["enabled"] = ["custom"]
     before = copy.deepcopy(config)
@@ -390,7 +398,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 )
 def test_document_contract_detects_drift(definitions, language, failure, expected):
     content = document(definitions, language, True)
-    row = "| `ucm:kv_count` | unit | Translated description |\n"
+    row = "| `kv:kv_count` | unit | Translated description |\n"
     if failure == "missing":
         content = content.replace(row, "")
     elif failure == "duplicate":
@@ -441,7 +449,7 @@ def test_cli_check_covers_all_documents_without_writes(sandbox, index, remove_fi
     else:
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "`ucm:kv_count`", "`ucm:kv_obsolete`"
+                "`kv:kv_count`", "`kv:kv_obsolete`"
             ),
             encoding="utf-8",
         )

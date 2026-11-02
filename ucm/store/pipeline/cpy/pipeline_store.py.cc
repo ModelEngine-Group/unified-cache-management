@@ -201,7 +201,12 @@ public:
     pybind11::bytes Lookup(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
-        auto res = StoreBack()->Lookup(idArr.data, idArr.num);
+        // Read Python buffers and build Python results with the GIL held;
+        // native storage waits must not block other Python threads.
+        auto res = [&] {
+            pybind11::gil_scoped_release release;
+            return StoreBack()->Lookup(idArr.data, idArr.num);
+        }();
         if (res) {
             auto& v = res.Value();
             return pybind11::bytes(reinterpret_cast<const char*>(v.data()), v.size());
@@ -211,14 +216,20 @@ public:
     ssize_t LookupOnPrefix(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
-        auto res = StoreBack()->LookupOnPrefix(idArr.data, idArr.num);
+        auto res = [&] {
+            pybind11::gil_scoped_release release;
+            return StoreBack()->LookupOnPrefix(idArr.data, idArr.num);
+        }();
         if (res) { return res.Value(); }
         ThrowError(res.Error());
     }
     ssize_t LookupOnReverse(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
-        auto res = StoreBack()->LookupOnReverse(idArr.data, idArr.num);
+        auto res = [&] {
+            pybind11::gil_scoped_release release;
+            return StoreBack()->LookupOnReverse(idArr.data, idArr.num);
+        }();
         if (res) { return res.Value(); }
         ThrowError(res.Error());
     }
