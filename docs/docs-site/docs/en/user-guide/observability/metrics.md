@@ -48,7 +48,7 @@ The metrics file must exist and be readable by the vLLM process. Otherwise, UCM 
 Start vLLM with the UCM connector and send at least one inference request. Then verify that UCM metrics are available:
 
 ```bash
-curl http://<vllm-ip>:<vllm-port>/metrics | grep '^ucm:'
+curl http://<vllm-ip>:<vllm-port>/metrics | grep -E '^(ucm|kv):'
 ```
 
 Most UCM metrics appear only after their corresponding code path has run. When there is no external-storage hit, only a
@@ -116,7 +116,7 @@ docker run -d \
   prom/prometheus
 ```
 
-Open `http://<prometheus-host>:9090/targets`, confirm the `vllm` target is **UP**, then query `ucm:` metrics. Reuse `ucm-monitoring` when the network already exists.
+Open `http://<prometheus-host>:9090/targets`, confirm the `vllm` target is **UP**, then query `ucm:` metrics and, when KVClient operations run, `kv:` metrics. Reuse `ucm-monitoring` when the network already exists.
 
 ### Install Grafana
 
@@ -173,6 +173,21 @@ ucm-toolkit run metrics-view check \
 ```
 
 This inspects the current snapshot. See [metrics-view operations](../../toolkit/user/metrics-view.md) for background collection, time-window queries and MLA TP parameters.
+
+## Metric export names
+
+The configuration `name` is the internal collection key. Optional `prometheus_name` sets the public name for both vLLM and multiproc consumers. Names containing `:` are preserved; otherwise the consumer prefix is added (default `ucm:`). An explicit `vllm_connector_name` overrides the public name only for vLLM. Export naming does not change values, units, buckets, or labels.
+
+## KVClient metrics (`kv:`)
+
+KVClient and its transport layer use the `kv:` namespace. The default configuration sets their public names explicitly:
+
+- `kv:kv_client_*`: KVClient API counters and task duration histograms.
+- `kv:kv_transport_*`: transport error counters and task duration histograms.
+
+For example, the internal key `kv_client_query_requests_total` is exported as `kv:kv_client_query_requests_total`. Both the vLLM and multiproc consumers use these configured names. Other default UCM metrics continue to use `ucm:`.
+
+Custom YAML and inline configurations replace the defaults. Include the `prometheus_name` fields for KV metrics when using a custom configuration. To update the repository's example YAML and Python defaults, run `python kv_semantics/metrics/tools/generate_kv_metrics.py --sync-ucm`. Existing queries for `ucm:kv_*` must be updated to `kv:kv_*`.
 
 ## Reference
 

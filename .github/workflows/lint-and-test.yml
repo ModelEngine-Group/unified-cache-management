@@ -2,13 +2,19 @@ name: 'Lint and Unit Tests'
 
 on:
   workflow_call:
-
+    inputs:
+      run_checks:
+        description: Run lint, unit tests, and toolkit packaging.
+        type: boolean
+        default: true
 
 jobs:
   toolkit-package:
+    if: ${{ inputs.run_checks }}
     uses: ./.github/workflows/_build-toolkit.yml
 
   cpp-linter:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +71,7 @@ jobs:
           exit 1
 
   py-linter:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -88,6 +95,7 @@ jobs:
         extra_args: --all-files --hook-stage manual
 
   cpp_gtest:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     env:
       BUILD_TYPE: Debug
@@ -105,6 +113,7 @@ jobs:
       run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
 
   cpp_v2_gtest:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     env:
       BUILD_TYPE: Debug
