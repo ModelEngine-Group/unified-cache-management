@@ -60,11 +60,7 @@ public:
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& /*jobIds*/) override
-    {
-        return {};
-    }
+    Status Wait(std::size_t /*jobId*/) override { return Status::Ok(); }
 
 private:
     std::vector<std::string>* log_;

@@ -66,7 +66,7 @@ public:
     Status SubmitPut(std::size_t jobId, std::vector<BlockPayload> payloads, AddressedToken token,
                      const IoContext& ctx) override;
     std::vector<IoResult> GetFinished() override;
-    std::vector<IoResult> Wait(const std::vector<std::size_t>& jobIds) override;
+    Status Wait(std::size_t jobId) override;
 
 private:
     struct RequestState {

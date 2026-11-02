@@ -373,10 +373,7 @@ PYBIND11_MODULE(ucm_proxy, m)
             "get_finished", [](StoreWorker& worker) { return worker.GetFinished(); },
             py::call_guard<py::gil_scoped_release>())
         .def(
-            "wait",
-            [](StoreWorker& worker, const std::vector<std::size_t>& jobIds) {
-                return worker.Wait(jobIds);
-            },
+            "wait", [](StoreWorker& worker, std::size_t jobId) { CheckStatus(worker.Wait(jobId)); },
             py::call_guard<py::gil_scoped_release>());
 
     py::class_<StoreAssembler>(m, "StoreAssembler")

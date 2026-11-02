@@ -286,14 +286,12 @@ TEST(StoreEntryTest, WaitDeliversSyntheticCompletionOnce)
     auto handle = MakeEntry(false, true);
     AddressedToken token;
     EXPECT_TRUE(handle.entry->SubmitPrefetch(7, token).Success());
-    auto first = handle.entry->Wait({7});
-    ASSERT_EQ(first.size(), 1);
-    EXPECT_EQ(first[0].jobId, 7);
-    EXPECT_TRUE(first[0].success);
-    EXPECT_TRUE(handle.entry->Wait({7}).empty());
+    EXPECT_TRUE(handle.entry->Wait(7).Success());
+    auto second = handle.entry->Wait(7);
+    ASSERT_TRUE(second.Failure());
+    EXPECT_EQ(second, Status::InvalidParam());
     EXPECT_TRUE(handle.entry->GetFinished().empty());
-    ASSERT_EQ(handle.fake->waits.size(), 1);
-    EXPECT_EQ(handle.fake->waits[0], std::vector<std::size_t>{7});
+    EXPECT_TRUE(handle.fake->waits.empty());
 }
 
 TEST(StoreEntryTest, WaitCombinesSyntheticAndStoreCompletions)
@@ -310,13 +308,14 @@ TEST(StoreEntryTest, WaitCombinesSyntheticAndStoreCompletions)
     handle.fake->finishedQueue = {
         {5, false}
     };
-    auto results = handle.entry->Wait({5, 7});
-    EXPECT_EQ(results.size(), 2);
-    EXPECT_TRUE(Contains(results, 7, true));
-    EXPECT_TRUE(Contains(results, 5, false));
-    ASSERT_EQ(handle.fake->waits.size(), 1);
-    EXPECT_EQ(handle.fake->waits[0], std::vector<std::size_t>{5});
-    EXPECT_TRUE(handle.entry->Wait({5, 7}).empty());
+    auto storeFailed = handle.entry->Wait(5);
+    ASSERT_TRUE(storeFailed.Failure());
+    EXPECT_EQ(storeFailed, Status::General());
+    EXPECT_TRUE(handle.entry->Wait(7).Success());
+    ASSERT_EQ(handle.fake->waits.size(), 1u);
+    EXPECT_EQ(handle.fake->waits[0], 5u);
+    EXPECT_EQ(handle.entry->Wait(5), Status::InvalidParam());
+    EXPECT_EQ(handle.entry->Wait(7), Status::InvalidParam());
     EXPECT_TRUE(handle.entry->GetFinished().empty());
 }
 
@@ -464,7 +463,7 @@ TEST(StoreEntryTest, GetFinishedConvertsStoreCompletionsAndFreesJobIds)
         handle.entry->SubmitGet(5, {MakePayload(16)}, token.Value(), IoContext{0}).Success());
 }
 
-TEST(StoreEntryTest, WaitConvertsStoreCompletionsAndIgnoresUnknownIds)
+TEST(StoreEntryTest, WaitConvertsStoreCompletionsAndRejectsUnknownIds)
 {
     auto handle = MakeEntry(true, true);
     const std::vector<BlockId> keys = MakeKeys(1, 1);
@@ -476,11 +475,11 @@ TEST(StoreEntryTest, WaitConvertsStoreCompletionsAndIgnoresUnknownIds)
     handle.fake->finishedQueue = {
         {5, false}
     };
-    auto first = handle.entry->Wait({5, 404});
-    ASSERT_EQ(first.size(), 1);
-    EXPECT_EQ(first[0].jobId, 5);
-    EXPECT_FALSE(first[0].success);
-    EXPECT_TRUE(handle.entry->Wait({5}).empty());
+    auto storeFailed = handle.entry->Wait(5);
+    ASSERT_TRUE(storeFailed.Failure());
+    EXPECT_EQ(storeFailed, Status::General());
+    EXPECT_EQ(handle.entry->Wait(404), Status::InvalidParam());
+    EXPECT_EQ(handle.entry->Wait(5), Status::InvalidParam());
     EXPECT_TRUE(handle.entry->GetFinished().empty());
     EXPECT_TRUE(
         handle.entry->SubmitGet(5, {MakePayload(16)}, token.Value(), IoContext{0}).Success());
@@ -628,37 +627,16 @@ TEST(StoreEntryTest, WaitDeliversManySyntheticCompletionsWithoutStoreRoundTrip)
 {
     auto handle = MakeEntry(false, true);
     AddressedToken token;
-    std::vector<std::size_t> jobIds;
     for (std::size_t id = 1; id <= 64; id++) {
         ASSERT_TRUE(handle.entry->SubmitPrefetch(id, token).Success());
-        jobIds.push_back(id);
     }
-    auto results = handle.entry->Wait(jobIds);
-    ASSERT_EQ(results.size(), jobIds.size());
-    for (std::size_t i = 0; i < results.size(); i++) {
-        EXPECT_EQ(results[i].jobId, jobIds[i]);
-        EXPECT_TRUE(results[i].success);
-    }
+    for (std::size_t id = 1; id <= 64; id++) { EXPECT_TRUE(handle.entry->Wait(id).Success()); }
     EXPECT_TRUE(handle.fake->waits.empty());
-    EXPECT_TRUE(handle.entry->Wait(jobIds).empty());
+    for (std::size_t id = 1; id <= 64; id++) {
+        EXPECT_EQ(handle.entry->Wait(id), Status::InvalidParam());
+    }
     EXPECT_TRUE(handle.entry->GetFinished().empty());
     EXPECT_TRUE(handle.entry->SubmitPrefetch(7, token).Success());
-}
-
-TEST(StoreEntryTest, WaitDeliversSyntheticCompletionsInWaitedOrder)
-{
-    auto handle = MakeEntry(false, true);
-    AddressedToken token;
-    EXPECT_TRUE(handle.entry->SubmitPrefetch(3, token).Success());
-    EXPECT_TRUE(handle.entry->SubmitPrefetch(7, token).Success());
-    auto results = handle.entry->Wait({7, 3});
-    ASSERT_EQ(results.size(), 2u);
-    EXPECT_EQ(results[0].jobId, 7u);
-    EXPECT_TRUE(results[0].success);
-    EXPECT_EQ(results[1].jobId, 3u);
-    EXPECT_TRUE(handle.fake->waits.empty());
-    EXPECT_TRUE(handle.entry->Wait({7, 3}).empty());
-    EXPECT_TRUE(handle.entry->GetFinished().empty());
 }
 
 }  // namespace

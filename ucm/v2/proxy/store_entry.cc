@@ -249,42 +249,25 @@ std::vector<IoResult> StoreEntry::GetFinished()
     return results;
 }
 
-std::vector<IoResult> StoreEntry::Wait(const std::vector<std::size_t>& jobIds)
+Status StoreEntry::Wait(std::size_t jobId)
 {
-    std::vector<IoResult> results;
-    std::vector<std::size_t> remaining;
-    if (completedJobs_.empty()) {
-        remaining = jobIds;
-    } else {
-        /* Pending ids are unique, so an index gives O(1) hits while the
-         * jobIds loop keeps the results in waited order. */
-        std::unordered_map<std::size_t, IoResult*> pending;
-        pending.reserve(completedJobs_.size());
-        for (auto& result : completedJobs_) { pending.emplace(result.jobId, &result); }
-        for (const auto& jobId : jobIds) {
-            auto it = pending.find(jobId);
-            if (it == pending.end()) {
-                remaining.push_back(jobId);
-                continue;
-            }
-            inFlightJobs_.erase(jobId);
-            results.push_back(std::move(*it->second));
-            pending.erase(it);
-        }
-        completedJobs_.erase(std::remove_if(completedJobs_.begin(), completedJobs_.end(),
-                                            [&pending](const IoResult& result) {
-                                                return pending.count(result.jobId) == 0;
-                                            }),
-                             completedJobs_.end());
+    /* Ids unknown here or already consumed are rejected: only in-flight
+     * jobs reach the store, so the store never sees a Wait for a foreign
+     * id. */
+    if (inFlightJobs_.count(jobId) == 0) {
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
-    if (remaining.empty()) { return results; }
-    auto finished = loaded_->Store()->Wait(remaining);
-    results.reserve(results.size() + finished.size());
-    for (const auto& [jobId, success] : finished) {
-        inFlightJobs_.erase(jobId);
-        results.push_back(IoResult{jobId, success});
+    inFlightJobs_.erase(jobId);
+    /* Synthetic completions (submits the store never saw) are served from
+     * the pending queue without a store round trip. */
+    auto it = std::find_if(completedJobs_.begin(), completedJobs_.end(),
+                           [jobId](const IoResult& result) { return result.jobId == jobId; });
+    if (it != completedJobs_.end()) {
+        const bool success = it->success;
+        completedJobs_.erase(it);
+        return success ? Status::Ok() : Status::General("job '{}' failed", jobId);
     }
-    return results;
+    return loaded_->Store()->Wait(jobId);
 }
 
 Expected<StoreEntry::RequestState*> StoreEntry::RequireRequest(const RequestId& requestId)
