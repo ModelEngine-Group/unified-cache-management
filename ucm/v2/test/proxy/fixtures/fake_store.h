@@ -102,20 +102,16 @@ public:
         return finished;
     }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(const std::vector<std::size_t>& jobIds) override
+    Status Wait(std::size_t jobId) override
     {
-        waits.push_back(jobIds);
-        std::vector<std::pair<std::size_t, bool>> results;
-        for (const auto& jobId : jobIds) {
-            for (auto it = finishedQueue.begin(); it != finishedQueue.end(); ++it) {
-                if (it->first == jobId) {
-                    results.push_back(*it);
-                    finishedQueue.erase(it);
-                    break;
-                }
-            }
+        waits.push_back(jobId);
+        for (auto it = finishedQueue.begin(); it != finishedQueue.end(); ++it) {
+            if (it->first != jobId) { continue; }
+            const bool success = it->second;
+            finishedQueue.erase(it);
+            return success ? Status::Ok() : Status::General("job '{}' failed", jobId);
         }
-        return results;
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
 
     Prefetchable* AsPrefetchable() override { return prefetchable_ ? this : nullptr; }
@@ -202,7 +198,7 @@ public:
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> touches;
     std::vector<RecordedJob> loads;
     std::vector<RecordedJob> dumps;
-    std::vector<std::vector<std::size_t>> waits;
+    std::vector<std::size_t> waits;
     std::vector<std::vector<BlockId>> pins;
     std::vector<std::vector<BlockId>> unpins;
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> allocs;
@@ -257,14 +253,6 @@ inline BlockPayload MakePayload(std::size_t size)
     payload.pointers = {nullptr};
     payload.sizes = {size};
     return payload;
-}
-
-inline bool Contains(const std::vector<IoResult>& results, std::size_t jobId, bool success)
-{
-    for (const auto& result : results) {
-        if (result.jobId == jobId && result.success == success) { return true; }
-    }
-    return false;
 }
 
 }  // namespace UC::Proxy

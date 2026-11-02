@@ -258,24 +258,16 @@ std::vector<IoResult> StorePeer::GetFinished()
     return results;
 }
 
-std::vector<IoResult> StorePeer::Wait(const std::vector<std::size_t>& jobIds)
+Status StorePeer::Wait(std::size_t jobId)
 {
-    std::vector<IoResult> results;
-    std::unordered_map<std::size_t, std::vector<std::size_t>> groups;
-    for (const auto& jobId : jobIds) {
-        auto it = inFlightJobs_.find(jobId);
-        if (it != inFlightJobs_.end()) { groups[it->second].push_back(jobId); }
+    auto it = inFlightJobs_.find(jobId);
+    if (it == inFlightJobs_.end()) {
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
-    for (std::size_t branch = 0; branch < branches_.size(); branch++) {
-        auto it = groups.find(branch);
-        if (it == groups.end()) { continue; }
-        for (auto& result : branches_[branch]->Wait(it->second)) {
-            inFlightJobs_.erase(result.jobId);
-            --inFlightPerBranch_[branch];
-            results.push_back(std::move(result));
-        }
-    }
-    return results;
+    const std::size_t branch = it->second;
+    inFlightJobs_.erase(it);
+    --inFlightPerBranch_[branch];
+    return branches_[branch]->Wait(jobId);
 }
 
 Expected<StorePeer::RequestState*> StorePeer::RequireRequest(const RequestId& requestId)

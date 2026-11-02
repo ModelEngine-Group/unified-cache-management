@@ -355,7 +355,7 @@ TEST(StorePeerTest, GetFinishedAggregatesAllBranches)
         handle.peer->SubmitGet(1, {MakePayload(16)}, token1.Value(), IoContext{0}).Success());
 }
 
-TEST(StorePeerTest, WaitRoutesByBranchAndIgnoresUnknownIds)
+TEST(StorePeerTest, WaitRoutesByBranchAndRejectsUnknownIds)
 {
     auto handle = MakePeer({
         {true, true},
@@ -380,15 +380,17 @@ TEST(StorePeerTest, WaitRoutesByBranchAndIgnoresUnknownIds)
     handle.fakes[1]->finishedQueue = {
         {2, false}
     };
-    auto results = handle.peer->Wait({1, 2, 404});
-    EXPECT_EQ(results.size(), 2);
-    EXPECT_TRUE(Contains(results, 1, true));
-    EXPECT_TRUE(Contains(results, 2, false));
-    ASSERT_EQ(handle.fakes[0]->waits.size(), 1);
-    EXPECT_EQ(handle.fakes[0]->waits[0], std::vector<std::size_t>{1});
-    ASSERT_EQ(handle.fakes[1]->waits.size(), 1);
-    EXPECT_EQ(handle.fakes[1]->waits[0], std::vector<std::size_t>{2});
-    EXPECT_TRUE(handle.peer->Wait({1, 2}).empty());
+    EXPECT_TRUE(handle.peer->Wait(1).Success());
+    auto storeFailed = handle.peer->Wait(2);
+    ASSERT_TRUE(storeFailed.Failure());
+    EXPECT_EQ(storeFailed, Status::General());
+    EXPECT_EQ(handle.peer->Wait(404), Status::InvalidParam());
+    ASSERT_EQ(handle.fakes[0]->waits.size(), 1u);
+    EXPECT_EQ(handle.fakes[0]->waits[0], 1u);
+    ASSERT_EQ(handle.fakes[1]->waits.size(), 1u);
+    EXPECT_EQ(handle.fakes[1]->waits[0], 2u);
+    EXPECT_EQ(handle.peer->Wait(1), Status::InvalidParam());
+    EXPECT_EQ(handle.peer->Wait(2), Status::InvalidParam());
     EXPECT_TRUE(handle.peer->GetFinished().empty());
 }
 

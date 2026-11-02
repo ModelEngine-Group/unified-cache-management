@@ -313,20 +313,21 @@ public:
      */
     virtual std::vector<std::pair<std::size_t, bool>> GetFinished() = 0;
     /**
-     * @brief Blocks until every listed job has finished, then returns their
-     *        (consumed) completion events.
+     * @brief Blocks until the given job has finished, then consumes and
+     *        reports its completion.
      *
-     * @param jobIds Jobs to wait for; ids that are unknown or whose completion
-     *               has already been consumed are ignored.
+     * @param jobId Job to wait for; must identify an in-flight (submitted,
+     *              not yet consumed) job of this Store.
      *
-     * @return (jobId, success) pairs for the waited jobs, where success tells
-     *         whether the job's transfer completed successfully.
+     * @return Status::Ok() when the job's transfer completed successfully;
+     *         an error status carrying the failure detail otherwise.
      *
-     * @note Completions delivered here are not reported again by GetFinished()
-     *       and vice versa (exactly-once).
+     * @note The completion delivered here is not reported again by
+     *       GetFinished() and vice versa (exactly-once).
+     * @note Id that are unknown to this Store or whose completion has
+     *       already been consumed yield InvalidParam.
      */
-    virtual std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& jobIds) = 0;
+    virtual Status Wait(std::size_t jobId) = 0;
     /**
      * @brief Queries the Prefetchable capability of this Store.
      *
