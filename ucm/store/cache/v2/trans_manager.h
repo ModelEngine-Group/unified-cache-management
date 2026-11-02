@@ -54,7 +54,8 @@ protected:
     Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
-        const auto isLoad = t->type == Task::Type::LOAD;
+        const auto isLoad =
+            t->type == Task::Type::LOAD || t->type == Task::Type::PREFETCH;
         const auto shards = t->desc.size();
         const auto bytes = shardSize_ * shards;
         w->SetEpilog([isLoad, shards, bytes, tp = w->startTp] {

@@ -407,6 +407,24 @@ class RequestMeta:
     token_processed: int = 0
 
 
+def build_kv_block_info(
+    req_meta: "RequestMeta | None", prefetch_rank: Optional[int] = None
+) -> dict[str, Any] | None:
+    """Build the prefetch handle returned with the response.
+
+    prefetch_rank: 0-based DP replica index serving the request; omitted from
+    the result when None.
+    """
+    if req_meta is None or not req_meta.ucm_block_ids:
+        return None
+    info: dict[str, Any] = {
+        "ucm_block_ids": [b.hex() for b in req_meta.ucm_block_ids],
+    }
+    if prefetch_rank is not None:
+        info["prefetch_rank"] = prefetch_rank
+    return info
+
+
 @dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
@@ -2758,10 +2776,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
+        req_meta = self.requests_meta.get(request.request_id)
+        kv_transfer_params = build_kv_block_info(req_meta)
         if request.request_id in self._async_dump_req_ids:
             self._async_dump_req_ids.discard(request.request_id)
-            return True, None
-        return False, None
+            return True, kv_transfer_params
+        return False, kv_transfer_params
 
     def request_finished_all_groups(
         self,
@@ -3468,8 +3488,8 @@ class UCMLiteConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
-        self.requests_meta.pop(request.request_id, None)
-        return False, None
+        req_meta = self.requests_meta.pop(request.request_id, None)
+        return False, build_kv_block_info(req_meta)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         pass
@@ -3698,6 +3718,46 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
 
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        """Warm blocks into the host DDR buffer (Backend2Cache), no H2D.
+
+        Forwards to the inner connector's store.prefetch_data (worker side only).
+        """
+        inner = getattr(self, "connector", None)
+        store = getattr(inner, "store", None)
+        if store is not None:
+            store.prefetch_data(block_ids)
+
+    def _maybe_start_prefetch_server(self) -> None:
+        """Start the prefetch HTTP server on the worker side if enabled.
+
+        The UCM store (including the cache buffer) only exists on workers, so
+        the scheduler side is skipped. Under DP x TP each worker needs a unique
+        port: base_port + dp_rank * tp_size + tp_rank.
+        """
+        cfg = (self.launch_config or {}).get("prefetch_http") or {}
+        if not cfg.get("enable"):
+            return
+        if self._role != KVConnectorRole.WORKER:  # Requires the cache buffer
+            return
+        host = cfg.get("host", "0.0.0.0")  # Reachable by the router via node IP
+        base_port = int(cfg.get("base_port", 6997))
+        token = cfg.get("token") or None
+        dp_rank = int(
+            self._vllm_config.parallel_config.data_parallel_index
+        )  # 0-based
+        tp_size = int(self._vllm_config.parallel_config.tensor_parallel_size)
+        tp_rank = max(get_world_group().local_rank, 0)
+        port = base_port + dp_rank * tp_size + tp_rank  # Globally unique
+        try:
+            from ucm.integration.vllm.prefetch_server import UcmPrefetchServer
+
+            self._prefetch_server = UcmPrefetchServer(
+                self.prefetch_data, host, port, token
+            ).start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("UCM prefetch HTTP failed to start: %s", e)
+
     def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         self._vllm_metrics_enabled = False
         self._vllm_metric_definitions = []
@@ -3861,6 +3921,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             dictionary of layer names, kv cache
         """
         self.connector.register_kv_caches(kv_caches)
+        self._maybe_start_prefetch_server()  # Store is ready, start prefetch
 
     @_record_connector_interface_duration
     def build_connector_meta(

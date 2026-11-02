@@ -34,7 +34,7 @@ namespace UC::CacheStore {
 
 class TransTask {
 public:
-    enum class Type : uint8_t { LOAD, DUMP };
+    enum class Type : uint8_t { LOAD, DUMP, PREFETCH };
 
 public:
     Detail::TaskHandle id{0};

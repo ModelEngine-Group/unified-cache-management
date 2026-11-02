@@ -43,6 +43,7 @@ class CacheStore : public StoreV1 {
     BufferManager bufferMgr_;
     bool transEnable_{false};
     TransManager transMgr_;
+    size_t nShardPerBlock_{0};
     std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 
 public:
@@ -69,6 +70,7 @@ public:
             return s;
         }
         transEnable_ = config.deviceId >= 0;
+        nShardPerBlock_ = config.blockSize / config.shardSize;
         if (transEnable_) {
             s = transMgr_.Setup(config, bufferMgr_.GetTransBuffer());
             if (s.Failure()) [[unlikely]] { return s; }
@@ -98,6 +100,22 @@ public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         bufferMgr_.Prefetch(blocks, num);
+    }
+    void Warm(const Detail::BlockId* blocks, size_t num) override
+    {
+        if (!transEnable_) { return; }  // Scheduler side (no device)
+        if (num == 0) { return; }       // Empty prefetch must not block
+        Detail::TaskDesc desc;
+        for (size_t i = 0; i < num; i++) {
+            for (size_t shard = 0; shard < nShardPerBlock_; shard++) {
+                // Empty addrs: PREFETCH performs no H2D
+                desc.emplace_back(Detail::Shard{blocks[i], shard, {}});
+            }
+        }
+        if (desc.empty()) { return; }  // Guard against nShardPerBlock_ == 0
+        desc.brief = "Prefetch";
+        auto res = transMgr_.Submit({TransTask::Type::PREFETCH, std::move(desc)});
+        if (res) { transMgr_.Wait(res.Value()); }  // Blocking wait for prefetch
     }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {

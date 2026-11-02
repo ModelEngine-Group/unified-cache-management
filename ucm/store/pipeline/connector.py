@@ -117,6 +117,10 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         self.store_.Prefetch(flat)
 
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        self.store_.Warm(flat)
+
     def _tensor_normalize(self, tensors: List[List[torch.Tensor]]) -> np.ndarray:
         n_rows = len(tensors)
         n_cols = len(tensors[0])
