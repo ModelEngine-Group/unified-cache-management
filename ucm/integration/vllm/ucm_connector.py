@@ -1,6 +1,5 @@
 import copy
 import glob
-import hashlib
 import math
 import os
 import re
@@ -2795,31 +2794,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
 
-    def _diag_layerwise(self, phase, layer_id, keys, blocks, ptrs=None, request_id=None):
-        """Temporary diagnostic branch: hashes introduce device synchronization."""
-        logger.info("[UCM_DIAG] phase=%s pid=%s rank=%s batch=%s layer=%s req=%s keys=%s blocks=%s ptrs=%s sizes=%s",
-                    phase, os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0), layer_id, request_id,
-                    [key.hex() for key in keys], list(blocks),
-                    None if ptrs is None else ptrs.tolist(), self.kv_cache_layout.tensor_size_list)
-        if phase == "LOAD_SUBMIT":
-            return
-        for name, cache in self.kv_caches.items():
-            if self.layer_name_to_id.get(name) != layer_id:
-                continue
-            tensors = [cache] if isinstance(cache, torch.Tensor) else list(cache)
-            for component, tensor in enumerate(tensors):
-                logger.info("[UCM_DIAG_LAYOUT] phase=%s rank=%s layer=%s component=%s shape=%s stride=%s dtype=%s base=%s row_bytes=%s physical_stride=%s",
-                            phase, self.tp_rank, name, component, tuple(tensor.shape), tensor.stride(), tensor.dtype,
-                            tensor.data_ptr(), math.prod(tensor.shape[1:]) * tensor.element_size(), tensor.stride(0) * tensor.element_size())
-                for key, block in zip(keys, blocks):
-                    try:
-                        raw = tensor[int(block)].detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
-                        logger.info("[UCM_DIAG_DIGEST] phase=%s pid=%s rank=%s batch=%s req=%s key=%s layer=%s component=%s block=%s bytes=%s sha256=%s",
-                                    phase, os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0), request_id,
-                                    key.hex(), name, component, block, len(raw), hashlib.sha256(raw).hexdigest())
-                    except Exception:
-                        logger.exception("[UCM_DIAG] digest failed phase=%s layer=%s block=%s", phase, name, block)
-
     def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
         if layer_id not in self._layerwise_load_start_by_layer:
             return False
@@ -2854,10 +2828,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         event_handle = 0
         try:
             layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-            expected_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids, layer_first=True)[local_layer_id]
-            if not np.array_equal(layer_ptrs, expected_ptrs):
-                logger.error("[UCM_DIAG_STALE_PTRS] rank=%s layer=%s cached=%s expected=%s", self.tp_rank, layer_id, layer_ptrs.tolist(), expected_ptrs.tolist())
-            self._diag_layerwise("DUMP_SRC", layer_id, total_ucm_block_ids, total_vllm_block_ids, layer_ptrs, sorted(dump_request_ids))
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             event_handle = self._get_dump_event_handle()
             task = self._rank_consistency.submit_dump(
@@ -2909,7 +2879,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             try:
                 shard_indexs = [layer_id] * len(ucm_block_ids)
                 layer_ptrs = total_ptrs[local_row]
-                self._diag_layerwise("LOAD_SUBMIT", layer_id, store_block_ids, metadata.request_meta[request_id].load_block_ids[1], layer_ptrs, request_id)
                 task = self._rank_consistency.submit_load(
                     self.store,
                     {request_id: ucm_block_ids},
@@ -2938,8 +2907,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         super().bind_connector_metadata(connector_metadata)
         # vLLM may defer start_load_kv until after forward on steps without
         # synchronous loads. Reset batch state before any attention hooks run.
-        self._diag_batch = getattr(self, "_diag_batch", 0) + 1
-        logger.info("[UCM_DIAG_BIND] pid=%s rank=%s batch=%s pending_load_layers=%s pending_dumps=%s", os.getpid(), self.tp_rank, self._diag_batch, list(self.load_tasks), len(self._pending_dump_tasks))
         self._dumped_layer_ids.clear()
         self.load_tasks.clear()
         self.request_data.clear()
@@ -2957,8 +2924,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # attention wait can start the same batch early; the later hook must
         # not duplicate tasks or reload pages already updated by computation.
         if self._layerwise_load_started:
-            logger.info("[UCM_DIAG_START_SKIP] pid=%s rank=%s batch=%s reason=already_started",
-                        os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0))
             return
         if not self._connector_metadata:
             return
@@ -2993,27 +2958,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
-        logger.info("[UCM_DIAG_WAIT_ENTRY] pid=%s rank=%s batch=%s object=%s layer=%s has_meta=%s need_load=%s pending=%s",
-                    os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0), id(self), layer_name,
-                    bool(self._connector_metadata), self.need_load, list(self.load_tasks))
         if not self._connector_metadata:
-            logger.info("[UCM_DIAG_WAIT_SKIP] pid=%s rank=%s layer=%s reason=no_metadata", os.getpid(), self.tp_rank, layer_name)
             return
         if not self._layerwise_load_started:
-            logger.info("[UCM_DIAG_LAZY_START] pid=%s rank=%s batch=%s layer=%s",
-                        os.getpid(), self.tp_rank, getattr(self, "_diag_batch", 0), layer_name)
             # This implementation uses connector metadata and registered cache
             # addresses only, so no ForwardContext is needed to prepare loads.
             self.start_load_kv(None)
         if not self.need_load:
-            logger.info("[UCM_DIAG_WAIT_SKIP] pid=%s rank=%s layer=%s reason=need_load_false", os.getpid(), self.tp_rank, layer_name)
             return
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
 
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
-        logger.info("[UCM_DIAG_WAIT] rank=%s batch=%s layer_name=%s layer=%s pending_layers=%s", self.tp_rank, getattr(self, "_diag_batch", 0), layer_name, current_layer_id, list(self.load_tasks))
         layer_tasks = self.load_tasks.pop(current_layer_id, {})
         if not layer_tasks:
             # A repeated hook must not resubmit and replace next-layer tasks.
@@ -3034,10 +2991,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
             else:
-                diag_keys, diag_blocks = metadata.request_meta[request_id].load_block_ids
-                if self.tp_rank % self.tp_size != 0 and not self.is_mla:
-                    diag_keys = [self.request_hasher(key) for key in diag_keys]
-                self._diag_layerwise("LOAD_DST", current_layer_id, diag_keys, diag_blocks, request_id=request_id)
                 self._layerwise_load_bytes += (
                     len(metadata.request_meta[request_id].load_block_ids[0])
                     * self.kv_cache_layout.shard_size
@@ -3083,7 +3036,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
-        logger.info("[UCM_DIAG_SAVE_HOOK] rank=%s batch=%s layer_name=%s layer=%s duplicate=%s", self.tp_rank, getattr(self, "_diag_batch", 0), layer_name, layer_id, layer_id in self._dumped_layer_ids)
         if layer_id in self._dumped_layer_ids:
             logger.debug(
                 f"Skip duplicate layerwise dump in the same batch: "
@@ -3907,9 +3859,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             the same.
 
         """
-        logger.info("[UCM_DIAG_START_DISPATCH] pid=%s impl=%s object=%s batch=%s has_meta=%s",
-                    os.getpid(), type(self.connector).__qualname__, id(self.connector),
-                    getattr(self.connector, "_diag_batch", 0), self.connector.has_connector_metadata())
         self.connector.start_load_kv(forward_context, **kwargs)
 
     @_record_connector_interface_duration
@@ -3924,9 +3873,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             layer_name: the name of that layer
         """
-        logger.info("[UCM_DIAG_WAIT_DISPATCH] pid=%s layer=%s impl=%s object=%s has_meta=%s need_load=%s",
-                    os.getpid(), layer_name, type(self.connector).__qualname__, id(self.connector),
-                    self.connector.has_connector_metadata(), getattr(self.connector, "need_load", None))
         self.connector.wait_for_layer_load(layer_name)
 
     @_record_connector_interface_duration
@@ -4004,10 +3950,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         This function should be called by the model runner every time
         after the model execution.
         """
-        logger.info("[UCM_DIAG_CLEAR] pid=%s impl=%s object=%s batch=%s need_load=%s pending=%s",
-                    os.getpid(), type(self.connector).__qualname__, id(self.connector),
-                    getattr(self.connector, "_diag_batch", 0), getattr(self.connector, "need_load", None),
-                    list(getattr(self.connector, "load_tasks", {})))
         self.connector.clear_connector_metadata()
 
     @_record_connector_interface_duration
