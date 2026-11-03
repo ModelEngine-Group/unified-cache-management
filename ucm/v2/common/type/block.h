@@ -44,10 +44,17 @@ struct BlockId {
  * @brief Resolved content of a KV cache block, ready for transfer.
  */
 struct BlockPayload {
-    /** Resolved xPU byte pointers of the block. */
+    /**
+     * Resolved xPU byte pointers of the block. Empty means this worker has no ranges
+     * for the addressed object; transfers must leave its bytes and size unchanged.
+     */
     std::vector<void*> pointers;
     /** Byte length of each pointer. */
     std::vector<std::size_t> sizes;
+    /** Object-relative byte offset of each pointer, parallel to sizes. */
+    std::vector<std::size_t> offsets;
+    /** Complete object size on Dump, including ranges sent by other workers. */
+    std::size_t totalSize{0};
     /**
      * Optional: when MemoryRegions were registered at initialization, the index of the
      * MemoryRegion each pointer belongs to.
