@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "AgentLogger.h"
-
 #include "common/async/context_pool.h"
 #include "common/ceph_argparse.h"
 #include "common/ceph_context.h"
@@ -308,7 +307,9 @@ public:
         return false;
     }
     void ms_handle_remote_reset(Connection* c) override
-    { std::cerr << "[trace] ms_handle_remote_reset: peer=" << c->get_peer_addr() << std::endl; }
+    {
+        std::cerr << "[trace] ms_handle_remote_reset: peer=" << c->get_peer_addr() << std::endl;
+    }
     bool ms_handle_refused(Connection* c) override
     {
         std::cerr << "[trace] ms_handle_refused: connection refused by peer"
@@ -324,7 +325,9 @@ public:
                   << " is_connected=" << c->is_connected() << std::endl;
     }
     void ms_handle_fast_connect(Connection* c) override
-    { std::cerr << "[trace] ms_handle_fast_connect: peer=" << c->get_peer_addr() << std::endl; }
+    {
+        std::cerr << "[trace] ms_handle_fast_connect: peer=" << c->get_peer_addr() << std::endl;
+    }
 
 private:
     void shutdown()

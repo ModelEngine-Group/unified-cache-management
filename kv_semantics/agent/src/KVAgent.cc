@@ -11,7 +11,6 @@
 #include <new>
 #include "KVAgentImpl.h"
 
-
 struct kv_agent_handle {
     agent::AgentLogger logger;
     std::unique_ptr<agent::KVAgentImpl> impl;

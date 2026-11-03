@@ -10,7 +10,6 @@
 #include <vector>
 #include "KVClientAgent.h"
 
-
 namespace {
 
 const char* get_arg(int argc, const char** argv, const std::string& name)

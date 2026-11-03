@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include "AgentLogger.h"
 
-
 #define KV_OSD_AGENT_ABI_VERSION 1U
 
 #define INVALID_AGENT_HANDLE (-20000)

@@ -13,7 +13,6 @@
 #include <thread>
 #include "KVAgent.h"
 
-
 namespace {
 
 /* sync wrapper for async API: smoke test 是普通 OS 程序, 可用 cv.wait */

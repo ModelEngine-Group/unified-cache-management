@@ -9,7 +9,6 @@
 #include <string>
 #include "AgentLogger.h"
 
-
 #define KV_AGENT_MON_AUTH_TIMEOUT_SECONDS 20U
 
 namespace agent {

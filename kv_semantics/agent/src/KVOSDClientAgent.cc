@@ -35,7 +35,6 @@
 #include "msg/Messenger.h"
 #include "osd/OSDMap.h"
 
-
 namespace agent {
 namespace {
 
@@ -219,16 +218,24 @@ public:
     }
 
     std::vector<KVClientNodeView> get_up_in_by_ns(const std::string& ns) const override
-    { return get_view_by_ns(ns, true, true); }
+    {
+        return get_view_by_ns(ns, true, true);
+    }
 
     std::vector<KVClientNodeView> get_down_in_by_ns(const std::string& ns) const override
-    { return get_view_by_ns(ns, false, true); }
+    {
+        return get_view_by_ns(ns, false, true);
+    }
 
     std::vector<KVClientNodeView> get_up_out_by_ns(const std::string& ns) const override
-    { return get_view_by_ns(ns, true, false); }
+    {
+        return get_view_by_ns(ns, true, false);
+    }
 
     std::vector<KVClientNodeView> get_down_out_by_ns(const std::string& ns) const override
-    { return get_view_by_ns(ns, false, false); }
+    {
+        return get_view_by_ns(ns, false, false);
+    }
 
     std::vector<KVClientNodeView> get_in() const override
     {
@@ -827,6 +834,8 @@ private:
 }  // namespace
 
 std::unique_ptr<KVClientAgentImpl> create_kv_client_agent()
-{ return std::make_unique<KVOSDClientAgent>(); }
+{
+    return std::make_unique<KVOSDClientAgent>();
+}
 
 }  // namespace agent

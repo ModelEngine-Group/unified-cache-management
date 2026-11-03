@@ -36,7 +36,9 @@ AgentlogFunc get_agentlog_func_impl(void)
 namespace {
 
 bool is_permission_error(const std::error_code& error)
-{ return error == std::errc::permission_denied || error == std::errc::operation_not_permitted; }
+{
+    return error == std::errc::permission_denied || error == std::errc::operation_not_permitted;
+}
 
 const char* module_basename(const char* module)
 {

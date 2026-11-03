@@ -12,7 +12,6 @@
 #include "AgentLogger.h"
 #include "KVClientAgentImpl.h"
 
-
 namespace agent {
 
 class KVClientAgent::Private {

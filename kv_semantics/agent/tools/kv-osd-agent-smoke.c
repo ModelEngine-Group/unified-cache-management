@@ -14,7 +14,6 @@
 #include <unistd.h>
 #include "KVAgent.h"
 
-
 typedef uint32_t (*kv_agent_get_abi_version_fn)(void);
 typedef kv_agent_handle* (*kv_agent_create_fn)(void);
 typedef int32_t (*kv_agent_init_fn)(kv_agent_handle*, const kv_osd_agent_config*, uint32_t, size_t,

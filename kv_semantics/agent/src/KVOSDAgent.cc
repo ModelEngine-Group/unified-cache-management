@@ -1549,7 +1549,9 @@ private:
     }
 
     void send_heartbeat(epoch_t epoch)
-    { monc->send_mon_message(new MOSDBeacon(epoch, 0, utime_t(), heartbeat_interval)); }
+    {
+        monc->send_mon_message(new MOSDBeacon(epoch, 0, utime_t(), heartbeat_interval));
+    }
 
     void handle_heartbeat(const boost::system::error_code& error)
     {

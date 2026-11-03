@@ -13,7 +13,6 @@
 #include "AgentLogger.h"
 #include "KVClientAgent.h"
 
-
 namespace agent {
 
 class KVClientAgentImpl {

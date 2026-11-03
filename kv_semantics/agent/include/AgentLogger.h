@@ -150,7 +150,7 @@ void log(AgentLogger* logger, LogLevel level, const char* module, const char* in
             int _log_level = (level) == ::agent::LogLevel::ERROR     ? LOG_ERR                   \
                              : (level) == ::agent::LogLevel::WARNING ? LOG_WARNING               \
                              : (level) == ::agent::LogLevel::DEBUG   ? LOG_DEBUG                 \
-                                                                     : LOG_INFO;                 \
+                                                                     : LOG_INFO;                   \
             std::string _log_msg = (message);                                                    \
             _agentLog(PID_KVCACHE_POOL, _log_level, (char*)_AGENT_FILENAME_, __LINE__, __func__, \
                       LOG_ID_KVCACHE_POOL, _log_msg.c_str());                                    \
