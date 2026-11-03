@@ -428,15 +428,135 @@ class LayoutPreparationTest(unittest.TestCase):
         self.assertTrue(np.shares_memory(calls[1][2], transfer.addresses))
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
             adapter.submit_offload([transfer], prerequisite_handle=42)
-        self.assertEqual([call[3] for call in calls[2:]], [42, 42])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2][3], 42)
+        self.assertEqual(
+            calls[2][0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
+        )
+        np.testing.assert_array_equal(calls[2][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(calls[2][2], transfer.addresses.reshape(4, 1))
+        self.assertTrue(np.shares_memory(calls[2][2], transfer.addresses))
+
+    def dump_adapter(self, fail_call=None):
+        calls, waited = [], []
+
+        class Native:
+            def Dump(self, ids, indexes, addresses, event):
+                calls.append((ids, indexes, addresses, event))
+                if len(calls) == fail_call:
+                    raise RuntimeError("dump submit failed")
+                return len(calls)
+
+            def Wait(self, task_id):
+                waited.append(task_id)
+
+        store = object.__new__(pipeline_module.UcmPipelineStore)
+        store.store_ = Native()
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._store_config["store_pipeline"] = "Cache|Posix"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        return adapter, calls, waited
+
+    def test_dump_keeps_node_and_group_task_boundaries(self):
+        adapter, calls, waited = self.dump_adapter()
+        first, second = self.transfer(), self.transfer(store_group="other")
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            tasks = adapter.submit_offload([first, second], prerequisite_handle=42)
+            following = adapter.submit_offload([first], prerequisite_handle=43)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(len(following), 1)
+        self.assertEqual([call[3] for call in calls], [42, 42, 43])
+        for call, transfer in zip(calls, (first, second, first)):
+            self.assertEqual(
+                call[0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
+            )
+            np.testing.assert_array_equal(call[1], [0, 0, 1, 1])
+            np.testing.assert_array_equal(call[2], transfer.addresses.reshape(4, 1))
+            self.assertTrue(np.shares_memory(call[2], transfer.addresses))
+        self.assertIs(tasks[0].addresses, calls[0][2])
+        adapter.wait(tasks + following)
+        self.assertEqual(waited, [1, 2, 3])
+
+    def test_dump_capacity_split_preserves_cross_layer_row_order(self):
+        adapter, calls, _ = self.dump_adapter()
+        transfer = self.transfer()
+        with (
+            patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}),
+            patch.object(adapter, "_offload_batch_rows", return_value=3),
+        ):
+            tasks = adapter.submit_offload([transfer], prerequisite_handle=42)
+        self.assertEqual(len(tasks), 2)
+        np.testing.assert_array_equal(calls[0][1], [0, 0, 1])
+        np.testing.assert_array_equal(calls[1][1], [1])
+        self.assertEqual(
+            b"".join(c[0].tobytes() for c in calls),
+            b"".join(adapter._block_ids(transfer)) * 2,
+        )
+        np.testing.assert_array_equal(
+            np.concatenate([c[2] for c in calls]), transfer.addresses.reshape(4, 1)
+        )
+        self.assertEqual([c[3] for c in calls], [42, 42])
+
+    def test_dump_submit_failure_drains_previous_batches_and_groups(self):
+        for split in (False, True):
+            with self.subTest(split=split):
+                adapter, calls, waited = self.dump_adapter(fail_call=2)
+                transfers = [self.transfer()]
+                if not split:
+                    transfers.append(self.transfer(store_group="other"))
+                with (
+                    patch.dict(
+                        sys.modules, {"ucm.store.pipeline.connector": pipeline_module}
+                    ),
+                    patch.object(
+                        adapter, "_offload_batch_rows", return_value=3 if split else 100
+                    ),
+                    self.assertLogs(adapter_module.logger, level="ERROR"),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "dump submit failed"):
+                        adapter.submit_offload(transfers, prerequisite_handle=42)
+                self.assertEqual(waited, [1])
+                self.assertEqual(len(calls), 2)
+
+    def test_dump_batch_capacity_uses_existing_cache_configuration(self):
+        adapter = self.adapter()
+        adapter._store_config.update(
+            cache_buffer_capacity_gb=1, cache_load_exclusive_buffer_number=1024
+        )
+        adapter._identity.update(rank_replicated=True, tp_size=8)
+        self.assertEqual(adapter._offload_batch_rows(65536), (16384 - 1024) // 8)
+        adapter._identity["rank_replicated"] = False
+        self.assertEqual(adapter._offload_batch_rows(65536), 16384 - 1024)
+
+    def test_generic_dump_submits_all_shards_through_public_method(self):
+        calls = []
+
+        class Store:
+            def dump_data(self, ids, indexes, addresses):
+                calls.append((ids, indexes, addresses))
+                return 1
+
+        adapter = self.adapter()
+        adapter._ensure_store_schema = lambda *args, **kwargs: Store()
+        transfer = self.transfer()
+        tasks = adapter.submit_offload([transfer])
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(calls[0][0], adapter._block_ids(transfer) * 2)
+        self.assertEqual(calls[0][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(calls[0][2], transfer.addresses.reshape(4, 1))
 
     def test_custom_pipeline_stores_keep_their_public_methods(self):
-        calls = []
+        calls, dumped = [], []
 
         class CustomPipeline(pipeline_module.UcmPipelineStore):
             def load_data(self, block_ids, indexes, addresses):
                 calls.append((block_ids, indexes, addresses))
                 return pipeline_module.UcmPipelineStoreTransTask(1)
+
+            def dump_data(self, block_ids, indexes, addresses):
+                dumped.append((block_ids, indexes, addresses))
+                return pipeline_module.UcmPipelineStoreTransTask(2)
 
         store = object.__new__(CustomPipeline)
         adapter = self.adapter()
@@ -451,6 +571,13 @@ class LayoutPreparationTest(unittest.TestCase):
         self.assertEqual(calls[0][1], [0, 0])
         np.testing.assert_array_equal(calls[0][2], transfer.addresses[0])
         self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            dumped_tasks = adapter.submit_offload([transfer])
+        self.assertEqual(len(dumped_tasks), 1)
+        self.assertEqual(len(dumped), 1)
+        self.assertEqual(dumped[0][0], adapter._block_ids(transfer) * 2)
+        self.assertEqual(dumped[0][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(dumped[0][2], transfer.addresses.reshape(4, 1))
         adapter._module_path = "custom.backend"
         self.assertIsNone(adapter._prepare_pipeline_io(store, [b"a" * 16]))
 

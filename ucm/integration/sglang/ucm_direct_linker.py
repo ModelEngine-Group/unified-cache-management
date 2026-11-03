@@ -7,12 +7,13 @@ layer-ready and completion queues. Store setup and I/O stay in the adapter.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from queue import Empty, Queue
 from typing import Any
 
@@ -153,12 +154,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._tp_rank = torch.distributed.get_rank(group=tp_group)
             self._tp_size = torch.distributed.get_world_size(group=tp_group)
         self._lookup_owner = True
-        self._offload_owner = not self.pool_group.rank_replicated or self._tp_rank == 0
+        self._dump_ranks = (0,) if self.pool_group.rank_replicated else (self._tp_rank,)
         self._log_pool_topology()
         try:
             self.adapter = adapter or self._create_adapter(params, extra_config)
             self.adapter.register_device_pools(self._pool_metadata())
-            self._select_lookup_owner(tp_group, params.attn_cp_size)
+            self._select_store_ranks(tp_group, params.attn_cp_size)
         except Exception:
             logger.exception(
                 "UCM linker initialization failed: layers=%d tp=%d/%d replicated=%s.",
@@ -186,8 +187,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_thread.start()
         self._offload_thread.start()
 
-    def _select_lookup_owner(self, tp_group: Any, attn_cp_size: int) -> None:
-        """Elect one reader per shared Cache within this attention-TP group."""
+    def _select_store_ranks(self, tp_group: Any, attn_cp_size: int) -> None:
+        """Find shared-Cache peers for lookup deduplication and dump partitioning."""
         if (
             not self.pool_group.rank_replicated
             or attn_cp_size != 1
@@ -221,15 +222,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
         identities: list[Any] = [None] * self._tp_size
         torch.distributed.all_gather_object(identities, cache_identity, group=tp_group)
         if cache_identity is not None:
-            self._lookup_owner = self._tp_rank == identities.index(cache_identity)
+            self._dump_ranks = tuple(
+                rank
+                for rank, identity in enumerate(identities)
+                if identity == cache_identity
+            )
+            self._lookup_owner = self._tp_rank == self._dump_ranks[0]
         if self._lookup_owner:
             logger.info(
                 "UCM linker lookup owner dp_rank=%d tp_rank=%d tp_size=%d "
-                "shared_cache_identified=%s",
+                "shared_cache_identified=%s dump_ranks=%s",
                 self._dp_rank,
                 self._tp_rank,
                 self._tp_size,
                 cache_identity is not None,
+                self._dump_ranks,
             )
 
     def _create_adapter(
@@ -764,6 +771,62 @@ class UcmDirectLinker(UnifiedCacheLinker):
             finally:
                 self._load_queue.task_done()
 
+    def _partition_offload(self, expanded: list[PoolTransfer]) -> list[PoolTransfer]:
+        if len(self._dump_ranks) == 1:
+            return expanded if self._tp_rank == self._dump_ranks[0] else []
+
+        rank_index = self._dump_ranks.index(self._tp_rank)
+        rank_count = len(self._dump_ranks)
+        selected = []
+        index_views: dict[tuple[int, int, int], torch.Tensor] = {}
+        tail_owner = None
+        for transfer in expanded:
+            entry = self.pools[transfer.name]
+            if entry.indices_from_pool != PoolName.KV:
+                if tail_owner is None:
+                    # Keep every auxiliary pool at a node boundary together.
+                    # Prefer a KV tail key, independent of local GPU addresses.
+                    key_transfer = min(
+                        expanded,
+                        key=lambda t: (
+                            self.pools[t.name].indices_from_pool != PoolName.KV,
+                            str(t.name),
+                        ),
+                    )
+                    digest = hashlib.sha256(
+                        key_transfer.keys[-1].encode("utf-8")
+                    ).digest()
+                    tail_owner = self._dump_ranks[
+                        int.from_bytes(digest[:8], "little") % rank_count
+                    ]
+                if self._tp_rank == tail_owner:
+                    selected.append(transfer)
+                continue
+
+            pages = len(transfer.keys)
+            start = pages * rank_index // rank_count
+            end = pages * (rank_index + 1) // rank_count
+            if start == end:
+                continue
+            if start == 0 and end == pages:
+                selected.append(transfer)
+                continue
+            # Slice complete physical pages before any CPU snapshot. Reuse the
+            # view when KV/indexer pools share the same source and page range.
+            indices = transfer.host_indices
+            first, last = start * entry.page_size, end * entry.page_size
+            view_key = (id(indices), first, last)
+            if view_key not in index_views:
+                index_views[view_key] = indices.reshape(-1)[first:last]
+            selected.append(
+                replace(
+                    transfer,
+                    keys=transfer.keys[start:end],
+                    host_indices=index_views[view_key],
+                )
+            )
+        return selected
+
     def offload(
         self, transfers: list[PoolTransfer], session_id: str | None = None
     ) -> bool:
@@ -774,11 +837,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if not expanded:
             return False
         self._freeze_gc_once()
-        if not self._offload_owner:
-            self._offload_results.put(True)
+        selected = self._partition_offload(expanded)
+        if not selected:
+            # Empty ranks still occupy their position in the node-result FIFO.
+            self._offload_queue.put(([], []))
             return True
         ready_events = self._record_transfer_events()
-        self._offload_queue.put((expanded, ready_events))
+        self._offload_queue.put((selected, ready_events))
         return True
 
     def _offload_worker(self) -> None:
@@ -793,6 +858,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             nonlocal sequence
             sequence += 1
             expanded, ready_events = task
+            if not expanded:
+                in_flight.append(_PendingOffload(sequence, [], [], [], result=True))
+                return
             transfers: list[UcmLayerTransfer] = []
             try:
                 prerequisite_handle = self._wait_transfer_events(ready_events)

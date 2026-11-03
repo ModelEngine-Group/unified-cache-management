@@ -128,6 +128,20 @@ class OffloadWorkerTest(unittest.TestCase):
         self.complete["B"].set()
         self.assertTrue(self.obj._offload_results.get(timeout=2))
 
+    def test_empty_rank_result_does_not_overtake_owned_node(self):
+        self.enqueue("A")
+        self.obj._offload_queue.put(([], []))
+        self.enqueue("C")
+        self.complete["C"].set()
+        self.assertTrue(self.waited["C"].wait(2))
+        self.assertTrue(self.obj._offload_results.empty())
+        with self.assertLogs(linker_module.logger, level="ERROR"):
+            self.wait_fail.add("A")
+            self.complete["A"].set()
+            self.assertFalse(self.obj._offload_results.get(timeout=2))
+        self.assertTrue(self.obj._offload_results.get(timeout=2))
+        self.assertTrue(self.obj._offload_results.get(timeout=2))
+
     def test_shutdown_drains_pending_nodes(self):
         self.enqueue("A")
         self.enqueue("B")

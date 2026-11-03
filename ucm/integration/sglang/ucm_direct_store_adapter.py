@@ -54,7 +54,7 @@ class UcmLayerTransfer:
 class _StoreTask:
     store: UcmKVStoreBaseV1
     task: Task
-    # Keep lazily generated address arrays alive until the native task is reaped.
+    # Keep address arrays alive until the native task is reaped.
     addresses: np.ndarray
 
 
@@ -81,11 +81,14 @@ class _PreparedPipelineTransfer:
         )
 
     def dump_data(
-        self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
+        self, row_offset: int, addresses: np.ndarray, prerequisite_handle: int = 0
     ) -> Task:
-        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
+        # The flattened address rows are ordered by Store shard, then page.
+        rows = np.arange(row_offset, row_offset + len(addresses), dtype=np.uint64)
+        indexes = rows // self.page_count
+        ids = self.ids.reshape(self.page_count, -1)[rows % self.page_count].reshape(-1)
         return self.task_type(
-            self.store.Dump(self.ids, indexes, addresses, prerequisite_handle)
+            self.store.Dump(ids, indexes, addresses, prerequisite_handle)
         )
 
 
@@ -755,6 +758,61 @@ class UcmDirectStoreAdapter:
                 by_layer.setdefault(layer, []).append(item)
         return by_layer
 
+    def _offload_batch_rows(self, shard_size: int) -> int:
+        # Cache pins every task buffer until D2H completes. Bound a batch by
+        # its non-reserved capacity, conservatively divided among local ranks
+        # for Cache v2's per-rank partitions. No new configuration is needed.
+        shared = self._store_config.get("share_buffer_enable", True)
+        capacity_gb = self._store_config.get("cache_buffer_capacity_gb", 0)
+        capacity = int(capacity_gb or (160 if shared else 20)) << 30
+        reserved = int(
+            self._store_config.get("cache_load_exclusive_buffer_number", 1024)
+        )
+        ranks = (
+            int(self._identity.get("tp_size", 1))
+            if self._identity.get("rank_replicated", False)
+            else 1
+        )
+        return max(1, (capacity // shard_size - reserved) // ranks)
+
+    def _submit_dump_batches(
+        self,
+        item: _PreparedStoreTransfer,
+        tasks: list[_StoreTask],
+        prerequisite_handle: int,
+    ) -> None:
+        transfer = item.transfer
+        addresses = transfer.addresses.reshape(-1, len(transfer.tensor_size_list))
+        if not len(addresses):
+            return
+        batch_rows = len(addresses)
+        if self._connector_name == "UcmPipelineStore" and str(
+            self._store_config.get("store_pipeline", "")
+        ).startswith("Cache|"):
+            batch_rows = self._offload_batch_rows(transfer.shard_size)
+        for start in range(0, len(addresses), batch_rows):
+            batch = addresses[start : start + batch_rows]
+            if item.prepared_io is not None:
+                task = item.prepared_io.dump_data(start, batch, prerequisite_handle)
+            else:
+                # Keep custom Stores on their public interface. Native Pipeline
+                # consumes these descriptors before returning the task handle.
+                page_count = len(item.block_ids)
+                rows = range(start, start + len(batch))
+                block_ids = [item.block_ids[row % page_count] for row in rows]
+                indexes = [row // page_count for row in rows]
+                task = (
+                    item.store.dump_data(
+                        block_ids,
+                        indexes,
+                        batch,
+                        prerequisite_handle=prerequisite_handle,
+                    )
+                    if prerequisite_handle
+                    else item.store.dump_data(block_ids, indexes, batch)
+                )
+            tasks.append(_StoreTask(item.store, task, batch))
+
     def _submit_prepared(
         self,
         prepared: list[_PreparedStoreTransfer],
@@ -767,21 +825,22 @@ class UcmDirectStoreAdapter:
         for item in prepared:
             transfer = item.transfer
             try:
+                if is_offload:
+                    # One node/group is one task unless Cache capacity requires
+                    # splitting. Failure cleanup below covers previous batches.
+                    self._submit_dump_batches(item, tasks, prerequisite_handle)
+                    continue
                 target = (
                     item.prepared_io if item.prepared_io is not None else item.store
                 )
-                operation = target.dump_data if is_offload else target.load_data
-                shard_indices = (
-                    range(len(transfer.layers))
-                    if logical_layer is None
-                    else item.shards_by_layer.get(logical_layer, ())
-                )
+                operation = target.load_data
+                shard_indices = item.shards_by_layer.get(logical_layer, ())
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
                     addresses = (
                         transfer.address_builder(shard_index)
-                        if transfer.address_builder is not None and not is_offload
+                        if transfer.address_builder is not None
                         else transfer.addresses[shard_index]
                     )
                     args = (
@@ -800,7 +859,7 @@ class UcmDirectStoreAdapter:
                     )
                     tasks.append(_StoreTask(item.store, task, addresses))
             except Exception:
-                # A later shard may fail to submit after earlier shards have
+                # A later layer, batch or group can fail after earlier tasks
                 # started. Reap those handles before their device buffers can
                 # be reused by the caller.
                 try:

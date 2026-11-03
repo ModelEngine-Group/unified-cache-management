@@ -165,7 +165,8 @@ class LoadWorkerTest(unittest.TestCase):
         obj.layer_done_counter = types.SimpleNamespace(update_producer=lambda: 0)
         obj._load_queue = queue.Queue()
         obj._offload_queue = queue.Queue()
-        obj._offload_owner = True
+        obj._dump_ranks = (0,)
+        obj._tp_rank = 0
         obj._expand = lambda transfers, **kwargs: transfers
         streams = []
 
