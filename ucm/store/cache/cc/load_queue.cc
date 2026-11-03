@@ -121,7 +121,8 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
             waiter->Done();
         };
         if (task->filter.size() != nShard) {
-            fail(Status::InvalidParam("filter size({}) != shards({})", task->filter.size(), nShard));
+            fail(
+                Status::InvalidParam("filter size({}) != shards({})", task->filter.size(), nShard));
             return;
         }
         for (size_t i = 0; i < nShard; ++i) {

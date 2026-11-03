@@ -116,8 +116,8 @@ public:
         }
         return res;
     }
-    Expected<Detail::TaskHandle> LoadOnToken(Detail::TaskDesc task,
-                                             const std::vector<Detail::TokenFilter>& filter) override
+    Expected<Detail::TaskHandle> LoadOnToken(
+        Detail::TaskDesc task, const std::vector<Detail::TokenFilter>& filter) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
         if (task.memoryType != Detail::TaskDesc::MemoryType::DDR) {
@@ -133,8 +133,7 @@ public:
                                             shard.index);
             }
         }
-        auto res =
-            transMgr_.Submit({TransTask::Type::LOAD_ON_TOKEN, std::move(task), filter});
+        auto res = transMgr_.Submit({TransTask::Type::LOAD_ON_TOKEN, std::move(task), filter});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load-on-token task({}).", res.Error(), task.brief);
         }

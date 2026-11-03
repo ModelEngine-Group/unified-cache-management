@@ -331,9 +331,7 @@ TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenFillsCacheSlotWithoutSplicing)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("d1b2c3d4e5f6789012345678901234ab");
     std::vector<UC::Detail::TokenFilter> filter(1);
-    filter[0].ranges = {
-        {UC::Detail::TokenRange{0, tensorSize / 2}}
-    };
+    filter[0].ranges = {{UC::Detail::TokenRange{0, tensorSize / 2}}};
 
     UC::Detail::TaskDesc miss;
     miss.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
