@@ -351,8 +351,6 @@ class KVCacheGroupManager:
         external_hit_tokens = (
             min_external_hit_tokens // self.lcm_block_size
         ) * self.lcm_block_size
-        # MTP eagle drops
-        external_hit_tokens -= self.lcm_block_size
         if external_hit_tokens <= 0:
             return 0, 0, []
 
