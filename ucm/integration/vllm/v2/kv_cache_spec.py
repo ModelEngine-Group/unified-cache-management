@@ -37,6 +37,7 @@ class RestorePolicy(Enum):
 
     @property
     def tag(self) -> bytes:
+        """Policy ID stored in the low three bits of a chunk ID's final byte."""
         return _RESTORE_POLICY_TAGS[self]
 
 

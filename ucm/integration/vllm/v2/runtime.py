@@ -35,6 +35,8 @@ logger = init_logger(__name__)
 
 # Development format revision; compatibility with old records is not maintained.
 UCM_CHUNK_ID_VERSION = 6
+UCM_PP_RANK_BITS = 3
+UCM_RESTORE_POLICY_BITS = 3
 
 
 class ParallelRank(NamedTuple):
@@ -57,6 +59,8 @@ class ParallelTopology:
     @classmethod
     def from_config(cls, config: VllmConfig) -> ParallelTopology:
         parallel_config = config.parallel_config
+        if parallel_config.pipeline_parallel_size > (1 << UCM_PP_RANK_BITS):
+            raise ValueError("UCM v2 supports at most 8 PP stages (3-bit PP rank)")
         # Engine configuration validation owns dimensions and legal TP/PCP/DCP
         # combinations. Only project the already-resolved configuration here.
         return cls(
@@ -81,6 +85,7 @@ class UCMStorageHandshake(KVConnectorHandshakeMetadata):
 
 
 def make_common_ucm_chunk_ids(chunk_hashes: Iterable[bytes]) -> tuple[bytes, ...]:
+    """Keep the first 15 bytes of each chained MD5 digest."""
     return tuple(value[:15] for value in chunk_hashes)
 
 
@@ -89,12 +94,9 @@ def make_ucm_chunk_ids(
     restore_policy: RestorePolicy = RestorePolicy.FA,
     pp_rank: int = 0,
 ) -> tuple[bytes, ...]:
-    """One object per PP stage and policy, shared by its TP/PCP ranks."""
-    stage = pp_rank.to_bytes(4, "little")
-    return tuple(
-        hashlib.sha256(value + stage).digest()[:15] + restore_policy.tag
-        for value in common_ucm_chunk_ids
-    )
+    """Append reserved(2)/PP rank(3)/policy(3) bits to the common MD5 prefix."""
+    suffix = bytes([(pp_rank << UCM_RESTORE_POLICY_BITS) | restore_policy.tag[0]])
+    return tuple(value + suffix for value in common_ucm_chunk_ids)
 
 
 def _load_launch_config(vllm_config: "VllmConfig") -> dict[str, Any]:
