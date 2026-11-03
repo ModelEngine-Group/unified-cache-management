@@ -78,18 +78,15 @@ public:
     int32_t Fd() const { return fd_; }
     size_t Size() const { return size_; }
 
-    /* Unlike a userspace first touch, this reports a failed allocation instead
-     * of delivering SIGBUS. Call after applying the mapping's NUMA policy.
-     * Older kernels may reject the advice; callers must handle that failure. */
-    Status PopulateWrite()
+    /* Instantiate the backing pages without a userspace fault. HugeTLB uses
+     * the calling thread's allocation policy, not this mapping's mbind policy. */
+    Status Preallocate()
     {
         if (addr_ == nullptr || size_ == 0) {
-            return Status::InvalidParam("cannot populate an unmapped memfd");
+            return Status::InvalidParam("cannot preallocate an unmapped memfd");
         }
-        // Linux UAPI value, also usable with headers predating Linux 5.14.
-        constexpr int populateWrite = 23;  // MADV_POPULATE_WRITE
-        if (::madvise(addr_, size_, populateWrite) != 0) {
-            return OsError("madvise(MADV_POPULATE_WRITE) failed", errno);
+        if (::fallocate(fd_, 0, 0, static_cast<off_t>(size_)) != 0) {
+            return OsError("fallocate memfd failed", errno);
         }
         return Status::OK();
     }

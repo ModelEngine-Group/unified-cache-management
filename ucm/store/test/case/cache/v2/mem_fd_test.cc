@@ -12,22 +12,18 @@
 namespace UC {
 namespace {
 
-TEST(MemFdTest, PopulateRejectsUnmappedMemory)
+TEST(MemFdTest, PreallocateRejectsUnmappedMemory)
 {
     MemFd mem;
-    EXPECT_EQ(Status::InvalidParam(), mem.PopulateWrite());
+    EXPECT_EQ(Status::InvalidParam(), mem.Preallocate());
 }
 
-TEST(MemFdTest, PopulateMakesSharedMemoryWritable)
+TEST(MemFdTest, PreallocateMakesSharedMemoryWritable)
 {
     const auto pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
     MemFd owner;
-    ASSERT_TRUE(owner.Create("ucm_populate_test", pageSize * 2).Success());
-    // The running kernel, rather than the build headers, determines support.
-    const auto result = owner.PopulateWrite();
-    if (result.Failure() && result.ToString().find("errno=22 ") != std::string::npos) {
-        GTEST_SKIP() << result.ToString();
-    }
+    ASSERT_TRUE(owner.Create("ucm_preallocate_test", pageSize * 2).Success());
+    const auto result = owner.Preallocate();
     ASSERT_TRUE(result.Success()) << result.ToString();
     auto* bytes = static_cast<uint8_t*>(owner.Addr());
     bytes[0] = 0x5a;
@@ -38,18 +34,22 @@ TEST(MemFdTest, PopulateMakesSharedMemoryWritable)
     EXPECT_EQ(0xa5, static_cast<uint8_t*>(peer.Addr())[pageSize]);
 }
 
-TEST(MemFdTest, PopulateReportsMissingBackingWithoutSigbus)
+TEST(MemFdTest, PreallocateReportsFailureWithoutSigbus)
 {
     const auto pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    const int fd = ::memfd_create("ucm_preallocate_short_file", MFD_ALLOW_SEALING | MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
     MemFd owner;
-    ASSERT_TRUE(owner.Create("ucm_populate_short_file", pageSize).Success());
+    ASSERT_TRUE(owner.Adopt(fd, pageSize).Success());
+    ASSERT_EQ(0, ::ftruncate(fd, static_cast<off_t>(pageSize)));
+    ASSERT_EQ(0, ::fcntl(fd, F_ADD_SEALS, F_SEAL_GROW));
     MemFd peer;
-    // Accessing the second page directly would deliver SIGBUS. A prefault must
-    // return an error instead, including on kernels with no populate support.
+    // Accessing the second page directly would deliver SIGBUS. Growing the
+    // sealed file is forbidden, so preallocation must report a syscall error.
     ASSERT_TRUE(peer.Adopt(::dup(owner.Fd()), pageSize * 2).Success());
-    const auto result = peer.PopulateWrite();
+    const auto result = peer.Preallocate();
     EXPECT_TRUE(result.Failure());
-    EXPECT_NE(std::string::npos, result.ToString().find("MADV_POPULATE_WRITE"));
+    EXPECT_NE(std::string::npos, result.ToString().find("fallocate memfd failed"));
     // The process and the original mapping remain usable after the failure.
     static_cast<uint8_t*>(owner.Addr())[0] = 0x7c;
     EXPECT_EQ(0x7c, static_cast<uint8_t*>(peer.Addr())[0]);

@@ -89,13 +89,13 @@ public:
     void Reset() override;
 
 private:
-    /* Each attempt includes NUMA placement and first-touch allocation. A failed
-     * HugeTLB prefault releases the candidate before trying a smaller page. */
+    /* Each attempt includes NUMA placement and backing allocation. A failed
+     * HugeTLB preallocation releases the candidate before trying a smaller page. */
     Status CreateLocalSegment(size_t rank);
     Expected<PageBacking> PageBackingOf(int32_t fd) const;
     static const char* PageBackingName(PageBacking backing);
     static size_t PageSizeOf(PageBacking backing, size_t systemPageSize);
-    Status PrepareLocalMemory(MemFd& mem, PageBacking backing);
+    Status PrepareLocalMemory(MemFd& mem, PageBacking backing, bool& canRetry);
     Status RegisterSegment(Segment& segment);
     /* memfd name, and the abstract socket a peer uses to fetch the fd. */
     std::string SegmentName(size_t rank) const;
