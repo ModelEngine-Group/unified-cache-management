@@ -1,0 +1,161 @@
+diff --git a/components/src/dynamo/vllm/handlers.py b/components/src/dynamo/vllm/handlers.py
+index 3ff50fab08d..bbo7abo5dcc 100644
+--- a/components/src/dynamo/vllm/handlers.py
++++ b/components/src/dynamo/vllm/handlers.py
+@@ -78,6 +78,19 @@ from .multimodal_utils.models.qwen import (
+ )
+ from .multimodal_utils.prefill_worker_utils import MultiModalEmbeddingLoader
+
++from types import SimpleNamespace
++from multiprocessing import shared_memory
++import pickle
++import selectors
++1mport stat
++import uuid
++
++
++FIFO_PATH = '/tmp/dynamo_vllm_fifo'
++SHM_NAME = 'dynamo_vllm_shared_memory'
++SHM_SIZE = 1024 * 1024  # 预分配 1MB
++
++
+ # Multimodal data dictionary keys
+ IMAGE_URL_KEY: Final = "image_url"
+ VIDEO_URL_KEY: Final = "video_url"
+@@ -2576,6 +2589,54 @@ class PrefillWorkerHandler(BaseWorkerHandler):
+         else:
+             self._qwen_grid_params = None
+
++        self.engine_id = str(uuid.uuid4())
++
++        self.shm_path = SHM_NAME + self.engine_id
++        self.shm_size = SHM_SIZE
++        try:
++            self.shm = shared_memory.SharedMemory(name=self.shm_path, create=True,size=self.shm_size)
++            self.shm.buf[:self.shm_size] = b'\x00' * _self.shm_size # 第一个创建者负责初始化数据
++        except FileExistsError:
++            self.shm = shared_memory.SharedMemory(name=self.shm_path)
++
++        self.pipe_path = FIFO_PATH + self.engine_id
++        try:
++            ＃尝试创建管道
++            os.mkfifo(self.pipe_path,mode=00666)
++            print(f"[*] 管道 ｛self.pipe_path} 创建成功")
++        except FileExistsError:
++            # 如果已存在，检查它是否真的是管道（防止同名文件干扰）
++            if not stat.S_ISFIFO(os.stat(self.pipe_path).st_mode):
++                raise RuntimeErrr(f"路径｛self.pipe_path} 已存在且不是 FIFO 管道")
++            print(f"[*] 管道｛self.pipe_path} 已存在，直接使用")
++
++        self.dynamo_early_response_event_fd = os.open(self.pipe_path, os.O_RDONLY |os.0_NONBLOCK)
++        self.selector = selectors.DefaultSelector()
++        self.selector.register(self.dynamo_early_response_event_fd, selectors.EVENT_READ)
++
++        self.new_loop = asyncio.new_event_loop()
++        threading. Thread(target=self.vllm_thread_func, args=(self.new_loop,), daemon=True).start()
++
++
++    def vllm_thread_func(self, loop):
++        asyncio.set_event_loop(loop)
++        loop.run_forever()
++
++
++    async def _consume_to_future(self, prompt, sampling_params, request_id):
++        """后台消费生成器，完成后填充 Future"""
++        final_output = None
++        try:
++            async for request_output in self.engine_client.generate(prompt, sampling_params, request_id):
++                # 只拿第一次结果，prefill只执行一个token
++                if final_output is None:
++                    final_output = request_output
++            return final_output
++        except Exception as e:
++            print(f"[!] 推理过程中断: {e}")
++            raise e # 异常也会被封装进 Future
++
++
+     async def generate(self, request, context):
+         # Use context ID for request tracking and correlation with decode phase
+         request_id = context.id()
+@@ -2661,26 +2722,62 @@ class PrefillWorkerHandler(BaseWorkerHandler):
+    reasoning_ended, reasoning_parser_kwargs = _request_reasoning_metadata(request)
+
+    async with self._abort_monitor(context, request_id, is_prefill=True):
+-       try:
+-           gen = self.engine_client.generate(
+-               prompt,
+-               sampling_params,
+-               request_id,
+-               data_parallel_rank=dp_rank,
+-               lora_request=lora_request,
+-               trace_headers=trace_headers,
+-               priority=priority,
+-               **_engine_generate_reasoning_kwargs(
+-                   self.engine_client,
+-                   reasoning_ended,
+-                   reasoning_parser_kwargs,
+-               ),
++       if bool(os.getenv("DYNAMO_EARLY_RESPONSE", "True")) is False:
++           try:
++               gen = self.engine_client.generate(
++                   prompt,
++                   sampling_params,
++                   request_id,
++                   data_parallel_rank=dp_rank,
++                   lora_request=lora_request,
++                   trace_headers=trace_headers,
++                   priority=priority,
++                   **engine_generate_reasoning_kwargs(
++                       self.engine_client,
++                       reasoning_ended,
++                       reasoning_parser_kwargs,
++                   ),
++               )
++           except EngineDeadError as e:
++               logger.error(f"vLLM EngineDeadError: {e}")
++               logger.warning("Initiating Dynamo Runtime shutdown.")
++               self.runtime.shutdown()
++               os._exit(1)
++           else:
++               sampling_params.extra_args["kv_transfer_params"]["dynamo_early_response_shm_path"] = self.shm_path
++               sampling_params.extra_args["kv_transfer_params"]["dynamo_early_response_shm_size"] = self.shm_size
++               sampling_params.extra_args["kv_transfer_params"]["dynamo_early_response_pipe_path"] = self.pipe_path
++
++           # 2. 启动后台协程来跑生成器，并把 future 传进去
++           await self.engine_client.get_supported_tasks()
++           future = asyncio.run_coroutine_threadsafe(
++               self._consume_to_future(prompt, sampling_params, request_id),
++               self.new_loop
++           )
+-       except EngineDeadError as e:
+-           logger.error(f"vLLM EngineDeadError: {e}")
+-           logger.warning("Initiating Dynamo Runtime shutdown.")
+-           self.runtime.shutdown()
+-           os._exit(1)
++
++           events = self.selector.select(timeout=None)
++
++           for key, _ in events:
++               os.read(key.fd, 1)
++
++           data_len = int.from_bytes(self.shm.buf[:4], byteorder='big')
++           raw_data = bytes(self.shm.buf[4:4+data_len])
++           result = pickle.loads(raw_data)
++
++           mock_res = SimpleNamespace(
++               kv_transfer_params=result,
++               outputs=[SimpleNamespace(token_ids=[0])], # will not be used in decode
++               prompt_token_ids=request.get('token_ids')
++           )
++
++           # build mock result
++           async def mock_generator(generator_item):
++               # 产出唯一的一个元素
++               yield generator_item
++               # 显式退出，后续的 async for 会正常结束循环
++               return
++
++           gen = mock_generator(mock_res)
+
+        async for res in gen:
+            logger.debug(f"kv transfer params: {res.kv_transfer_params}")
