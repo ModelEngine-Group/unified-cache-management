@@ -2780,7 +2780,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.use_layerwise = True
         self.need_load = False
-        self._layerwise_load_started = False
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
@@ -2912,7 +2911,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
-        self._layerwise_load_started = False
         self._layerwise_load_start_by_layer.clear()
         self._layerwise_layer_load_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
@@ -2920,14 +2918,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.dump_total_ptrs = None
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        # Newer vLLM may defer this hook until after forward. The first
-        # attention wait can start the same batch early; the later hook must
-        # not duplicate tasks or reload pages already updated by computation.
-        if self._layerwise_load_started:
-            return
-        if not self._connector_metadata:
-            return
-        self._layerwise_load_started = True
         first_layer_load_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         for request_id, request in metadata.request_meta.items():
@@ -2960,10 +2950,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata:
             return
-        if not self._layerwise_load_started:
-            # This implementation uses connector metadata and registered cache
-            # addresses only, so no ForwardContext is needed to prepare loads.
-            self.start_load_kv(None)
         if not self.need_load:
             return
         metadata = self._get_connector_metadata()
