@@ -130,6 +130,8 @@ class UCMConnectorScheduler:
         self._job_ids = count(JOB_ID_STRIDE, JOB_ID_STRIDE)
         self._pending_jobs: dict[int, PendingJob] = {}
         self._prefetch_job_ids_by_request: dict[str, int] = {}
+        self._prefetch_completed_request_ids: set[str] = set()
+        self._prefetch_failed_request_ids: set[str] = set()
         self._registered_request_ids: set[str] = set()
         self._stage_policies: dict[int, tuple[RestorePolicy, ...]] = {}
         self._finished_request_ids: set[str] = set()
@@ -178,18 +180,39 @@ class UCMConnectorScheduler:
         common_chunk_hashes = make_common_ucm_chunk_ids(self._chunk_hasher(request))
         if request_id in self._prefetch_job_ids_by_request:
             return UCMLookupResult(None, common_chunk_hashes)
-        hit_tokens = self._lookup_hit_tokens(
-            request_id,
-            common_chunk_hashes,
-            len(request.all_token_ids),
-            num_computed_tokens,
+        hit_tokens = (
+            0
+            if request_id in self._prefetch_failed_request_ids
+            else self._lookup_hit_tokens(
+                request_id,
+                common_chunk_hashes,
+                len(request.all_token_ids),
+                num_computed_tokens,
+            )
         )
         if hit_tokens is None:
-            prefetch_token = self._store_scheduler.prepare_prefetch(request_id)
+            try:
+                prefetch_token = self._store_scheduler.prepare_prefetch(request_id)
+            except StoreIOError:
+                # No Get hit was promised. Recompute on the next query instead
+                # of repeatedly retrying the failed prefetch window.
+                logger.warning(
+                    "UCM PreparePrefetch failed; recomputing this request",
+                    exc_info=True,
+                )
+                self._prefetch_failed_request_ids.add(request_id)
+                self._prefetch_completed_request_ids.add(request_id)
+                return UCMLookupResult(None, common_chunk_hashes)
             prefetch_job = self._track_prepared_job(
                 "prefetch", request_id, prefetch_token
             )
             self._prefetch_job_ids_by_request[request_id] = prefetch_job.job_id
+            return UCMLookupResult(None, common_chunk_hashes)
+        if request_id not in self._prefetch_completed_request_ids:
+            # The first query initializes Store prefetch. A definite result
+            # means no transfer is needed, but admission still waits until
+            # the next query, just as it does for an actual prefetch job.
+            self._prefetch_completed_request_ids.add(request_id)
             return UCMLookupResult(None, common_chunk_hashes)
         external_hit_tokens = (
             hit_tokens if hit_tokens > self.load_threshold_tokens else 0
@@ -445,6 +468,9 @@ class UCMConnectorScheduler:
                     pending_job.request_id, not pending_job.failed
                 )
             if pending_job.operation == "prefetch":
+                self._prefetch_completed_request_ids.add(pending_job.request_id)
+                if pending_job.failed:
+                    self._prefetch_failed_request_ids.add(pending_job.request_id)
                 del self._prefetch_job_ids_by_request[pending_job.request_id]
             del self._pending_jobs[job_id]
 
@@ -459,6 +485,8 @@ class UCMConnectorScheduler:
                 self._store_scheduler.on_request_finished(request_id)
                 self._registered_request_ids.remove(request_id)
             self._finished_request_ids.discard(request_id)
+            self._prefetch_completed_request_ids.discard(request_id)
+            self._prefetch_failed_request_ids.discard(request_id)
             self._retired_request_ids.remove(request_id)
 
     def update_connector_output(self, connector_output: KVConnectorOutput) -> None:

@@ -93,12 +93,26 @@ Prepare/Complete；远端 Lookup 命中不能解决远端准入，不声明配�
 | 请求结束且最后窗口已关闭 | `on_request_finished` |
 
 `update_state_after_alloc` 保持 no-op，block tables 来自本步
-`SchedulerOutput.kv_connector_block_state`。同步 load 返回 `(N, False)`。
-Lookup 返回 None 时下发预取 token，由 rank0 同步执行 `submit_prefetch/wait`，
-其余 rank 回报 no-op 成功；汇总后 `complete_prefetch` 并重新查询。
+`SchedulerOutput.kv_connector_block_state`。第一版默认固定为预取阶段、重新查命中、
+layerwise Get：首次查询始终向 vLLM 返回 `(None, False)`，本轮不为该请求调度 forward。
+预取完成后的查询才返回 `(N, False)`，按 layer ID 提交 Get 并在对应层执行前等待。
+`use_layerwise` 未配置时默认为 true，cudagraph 的 piecewise 要求使用同一默认值。
+
+现有 `PreparePrefetch(request_id)` 不携带 keys，需要内部 Lookup 先登记查询范围。
+内部 Lookup 返回 None 时下发预取 token，由 rank0 同步执行 `submit_prefetch/wait`，
+其余 rank 回报 no-op 成功；全部 rank 终态齐全后 `complete_prefetch` 并重新查询。
+内部 Lookup 已返回确定命中/未命中时，预取阶段直接完成，无需生成虚假的 Store job；
+本次仍返回 None，下次查询才把命中数交给 vLLM。
 这里是 Store 下层到当前层的 prefetch，CacheStore 的典型目标是 DRAM/shm，
 具体源/目标由 Store 解释 token 决定；随后仍需 Get 到设备，并非异步 HBM load。
-这不代表跨 step 异步 HBM load 已实现。
+即使本步为 0-token，MRV2 的 no-forward 路径仍绑定 connector metadata、调用
+`start_load_kv`、回传 Worker metadata；待预取请求独立加入 metadata，不依赖已调度请求集合。
+这条调用链已对照本地 vLLM/Ascend MRV2 源码，但未做端到端验证。
+
+PreparePrefetch 或已终止的预取 IO 发生可恢复失败时，本请求后续返回 0，走重算，
+不重复预取而一直返回 None；该失败状态在请求结束且所有窗口关闭后清除。
+取消未下发的预取直接 CompletePrefetch(false)，已下发的预取等所有 rank 终态后再关闭窗口。
+无法确认 IO 已终止的异常继续保留任务并报错，不按已完成失败处理。
 
 `RequestMetadata.prepare_get_failed` 仅在 Scheduler 的 PrepareGet 抛出可恢复错误时
 设置。Lookup 已向引擎报告命中，不能无声丢弃此次 load；Worker 保留计划中的 block ID，
@@ -153,7 +167,7 @@ PreparePut 当前只有 keys，变长对象在 Alloc 时如何获知大小仍需
 
 ```yaml
 chunk_size: 256
-use_layerwise: false
+use_layerwise: true
 store_module: ucm_proxy
 store_config:
   type: store

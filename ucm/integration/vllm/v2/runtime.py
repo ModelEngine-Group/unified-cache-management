@@ -231,7 +231,7 @@ class UCMRuntimeContext:
         model_dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         speculative_config = vllm_config.speculative_config
         additional_config = vllm_config.additional_config or {}
-        use_layerwise = bool(launch_config.get("use_layerwise", False))
+        use_layerwise = bool(launch_config.get("use_layerwise", True))
         fingerprint_schema = {
             "device_type": device_type,
             "model_dtype": model_dtype,
