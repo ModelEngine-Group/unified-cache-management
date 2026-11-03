@@ -33,6 +33,11 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.v1.core.sched.output import SchedulerOutput
 
+from ucm.integration.vllm.cache_config import (
+    cache_rank_count,
+    configure_cache_capacity,
+    configure_cache_numa,
+)
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -47,6 +52,7 @@ from ucm.integration.vllm.ucm_connector import (
     _worker_generate_unique_id,
 )
 from ucm.logger import init_logger
+from ucm.store.cache.capabilities import uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -239,6 +245,8 @@ def create_ucm_ec_store(
         ]
 
     store_config["share_buffer_enable"] = True
+    configure_cache_capacity(store_config, vllm_config.parallel_config)
+    # Unversioned wheels retain their original shared-buffer default.
     store_config.setdefault("cache_buffer_capacity_gb", 128)
     _check_shm_capacity(int(store_config["cache_buffer_capacity_gb"]))
 
@@ -286,7 +294,18 @@ def create_ucm_ec_store(
             "posix_gc_enable": gc_owner,
         }
     )
+    if uses_partitioned_cache():
+        local_count = cache_rank_count(parallel_config)
+        store_config["local_rank_size"] = local_count
     if role == ECConnectorRole.WORKER:
+        if uses_partitioned_cache():
+            configure_cache_numa(
+                store_config,
+                create_device(),
+                device_id,
+                parallel_config,
+                device_id % local_count,
+            )
         store_config.update(
             {
                 "tensor_size_list": tensor_size_list,
@@ -345,6 +364,7 @@ class UCMECConnector(ECConnectorBase):
                 "prerequisite event waits."
             )
         encoder_config = ec_config["encoder_cache_config"]
+        self.enable_event_sync = encoder_config.get("enable_event_sync", True)
         self._block_hasher = RequestHasher(
             meta=build_ec_hash_meta(vllm_config, encoder_config)
         )
@@ -557,6 +577,18 @@ class UCMECConnector(ECConnectorBase):
                 del self.identifier_to_blocks[identifier]
         return False, None
 
+    def _get_load_event_handle(self) -> int:
+        if self._save_device is None:
+            raise RuntimeError("Worker transfer device is not initialized.")
+        if not self.enable_event_sync:
+            self._save_device.synchronize()
+            return 0
+        event_handle = self._save_device.get_event_handle()
+        if event_handle == 0:
+            logger.warning("Failed to record EC load event; synchronizing before load.")
+            self._save_device.synchronize()
+        return event_handle
+
     def start_load_caches(
         self,
         encoder_cache: dict[str, torch.Tensor],
@@ -576,7 +608,7 @@ class UCMECConnector(ECConnectorBase):
 
         rows = self.layout.rows_per_chunk
         width = self.layout.width
-        pending: list[tuple[str, ECLoadSpec, torch.Tensor, Task]] = []
+        pending: list[tuple[str, ECLoadSpec, torch.Tensor, Task, int]] = []
         wait_error: tuple[str, Exception] | None = None
         skipped_items = 0
         submit_start = time.perf_counter()
@@ -599,17 +631,22 @@ class UCMECConnector(ECConnectorBase):
                     device=self.device,
                 )
                 dst_addrs = self._chunk_addresses(storage, expected_chunks)
+                # Fence this destination before handing its raw addresses to UCM.
+                event_handle = self._get_load_event_handle()
                 try:
                     task = self.store.load_data(
                         list(spec.chunk_ids),
                         [0] * expected_chunks,
                         dst_addrs,
+                        prerequisite_handle=event_handle,
                     )
                 except Exception as exc:
+                    if event_handle:
+                        self._save_device.destroy_event_handle(event_handle)
                     raise UCMEncoderCacheError(
                         identifier, "Failed to load encoder cache item"
                     ) from exc
-                pending.append((identifier, spec, storage, task))
+                pending.append((identifier, spec, storage, task, event_handle))
         finally:
             submit_ms = (time.perf_counter() - submit_start) * 1e3
             # Retain destinations and drain every submitted task even if a later
@@ -618,7 +655,7 @@ class UCMECConnector(ECConnectorBase):
             loaded_items = failed_items = 0
             total_chunks = 0
             total_bytes = 0
-            for identifier, spec, storage, task in pending:
+            for identifier, spec, storage, task, event_handle in pending:
                 item_start = time.perf_counter()
                 try:
                     self.store.wait(task)
@@ -646,6 +683,9 @@ class UCMECConnector(ECConnectorBase):
                     logger.exception("Failed to load EC item %s", identifier)
                     if wait_error is None:
                         wait_error = (identifier, exc)
+                finally:
+                    if event_handle:
+                        self._save_device.destroy_event_handle(event_handle)
             if pending:
                 logger.debug(
                     "EC loads: submitted=%d, loaded=%d, failed=%d, skipped=%d, "

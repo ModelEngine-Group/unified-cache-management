@@ -26,6 +26,7 @@
 
 #include "block_tracker.h"
 #include "global_config.h"
+#include "handle_cache.h"
 #include "space_layout.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -49,7 +50,9 @@ private:
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
+    const std::vector<std::string>* backends_{nullptr};
     BlockCommitTracker tracker_;
+    std::deque<LoadHandleCache> loadHandles_;
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;
@@ -59,7 +62,9 @@ private:
     size_t timeoutMs_;
 
 public:
-    Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
+    // backends must outlive this queue; each task picks one by index.
+    Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout,
+                 const std::vector<std::string>* backends);
     void Push(TaskPtr task, WaiterPtr waiter);
     void Cancel(TaskPtr task);
 
@@ -67,6 +72,7 @@ private:
     void LoadWorker(IoUnit& ios);
     void DumpWorker(IoUnit& ios);
     void OnIoUnitTimeout(IoUnit& ios);
+    void OnIoUnitQueueTimeout(IoUnit& ios);
     Status H2S(IoUnit& ios);
     Status S2H(IoUnit& ios);
 };

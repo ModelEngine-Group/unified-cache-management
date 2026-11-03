@@ -63,7 +63,11 @@ def render_values(plan: dict[str, Any], source: str) -> str:
         chart_families(plan),
         key=lambda family: (
             family["product_id"],
-            Version(family["runtime"]["version"]),
+            (
+                (1, family["runtime"]["tag"])
+                if family["runtime"]["channel"] == "pinned"
+                else (0, Version(family["runtime"]["version"]))
+            ),
             family["runtime"]["accelerator_runtime"],
             family["variant"],
             family["label"],

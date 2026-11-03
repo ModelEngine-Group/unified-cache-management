@@ -26,7 +26,10 @@
 
 #include <atomic>
 #include <ctime>
+#include <functional>
+#include <memory>
 #include <string>
+#include "backend_manager.h"
 #include "gc_liveness.h"
 #include "global_config.h"
 #include "status/status.h"
@@ -46,7 +49,7 @@ public:
     GcLease& operator=(const GcLease&) = delete;
     ~GcLease();
 
-    void Setup(const Config& config);
+    void Setup(const Config& config, const BackendManager* backendMgr);
 
     Acquisition TryAcquire();
     void Release();
@@ -54,18 +57,32 @@ public:
     void RequestStop();
 
 private:
-    Status Claim();
-    bool EntryPresent() const;
-    Status ProbeHolder(bool& stale);
-    Status TakeOverStale();
-    void SweepParked() const;
+    struct Paths {
+        BackendManager::BackendAttempt attempt;
+        std::string backend;
+        std::string lockDir;
+        std::string checkTime;
+    };
+    struct Holder {
+        bool locked{false};
+        std::string name;
+        time_t mtime{0};
+        size_t lag{0};
+    };
+    static Status ProbeLock(const std::string& lockDir, const std::string& checkTime,
+                            const std::shared_ptr<Holder>& holder);
+    Expected<Paths> SelectPaths() const;
+    Status Run(const Paths& paths, std::function<Status()> op) const;
+    Status Claim(const Paths& paths);
+    bool IsStale(const Paths& paths, const Holder& holder);
+    bool EntryPresent(const Paths& paths) const;
     void StopHeartbeat();
 
-    std::string backend_;
-    std::string lockDir_;
-    std::string checkTimePath_;
-    std::string heartbeatPath_;
+    const BackendManager* backendMgr_{nullptr};
     std::string identity_;
+    // Heartbeat file name of the current claim. Each claim gets a new name, so a late release
+    // from an earlier claim cannot remove the current lock.
+    std::string heartbeatName_;
     size_t heartbeatIntervalSec_{5};
     size_t staleThresholdSec_{180};
 

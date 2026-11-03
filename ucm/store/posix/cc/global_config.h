@@ -26,17 +26,21 @@
 
 #include <string>
 #include <vector>
+#include "detail/store_health_config.h"
 
 namespace UC::PosixStore {
 
 struct Config {
     std::vector<std::string> storageBackends{};
+    Detail::StoreHealthConfig backendHealth{};
     int32_t deviceId{-1};
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
     std::string ioEngine{"psync"};  // "aio", "psync"
     bool ioDirect{true};
+    size_t aioQueueDepth{1024};
+    size_t loadHandleCacheSize{8192};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t dataTransConcurrency{128};
     size_t lookupConcurrency{16};
@@ -44,6 +48,7 @@ struct Config {
     size_t commitConcurrency{4};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
+    bool posixHotnessEnable{false};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};
     bool posixGcPreciseMode{true};

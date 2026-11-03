@@ -185,12 +185,8 @@ bool HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t gene
 {
     if (config_.passiveEnabled && Detail::ShouldRecordResult(status)) {
         if (health_->RecordIo(generation, status)) { RecordEffectiveHealth(); }
-        if (status.Failure()) {
-            if (storeId_.find(":PosixStore") != std::string::npos) {
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_passive_failures_total"), 1.0);
-            } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_passive_failures_total"), 1.0);
-            }
+        if (status.Failure() && storeId_.find(":MooncakeStore") != std::string::npos) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_passive_failures_total"), 1.0);
         }
         return true;
     } else {
@@ -200,11 +196,7 @@ bool HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t gene
 
 void HealthBreakerStore::RecordProbeMetrics(bool healthy)
 {
-    if (storeId_.find(":PosixStore") != std::string::npos) {
-        UC::Metrics::UpdateStats(healthy ? NAME_TO_METRIC_ID("posix_healthy_count_total")
-                                         : NAME_TO_METRIC_ID("posix_unhealthy_count_total"),
-                                 1.0);
-    } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
+    if (storeId_.find(":MooncakeStore") != std::string::npos) {
         UC::Metrics::UpdateStats(healthy ? NAME_TO_METRIC_ID("mooncake_healthy_count_total")
                                          : NAME_TO_METRIC_ID("mooncake_unhealthy_count_total"),
                                  1.0);
@@ -214,9 +206,7 @@ void HealthBreakerStore::RecordProbeMetrics(bool healthy)
 
 void HealthBreakerStore::RecordEffectiveHealth()
 {
-    if (storeId_.find(":PosixStore") != std::string::npos) {
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_health"), Enabled() ? 1.0 : 0.0);
-    } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
+    if (storeId_.find(":MooncakeStore") != std::string::npos) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_store_health"), Enabled() ? 1.0 : 0.0);
     }
 }

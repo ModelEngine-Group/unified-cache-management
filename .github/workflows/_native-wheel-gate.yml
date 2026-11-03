@@ -47,8 +47,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/inputs
-          # The PR Gate smokes only the newest SGLang selector; its older supported
-          # versions are still exercised by release/nightly.
+          # Smoke the newest SGLang numeric range and every explicitly pinned Tag.
+          # Older numeric ranges are still exercised by release/nightly.
           PYTHONPATH=.github/release python -m ucm_release upstreams candidates \
             --latest-per-product sglang \
             --output out/inputs/runtime-candidates.json >/dev/null

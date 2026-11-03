@@ -24,60 +24,34 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_BLOCK_OPERATOR_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_BLOCK_OPERATOR_H
 
-#include <atomic>
 #include <cerrno>
-#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <fcntl.h>
 #include <functional>
 #include <list>
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <sys/stat.h>
-#include <thread>
+#include <vector>
+#include "block_tracker.h"
+#include "handle_cache.h"
 #include "logger/logger.h"
 #include "space_layout.h"
 #include "thread/cpu_affinity.h"
+#include "thread/thread_pool.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
-
-#ifdef UCM_ENABLE_TEST_HOOKS
-namespace TestHooks {
-using OpenHook = std::function<int32_t(const std::string&, int32_t, mode_t)>;
-inline std::mutex& OpenHookMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-inline OpenHook& OpenHookSlot()
-{
-    static OpenHook hook;
-    return hook;
-}
-inline void SetOpenHook(OpenHook hook)
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = std::move(hook);
-}
-inline void ClearOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = nullptr;
-}
-inline OpenHook GetOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    return OpenHookSlot();
-}
-}  // namespace TestHooks
-#endif
 
 class BlockOperator {
 public:
     struct OpenResult {
         int32_t fd;
         int32_t error;
+        LoadHandleCache::BorrowedFd borrowed;
     };
     using OpenCallback = std::function<void(OpenResult)>;
     struct OpenTask {
@@ -86,135 +60,162 @@ public:
         int32_t flags;
         OpenCallback callback;
         uint64_t tag{0};
+        bool useHandleCache{false};
+        size_t backendIndex{0};
+        // Called when a worker takes the task; returning false skips the open.
+        std::function<bool()> onStart;
     };
     struct CommitTask {
         Detail::BlockId id;
         bool success;
+        size_t backendIndex{0};
+        uint64_t ino{0};
     };
 
     ~BlockOperator() { Stop(); }
     void Stop()
     {
-        stop_ = true;
+        std::unique_ptr<ThreadPool<OpenTask>> openSrv;
+        std::unique_ptr<ThreadPool<CommitTask>> commitSrv;
         {
-            std::lock_guard<std::mutex> lock{openQueue_.mutex};
-            openQueue_.cv.notify_all();
+            std::unique_lock<std::shared_mutex> lock{srvMutex_};
+            openSrv = std::move(openSrv_);
+            commitSrv = std::move(commitSrv_);
         }
-        {
-            std::lock_guard<std::mutex> lock{commitQueue_.mutex};
-            commitQueue_.cv.notify_all();
-        }
-        for (auto& worker : workers_) {
-            if (worker.joinable()) { worker.join(); }
-        }
+        openSrv.reset();
+        commitSrv.reset();
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    // loadHandles holds one handle cache per backend.
+    Status Setup(const SpaceLayout* layout, const std::vector<std::string>* backends,
+                 size_t nOpenWorker, size_t nCommitWorker, size_t timeoutMs,
+                 std::function<void()> onOpenStuck,
+                 std::deque<LoadHandleCache>* loadHandles = nullptr)
     {
         layout_ = layout;
-        for (size_t i = 0; i < nOpenWorker; ++i) {
-            workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
-        }
-        for (size_t i = 0; i < nCommitWorker; ++i) {
-            workers_.push_back(std::thread{[this] { CommitWorkerLoop(); }});
-        }
+        backends_ = backends;
+        loadHandles_ = loadHandles;
+        openSrv_ = std::make_unique<ThreadPool<OpenTask>>();
+        auto success =
+            openSrv_->SetWorkerInitFn([](auto&) { return SetThreadName("ucm_posix_open"); })
+                .SetWorkerFn([this](OpenTask& task, auto&) { Open(task); })
+                .SetWorkerTimeoutFn(
+                    [this, timeoutMs, onOpenStuck](OpenTask& task, auto) {
+                        UC_WARN(
+                            "Open of block({}) in backend({}:{}) is stuck over {} ms; a new "
+                            "worker takes over.",
+                            task.id, task.backendIndex, (*backends_)[task.backendIndex], timeoutMs);
+                        if (onOpenStuck) { onOpenStuck(); }
+                    },
+                    timeoutMs)
+                .SetNWorker(nOpenWorker)
+                .Run();
+        if (!success) { return Status::Error("failed to run posix open thread pool"); }
+        commitSrv_ = std::make_unique<ThreadPool<CommitTask>>();
+        success =
+            commitSrv_->SetWorkerInitFn([](auto&) { return SetThreadName("ucm_posix_cmit"); })
+                .SetWorkerFn([this](CommitTask& task, auto&) { Commit(task); })
+                .SetWorkerTimeoutFn(
+                    [this, timeoutMs](CommitTask& task, auto) {
+                        UC_WARN(
+                            "Commit of block({}) in backend({}:{}) is stuck over {} ms; a new "
+                            "worker takes over.",
+                            task.id, task.backendIndex, (*backends_)[task.backendIndex], timeoutMs);
+                    },
+                    timeoutMs)
+                .SetNWorker(nCommitWorker)
+                .Run();
+        if (!success) { return Status::Error("failed to run posix commit thread pool"); }
+        return Status::OK();
     }
     void Submit(std::list<OpenTask>&& tasks)
     {
-        auto& q = openQueue_;
-        std::lock_guard<std::mutex> lock{q.mutex};
-        q.queue.splice(q.queue.end(), tasks);
-        q.cv.notify_all();
+        std::shared_lock<std::shared_mutex> lock{srvMutex_};
+        if (openSrv_) { openSrv_->Push(tasks); }
     }
     void Submit(CommitTask&& task)
     {
-        auto& q = commitQueue_;
-        std::lock_guard<std::mutex> lock{q.mutex};
-        q.queue.push_back(std::move(task));
-        q.cv.notify_one();
+        std::shared_lock<std::shared_mutex> lock{srvMutex_};
+        if (commitSrv_) { commitSrv_->Push(std::move(task)); }
     }
     void CancelQueued(uint64_t tag)
     {
         std::list<OpenTask> purged;
         {
-            std::lock_guard<std::mutex> lock{openQueue_.mutex};
-            auto& q = openQueue_.queue;
-            for (auto it = q.begin(); it != q.end();) {
-                if (it->tag == tag) {
-                    purged.splice(purged.end(), q, it++);
-                } else {
-                    ++it;
-                }
+            std::shared_lock<std::shared_mutex> lock{srvMutex_};
+            if (openSrv_) {
+                openSrv_->TraverseWaitQueue(
+                    [tag](OpenTask& task) { return task.tag == tag; },
+                    [&purged](OpenTask& task) { purged.push_back(std::move(task)); }, nullptr);
             }
         }
         if (!purged.empty()) {
             UC_WARN("AIO task({}) cancelled {} queued open task(s).", tag, purged.size());
         }
+        // Run callbacks outside the lock, since they may submit commits.
         for (auto& task : purged) {
-            if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
+            if (task.callback) { task.callback(OpenResult{-1, ECANCELED, {}}); }
         }
     }
 
 private:
-    void OpenWorkerLoop()
+    static bool SetThreadName(const char* name)
     {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_open");
+        auto nameStatus = CpuAffinity::SetCurrentThreadName(name);
         if (nameStatus.Failure()) {
-            UC_WARN("Failed({}) to set UCM posix open worker name.", nameStatus);
+            UC_WARN("Failed({}) to set UCM posix worker name({}).", nameStatus, name);
         }
+        return true;
+    }
+    void Open(OpenTask& task)
+    {
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-        for (;;) {
-            OpenTask task;
-            {
-                std::unique_lock<std::mutex> lock{openQueue_.mutex};
-                openQueue_.cv.wait(lock, [this] { return stop_ || !openQueue_.queue.empty(); });
-                if (stop_) { break; }
-                if (openQueue_.queue.empty()) { continue; }
-                task = std::move(openQueue_.queue.front());
-                openQueue_.queue.pop_front();
-            }
-            const auto path = layout_->DataFilePath(task.id, task.activated);
+        const auto& backend = (*backends_)[task.backendIndex];
+        const auto path = task.activated ? layout_->ActivatedFilePath(backend, task.id)
+                                         : layout_->ArchivedFilePath(backend, task.id);
+        const auto shouldStart = !task.onStart || task.onStart();
+        if (shouldStart) {
+            OpenResult result{-1, 0, {}};
+            if (task.useHandleCache && loadHandles_) {
+                result.borrowed = (*loadHandles_)[task.backendIndex].GetOrOpen(task.id, path);
+                if (result.borrowed.Valid()) {
+                    result.fd = result.borrowed.Fd();
+                    result.error = 0;
+                } else {
+                    result.fd = -1;
+                    result.error = result.borrowed.Error();
+                }
+            } else {
 #ifdef UCM_ENABLE_TEST_HOOKS
-            auto hook = TestHooks::GetOpenHook();
-            auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
+                auto hook = TestHooks::GetOpenHook();
+                result.fd =
+                    hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
 #else
-            auto fd = ::open(path.c_str(), task.flags, mode);
+                result.fd = ::open(path.c_str(), task.flags, mode);
 #endif
-            auto err = (fd < 0) ? errno : 0;
-            if (task.callback) { task.callback(OpenResult{fd, err}); }
-        }
-    }
-    void CommitWorkerLoop()
-    {
-        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_cmit");
-        if (nameStatus.Failure()) {
-            UC_WARN("Failed({}) to set UCM posix commit worker name.", nameStatus);
-        }
-        for (;;) {
-            CommitTask task;
-            {
-                std::unique_lock<std::mutex> lock{commitQueue_.mutex};
-                commitQueue_.cv.wait(lock, [this] { return stop_ || !commitQueue_.queue.empty(); });
-                if (stop_) { break; }
-                if (commitQueue_.queue.empty()) { continue; }
-                task = std::move(commitQueue_.queue.front());
-                commitQueue_.queue.pop_front();
+                result.error = (result.fd < 0) ? errno : 0;
             }
-            layout_->CommitFile(task.id, task.success);
+            if (task.callback) { task.callback(std::move(result)); }
+        } else {
+            if (task.callback) { task.callback(OpenResult{-1, ECANCELED, {}}); }
+        }
+    }
+    // The inode check stats the file, so it runs here rather than on the AIO completion thread,
+    // where a hung backend would block completions of every backend.
+    void Commit(const CommitTask& task)
+    {
+        const auto& backend = (*backends_)[task.backendIndex];
+        if (!task.success ||
+            (task.ino != 0 && InoOf(layout_->ActivatedFilePath(backend, task.id)) == task.ino)) {
+            layout_->CommitFile(backend, task.id, task.success);
         }
     }
 
-    template <class T>
-    struct TaskQueue {
-        std::list<T> queue;
-        std::mutex mutex;
-        std::condition_variable cv;
-    };
-
-    std::atomic_bool stop_{false};
-    const SpaceLayout* layout_;
-    std::list<std::thread> workers_;
-    TaskQueue<OpenTask> openQueue_;
-    TaskQueue<CommitTask> commitQueue_;
+    const SpaceLayout* layout_{nullptr};
+    const std::vector<std::string>* backends_{nullptr};
+    std::deque<LoadHandleCache>* loadHandles_{nullptr};
+    std::shared_mutex srvMutex_;
+    std::unique_ptr<ThreadPool<OpenTask>> openSrv_;
+    std::unique_ptr<ThreadPool<CommitTask>> commitSrv_;
 };
 
 }  // namespace UC::PosixStore

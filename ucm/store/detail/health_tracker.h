@@ -161,7 +161,7 @@ inline bool ShouldRecordResult(const Status& status)
 {
     return status != Status::NotFound() && status != Status::StoreUnhealthy() &&
            status != Status::InvalidParam() && status != Status::DuplicateKey() &&
-           status != Status::Unsupported();
+           status != Status::Unsupported() && status != Status::TimeoutInQueue();
 }
 
 // Healthy, Generation and RecordIo are lock-free unless RecordIo trips the breaker;

@@ -13,6 +13,7 @@ from urllib.parse import quote, urlparse
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 from ucm_release import toolkit as toolkit_ops
+from ucm_release import version_config
 
 RELEASE_MANIFEST_FILENAME = "release-manifest.json"
 RELEASE_MANIFEST_KIND = "ucm-release-manifest"
@@ -692,20 +693,6 @@ def _project_image_publications(
     return result
 
 
-def _canonical_public_version(value: object, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{context} must be a version string")
-    try:
-        parsed = Version(value)
-    except InvalidVersion as error:
-        raise ValueError(f"{context} is not a valid PEP 440 version") from error
-    if parsed.local is not None or str(parsed) != value:
-        raise ValueError(
-            f"{context} must be canonical and must not use a local version"
-        )
-    return value
-
-
 def _public_sha256(value: object, context: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{context} has an invalid SHA256")
@@ -719,7 +706,15 @@ def _project_python_package(
     state: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, str]]:
     release = _mapping(state.get("release"), "release state release")
-    version = _canonical_public_version(release.get("version"), "release state version")
+    version = version_config.release_version(
+        release.get("version"), "release state version"
+    )
+    version_config.validate_custom_draft_identity(
+        version,
+        release.get("git_tag"),
+        release.get("release_type"),
+        context="release state",
+    )
     meta = _mapping(state.get("meta_package"), "release state meta package")
     meta_distribution = meta.get("distribution")
     if (
@@ -735,7 +730,7 @@ def _project_python_package(
         wheel = _mapping(raw_wheel, f"release state Wheels[{index}]")
         extra = wheel.get("runtime_variant")
         distribution = wheel.get("distribution")
-        wheel_version = _canonical_public_version(
+        wheel_version = version_config.release_version(
             wheel.get("version"), f"release state Wheels[{index}] version"
         )
         if (
