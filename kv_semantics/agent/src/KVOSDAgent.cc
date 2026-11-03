@@ -254,9 +254,9 @@ private:
                       std::to_string(osdmap.get_num_up_osds()) + "/" +
                       std::to_string(osdmap.get_num_osds()));
         // We should check osdmap.is_up(osd_id) because if this osd was marked down by
-        // monitor, it can still recive osdmap but all the heatbeat(beacon msg) from it
+        // monitor, it can still receive osdmap but all the heartbeat(beacon msg) from it
         // will be ignored by monitor. This down OSD MUST resend BOOT message so can it
-        // be marked up. This preocess should be finished in DFX story.
+        // be marked up. This process should be finished in DFX story.
         notify_osdmap(osdmap.get_epoch(), osdmap.exists(osd_id) && osdmap.is_up(osd_id));
         msg->put();
         return true;
