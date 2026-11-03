@@ -7,7 +7,7 @@ ranges using the segments' physical storage granularity.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import lcm
 from typing import TYPE_CHECKING
@@ -78,8 +78,7 @@ class KVCacheGroupLayout:
         # order key and the name is only a stable tiebreak within the same
         # layer -- the record layout must not depend on the config's
         # enumeration order.
-        layer_names: list[str] = []
-        layer_ids: list[int] = []
+        segment_layer_ids: list[int] = []
         base_ptrs: list[int] = []
         block_strides: list[int] = []
         states_per_block: list[int] = []
@@ -109,16 +108,14 @@ class KVCacheGroupLayout:
                             f"declared {layer.descriptor.block_stride}"
                         )
             for segment in segments:
-                layer_names.append(layer.layer_name)
-                layer_ids.append(layer.layer_index)
+                segment_layer_ids.append(layer.layer_index)
                 base_ptrs.append(segment.base_ptr)
                 block_strides.append(segment.block_stride_bytes)
                 states_per_block.append(segment.states_per_block)
                 payload_bytes.append(segment.payload_bytes)
 
-        # Flat columns carry the arithmetic; layer IDs/names select columns.
-        self.layer_names: tuple[str, ...] = tuple(layer_names)
-        self.layer_ids = np.asarray(layer_ids, dtype=np.uint64)
+        # Flat columns carry the arithmetic; model layer IDs select segments.
+        self.segment_layer_ids = np.asarray(segment_layer_ids, dtype=np.uint64)
         self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
         self.block_strides = np.asarray(block_strides, dtype=np.uint64)
         self.states_per_block = np.asarray(states_per_block, dtype=np.uint64)
@@ -180,28 +177,11 @@ class KVCacheGroupLayout:
     # Queries
     # ------------------------------------------------------------------
 
-    def segment_mask(
-        self,
-        layer_names: "Collection[str] | None" = None,
-        layer_ids: Sequence[int] | None = None,
-    ) -> np.ndarray | None:
-        """Boolean column mask selecting segments (None = every segment).
-
-        Exact names or every cache name of the model layers with these
-        IDs (attention and indexer of one layer share the ID).
-        """
-
-        if layer_names is not None and layer_ids is not None:
-            raise ValueError("Specify either layer_names or layer_ids")
-        if layer_ids is not None:
-            return np.isin(self.layer_ids, np.asarray(layer_ids, dtype=np.uint64))
-        if layer_names is None:
+    def segment_mask(self, layer_id: int | None = None) -> np.ndarray | None:
+        """Select all registered segments of one model layer; None selects all."""
+        if layer_id is None:
             return None
-        wanted_layer_names = set(layer_names)
-        return np.asarray(
-            [layer_name in wanted_layer_names for layer_name in self.layer_names],
-            dtype=np.bool_,
-        )
+        return self.segment_layer_ids == np.uint64(layer_id)
 
     def resolve_ptrs(
         self,
