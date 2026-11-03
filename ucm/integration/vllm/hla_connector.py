@@ -935,6 +935,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self._load_bytes_total = 0
         self._load_bytes_recorded = False
         self._save_bytes_total = 0
+        # Per-step compute-stream event ordering load DMAs behind work
+        # enqueued before start_load_kv.
+        self._load_prereq_handle = 0
+        self._load_prereq_supported: Optional[bool] = None
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -1697,6 +1701,47 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         return self._dump_plan
 
+    def _get_load_prerequisite_handle(self) -> int:
+        """Event ordering this step's load DMAs behind compute-stream work.
+
+        Where we decline the mamba state-copy takeover, the engine's
+        fallback pre-copy runs on the compute stream before start_load_kv
+        and writes the same blocks these DMAs restore; the store stream
+        must wait for it. synchronize() substitutes when event sync is off
+        or the store's load_data lacks a prerequisite_handle parameter.
+        """
+        if self.device is None:
+            return 0
+        # Drop a straggler from an aborted step before creating a new one.
+        self._destroy_load_prereq_handle()
+        if not self.enable_event_sync:
+            self.device.synchronize()
+            return 0
+        if self._load_prereq_supported is None:
+            import inspect
+
+            try:
+                self._load_prereq_supported = (
+                    "prerequisite_handle"
+                    in inspect.signature(self.store.load_data).parameters
+                )
+            except (TypeError, ValueError):
+                self._load_prereq_supported = False
+        if not self._load_prereq_supported:
+            self.device.synchronize()
+            return 0
+        event_handle = self.device.get_event_handle()
+        if event_handle == 0:
+            self.device.synchronize()
+        return event_handle
+
+    def _destroy_load_prereq_handle(self) -> None:
+        """Drop the load-ordering event once its DMA waits completed."""
+        event_handle = self._load_prereq_handle
+        self._load_prereq_handle = 0
+        if event_handle and self.device is not None:
+            self.device.destroy_event_handle(event_handle)
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """Direct load: one whole-block task per request, then wait for all."""
         metadata = self._get_connector_metadata()
@@ -1707,6 +1752,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if not self.need_load or not self.layer_order:
             return
 
+        self._load_prereq_handle = self._get_load_prerequisite_handle()
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
@@ -1732,6 +1778,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     scoped_ucm,
                     [0] * len(scoped_ucm),
                     ptrs,
+                    prerequisite_handle=self._load_prereq_handle,
                 )
                 request_tasks.append((request_id, task, len(scoped_ucm)))
                 self._load_bytes_total += sum(
@@ -1756,6 +1803,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 self._mark_load_failed(metadata, request_id)
                 num_loaded_block -= n_blocks
+
+        self._destroy_load_prereq_handle()
 
         load_end_time = time.perf_counter() * 1000
         load_duration_ms = load_end_time - load_start_time
@@ -2004,6 +2053,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     sel_scoped,
                     [slot] * len(sel_scoped),
                     ptrs,
+                    prerequisite_handle=self._load_prereq_handle,
                 )
                 self.load_tasks[pair_key][request_id] = task
                 self._load_bytes_by_pair[pair_key] += (
@@ -2187,6 +2237,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if not self.need_load or not self.layer_order:
             return
 
+        self._load_prereq_handle = self._get_load_prerequisite_handle()
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.
@@ -2304,6 +2355,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._wait_dump_tasks()
 
         self._record_load_bytes()
+        # A leftover pair's DMA may not have consumed the event yet (its wait
+        # hook never fired); the next step's acquire drops it instead.
+        if not self.load_tasks:
+            self._destroy_load_prereq_handle()
         # need_load is only valid within its own step: with the post-forward
         # load order, prepare_mamba_state_copy may read it before the next
         # start_load_kv can refresh it — clear here (before the early return)

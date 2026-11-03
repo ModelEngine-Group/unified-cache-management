@@ -157,6 +157,7 @@ class RankConsistencyManager:
         block_ids: list[bytes],
         shard_indices: list[int],
         ptrs: Any,
+        prerequisite_handle: int = 0,
     ) -> Any:
         """Retain request block IDs and classify immediate NotFound errors."""
         request_context = (
@@ -168,7 +169,15 @@ class RankConsistencyManager:
             else {}
         )
         try:
-            task = store.load_data(block_ids, shard_indices, ptrs)
+            if prerequisite_handle:
+                task = store.load_data(
+                    block_ids,
+                    shard_indices,
+                    ptrs,
+                    prerequisite_handle=prerequisite_handle,
+                )
+            else:
+                task = store.load_data(block_ids, shard_indices, ptrs)
         except Exception as error:
             if self.enabled and isinstance(error, StoreNotFoundError):
                 self._mark_load_context_missing(request_context)
