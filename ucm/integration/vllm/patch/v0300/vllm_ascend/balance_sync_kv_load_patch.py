@@ -8,6 +8,23 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
+def _has_ucm_sync_load(metadata):
+    # Keep imports lazy: registration happens during platform initialization.
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (
+        MultiKVConnectorMetadata,
+    )
+
+    from ucm.integration.vllm.ucm_connector import UCMConnectorMetadata
+
+    if isinstance(metadata, UCMConnectorMetadata):
+        return any(
+            bool(request.load_block_ids[0]) and not request.load_async
+            for request in metadata.request_meta.values()
+        )
+    if isinstance(metadata, MultiKVConnectorMetadata):
+        return any(_has_ucm_sync_load(child) for child in metadata.metadata)
+    return False
+
 @when_imported("vllm_ascend.patch.platform.patch_balance_schedule")
 def patch_balance_sync_kv_load(mod):
     cls = mod.BalanceScheduler
@@ -21,21 +38,9 @@ def patch_balance_sync_kv_load(mod):
         if getattr(output, "has_sync_kv_loads", False):
             return output
 
-        # Lazy import avoids pulling connector/worker dependencies into patch
-        # registration while vLLM and the Ascend platform are being imported.
-        from ucm.integration.vllm.ucm_connector import UCMConnectorMetadata
-
-        metadata = output.kv_connector_metadata
-        if not isinstance(metadata, UCMConnectorMetadata):
-            return output
-
-        # A copied Ascend schedule() can omit has_sync_kv_loads, leaving the
-        # default False. The worker would then start these loads after forward.
-        # Derive the flag from the actual plan and preserve request-async loads.
-        if any(
-            bool(request.load_block_ids[0]) and not request.load_async
-            for request in metadata.request_meta.values()
-        ):
+        # Inspect child plans too: MultiConnector/AscendMultiConnector wrap
+        # UCM metadata, while explicit request-async loads remain deferred.
+        if _has_ucm_sync_load(output.kv_connector_metadata):
             output.has_sync_kv_loads = True
         return output
 
