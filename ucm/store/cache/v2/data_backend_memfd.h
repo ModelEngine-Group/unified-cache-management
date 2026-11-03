@@ -89,14 +89,13 @@ public:
     void Reset() override;
 
 private:
-    /* memfd_create -> ftruncate -> mmap, without MAP_POPULATE. */
+    /* Each attempt includes NUMA placement and first-touch allocation. A failed
+     * HugeTLB prefault releases the candidate before trying a smaller page. */
     Status CreateLocalSegment(size_t rank);
     Expected<PageBacking> PageBackingOf(int32_t fd) const;
     static const char* PageBackingName(PageBacking backing);
     static size_t PageSizeOf(PageBacking backing, size_t systemPageSize);
-    /* NUMA bind, first touch, then device registration. Registration pins the
-     * pages, so it must stay last. */
-    Status PlaceAndRegister(size_t rank);
+    Status PrepareLocalMemory(MemFd& mem, PageBacking backing);
     Status RegisterSegment(Segment& segment);
     /* memfd name, and the abstract socket a peer uses to fetch the fd. */
     std::string SegmentName(size_t rank) const;

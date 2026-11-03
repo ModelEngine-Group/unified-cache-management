@@ -145,7 +145,7 @@ Status MemfdDataBackend::BindLocal(size_t rank)
     if (rank >= segments_.size()) { return Status::InvalidParam("rank({}) out of range", rank); }
     auto status = CreateLocalSegment(rank);
     if (status.Failure()) { return status; }
-    status = PlaceAndRegister(rank);
+    status = RegisterSegment(segments_[rank]);
     if (status.Failure()) { return status; }
     ownerRank_ = rank;
     status = StartFdServer();
@@ -278,9 +278,10 @@ void MemfdDataBackend::Reset()
 Status MemfdDataBackend::CreateLocalSegment(size_t rank)
 {
     const auto name = SegmentName(rank);
-    auto mem = std::make_unique<MemFd>();
+    std::unique_ptr<MemFd> mem;
     PageBacking actualPageBacking = PageBacking::Base;
     auto create = [&](PageBacking backing) {
+        auto candidate = std::make_unique<MemFd>();
         const auto pageSize = PageSizeOf(backing, systemPageSize_);
         if (rankStride_ > std::numeric_limits<size_t>::max() - (pageSize - 1)) {
             return Status::InvalidParam(
@@ -294,16 +295,21 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
         } else if (backing == PageBacking::HugeTlb2M) {
             additionalFlags = MFD_HUGETLB | MFD_HUGE_2MB;
         }
-        auto status = mem->Create(name, bytes, additionalFlags);
+        auto status = candidate->Create(name, bytes, additionalFlags);
         if (status.Failure()) { return status; }
-        auto detected = PageBackingOf(mem->Fd());
+        auto detected = PageBackingOf(candidate->Fd());
         if (!detected) { return detected.Error(); }
         if (detected.Value() != backing) {
             return Status::Error(fmt::format("memfd page backing mismatch: expected={} actual={}",
                                              PageBackingName(backing),
                                              PageBackingName(detected.Value())));
         }
+        // mmap only reserves HugeTLB pages globally. Allocate them under the
+        // final NUMA policy before accepting this candidate, without SIGBUS.
+        status = PrepareLocalMemory(*candidate, backing);
+        if (status.Failure()) { return status; }
         actualPageBacking = detected.Value();
+        mem = std::move(candidate);
         return Status::OK();
     };
 
@@ -311,14 +317,14 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
     auto status = create(firstAttempt);
     if (status.Failure() && firstAttempt == PageBacking::HugeTlb1G) {
         UC_WARN(
-            "memfd 1GiB HugeTLB create failed, falling back to 2MiB HugeTLB: owner={} "
+            "memfd 1GiB HugeTLB setup failed, falling back to 2MiB HugeTLB: owner={} "
             "device={} name={} bytes={} status={}",
             rank, deviceId_, name, rankStride_, status);
         status = create(PageBacking::HugeTlb2M);
     }
     if (status.Failure()) {
         UC_WARN(
-            "memfd 2MiB HugeTLB create failed, falling back to base pages: owner={} device={} "
+            "memfd 2MiB HugeTLB setup failed, falling back to base pages: owner={} device={} "
             "name={} bytes={} status={}",
             rank, deviceId_, name, rankStride_, status);
         status = create(PageBacking::Base);
@@ -343,34 +349,36 @@ Status MemfdDataBackend::CreateLocalSegment(size_t rank)
     return Status::OK();
 }
 
-Status MemfdDataBackend::PlaceAndRegister(size_t rank)
+Status MemfdDataBackend::PrepareLocalMemory(MemFd& mem, PageBacking backing)
 {
-    auto& segment = segments_[rank];
-    const auto bytes = segment.mem->Size();
+    const auto bytes = mem.Size();
     /* Try placement before first touch on platforms that use NUMA binding.
      * Restricted containers may reject mbind; keep the inherited memory policy
      * in that case. Touching still precedes registration, which pins the pages. */
     if (localPlacement_.node < 0) {
-        UC_WARN(
-            "memfd segment has no NUMA plan, leaving placement to the kernel: device={} "
-            "rank={}",
-            deviceId_, rank);
+        UC_WARN("memfd segment has no NUMA plan, leaving placement to the kernel: device={}",
+                deviceId_);
     } else {
-        auto bindStatus = Numa::BindBeforeTouch(segment.mem->Addr(), bytes, localPlacement_);
+        auto bindStatus = Numa::BindBeforeTouch(mem.Addr(), bytes, localPlacement_);
         if (bindStatus.Failure()) {
             UC_WARN(
-                "memfd NUMA bind failed, continuing with kernel policy: device={} rank={} "
+                "memfd NUMA bind failed, continuing with kernel policy: device={} "
                 "node={} status={}",
-                deviceId_, rank, localPlacement_.node, bindStatus);
+                deviceId_, localPlacement_.node, bindStatus);
         }
     }
-    if (segment.touchPageSize != 0) {
-        auto* base = static_cast<std::byte*>(segment.mem->Addr());
-        for (size_t offset = 0; offset < bytes; offset += segment.touchPageSize) {
-            base[offset] = std::byte{0};
-        }
+    if (backing != PageBacking::Base) {
+        // A globally reserved huge page may be unavailable on the bound node.
+        // An unsupported advice is also a failed HugeTLB attempt: never fall
+        // back to unsafe stores into an unpopulated huge-page mapping.
+        return mem.PopulateWrite();
     }
-    return RegisterSegment(segment);
+    // Keep the existing ordinary-page first-touch policy, with no THP advice.
+    auto* base = static_cast<std::byte*>(mem.Addr());
+    for (size_t offset = 0; offset < bytes; offset += systemPageSize_) {
+        base[offset] = std::byte{0};
+    }
+    return Status::OK();
 }
 
 Expected<MemfdDataBackend::PageBacking> MemfdDataBackend::PageBackingOf(int32_t fd) const

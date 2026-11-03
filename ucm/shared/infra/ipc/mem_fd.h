@@ -78,6 +78,22 @@ public:
     int32_t Fd() const { return fd_; }
     size_t Size() const { return size_; }
 
+    /* Unlike a userspace first touch, this reports a failed allocation instead
+     * of delivering SIGBUS. Call after applying the mapping's NUMA policy.
+     * Older kernels may reject the advice; callers must handle that failure. */
+    Status PopulateWrite()
+    {
+        if (addr_ == nullptr || size_ == 0) {
+            return Status::InvalidParam("cannot populate an unmapped memfd");
+        }
+        // Linux UAPI value, also usable with headers predating Linux 5.14.
+        constexpr int populateWrite = 23;  // MADV_POPULATE_WRITE
+        if (::madvise(addr_, size_, populateWrite) != 0) {
+            return OsError("madvise(MADV_POPULATE_WRITE) failed", errno);
+        }
+        return Status::OK();
+    }
+
 private:
     Status Map(size_t size, const char* error)
     {
