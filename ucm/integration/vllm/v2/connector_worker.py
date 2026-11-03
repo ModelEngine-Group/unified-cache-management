@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -14,15 +13,16 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 
 from ucm.logger import init_logger
 
-from .connector_scheduler import UCMConnectorMetadata
+from .connector_scheduler import RequestMetadata, UCMConnectorMetadata
 from .kv_cache_layout import UCMKVCacheLayout
-from .kv_cache_spec import RestorePolicy, groups_by_restore_policy
-from .runtime import (
-    ParallelRank,
-    UCMStorageHandshake,
-    make_ucm_chunk_ids,
+from .runtime import ParallelRank, UCMStorageHandshake
+from .store_client import (
+    PreparedJob,
+    StoreIOError,
+    StoreWorkerClient,
+    TransferBatch,
+    TransferTask,
 )
-from .store_client import PreparedJob, StoreClient, StoreIOError, Transfer, TransferTask
 
 if TYPE_CHECKING:
     import torch
@@ -46,16 +46,14 @@ class JobResult:
 
 @dataclass
 class UCMWorkerMetadata(KVConnectorWorkerMetadata):
-    load_failed_reqs: set[str] = field(default_factory=set)
+    failed_load_request_ids: set[str] = field(default_factory=set)
     job_results: set[JobResult] = field(default_factory=set)
 
-    def mark_failed(self, request_id: str) -> None:
-        self.load_failed_reqs.add(request_id)
+    def mark_load_failed(self, request_id: str) -> None:
+        self.failed_load_request_ids.add(request_id)
 
     def aggregate(self, other: KVConnectorWorkerMetadata) -> "UCMWorkerMetadata":
-        if not isinstance(other, UCMWorkerMetadata):
-            raise TypeError(f"Cannot aggregate {type(other).__name__}")
-        self.load_failed_reqs.update(other.load_failed_reqs)
+        self.failed_load_request_ids.update(other.failed_load_request_ids)
         self.job_results.update(other.job_results)
         return self
 
@@ -80,17 +78,16 @@ class UCMConnectorWorker:
         if context.rank is None:
             raise ValueError("Worker context requires parallel rank coordinates")
         self._parallel_rank = context.rank
-        self._store = StoreClient(context.launch_config)
-        self._layer_load_tasks: dict[int, list[tuple[str, TransferTask]]] = {}
+        self._store_worker = StoreWorkerClient(context.launch_config)
+        self._layer_load_tasks: dict[int | None, list[tuple[str, TransferTask]]] = {}
         self._dump_tasks: list[TransferTask] = []
-        self._dump_submitted_layers = set()
-        self._failed_load_reqs = set()
+        self._dump_submitted_layer_ids: set[int] = set()
+        self._failed_load_request_ids: set[str] = set()
         self._failed_dump_jobs: set[int] = set()
-        self._sub_job_ids: dict[int, int] = {}
-        self._step_save_finalized = False
+        self._sub_job_ids_by_job: dict[int, int] = {}
+        self._step_io_completed = False
         self.layout: UCMKVCacheLayout | None = None
-        self.transfer_builder: UCMTransferBuilder | None = None
-        self._worker_metadata = UCMWorkerMetadata()
+        self._completion_metadata = UCMWorkerMetadata()
         self._invalid_vllm_block_ids = set()
         self._connector_metadata = None
 
@@ -118,16 +115,16 @@ class UCMConnectorWorker:
         for layer_tasks in self._layer_load_tasks.values():
             for _, task in layer_tasks:
                 try:
-                    self._store.wait(task)
+                    self._store_worker.wait(task)
                 except Exception as exc:
                     first_error = first_error or exc
         for task in self._dump_tasks:
             try:
-                self._store.wait(task)
+                self._store_worker.wait(task)
             except Exception as exc:
                 first_error = first_error or exc
         try:
-            self._store.close()
+            self._store_worker.close()
         except Exception as exc:
             first_error = first_error or exc
         else:
@@ -145,29 +142,25 @@ class UCMConnectorWorker:
             num_hidden_layers=self._num_hidden_layers,
         )
         self.layout.build_store_layouts(self.parallel_topology, self._parallel_rank)
-        self.transfer_builder = UCMTransferBuilder(self.layout, self._parallel_rank)
 
     def get_handshake_metadata(self) -> UCMStorageHandshake:
-        if self.transfer_builder is None:
+        if self.layout is None:
             raise RuntimeError("Register KV caches before the storage handshake")
         return UCMStorageHandshake(
             rank=self._parallel_rank,
             fingerprint=self.fingerprint,
-            stored_policies=tuple(
-                policy
-                for policy, groups in self.transfer_builder.groups_by_policy.items()
-                if groups
-            ),
+            stored_policies=tuple(self.layout.store_sizes_by_policy),
         )
 
-    def _mark_load_failed(self, request_id: str, request: Any) -> None:
-        self._failed_load_reqs.add(request_id)
-        self._worker_metadata.mark_failed(request_id)
+    def _mark_load_failed(self, request_metadata: RequestMetadata) -> None:
+        request_id = request_metadata.request_id
+        self._failed_load_request_ids.add(request_id)
+        self._completion_metadata.mark_load_failed(request_id)
         self._invalid_vllm_block_ids.update(
-            int(vllm_block_id)
-            for plan in request.load_plans
-            for vllm_block_ids in plan.vllm_block_ids_by_group
-            for vllm_block_id in vllm_block_ids.tolist()
+            int(block_id)
+            for load_plan in request_metadata.load_plans
+            for group_block_ids in load_plan.vllm_block_ids_by_group
+            for block_id in group_block_ids
         )
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
@@ -176,130 +169,118 @@ class UCMConnectorWorker:
         # in 0.30 when this step has no synchronous loads.
         if self._layer_load_tasks or self._dump_tasks:
             raise RuntimeError("Previous UCM transfers have not been drained")
-        self._dump_submitted_layers.clear()
-        self._failed_load_reqs.clear()
+        self._dump_submitted_layer_ids.clear()
+        self._failed_load_request_ids.clear()
         self._failed_dump_jobs.clear()
-        self._sub_job_ids.clear()
-        self._step_save_finalized = False
+        self._sub_job_ids_by_job.clear()
+        self._step_io_completed = False
         self._connector_metadata = connector_metadata
 
-    def _submit_job(
-        self,
-        operation: str,
-        job: PreparedJob,
-        transfers: tuple[Transfer, ...],
-        *,
-        layerwise: bool,
-    ) -> TransferTask | None:
-        if not transfers:
-            return None
-        sub_job_id = None
-        if layerwise:
-            sub_job_id = self._sub_job_ids.get(job.job_id, 0) + 1
-            self._sub_job_ids[job.job_id] = sub_job_id
-        return self._store.submit(operation, job, transfers, sub_job_id)
+    def _next_sub_job_id(self, job_id: int) -> int:
+        sub_job_id = self._sub_job_ids_by_job.get(job_id, 0) + 1
+        self._sub_job_ids_by_job[job_id] = sub_job_id
+        return sub_job_id
 
-    @staticmethod
-    def _transfers_by_request(
-        transfers: tuple[Transfer, ...]
-    ) -> dict[str, list[Transfer]]:
-        by_request = defaultdict(list)
-        for transfer in transfers:
-            by_request[transfer.request_id].append(transfer)
-        return by_request
+    def _execute_prefetch(self, prefetch_job: PreparedJob) -> None:
+        success = True
+        # One shared Store prefetch per job. Other ranks acknowledge the no-op.
+        if self._parallel_rank == ParallelRank():
+            try:
+                prefetch_task = self._store_worker.submit_prefetch(prefetch_job)
+                self._store_worker.wait(prefetch_task)
+            except StoreIOError:
+                success = False
+        self._completion_metadata.job_results.add(
+            JobResult(prefetch_job.job_id, self._parallel_rank, success)
+        )
+
+    def _submit_load(
+        self, request_metadata: RequestMetadata, layer_id: int | None = None
+    ) -> None:
+        transfer_batches = self._build_transfer_batches(
+            request_metadata, is_dump=False, layer_id=layer_id
+        )
+        if not transfer_batches:
+            return
+        load_job = request_metadata.load_job
+        sub_job_id = (
+            self._next_sub_job_id(load_job.job_id) if layer_id is not None else None
+        )
+        load_task = self._store_worker.submit_get(
+            load_job, transfer_batches, sub_job_id
+        )
+        self._layer_load_tasks.setdefault(layer_id, []).append(
+            (request_metadata.request_id, load_task)
+        )
+        if layer_id is None:
+            self._wait_layer_load(None)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         if not self.has_connector_metadata():
             return
-        metadata = self._get_connector_metadata()
-        assert self.layout is not None and self.transfer_builder is not None
-        for request_id, request in metadata.requests.items():
-            if request.prefetch_job is not None:
-                success = True
-                if self._parallel_rank == ParallelRank():
-                    try:
-                        task = self._store.submit_prefetch(request.prefetch_job)
-                        self._store.wait(task)
-                    except StoreIOError:
-                        success = False
-                self._worker_metadata.job_results.add(
-                    JobResult(request.prefetch_job.job_id, self._parallel_rank, success)
-                )
-            if request.load_error:
-                self._mark_load_failed(request_id, request)
+        connector_metadata = self._get_connector_metadata()
+        for request_metadata in connector_metadata.requests.values():
+            if request_metadata.prefetch_job is not None:
+                self._execute_prefetch(request_metadata.prefetch_job)
+            if request_metadata.prepare_get_failed:
+                self._mark_load_failed(request_metadata)
                 continue
-            request_metadata = UCMConnectorMetadata(requests={request_id: request})
+            if request_metadata.load_job is None:
+                continue
             try:
                 if self.use_layerwise:
-                    for layer_id in self.layout.layer_names_by_id:
-                        transfers = self.transfer_builder.build_load_transfers(
-                            request_metadata, layer_id=layer_id
-                        )
-                        task = self._submit_job(
-                            "get", request.load_job, transfers, layerwise=True
-                        )
-                        if task is not None:
-                            self._layer_load_tasks.setdefault(layer_id, []).append(
-                                (request_id, task)
-                            )
+                    for layer_id in self.layout.layer_ids:
+                        self._submit_load(request_metadata, layer_id)
                 else:
-                    transfers = self.transfer_builder.build_load_transfers(
-                        request_metadata
-                    )
-                    task = self._submit_job(
-                        "get", request.load_job, transfers, layerwise=False
-                    )
-                    if task is not None:
-                        self._layer_load_tasks.setdefault(-1, []).append(
-                            (request_id, task)
-                        )
-                        self._wait_layer_load(-1)
+                    self._submit_load(request_metadata)
             except StoreIOError:
-                self._mark_load_failed(request_id, request)
+                self._mark_load_failed(request_metadata)
         if self.use_layerwise:
             state_layer_ids = {
-                layer.layer_index
-                for group in self.spec.state_groups
-                if group.group_id in self.layout.group_layouts
-                for layer in self.layout.group_layouts[group.group_id].layer_specs
+                layer_spec.layer_index
+                for state_group in self.spec.state_groups
+                if state_group.group_id in self.layout.group_layouts
+                for layer_spec in self.layout.group_layouts[
+                    state_group.group_id
+                ].layer_specs
             }
             for layer_id in state_layer_ids:
                 self._wait_layer_load(layer_id)
 
-    def _wait_layer_load(self, layer_id: int) -> None:
+    def _wait_layer_load(self, layer_id: int | None) -> None:
         metadata = self._get_connector_metadata()
-        pending = []
-        fatal = None
+        unfinished_tasks = []
+        fatal_error = None
         for request_id, task in self._layer_load_tasks.get(layer_id, ()):
             try:
-                self._store.wait(task)
+                self._store_worker.wait(task)
             except StoreIOError:
-                self._mark_load_failed(request_id, metadata.requests[request_id])
+                self._mark_load_failed(metadata.requests[request_id])
             except Exception as exc:
                 # Unknown completion state: retain the task/descriptors and fail.
-                pending.append((request_id, task))
-                fatal = fatal or exc
-        if pending:
-            self._layer_load_tasks[layer_id] = pending
+                unfinished_tasks.append((request_id, task))
+                fatal_error = fatal_error or exc
+        if unfinished_tasks:
+            self._layer_load_tasks[layer_id] = unfinished_tasks
         else:
             self._layer_load_tasks.pop(layer_id, None)
-        if fatal is not None:
-            raise fatal
+        if fatal_error is not None:
+            raise fatal_error
 
     def _drain_dump_tasks(self) -> None:
-        pending = []
-        fatal = None
+        unfinished_tasks = []
+        fatal_error = None
         for task in self._dump_tasks:
             try:
-                self._store.wait(task)
+                self._store_worker.wait(task)
             except StoreIOError:
                 self._failed_dump_jobs.add(task.job_id)
             except Exception as exc:
-                pending.append(task)
-                fatal = fatal or exc
-        self._dump_tasks = pending
-        if fatal is not None:
-            raise fatal
+                unfinished_tasks.append(task)
+                fatal_error = fatal_error or exc
+        self._dump_tasks = unfinished_tasks
+        if fatal_error is not None:
+            raise fatal_error
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self.use_layerwise or not self.has_connector_metadata():
@@ -310,34 +291,30 @@ class UCMConnectorWorker:
             # An attention hook also waits for indexer caches of the same layer.
             self._wait_layer_load(layer_id)
 
-    def _dump_metadata(self) -> UCMConnectorMetadata:
-        metadata = self._get_connector_metadata()
-        return UCMConnectorMetadata(
-            requests={
-                request_id: request
-                for request_id, request in metadata.requests.items()
-                if request_id not in self._failed_load_reqs
-            }
-        )
-
-    def _save_layer(self, layer_name: str, metadata: UCMConnectorMetadata) -> None:
-        assert self.transfer_builder is not None
-        if layer_name in self._dump_submitted_layers:
+    def _dump_layer(self, layer_id: int) -> None:
+        if layer_id in self._dump_submitted_layer_ids:
             return
-        transfers = self.transfer_builder.build_dump_transfers(
-            metadata, layer_name=layer_name
-        )
-        for request_id, batches in self._transfers_by_request(transfers).items():
-            job = metadata.requests[request_id].dump_job
-            if job.job_id in self._failed_dump_jobs:
+        for request_metadata in self._get_connector_metadata().requests.values():
+            dump_job = request_metadata.dump_job
+            if (
+                dump_job is None
+                or request_metadata.request_id in self._failed_load_request_ids
+                or dump_job.job_id in self._failed_dump_jobs
+            ):
+                continue
+            transfer_batches = self._build_transfer_batches(
+                request_metadata, is_dump=True, layer_id=layer_id
+            )
+            if not transfer_batches:
                 continue
             try:
-                task = self._submit_job("put", job, tuple(batches), layerwise=True)
-                if task is not None:
-                    self._dump_tasks.append(task)
+                dump_task = self._store_worker.submit_put(
+                    dump_job, transfer_batches, self._next_sub_job_id(dump_job.job_id)
+                )
+                self._dump_tasks.append(dump_task)
             except StoreIOError:
-                self._failed_dump_jobs.add(job.job_id)
-        self._dump_submitted_layers.add(layer_name)
+                self._failed_dump_jobs.add(dump_job.job_id)
+        self._dump_submitted_layer_ids.add(layer_id)
 
     def save_kv_layer(
         self,
@@ -348,80 +325,88 @@ class UCMConnectorWorker:
     ) -> None:
         if not self.use_layerwise or not self.has_connector_metadata():
             return
-        assert self.layout is not None
-        if self._step_save_finalized or layer_name not in self.layout.layer_id_by_name:
+        if self._step_io_completed:
             return
-        # Save this cache only: another cache with the same layer index may
-        # still be computing. Its own hook or the end-of-forward fallback saves it.
-        self._save_layer(layer_name, self._dump_metadata())
+        layer_id = self.layout.layer_id_by_name.get(layer_name)
+        if layer_id is not None:
+            self._dump_layer(layer_id)
 
     def wait_for_save(self) -> None:
-        if not self.has_connector_metadata() or self._step_save_finalized:
+        if not self.has_connector_metadata() or self._step_io_completed:
             return
-        assert self.layout is not None and self.transfer_builder is not None
-        bound = self._get_connector_metadata()
+        connector_metadata = self._get_connector_metadata()
         for layer_id in tuple(self._layer_load_tasks):
             self._wait_layer_load(layer_id)
         if self.use_layerwise:
             try:
-                for layer_name in self.layout.layer_id_by_name:
-                    self._save_layer(layer_name, self._dump_metadata())
+                for layer_id in self.layout.layer_ids:
+                    self._dump_layer(layer_id)
             finally:
                 self._drain_dump_tasks()
         else:
-            transfers = self.transfer_builder.build_dump_transfers(
-                self._dump_metadata()
-            )
-            for request_id, batches in self._transfers_by_request(transfers).items():
-                job = bound.requests[request_id].dump_job
-                try:
-                    # All groups/chunks for this Prepare form one native bulk
-                    # submission, whose id is exactly the Scheduler job_id.
-                    task = self._store.submit("put", job, tuple(batches))
-                    self._dump_tasks.append(task)
-                    try:
-                        self._store.wait(task)
-                    except StoreIOError:
-                        self._dump_tasks.pop()
-                        raise
-                    else:
-                        self._dump_tasks.pop()
-                except StoreIOError:
-                    self._failed_dump_jobs.add(job.job_id)
-                    logger.warning("UCM dump failed; skipping this job", exc_info=True)
-        for request in bound.requests.values():
-            load_ok = request.request_id not in self._failed_load_reqs
-            if request.load_job is not None:
-                self._worker_metadata.job_results.add(
-                    JobResult(request.load_job.job_id, self._parallel_rank, load_ok)
+            for request_metadata in connector_metadata.requests.values():
+                dump_job = request_metadata.dump_job
+                if (
+                    dump_job is None
+                    or request_metadata.request_id in self._failed_load_request_ids
+                ):
+                    continue
+                transfer_batches = self._build_transfer_batches(
+                    request_metadata, is_dump=True
                 )
-            if request.dump_job is not None:
-                self._worker_metadata.job_results.add(
+                if not transfer_batches:
+                    continue
+                try:
+                    # One native submission per Prepare on this rank in bulk mode.
+                    dump_task = self._store_worker.submit_put(
+                        dump_job, transfer_batches
+                    )
+                    self._dump_tasks.append(dump_task)
+                except StoreIOError:
+                    self._failed_dump_jobs.add(dump_job.job_id)
+                    logger.warning(
+                        "UCM dump submission failed; skipping this job", exc_info=True
+                    )
+                self._drain_dump_tasks()
+        for request_metadata in connector_metadata.requests.values():
+            load_succeeded = (
+                request_metadata.request_id not in self._failed_load_request_ids
+            )
+            if request_metadata.load_job is not None:
+                self._completion_metadata.job_results.add(
                     JobResult(
-                        request.dump_job.job_id,
+                        request_metadata.load_job.job_id,
                         self._parallel_rank,
-                        load_ok
-                        and request.dump_job.job_id not in self._failed_dump_jobs,
+                        load_succeeded,
                     )
                 )
-        # No-op ranks still report the parent job. Completion is emitted only
-        # after every submitted subjob is terminal and its event is consumed.
-        self._step_save_finalized = True
+            if request_metadata.dump_job is not None:
+                self._completion_metadata.job_results.add(
+                    JobResult(
+                        request_metadata.dump_job.job_id,
+                        self._parallel_rank,
+                        load_succeeded
+                        and request_metadata.dump_job.job_id
+                        not in self._failed_dump_jobs,
+                    )
+                )
+        # Empty ranks acknowledge the parent too, after all local IO is terminal.
+        self._step_io_completed = True
 
     def poll_finished(self) -> None:
         # wait() and get_finished() consume the same native completion queue.
-        # StoreClient caches consumed terminal status, so a later layer wait
+        # StoreWorkerClient caches consumed terminal status, so a later layer wait
         # never waits for a second notification of that job.
-        self._store.poll_finished()
+        self._store_worker.poll_finished()
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if (
-            not self._worker_metadata.load_failed_reqs
-            and not self._worker_metadata.job_results
+            not self._completion_metadata.failed_load_request_ids
+            and not self._completion_metadata.job_results
         ):
             return None
-        worker_metadata = self._worker_metadata
-        self._worker_metadata = UCMWorkerMetadata()
+        worker_metadata = self._completion_metadata
+        self._completion_metadata = UCMWorkerMetadata()
         return worker_metadata
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -434,147 +419,74 @@ class UCMConnectorWorker:
         # engine; bulk IO completes synchronously. No task spans scheduler steps.
         return None
 
-
-class UCMTransferBuilder:
-    def __init__(
-        self, layout: UCMKVCacheLayout, rank: ParallelRank = ParallelRank()
-    ) -> None:
-        self.layout = layout
-        self.rank = rank
-        self.groups_by_policy = {
-            policy: tuple(
-                layout.store_layouts[group.group_id]
-                for group in groups
-                if group.group_id in layout.store_layouts
-            )
-            for policy, groups in groups_by_restore_policy(layout.spec).items()
-        }
-        self.group_byte_offsets: dict[int, int] = {}
-        self.record_nbytes: dict[RestorePolicy, int] = {}
-        for policy, stores in self.groups_by_policy.items():
-            offset = 0
-            for store in stores:
-                self.group_byte_offsets[store.group_id] = offset
-                offset += store.whole_chunk_nbytes
-            self.record_nbytes[policy] = offset
-
-    def build_load_transfers(
+    def _build_transfer_batches(
         self,
-        metadata: UCMConnectorMetadata,
-        layer_name: str | None = None,
+        request_metadata: RequestMetadata,
         *,
+        is_dump: bool,
         layer_id: int | None = None,
-    ) -> tuple[Transfer, ...]:
-        return self._build(metadata, False, layer_name, layer_id)
-
-    def build_dump_transfers(
-        self,
-        metadata: UCMConnectorMetadata,
-        layer_name: str | None = None,
-        *,
-        layer_id: int | None = None,
-    ) -> tuple[Transfer, ...]:
-        return self._build(metadata, True, layer_name, layer_id)
-
-    def _build(
-        self,
-        metadata: UCMConnectorMetadata,
-        dump: bool,
-        layer_name: str | None,
-        layer_id: int | None,
-    ) -> tuple[Transfer, ...]:
-        if layer_name is not None and layer_id is not None:
-            raise ValueError("Specify either layer_name or layer_id")
-        names = (
-            self.layout.layer_names_by_id[layer_id]
-            if layer_id is not None
-            else None if layer_name is None else frozenset((layer_name,))
+    ) -> tuple[TransferBatch, ...]:
+        """Resolve Scheduler plans into this rank's device-to-object ranges."""
+        dispatch_plans = (
+            request_metadata.dump_plans if is_dump else request_metadata.load_plans
         )
-        transfers = []
-        for request in metadata.requests.values():
-            for plan in request.dump_plans if dump else request.load_plans:
-                positions = {gid: i for i, gid in enumerate(plan.group_ids)}
-                if len(positions) != len(plan.group_ids) or len(positions) != len(
-                    plan.vllm_block_ids_by_group
-                ):
-                    raise ValueError("Plan must name each native group exactly once")
-                indices = plan.token_starts // self.layout.spec.chunk_size
-                for store in self.groups_by_policy[plan.restore_policy]:
-                    gid = store.group_id
-                    base = self.group_byte_offsets[gid]
-                    hbm = store.group_layout
-                    mask = (
-                        None if names is None else hbm.segment_mask(layer_names=names)
-                    )
-                    if mask is not None and not mask.any():
-                        continue
-                    rows = (
-                        store.writer_rows(indices) if dump else np.arange(len(indices))
-                    )
-                    if not len(rows):
-                        continue
-                    blocks = (
-                        np.asarray(
-                            plan.vllm_block_ids_by_group[positions[gid]],
-                            dtype=np.uint64,
-                        )
-                        .reshape(len(indices), -1)[rows]
-                        .reshape(-1)
-                    )
-                    offsets, ptrs, sizes = store.resolve_matrices(
-                        blocks, plan.token_starts[rows], segment_mask=mask
-                    )
-                    offsets = np.broadcast_to(
-                        offsets[0] + np.uint64(base), offsets.shape
-                    )
-                    ids = make_ucm_chunk_ids(
-                        tuple(plan.common_ucm_chunk_ids[row] for row in rows),
-                        plan.restore_policy,
-                        self.rank.pp_rank,
-                    )
-                    transfers.append(
-                        (
-                            request.request_id,
-                            Transfer(
-                                request.request_id,
-                                ids,
-                                indices[rows],
-                                ptrs,
-                                sizes,
-                                offsets,
-                                (
-                                    np.full(
-                                        len(rows),
-                                        self.record_nbytes[plan.restore_policy],
-                                        dtype=np.uint64,
-                                    )
-                                    if dump
-                                    else None
-                                ),
-                            ),
-                        )
-                    )
-        combined = {}
-        for request_id, transfer in transfers:
-            key = (request_id, transfer.ucm_chunk_ids, tuple(transfer.chunk_indices))
-            if key not in combined:
-                combined[key] = transfer
-                continue
-            previous = combined[key]
-
-            def join(left, right):
-                return np.broadcast_to(
-                    np.concatenate((left[0], right[0])),
-                    (len(left), left.shape[1] + right.shape[1]),
+        transfer_batches = []
+        for dispatch_plan in dispatch_plans:
+            chunk_indices = dispatch_plan.token_starts // self.spec.chunk_size
+            for group_id, group_block_ids in zip(
+                dispatch_plan.group_ids, dispatch_plan.vllm_block_ids_by_group
+            ):
+                # PP stages may have no layers in a participating native group.
+                store_layout = self.layout.store_layouts.get(group_id)
+                if store_layout is None:
+                    continue
+                segment_mask = store_layout.group_layout.segment_mask(layer_id)
+                if segment_mask is not None and not segment_mask.any():
+                    continue
+                selected_chunk_rows = (
+                    store_layout.select_writer_chunk_rows(chunk_indices)
+                    if is_dump
+                    else np.arange(len(chunk_indices))
                 )
-
-            combined[key] = Transfer(
-                transfer.request_id,
-                transfer.ucm_chunk_ids,
-                transfer.chunk_indices,
-                np.concatenate((previous.ptrs, transfer.ptrs), axis=1),
-                join(previous.sizes, transfer.sizes),
-                join(previous.ucm_chunk_offsets, transfer.ucm_chunk_offsets),
-                transfer.record_nbytes,
-            )
-        return tuple(combined.values())
+                if not len(selected_chunk_rows):
+                    continue
+                selected_block_ids = group_block_ids.reshape(len(chunk_indices), -1)[
+                    selected_chunk_rows
+                ].reshape(-1)
+                store_offsets, device_ptrs, byte_sizes = (
+                    store_layout.resolve_transfer_ranges(
+                        selected_block_ids,
+                        dispatch_plan.token_starts[selected_chunk_rows],
+                        segment_mask=segment_mask,
+                    )
+                )
+                store_offsets = np.broadcast_to(
+                    store_offsets[0]
+                    + np.uint64(self.layout.store_offsets_by_group[group_id]),
+                    store_offsets.shape,
+                )
+                stage_object_keys = dispatch_plan.object_keys_by_pp_rank[
+                    self._parallel_rank.pp_rank
+                ]
+                transfer_batches.append(
+                    TransferBatch(
+                        object_keys=tuple(
+                            stage_object_keys[int(row)] for row in selected_chunk_rows
+                        ),
+                        device_ptrs=device_ptrs,
+                        byte_sizes=byte_sizes,
+                        store_offsets=store_offsets,
+                        store_sizes=(
+                            np.full(
+                                len(selected_chunk_rows),
+                                self.layout.store_sizes_by_policy[
+                                    dispatch_plan.restore_policy
+                                ],
+                                dtype=np.uint64,
+                            )
+                            if is_dump
+                            else None
+                        ),
+                    )
+                )
+        return tuple(transfer_batches)

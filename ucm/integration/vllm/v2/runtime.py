@@ -61,6 +61,11 @@ class ParallelTopology:
         parallel_config = config.parallel_config
         if parallel_config.pipeline_parallel_size > (1 << UCM_PP_RANK_BITS):
             raise ValueError("UCM v2 supports at most 8 PP stages (3-bit PP rank)")
+        if parallel_config.nnodes_within_dp != 1:
+            raise ValueError(
+                "UCM v2 requires each DP replica's workers on one node; "
+                "cross-node TP/PP/PCP/DCP is not supported"
+            )
         # Engine configuration validation owns dimensions and legal TP/PCP/DCP
         # combinations. Only project the already-resolved configuration here.
         return cls(

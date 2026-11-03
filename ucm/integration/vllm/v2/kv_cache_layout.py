@@ -11,7 +11,13 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from .group_layout import KVCacheGroupLayout
-from .kv_cache_spec import UCMKVCacheSpec, is_block_first_layout, parse_layer_specs
+from .kv_cache_spec import (
+    RestorePolicy,
+    UCMKVCacheSpec,
+    groups_by_restore_policy,
+    is_block_first_layout,
+    parse_layer_specs,
+)
 from .store_layout import GroupStoreLayout
 
 if TYPE_CHECKING:
@@ -72,20 +78,13 @@ class UCMKVCacheLayout:
             for group_layout in self.group_layouts.values()
             for layer in group_layout.layer_specs
         }
-        layer_name_lists: dict[int, list[str]] = {}
-        for layer_name, layer_id in self.layer_id_by_name.items():
-            layer_name_lists.setdefault(layer_id, []).append(layer_name)
-        self.layer_names_by_id = {
-            layer_id: frozenset(layer_names)
-            for layer_id, layer_names in layer_name_lists.items()
-        }
+        self.layer_ids = tuple(sorted(set(self.layer_id_by_name.values())))
 
     def build_store_layouts(
         self,
         topology: ParallelTopology,
         rank: ParallelRank,
     ) -> None:
-        expected = set(self.group_layouts)
         self.store_layouts = {
             group_id: GroupStoreLayout.build(
                 self.spec,
@@ -94,5 +93,21 @@ class UCMKVCacheLayout:
                 topology,
                 rank,
             )
-            for group_id in sorted(expected)
+            for group_id in sorted(self.group_layouts)
         }
+        # Byte ranges in a stage-local Store record, grouped by restore policy.
+        self.store_offsets_by_group: dict[int, int] = {}
+        self.store_sizes_by_policy: dict[RestorePolicy, int] = {}
+        for restore_policy, group_specs in groups_by_restore_policy(self.spec).items():
+            local_group_ids = [
+                group_spec.group_id
+                for group_spec in group_specs
+                if group_spec.group_id in self.store_layouts
+            ]
+            if not local_group_ids:
+                continue
+            store_size = 0
+            for group_id in local_group_ids:
+                self.store_offsets_by_group[group_id] = store_size
+                store_size += self.store_layouts[group_id].whole_chunk_nbytes
+            self.store_sizes_by_policy[restore_policy] = store_size

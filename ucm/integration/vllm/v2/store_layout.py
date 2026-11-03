@@ -164,11 +164,11 @@ class GroupStoreLayout:
             whole_chunk_nbytes=int(chunk_segment_bytes.sum()),
         )
 
-    def writer_rows(self, chunk_indices: np.ndarray) -> np.ndarray:
+    def select_writer_chunk_rows(self, chunk_indices: np.ndarray) -> np.ndarray:
         """One writer owns every local segment of this group at a chunk index."""
         return np.flatnonzero(chunk_indices % self.replica_count == self.replica_index)
 
-    def resolve_matrices(
+    def resolve_transfer_ranges(
         self,
         vllm_block_ids: np.ndarray,
         token_starts: np.ndarray,
@@ -176,26 +176,27 @@ class GroupStoreLayout:
         segment_mask: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Final [chunk,entry] offsets, ptrs, sizes; layout compilation is over."""
-        rows = len(token_starts)
-        cols = slice(None) if segment_mask is None else segment_mask
-        fixed = self.chunk_segment_bytes[:, cols].copy()
-        block_count = max(self.spec.blocks_per_chunk[self.group_id], 1)
-        ptrs = self.group_layout.resolve_ptrs(
+        chunk_count = len(token_starts)
+        segment_columns = slice(None) if segment_mask is None else segment_mask
+        segment_byte_sizes = self.chunk_segment_bytes[:, segment_columns].copy()
+        blocks_per_chunk = max(self.spec.blocks_per_chunk[self.group_id], 1)
+        device_ptrs = self.group_layout.resolve_ptrs(
             vllm_block_ids, segment_mask=segment_mask
-        ).reshape(rows, block_count, fixed.shape[1])
-        ptrs += self.segment_byte_offsets_in_block[:, cols]
+        ).reshape(chunk_count, blocks_per_chunk, segment_byte_sizes.shape[1])
+        device_ptrs += self.segment_byte_offsets_in_block[:, segment_columns]
         if not self.group.is_sliding_window:
-            ptrs += self.group_layout.tokens_to_bytes(
+            device_ptrs += self.group_layout.tokens_to_bytes(
                 np.asarray(token_starts, dtype=np.uint64)
                 % np.uint64(self.group.block_token_span),
                 self.group.block_token_span,
                 segment_mask,
             )[:, None, :]
-        shape = (rows, fixed.size)
+        transfer_shape = (chunk_count, segment_byte_sizes.size)
         return (
             np.broadcast_to(
-                self.chunk_segment_offsets[:, cols].copy().reshape(-1), shape
+                self.chunk_segment_offsets[:, segment_columns].copy().reshape(-1),
+                transfer_shape,
             ),
-            ptrs.reshape(shape),
-            np.broadcast_to(fixed.reshape(-1), shape),
+            device_ptrs.reshape(transfer_shape),
+            np.broadcast_to(segment_byte_sizes.reshape(-1), transfer_shape),
         )

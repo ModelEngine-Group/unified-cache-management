@@ -1,6 +1,6 @@
 # Connector v2 与 native Store 接口
 
-实施入口：`feature_ucm_v2@8e03c9d85fba6e803fae3824b89444c703066113`。
+实施分支：`feature_ucm_v2`，移植基线为 `8e03c9d85fba6e803fae3824b89444c703066113`。
 connector 源自 `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8`。
 本轮只移植接口，不沿用旧测试结论；按用户要求，不新增、迁移或运行测试，不做端到端验证。
 
@@ -12,16 +12,24 @@ connector 源自 `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8`。
 | --- | --- |
 | `ucm_connector.py` | vLLM 公开回调，分别转交 Scheduler/Worker |
 | `connector_scheduler.py` | 请求注册、跨 PP lookup 汇总、计划、Prepare/Complete |
-| `connector_worker.py` | KV 注册、TransferBuilder、提交、等待、终态回报 |
+| `connector_worker.py` | KV 注册、传输范围组装、提交、等待、终态回报 |
 | `kv_cache_spec.py` | 公共 spec、Worker layer/descriptor 声明、原生 config parser |
 | `kv_cache_layout.py` | 已解析声明与实际 tensor 绑定，汇总本 stage 布局 |
 | `group_layout.py` / `cache_view.py` | HBM 几何、block 寻址和 layer 内 segment 归并 |
 | `store_layout.py` | stage 内 TP/DCP shard、副本与对象内字节布局 |
 | `runtime.py` | Runtime、并行坐标、fingerprint、PP 对象 key 与握手 |
-| `store_client.py` | native binding 类型、可序列化 token、完成事件消费 |
+| `store_client.py` | 按角色拆分的 native client、可序列化 token、完成事件消费 |
 
 不迁入 Python PipelineProxy/ParallelProxy、Memory/File 开发 Store 或 model-check 工具。
 `store_client.py` 不负责路由、容量、promotion/writeback、暂存或发布；这些由 `ucm/v2` 负责。
+
+`StoreSchedulerClient` 只获取 Scheduler 接口，显式提供请求注册、
+`lookup_on_prefix/reverse`、`prepare_get/put/prefetch`、`complete_get/put/prefetch`。
+`StoreWorkerClient` 只获取 Worker 接口，显式提供 `submit_get/put/prefetch`、
+`wait`、`poll_finished` 和排空；调用点不再使用通用 `call/prepare/submit`。
+可恢复的 native 异常在明确的方法内统一转换，等待异常仍不能当作 IO 已终止。
+两类 client 各自持有 StoreAssembler 保证借用接口存活；native `Create(config)`
+目前仍创建同一类组合对象，本轮没有增加 native 按角色创建的工厂。
 
 声明解析与实际视图的边界：`kv_cache_spec.py` 中的 `parse_layer_specs` 解析
 `TensorDescriptor`、存储粒度、view order 和层号，不访问实际 tensors；这些 Worker
@@ -34,6 +42,18 @@ connector 源自 `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8`。
 `IoResult` 区分；客户端 `poll_finished` 消费并记录完成事件，native 方法仍是
 `get_finished`。原 `attempt_id`/SaveJob 已在主 job 改造时移除，不再引入同义类型。
 
+删除 `UCMTransferBuilder`。`UCMConnectorWorker._build_transfer_batches` 直接接收
+`RequestMetadata`，按计划与本地 Layout 生成 `TransferBatch`，不再临时包装完整
+`UCMConnectorMetadata`、再按请求拆分或合并描述。`TransferBatch` 明确携带
+`object_keys`、`device_ptrs`、`byte_sizes`、`store_offsets` 和完整对象的
+`store_sizes`；矩阵维度是 `[object, segment]`。多个 group/目标范围按 key
+直接追加到 native BlockPayload，一次 bulk Submit 仍覆盖同一 Prepare 的全部范围。
+
+引擎钩子的 `layer_name` 在 Worker 入口转换为 `layer_id`。load/dump 内部统一按
+model layer ID 选择该层全部 cache segments，同一个 layer ID 每个 step 只 dump
+一次，`wait_for_save` 按 ID 补交未触发钩子的层。删除 layer_name/layer_id 二选一
+参数和重复 group 一致性检查，直接使用 Scheduler 按同一顺序生成的 group ID/block 列表。
+
 ## PP 与分片
 
 PP 分开存。key 由 common hash、PP rank 与恢复策略确定，保持 16 字节；
@@ -43,15 +63,17 @@ Worker 只处理本 stage 对象，offset 和完整对象大小都不包含其�
 高 2 bit 置零，`suffix = (pp_rank << 3) | policy_id`；FA/WA/State 的 policy_id
 分别是 0/1/2。配置初始化时限制 PP stage 数量不超过 8，pp_rank 范围为 0～7。
 同一 chunk 在不同 PP stage 和策略下共享前 15 字节，仅尾字节不同。
+完整 key 在 Scheduler 建计划时生成，存放在 `UCMDispatchPlan.object_keys_by_pp_rank`；
+Prepare 使用这份计划的有序去重 key 集合。Worker 仅选择自身 PP stage 的现成 key，
+不再调用 `make_ucm_chunk_ids` 或重新拼接 PP/policy。
 删除 PP 布局 all-gather。`UCMShard(tp_shard, dcp_shard)` 不再包含 PP；
 `ParallelRank(tp_rank, pp_rank, pcp_rank)` 仍保留完整 Worker 身份。
 每个 stage 在握手中声明实际存储的策略，空 stage/group 不产生空对象。
 Scheduler 对全部参与 stage 查询 FA 共同前缀、WA/State 共同恢复边界。
 
-部署约束：每个 stage 内 TP/PCP/DCP 都在单机，跨机 TP/PCP/DCP 不支持。
-PP 可以跨节点，但配置的远端 Store 必须允许 Scheduler 和全部 Worker 访问相同对象，
-并兑现 AddressedToken 寻址。本轮不实现跨机 shm 或 Store RPC；远端 Lookup 命中
-不等于远端 Worker 已能使用本机 shm token。
+部署约束：本轮每个 DP 副本的 TP/PP/PCP/DCP Workers 都在单机，跨机并行暂不考虑。
+配置初始化时拒绝 `nnodes_within_dp != 1`。尤其跨机 PP 尚未接通远端 shm 的
+Prepare/Complete；远端 Lookup 命中不能解决远端准入，不声明配置远端 Store 即可支持。
 
 ## 调用位置
 
@@ -74,16 +96,25 @@ PP 可以跨节点，但配置的远端 Store 必须允许 Scheduler 和全部 W
 `SchedulerOutput.kv_connector_block_state`。同步 load 返回 `(N, False)`。
 Lookup 返回 None 时下发预取 token，由 rank0 同步执行 `submit_prefetch/wait`，
 其余 rank 回报 no-op 成功；汇总后 `complete_prefetch` 并重新查询。
+这里是 Store 下层到当前层的 prefetch，CacheStore 的典型目标是 DRAM/shm，
+具体源/目标由 Store 解释 token 决定；随后仍需 Get 到设备，并非异步 HBM load。
 这不代表跨 step 异步 HBM load 已实现。
+
+`RequestMetadata.prepare_get_failed` 仅在 Scheduler 的 PrepareGet 抛出可恢复错误时
+设置。Lookup 已向引擎报告命中，不能无声丢弃此次 load；Worker 保留计划中的 block ID，
+经 `get_block_ids_with_load_errors` 回报引擎重算。真正 Submit/Wait 的 IO 失败走独立的
+`failed_load_request_ids` 汇总，两者都会阻止该请求的 dump 被发布。
 
 ## 窗口与完成事件
 
 每次成功 Prepare 对应一个 AddressedToken，窗口内允许多次 native Submit。
 metadata 只复制 token 的 keys/payload，Worker 原样还原；不传进程内指针。
-opaque token 不可独立切片，因此 Submit 保持完整 keys 顺序，未涉及的 key
+opaque token 不可独立切片，因此 Submit 保持 Prepare 输入 keys 的顺序，未涉及的 key
 使用空 BlockPayload；后端必须将空范围视为 no-op，不能清空或发布该对象。
+这份有序 key 集合单独保存在 PreparedJob 中，Worker 用它对齐 payload，不读取
+token.keys 做业务匹配；token 字段的复制/还原只保留在 binding 适配边界。
 
-主 job_id 由 Connector Scheduler 产生，随 PreparedJob(job_id, AddressedToken)
+主 job_id 由 Connector Scheduler 产生，随 PreparedJob(job_id, object_keys, token)
 下发到 Worker；一次主 job 对应一次成功 Prepare，不使用额外的 UUID 保存标识。
 同一个 request_id 的不同 step、Get/Put/Prefetch 使用不同主 job。
 
