@@ -306,8 +306,8 @@ def apply_all_patches() -> None:
                 logger.info(
                     "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
                 )
-                import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
 
