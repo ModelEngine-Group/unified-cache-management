@@ -219,6 +219,10 @@ def apply_all_patches() -> None:
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 
+        if (int(major), int(minor)) >= (0, 23):
+            logger.info("UCM patching vllm Model Runner V2 preemption order...")
+            import ucm.integration.vllm.patch.v0230.vllm.v2_preemption_order_patch
+
         if (int(major), int(minor)) >= (0, 24):
             logger.info(
                 "UCM patching vllm for EngineCore startup-failure worker shutdown..."
@@ -306,6 +310,7 @@ def apply_all_patches() -> None:
                 logger.info(
                     "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
                 )
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
