@@ -72,9 +72,13 @@ class _PreparedPipelineTransfer:
     page_count: int
     task_type: type[Task]
 
-    def load_data(self, shard_index: int, addresses: np.ndarray) -> Task:
+    def load_data(
+        self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
+    ) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
-        return self.task_type(self.store.Load(self.ids, indexes, addresses))
+        return self.task_type(
+            self.store.Load(self.ids, indexes, addresses, prerequisite_handle)
+        )
 
     def dump_data(
         self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
@@ -137,10 +141,11 @@ class UcmDirectStoreAdapter:
         self._identity = dict(identity)
         self._block_identity_prefix = self._identity_suffix()
         self._store_config = copy.deepcopy(store_config)
-        # Cache's D2H stream waits on this CUDA event before reading KV data.
-        # Other connectors/pipelines have not established that contract.
-        self.supports_dump_prerequisite = (
+        # Only the stock Cache pipeline establishes the event contract for
+        # H2D/D2H. Custom Stores and other pipelines use the CPU-wait fallback.
+        self.supports_transfer_prerequisite = (
             connector_name == "UcmPipelineStore"
+            and not module_path
             and self._store_config.get("store_pipeline") == "Cache|Posix"
         )
         # Accepted for compatibility; loads now submit beyond the old window.
@@ -848,7 +853,7 @@ class UcmDirectStoreAdapter:
                     )
                     task = (
                         operation(*args, prerequisite_handle=prerequisite_handle)
-                        if is_offload and prerequisite_handle
+                        if prerequisite_handle
                         else operation(*args)
                     )
                     tasks.append(_StoreTask(item.store, task, addresses))
@@ -876,12 +881,16 @@ class UcmDirectStoreAdapter:
         return tasks
 
     def submit_prepared_load_layer(
-        self, prepared: dict[int, list[_PreparedStoreTransfer]], logical_layer: int
+        self,
+        prepared: dict[int, list[_PreparedStoreTransfer]],
+        logical_layer: int,
+        prerequisite_handle: int = 0,
     ) -> list[_StoreTask]:
         return self._submit_prepared(
             prepared.get(logical_layer, []),
             is_offload=False,
             logical_layer=logical_layer,
+            prerequisite_handle=prerequisite_handle,
         )
 
     def submit_offload(

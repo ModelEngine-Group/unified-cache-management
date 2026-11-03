@@ -125,6 +125,22 @@ class LayoutPreparationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no positive estimated pool capacity"):
             adapter._estimate_gc_capacities({"a": [member]})
 
+    def test_only_stock_cache_pipeline_accepts_transfer_events(self):
+        for name, module, pipeline, expected in (
+            ("UcmPipelineStore", None, "Cache|Posix", True),
+            ("UcmPipelineStore", "custom.backend", "Cache|Posix", False),
+            ("UcmPipelineStore", None, "Posix", False),
+            ("CustomStore", None, "Cache|Posix", False),
+        ):
+            with self.subTest(name=name, module=module, pipeline=pipeline):
+                adapter = adapter_module.UcmDirectStoreAdapter(
+                    connector_name=name,
+                    module_path=module,
+                    store_config={"store_pipeline": pipeline},
+                    identity={},
+                )
+                self.assertEqual(adapter.supports_transfer_prerequisite, expected)
+
     def transfer(self, **changes):
         transfer = adapter_module.UcmLayerTransfer(
             store_group="g",
@@ -193,9 +209,12 @@ class LayoutPreparationTest(unittest.TestCase):
         linker._layer_pointer_layouts = linker._build_layer_pointer_layouts()
         # Request preparation must use the cached schema, not rebuild it.
         linker._entry_layer_schema = lambda *args: self.fail("schema rebuilt")
+        indices = types.SimpleNamespace(
+            detach=lambda: types.SimpleNamespace(cpu=lambda: [0, 2])
+        )
         transfers = [
             types.SimpleNamespace(
-                name=name, keys=("a", "b"), hit_policy="all_pages", host_indices=[0, 2]
+                name=name, keys=("a", "b"), hit_policy="all_pages", host_indices=indices
             )
             for name in linker.pools
         ]
@@ -238,6 +257,68 @@ class LayoutPreparationTest(unittest.TestCase):
         linker.pools["kv"].prepare_locations = lambda indices: indices[:1]
         with self.assertRaisesRegex(ValueError, "missing kv layer"):
             linker._page_transfers(transfers, for_io=True)
+
+    def test_cpu_index_snapshot_is_shared_but_pool_rows_are_independent(self):
+        copies = []
+        values = [0, 1, 4, 5]
+
+        def indices():
+            source = types.SimpleNamespace()
+
+            def cpu():
+                copies.append(source)
+                return np.array(values)
+
+            source.detach = lambda: source
+            source.cpu = cpu
+            return source
+
+        linker = object.__new__(linker_module.UcmDirectLinker)
+
+        def entry(name, base, stride, divisor):
+            return types.SimpleNamespace(
+                name=name,
+                indices_from_pool="kv",
+                layer_mapping={0: 0},
+                packed=True,
+                buffer_meta=[[(base, stride, stride)]],
+                _component_offsets=[[0]],
+                prepare_locations=lambda cpu: cpu[::2] // divisor,
+            )
+
+        linker.pools = {
+            "kv": entry("kv", 100, 8, 1),
+            "indexer": entry("indexer", 200, 4, 2),
+        }
+        linker.num_layers = 1
+        linker._bundles = linker._build_pool_bundles()
+        linker._layer_pointer_layouts = linker._build_layer_pointer_layouts()
+        shared = indices()
+        transfers = [
+            types.SimpleNamespace(
+                name=name,
+                keys=("a", "b"),
+                hit_policy="all_pages",
+                host_indices=shared,
+            )
+            for name in linker.pools
+        ]
+        eager = linker._page_transfers(transfers, for_io=True)[0]
+        self.assertEqual(len(copies), 1)
+        np.testing.assert_array_equal(eager.addresses, [[[200, 100], [208, 132]]])
+        lazy = linker._page_transfers(transfers, for_io=True, lazy_addresses=True)[0]
+        self.assertEqual(len(copies), 2)
+        np.testing.assert_array_equal(lazy.address_builder(0), eager.addresses[0])
+        linker._page_transfers(transfers, for_io=False)
+        self.assertEqual(len(copies), 2)
+        # An equal-valued but distinct tensor must have its own snapshot.
+        transfers[1].host_indices = indices()
+        linker._page_transfers(transfers, for_io=True)
+        self.assertEqual(len(copies), 4)
+        # Never reuse a previous call's snapshot after indices change.
+        values[:] = [2, 3, 6, 7]
+        fresh = linker._page_transfers(transfers, for_io=True)[0]
+        np.testing.assert_array_equal(fresh.addresses, [[[204, 116], [212, 148]]])
 
     def test_lookup_reuses_layout_and_preserves_resume_fallback(self):
         hits = {"a", "b", "c"}
@@ -289,8 +370,8 @@ class LayoutPreparationTest(unittest.TestCase):
         calls = []
 
         class Native:
-            def Load(self, ids, indexes, addresses):
-                calls.append((ids, indexes, addresses, None))
+            def Load(self, ids, indexes, addresses, event=0):
+                calls.append((ids, indexes, addresses, event))
                 return len(calls)
 
             def Dump(self, ids, indexes, addresses, event):
@@ -307,8 +388,9 @@ class LayoutPreparationTest(unittest.TestCase):
             prepared = adapter.prepare_load([transfer])
         self.assertIs(prepared[0][0], prepared[2][0])
         self.assertEqual(adapter.submit_prepared_load_layer(prepared, 1), [])
-        adapter.submit_prepared_load_layer(prepared, 0)
-        adapter.submit_prepared_load_layer(prepared, 2)
+        adapter.submit_prepared_load_layer(prepared, 0, prerequisite_handle=43)
+        adapter.submit_prepared_load_layer(prepared, 2, prerequisite_handle=43)
+        self.assertEqual([call[3] for call in calls], [43, 43])
         self.assertIs(calls[0][0], calls[1][0])
         self.assertFalse(calls[0][0].flags.writeable)
         self.assertEqual(calls[0][0].tobytes(), b"".join(adapter._block_ids(transfer)))

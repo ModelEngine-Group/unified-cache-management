@@ -121,7 +121,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         adapter: UcmDirectStoreAdapter | None = None,
     ):
         del server_args
-        self._forward_stream = forward_stream
+        self.forward_stream = forward_stream
         self.page_size = params.page_size
         self._kv_allocator = params.token_to_kv_pool_allocator
         kvcache = self._kv_allocator.get_kvcache()
@@ -141,7 +141,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], object] | None
+            tuple[int, dict[str, list[PoolTransfer]], list[object]] | None
         ] = Queue()
         self._completed_loads: Queue[list[str]] = Queue()
         self._requires_load_finish = hasattr(
@@ -470,6 +470,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         by_name = {transfer.name: transfer for transfer in transfers}
         result: list[UcmLayerTransfer] = []
         locations_by_pool: dict[PoolName, np.ndarray] = {}
+        cpu_indices: dict[int, torch.Tensor] = {}
         for bundle in self._bundles:
             members = [(entry, by_name.get(entry.name)) for entry in bundle.entries]
             if any(transfer is None or not transfer.keys for _, transfer in members):
@@ -496,8 +497,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             f"UCM {entry.name} transfer has no device indices."
                         )
                     if entry.name not in locations_by_pool:
+                        # KV and sidecar pools can share one source tensor.
+                        # Snapshot it once, but preserve each pool's row geometry.
+                        indices = transfer.host_indices
+                        source_id = id(indices)
+                        if source_id not in cpu_indices:
+                            cpu_indices[source_id] = indices.detach().cpu()
                         locations_by_pool[entry.name] = np.asarray(
-                            entry.prepare_locations(transfer.host_indices),
+                            entry.prepare_locations(cpu_indices[source_id]),
                             dtype=np.uint64,
                         )
                     prepared_locations.append(locations_by_pool[entry.name])
@@ -642,6 +649,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
             freeze_gc("UCM direct linker")
             self._gc_frozen = True
 
+    def _record_transfer_events(self) -> list[object]:
+        record_ready = getattr(self, "record_transfer_ready", None)
+        if record_ready is not None:
+            return record_ready().events
+
+        # Older SGLang releases have no shared transfer-ready helper.
+        indices_ready = device_module.Event()
+        indices_ready.record()
+        events = [indices_ready]
+        if self.forward_stream is not None:
+            forward_done = device_module.Event()
+            forward_done.record(self.forward_stream)
+            events.append(forward_done)
+        return events
+
+    def _wait_transfer_events(self, events: list[object]) -> int:
+        # Address preparation reads indices on CPU. Only the dependency on
+        # earlier device-page use can be delegated to Cache's copy streams.
+        events[0].synchronize()
+        if len(events) == 1:
+            return 0
+        forward_done = events[1]
+        if getattr(self.adapter, "supports_transfer_prerequisite", False):
+            handle = int(getattr(forward_done, "cuda_event", 0) or 0)
+            if handle:
+                return handle
+        forward_done.synchronize()
+        return 0
+
     def start_layer_wise_loading(self) -> int:
         if not self._pending_loads:
             return -1
@@ -651,9 +687,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         counter_index = self.layer_done_counter.update_producer()
         if self._requires_load_finish:
             self._load_results[counter_index] = Future()
-        ready_event = device_module.Event()
-        ready_event.record()
-        self._load_queue.put((counter_index, pending, ready_event))
+        ready_events = self._record_transfer_events()
+        self._load_queue.put((counter_index, pending, ready_events))
         return counter_index
 
     def finish_layer_wise_loading(self, counter_index: int) -> bool:
@@ -672,11 +707,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 if task is None:
                     return
-                counter_index, pending, ready_event = task
+                counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
                 try:
-                    ready_event.synchronize()
+                    prerequisite_handle = self._wait_transfer_events(ready_events)
                     page_transfers = [
                         transfer
                         for request in pending.values()
@@ -694,7 +729,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         for layer in range(self.num_layers):
                             active_layer = layer
                             in_flight[layer] = self.adapter.submit_prepared_load_layer(
-                                prepared_transfers, layer
+                                prepared_transfers,
+                                layer,
+                                prerequisite_handle=prerequisite_handle,
                             )
                             while next_complete <= layer:
                                 tasks = in_flight[next_complete]
@@ -755,13 +792,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if not self._offload_owner:
             self._offload_results.put(True)
             return True
-        indices_ready = device_module.Event()
-        indices_ready.record()
-        ready_events = [indices_ready]
-        if self._forward_stream is not None:
-            kv_written = device_module.Event()
-            kv_written.record(self._forward_stream)
-            ready_events.append(kv_written)
+        ready_events = self._record_transfer_events()
         self._offload_queue.put((expanded, ready_events))
         return True
 
@@ -779,25 +810,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
             expanded, ready_events = task
             transfers: list[UcmLayerTransfer] = []
             try:
-                # The index is read on CPU while building transfers. The KV
-                # event can instead be waited on by Cache's D2H stream.
-                ready_events[0].synchronize()
-                prerequisite_handle = 0
-                if len(ready_events) > 1:
-                    kv_event = ready_events[1]
-                    if getattr(self.adapter, "supports_dump_prerequisite", False):
-                        prerequisite_handle = int(
-                            getattr(kv_event, "cuda_event", 0) or 0
-                        )
-                    if not prerequisite_handle:
-                        kv_event.synchronize()
+                prerequisite_handle = self._wait_transfer_events(ready_events)
                 transfers = self._page_transfers(expanded, for_io=True)
-                tasks = (
-                    self.adapter.submit_offload(
-                        transfers, prerequisite_handle=prerequisite_handle
-                    )
-                    if prerequisite_handle
-                    else self.adapter.submit_offload(transfers)
+                tasks = self.adapter.submit_offload(
+                    transfers, prerequisite_handle=prerequisite_handle
                 )
             except BaseException:
                 logger.exception(

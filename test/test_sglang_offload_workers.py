@@ -55,7 +55,7 @@ class OffloadWorkerTest(unittest.TestCase):
                     raise RuntimeError("test wait failure")
 
         obj.adapter = types.SimpleNamespace(
-            supports_dump_prerequisite=True,
+            supports_transfer_prerequisite=True,
             submit_offload=submit,
             check=check,
             wait=wait,
