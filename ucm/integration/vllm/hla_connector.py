@@ -1976,6 +1976,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
         self._group_commit_layer: dict[int, str] = {}
+        # AscendMultiConnector gates its mamba-copy takeover on this flag
+        # aggregated over children, not on the delegated methods; composed
+        # (PD disagg) deployments race the engine's batched fallback without
+        # it.
+        self.requires_mamba_state_copy_after_layer_load = True
         self._mamba_copy_bufs = None
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
