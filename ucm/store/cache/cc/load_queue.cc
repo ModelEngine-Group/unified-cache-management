@@ -112,6 +112,44 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
     const auto nShard = task->desc.size();
+    if (task->type == TransTask::Type::LOAD_ON_TOKEN) {
+        auto fail = [&](Status s) {
+            UC_ERROR("LoadOnToken task({}) invalid filter: {}.", task->id, s);
+            RecordFailedShards(nShard);
+            task->Fail(s);
+            failureSet_->Insert(task->id);
+            waiter->Done();
+        };
+        if (task->filter.size() != nShard) {
+            fail(Status::InvalidParam("filter size({}) != shards({})", task->filter.size(), nShard));
+            return;
+        }
+        for (size_t i = 0; i < nShard; ++i) {
+            const auto& tokenFilter = task->filter[i];
+            if (tokenFilter.ranges.size() != tensorSizes_.size()) {
+                fail(Status::InvalidParam("shard({}) tensor filter size({}) != tensorSizes({})",
+                                          task->desc[i].index, tokenFilter.ranges.size(),
+                                          tensorSizes_.size()));
+                return;
+            }
+            for (size_t t = 0; t < tokenFilter.ranges.size(); ++t) {
+                const auto tensorSize = tensorSizes_[t];
+                for (const auto& range : tokenFilter.ranges[t]) {
+                    if (range.length == 0) {
+                        fail(Status::InvalidParam("shard({}) tensor({}) has empty token range",
+                                                  task->desc[i].index, t));
+                        return;
+                    }
+                    if (range.offset >= tensorSize || range.length > tensorSize - range.offset) {
+                        fail(Status::InvalidParam(
+                            "shard({}) tensor({}) range({},{}) exceeds size({})",
+                            task->desc[i].index, t, range.offset, range.length, tensorSize));
+                        return;
+                    }
+                }
+            }
+        }
+    }
     size_t backendSubmitCount = 0;
     size_t waitShardCount = 0;
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
@@ -146,6 +184,9 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         }
         shardTask.task = task;
         shardTask.shard = std::move(shard);
+        if (task->type == TransTask::Type::LOAD_ON_TOKEN) {
+            shardTask.tokenFilter = task->filter[indexes[i]];
+        }
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
         running_.Push(std::move(shardTask));
     }
@@ -222,10 +263,53 @@ void LoadQueue::TransferDdrLoad(ShardTask&& task)
     if (waiter) { waiter->Done(); }
 }
 
+void LoadQueue::TransferDdrLoadOnToken(ShardTask&& task)
+{
+    auto parentTask = task.task;
+    const auto taskHandle = parentTask->id;
+    auto waiter = std::move(task.waiter);
+    if (failureSet_->Contains(taskHandle)) {
+        RecordFailedShards(1);
+        task.bufferHandle = TransBuffer::Handle{};
+        if (waiter) { waiter->Done(); }
+        return;
+    }
+    auto s = WaitBackendTaskReady(task);
+    if (s.Success()) {
+        auto* src = task.bufferHandle.Data();
+        auto* dst = task.shard.addrs.empty() ? nullptr : task.shard.addrs.front();
+        if (src == nullptr || dst == nullptr || task.shard.addrs.size() != 1) [[unlikely]] {
+            s = Status::InvalidParam();
+            UC_ERROR("DDR load-on-token shard({}) requires one host address.", task.shard.index);
+        } else {
+            // TODO: for each tensor t, use tensorSizes_[t] layout in the cache slot (src)
+            // and task.tokenFilter.ranges[t] to select TokenRanges, then concatenate the
+            // covered bytes into the caller DDR buffer (dst).
+            (void)src;
+            (void)dst;
+            (void)task.tokenFilter;
+            (void)tensorSizes_;
+        }
+    }
+    if (s.Failure()) [[unlikely]] {
+        RecordShardResults({}, &task, false);
+        parentTask->Fail(s);
+        failureSet_->Insert(taskHandle);
+    } else {
+        RecordShardResults({}, &task, true);
+    }
+    task.bufferHandle = TransBuffer::Handle{};
+    if (waiter) { waiter->Done(); }
+}
+
 void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
     if (task.task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR) {
-        TransferDdrLoad(std::move(task));
+        if (task.task->type == TransTask::Type::LOAD_ON_TOKEN) {
+            TransferDdrLoadOnToken(std::move(task));
+        } else {
+            TransferDdrLoad(std::move(task));
+        }
         return;
     }
     auto parentTask = task.task;

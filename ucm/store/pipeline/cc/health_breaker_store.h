@@ -57,6 +57,8 @@ public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;
     Status CheckHealth() override;
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
+    Expected<Detail::TaskHandle> LoadOnToken(Detail::TaskDesc task,
+                                             const std::vector<Detail::TokenFilter>& filter) override;
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
