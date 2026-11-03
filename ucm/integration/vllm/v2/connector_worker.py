@@ -189,6 +189,9 @@ class UCMConnectorWorker:
                 prefetch_task = self._store_worker.submit_prefetch(prefetch_job)
                 self._store_worker.wait(prefetch_task)
             except StoreIOError:
+                logger.warning(
+                    "UCM prefetch failed; recomputing this request", exc_info=True
+                )
                 success = False
         self._completion_metadata.job_results.add(
             JobResult(prefetch_job.job_id, self._parallel_rank, success)

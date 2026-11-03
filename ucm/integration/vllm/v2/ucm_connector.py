@@ -59,7 +59,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return bool(
             Config(SimpleNamespace(kv_connector_extra_config=extra_config))
             .get_config()
-            .get("use_layerwise", False)
+            .get("use_layerwise", True)
         )
 
     @property
