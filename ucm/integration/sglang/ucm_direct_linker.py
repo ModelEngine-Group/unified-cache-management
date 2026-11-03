@@ -7,7 +7,6 @@ layer-ready and completion queues. Store setup and I/O stay in the adapter.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 import time
@@ -44,20 +43,10 @@ _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
 
 
-def _pool_group_name(
-    source: str, pools: tuple[str, ...], shape_index: int, layers: tuple[int, ...]
-) -> str:
-    """Build a bounded, deterministic Store group name."""
-    base = "__".join((source, *pools))
-    if len(base) > 64:
-        digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
-        base = f"{base[:46]}__h{digest}"
-    if not layers:
-        raise ValueError("A Store group must contain at least one layer")
-    # Keep layer membership in the identity without expanding it in the name.
-    layer_key = ",".join(map(str, layers))
-    digest = hashlib.sha256(layer_key.encode("ascii")).hexdigest()[:16]
-    return f"{base}__s{shape_index}__h{digest}"
+def _pool_group_name(pools: tuple[str, ...], shard_bytes: int, shard_count: int) -> str:
+    """Name a Store by its shortest physical pool and shard geometry."""
+    name = min(pools, key=lambda value: (len(value), value))
+    return f"{name}_{shard_bytes}x{shard_count}"
 
 
 @dataclass(frozen=True)
@@ -306,9 +295,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 )
         return metadata
 
-    def _build_pool_bundles(
-        self,
-    ) -> tuple[_PoolBundle, ...]:
+    def _build_pool_bundles(self) -> tuple[_PoolBundle, ...]:
         """Group entries that can share one page/layer Store block schema."""
         grouped: dict[
             tuple[PoolName, tuple[tuple[int, int | tuple[int, ...]], ...]],
@@ -329,9 +316,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
             grouped.setdefault((entry.indices_from_pool, mapping), []).append(entry)
 
         bundles = []
+        names = set()
         for (source_pool, mapping), entries in grouped.items():
             layers = tuple(layer for layer, _ in mapping)
             ordered = tuple(sorted(entries, key=lambda entry: str(entry.name)))
+            pool_names = tuple(str(entry.name) for entry in ordered)
             by_schema: dict[tuple[int, ...], list[int]] = {}
             for layer in layers:
                 schema = tuple(
@@ -344,17 +333,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         f"UCM pool group {source_pool} has no fragments at layer {layer}."
                     )
                 by_schema.setdefault(schema, []).append(layer)
-            for index, (tensor_sizes, schema_layers) in enumerate(
-                sorted(by_schema.items())
-            ):
+            for tensor_sizes, schema_layers in sorted(by_schema.items()):
+                shard_size = sum(tensor_sizes)
+                name = _pool_group_name(pool_names, shard_size, len(schema_layers))
+                if name in names:
+                    raise ValueError(f"Duplicate UCM Store group name: {name}")
+                names.add(name)
                 bundles.append(
                     _PoolBundle(
-                        _pool_group_name(
-                            str(source_pool),
-                            tuple(str(entry.name) for entry in ordered),
-                            index,
-                            tuple(schema_layers),
-                        ),
+                        name,
                         source_pool,
                         tuple(schema_layers),
                         ordered,
@@ -365,7 +352,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             for fragment in self._entry_layer_schema(entry, layer)
                         ),
                         tensor_sizes,
-                        sum(tensor_sizes),
+                        shard_size,
                     )
                 )
         return tuple(bundles)
@@ -485,8 +472,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     f"UCM store bundle {bundle.name} has inconsistent source transfer metadata."
                 )
 
-            fragments = bundle.fragments
-            layer_tensor_size_list = bundle.tensor_size_list
             addresses = None
             address_builder = None
             if for_io:
@@ -543,7 +528,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         (
                             len(bundle.layers),
                             len(page_keys),
-                            len(layer_tensor_size_list),
+                            len(bundle.tensor_size_list),
                         ),
                         dtype=np.uint64,
                     )
@@ -556,11 +541,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     pools=tuple(str(entry.name) for entry in bundle.entries),
                     layers=bundle.layers,
                     shard_size=bundle.shard_size,
-                    tensor_size_list=layer_tensor_size_list,
+                    tensor_size_list=bundle.tensor_size_list,
                     page_keys=page_keys,
                     addresses=addresses,
                     address_builder=address_builder,
-                    fragments=fragments,
+                    fragments=bundle.fragments,
                     hit_policy=str(getattr(hit_policy, "value", hit_policy)),
                 )
             )

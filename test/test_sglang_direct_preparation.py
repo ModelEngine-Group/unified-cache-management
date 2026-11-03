@@ -1,6 +1,5 @@
 """Exercise Python preparation without SGLang, torch or native UCM libraries."""
 
-import hashlib
 import os
 import sys
 import types
@@ -54,18 +53,52 @@ class LayoutPreparationTest(unittest.TestCase):
                 {"config_file": "legacy.yaml"}, {}
             )
 
-    def test_registered_backend_paths_preserve_pool_and_layout_names(self):
+    def test_group_name_uses_shortest_pool_and_shard_geometry(self):
+        self.assertEqual(
+            linker_module._pool_group_name(
+                ("deepseek_v4_c4_indexer", "deepseek_v4_c4"), 4096, 32
+            ),
+            "deepseek_v4_c4_4096x32",
+        )
+        self.assertEqual(linker_module._pool_group_name(("bb", "aa"), 8, 2), "aa_8x2")
+        self.assertEqual(
+            linker_module._pool_group_name(("indexer", "kv"), 16, 4), "kv_16x4"
+        )
+
+    def test_equal_geometry_group_name_collision_is_rejected(self):
+        linker = object.__new__(linker_module.UcmDirectLinker)
+        linker.num_layers = 2
+        linker.pools = {
+            "kv": types.SimpleNamespace(
+                name="kv",
+                indices_from_pool="kv",
+                layer_mapping={0: 0, 1: 1},
+                buffer_meta=[[(100, 4, 4), (200, 8, 8)], [(300, 12, 12), (400, 8, 8)]],
+                _component_offsets=[[0, 0], [0, 0]],
+            )
+        }
+        with self.assertRaisesRegex(
+            ValueError, "Duplicate UCM Store group name: kv_16x1"
+        ):
+            linker._build_pool_bundles()
+
+    def test_registered_backend_paths_use_group_names(self):
         adapter = self.adapter()
         del adapter._ensure_store_schema
         roots = ["cache-a", "cache-b"]
         adapter._store_config["storage_backends"] = roots
         pools = []
         for group, names, layers, size in (
-            ("kv-a", ("kv",), (0, 1), 8),
-            ("kv-b", ("kv",), (0, 1), 16),
-            ("kv-tail", ("kv",), (4, 6), 8),
-            ("swa", ("swa",), (0, 1), 8),
-            ("dsa", ("INDEXER", "KV"), (0, 1), 8),
+            ("kv_8x2", ("kv",), (0, 1), 8),
+            ("kv_16x2", ("kv",), (0, 1), 16),
+            ("kv_8x3", ("kv",), (4, 6, 8), 8),
+            ("swa_8x2", ("swa",), (0, 1), 8),
+            (
+                "deepseek_v4_c4_16x2",
+                ("deepseek_v4_c4", "deepseek_v4_c4_indexer"),
+                (0, 1),
+                8,
+            ),
         ):
             for name in names:
                 pools.append(
@@ -91,16 +124,9 @@ class LayoutPreparationTest(unittest.TestCase):
             patch.object(Path, "mkdir") as mkdir,
         ):
             adapter.register_device_pools(pools)
-        expected_names = {
-            group: f"kv_layers_0-1_layout_{hashlib.sha256(group.encode()).hexdigest()[:10]}"
-            for group in ("kv-a", "kv-b")
-        }
-        expected_names.update(
-            {"kv-tail": "kv_layers_4_6", "swa": "swa", "dsa": "kv_indexer"}
-        )
         expected = {
-            group: [str(Path(root) / name) for root in roots]
-            for group, name in expected_names.items()
+            group: [str(Path(root) / "sglang_linker" / group) for root in roots]
+            for group in adapter._stores
         }
         self.assertEqual(adapter._backend_paths_by_group, expected)
         self.assertEqual(

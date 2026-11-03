@@ -110,16 +110,6 @@ def _safe_name(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value))
 
 
-def _pool_names_key(members: Iterable[UcmPoolMetadata]) -> tuple[str, ...]:
-    pool_order = {"kv": 0, "indexer": 1, "swa": 2, "mamba": 3}
-    return tuple(
-        sorted(
-            {_safe_name(pool.pool_name).strip("._-").lower() for pool in members},
-            key=lambda name: (pool_order.get(name, 4), name),
-        )
-    )
-
-
 class UcmDirectStoreAdapter:
     """Map SGLang device-address rows to UCM Store V1 operations.
 
@@ -343,9 +333,9 @@ class UcmDirectStoreAdapter:
         """Return a bounded, deterministic ID for Cache/Fake shm objects.
 
         The C++ backends prepend ``uc_shm_cache_`` or ``uc_shm_fake_`` to this
-        value.  Hash the complete sharing identity and layout instead of
-        passing the long layer-expanded ``store_group`` directly, while
-        preserving the full group in persistent block IDs.
+        value. Hash the sharing identity and tensor layout together with
+        ``store_group``: the short group name contains only the pool name,
+        shard bytes and shard count, not the complete tensor layout.
         """
         identity = {
             "model": str(self._identity.get("model") or "model"),
@@ -390,9 +380,7 @@ class UcmDirectStoreAdapter:
         # ordered fragments for every layer in the page.
         return tuple((size, 0) for size, _ in raw_schema)
 
-    def _prepare_backend_paths(
-        self, by_group: dict[str, list[UcmPoolMetadata]]
-    ) -> dict[str, list[str]]:
+    def _prepare_backend_paths(self, groups: Iterable[str]) -> dict[str, list[str]]:
         configured = self._store_config.get("storage_backends")
         if isinstance(configured, str):
             roots = [item for item in configured.split(":") if item]
@@ -402,55 +390,10 @@ class UcmDirectStoreAdapter:
             raise ValueError("UCM connector config requires storage_backends.")
         if not roots:
             raise ValueError("UCM connector config has no storage_backends.")
-        groups_by_pools: dict[tuple[str, ...], list[str]] = {}
-        for group, members in by_group.items():
-            pool_names = _pool_names_key(members)
-            if any(not name for name in pool_names):
-                raise ValueError(
-                    f"UCM store group {group} has an empty physical pool name."
-                )
-            groups_by_pools.setdefault(pool_names, []).append(group)
-
-        backends: dict[str, list[str]] = {}
-        for pool_names, groups in groups_by_pools.items():
-            base_name = "_".join(pool_names)
-            # A single Store for this physical pool set keeps the simple name.
-            if len(groups) == 1:
-                backends[groups[0]] = [str(Path(root) / base_name) for root in roots]
-                continue
-
-            groups_by_layers: dict[tuple[int, ...], list[str]] = {}
-            for group in groups:
-                layers = tuple(
-                    sorted(
-                        {
-                            layer
-                            for pool in by_group[group]
-                            for layer, _ in pool.layer_schemas
-                        }
-                    )
-                )
-                groups_by_layers.setdefault(layers, []).append(group)
-            for layers, matching_groups in groups_by_layers.items():
-                directory_name = base_name
-                if layers:
-                    contiguous = layers == tuple(range(layers[0], layers[-1] + 1))
-                    label = (
-                        f"{layers[0]}-{layers[-1]}"
-                        if contiguous
-                        else "_".join(map(str, layers))
-                    )
-                    directory_name = f"{directory_name}_layers_{label}"
-                for group in matching_groups:
-                    name = directory_name
-                    # Same pool set and layer range require a layout fingerprint.
-                    if len(matching_groups) > 1:
-                        fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[
-                            :10
-                        ]
-                        name = f"{name}_layout_{fingerprint}"
-                    backends[group] = [str(Path(root) / name) for root in roots]
-        return backends
+        return {
+            group: [str(Path(root) / "sglang_linker" / group) for root in roots]
+            for group in groups
+        }
 
     def _ensure_store_schema(
         self,
@@ -764,11 +707,10 @@ class UcmDirectStoreAdapter:
             try:
                 layout = self._transfer_layout(transfer)
                 addresses = transfer.addresses
-                if not (
-                    not is_offload
-                    and addresses is None
-                    and transfer.address_builder is not None
-                ) and (
+                if addresses is None:
+                    if is_offload or transfer.address_builder is None:
+                        raise ValueError("address/schema mismatch")
+                elif (
                     not isinstance(addresses, np.ndarray)
                     or addresses.shape
                     != (
