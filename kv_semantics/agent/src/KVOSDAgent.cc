@@ -47,8 +47,7 @@ namespace {
 constexpr int BOOT_RETRY_DELAY = 5;       // 秒, Boot 重试初始等待时间
 constexpr int BOOT_RETRY_MAX_DELAY = 60;  // 秒, Boot 重试等待上限
 // OSD Agent 固定监听端口, 配置未指定端口时使用此值
-// constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
-constexpr int KV_OSD_AGENT_DEFAULT_PORT = 65536;
+constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
 
 int parse_public_addrs(const std::string& value, entity_addrvec_t* result,
                        AgentLogger* logger = nullptr)
