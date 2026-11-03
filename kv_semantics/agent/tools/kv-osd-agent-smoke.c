@@ -12,18 +12,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-
 #include "KVAgent.h"
 
-typedef uint32_t (*kv_agent_get_abi_version_fn)(void);
-typedef kv_agent_handle *(*kv_agent_create_fn)(void);
-typedef int32_t (*kv_agent_init_fn)(
-    kv_agent_handle *, const kv_osd_agent_config *, uint32_t, size_t,
-    const char *);
-typedef int32_t (*kv_agent_start_heartbeat_fn)(kv_agent_handle *);
-typedef void (*kv_agent_destroy_fn)(kv_agent_handle *);
 
-struct kv_agent_api { 
+typedef uint32_t (*kv_agent_get_abi_version_fn)(void);
+typedef kv_agent_handle* (*kv_agent_create_fn)(void);
+typedef int32_t (*kv_agent_init_fn)(kv_agent_handle*, const kv_osd_agent_config*, uint32_t, size_t,
+                                    const char*);
+typedef int32_t (*kv_agent_start_heartbeat_fn)(kv_agent_handle*);
+typedef void (*kv_agent_destroy_fn)(kv_agent_handle*);
+
+struct kv_agent_api {
     kv_agent_get_abi_version_fn get_abi_version;
     kv_agent_create_fn create;
     kv_agent_init_fn init;
@@ -35,38 +34,32 @@ static volatile sig_atomic_t stop_requested = 0;
 
 static void handle_signal(int signal)
 {
-    if (stop_requested) {
-        _exit(128 + signal);
-    }
+    if (stop_requested) { _exit(128 + signal); }
     stop_requested = 1;
 }
 
-static int parse_u32(const char *value, uint32_t *result)
+static int parse_u32(const char* value, uint32_t* result)
 {
-    char *end = NULL;
+    char* end = NULL;
     unsigned long parsed;
 
     errno = 0;
     parsed = strtoul(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0' || parsed > UINT32_MAX) {
-        return -1;
-    }
+    if (errno != 0 || end == value || *end != '\0' || parsed > UINT32_MAX) { return -1; }
     *result = (uint32_t)parsed;
     return 0;
 }
 
-static int load_api(void *module, struct kv_agent_api *api)
+static int load_api(void* module, struct kv_agent_api* api)
 {
     dlerror();
-    api->get_abi_version = (kv_agent_get_abi_version_fn)dlsym(
-        module, "kv_agent_get_abi_version");
+    api->get_abi_version = (kv_agent_get_abi_version_fn)dlsym(module, "kv_agent_get_abi_version");
     api->create = (kv_agent_create_fn)dlsym(module, "kv_agent_create");
     api->init = (kv_agent_init_fn)dlsym(module, "kv_agent_init");
-    api->start_heartbeat = (kv_agent_start_heartbeat_fn)dlsym(
-        module, "kv_agent_start_heartbeat");
+    api->start_heartbeat = (kv_agent_start_heartbeat_fn)dlsym(module, "kv_agent_start_heartbeat");
     api->destroy = (kv_agent_destroy_fn)dlsym(module, "kv_agent_destroy");
 
-    const char *error = dlerror();
+    const char* error = dlerror();
     if (error != NULL) {
         fprintf(stderr, "failed to load agent API: %s\n", error);
         return -1;
@@ -74,7 +67,7 @@ static int load_api(void *module, struct kv_agent_api *api)
     return 0;
 }
 
-static void usage(const char *program)
+static void usage(const char* program)
 {
     fprintf(stderr,
             "usage: %s [--library <so>] --mon-host <hosts> --osd-id <id> "
@@ -86,12 +79,12 @@ static void usage(const char *program)
             program);
 }
 
-int main(int argc, char **argv)
+int main(int argc, char** argv)
 {
-    const char *library = "libkv_agent.so";
+    const char* library = "libkv_agent.so";
     uint32_t runtime = 0;
     uint32_t restart_count = 1;
-    const char *log_dir = NULL;
+    const char* log_dir = NULL;
     kv_osd_agent_config config = {
         .dpu_id = 0,
         .mon_host = NULL,
@@ -103,105 +96,76 @@ int main(int argc, char **argv)
         .addrs = NULL,
     };
     static const struct option options[] = {
-        {"library", required_argument, NULL, 'l'},
-        {"dpu-id", required_argument, NULL, 'd'},
-        {"mon-host", required_argument, NULL, 'm'},
-        {"osd-id", required_argument, NULL, 'i'},
+        {"library",            required_argument, NULL, 'l'},
+        {"dpu-id",             required_argument, NULL, 'd'},
+        {"mon-host",           required_argument, NULL, 'm'},
+        {"osd-id",             required_argument, NULL, 'i'},
         {"heartbeat-interval", required_argument, NULL, 'h'},
-        {"boot-beacon-delay", required_argument, NULL, 'b'},
-        {"osd-key", required_argument, NULL, 'k'},
-        {"osd-uuid", required_argument, NULL, 'u'},
-        {"runtime", required_argument, NULL, 'r'},
-        {"restart-count", required_argument, NULL, 'n'},
-        {"log-dir", required_argument, NULL, 'g'},
-        {"addrs", required_argument, NULL, 'a'},
-        {NULL, 0, NULL, 0},
+        {"boot-beacon-delay",  required_argument, NULL, 'b'},
+        {"osd-key",            required_argument, NULL, 'k'},
+        {"osd-uuid",           required_argument, NULL, 'u'},
+        {"runtime",            required_argument, NULL, 'r'},
+        {"restart-count",      required_argument, NULL, 'n'},
+        {"log-dir",            required_argument, NULL, 'g'},
+        {"addrs",              required_argument, NULL, 'a'},
+        {NULL,                 0,                 NULL, 0  },
     };
 
     int option;
-    while ((option = getopt_long(argc, argv, "l:d:m:i:h:b:k:u:r:n:g:a:", 
-                                 options, NULL)) != -1) {
+    while ((option = getopt_long(argc, argv, "l:d:m:i:h:b:k:u:r:n:g:a:", options, NULL)) != -1) {
         uint32_t number;
         switch (option) {
-        case 'l':
-            library = optarg;
-            break;
-        case 'm':
-            config.mon_host = optarg;
-            break;
-        case 'k':
-            config.osd_keyring = optarg;
-            break;
-        case 'u':
-            config.osd_uuid = optarg;
-            break;
-        case 'g':
-            log_dir = optarg;
-            break;
-        case 'a':
-            config.addrs = optarg;
-            break;
-        case 'd':
-        case 'h':
-        case 'b':
-        case 'r':
-        case 'n':
-            if (parse_u32(optarg, &number) < 0) {
-                usage(argv[0]);
-                return EXIT_FAILURE;
-            }
-            if (option == 'd') {
-                config.dpu_id = number;
-            }
-            if (option == 'h') {
-                config.osd_mon_heartbeat_interval = number;
-            }
-            if (option == 'b') {
-                config.boot_beacon_delay = number;
-            }
-            if (option == 'r') {
-                runtime = number;
-            }
-            if (option == 'n') {
-                restart_count = number;
-            }
-            break;
-        case 'i':
-            if (parse_u32(optarg, &number) < 0 || number > INT32_MAX) {
-                usage(argv[0]);
-                return EXIT_FAILURE;
-            }
-            config.osd_id = (int32_t)number;
-            break;
-        default:
-            usage(argv[0]);
-            return EXIT_FAILURE;
+            case 'l': library = optarg; break;
+            case 'm': config.mon_host = optarg; break;
+            case 'k': config.osd_keyring = optarg; break;
+            case 'u': config.osd_uuid = optarg; break;
+            case 'g': log_dir = optarg; break;
+            case 'a': config.addrs = optarg; break;
+            case 'd':
+            case 'h':
+            case 'b':
+            case 'r':
+            case 'n':
+                if (parse_u32(optarg, &number) < 0) {
+                    usage(argv[0]);
+                    return EXIT_FAILURE;
+                }
+                if (option == 'd') { config.dpu_id = number; }
+                if (option == 'h') { config.osd_mon_heartbeat_interval = number; }
+                if (option == 'b') { config.boot_beacon_delay = number; }
+                if (option == 'r') { runtime = number; }
+                if (option == 'n') { restart_count = number; }
+                break;
+            case 'i':
+                if (parse_u32(optarg, &number) < 0 || number > INT32_MAX) {
+                    usage(argv[0]);
+                    return EXIT_FAILURE;
+                }
+                config.osd_id = (int32_t)number;
+                break;
+            default: usage(argv[0]); return EXIT_FAILURE;
         }
     }
 
-    if (!config.mon_host || config.osd_id < 0 || !config.osd_keyring ||
-        !config.osd_uuid ||
-        config.osd_mon_heartbeat_interval == 0 ||
-        restart_count == 0 || !config.addrs) {
+    if (!config.mon_host || config.osd_id < 0 || !config.osd_keyring || !config.osd_uuid ||
+        config.osd_mon_heartbeat_interval == 0 || restart_count == 0 || !config.addrs) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
     if (runtime == 0) {
-        runtime = config.boot_beacon_delay +
-                  2 * config.osd_mon_heartbeat_interval;
+        runtime = config.boot_beacon_delay + 2 * config.osd_mon_heartbeat_interval;
     }
 
     struct sigaction action = {
         .sa_handler = handle_signal,
     };
     sigemptyset(&action.sa_mask);
-    if (sigaction(SIGINT, &action, NULL) < 0 ||
-        sigaction(SIGTERM, &action, NULL) < 0) {
+    if (sigaction(SIGINT, &action, NULL) < 0 || sigaction(SIGTERM, &action, NULL) < 0) {
         perror("failed to install signal handler");
         return EXIT_FAILURE;
     }
 
-    void *module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    void* module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
     if (!module) {
         fprintf(stderr, "failed to load %s: %s\n", library, dlerror());
         return EXIT_FAILURE;
@@ -213,48 +177,40 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
     if (api.get_abi_version() != KV_OSD_AGENT_ABI_VERSION) {
-        fprintf(stderr, "unsupported agent ABI: library=%u caller=%u\n",
-                api.get_abi_version(), KV_OSD_AGENT_ABI_VERSION);
+        fprintf(stderr, "unsupported agent ABI: library=%u caller=%u\n", api.get_abi_version(),
+                KV_OSD_AGENT_ABI_VERSION);
         dlclose(module);
         return EXIT_FAILURE;
     }
 
     int32_t result = 0;
-    for (uint32_t iteration = 0;
-         iteration < restart_count && !stop_requested;
-         ++iteration) {
-        kv_agent_handle *agent = api.create();
+    for (uint32_t iteration = 0; iteration < restart_count && !stop_requested; ++iteration) {
+        kv_agent_handle* agent = api.create();
         if (!agent) {
             fprintf(stderr, "kv_agent_create failed\n");
             result = -ENOMEM;
             break;
         }
 
-        result = api.init(agent, &config, KV_OSD_AGENT_ABI_VERSION,
-                          sizeof(config), log_dir);
-        if (result == 0) {
-            result = api.start_heartbeat(agent);
-        }
+        result = api.init(agent, &config, KV_OSD_AGENT_ABI_VERSION, sizeof(config), log_dir);
+        if (result == 0) { result = api.start_heartbeat(agent); }
         if (result <= AGENT_LOG_ERR_DIRECTORY_NOT_FOUND &&
             result >= AGENT_LOG_ERR_COMPONENT_CREATE_FAILED) {
-            fprintf(stderr, "kv-osd agent could not initialize file logging: %d\n",
-                    result);
+            fprintf(stderr, "kv-osd agent could not initialize file logging: %d\n", result);
         }
         if (result == 0) {
-            printf("kv-osd agent run %u/%u started; observing heartbeats for %u "
-                   "seconds\n",
-                   iteration + 1, restart_count, runtime);
+            printf(
+                "kv-osd agent run %u/%u started; observing heartbeats for %u "
+                "seconds\n",
+                iteration + 1, restart_count, runtime);
             unsigned remaining = runtime;
-            while (!stop_requested && (remaining = sleep(remaining)) != 0) {
-            }
+            while (!stop_requested && (remaining = sleep(remaining)) != 0) {}
         } else {
             fprintf(stderr, "kv-osd agent failed: %d\n", result);
         }
 
         api.destroy(agent);
-        if (result != 0) {
-            break;
-        }
+        if (result != 0) { break; }
     }
 
     dlclose(module);

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
  * Description: KV Client Agent 头文件
-*/
+ */
 
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
@@ -16,7 +16,7 @@
 namespace agent {
 
 #define KV_VIEW_REFRESH_INTERVAL_DEFAULT 30 /* 视图刷新周期默认值(秒) */
-#define KV_VIEW_FETCH_TIMEOUT_DEFAULT    10 /* 单次拉取超时默认值(秒) */
+#define KV_VIEW_FETCH_TIMEOUT_DEFAULT 10    /* 单次拉取超时默认值(秒) */
 
 struct KVClientAgentConfig {
     std::string mon_host;
@@ -44,7 +44,7 @@ public:
     KVClientAgent(KVClientAgent&&) noexcept;
     KVClientAgent& operator=(KVClientAgent&&) noexcept;
 
-    int init(const KVClientAgentConfig& config, const char *log_dir = nullptr);
+    int init(const KVClientAgentConfig& config, const char* log_dir = nullptr);
     int start();
     uint64_t get_epoch() const;
     std::vector<KVClientNodeView> get_view() const;
@@ -53,8 +53,7 @@ public:
     int stop_view_refresh();
 
     // 按照ns (Ceph pool name) 查询指定状态的OSD视图
-    std::vector<KVClientNodeView> get_view_by_ns(
-        const std::string& ns, bool up, bool in) const;
+    std::vector<KVClientNodeView> get_view_by_ns(const std::string& ns, bool up, bool in) const;
 
     // 按 ns（Ceph pool name）查询对应状态的OSD视图
     std::vector<KVClientNodeView> get_up_in_by_ns(const std::string& ns) const;
@@ -75,4 +74,4 @@ private:
     std::unique_ptr<Private> private_impl;
 };
 
-} // namespace agent
+}  // namespace agent
