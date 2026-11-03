@@ -25,6 +25,7 @@ def _has_ucm_sync_load(metadata):
         return any(_has_ucm_sync_load(child) for child in metadata.metadata)
     return False
 
+
 @when_imported("vllm_ascend.patch.platform.patch_balance_schedule")
 def patch_balance_sync_kv_load(mod):
     cls = mod.BalanceScheduler
