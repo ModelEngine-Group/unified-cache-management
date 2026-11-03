@@ -49,6 +49,54 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _ascend_fawa_hash_suffix(
+    vllm_config, kv_cache_config, group_metas, whole_page_sizes
+) -> str:
+    """Hash physical metadata retained by scheduler spec flattening.
+
+    Use the same representative as generate_scheduler_kv_cache_config, not
+    worker-only per-layer specs. Bump the format tag for incompatible encoding
+    changes not represented here, including non-representative components.
+    Package versions and upstream source text are deliberately excluded.
+    """
+    cache = vllm_config.cache_config
+    ratios = tuple(vllm_config.model_config.hf_config.compress_ratios)
+    groups = []
+    for group_id, meta in sorted(group_metas.items()):
+        if not meta.tail_tokens:
+            continue
+        group = kv_cache_config.kv_cache_groups[group_id]
+        spec = group.kv_cache_spec
+        nested = getattr(spec, "kv_cache_specs", None)
+        spec = next(iter(nested.values())) if nested else spec
+        scale_dim = getattr(spec, "scale_dim", 0)
+        groups.append(
+            (
+                group_id,
+                tuple(group.layer_names),
+                meta.token_block_size,
+                meta.tail_blocks,
+                meta.tail_tokens,
+                getattr(spec, "num_kv_heads", 1),
+                spec.head_size,
+                str(spec.dtype),
+                scale_dim,
+                str(spec.scale_dtype) if scale_dim else None,
+                getattr(spec, "cache_dtype_str", None),
+                getattr(spec, "cache_sparse_sfa_c8", False),
+                getattr(spec, "cache_sparse_sfa_turboquant", False),
+                getattr(spec, "cache_sparse_li_c8", False),
+                getattr(spec, "cache_sparse_li_c4", False),
+            )
+        )
+    pages = tuple(sorted(whole_page_sizes.items()))
+    return (
+        ":ascend_fawa=v2"
+        f":cache_dtype={cache.cache_dtype}:block_size={cache.block_size}"
+        f":compress_ratios={ratios!r}:groups={tuple(groups)!r}:pages={pages!r}"
+    )
+
+
 def select_transfer_views(tensors):
     """Replace the A5 (K, scale, full) alias triple with its full-page view.
 
@@ -800,15 +848,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
         self.max_token_block_size = 0
         self._init_group_metas()
-        if self.is_v41_layout:
-            rank_id = (
-                0 if role == KVConnectorRole.SCHEDULER else self.tp_rank % self.tp_size
-            )
-            self.request_hasher = RequestHasher(
-                _build_v41_hash_meta(vllm_config, rank_id, self._kv_cache_config)
-            )
-            if role == KVConnectorRole.SCHEDULER:
-                self._seed = self.request_hasher.seed
+        self._init_fawa_request_hasher(vllm_config, role)
         self._bind_request_block_hasher()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
@@ -848,6 +888,37 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"group_metas={group_meta_summary}"
         )
         logger.info("Init UCM FAWA connector.")
+
+    def _init_fawa_request_hasher(self, vllm_config, role) -> None:
+        """Keep scheduler and worker keys compatible with the upstream layout."""
+        if self.is_v41_layout or self.is_ascend_layout:
+            if self.is_ascend_layout:
+                # EngineCore rewrites cache_config.block_size to the smallest
+                # group after worker initialization. Hash the stable size
+                # derived from KV groups without mutating either role's config.
+                vllm_config = copy.copy(vllm_config)
+                vllm_config.cache_config = copy.copy(vllm_config.cache_config)
+                vllm_config.cache_config.block_size = self.ascend_base_block_size
+            rank_id = (
+                0
+                if role == KVConnectorRole.SCHEDULER or self.is_mla
+                else self.tp_rank % self.tp_size
+            )
+            hash_meta = (
+                _build_v41_hash_meta(vllm_config, rank_id, self._kv_cache_config)
+                if self.is_v41_layout
+                else build_kv_hash_meta(vllm_config, rank_id)
+            )
+            if self.is_ascend_layout:
+                hash_meta += _ascend_fawa_hash_suffix(
+                    vllm_config,
+                    self._kv_cache_config,
+                    self.group_metas,
+                    self.whole_page_sizes,
+                )
+            self.request_hasher = RequestHasher(hash_meta)
+            if role == KVConnectorRole.SCHEDULER:
+                self._seed = self.request_hasher.seed
 
     def get_block_size(self) -> int:
         return self.hash_block_size
@@ -1198,12 +1269,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"hash_block_size={self.hash_block_size}, "
                     f"compression_group_size={self.resume_token_alignment}."
                 )
-        # V4.1 layouts derive payloads from the actual KV specs.  V4.0 keeps
-        # the established model-specific sizing for compatibility.
-        if self.is_v41_layout:
+        # Ascend V4 and V4.1 use runtime page payloads, including FP8 and
+        # TurboQuant. Worker-published sizes remain authoritative for GC when
+        # the scheduler has only representative (flattened) layer specs.
+        if self.is_v41_layout or self.is_ascend_layout:
             self.file_size = self._derive_v41_file_sizes(groups)
             logger.info(
-                "DeepSeek V4.1 UCM groups: excluded=%s, windows=%s, replay_tokens=%s",
+                "FAWA UCM groups: excluded=%s, windows=%s, replay_tokens=%s",
                 sorted(self.transient_group_ids),
                 self.window_group_ids,
                 self.prefix_replay_tokens,
@@ -1230,28 +1302,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             num_total_layers += 1
 
         # TODO we should get file size in worker thread
-        if self.is_ascend_layout:
-            if self.ascend_base_block_size is None:
-                raise RuntimeError("Ascend base block size was not initialized.")
-            # One C4 row consumes a complete physical block. One C128 row
-            # consumes block_size / 32 physical tokens, so both contributions
-            # scale linearly with the configured vLLM block size.
-            c4a_bytes_per_block_token = 1024 + 128 + 2
-            c128a_bytes_per_block_token = 32
-            self.file_size["FA"] = self.ascend_base_block_size * (
-                c4a_bytes_per_block_token * num_c4a_layers
-                + c128a_bytes_per_block_token * num_c128a_layers
-            )
-            self.file_size["WA"] = (
-                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
-            )
-        else:
-            self.file_size["FA"] = (
-                37376 + 8448
-            ) * num_c4a_layers + 1168 * num_c128a_layers
-            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
-                8192 + 32768
-            ) * num_c4a_layers
+        self.file_size["FA"] = (37376 + 8448) * num_c4a_layers + 1168 * num_c128a_layers
+        self.file_size["WA"] = (37376 * 2) * num_total_layers + (
+            8192 + 32768
+        ) * num_c4a_layers
         self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
         self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
 
@@ -1269,6 +1323,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return [spec] * len(group.layer_names)
 
     def _derive_v41_file_sizes(self, groups) -> dict[str, int]:
+        """Estimate FAWA record sizes from layer specs, not model layer counts."""
         sizes = {"FA": 0, "WA": 0}
         for group_id, group in enumerate(groups):
             if group_id in self.transient_group_ids:
@@ -1279,18 +1334,24 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 label = "WA"
             else:
                 raise ValueError(
-                    f"V4.1 persistent group {group_id} is neither FA nor WA."
+                    f"FAWA persistent group {group_id} is neither FA nor WA."
                 )
             payload = 0
             meta = self.group_metas[group_id]
-            segment_tokens = meta.tail_tokens // meta.tail_blocks
-            if segment_tokens <= 0 or meta.tail_blocks <= 0:
+            if meta.tail_tokens == 0:
+                continue
+            if meta.tail_blocks <= 0:
                 raise ValueError(
-                    f"V4.1 group {group_id} has invalid tail metadata: {meta}"
+                    f"FAWA group {group_id} has invalid tail metadata: {meta}"
+                )
+            segment_tokens = meta.tail_tokens // meta.tail_blocks
+            if segment_tokens <= 0 or meta.tail_tokens % meta.tail_blocks:
+                raise ValueError(
+                    f"FAWA group {group_id} has invalid tail metadata: {meta}"
                 )
             if getattr(self, "whole_page_sizes", None):
                 if segment_tokens != meta.token_block_size:
-                    raise ValueError("UCM V4.1 cannot store a partial padded page.")
+                    raise ValueError("UCM FAWA cannot store a partial padded page.")
                 payload = sum(
                     self.whole_page_sizes[name]
                     for name in group.layer_names
@@ -1300,33 +1361,48 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 sizes[label] += payload * meta.tail_blocks
                 continue
             for spec in self._specs_for_group(group):
+                # Ascend indexer specs include scales in real_page_size_bytes;
+                # the inherited unpadded property may describe only K values.
+                page_attributes = (
+                    (
+                        "real_page_size_bytes",
+                        "unpadded_page_size_bytes",
+                        "page_size_bytes",
+                    )
+                    if getattr(self, "is_ascend_layout", False)
+                    else (
+                        "unpadded_page_size_bytes",
+                        "real_page_size_bytes",
+                        "page_size_bytes",
+                    )
+                )
                 page_size = next(
                     (
                         getattr(spec, name, None)
-                        for name in (
-                            "unpadded_page_size_bytes",
-                            "real_page_size_bytes",
-                            "page_size_bytes",
-                        )
+                        for name in page_attributes
                         if getattr(spec, name, None) is not None
                     ),
                     None,
                 )
                 if page_size is None:
                     raise ValueError(
-                        f"V4.1 group {group_id} layer spec {type(spec).__name__} "
+                        f"FAWA group {group_id} layer spec {type(spec).__name__} "
                         "has no page-size byte attribute."
                     )
                 spec_block_size = getattr(spec, "block_size", None)
+                if getattr(self, "is_ascend_layout", False) and not getattr(
+                    self, "is_ascend_v41_layout", False
+                ):
+                    spec_block_size = self.ascend_block_geometry(spec).logical
                 if not isinstance(spec_block_size, int) or spec_block_size <= 0:
                     raise ValueError(
-                        f"V4.1 group {group_id} has invalid spec block size "
+                        f"FAWA group {group_id} has invalid spec block size "
                         f"{spec_block_size!r}."
                     )
                 numerator = int(page_size) * segment_tokens
                 if numerator % spec_block_size:
                     raise ValueError(
-                        f"V4.1 group {group_id} page payload {page_size} does "
+                        f"FAWA group {group_id} page payload {page_size} does "
                         f"not scale evenly for segment_tokens={segment_tokens} "
                         f"and spec.block_size={spec_block_size}."
                     )
