@@ -38,6 +38,11 @@ connector 源自 `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8`。
 
 PP 分开存。key 由 common hash、PP rank 与恢复策略确定，保持 16 字节；
 Worker 只处理本 stage 对象，offset 和完整对象大小都不包含其他 stage。
+前 15 字节直接取 RequestHasher 的链式 MD5 摘要前缀，不再混入 PP rank 做二次 SHA256。
+最后 1 字节按 `[预留 2 bit][pp_rank 3 bit][restore_policy 3 bit]` 编码：
+高 2 bit 置零，`suffix = (pp_rank << 3) | policy_id`；FA/WA/State 的 policy_id
+分别是 0/1/2。配置初始化时限制 PP stage 数量不超过 8，pp_rank 范围为 0～7。
+同一 chunk 在不同 PP stage 和策略下共享前 15 字节，仅尾字节不同。
 删除 PP 布局 all-gather。`UCMShard(tp_shard, dcp_shard)` 不再包含 PP；
 `ParallelRank(tp_rank, pp_rank, pcp_rank)` 仍保留完整 Worker 身份。
 每个 stage 在握手中声明实际存储的策略，空 stage/group 不产生空对象。
