@@ -770,7 +770,7 @@ bool GSAPrefetchEngineC::ProcessIndexerInitLoadLayer(std::vector<std::vector<int
     const auto& hashVec = mAllBlocksHash.at(reqID);
     UC::Detail::TaskDesc task;
     task.reserve(number);
-    task.brief = "UCMIndexerInitLoadToDevice";
+    task.brief = "UCMIndexerInitLoad";
     size_t shardIndex = static_cast<size_t>(layerID);
     for (int i = 0; i < number; i++) {
         int deviceBlockId = blockTable[layerID][i];
@@ -797,9 +797,13 @@ bool GSAPrefetchEngineC::ProcessIndexerInitLoadLayer(std::vector<std::vector<int
                         reqID.c_str(), layerID, blockIdx, hashVec.size());
             continue;
         }
-        task.emplace_back(UC::Detail::Shard{
-            hashVec[blockIdx], shardIndex, std::vector<void*>{nullptr, nullptr, indexerAddr}
-        });
+        /* One address per store tensor slot: the store's H2D path walks
+         * tensorSizes_ and reads addrs[i] for every slot, so pad the vector
+         * to the full slot count with the indexer address at
+         * kIndexerTensorIndex (ghost slots stay nullptr). */
+        std::vector<void*> tensorAddrs(kStoreTensorCount, nullptr);
+        tensorAddrs[kIndexerTensorIndex] = indexerAddr;
+        task.emplace_back(UC::Detail::Shard{hashVec[blockIdx], shardIndex, std::move(tensorAddrs)});
     }
     return SubmitIndexerInitLoadTask(task, reqID, layerID);
 }
@@ -815,11 +819,20 @@ bool GSAPrefetchEngineC::SubmitIndexerInitLoadTask(UC::Detail::TaskDesc& task,
         return false;
     }
     const size_t loadNumber = task.size();
-    auto status = mStoreV1_->LoadToDevice(std::move(task));
-    if (status.Failure()) {
-        const std::string error = status.ToString();
+    auto loadResult = mStoreV1_->Load(std::move(task));
+    if (!loadResult) {
+        const std::string error = loadResult.Error().ToString();
         mLogger.log(LogLevel::ERROR,
-                    "[ERROR] IndexerInitLoad LoadToDevice failed, "
+                    "[ERROR] IndexerInitLoad Load failed, "
+                    "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
+                    reqID.c_str(), layerID, loadNumber, error.c_str());
+        return false;
+    }
+    auto waitStatus = mStoreV1_->Wait(loadResult.Value());
+    if (waitStatus.Failure()) {
+        const std::string error = waitStatus.ToString();
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] IndexerInitLoad Wait failed, "
                     "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
                     reqID.c_str(), layerID, loadNumber, error.c_str());
         return false;
@@ -952,7 +965,7 @@ bool GSAPrefetchEngineC::LoadIndexerRequest(const std::string& reqID,
 
     UC::Detail::TaskDesc task;
     task.reserve(number);
-    task.brief = "UCMIndexerLoadToDevice";
+    task.brief = "UCMIndexerLoad";
     if (!BuildIndexerLoadTask(reqID, layerID, indexerBaseAddr, hbmBlockIDs, missBlockIdxs, hashVec,
                               task, totalNumber)) {
         return false;
@@ -993,9 +1006,12 @@ bool GSAPrefetchEngineC::BuildIndexerLoadTask(const std::string& reqID, int laye
                         reqID.c_str(), layerID, missBlockIdx, hashVec.size());
             continue;
         }
-        task.emplace_back(UC::Detail::Shard{
-            hashVec[missBlockIdx], shardIndex, std::vector<void*>{nullptr, nullptr, indexerAddr}
-        });
+        /* Same slot-padded addrs contract as the init load: the store's H2D
+         * path indexes addrs[i] for every tensorSizes_ slot. */
+        std::vector<void*> tensorAddrs(kStoreTensorCount, nullptr);
+        tensorAddrs[kIndexerTensorIndex] = indexerAddr;
+        task.emplace_back(
+            UC::Detail::Shard{hashVec[missBlockIdx], shardIndex, std::move(tensorAddrs)});
     }
     return true;
 }
@@ -1044,11 +1060,20 @@ bool GSAPrefetchEngineC::LoadIndexerTask(const std::string& reqID, int layerID,
         return false;
     }
     const size_t loadNumber = task.size();
-    auto status = mStoreV1_->LoadToDevice(std::move(task));
-    if (status.Failure()) {
-        const std::string error = status.ToString();
+    auto loadResult = mStoreV1_->Load(std::move(task));
+    if (!loadResult) {
+        const std::string error = loadResult.Error().ToString();
         mLogger.log(LogLevel::ERROR,
-                    "[ERROR] UCMIndexerLoadAsync LoadToDevice failed, "
+                    "[ERROR] UCMIndexerLoadAsync Load failed, "
+                    "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
+                    reqID.c_str(), layerID, loadNumber, error.c_str());
+        return false;
+    }
+    auto waitStatus = mStoreV1_->Wait(loadResult.Value());
+    if (waitStatus.Failure()) {
+        const std::string error = waitStatus.ToString();
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] UCMIndexerLoadAsync Wait failed, "
                     "reqID=%s layerID=%d loadNumber=%zu status=%s\n",
                     reqID.c_str(), layerID, loadNumber, error.c_str());
         return false;

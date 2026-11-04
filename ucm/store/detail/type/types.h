@@ -58,8 +58,9 @@ struct Shard {
  * @brief Byte range inside one tensor buffer for LoadOnToken.
  */
 struct TokenRange {
-    std::size_t offset; /* Range start inside the tensor's buffer */
-    std::size_t length; /* Range length in bytes */
+    std::size_t offset;    /* Range start inside the tensor's buffer */
+    std::size_t length;    /* Range length in bytes */
+    std::size_t dstOffset; /* Offset inside the source buffer (for concatenation) */
 };
 
 /**
