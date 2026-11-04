@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(kv-agent LANGUAGE C CXX)
+project(kv-agent LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXCEPTIONS OFF)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(KV_AGENT_BUILD_SHARED
   "Link libkv_agent.so and its smoke tools" ON)
