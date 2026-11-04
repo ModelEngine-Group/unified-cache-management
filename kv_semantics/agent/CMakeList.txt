@@ -22,7 +22,7 @@ set(CEPH_BUILD_DIR "${CEPH_SOURCE_DIR}/build" CACHE PATH
 set(KV_AGENT_CEPH_INCLUDE_DIRS)
 if(NOT EXISTS "${CEPH_SOURCE_DIR}/src/mon/MonClient.h")
   message(FATAL_ERROR
-    "Could not locate the Ceph  source tree at the default <ceph>/src/agent "
+    "Could not locate the Ceph source tree at the default <ceph>/src/agent "
     "layout. For any other layout, set "
     "-DCEPH_SOURCE_DIR=/absolute/path/to/ceph")
 endif()
