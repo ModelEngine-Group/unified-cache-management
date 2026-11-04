@@ -3935,6 +3935,33 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.wait_for_layer_load(layer_name)
 
+    @property
+    def requires_mamba_state_copy_after_layer_load(self) -> bool:
+        """Surface the routed connector's takeover declaration.
+
+        AscendMultiConnector gates takeover on this flag aggregated over
+        children — delegating the protocol methods alone does not enable it.
+        """
+        return getattr(
+            self.connector,
+            "requires_mamba_state_copy_after_layer_load",
+            False,
+        )
+
+    @_record_connector_interface_duration
+    def prepare_mamba_state_copy(self, mamba_state_or_copy_bufs) -> bool:
+        """Delegate to the routed connector; False when it does not
+        implement the protocol (direct/lite -> engine fallback)."""
+        prepare = getattr(self.connector, "prepare_mamba_state_copy", None)
+        return prepare(mamba_state_or_copy_bufs) if callable(prepare) else False
+
+    @_record_connector_interface_duration
+    def finish_mamba_state_copy(self) -> None:
+        """Only called when prepare_mamba_state_copy returned True."""
+        finish = getattr(self.connector, "finish_mamba_state_copy", None)
+        if callable(finish):
+            finish()
+
     @_record_connector_interface_duration
     def save_kv_layer(
         self,

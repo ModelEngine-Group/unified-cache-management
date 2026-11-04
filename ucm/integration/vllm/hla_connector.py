@@ -933,6 +933,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self._load_bytes_total = 0
         self._load_bytes_recorded = False
         self._save_bytes_total = 0
+        # Per-step compute-stream event ordering load DMAs behind work
+        # enqueued before start_load_kv.
+        self._load_prereq_handle = 0
+        self._load_prereq_supported: Optional[bool] = None
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -1695,6 +1699,47 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         return self._dump_plan
 
+    def _get_load_prerequisite_handle(self) -> int:
+        """Event ordering this step's load DMAs behind compute-stream work.
+
+        Where we decline the mamba state-copy takeover, the engine's
+        fallback pre-copy runs on the compute stream before start_load_kv
+        and writes the same blocks these DMAs restore; the store stream
+        must wait for it. synchronize() substitutes when event sync is off
+        or the store's load_data lacks a prerequisite_handle parameter.
+        """
+        if self.device is None:
+            return 0
+        # Drop a straggler from an aborted step before creating a new one.
+        self._destroy_load_prereq_handle()
+        if not self.enable_event_sync:
+            self.device.synchronize()
+            return 0
+        if self._load_prereq_supported is None:
+            import inspect
+
+            try:
+                self._load_prereq_supported = (
+                    "prerequisite_handle"
+                    in inspect.signature(self.store.load_data).parameters
+                )
+            except (TypeError, ValueError):
+                self._load_prereq_supported = False
+        if not self._load_prereq_supported:
+            self.device.synchronize()
+            return 0
+        event_handle = self.device.get_event_handle()
+        if event_handle == 0:
+            self.device.synchronize()
+        return event_handle
+
+    def _destroy_load_prereq_handle(self) -> None:
+        """Drop the load-ordering event once its DMA waits completed."""
+        event_handle = self._load_prereq_handle
+        self._load_prereq_handle = 0
+        if event_handle and self.device is not None:
+            self.device.destroy_event_handle(event_handle)
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """Direct load: one whole-block task per request, then wait for all."""
         metadata = self._get_connector_metadata()
@@ -1705,10 +1750,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if not self.need_load or not self.layer_order:
             return
 
-        # Ensure do_mamba_copy_block (preprocess_mamba, compute stream) has
-        # completed before load DMA (store stream) can overwrite the state
-        # it copies.
-        self.device.synchronize()
+        self._load_prereq_handle = self._get_load_prerequisite_handle()
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
@@ -1734,6 +1776,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     scoped_ucm,
                     [0] * len(scoped_ucm),
                     ptrs,
+                    prerequisite_handle=self._load_prereq_handle,
                 )
                 request_tasks.append((request_id, task, len(scoped_ucm)))
                 self._load_bytes_total += sum(
@@ -1758,6 +1801,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 self._mark_load_failed(metadata, request_id)
                 num_loaded_block -= n_blocks
+
+        self._destroy_load_prereq_handle()
 
         load_end_time = time.perf_counter() * 1000
         load_duration_ms = load_end_time - load_start_time
@@ -1929,6 +1974,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
         self._group_commit_layer: dict[int, str] = {}
+        # AscendMultiConnector gates its mamba-copy takeover on this flag
+        # aggregated over children, not on the delegated methods; composed
+        # (PD disagg) deployments race the engine's batched fallback without
+        # it.
+        self.requires_mamba_state_copy_after_layer_load = True
+        self._mamba_copy_bufs = None
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Layerwise registration: per-pair store + deferred commit plan.
@@ -2005,6 +2056,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     sel_scoped,
                     [slot] * len(sel_scoped),
                     ptrs,
+                    prerequisite_handle=self._load_prereq_handle,
                 )
                 self.load_tasks[pair_key][request_id] = task
                 self._load_bytes_by_pair[pair_key] += (
@@ -2182,15 +2234,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self._reset_transfer_state()
+        self._mamba_copy_bufs = None
         self._prepare_load_plan(metadata)
 
         if not self.need_load or not self.layer_order:
             return
 
-        # Ensure do_mamba_copy_block (preprocess_mamba, compute stream)
-        # has completed before load DMA (store stream) can overwrite the
-        # state it copies.
-        self.device.synchronize()
+        self._load_prereq_handle = self._get_load_prerequisite_handle()
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.
@@ -2219,11 +2269,53 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
                 self._record_load_bytes()
+        # Takeover: the pair wait guarantees this layer's row has landed,
+        # so its staged copy reads a fully-loaded checkpoint slice.
+        if self._mamba_copy_bufs is not None:
+            self._mamba_utils().do_mamba_copy_block_for_layer(
+                self._mamba_copy_bufs, layer_name
+            )
         # Keep at most two layers in flight: the next position was normally
         # submitted two waits ago; resubmitting is a no-op and covers a gap
         # where an earlier layer's wait hook never fired.
         self._submit_layer_load(pos + 1)
         self._submit_layer_load(pos + 2)
+
+    @staticmethod
+    def _mamba_utils():
+        """vllm-ascend's per-layer copy helpers installed onto core's
+        mamba_utils (adapt_patch, worker startup). Lazy import keeps
+        vllm.v1.worker out of the scheduler process.
+        """
+        from vllm.v1.worker import mamba_utils
+
+        return mamba_utils
+
+    def prepare_mamba_state_copy(self, mamba_state_or_copy_bufs) -> bool:
+        """Take over this step's staged align copies (probed every step).
+
+        Only on load steps — the engine's batched fallback would race our
+        in-flight load DMAs. Otherwise decline; the fallback is race-free.
+        """
+        if hasattr(mamba_state_or_copy_bufs, "do_mamba_copy_for_layer"):
+            # MRV2 hands its model-state object, not the V1 copy buffers.
+            return False
+        if not self.need_load or not self.layer_order:
+            return False
+        self._mamba_utils().prepare_mamba_copy_by_layer(mamba_state_or_copy_bufs)
+        self._mamba_copy_bufs = mamba_state_or_copy_bufs
+        return True
+
+    def finish_mamba_state_copy(self) -> None:
+        """Post-forward checkpoint. Raises if any layer's copy was skipped:
+        running it now could neither repair the step's output nor safely
+        overwrite the state the forward just advanced.
+        """
+        bufs = self._mamba_copy_bufs
+        if bufs is None:
+            return
+        self._mamba_copy_bufs = None
+        self._mamba_utils().finish_mamba_copy_by_layer(bufs)
 
     def save_kv_layer(
         self,
@@ -2266,6 +2358,15 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._wait_dump_tasks()
 
         self._record_load_bytes()
+        # A leftover pair's DMA may not have consumed the event yet (its wait
+        # hook never fired); the next step's acquire drops it instead.
+        if not self.load_tasks:
+            self._destroy_load_prereq_handle()
+        # need_load is only valid within its own step: with the post-forward
+        # load order, prepare_mamba_state_copy may read it before the next
+        # start_load_kv can refresh it — clear here (before the early return)
+        # so a stale True can't trigger a takeover.
+        self.need_load = False
         if not self.is_save:
             self._dump_tasks.clear()
             self._dump_plan = None
