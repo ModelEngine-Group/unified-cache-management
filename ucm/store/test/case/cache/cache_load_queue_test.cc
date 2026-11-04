@@ -294,7 +294,7 @@ TEST_F(UCCacheLoadQueueTest, DdrLoadCopiesCacheSlotIntoCallerBuffer)
     EXPECT_EQ(std::memcmp(handle.Data(), payload.data(), tensorSize), 0);
 }
 
-TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenFillsCacheSlotWithoutSplicing)
+TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenSplicesSelectedRangesIntoCallerBuffer)
 {
     using namespace UC::CacheStore;
     constexpr size_t tensorSize = 4096;
@@ -331,7 +331,7 @@ TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenFillsCacheSlotWithoutSplicing)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("d1b2c3d4e5f6789012345678901234ab");
     std::vector<UC::Detail::TokenFilter> filter(1);
-    filter[0].ranges = {{UC::Detail::TokenRange{0, tensorSize / 2}}};
+    filter[0].ranges = {{UC::Detail::TokenRange{0, tensorSize / 2, 0}}};
 
     UC::Detail::TaskDesc miss;
     miss.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
@@ -342,8 +342,11 @@ TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenFillsCacheSlotWithoutSplicing)
     loadQ.Submit(missTask, missWaiter);
     ASSERT_TRUE(missWaiter->WaitForDuration(1000));
     ASSERT_FALSE(failureSet.Contains(missTask->id));
-    EXPECT_TRUE(
-        std::all_of(first.begin(), first.end(), [](std::byte b) { return b == std::byte{0}; }));
+    /* The selected token range is spliced into the caller buffer; the rest of
+     * the buffer stays untouched. */
+    EXPECT_EQ(std::memcmp(first.data(), payload.data(), tensorSize / 2), 0);
+    EXPECT_TRUE(std::all_of(first.begin() + tensorSize / 2, first.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
 
     UC::Detail::TaskDesc hit;
     hit.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
@@ -354,8 +357,9 @@ TEST_F(UCCacheLoadQueueTest, DdrLoadOnTokenFillsCacheSlotWithoutSplicing)
     loadQ.Submit(hitTask, hitWaiter);
     ASSERT_TRUE(hitWaiter->WaitForDuration(1000));
     ASSERT_FALSE(failureSet.Contains(hitTask->id));
-    EXPECT_TRUE(
-        std::all_of(second.begin(), second.end(), [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_EQ(std::memcmp(second.data(), payload.data(), tensorSize / 2), 0);
+    EXPECT_TRUE(std::all_of(second.begin() + tensorSize / 2, second.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
 
     auto handle = buffer.Get(blockId, 0, true, true);
     EXPECT_TRUE(handle.Ready());

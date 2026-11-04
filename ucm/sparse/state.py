@@ -52,19 +52,13 @@ def ensure_ucm_sparse_initialized(
     ucm_config = Config(vllm_config.kv_transfer_config)
     ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
     if not ucm_sparse_config:
-        return
+        if not IS_OPEN_GSA:
+            return
+        else:
+            ucm_sparse_config = {}
+            ucm_sparse_config["GSA"] = {}
 
     sparse_method_name = next(iter(ucm_sparse_config))
-
-    # GSA / GSAPD are opt-in: require the explicit IS_OPEN_GSA switch so that
-    # non-GSA deployments are unaffected.
-    if sparse_method_name in ("GSA", "GSAPD") and not IS_OPEN_GSA:
-        logger.info(
-            "Sparse method %s selected but GSA is disabled; "
-            "set UCM_SPARSE_GSA_ENABLE=1 to enable it. Skip initialization.",
-            sparse_method_name,
-        )
-        return
 
     if _UCM_SPARSE_AGENT is None:
         logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)
@@ -145,10 +139,16 @@ def maybe_execute_sparse_attention_begin(
     layer_name: str,
     forward_context: ForwardContext,
     output: Optional[torch.Tensor] = None,
+    indexer_cache: Optional[torch.Tensor] = None,
+    indexer_scale: Optional[torch.Tensor] = None,
+    vllm_indexer_cache: Optional[torch.Tensor] = None,
+    vllm_indexer_scale: Optional[torch.Tensor] = None,
     phase: Optional[str] = None,
     k_hash: Optional[torch.Tensor] = None,
     decode_ql_nope: Optional[torch.Tensor] = None,
     decode_q_pe: Optional[torch.Tensor] = None,
+    has_indexer: Optional[bool] = True,
+    use_li_c8: Optional[bool] = False,
 ):
     if not has_ucm_sparse():
         return query, key, value, output
@@ -165,11 +165,17 @@ def maybe_execute_sparse_attention_begin(
         value,
         layer_name,
         forward_context,
+        indexer_cache,
+        indexer_scale,
+        vllm_indexer_cache,
+        vllm_indexer_scale,
         output,
         phase,
         k_hash,
         decode_ql_nope,
         decode_q_pe,
+        has_indexer,
+        use_li_c8,
     )
 
 
@@ -181,6 +187,8 @@ def maybe_execute_sparse_attention_finished(
     layer_name: str,
     forward_context: ForwardContext,
     phase: Optional[str] = None,
+    has_indexer: Optional[bool] = True,
+    use_li_c8: Optional[bool] = False,
 ):
     if not has_ucm_sparse():
         return
@@ -192,5 +200,13 @@ def maybe_execute_sparse_attention_finished(
         return
 
     ucm_sparse.attention_finished(
-        query, key, value, attn_output, layer_name, forward_context, phase
+        query,
+        key,
+        value,
+        attn_output,
+        layer_name,
+        forward_context,
+        phase,
+        has_indexer,
+        use_li_c8,
     )

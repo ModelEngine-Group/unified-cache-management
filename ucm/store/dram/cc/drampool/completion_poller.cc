@@ -437,7 +437,12 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
             }
         }
 
-        record.results[item.index_in_request] = static_cast<std::uint8_t>(result);
+        if (item.index_in_request < record.results.size()) {
+            record.results[item.index_in_request] = static_cast<std::uint8_t>(result);
+        } else {
+            UC_ERROR("CompletionPoller result index out of range, request_id={}, index={}",
+                     record.request_id, item.index_in_request);
+        }
     }
     record.transfer_items.clear();
 }

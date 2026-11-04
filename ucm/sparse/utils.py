@@ -27,7 +27,7 @@ def _env_bool(name: str, default: bool) -> bool:
 MIN_TOPK_LEN = 32
 MAX_TOPK_LEN = 48
 MAX_BS = 256
-SEG_PREFILL_THRESHOLD = 8400
+SEG_PREFILL_THRESHOLD = 32768
 CUDA_TOPK = False
 VLLM_CUDA_MEM_ALIGN_KV_CACHE = False
 INIT_WINDOW_SZ = 1
@@ -39,7 +39,7 @@ NUM_GSA_BLOCKS = 1
 # (e.g. via env var UCM_SPARSE_GSA_ENABLE=1), so non-GSA deployments are not
 # affected. Other sparse methods (ESA / KVStar / GSAOnDevice / Blend) are driven
 # by their own kv_transfer_config and do not consume this switch.
-IS_OPEN_GSA = _env_bool("UCM_SPARSE_GSA_ENABLE", False)
+IS_OPEN_GSA = _env_bool("UCM_SPARSE_GSA_ENABLE", True)
 # Topk-prefetch switch consumed by GSA v2 and the vLLM integration patches.
 # Configurable via env var, defaulting to True for GSA v2.
 PTOPK_PREFETCH_ENABLE = _env_bool("UCM_GSA_PTOPK_PREFETCH_ENABLE", True)
@@ -61,7 +61,7 @@ PREFETCH_THREAD_NUM = 16
 DEFAULT_TOPK_LEN = 2048
 IS_SHARED_MEMCPY = True
 PREFETCH_TYPE = 0
-MAX_INDEXER_BLOCK_NUM = 13600
+MAX_INDEXER_BLOCK_NUM = 17000
 MAX_SLOTS_BLOCK_NUM = 12000
 INIT_LOCAL_WINDOWS = 5
 LOCAL_WINDOWS_LEN = 1

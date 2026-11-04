@@ -28,6 +28,9 @@ set(INCLUDE_DIRS
     ${PYTORCH_PATH}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${UCM_ROOT_DIR}/ucm/store
+    ${UCM_ROOT_DIR}/ucm/store/detail
+    ${UCM_ROOT_DIR}/ucm/store/detail/type
+    ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 
 set(LIBRARY_DIRS
@@ -101,14 +104,18 @@ find_package(OpenMP REQUIRED)
 
 # 创建pybind11模块
 pybind11_add_module(gsa_prefetch ${SOURCES})
-get_target_property(SPDLOG_INCLUDE_DIRS spdlog INTERFACE_INCLUDE_DIRECTORIES)
-if(SPDLOG_INCLUDE_DIRS)
-    target_include_directories(gsa_prefetch BEFORE PRIVATE ${SPDLOG_INCLUDE_DIRS})
+if(TARGET spdlog)
+    get_target_property(SPDLOG_INCLUDE_DIRS spdlog INTERFACE_INCLUDE_DIRECTORIES)
+    if(SPDLOG_INCLUDE_DIRS)
+        target_include_directories(gsa_prefetch BEFORE PRIVATE ${SPDLOG_INCLUDE_DIRS})
+    endif()
 endif()
 
-get_target_property(FMT_INCLUDE_DIRS fmt INTERFACE_INCLUDE_DIRECTORIES)
-if(FMT_INCLUDE_DIRS)
-    target_include_directories(gsa_prefetch BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
+if(TARGET fmt)
+    get_target_property(FMT_INCLUDE_DIRS fmt INTERFACE_INCLUDE_DIRECTORIES)
+    if(FMT_INCLUDE_DIRS)
+        target_include_directories(gsa_prefetch BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
+    endif()
 endif()
 # 设置头文件目录
 target_include_directories(gsa_prefetch PRIVATE ${INCLUDE_DIRS})
@@ -129,3 +136,10 @@ file(RELATIVE_PATH INSTALL_REL_PATH
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
 install(TARGETS gsa_prefetch LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
+
+# 单元/模块/端到端测试套件：仅在开启 BUILD_UNIT_TESTS 时构建，使用 ACL stub + mock store，
+# 不依赖 Ascend NPU / torch_npu 环境。
+if(BUILD_UNIT_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
