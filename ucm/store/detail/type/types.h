@@ -55,6 +55,21 @@ struct Shard {
 };
 
 /**
+ * @brief Byte range inside one tensor buffer for LoadOnToken.
+ */
+struct TokenRange {
+    std::size_t offset; /* Range start inside the tensor's buffer */
+    std::size_t length; /* Range length in bytes */
+};
+
+/**
+ * @brief Per-shard token selection: ranges[t] selects sub-ranges of tensor t.
+ */
+struct TokenFilter {
+    std::vector<std::vector<TokenRange>> ranges; /* ranges[t]: selected ranges of tensor t */
+};
+
+/**
  * @brief Batch descriptor for load or dump operations.
  *
  * Inherits from std::vector<Shard> to store the shard list and reserves

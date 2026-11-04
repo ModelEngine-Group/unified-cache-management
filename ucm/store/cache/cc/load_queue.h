@@ -45,6 +45,7 @@ class LoadQueue {
     struct ShardTask {
         TaskPtr task;
         Detail::Shard shard;
+        Detail::TokenFilter tokenFilter;
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
@@ -83,6 +84,7 @@ private:
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     void TransferDdrLoad(ShardTask&& task);
+    void TransferDdrLoadOnToken(ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
