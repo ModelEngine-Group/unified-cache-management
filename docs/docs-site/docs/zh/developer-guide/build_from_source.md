@@ -48,6 +48,8 @@ export ENABLE_UCM_PATCH=1
 
 继续按 [vLLM 快速开始](../user-guide/quick_start/index.md#vllm)配置、启动服务，并验证外部缓存。
 
+在 AMD GPU 上，请改为设置 `PLATFORM=rocm`。这会用 HIP 构建相同的 KV 传输和汉明距离内核，需要 ROCm 和 ROCm 版本的 PyTorch。GPU 架构从构建主机自动检测；如需面向其他 GPU，请直接用 CMake 配置并传入 `-DCMAKE_HIP_ARCHITECTURES=<arch>`（例如 `gfx90a`、`gfx1100`）。
+
 ## vLLM-Ascend { #vllm-ascend-ascend-platform }
 
 准备相互匹配的 vLLM-Ascend、PyTorch、CANN 和驱动环境，并显式选择目标平台：
