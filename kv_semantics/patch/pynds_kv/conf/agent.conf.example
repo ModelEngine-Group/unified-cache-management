@@ -1,0 +1,6 @@
+# Vendor agent configuration example.
+# Copy to conf/agent.conf and replace all placeholders before use.
+mon_host = [v2:<MONITOR_IP>:3300/0,v1:<MONITOR_IP>:6789/0]
+client_name = client.example
+client_key = <BASE64_CLIENT_KEY>
+log_dir = log/agent
