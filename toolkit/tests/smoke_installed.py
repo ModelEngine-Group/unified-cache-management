@@ -31,6 +31,7 @@ def main():
         "posix-aio",
         "nic-monitor",
         "dev-sandbox",
+        "sglang-model-check",
     }
     for name in ("dev-sandbox", "nic_monitor_pro.sh", "posixstore_aio_test.py"):
         assert resource_path(name).exists()
