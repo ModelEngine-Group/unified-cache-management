@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ucm_toolkit.tools.model_check.common import (  # noqa: E402
+    group_block_tokens,
     plan_restore_policy,
     spec_chunk_tokens,
     v2_worker_internals,
@@ -113,6 +114,84 @@ class RestorePolicyTest(unittest.TestCase):
     def test_refuses_to_guess(self):
         with self.assertRaises(AssertionError):
             plan_restore_policy(SimpleNamespace())
+
+
+class GroupBlockTokensTest(unittest.TestCase):
+    """``tokens_per_block`` became ``block_size`` + ``block_token_span``.
+
+    The layout-only log read the old name, which no run exercised until the
+    Ascend and 5090 device-less runs both failed on the line above it.
+    """
+
+    def test_reads_the_current_span(self):
+        group = SimpleNamespace(block_token_span=256, block_size=128)
+        self.assertEqual(group_block_tokens(group), 256)
+
+    def test_falls_back_to_block_size_alone(self):
+        self.assertEqual(group_block_tokens(SimpleNamespace(block_size=128)), 128)
+
+    def test_still_reads_the_previous_name(self):
+        self.assertEqual(
+            group_block_tokens(SimpleNamespace(tokens_per_block=64)), 64
+        )
+
+    def test_refuses_to_guess(self):
+        with self.assertRaises(AssertionError):
+            group_block_tokens(SimpleNamespace())
+
+
+class LayoutDescriptionTest(unittest.TestCase):
+    """``describe_ucm_layout`` must survive a spec that dropped a field."""
+
+    class Kind(Enum):
+        FULL_ATTENTION = "FULL_ATTENTION"
+
+    def _spec(self, **extra):
+        group = SimpleNamespace(
+            group_id=0,
+            kinds=frozenset({self.Kind.FULL_ATTENTION}),
+            block_token_span=128,
+            tail_tokens=None,
+            is_persistent=True,
+        )
+        fields = {
+            "groups": (group,),
+            "chunk_size": 128,
+            "device_type": "cuda",
+            "blocks_per_chunk": (1,),
+        }
+        fields.update(extra)
+        return SimpleNamespace(**fields)
+
+    def _describe(self, spec):
+        from ucm_toolkit.tools.model_check import common
+
+        lines = []
+        original, common.log = common.log, lines.append
+        try:
+            common.describe_ucm_layout(
+                SimpleNamespace(
+                    connector_worker=SimpleNamespace(
+                        spec=spec, layout=object(), transfer_builder=object()
+                    )
+                )
+            )
+        finally:
+            common.log = original
+        return "\n".join(lines)
+
+    def test_omits_a_field_the_spec_no_longer_carries(self):
+        """Upstream calls scheduler granularity a diagnostic, not metadata."""
+
+        text = self._describe(self._spec())
+        self.assertIn("chunk_size=128", text)
+        self.assertIn("device_type=cuda", text)
+        self.assertNotIn("scheduler_block_size", text)
+        self.assertIn("tokens_per_block=128", text)
+
+    def test_still_reports_it_when_present(self):
+        text = self._describe(self._spec(scheduler_block_size=128))
+        self.assertIn("scheduler_block_size=128", text)
 
 
 if __name__ == "__main__":

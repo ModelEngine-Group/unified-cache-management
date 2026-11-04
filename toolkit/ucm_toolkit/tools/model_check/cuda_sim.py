@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import gc
 import importlib
+import os
+import tempfile
 from typing import Any
 
 import torch
@@ -64,6 +66,7 @@ import torch
 from .common import CacheFixture, UnsupportedEnvironment, describe_ucm_layout, log
 from .common import make_cache as make_common_cache
 from .common import make_worker, schedule, verify
+from . import sim_bootstrap
 from .config import load_config
 from .sim_runtime import (
     HOST,
@@ -125,23 +128,19 @@ def _force_cuda_platform() -> None:
     ``cuda_platform_plugin`` asks NVML for a device count, so on a GPU-less
     host it reports nothing and the CPU platform wins. Replacing the probe map
     states which platform is being simulated -- it answers "is this hardware
-    present", not "what does the layout look like". Must run before anything
-    touches ``vllm.platforms.current_platform``, which resolves once and
-    caches.
+    present", not "what does the layout look like".
+
+    Older vLLM resolved only when ``current_platform`` was first read, so this
+    had to run before that access. vLLM 0.30+ resolves during ``import vllm``
+    itself (``env_override`` -> torch helpers -> ``current_platform``), so the
+    cache may already be warm when this function imports ``vllm.platforms``.
+    That is a probe-timing issue, not a layout one: clear the cache, declare
+    the plugin map, and let the next ``current_platform`` read re-resolve
+    against the declaration. KV specs, groups, shapes, strides and block IDs
+    are untouched.
     """
 
     platforms = importlib.import_module("vllm.platforms")
-    # vLLM records a stack trace when it resolves its platform, and caches the
-    # result. Read those markers instead of ``current_platform``, whose getter
-    # would do the resolving.
-    if getattr(platforms, "_init_trace", "") or (
-        getattr(platforms, "_current_platform", None) is not None
-    ):
-        raise UnsupportedEnvironment(
-            "vLLM already resolved its platform before cuda-sim could declare "
-            "CUDA. Run this launcher as the process entry point so nothing "
-            "imports vllm.platforms.current_platform first."
-        )
     plugins = getattr(platforms, "builtin_platform_plugins", None)
     if not isinstance(plugins, dict):
         raise UnsupportedEnvironment(
@@ -152,6 +151,18 @@ def _force_cuda_platform() -> None:
     # so rebinding the name could be intercepted.
     plugins.clear()
     plugins["cuda"] = lambda: CUDA_PLATFORM_QUALNAME
+
+    already = bool(getattr(platforms, "_init_trace", "")) or (
+        getattr(platforms, "_current_platform", None) is not None
+    )
+    if already:
+        # Drop the eagerly cached probe result so the declared plugin map wins.
+        platforms._current_platform = None
+        platforms._init_trace = ""
+        log(
+            "cuda-sim: cleared vLLM platform cache warmed by import "
+            "(v0.30+ eager resolve); re-declaring CUDA"
+        )
     log("cuda-sim: CUDA declared as the simulated platform (NVML probe bypassed)")
 
 
@@ -234,6 +245,12 @@ def install_host_runtime() -> None:
 
     major, minor = _parse_capability()
     _force_cuda_platform()
+    # Children vLLM starts for model-class inspection import vllm fresh; the
+    # same eager platform resolve would otherwise ignore the parent's patches.
+    # sitecustomize repeats only the hardware-identity declaration.
+    bootstrap_parent = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    directory = sim_bootstrap.install_child_bootstrap("cuda", bootstrap_parent)
+    log(f"cuda-sim: child interpreters bootstrap from {directory}")
     _patch_cuda_runtime()
     require_platform(
         "cuda",

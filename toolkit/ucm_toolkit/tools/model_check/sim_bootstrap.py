@@ -113,6 +113,30 @@ def declare_ascend_arch(arch: str) -> list[str]:
     return replaced
 
 
+CUDA_PLATFORM_QUALNAME = "vllm.platforms.cuda.CudaPlatform"
+
+
+def declare_cuda_platform() -> list[str]:
+    """Pin vLLM's builtin platform probes to CUDA and clear an eager cache.
+
+    Safe to call from sitecustomize after ``import vllm`` has already warmed
+    ``current_platform``. Returns the names that were replaced for logging.
+    """
+
+    platforms = importlib.import_module("vllm.platforms")
+    plugins = getattr(platforms, "builtin_platform_plugins", None)
+    if not isinstance(plugins, dict):
+        raise BootstrapError(
+            "vllm.platforms.builtin_platform_plugins is missing; cannot declare "
+            "CUDA for cuda-sim children"
+        )
+    plugins.clear()
+    plugins["cuda"] = lambda: CUDA_PLATFORM_QUALNAME
+    platforms._current_platform = None
+    platforms._init_trace = ""
+    return ["builtin_platform_plugins.cuda", "_current_platform"]
+
+
 def apply(platform: str | None = None) -> list[str]:
     """Make this interpreter's declarations. Safe to call more than once.
 
@@ -128,9 +152,11 @@ def apply(platform: str | None = None) -> list[str]:
     replaced: list[str] = []
     if platform == "ascend":
         replaced = declare_ascend_arch(declared_ascend_arch())
-    # cuda needs no child-side declaration today: its blocker is vLLM's
-    # platform probe, which a child that only inspects a model class does not
-    # reach. If one shows up, it belongs here next to the Ascend branch.
+    elif platform == "cuda":
+        # vLLM 0.30+ resolves the platform during ``import vllm``. Clear that
+        # cache and pin the builtin probe map to CUDA so a GPU-less child does
+        # not fall through to CPU. Hardware identity only; no KV layout fields.
+        replaced = declare_cuda_platform()
     os.environ[APPLIED_ENV] = platform
     return replaced
 

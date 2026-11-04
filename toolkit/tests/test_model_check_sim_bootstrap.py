@@ -19,6 +19,7 @@ import subprocess
 import sys
 import textwrap
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -261,6 +262,37 @@ class InstallBootstrapTest(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         generated = sim_bootstrap.write_child_bootstrap(temp.name) / "sitecustomize.py"
         compile(generated.read_text(encoding="utf-8"), str(generated), "exec")
+
+
+class CudaChildDeclarationTest(unittest.TestCase):
+    """A cuda-sim child must repeat the platform declaration, not inherit it.
+
+    The parent's patches do not survive into a fresh interpreter, and vLLM
+    0.30+ resolves the platform during ``import vllm``, so a child that only
+    inspects a model class would otherwise resolve CPU.
+    """
+
+    def test_declares_cuda_and_drops_the_cached_answer(self):
+        stub = type(sys)("vllm.platforms")
+        stub._current_platform = object()
+        stub._init_trace = "resolved during import vllm"
+        stub.builtin_platform_plugins = {"cpu": lambda: "cpu"}
+        with patch.object(
+            sim_bootstrap.importlib, "import_module", return_value=stub
+        ):
+            replaced = sim_bootstrap.declare_cuda_platform()
+        self.assertEqual(list(stub.builtin_platform_plugins), ["cuda"])
+        self.assertIsNone(stub._current_platform)
+        self.assertTrue(replaced)
+
+    def test_refuses_when_the_plugin_map_is_gone(self):
+        stub = type(sys)("vllm.platforms")
+        stub.builtin_platform_plugins = None
+        with patch.object(
+            sim_bootstrap.importlib, "import_module", return_value=stub
+        ):
+            with self.assertRaises(sim_bootstrap.BootstrapError):
+                sim_bootstrap.declare_cuda_platform()
 
 
 if __name__ == "__main__":

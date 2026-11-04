@@ -60,16 +60,36 @@ class CudaSimContractTest(unittest.TestCase):
                 cuda_sim._require_cuda_flash_attn()
         self.assertIn("CUDA build of vLLM", str(caught.exception))
 
-    def test_refuses_to_declare_cuda_after_the_platform_resolved(self):
-        """Declaring the platform too late would silently check the wrong one."""
+    def test_clears_a_platform_cache_warmed_during_import(self):
+        """vLLM 0.30+ resolves the platform inside ``import vllm`` itself.
+
+        The launcher used to refuse in this case, which made every 5090
+        device-less run fail before it reached the layout. Resolution order is
+        a probe-timing question, not a layout one, so the declaration wins:
+        drop the cached CPU answer and let the next read re-resolve.
+        """
 
         stub = type(sys)("vllm.platforms")
         stub._current_platform = object()
-        stub.builtin_platform_plugins = {}
+        stub._init_trace = "resolved during import vllm"
+        stub.builtin_platform_plugins = {"cpu": lambda: "cpu"}
         with patch.object(cuda_sim.importlib, "import_module", return_value=stub):
-            with self.assertRaises(UnsupportedEnvironment) as caught:
+            cuda_sim._force_cuda_platform()
+        self.assertIsNone(stub._current_platform)
+        self.assertEqual(stub._init_trace, "")
+        self.assertEqual(list(stub.builtin_platform_plugins), ["cuda"])
+        self.assertEqual(
+            stub.builtin_platform_plugins["cuda"](), cuda_sim.CUDA_PLATFORM_QUALNAME
+        )
+
+    def test_still_refuses_a_build_whose_platform_map_is_gone(self):
+        """No plugin map means the declaration would silently do nothing."""
+
+        stub = type(sys)("vllm.platforms")
+        stub.builtin_platform_plugins = None
+        with patch.object(cuda_sim.importlib, "import_module", return_value=stub):
+            with self.assertRaises(UnsupportedEnvironment):
                 cuda_sim._force_cuda_platform()
-        self.assertIn("already resolved", str(caught.exception))
 
 
 if __name__ == "__main__":

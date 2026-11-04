@@ -2197,6 +2197,25 @@ def plan_restore_policy(plan: Any) -> str:
     )
 
 
+def group_block_tokens(group: Any) -> int:
+    """Logical tokens one vLLM block covers in a UCM group spec.
+
+    ``tokens_per_block`` became ``block_size`` plus a ``block_token_span``
+    property that multiplies it by ``dcp_size`` when the group is DCP-sharded.
+    The span is the one that still means "tokens in a block", so prefer it.
+    """
+
+    for name in ("block_token_span", "tokens_per_block", "block_size"):
+        value = getattr(group, name, None)
+        if value is not None:
+            return int(value)
+    raise AssertionError(
+        "a UCM group spec exposes none of block_token_span / tokens_per_block "
+        "/ block_size, so the checker cannot tell how many tokens one vLLM "
+        "block covers."
+    )
+
+
 def _fa_plan_chunks(metadata: Any, phase: str) -> list[tuple[bytes, int]]:
     """(common chunk id, first token) of every FA chunk in v2 metadata."""
 
@@ -2421,15 +2440,23 @@ def describe_ucm_layout(worker: Any) -> None:
             if hasattr(connector, name):
                 log(f"UCM {name}={sorted(getattr(connector, name))}")
         return
-    log(
-        f"UCM spec: scheduler_block_size={spec.scheduler_block_size}, "
-        f"chunk_size={spec_chunk_tokens(spec)}, device_type={spec.device_type}"
-    )
+    # The spec used to carry the engine's scheduler block size; upstream
+    # dropped it ("a parser diagnostic, not stored metadata"). Report it only
+    # while a tree still exposes it rather than deriving a stand-in.
+    fields = [f"chunk_size={spec_chunk_tokens(spec)}"]
+    scheduler_block_size = getattr(spec, "scheduler_block_size", None)
+    if scheduler_block_size is not None:
+        fields.insert(0, f"scheduler_block_size={scheduler_block_size}")
+    for name in ("device_type", "num_attn_module"):
+        value = getattr(spec, name, None)
+        if value is not None:
+            fields.append(f"{name}={value}")
+    log(f"UCM spec: {', '.join(fields)}")
     for group in spec.groups:
         log(
             f"UCM group {group.group_id}: "
             f"kinds={sorted(kind.name for kind in group.kinds)}, "
-            f"tokens_per_block={group.tokens_per_block}, "
+            f"tokens_per_block={group_block_tokens(group)}, "
             f"tail_tokens={group.tail_tokens}, persistent={group.is_persistent}, "
             f"blocks_per_chunk={spec.blocks_per_chunk[group.group_id]}"
         )
