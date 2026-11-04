@@ -1094,7 +1094,7 @@ index 0000000000..b382e6d917
 +
 +def extract_layer_index(layer_name: str) -> int:
 +    """
-+    Copyed from vllm.model_executor.models.utils as import cause cycle dependence
++    Copied from vllm.model_executor.models.utils as import cause cycle dependence
 +    Extract the layer index from the module name.
 +    Examples:
 +    - "encoder.layers.0" -> 0
@@ -2994,7 +2994,7 @@ index 0000000000..a50340fbc3
 +        return self.scheduler.update_connector_output(connector_output=connector_output)
 +
 +
-+    # jsut for original dynamo
++    # just for original dynamo
 +    def request_finished(
 +        self,
 +        request: "Request",
@@ -3552,7 +3552,7 @@ index 0000000000..a1750f8fae
 +        return
 +
 +
-+    # jsut for original dynamo
++    # just for original dynamo
 +    def request_finished(
 +        self,
 +        request: "Request",
@@ -3673,7 +3673,7 @@ index 0000000000..fd92687c95
 +        self._queue.put((func, args, kwargs))
 +
 +    def _process_queue(self):
-+        """retrive func and execute"""
++        """retrieve func and execute"""
 +        while self._running:
 +            func, args, kwargs = self._queue.get()
 +            if func is None:
@@ -3975,7 +3975,7 @@ index 0000000000..5aae0cc175
 +        # Listen for new requests decode for layer update.
 +        path = make_zmq_path("tcp", host, port)
 +        logger.info(
-+            f"{self._tp_rank=}, {self._pp_rank=}, {self._dp_rank=}, decode reqeust starting listening on path: {path}")
++            f"{self._tp_rank=}, {self._pp_rank=}, {self._dp_rank=}, decode request starting listening on path: {path}")
 +
 +        with zmq_ctx(zmq.ROUTER, path) as sock:
 +            ready_event.set()
