@@ -1,0 +1,151 @@
+cmake_minimum_required(VERSION 3.16)
+project(kv-agent LANGUAGES C CXX)
+
+include(GNUInstallDirs)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(KV_AGENT_BUILD_SHARED
+  "Link libkv_agent.so and its smoke tools" ON)
+
+# By default the customer places this project at <ceph>/src/agent.
+get_filename_component(_agent_default_ceph_source_dir
+  "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(CEPH_SOURCE_DIR "${_agent_default_ceph_source_dir}" CACHE PATH
+  "Ceph repository root containing src/mon/MonClient.h")
+set(CEPH_BUILD_DIR "${CEPH_SOURCE_DIR}/build" CACHE PATH
+  "Configured build directory for the matching Ceph source tree")
+
+set(KV_AGENT_CEPH_INCLUDE_DIRS)
+if(NOT EXISTS "${CEPH_SOURCE_DIR}/src/mon/MonClient.h")
+  message(FATAL_ERROR
+    "Could not locate the Ceph source tree at the default <ceph>/src/agent "
+    "layout. For any other layout, set "
+    "-DCEPH_SOURCE_DIR=/absolute/path/to/ceph")
+endif()
+if(NOT EXISTS "${CEPH_BUILD_DIR}/CMakeCache.txt")
+  message(FATAL_ERROR
+    "CEPH_BUILD_DIR is not a configured Ceph build: ${CEPH_BUILD_DIR}. "
+    "Configure Ceph first, or set -DCEPH_BUILD_DIR=/absolute/path/to/build")
+endif()
+file(STRINGS "${CEPH_BUILD_DIR}/CMakeCache.txt"
+  _agent_ceph_debug_mutex_setting
+  REGEX "^WITH_CEPH_DEBUG_MUTEX:BOOL=(ON|TRUE|YES|1)$")
+list(APPEND KV_AGENT_CEPH_INCLUDE_DIRS
+  "${CEPH_SOURCE_DIR}/src"
+  "${CEPH_SOURCE_DIR}/src/fmt/include"
+  "${CEPH_SOURCE_DIR}/src/xxHash"
+  "${CEPH_BUILD_DIR}"
+  "${CEPH_BUILD_DIR}/boost/include"
+  "${CEPH_BUILD_DIR}/include"
+  "${CEPH_BUILD_DIR}/src"
+  "${CEPH_BUILD_DIR}/src/include")
+
+add_library(kv_agent_objects OBJECT
+  src/KVAgent.cc
+  src/AgentLogger.cc
+  src/KVClientAgent.cc
+  src/KVOSDClientAgent.cc
+  src/KVOSDAgent.cc)
+set_target_properties(kv_agent_objects PROPERTIES
+  POSITION_INDEPENDENT_CODE ON)
+target_include_directories(kv_agent_objects PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  ${KV_AGENT_CEPH_INCLUDE_DIRS})
+if(_agent_ceph_debug_mutex_setting)
+  # ConfigProxy methods are inline and ceph::mutex is a different type when
+  # lockdep is enabled. Match the Ceph build or ConfigProxy::lock is read at
+  # the wrong object offset when agent code calls cct->_conf methods.
+  target_compile_definitions(kv_agent_objects PRIVATE CEPH_DEBUG_MUTEX)
+  message(STATUS "KV agent: matching Ceph WITH_CEPH_DEBUG_MUTEX=ON")
+else()
+  message(STATUS "KV agent: matching Ceph WITH_CEPH_DEBUG_MUTEX=OFF")
+endif()
+
+if(KV_AGENT_BUILD_SHARED)
+  # Build ceph-common from the matching configured Ceph tree before compiling
+  # and linking the agent.
+  set(CEPH_COMMON_LIBRARY
+    "${CEPH_BUILD_DIR}/lib/libceph-common.so.2"
+    CACHE FILEPATH
+    "libceph-common.so.2 produced by the matching Ceph build")
+  set(AGENT_CEPH_COMMON_LIBRARY
+    "${CMAKE_BINARY_DIR}/lib/libceph-common.so.2")
+  add_custom_target(agent_ceph_common_build
+    COMMAND "${CMAKE_COMMAND}" --build "${CEPH_BUILD_DIR}"
+      --target ceph-common --parallel
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+      "${CMAKE_BINARY_DIR}/lib"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${CEPH_COMMON_LIBRARY}" "${AGENT_CEPH_COMMON_LIBRARY}"
+    BYPRODUCTS "${AGENT_CEPH_COMMON_LIBRARY}"
+    COMMENT "Building and staging ceph-common in ${CMAKE_BINARY_DIR}/lib"
+    VERBATIM)
+  add_library(agent_ceph_common SHARED IMPORTED GLOBAL)
+  set_target_properties(agent_ceph_common PROPERTIES
+    IMPORTED_LOCATION "${AGENT_CEPH_COMMON_LIBRARY}")
+
+  add_library(kv_agent SHARED
+    $<TARGET_OBJECTS:kv_agent_objects>)
+  add_dependencies(kv_agent_objects agent_ceph_common_build)
+  add_dependencies(kv_agent agent_ceph_common_build)
+  target_include_directories(kv_agent PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(kv_agent PRIVATE agent_ceph_common)
+  set_target_properties(kv_agent PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    BUILD_RPATH_USE_ORIGIN ON
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN")
+
+  add_executable(kv-client-agent-smoke
+    tools/kv-client-agent-smoke.cc)
+  target_include_directories(kv-client-agent-smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    ${KV_AGENT_CEPH_INCLUDE_DIRS})
+  target_link_libraries(kv-client-agent-smoke PRIVATE kv_agent)
+  set_target_properties(kv-client-agent-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+  add_executable(kv-osd-agent-smoke
+    tools/kv-osd-agent-smoke.c)
+  add_dependencies(kv-osd-agent-smoke kv_agent)
+  target_include_directories(kv-osd-agent-smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(kv-osd-agent-smoke PRIVATE ${CMAKE_DL_LIBS})
+  set_target_properties(kv-osd-agent-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+  add_executable(kv-osdmap-pull-smoke
+    tools/kv-osdmap-pull-smoke.cc)
+  target_include_directories(kv-osdmap-pull-smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    ${KV_AGENT_CEPH_INCLUDE_DIRS})
+  target_link_libraries(kv-osdmap-pull-smoke PRIVATE kv_agent agent_ceph_common pthread)
+  if(_agent_ceph_debug_mutex_setting)
+    target_compile_definitions(kv-osdmap-pull-smoke PRIVATE CEPH_DEBUG_MUTEX)
+  endif()
+  set_target_properties(kv-osdmap-pull-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+  add_executable(crush-smoke
+    tools/crush-smoke.cc)
+  target_include_directories(crush-smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    ${KV_AGENT_CEPH_INCLUDE_DIRS})
+  target_link_libraries(crush-smoke PRIVATE
+    kv_agent
+    agent_ceph_common
+    ${CMAKE_DL_LIBS})
+  set_target_properties(crush-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+else()
+  add_custom_target(kv_agent DEPENDS kv_agent_objects)
+endif()
