@@ -6,6 +6,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include "AgentLogger.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -16,7 +17,6 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
-#include "AgentLogger.h"
 
 // Weak stub: when the agent is loaded into a process that already provides
 // GetAgentLogFunc (e.g. kvcache_pool linked into the host), the strong

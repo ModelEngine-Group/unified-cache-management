@@ -5,10 +5,10 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include "KVAgent.h"
 #include <cerrno>
 #include <memory>
 #include <new>
-#include "KVAgent.h"
 #include "KVAgentImpl.h"
 
 // 存储侧日志固定目录, 运行环境暂定不可修改.
@@ -20,7 +20,9 @@ struct kv_agent_handle {
 };
 
 extern "C" KV_AGENT_EXPORT uint32_t kv_agent_get_abi_version(void)
-{ return KV_OSD_AGENT_ABI_VERSION; }
+{
+    return KV_OSD_AGENT_ABI_VERSION;
+}
 
 extern "C" KV_AGENT_EXPORT kv_agent_handle* kv_agent_create(void)
 {
