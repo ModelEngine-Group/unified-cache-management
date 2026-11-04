@@ -80,7 +80,7 @@ KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle* agent);
  * worker线程内被调用, 禁止在其中执行长耗时操作或者反向调用agent的其他API（会与worker现场串行死锁）
  *   - 回调里唤醒调用方线程/任务的同步原语由调用方提供（例如LWT信号量）
  * 入参缓冲区 (kvPoolName/kvnsName/osdIdList 指向的内存) 由 agent 在调用返回前
- * 完成拷贝, 调用方法可在返回后立即释放或复用, 无需保持有效直至回调.
+ * 完成拷贝, 调用方可在返回后立即释放或复用, 无需保持有效直至回调.
  */
 typedef void (*kv_agent_async_cb)(int32_t result, void* user_data);
 

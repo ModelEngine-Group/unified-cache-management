@@ -1145,7 +1145,7 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
-        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
         // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
         // 存活, 因此任务执行期间始终安全.
         const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
@@ -1168,7 +1168,7 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
-        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
         // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
         // 存活, 因此任务执行期间始终安全.
         const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
@@ -1191,7 +1191,7 @@ public:
                                             uint32_t kvnsLen, KVAgentAsyncCallback cb,
                                             void* user_data) override
     {
-        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
         // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
         // 存活, 因此任务执行期间始终安全.
         const std::string pool_name =
@@ -1211,7 +1211,7 @@ public:
     int32_t kv_agent_delete_ceph_pool_async(char* kvnsName, uint32_t nameLen,
                                             KVAgentAsyncCallback cb, void* user_data) override
     {
-        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
         // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
         // 存活, 因此任务执行期间始终安全.
         const std::string ns_name = kvnsName ? std::string(kvnsName, nameLen) : std::string();

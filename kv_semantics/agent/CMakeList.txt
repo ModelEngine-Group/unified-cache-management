@@ -1,35 +1,35 @@
 cmake_minimum_required(VERSION 3.16)
 project(kv-agent LANGUAGE C CXX)
 
-include(GUNInstallDirs)
-set(CNAKE_C_STANDARD 11)
-set(CNAKE_C_STANDARD_REQUIRED ON)
-set(CNAKE_CXX_STANDARD 20)
-set(CNAKE_CXX_STANDARD_REQUIRED ON)
-set(CNAKE_CXX_EXCEPTIONS OFF)
+include(GNUInstallDirs)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXCEPTIONS OFF)
 
 option(KV_AGENT_BUILD_SHARED
   "Link libkv_agent.so and its smoke tools" ON)
 
-# By default, the customer places this project at <ceph>/src/agent.
+# By default the customer places this project at <ceph>/src/agent.
 get_filename_component(_agent_default_ceph_source_dir
   "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(CEPH_SOURCE_DIR "${_agent_default_ceph_source_dir}" CACHE PATH
   "Ceph repository root containing src/mon/MonClient.h")
 set(CEPH_BUILD_DIR "${CEPH_SOURCE_DIR}/build" CACHE PATH
-  "Configyred build directory for the matching Ceph source tree")
+  "Configured build directory for the matching Ceph source tree")
 
 set(KV_AGENT_CEPH_INCLUDE_DIRS)
 if(NOT EXISTS "${CEPH_SOURCE_DIR}/src/mon/MonClient.h")
   message(FATAL_ERROR
-    "Could not local the Ceph  source tree at the default <ceph>/src/agent "
+    "Could not locate the Ceph  source tree at the default <ceph>/src/agent "
     "layout. For any other layout, set "
     "-DCEPH_SOURCE_DIR=/absolute/path/to/ceph")
 endif()
 if(NOT EXISTS "${CEPH_BUILD_DIR}/CMakeCache.txt")
   message(FATAL_ERROR
     "CEPH_BUILD_DIR is not a configured Ceph build: ${CEPH_BUILD_DIR}. "
-    "Configure Ceph first, or set -DCEPH_BUILD_DIR=/absolute/path/to/ceph")
+    "Configure Ceph first, or set -DCEPH_BUILD_DIR=/absolute/path/to/build")
 endif()
 file(STRINGS "${CEPH_BUILD_DIR}/CMakeCache.txt"
   _agent_ceph_debug_mutex_setting
@@ -55,7 +55,7 @@ set_target_properties(kv_agent_objects PROPERTIES
 target_include_directories(kv_agent_objects PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  $(KV_AGENT_CEPH_INCLUDE_DIRS))
+  ${KV_AGENT_CEPH_INCLUDE_DIRS})
 if(_agent_ceph_debug_mutex_setting)
   # ConfigProxy methods are inline and ceph::mutex is a different type when
   # lockdep is enabled. Match the Ceph build or ConfigProxy::lock is read at
@@ -68,9 +68,9 @@ endif()
 
 if(KV_AGENT_BUILD_SHARED)
   # Build ceph-common from the matching configured Ceph tree before compiling
-  # end linking the agent.
+  # and linking the agent.
   set(CEPH_COMMON_LIBRARY
-    "${CEPH_COMMON_DIR}/lib/libceph-common.so.2"
+    "${CEPH_BUILD_DIR}/lib/libceph-common.so.2"
     CACHE FILEPATH
     "libceph-common.so.2 produced by the matching Ceph build")
   set(AGENT_CEPH_COMMON_LIBRARY
@@ -121,17 +121,17 @@ if(KV_AGENT_BUILD_SHARED)
   set_target_properties(kv-osd-agent-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-  add_executable(kv-osdmap-puul-smoke
+  add_executable(kv-osdmap-pull-smoke
     tools/kv-osdmap-pull-smoke.cc)
-  target_include_directories(kv-osdmap-puul-smoke PRIVATE
+  target_include_directories(kv-osdmap-pull-smoke PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     ${KV_AGENT_CEPH_INCLUDE_DIRS})
-  target_link_libraries(kv-osdmap-puul-smoke PRIVATE kv_agent agent_ceph_commmon pthread)
+  target_link_libraries(kv-osdmap-pull-smoke PRIVATE kv_agent agent_ceph_common pthread)
   if(_agent_ceph_debug_mutex_setting)
-    target_compile_definitions(kv-osdmap-puul-smoke PRIVATE CEPH_DEBUG_MUTEX)
+    target_compile_definitions(kv-osdmap-pull-smoke PRIVATE CEPH_DEBUG_MUTEX)
   endif()
-  set_target_properties(kv-osdmap-puul-smoke PROPERTIES
+  set_target_properties(kv-osdmap-pull-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
   add_executable(crush-smoke
@@ -142,7 +142,7 @@ if(KV_AGENT_BUILD_SHARED)
     ${KV_AGENT_CEPH_INCLUDE_DIRS})
   target_link_libraries(crush-smoke PRIVATE
     kv_agent
-    agent_ceph_commmon
+    agent_ceph_common
     ${CMAKE_DL_LIBS})
   set_target_properties(crush-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
