@@ -95,7 +95,7 @@ def make_ucm_config(
     storage_backends: str,
     use_layerwise: bool,
     enable_event_sync: bool = True,
-    tokens_per_chunk: int | None = None,
+    chunk_size: int | None = None,
 ) -> dict[str, Any]:
     """Build the fixed UCM configuration used by the compatibility check."""
 
@@ -123,8 +123,8 @@ def make_ucm_config(
         "load_tokens_threshold": 0,
         "enable_record_traces": False,
     }
-    if tokens_per_chunk is not None:
-        config["tokens_per_chunk"] = tokens_per_chunk
+    if chunk_size is not None:
+        config["chunk_size"] = chunk_size
     return config
 
 
@@ -141,7 +141,7 @@ def make_config(
     use_layerwise: bool,
     device: str,
     connector_module_path: str = "ucm.integration.vllm.ucm_connector",
-    tokens_per_chunk: int | None = None,
+    chunk_size: int | None = None,
 ) -> Any:
     """Create the requested vLLM parallel configuration for the synthetic request."""
 
@@ -158,7 +158,7 @@ def make_config(
                 store_pipeline,
                 storage_backends,
                 use_layerwise,
-                tokens_per_chunk=tokens_per_chunk,
+                chunk_size=chunk_size,
             ),
         },
     )
@@ -654,7 +654,7 @@ def assert_shared_dispatch(metadata):
         (
             request_id,
             phase,
-            plan.attention_type,
+            plan.restore_policy,
             plan.common_ucm_chunk_ids,
             tuple(int(token) for token in plan.token_starts),
             tuple(
@@ -1063,6 +1063,7 @@ def make_scheduler(
     scheduler_block_size: int,
     hash_block_size: int,
     patch_groups: Callable[[Any], None] | None,
+    worker: Any = None,
 ) -> Any:
     """Construct the installed vLLM Scheduler and its UCM connector."""
 
@@ -1092,6 +1093,19 @@ def make_scheduler(
             "vLLM Scheduler did not construct the UCM KV connector. Check "
             "KVTransferConfig / UCM configuration."
         )
+    if getattr(scheduler.connector, "connector_scheduler", None) is not None:
+        if worker is None:
+            raise ValueError("connector v2 requires a registered worker for handshake")
+        connector = getattr(worker, "connector", worker)
+        declarations = gather_objects(connector.get_handshake_metadata())
+        metadata = {}
+        for declaration in declarations:
+            tp, pp, pcp = declaration.rank
+            identity = (pp, pcp, tp)
+            if identity in metadata:
+                raise ValueError(f"Duplicate worker handshake: {identity}")
+            metadata[identity] = declaration
+        scheduler.connector.set_xfer_handshake_metadata_pp_aware(metadata)
     return scheduler
 
 
@@ -1202,6 +1216,7 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     if not hasattr(metadata, "requests"):
         return None
     connector = getattr(worker, "connector", worker)
+    connector = getattr(connector, "connector_worker", None) or connector
     layout = getattr(connector, "layout", None)
     if layout is None:
         raise ValueError("connector v2 worker has no registered KV-cache layout")
@@ -1215,8 +1230,13 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     else:
         transfers = builder(metadata)
     # Diagnostics iterate bytes; worker IO keeps the native [K,S] matrices.
+    canonical = {
+        job.attempt_id: job.ucm_block_id
+        for request in metadata.requests.values()
+        for job in request.save_jobs
+    }
     block_ids = tuple(
-        ucm_chunk_id
+        canonical.get(ucm_chunk_id, ucm_chunk_id)
         for transfer in transfers
         for ucm_chunk_id in transfer.ucm_chunk_ids
         for _ in range(transfer.ptrs.shape[1])
@@ -1229,15 +1249,43 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
     )
 
 
+def share_v2_save_attempts(scheduler, metadata):
+    """This diagnostic runs one Scheduler per rank; use one global attempt set."""
+    if not hasattr(metadata, "requests"):
+        return metadata
+    from ucm.integration.vllm.v2.connector_scheduler import PendingSave
+
+    shared = gather_objects(metadata)[0]
+    role = scheduler.connector.connector_scheduler
+    role._pending_saves.clear()
+    for request in shared.requests.values():
+        for job in request.save_jobs:
+            role._pending_saves[job.attempt_id] = PendingSave(job)
+    return shared
+
+
+def publish_v2_saves(scheduler, worker, metadata):
+    if not hasattr(metadata, "requests"):
+        return
+    from ucm.integration.vllm.v2.connector_worker import UCMWorkerMetadata
+
+    connector = getattr(worker, "connector", worker)
+    local = connector.connector_worker.build_connector_worker_meta()
+    aggregated = UCMWorkerMetadata()
+    for value in gather_objects(local):
+        if value is not None:
+            aggregated.aggregate(value)
+    role = scheduler.connector.connector_scheduler
+    role.update_connector_output(SimpleNamespace(kv_connector_worker_meta=aggregated))
+    for request_id in metadata.requests:
+        role.request_finished(request_id)
+
+
 def _v2_segment_payload(key: bytes, offset: int, size: int) -> bytes:
     """Generate position-dependent bytes without retaining a second KV copy."""
 
     offset, size = int(offset), int(size)
-    seed = hashlib.sha256(
-        bytes(key)
-        + offset.to_bytes(8, "little")
-        + int(os.getenv("RANK", "0")).to_bytes(4, "little")
-    ).digest()
+    seed = hashlib.sha256(bytes(key) + offset.to_bytes(8, "little")).digest()
     pattern = bytes((seed[index % len(seed)] + index) % 251 for index in range(251))
     return (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
 
@@ -2079,13 +2127,83 @@ def compare_native_blocks(
     return compared
 
 
+# Attributes that identify the object owning the v2 worker internals, and the
+# places it has lived: the refactor that split UCMConnector into a facade plus
+# UCMConnectorWorker moved them onto ``connector_worker``, while the legacy
+# facade keeps its inner connector on ``connector``.
+_V2_WORKER_MARKERS = ("spec", "layout", "transfer_builder")
+_V2_WORKER_ATTRS = ("connector_worker", "connector")
+
+
+def v2_worker_internals(worker: Any) -> Any:
+    """Return the object holding ``spec``, ``layout`` and ``transfer_builder``.
+
+    Raises instead of returning None. A v2 run whose internals cannot be found
+    would otherwise skip every v2 check and still report PASS, which is the one
+    outcome these checks exist to prevent.
+    """
+
+    candidates = [worker]
+    for name in _V2_WORKER_ATTRS:
+        nested = getattr(worker, name, None)
+        if nested is not None:
+            candidates.append(nested)
+            for inner in _V2_WORKER_ATTRS:
+                deeper = getattr(nested, inner, None)
+                if deeper is not None:
+                    candidates.append(deeper)
+    for candidate in candidates:
+        if all(hasattr(candidate, marker) for marker in _V2_WORKER_MARKERS):
+            return candidate
+    seen = ", ".join(
+        f"{type(c).__name__}" f"{[m for m in _V2_WORKER_MARKERS if hasattr(c, m)]}"
+        for c in candidates
+    )
+    raise AssertionError(
+        "this is connector-v2 metadata, but no worker object exposes "
+        f"{list(_V2_WORKER_MARKERS)}, so the v2 checks cannot run. Looked at: "
+        f"{seen}. If the connector moved them again, add the new attribute to "
+        "_V2_WORKER_ATTRS -- never let a run report PASS without these checks."
+    )
+
+
+def spec_chunk_tokens(spec: Any) -> int:
+    """Tokens per UCM record. ``tokens_per_chunk`` was renamed ``chunk_size``."""
+
+    for name in ("chunk_size", "tokens_per_chunk"):
+        value = getattr(spec, name, None)
+        if value is not None:
+            return int(value)
+    raise AssertionError(
+        "the connector spec exposes neither chunk_size nor tokens_per_chunk, so "
+        "the checker cannot tell how many tokens one UCM record covers."
+    )
+
+
+def plan_restore_policy(plan: Any) -> str:
+    """A dispatch plan's restore policy name (FA / WA / STATE).
+
+    ``attention_type`` was renamed ``restore_policy``; both enums use the same
+    member names.
+    """
+
+    for name in ("restore_policy", "attention_type"):
+        value = getattr(plan, name, None)
+        if value is not None:
+            return str(getattr(value, "name", value))
+    raise AssertionError(
+        "a dispatch plan carries neither restore_policy nor attention_type, so "
+        "the checker cannot tell full attention from a window or state group."
+    )
+
+
 def _fa_plan_chunks(metadata: Any, phase: str) -> list[tuple[bytes, int]]:
     """(common chunk id, first token) of every FA chunk in v2 metadata."""
 
     chunks = []
     for request_meta in getattr(metadata, "requests", {}).values():
         for plan in getattr(request_meta, f"{phase}_plans"):
-            if getattr(plan.attention_type, "name", None) != "FA":
+            if plan_restore_policy(plan) != "FA":
                 continue
             chunks.extend(
                 zip(
@@ -2128,11 +2246,8 @@ def check_v2_hit(
     correspondingly short hit agree with each other.
     """
 
-    connector = getattr(worker, "connector", worker)
-    spec = getattr(connector, "spec", None)
-    if spec is None:
-        return "hit check skipped: connector has no v2 spec"
-    chunk_tokens = int(spec.tokens_per_chunk)
+    spec = v2_worker_internals(worker).spec
+    chunk_tokens = spec_chunk_tokens(spec)
     dumped = _fa_plan_chunks(save_metadata, "dump")
     loaded = _fa_plan_chunks(load_metadata, "load")
     if not dumped:
@@ -2150,7 +2265,7 @@ def check_v2_hit(
         raise AssertionError(
             "scheduler external hit disagrees with the FA load plan: "
             f"hit_tokens={hit_tokens}, loaded_chunks={len(loaded)}, "
-            f"tokens_per_chunk={chunk_tokens}"
+            f"chunk_size={chunk_tokens}"
         )
     hybrid = bool(spec.state_groups) or any(
         (group.tail_tokens or 0) > 0 for group in spec.wa_groups
@@ -2162,7 +2277,7 @@ def check_v2_hit(
         raise AssertionError(
             "dumped FA chunks disagree with the source request's scheduled "
             f"range: dumped={len(dumped)}, expected={expected_dump} "
-            f"(scheduled_tokens={source_tokens}, tokens_per_chunk={chunk_tokens})"
+            f"(scheduled_tokens={source_tokens}, chunk_size={chunk_tokens})"
         )
     # vLLM always recomputes at least the request's last token, so the longest
     # restorable prefix is bounded by the chunks before it. Read from the
@@ -2295,8 +2410,12 @@ def describe_ucm_layout(worker: Any) -> None:
     """Log how UCM classified the native groups (layout-only mode output)."""
 
     connector = getattr(worker, "connector", worker)
-    spec = getattr(connector, "spec", None)
     log(f"UCM connector: {type(connector).__module__}.{type(connector).__name__}")
+    try:
+        # v2 keeps the spec on the worker object, whose location moved once.
+        spec = v2_worker_internals(worker).spec
+    except AssertionError:
+        spec = None  # legacy connector: report its own group classification
     if spec is None:
         for name in ("fa_group_ids", "window_group_ids", "transient_group_ids"):
             if hasattr(connector, name):
@@ -2304,7 +2423,7 @@ def describe_ucm_layout(worker: Any) -> None:
         return
     log(
         f"UCM spec: scheduler_block_size={spec.scheduler_block_size}, "
-        f"tokens_per_chunk={spec.tokens_per_chunk}, device_type={spec.device_type}"
+        f"chunk_size={spec_chunk_tokens(spec)}, device_type={spec.device_type}"
     )
     for group in spec.groups:
         log(
@@ -2322,6 +2441,7 @@ def schedule_source(
     request_id: str,
     prompt_token_ids: list[int],
     patch_groups: Callable[[Any], None] | None,
+    worker: Any = None,
 ) -> ScheduledRequestFixture:
     """Schedule the source request and obtain UCM dump metadata."""
 
@@ -2329,7 +2449,7 @@ def schedule_source(
         fixture.vllm_config, fixture.kv_cache_config
     )
     scheduler = make_scheduler(
-        fixture, scheduler_block_size, hash_block_size, patch_groups
+        fixture, scheduler_block_size, hash_block_size, patch_groups, worker
     )
     request = make_vllm_request(request_id, prompt_token_ids, hash_block_size)
     with current_vllm_config_context(fixture.vllm_config):
@@ -2439,15 +2559,16 @@ def schedule(
         fixture.vllm_config, fixture.kv_cache_config
     )
     connector = getattr(worker, "connector", worker)
-    connector_spec = getattr(connector, "spec", None)
+    role = getattr(connector, "connector_worker", None) or connector
+    connector_spec = getattr(role, "spec", None)
     source_token_ids = source_prompt_tokens(
         prompt_token_ids,
         fixture.kv_cache_config,
         hash_block_size,
-        getattr(connector_spec, "tokens_per_chunk", None),
+        getattr(connector_spec, "chunk_size", None),
     )
     source = schedule_source(
-        fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups
+        fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups, worker
     )
     return RequestDispatchFixture(
         request_id=source.request.request_id,
@@ -2486,10 +2607,10 @@ def verify(
       the dumped chunks and agree with the scheduler's external hit.
     """
 
-    connector = getattr(worker, "connector", worker)
     source_ids = dispatch.block_ids
     save_metadata = dispatch.scheduler_output.kv_connector_metadata
     assert_shared_dispatch(save_metadata)
+    save_metadata = share_v2_save_attempts(dispatch.scheduler, save_metadata)
     dump_count = metadata_key_count(save_metadata, "dump")
     if dump_count == 0:
         raise UnsupportedEnvironment(
@@ -2540,6 +2661,7 @@ def verify(
     call_worker_layer_hooks(worker, fixture, save=True)
     worker.wait_for_save()
     finish_async_dumps(worker, dispatch.request_id)
+    publish_v2_saves(dispatch.scheduler, worker, save_metadata)
     worker.clear_connector_metadata()
     synchronize()
     log(f"dump completed: request_id={dispatch.request_id}, dump_keys={dump_count}")
@@ -2602,9 +2724,9 @@ def verify(
         if blackbox_groups:
             hit_tokens = target.num_computed_tokens
             if hit_tokens is None:
-                hit_tokens = len(_fa_plan_chunks(load_metadata, "load")) * int(
-                    connector.spec.tokens_per_chunk
-                )
+                hit_tokens = len(
+                    _fa_plan_chunks(load_metadata, "load")
+                ) * spec_chunk_tokens(v2_worker_internals(worker).spec)
             strict_indices = verified_block_indices(
                 fixture,
                 full_attention,

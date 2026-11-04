@@ -21,10 +21,17 @@ class UCMStore(Protocol):
     """Stores own backend lookup, promotion, writeback and buffer lifetimes.
 
     Only committed records are visible. wait(dump) releases source pointers;
-    commit publishes complete records; flush drains downstream commits.
+    commit(True, ...) publishes complete records; commit(False, ...) discards
+    staging. flush drains downstream commits.
+    Submission errors retain no pointers for that submission. wait must finish
+    or cancel IO before raising OSError/MemoryError (recoverable failures).
+    If pointers may remain owned, raise a fatal RuntimeError instead. Contract
+    errors use ValueError/TypeError and must never be reported as cache misses.
     A Store with no backend performs local IO only. Dump metadata is per-record
     JSON with type (FA, WA, State) and absolute request chunk_index. Callers
-    commit only after every required byte range has completed.
+    commit(True) only after every required range succeeded; commit(False) only
+    after all required writers have terminated IO. Discard never removes an
+    existing published object or another attempt.
     """
 
     backend: UCMStore | None
@@ -54,8 +61,9 @@ class UCMStore(Protocol):
         metadata: Sequence[str],
         record_nbytes: np.ndarray,
     ) -> object | None: ...
-    def commit(self, ucm_chunk_ids: Sequence[bytes]) -> object | None: ...
-    def abort(self, ucm_chunk_ids: Sequence[bytes]) -> None: ...
+    def commit(
+        self, success: bool, staging_ids: Sequence[bytes], object_ids: Sequence[bytes]
+    ) -> object | None: ...
     def wait(self, task: object) -> None: ...
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None: ...
     def flush(self) -> None: ...

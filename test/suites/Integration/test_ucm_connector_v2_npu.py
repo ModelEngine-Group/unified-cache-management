@@ -31,18 +31,18 @@ for package_name, package_path in (
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
-from ucm.integration.vllm.v2.test_stores import FileTestStore, TorchTensorByteAccess
-from ucm.integration.vllm.v2.ucm_connector import UCMConnector
-from ucm.integration.vllm.v2.ucm_kv_cache import UCMTransferBuilder
-from ucm.integration.vllm.v2.ucm_proxy import (
-    PipelineProxy,
-    UCMProxyAdapter,
-)
-from ucm.integration.vllm.v2.ucm_scheduler import (
+from ucm.integration.vllm.v2.connector_scheduler import (
     RequestDispatchMeta,
     UCMConnectorMetadata,
     UCMGroupDispatchPlan,
     groups_by_attention_type,
+)
+from ucm.integration.vllm.v2.connector_worker import UCMTransferBuilder
+from ucm.integration.vllm.v2.test_stores import FileTestStore, TorchTensorByteAccess
+from ucm.integration.vllm.v2.ucm_connector import UCMConnector
+from ucm.integration.vllm.v2.ucm_proxy import (
+    PipelineProxy,
+    UCMProxyAdapter,
 )
 
 if (

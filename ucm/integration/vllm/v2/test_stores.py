@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
@@ -150,9 +151,9 @@ def record_segments(
 class FileTestStore:
     """Synchronous file backend with explicit UCM chunk publication.
 
-    Dump accumulates byte ranges in a private .tmp file per ucm_chunk_id. Commit
-    atomically renames it to the visible .ucm file. The caller guarantees
-    all required ranges have been written before committing a ucm_chunk_id.
+    Connector attempts accumulate disjoint ranges in a shared hidden file.
+    Scheduler publishes a complete attempt with atomic create-if-absent. The
+    direct dump/commit API also supports private records for standalone tests.
     """
 
     _SUFFIX = ".ucm"
@@ -215,6 +216,12 @@ class FileTestStore:
         for row, (ucm_chunk_id, segments) in enumerate(
             record_segments(ucm_chunk_ids, offsets, ptrs, sizes)
         ):
+            if metadata and json.loads(metadata[row]).get("shared_attempt", False):
+                self._dump_attempt(
+                    ucm_chunk_id, segments, int(record_nbytes[row]), metadata[row]
+                )
+                self._pending_metadata.pop(ucm_chunk_id, None)
+                continue
             temporary = self._pending.get(ucm_chunk_id)
             if temporary is None:
                 target = self._path(ucm_chunk_id)
@@ -241,24 +248,70 @@ class FileTestStore:
                 temporary.unlink(missing_ok=True)
                 raise
 
-    def commit(self, ucm_chunk_ids: Sequence[bytes]) -> None:
-        """Publish only the supplied ucm_chunk_ids; already committed ucm_chunk_ids are a no-op.
+    def _attempt_path(self, staging_id):
+        return self.root / f".{staging_id.hex()}.attempt"
 
-        Publication is atomic per ucm_chunk_id, not across the whole ucm_chunk_id sequence.
-        Private temporary names isolate independent Proxy writers.
+    def _dump_attempt(self, staging_id, segments, total_bytes, metadata):
+        path = self._attempt_path(staging_id)
+        # Every writer opens the same hidden attempt, never O_TRUNC. Repeating
+        # ftruncate to the agreed full size preserves ranges written by peers.
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.ftruncate(fd, total_bytes)
+            for offset, ptr, count in segments:
+                if offset < 0 or offset + count > total_bytes:
+                    raise ValueError("Dump range exceeds global object size")
+                payload = self.byte_access.read(ptr, count)
+                if len(payload) != count:
+                    raise ValueError("Byte access returned an incomplete range")
+                written = 0
+                while written < count:
+                    n = os.pwrite(fd, payload[written:], offset + written)
+                    if n == 0:
+                        raise OSError("Attempt write made no progress")
+                    written += n
+        finally:
+            os.close(fd)
+        # Metadata is identical on all writers and is not part of visibility.
+        path.with_suffix(".attempt.json").write_text(metadata)
+
+    def commit(
+        self, success: bool, staging_ids: Sequence[bytes], object_ids: Sequence[bytes]
+    ) -> None:
+        """Publish complete attempts on success; otherwise discard their staging.
+
+        Both decisions are idempotent and preserve existing published objects.
+        Scheduler calls this only after every required writer has terminated IO.
         """
-        for ucm_chunk_id in ucm_chunk_ids:
-            temporary = self._pending.get(ucm_chunk_id)
-            if temporary is None:
-                if self._path(ucm_chunk_id).is_file():
-                    continue
-                raise KeyError(f"No pending UCM chunk to commit: {ucm_chunk_id.hex()}")
-            self._path(ucm_chunk_id).with_suffix(".json").write_text(
-                self._pending_metadata.get(ucm_chunk_id, "{}")
-            )
-            os.replace(temporary, self._path(ucm_chunk_id))
-            del self._pending[ucm_chunk_id]
-            self._pending_metadata.pop(ucm_chunk_id, None)
+        if not success:
+            self._discard(staging_ids)
+            return
+        for staging_id, object_id in zip(staging_ids, object_ids, strict=True):
+            source = self._pending.get(staging_id, self._attempt_path(staging_id))
+            target = self._path(object_id)
+            try:
+                # Metadata is diagnostic; only the final object link controls visibility.
+                description = self._pending_metadata.get(staging_id)
+                metadata_path = self._attempt_path(staging_id).with_suffix(
+                    ".attempt.json"
+                )
+                if description is None and metadata_path.exists():
+                    description = metadata_path.read_text()
+                if description is not None:
+                    metadata = json.loads(description)
+                    metadata.pop("shared_attempt", None)
+                    try:
+                        with target.with_suffix(".json").open("x") as stream:
+                            json.dump(metadata, stream)
+                    except FileExistsError:
+                        pass
+                os.link(source, target)
+            except FileExistsError:
+                pass
+            except FileNotFoundError:
+                if not target.is_file():
+                    raise
+            self._discard((staging_id,))
 
     def load(
         self,
@@ -307,8 +360,12 @@ class FileTestStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def abort(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+    def _discard(self, ucm_chunk_ids: Sequence[bytes]) -> None:
         for ucm_chunk_id in ucm_chunk_ids:
+            self._attempt_path(ucm_chunk_id).unlink(missing_ok=True)
+            self._attempt_path(ucm_chunk_id).with_suffix(".attempt.json").unlink(
+                missing_ok=True
+            )
             temporary = self._pending.pop(ucm_chunk_id, None)
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
@@ -318,7 +375,7 @@ class FileTestStore:
         pass
 
     def close(self) -> None:
-        self.abort(tuple(self._pending))
+        self._discard(tuple(self._pending))
 
 
 class MemoryTestStore:
@@ -439,6 +496,15 @@ class MemoryTestStore:
         metadata: Sequence[str],
         record_nbytes: np.ndarray,
     ) -> None:
+        if (
+            self.backend is not None
+            and metadata
+            and all(json.loads(item).get("shared_attempt", False) for item in metadata)
+        ):
+            self.backend.byte_access = self.byte_access
+            return self.backend.dump(
+                ucm_chunk_ids, offsets, ptrs, sizes, metadata, record_nbytes
+            )
         self.byte_access.synchronize()
         for row, (ucm_chunk_id, segments) in enumerate(
             record_segments(ucm_chunk_ids, offsets, ptrs, sizes)
@@ -463,18 +529,33 @@ class MemoryTestStore:
                     raise ValueError("Byte access returned an incomplete range")
                 payload[offset : offset + count] = data
 
-    def commit(self, ucm_chunk_ids: Sequence[bytes]) -> None:
-        for ucm_chunk_id in ucm_chunk_ids:
-            self._reused.discard(ucm_chunk_id)
-            if ucm_chunk_id in self._pending:
-                payload, metadata = self._pending.pop(ucm_chunk_id)
-                self.records[ucm_chunk_id] = (bytes(payload), metadata)
-            if ucm_chunk_id not in self.records:
-                raise KeyError(f"No pending record to commit: {ucm_chunk_id.hex()}")
+    def commit(
+        self, success: bool, staging_ids: Sequence[bytes], object_ids: Sequence[bytes]
+    ) -> None:
+        if not success:
+            self._discard(staging_ids)
+            return
+        for staging_id, object_id in zip(staging_ids, object_ids, strict=True):
+            # Connector attempts are staged by the shared backend. Local pending
+            # buffers exist only for explicit in-process Store tests.
+            local = (
+                staging_id in self._pending
+                or staging_id in self._reused
+                or staging_id in self.records
+            )
+            if not local and self.backend is not None:
+                self.backend.commit(True, (staging_id,), (object_id,))
+                continue
+            self._reused.discard(staging_id)
+            if staging_id in self._pending:
+                payload, metadata = self._pending.pop(staging_id)
+                self.records.setdefault(object_id, (bytes(payload), metadata))
+            if object_id not in self.records:
+                raise KeyError(f"No pending record to commit: {staging_id.hex()}")
             if self.backend is not None:
-                self._writeback[ucm_chunk_id] = self.records[ucm_chunk_id]
-                self.backend.write_record(ucm_chunk_id, *self._writeback[ucm_chunk_id])
-                del self._writeback[ucm_chunk_id]
+                self._writeback[object_id] = self.records[object_id]
+                self.backend.write_record(object_id, *self._writeback[object_id])
+                del self._writeback[object_id]
 
     def load(
         self,
@@ -493,7 +574,9 @@ class MemoryTestStore:
                 self.byte_access.write(ptr, payload[offset : offset + size])
         self.byte_access.synchronize()
 
-    def abort(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+    def _discard(self, ucm_chunk_ids: Sequence[bytes]) -> None:
+        if self.backend is not None:
+            self.backend.commit(False, ucm_chunk_ids, ucm_chunk_ids)
         for ucm_chunk_id in ucm_chunk_ids:
             self._pending.pop(ucm_chunk_id, None)
             self._reused.discard(ucm_chunk_id)

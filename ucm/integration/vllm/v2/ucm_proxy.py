@@ -12,7 +12,11 @@ from .ucm_store import KVCacheValue, UCMStore
 
 
 class UCMProxyError(RuntimeError):
-    """Normalized error raised by the v2 Proxy adapter."""
+    """Recoverable backend IO failure; submitted tasks are terminal after wait.
+
+    Contract errors (ValueError/TypeError) and unknown RuntimeErrors remain fatal.
+    A backend unable to drain must raise a fatal error, never UCMProxyError.
+    """
 
 
 class UCMProxy(Protocol):
@@ -20,6 +24,7 @@ class UCMProxy(Protocol):
 
     load/dump arrays are read-only [K,S] descriptors retained until wait.
     Dump record_nbytes[K] describes complete records, including unsent layers.
+    commit(success, ...) finalizes staging: True publishes; False discards.
     """
 
     def lookup(
@@ -50,11 +55,13 @@ class UCMProxy(Protocol):
         record_nbytes: np.ndarray,
     ) -> object | None: ...
     def commit(
-        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
+        self,
+        success: bool,
+        staging_ids: Sequence[bytes],
+        object_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
     ) -> object | None: ...
-    def abort(
-        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
-    ) -> None: ...
+
     def wait(self, task: object) -> None: ...
     def flush(self) -> None: ...
     def close(self) -> None: ...
@@ -131,10 +138,10 @@ class UCMProxyAdapter:
                 bool(is_hit)
                 for is_hit in self._proxy.lookup(ucm_chunk_ids, chunk_indices)
             )
-        except Exception as exc:
+        except (OSError, MemoryError, UCMProxyError) as exc:
             raise UCMProxyError("Proxy lookup failed") from exc
         if len(hits) != len(ucm_chunk_ids):
-            raise UCMProxyError(
+            raise ValueError(
                 f"Proxy lookup returned {len(hits)} results for {len(ucm_chunk_ids)} ucm_chunk_ids"
             )
         return hits
@@ -150,10 +157,10 @@ class UCMProxyAdapter:
                 else self._proxy.lookup_on_reverse
             )
             hit_row = int(scan_method(ucm_chunk_ids, chunk_indices))
-        except Exception as exc:
+        except (OSError, MemoryError, UCMProxyError) as exc:
             raise UCMProxyError(f"Proxy lookup_on_{operation} failed") from exc
         if not -1 <= hit_row < len(ucm_chunk_ids):
-            raise UCMProxyError(
+            raise ValueError(
                 f"Proxy lookup_on_{operation} returned {hit_row} "
                 f"for {len(ucm_chunk_ids)} ucm_chunk_ids"
             )
@@ -177,21 +184,32 @@ class UCMProxyAdapter:
         if task is None:
             return
         if not isinstance(self._proxy, UCMProxyWaiter):
-            raise UCMProxyError(
+            raise RuntimeError(
                 f"Proxy {operation} returned an asynchronous task but does not "
                 "provide wait(task)"
             )
         self._proxy.wait(task)
 
-    def commit(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
-        """Publish ucm_chunk_ids after their writes complete, without rescanning descriptors."""
-        if not ucm_chunk_ids:
+    def commit(
+        self,
+        success: bool,
+        staging_ids: Sequence[bytes],
+        object_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
+    ) -> None:
+        """Finalize an attempt: True publishes it; False discards its staging."""
+        normalize_ucm_chunk_ids(staging_ids)
+        normalize_ucm_chunk_ids(object_ids)
+        if len(staging_ids) != len(object_ids):
+            raise ValueError("Commit requires one object ID per attempt")
+        if not staging_ids:
             return
         try:
-            self._wait("commit", self._proxy.commit(ucm_chunk_ids, chunk_indices))
-        except Exception as exc:
-            if isinstance(exc, UCMProxyError):
-                raise
+            self._wait(
+                "commit",
+                self._proxy.commit(success, staging_ids, object_ids, chunk_indices),
+            )
+        except (OSError, MemoryError, UCMProxyError) as exc:
             raise UCMProxyError("Proxy commit failed") from exc
 
     def enqueue(self, operation: str, transfer: UCMProxyTransfer) -> UCMProxyTask:
@@ -240,7 +258,7 @@ class UCMProxyAdapter:
                     transfer.sizes,
                 )
             return UCMProxyTask(operation, transfer, handle)
-        except Exception as exc:
+        except (OSError, MemoryError, UCMProxyError) as exc:
             if isinstance(exc, UCMProxyError):
                 raise
             raise UCMProxyError(f"Proxy {operation} failed") from exc
@@ -248,7 +266,7 @@ class UCMProxyAdapter:
     def wait(self, task: UCMProxyTask) -> None:
         try:
             self._wait(task.operation, task.handle)
-        except Exception as exc:
+        except (OSError, MemoryError, UCMProxyError) as exc:
             if isinstance(exc, UCMProxyError):
                 raise
             raise UCMProxyError(f"Proxy {task.operation} failed") from exc
@@ -256,12 +274,6 @@ class UCMProxyAdapter:
     def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
         """Submit and wait for a bulk transfer."""
         self.wait(self.enqueue(operation, transfer))
-
-    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
-        try:
-            self._proxy.abort(ucm_chunk_ids, chunk_indices)
-        except Exception as exc:
-            raise UCMProxyError("Proxy abort failed") from exc
 
     def flush(self) -> None:
         self._proxy.flush()
@@ -324,18 +336,18 @@ class PipelineProxy:
         )
 
     def commit(
-        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
+        self,
+        success: bool,
+        staging_ids: Sequence[bytes],
+        object_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
     ) -> object | None:
-        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
-        return self.store.commit(ucm_chunk_ids)
-
-    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
-        validate_chunk_indices(ucm_chunk_ids, chunk_indices)
-        self.store.abort(ucm_chunk_ids)
+        validate_chunk_indices(staging_ids, chunk_indices)
+        return self.store.commit(success, staging_ids, object_ids)
 
     def wait(self, task: object) -> None:
         if not isinstance(self.store, UCMProxyWaiter):
-            raise UCMProxyError("Store does not provide wait(task)")
+            raise RuntimeError("Store does not provide wait(task)")
         self.store.wait(task)
 
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
@@ -484,7 +496,7 @@ class ParallelProxy:
 
     def _submit(
         self,
-        operation: Literal["load", "dump", "commit"],
+        operation: Literal["load", "dump"],
         ucm_chunk_ids: Sequence[bytes],
         chunk_indices: np.ndarray,
         *descriptors: np.ndarray | Sequence[str],
@@ -504,7 +516,6 @@ class ParallelProxy:
                 store_method = {
                     "load": store.load,
                     "dump": store.dump,
-                    "commit": store.commit,
                 }[operation]
                 task = store_method(*arguments)
                 if task is not None:
@@ -513,8 +524,8 @@ class ParallelProxy:
             # Earlier routes may already own source pointers; drain all of them.
             try:
                 self.wait(StoreTasks(tuple(store_tasks)))
-            except Exception:
-                pass
+            except (OSError, MemoryError, UCMProxyError):
+                pass  # Terminal IO failures still release every source pointer.
             raise
         return StoreTasks(tuple(store_tasks)) if store_tasks else None
 
@@ -550,19 +561,35 @@ class ParallelProxy:
         )
 
     def commit(
-        self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray
-    ) -> object | None:
-        return self._submit("commit", ucm_chunk_ids, chunk_indices)
-
-    def abort(self, ucm_chunk_ids: Sequence[bytes], chunk_indices: np.ndarray) -> None:
-        error = None
-        for store, rows in self._rows_by_store(ucm_chunk_ids, chunk_indices):
+        self,
+        success: bool,
+        staging_ids: Sequence[bytes],
+        object_ids: Sequence[bytes],
+        chunk_indices: np.ndarray,
+    ) -> StoreTasks | None:
+        tasks = []
+        first_error = None
+        for store, rows in self._rows_by_store(staging_ids, chunk_indices):
+            arguments = (
+                success,
+                tuple(staging_ids[row] for row in rows),
+                tuple(object_ids[row] for row in rows),
+            )
             try:
-                store.abort(tuple(ucm_chunk_ids[row] for row in rows))
+                task = store.commit(*arguments)
+                if task is not None:
+                    tasks.append((store, task, arguments))
             except Exception as exc:
-                error = error or exc
-        if error is not None:
-            raise error
+                if success:
+                    self.wait(StoreTasks(tuple(tasks)))
+                    raise
+                # Failed saves may span routes. Attempt cleanup on every route
+                # even when one backend cannot discard its staging.
+                first_error = first_error or exc
+        if first_error is not None:
+            self.wait(StoreTasks(tuple(tasks)))
+            raise first_error
+        return StoreTasks(tuple(tasks)) if tasks else None
 
     def wait(self, task: StoreTasks) -> None:
         error = None
@@ -570,7 +597,9 @@ class ParallelProxy:
             try:
                 store.wait(handle)
             except Exception as exc:
-                if error is None:
+                if error is None or not isinstance(
+                    exc, (OSError, MemoryError, UCMProxyError)
+                ):
                     error = exc
         if error is not None:
             raise error
