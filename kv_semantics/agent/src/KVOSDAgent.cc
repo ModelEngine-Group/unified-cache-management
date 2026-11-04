@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
@@ -48,6 +71,8 @@ constexpr int BOOT_RETRY_DELAY = 5;       // 秒, Boot 重试初始等待时间
 constexpr int BOOT_RETRY_MAX_DELAY = 60;  // 秒, Boot 重试等待上限
 // OSD Agent 固定监听端口, 配置未指定端口时使用此值
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
+// 创建 kv 命名空间 pool 时使用的 pg_num 固定值
+constexpr int KV_OSD_AGENT_PG_NUM = 4;
 
 int parse_public_addrs(const std::string& value, entity_addrvec_t* result,
                        AgentLogger* logger = nullptr)
@@ -656,6 +681,10 @@ public:
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
             return -1;
         }
+        if (listSize > 0 && osdIdList == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList");
+            return -1;
+        }
 
         // -------- 连接集群 --------
         // --------使用已认证的 monc --------
@@ -774,6 +803,10 @@ public:
         // -------- 输入合法性检测 --------
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
+            return -1;
+        }
+        if (listSize > 0 && osdIdList == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList");
             return -1;
         }
 
@@ -990,7 +1023,8 @@ public:
         // [<pool_type:replicated|erasure>] [<rule>] 创建ceph pool并绑定对应的规则
         int32_t ret = mon_command_sync(
             {std::string("{\"prefix\": \"osd pool create\", \"pool\": \"") + kvnsNameString +
-             "\", \"pg_num\": 4, \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"},
+             "\", \"pg_num\": " + std::to_string(KV_OSD_AGENT_PG_NUM) +
+             ", \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"},
             &outbl, &outs);
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
                   "kv_agent_create_ceph_pool: osd pool create ret=" + std::to_string(ret) +
@@ -1111,9 +1145,21 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
+        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
+        // 存活, 因此任务执行期间始终安全.
+        const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
+        const std::vector<int32_t> osd_ids =
+            (osdIdList && listSize > 0) ? std::vector<int32_t>(osdIdList, osdIdList + listSize)
+                                        : std::vector<int32_t>();
         return async_dispatch(
-            [this, kvPoolName, nameLen, osdIdList, listSize]() {
-                return kv_agent_create_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+            [this, pool_name, nameLen, osd_ids]() {
+                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
+                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
+                const int32_t* osd_ids_data = osd_ids.empty() ? nullptr : osd_ids.data();
+                return kv_agent_create_crush_root_impl(const_cast<char*>(pool_name_data), nameLen,
+                                                       const_cast<int32_t*>(osd_ids_data),
+                                                       static_cast<uint32_t>(osd_ids.size()));
             },
             std::move(cb), user_data);
     }
@@ -1122,9 +1168,21 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
+        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
+        // 存活, 因此任务执行期间始终安全.
+        const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
+        const std::vector<int32_t> osd_ids =
+            (osdIdList && listSize > 0) ? std::vector<int32_t>(osdIdList, osdIdList + listSize)
+                                        : std::vector<int32_t>();
         return async_dispatch(
-            [this, kvPoolName, nameLen, osdIdList, listSize]() {
-                return kv_agent_delete_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
+            [this, pool_name, nameLen, osd_ids]() {
+                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
+                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
+                const int32_t* osd_ids_data = osd_ids.empty() ? nullptr : osd_ids.data();
+                return kv_agent_delete_crush_root_impl(const_cast<char*>(pool_name_data), nameLen,
+                                                       const_cast<int32_t*>(osd_ids_data),
+                                                       static_cast<uint32_t>(osd_ids.size()));
             },
             std::move(cb), user_data);
     }
@@ -1133,9 +1191,19 @@ public:
                                             uint32_t kvnsLen, KVAgentAsyncCallback cb,
                                             void* user_data) override
     {
+        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
+        // 存活, 因此任务执行期间始终安全.
+        const std::string pool_name =
+            kvPoolName ? std::string(kvPoolName, kvPoolLen) : std::string();
+        const std::string ns_name = kvnsName ? std::string(kvnsName, kvnsLen) : std::string();
         return async_dispatch(
-            [this, kvPoolName, kvPoolLen, kvnsName, kvnsLen]() {
-                return kv_agent_create_ceph_pool_impl(kvPoolName, kvPoolLen, kvnsName, kvnsLen);
+            [this, pool_name, kvPoolLen, ns_name, kvnsLen]() {
+                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
+                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
+                const char* ns_name_data = ns_name.empty() ? nullptr : ns_name.data();
+                return kv_agent_create_ceph_pool_impl(const_cast<char*>(pool_name_data), kvPoolLen,
+                                                      const_cast<char*>(ns_name_data), kvnsLen);
             },
             std::move(cb), user_data);
     }
@@ -1143,9 +1211,15 @@ public:
     int32_t kv_agent_delete_ceph_pool_async(char* kvnsName, uint32_t nameLen,
                                             KVAgentAsyncCallback cb, void* user_data) override
     {
+        // 入队前拷贝调用方缓存区: worker 延迟执行期间调用方可能释放/复用内存,
+        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function)  一同
+        // 存活, 因此任务执行期间始终安全.
+        const std::string ns_name = kvnsName ? std::string(kvnsName, nameLen) : std::string();
         return async_dispatch(
-            [this, kvnsName, nameLen]() {
-                return kv_agent_delete_ceph_pool_impl(kvnsName, nameLen);
+            [this, ns_name, nameLen]() {
+                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
+                const char* ns_name_data = ns_name.empty() ? nullptr : ns_name.data();
+                return kv_agent_delete_ceph_pool_impl(const_cast<char*>(ns_name_data), nameLen);
             },
             std::move(cb), user_data);
     }
@@ -1668,6 +1742,11 @@ private:
 
     int32_t moveOsd(std::string rootName, int32_t* osdIdList, uint32_t listSize)
     {
+        if (listSize > 0 && osdIdList == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList in moveOsd");
+            return -1;
+        }
+
         ceph::bufferlist outbl;
         std::string outs;
 
@@ -1726,6 +1805,11 @@ private:
     // 确认列表中的osd是否都在集群中
     int32_t checkOsdInCluster(std::string osd_list_str, int32_t* osdIdList, uint32_t listSize)
     {
+        if (listSize > 0 && osdIdList == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList in checkOsdInCluster");
+            return -1;
+        }
+
         std::vector<int32_t> existing_osds = getOsds(osd_list_str);
 
         // 检查请求的每个 OSD 是否存在

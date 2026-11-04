@@ -5,11 +5,14 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "KVAgent.h"
 #include <cerrno>
 #include <memory>
 #include <new>
+#include "KVAgent.h"
 #include "KVAgentImpl.h"
+
+// 存储侧日志固定目录, 运行环境暂定不可修改.
+#define KV_AGENT_LOG_DIR "/home/ibc_os_hs/agent_log"
 
 struct kv_agent_handle {
     agent::AgentLogger logger;
@@ -49,7 +52,7 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_init(kv_agent_handle* agent,
         return INVALID_AGENT_HANDLE;
     }
 
-    int r = agent->logger.init("/home/ibc_os_hs/agent_log", "kv_agent");
+    int r = agent->logger.init(KV_AGENT_LOG_DIR, "kv_agent");
     if (r < 0) {
         AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
                   "failed to initialize file logging: " + std::to_string(r));

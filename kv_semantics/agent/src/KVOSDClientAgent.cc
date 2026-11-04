@@ -38,6 +38,11 @@
 namespace agent {
 namespace {
 
+// 连接就绪轮询: 最多轮询次数与每次间隔, 封顶阻塞约 500ms.
+// 给异步连接握手一点时间, 避免在 CephX 认证完成前发送消息导致连接被 reset.
+constexpr int KV_CONN_READY_POLL_MAX = 50;
+constexpr int KV_CONN_READY_POLL_INTERVAL_MS = 10;
+
 // OSD Agent 固定监听端口, 与 KVOSDAgent 中 KV_OSD_AGENT_DEFAULT_PORT 一致.
 // OSDMap 中地址端口为 0 时用此值补齐.
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
@@ -669,9 +674,10 @@ private:
         if (!conn->is_connected()) {
             AGENT_LOG(logger, LogLevel::DEBUG,
                       "waiting for async connection to OSD " + std::to_string(osd_id) + "...");
-            for (int i = 0; i < 50; ++i) {
+            for (int i = 0; i < KV_CONN_READY_POLL_MAX; ++i) {
                 if (conn->is_connected()) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(KV_CONN_READY_POLL_INTERVAL_MS));
             }
             AGENT_LOG(logger, LogLevel::INFO,
                       "OSD " + std::to_string(osd_id) + " connection ready: is_connected=" +
