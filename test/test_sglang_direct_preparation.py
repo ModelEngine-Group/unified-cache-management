@@ -1,5 +1,6 @@
 """Exercise Python preparation without SGLang, torch or native UCM libraries."""
 
+import array
 import hashlib
 import os
 import sys
@@ -266,8 +267,8 @@ class LayoutPreparationTest(unittest.TestCase):
         calls = []
 
         class Native:
-            def Load(self, ids, indexes, addresses):
-                calls.append((ids, indexes, addresses, None))
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((ids, indexes, addresses, event, distribute_backend_load))
                 return len(calls)
 
             def Dump(self, ids, indexes, addresses, event):
@@ -295,9 +296,45 @@ class LayoutPreparationTest(unittest.TestCase):
         np.testing.assert_array_equal(calls[1][2], transfer.addresses[1])
         self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
         self.assertTrue(np.shares_memory(calls[1][2], transfer.addresses))
+        self.assertEqual([call[3:] for call in calls], [(0, False), (0, False)])
+        adapter._identity["rank_replicated"] = True
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            shared_prepared = adapter.prepare_load([transfer])
+        adapter.submit_prepared_load_layer(shared_prepared, 0)
+        self.assertEqual(calls[-1][3:], (0, True))
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
             adapter.submit_offload([transfer], prerequisite_handle=42)
-        self.assertEqual([call[3] for call in calls[2:]], [42, 42])
+        self.assertEqual([call[3] for call in calls[3:]], [42, 42])
+
+    def test_inherited_pipeline_public_load_receives_replication_option(self):
+        calls = []
+
+        class Native:
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((event, distribute_backend_load))
+                return len(calls)
+
+        class InheritedPipeline(pipeline_module.UcmPipelineStore):
+            pass
+
+        store = object.__new__(InheritedPipeline)
+        store.store_ = Native()
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        transfer = self.transfer()
+        for replicated in (False, True):
+            adapter._identity["rank_replicated"] = replicated
+            with (
+                patch.dict(
+                    sys.modules, {"ucm.store.pipeline.connector": pipeline_module}
+                ),
+                patch.object(pipeline_module, "array", array, create=True),
+            ):
+                prepared = adapter.prepare_load([transfer])
+                self.assertIsNone(prepared[0][0].prepared_io)
+                adapter.submit_prepared_load_layer(prepared, 0)
+            self.assertEqual(calls[-1], (0, replicated))
 
     def test_custom_pipeline_stores_keep_their_public_methods(self):
         calls = []

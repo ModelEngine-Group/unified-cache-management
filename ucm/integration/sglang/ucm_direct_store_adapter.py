@@ -68,10 +68,15 @@ class _PreparedPipelineTransfer:
     ids: np.ndarray
     page_count: int
     task_type: type[Task]
+    distribute_backend_load: bool
 
     def load_data(self, shard_index: int, addresses: np.ndarray) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
-        return self.task_type(self.store.Load(self.ids, indexes, addresses))
+        return self.task_type(
+            self.store.Load(
+                self.ids, indexes, addresses, 0, self.distribute_backend_load
+            )
+        )
 
     def dump_data(
         self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
@@ -755,6 +760,7 @@ class UcmDirectStoreAdapter:
             np.frombuffer(b"".join(block_ids), dtype=np.uint8),
             len(block_ids),
             UcmPipelineStoreTransTask,
+            bool(self._identity.get("rank_replicated", False)),
         )
 
     def _prepare_transfers(
@@ -826,6 +832,17 @@ class UcmDirectStoreAdapter:
                     item.prepared_io if item.prepared_io is not None else item.store
                 )
                 operation = target.dump_data if is_offload else target.load_data
+                transfer_options: dict[str, Any] = {}
+                if is_offload and prerequisite_handle:
+                    transfer_options["prerequisite_handle"] = prerequisite_handle
+                elif (
+                    not is_offload
+                    and item.prepared_io is None
+                    and getattr(item.store, "supports_distributed_backend_load", False)
+                ):
+                    transfer_options["distribute_backend_load"] = bool(
+                        self._identity.get("rank_replicated", False)
+                    )
                 shard_indices = (
                     range(len(transfer.layers))
                     if logical_layer is None
@@ -844,11 +861,7 @@ class UcmDirectStoreAdapter:
                             addresses,
                         )
                     )
-                    task = (
-                        operation(*args, prerequisite_handle=prerequisite_handle)
-                        if is_offload and prerequisite_handle
-                        else operation(*args)
-                    )
+                    task = operation(*args, **transfer_options)
                     tasks.append(_StoreTask(item.store, task))
             except Exception:
                 # A later shard may fail to submit after earlier shards have
