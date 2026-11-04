@@ -856,6 +856,50 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
 
+        # PCP expands the dump-ownership domain: with PCP>1 and DCP=1 every
+        # PCP peer holds a full KV replica after the step's PCP gather, so
+        # exactly one of the TP*PCP workers must dump each block (same idea
+        # as the TP-only dedup, spanning the PCP axis too). DCP>1 shards the
+        # KV cache, so the PCP axis must not be merged there.
+        self.pcp_world_size = 1
+        self.pcp_rank = 0
+        if (
+            role == KVConnectorRole.WORKER
+            and getattr(
+                self._vllm_config.parallel_config,
+                "prefill_context_parallel_size",
+                1,
+            )
+            > 1
+        ):
+            try:
+                from vllm.distributed import get_dcp_group, get_pcp_group
+
+                if get_dcp_group().world_size == 1:
+                    self.pcp_world_size = get_pcp_group().world_size
+                    self.pcp_rank = get_pcp_group().rank_in_group
+                else:
+                    logger.warning(
+                        "FAWA dump dedup keeps the TP-only domain because "
+                        "DCP>1 shards the KV cache across ranks."
+                    )
+            except (ImportError, AssertionError):
+                logger.warning(
+                    "FAWA dump dedup keeps the TP-only domain because the "
+                    "PCP process group is unavailable."
+                )
+        self.dump_owner_size = self.tp_size * self.pcp_world_size
+        self.dump_owner_rank = (
+            self.tp_rank % self.tp_size
+        ) + self.tp_size * self.pcp_rank
+        logger.info(
+            "FAWA dump ownership: tp_rank=%s, pcp_rank=%s, " "dump_owner_rank=%s/%s",
+            self.tp_rank,
+            self.pcp_rank,
+            self.dump_owner_rank,
+            self.dump_owner_size,
+        )
+
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
@@ -922,6 +966,18 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def get_block_size(self) -> int:
         return self.hash_block_size
+
+    def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
+        """Select this worker's MLA records across the TP*PCP replica domain.
+
+        The base implementation selects by absolute block position modulo
+        tp_size only. With PCP>1 (DCP=1) both PCP peers share a tp_rank, so
+        both would dump the same keys into the shared store concurrently.
+        The ownership domain here is TP*PCP; with PCP=1 this is identical
+        to the upstream TP-only slice.
+        """
+        first_index = (self.dump_owner_rank - dump_block_start) % self.dump_owner_size
+        return slice(first_index, None, self.dump_owner_size)
 
     @staticmethod
     def ascend_compression_ratio(spec) -> int:
@@ -2390,9 +2446,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
-        if self.tp_size > 1:
+        if self.dump_owner_size > 1:
             # Split FA rows by canonical block index. Block-wise WA follows the same
-            # TP key slice; chunk-wise WA assigns one final boundary per request.
+            # owner key slice (TP*PCP dedup domain); chunk-wise WA assigns one final
+            # boundary per request.
             wa_dump_ring_idx = 0
             for request_id, request in metadata.request_meta.items():
                 if not request.dump_keys:
@@ -2452,7 +2509,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                                 wa_dump_vllm_block_ids,
                             )
                         )
-                elif wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                elif wa_dump_ring_idx % self.dump_owner_size == self.dump_owner_rank:
                     request_wa_dump_keys = request.dump_keys[-1:]
                     wa_dump_blocks_by_request[request_id] = set(request_wa_dump_keys)
                     wa_dump_keys.extend(request_wa_dump_keys)
