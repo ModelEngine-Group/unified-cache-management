@@ -133,8 +133,6 @@ class UcmKVStoreBaseV1(ABC):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_tensor: List[List[torch.Tensor]],
-        *,
-        distribute_backend_load: bool = False,
     ) -> Task:
         """Initiate transfer of KV cache from storage to device.
 
@@ -143,8 +141,6 @@ class UcmKVStoreBaseV1(ABC):
             shard_index: Shard index for each block.
             dst_tensor: Double-list structure where ``dst_tensor[i][j]`` is the
                 destination PyTorch tensor on device for block ``i``, tensor ``j``.
-            distribute_backend_load: Distribute Cache2 backend reads for shared
-                keys requested in the same order by every participating rank.
 
         Returns:
             A ``Task`` handle that can be used to check or wait for completion.
@@ -178,8 +174,6 @@ class UcmKVStoreBaseV1(ABC):
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
         prerequisite_handle: int = 0,
-        *,
-        distribute_backend_load: bool = False,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 
@@ -190,8 +184,6 @@ class UcmKVStoreBaseV1(ABC):
                 pre-allocated device buffers.
             prerequisite_handle: Optional compute-stream event. A supporting
                 device-facing stage waits before writing the destination buffers.
-            distribute_backend_load: Distribute Cache2 backend reads for shared
-                keys requested in the same order by every participating rank.
 
         Returns:
             A ``Task`` handle for the asynchronous copy.
