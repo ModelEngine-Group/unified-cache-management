@@ -646,7 +646,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if record_ready is not None:
             return record_ready().events
 
-        # Older SGLang releases have no shared transfer-ready helper.
+        # Fall back when this SGLang build has no record_transfer_ready helper.
         indices_ready = device_module.Event()
         indices_ready.record()
         events = [indices_ready]

@@ -80,11 +80,9 @@ class _PreparedPipelineTransfer:
             self.store.Load(self.ids, indexes, addresses, prerequisite_handle)
         )
 
-    def dump_data(
-        self, row_offset: int, addresses: np.ndarray, prerequisite_handle: int = 0
-    ) -> Task:
+    def dump_data(self, addresses: np.ndarray, prerequisite_handle: int = 0) -> Task:
         # The flattened address rows are ordered by Store shard, then page.
-        rows = np.arange(row_offset, row_offset + len(addresses), dtype=np.uint64)
+        rows = np.arange(len(addresses), dtype=np.uint64)
         indexes = rows // self.page_count
         ids = self.ids.reshape(self.page_count, -1)[rows % self.page_count].reshape(-1)
         return self.task_type(
@@ -134,8 +132,8 @@ class UcmDirectStoreAdapter:
         self._identity = dict(identity)
         self._block_identity_prefix = self._identity_suffix()
         self._store_config = copy.deepcopy(store_config)
-        # Only the stock Cache pipeline establishes the event contract for
-        # H2D/D2H. Custom Stores and other pipelines use the CPU-wait fallback.
+        # Forward GPU events only for the stock Cache|Posix pipeline. Custom
+        # Stores and other pipelines use the CPU-wait fallback.
         self.supports_transfer_prerequisite = (
             connector_name == "UcmPipelineStore"
             and not module_path
@@ -758,24 +756,7 @@ class UcmDirectStoreAdapter:
                 by_layer.setdefault(layer, []).append(item)
         return by_layer
 
-    def _offload_batch_rows(self, shard_size: int) -> int:
-        # Cache pins every task buffer until D2H completes. Bound a batch by
-        # its non-reserved capacity, conservatively divided among local ranks
-        # for Cache v2's per-rank partitions. No new configuration is needed.
-        shared = self._store_config.get("share_buffer_enable", True)
-        capacity_gb = self._store_config.get("cache_buffer_capacity_gb", 0)
-        capacity = int(capacity_gb or (160 if shared else 20)) << 30
-        reserved = int(
-            self._store_config.get("cache_load_exclusive_buffer_number", 1024)
-        )
-        ranks = (
-            int(self._identity.get("tp_size", 1))
-            if self._identity.get("rank_replicated", False)
-            else 1
-        )
-        return max(1, (capacity // shard_size - reserved) // ranks)
-
-    def _submit_dump_batches(
+    def _submit_dump(
         self,
         item: _PreparedStoreTransfer,
         tasks: list[_StoreTask],
@@ -785,33 +766,26 @@ class UcmDirectStoreAdapter:
         addresses = transfer.addresses.reshape(-1, len(transfer.tensor_size_list))
         if not len(addresses):
             return
-        batch_rows = len(addresses)
-        if self._connector_name == "UcmPipelineStore" and str(
-            self._store_config.get("store_pipeline", "")
-        ).startswith("Cache|"):
-            batch_rows = self._offload_batch_rows(transfer.shard_size)
-        for start in range(0, len(addresses), batch_rows):
-            batch = addresses[start : start + batch_rows]
-            if item.prepared_io is not None:
-                task = item.prepared_io.dump_data(start, batch, prerequisite_handle)
-            else:
-                # Keep custom Stores on their public interface. Native Pipeline
-                # consumes these descriptors before returning the task handle.
-                page_count = len(item.block_ids)
-                rows = range(start, start + len(batch))
-                block_ids = [item.block_ids[row % page_count] for row in rows]
-                indexes = [row // page_count for row in rows]
-                task = (
-                    item.store.dump_data(
-                        block_ids,
-                        indexes,
-                        batch,
-                        prerequisite_handle=prerequisite_handle,
-                    )
-                    if prerequisite_handle
-                    else item.store.dump_data(block_ids, indexes, batch)
+        if item.prepared_io is not None:
+            task = item.prepared_io.dump_data(addresses, prerequisite_handle)
+        else:
+            # Keep custom Stores on their public interface. Native Pipeline
+            # consumes these descriptors before returning the task handle.
+            page_count = len(item.block_ids)
+            rows = range(len(addresses))
+            block_ids = [item.block_ids[row % page_count] for row in rows]
+            indexes = [row // page_count for row in rows]
+            task = (
+                item.store.dump_data(
+                    block_ids,
+                    indexes,
+                    addresses,
+                    prerequisite_handle=prerequisite_handle,
                 )
-            tasks.append(_StoreTask(item.store, task, batch))
+                if prerequisite_handle
+                else item.store.dump_data(block_ids, indexes, addresses)
+            )
+        tasks.append(_StoreTask(item.store, task, addresses))
 
     def _submit_prepared(
         self,
@@ -826,9 +800,8 @@ class UcmDirectStoreAdapter:
             transfer = item.transfer
             try:
                 if is_offload:
-                    # One node/group is one task unless Cache capacity requires
-                    # splitting. Failure cleanup below covers previous batches.
-                    self._submit_dump_batches(item, tasks, prerequisite_handle)
+                    # Submit one task per node/group; Cache owns buffer management.
+                    self._submit_dump(item, tasks, prerequisite_handle)
                     continue
                 target = (
                     item.prepared_io if item.prepared_io is not None else item.store

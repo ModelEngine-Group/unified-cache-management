@@ -478,56 +478,17 @@ class LayoutPreparationTest(unittest.TestCase):
         adapter.wait(tasks + following)
         self.assertEqual(waited, [1, 2, 3])
 
-    def test_dump_capacity_split_preserves_cross_layer_row_order(self):
-        adapter, calls, _ = self.dump_adapter()
-        transfer = self.transfer()
+    def test_dump_submit_failure_drains_previous_groups(self):
+        adapter, calls, waited = self.dump_adapter(fail_call=2)
+        transfers = [self.transfer(), self.transfer(store_group="other")]
         with (
             patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}),
-            patch.object(adapter, "_offload_batch_rows", return_value=3),
+            self.assertLogs(adapter_module.logger, level="ERROR"),
         ):
-            tasks = adapter.submit_offload([transfer], prerequisite_handle=42)
-        self.assertEqual(len(tasks), 2)
-        np.testing.assert_array_equal(calls[0][1], [0, 0, 1])
-        np.testing.assert_array_equal(calls[1][1], [1])
-        self.assertEqual(
-            b"".join(c[0].tobytes() for c in calls),
-            b"".join(adapter._block_ids(transfer)) * 2,
-        )
-        np.testing.assert_array_equal(
-            np.concatenate([c[2] for c in calls]), transfer.addresses.reshape(4, 1)
-        )
-        self.assertEqual([c[3] for c in calls], [42, 42])
-
-    def test_dump_submit_failure_drains_previous_batches_and_groups(self):
-        for split in (False, True):
-            with self.subTest(split=split):
-                adapter, calls, waited = self.dump_adapter(fail_call=2)
-                transfers = [self.transfer()]
-                if not split:
-                    transfers.append(self.transfer(store_group="other"))
-                with (
-                    patch.dict(
-                        sys.modules, {"ucm.store.pipeline.connector": pipeline_module}
-                    ),
-                    patch.object(
-                        adapter, "_offload_batch_rows", return_value=3 if split else 100
-                    ),
-                    self.assertLogs(adapter_module.logger, level="ERROR"),
-                ):
-                    with self.assertRaisesRegex(RuntimeError, "dump submit failed"):
-                        adapter.submit_offload(transfers, prerequisite_handle=42)
-                self.assertEqual(waited, [1])
-                self.assertEqual(len(calls), 2)
-
-    def test_dump_batch_capacity_uses_existing_cache_configuration(self):
-        adapter = self.adapter()
-        adapter._store_config.update(
-            cache_buffer_capacity_gb=1, cache_load_exclusive_buffer_number=1024
-        )
-        adapter._identity.update(rank_replicated=True, tp_size=8)
-        self.assertEqual(adapter._offload_batch_rows(65536), (16384 - 1024) // 8)
-        adapter._identity["rank_replicated"] = False
-        self.assertEqual(adapter._offload_batch_rows(65536), 16384 - 1024)
+            with self.assertRaisesRegex(RuntimeError, "dump submit failed"):
+                adapter.submit_offload(transfers, prerequisite_handle=42)
+        self.assertEqual(waited, [1])
+        self.assertEqual(len(calls), 2)
 
     def test_generic_dump_submits_all_shards_through_public_method(self):
         calls = []
