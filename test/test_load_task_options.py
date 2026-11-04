@@ -24,7 +24,9 @@ def methods_type(path, class_name, names, **namespace):
         ast.Module(body=[future, *methods], type_ignores=[])
     )
     exec(compile(module, path, "exec"), namespace)
-    return type(class_name, (), {name: namespace[name] for name in names})
+    cls = type(class_name, (), {name: namespace[name] for name in names})
+    namespace[class_name] = cls
+    return cls
 
 
 @pytest.fixture
@@ -32,7 +34,7 @@ def pipeline():
     cls = methods_type(
         "ucm/store/pipeline/connector.py",
         "UcmPipelineStore",
-        {"load", "load_data"},
+        {"load", "load_data", "supports_distributed_backend_load"},
         array=array,
         np=np,
         UcmPipelineStoreTransTask=lambda task_id: SimpleNamespace(task_id=task_id),
@@ -71,6 +73,71 @@ def test_rank_consistency_forwards_task_option_and_retains_store(pipeline, distr
     manager.wait_load(task)
     pipeline.wait.assert_called_once_with(task)
     assert not manager._load_task_contexts
+
+
+@pytest.mark.parametrize("distribute", [False, True])
+def test_rank_consistency_accepts_store_with_original_load_signature(distribute):
+    cls = methods_type(
+        "ucm/integration/vllm/rank_consistency.py",
+        "RankConsistencyManager",
+        {"__init__", "submit_load", "wait_load"},
+        Any=Any,
+    )
+    manager = cls(is_scheduler=False, use_consistency_manager=False)
+    task = object()
+    calls = []
+
+    def load_data(keys, shards, ptrs):
+        calls.append((keys, shards, ptrs))
+        return task
+
+    store = SimpleNamespace(load_data=load_data, wait=Mock())
+    ptrs = [[123]]
+    result = manager.submit_load(
+        store,
+        {"req": [b"key"]},
+        [b"key"],
+        [0],
+        ptrs,
+        distribute_backend_load=distribute,
+    )
+    assert result is task
+    assert calls == [([b"key"], [0], ptrs)]
+    manager.wait_load(task)
+    store.wait.assert_called_once_with(task)
+
+
+@pytest.mark.parametrize("distribute", [False, True])
+def test_custom_pipeline_override_keeps_original_load_signature(pipeline, distribute):
+    cls = methods_type(
+        "ucm/integration/vllm/rank_consistency.py",
+        "RankConsistencyManager",
+        {"__init__", "submit_load", "wait_load"},
+        Any=Any,
+    )
+    manager = cls(is_scheduler=False, use_consistency_manager=False)
+    task = object()
+
+    class CustomPipeline(type(pipeline)):
+        def load_data(self, keys, shards, ptrs):
+            return task
+
+    store = CustomPipeline()
+    store.wait = Mock()
+    assert not store.supports_distributed_backend_load
+    assert (
+        manager.submit_load(
+            store,
+            {"req": [b"key"]},
+            [b"key"],
+            [0],
+            [[123]],
+            distribute_backend_load=distribute,
+        )
+        is task
+    )
+    manager.wait_load(task)
+    store.wait.assert_called_once_with(task)
 
 
 @pytest.mark.parametrize("distribute", [False, True])

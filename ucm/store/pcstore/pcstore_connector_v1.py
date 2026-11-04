@@ -164,8 +164,6 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_tensor: List[List[torch.Tensor]],
-        *,
-        distribute_backend_load: bool = False,
     ) -> Task:
         """Initiate transfer of KV cache from storage to device.
 
@@ -208,8 +206,6 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
-        *,
-        distribute_backend_load: bool = False,
     ) -> Task:
         """Low-level fetch: copy KV data to device pointers.
 

@@ -827,8 +827,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
     The scheduler side (group-aware hashing, two-stage lookup, per-group
     dispatch meta) is shared between direct and layerwise modes.  The worker
-    side here is DIRECT: one whole-block task per request at
-    ``start_load_kv`` (waited inline), ONE whole-batch dump task in
+    side here is DIRECT: separate shared MLA and private state tasks per request
+    at ``start_load_kv`` (waited inline), ONE whole-batch dump task in
     ``wait_for_save`` — a single shard per block, no deferred-commit logic.
     The layerwise subclass overrides ``register_kv_caches`` and the whole
     transfer pipeline.

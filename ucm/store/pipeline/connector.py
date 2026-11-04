@@ -89,6 +89,11 @@ class UcmPipelineStoreTransTask(Task):
 
 
 class UcmPipelineStore(UcmKVStoreBaseV1):
+    @property
+    def supports_distributed_backend_load(self) -> bool:
+        """Custom load overrides keep their original submission interface."""
+        return getattr(self.load_data, "__func__", None) is UcmPipelineStore.load_data
+
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self.store_ = ucmpipelinestore.PipelineStore()
