@@ -259,6 +259,7 @@ class StoreWorkerClient(_StoreBinding):
         for result in results:
             task = self._tasks.pop(result.job_id)
             task.success = bool(result.success)
+            task.transfer_batches = ()
             task.native_arguments = ()
 
     def poll_finished(self) -> None:
