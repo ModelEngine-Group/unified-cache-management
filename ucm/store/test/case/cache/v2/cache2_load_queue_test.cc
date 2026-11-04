@@ -845,8 +845,8 @@ TEST_F(UCCache2LoadQueueTest, PrivateTaskKeepsOriginalOrderWithSharedBuffer)
 
     UC::Detail::TaskDesc desc;
     for (size_t i = 0; i < 4; ++i) {
-        desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0,
-                       {reinterpret_cast<void*>(0x1000 * (i + 1))}});
+        desc.push_back(
+            {TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x1000 * (i + 1))}});
     }
     EXPECT_CALL(backend_, Load).Times(4).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
         return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());

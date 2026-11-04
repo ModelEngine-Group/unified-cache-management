@@ -176,10 +176,10 @@ private:
             const auto originalIndex = indexes[i];
             auto& shard = task->desc[originalIndex];
             ShardTask shardTask;
-            auto handle = task->desc.distributeBackendLoad
-                              ? buffer_->Get(shard.owner, shard.index, true,
-                                             originalIndex % localRankSize_)
-                              : buffer_->Get(shard.owner, shard.index, true);
+            auto handle =
+                task->desc.distributeBackendLoad
+                    ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_)
+                    : buffer_->Get(shard.owner, shard.index, true);
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
