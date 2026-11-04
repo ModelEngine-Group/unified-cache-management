@@ -48,11 +48,9 @@ using cudaEvent_t = hipEvent_t;
 
 static constexpr hipError_t cudaSuccess = hipSuccess;
 static constexpr hipError_t cudaErrorNotReady = hipErrorNotReady;
-/* The cache2 tests pass host buffers as device addresses; hipMemcpyDefault lets
- * HIP pick the direction from the pointers instead of rejecting the explicit kind. */
-static constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyDefault;
-static constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDefault;
-static constexpr hipMemcpyKind cudaMemcpyDeviceToDevice = hipMemcpyDefault;
+static constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyHostToDevice;
+static constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDeviceToHost;
+static constexpr hipMemcpyKind cudaMemcpyDeviceToDevice = hipMemcpyDeviceToDevice;
 static constexpr unsigned int cudaStreamNonBlocking = hipStreamNonBlocking;
 static constexpr unsigned int cudaHostRegisterDefault = hipHostRegisterDefault;
 
