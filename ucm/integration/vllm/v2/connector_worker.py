@@ -84,7 +84,8 @@ class UCMConnectorWorker:
         self._dump_submitted_layer_ids: set[int] = set()
         self._failed_load_request_ids: set[str] = set()
         self._failed_dump_jobs: set[int] = set()
-        self._sub_job_ids_by_job: dict[int, int] = {}
+        # Keep completed tasks here until the step's parent results are reported.
+        self._transfer_tasks_by_job: dict[int, list[TransferTask]] = {}
         self._step_io_completed = False
         self.layout: UCMKVCacheLayout | None = None
         self._completion_metadata = UCMWorkerMetadata()
@@ -131,6 +132,7 @@ class UCMConnectorWorker:
             # close drains the backend; keep descriptors if it cannot finish.
             self._layer_load_tasks.clear()
             self._dump_tasks.clear()
+            self._transfer_tasks_by_job.clear()
         if first_error is not None:
             raise first_error
 
@@ -172,14 +174,19 @@ class UCMConnectorWorker:
         self._dump_submitted_layer_ids.clear()
         self._failed_load_request_ids.clear()
         self._failed_dump_jobs.clear()
-        self._sub_job_ids_by_job.clear()
+        self._transfer_tasks_by_job.clear()
         self._step_io_completed = False
         self._connector_metadata = connector_metadata
 
-    def _next_sub_job_id(self, job_id: int) -> int:
-        sub_job_id = self._sub_job_ids_by_job.get(job_id, 0) + 1
-        self._sub_job_ids_by_job[job_id] = sub_job_id
-        return sub_job_id
+    def _report_job_result(self, job_id: int, success: bool) -> None:
+        job_tasks = self._transfer_tasks_by_job.get(job_id, ())
+        self._completion_metadata.job_results.add(
+            JobResult(
+                job_id,
+                self._parallel_rank,
+                success and all(task.success is True for task in job_tasks),
+            )
+        )
 
     def _execute_prefetch(self, prefetch_job: PreparedJob) -> None:
         success = True
@@ -187,15 +194,14 @@ class UCMConnectorWorker:
         if self._parallel_rank == ParallelRank():
             try:
                 prefetch_task = self._store_worker.submit_prefetch(prefetch_job)
+                self._transfer_tasks_by_job[prefetch_job.job_id] = [prefetch_task]
                 self._store_worker.wait(prefetch_task)
             except StoreIOError:
                 logger.warning(
                     "UCM prefetch failed; recomputing this request", exc_info=True
                 )
                 success = False
-        self._completion_metadata.job_results.add(
-            JobResult(prefetch_job.job_id, self._parallel_rank, success)
-        )
+        self._report_job_result(prefetch_job.job_id, success)
 
     def _submit_load(
         self, request_metadata: RequestMetadata, layer_id: int | None = None
@@ -206,12 +212,12 @@ class UCMConnectorWorker:
         if not transfer_batches:
             return
         load_job = request_metadata.load_job
-        sub_job_id = (
-            self._next_sub_job_id(load_job.job_id) if layer_id is not None else None
-        )
+        job_tasks = self._transfer_tasks_by_job.setdefault(load_job.job_id, [])
+        sub_job_id = len(job_tasks) + 1 if layer_id is not None else None
         load_task = self._store_worker.submit_get(
             load_job, transfer_batches, sub_job_id
         )
+        job_tasks.append(load_task)
         self._layer_load_tasks.setdefault(layer_id, []).append(
             (request_metadata.request_id, load_task)
         )
@@ -310,10 +316,12 @@ class UCMConnectorWorker:
             )
             if not transfer_batches:
                 continue
+            job_tasks = self._transfer_tasks_by_job.setdefault(dump_job.job_id, [])
             try:
                 dump_task = self._store_worker.submit_put(
-                    dump_job, transfer_batches, self._next_sub_job_id(dump_job.job_id)
+                    dump_job, transfer_batches, len(job_tasks) + 1
                 )
+                job_tasks.append(dump_task)
                 self._dump_tasks.append(dump_task)
             except StoreIOError:
                 self._failed_dump_jobs.add(dump_job.job_id)
@@ -364,6 +372,7 @@ class UCMConnectorWorker:
                     dump_task = self._store_worker.submit_put(
                         dump_job, transfer_batches
                     )
+                    self._transfer_tasks_by_job[dump_job.job_id] = [dump_task]
                     self._dump_tasks.append(dump_task)
                 except StoreIOError:
                     self._failed_dump_jobs.add(dump_job.job_id)
@@ -376,22 +385,14 @@ class UCMConnectorWorker:
                 request_metadata.request_id not in self._failed_load_request_ids
             )
             if request_metadata.load_job is not None:
-                self._completion_metadata.job_results.add(
-                    JobResult(
-                        request_metadata.load_job.job_id,
-                        self._parallel_rank,
-                        load_succeeded,
-                    )
+                self._report_job_result(
+                    request_metadata.load_job.job_id, load_succeeded
                 )
             if request_metadata.dump_job is not None:
-                self._completion_metadata.job_results.add(
-                    JobResult(
-                        request_metadata.dump_job.job_id,
-                        self._parallel_rank,
-                        load_succeeded
-                        and request_metadata.dump_job.job_id
-                        not in self._failed_dump_jobs,
-                    )
+                dump_job_id = request_metadata.dump_job.job_id
+                self._report_job_result(
+                    dump_job_id,
+                    load_succeeded and dump_job_id not in self._failed_dump_jobs,
                 )
         # Empty ranks acknowledge the parent too, after all local IO is terminal.
         self._step_io_completed = True

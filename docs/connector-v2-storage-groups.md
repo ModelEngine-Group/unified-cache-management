@@ -133,8 +133,8 @@ token.keys 做业务匹配；token 字段的复制/还原只保留在 binding �
 同一个 request_id 的不同 step、Get/Put/Prefetch 使用不同主 job。
 
 bulk 将本 rank 的全部 group/chunk 描述合并为一次 Submit，直接使用主 job_id。
-layerwise 由 Worker 在主 job 下生成 sub_job_id，各层/缓存的 Submit 独立完成，
-全部子任务终态明确后才回报 JobResult(主 job_id, rank, success)。
+layerwise 由 Worker 在主 job 下生成 sub_job_id，按主 job 保留每个已提交子任务的编号和结果，
+本轮所有传输到达终态后，汇总并回报 JobResult(主 job_id, rank, success)。
 各 rank 可以有不同数量的子任务，无本地任务的 rank 直接回报主 job 成功。
 
 当前 native Submit/Wait 只接受一个 size_t 整数：Scheduler 按 2^32 的间隔分配
