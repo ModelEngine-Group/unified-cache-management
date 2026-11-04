@@ -272,6 +272,9 @@ float average2d(const std::vector<std::vector<float>>& matrix)
 
     size_t count = 0;
     for (const auto& row : matrix) { count += row.size(); }
+    /* Non-empty matrix of empty rows: count==0 must return 0.0f instead of
+     * dividing by zero (NaN). */
+    if (count == 0) { return 0.0f; }
 
     return static_cast<float>(sum / count);
 }
@@ -479,10 +482,10 @@ void GSAPrefetchEngineC::AttachPrefetchResultShm()
     // Other ranks: Wait for rank 0 to create, then attach with read-only access
     int retryCount = 0;
     int shmFd = -1;
-    while (shmFd == -1 && retryCount < 100) {
+    while (shmFd == -1 && retryCount < 3000) {
         shmFd = shm_open(mPrefetchResultShmName.c_str(), O_RDONLY, 0666);
         if (shmFd == -1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Wait 1ms before retry
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));  // Wait 1ms before retry
             retryCount++;
         }
     }
@@ -976,21 +979,16 @@ void GSAPrefetchEngineC::LastChunkMove(int layerID, const std::string& reqID,
     const size_t blockCount = moveMap.size() / blockSize;
     const size_t kBlockBytes = blockSize * static_cast<size_t>(mKVSizeBytesToken);
     const size_t vBlockBytes = blockSize * static_cast<size_t>(mKVSizeBytesTokenRe);
+    // sourceBlocks 仅保留非 UCM 块的 host 源地址；UCM 块的 token 由 LoadOnToken
+    // 在接口内直接拷贝到 last chunk staging buffer。
     std::vector<LastChunkSourceBlock> sourceBlocks(hashIt->second.size() + 1);
-    std::vector<int> loadedBlockIndices;
-    UC::Detail::TaskDesc task;
-    if (!PrepareLastChunkSources(layerID, reqID, moveMap, blockTable, sourceBlocks, task,
-                                 loadedBlockIndices)) {
+    UCMTokenLoadPlan plan;
+    if (!PrepareLastChunkSources(layerID, reqID, moveMap, blockTable, sourceBlocks, plan)) {
         return;
     }
-    UC::Detail::TaskHandle hostTaskId{};
-    bool hasHostTask = false;
-    if (!LoadLastChunkSources(layerID, reqID, task, loadedBlockIndices, sourceBlocks, hostTaskId,
-                              hasHostTask)) {
-        return;
-    }
+    if (!LoadLastChunkSources(layerID, reqID, plan)) { return; }
     Synchronize(mContext, mStream, 1, mLogger);
-    CopyLastChunkTokens(layerID, reqID, moveMap, sourceBlocks, hostTaskId, hasHostTask);
+    CopyLastChunkTokens(layerID, reqID, moveMap, sourceBlocks);
     for (size_t i = 0; i < blockCount; ++i) {
         const int hbmSlot = blockTable[i];
         void* kSrc = reinterpret_cast<void*>(mLastCHunkKPtr[layerID] + i * kBlockBytes);
@@ -1017,8 +1015,7 @@ bool GSAPrefetchEngineC::PrepareLastChunkSources(int layerID, const std::string&
                                                  const std::vector<int>& moveMap,
                                                  const std::vector<int>& blockTable,
                                                  std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                                 UC::Detail::TaskDesc& task,
-                                                 std::vector<int>& loadedBlockIndices)
+                                                 UCMTokenLoadPlan& plan)
 {
     const size_t blockSize = static_cast<size_t>(mBlockSize);
     const size_t blockCount = moveMap.size() / blockSize;
@@ -1037,29 +1034,44 @@ bool GSAPrefetchEngineC::PrepareLastChunkSources(int layerID, const std::string&
             return false;
         }
     }
-    return BuildLastChunkSources(layerID, reqID, moveMap, sourceBlocks, task, loadedBlockIndices);
+    return BuildLastChunkSources(layerID, reqID, moveMap, sourceBlocks, plan);
 }
 
 bool GSAPrefetchEngineC::BuildLastChunkSources(int layerID, const std::string& reqID,
                                                const std::vector<int>& moveMap,
                                                std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                               UC::Detail::TaskDesc& task,
-                                               std::vector<int>& loadedBlockIndices)
+                                               UCMTokenLoadPlan& plan)
 {
     const auto& hashVec = mAllBlocksHash.at(reqID);
     const size_t blockSize = static_cast<size_t>(mBlockSize);
-    const size_t kBlockBytes = blockSize * static_cast<size_t>(mKVSizeBytesToken);
-    const size_t vBlockBytes = blockSize * static_cast<size_t>(mKVSizeBytesTokenRe);
+    const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
+    const size_t vTokenBytes = static_cast<size_t>(mKVSizeBytesTokenRe);
+    const size_t kBlockBytes = blockSize * kTokenBytes;
+    const size_t vBlockBytes = blockSize * vTokenBytes;
     const int lastUCMBlockIdx = static_cast<int>(hashVec.size());
-    std::vector<uint8_t> blockAdded(hashVec.size(), 0);
-    const size_t reserveCount = std::min(moveMap.size(), hashVec.size());
-    loadedBlockIndices.reserve(reserveCount);
-    task.reserve(reserveCount);
+    if (layerID < 0 || static_cast<size_t>(layerID) >= mLastCHunkKPtr.size() ||
+        (!mISSPAC8 && static_cast<size_t>(layerID) >= mLastCHunkVPtr.size())) {
+        mLogger.log(LogLevel::ERROR, "|LastChunkMove| layerID out of range, layerID=%d\n", layerID);
+        return false;
+    }
+    auto* kDstBase = reinterpret_cast<std::byte*>(mLastCHunkKPtr[layerID]);
+    std::byte* vDstBase =
+        mISSPAC8 ? nullptr : reinterpret_cast<std::byte*>(mLastCHunkVPtr[layerID]);
+    if (kDstBase == nullptr || (!mISSPAC8 && vDstBase == nullptr)) {
+        mLogger.log(LogLevel::ERROR, "|LastChunkMove| last chunk buffer is nullptr\n");
+        return false;
+    }
     auto lastKVReqIt = mLastKVBlockAddress.find(reqID);
     if (lastKVReqIt == mLastKVBlockAddress.end()) {
         mLogger.log(LogLevel::ERROR, "|LastChunkMove| no non-UCM block\n");
         return false;
     }
+    // 每个 UCM 块对应一个 shard：目的首地址为该块首个 token 在 last chunk
+    // staging buffer 中的落位（kDstBase + firstDst * kTokenBytes）；块内每个
+    // token 追加一条 K TokenRange（offset 为块内偏移，dstOffset 相对 shard
+    // 首地址），V 同理。
+    std::vector<size_t> blockFirstDst(hashVec.size(), 0);
+    std::vector<int> blockShardIdx(hashVec.size(), -1);
     for (size_t i = 0; i < moveMap.size(); ++i) {
         const int globalToken = moveMap[i];
         if (globalToken < 0) {
@@ -1087,68 +1099,112 @@ bool GSAPrefetchEngineC::BuildLastChunkSources(int layerID, const std::string& r
             }
             continue;
         }
-        if (!blockAdded[blockIdx]) {
-            blockAdded[blockIdx] = 1;
-            loadedBlockIndices.push_back(blockIdx);
-            task.emplace_back(
-                UC::Detail::Shard{hashVec[blockIdx], static_cast<size_t>(layerID), {}});
+        const size_t blockIdxSz = static_cast<size_t>(blockIdx);
+        if (blockShardIdx[blockIdxSz] < 0) {
+            blockFirstDst[blockIdxSz] = i;
+            blockShardIdx[blockIdxSz] = static_cast<int>(plan.kTask.size());
+            plan.kTask.emplace_back(
+                UC::Detail::Shard{hashVec[blockIdxSz], static_cast<size_t>(layerID),
+                                  std::vector<void*>{kDstBase + i * kTokenBytes}});
+            UC::Detail::TokenFilter kFilter;
+            kFilter.ranges.resize(kStoreTensorCount);
+            plan.kFilters.push_back(std::move(kFilter));
+            if (!mISSPAC8) {
+                plan.vTask.emplace_back(
+                    UC::Detail::Shard{hashVec[blockIdxSz], static_cast<size_t>(layerID),
+                                      std::vector<void*>{vDstBase + i * vTokenBytes}});
+                UC::Detail::TokenFilter vFilter;
+                vFilter.ranges.resize(kStoreTensorCount);
+                plan.vFilters.push_back(std::move(vFilter));
+            }
+        }
+        const size_t shardIdx = static_cast<size_t>(blockShardIdx[blockIdxSz]);
+        const size_t tokenIdxInBlock = static_cast<size_t>(globalToken % mBlockSize);
+        const size_t dstOffset = i - blockFirstDst[blockIdxSz];
+        plan.kFilters[shardIdx].ranges[kKTensorIndex].push_back(UC::Detail::TokenRange{
+            tokenIdxInBlock * kTokenBytes, kTokenBytes, dstOffset * kTokenBytes});
+        if (!mISSPAC8) {
+            plan.vFilters[shardIdx].ranges[kVTensorIndex].push_back(UC::Detail::TokenRange{
+                tokenIdxInBlock * vTokenBytes, vTokenBytes, dstOffset * vTokenBytes});
         }
     }
     return true;
 }
 
 bool GSAPrefetchEngineC::LoadLastChunkSources(int layerID, const std::string& reqID,
-                                              UC::Detail::TaskDesc& task,
-                                              const std::vector<int>& loadedBlockIndices,
-                                              std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                              UC::Detail::TaskHandle& hostTaskId, bool& hasHostTask)
+                                              const UCMTokenLoadPlan& plan)
 {
-    if (task.empty()) { return true; }
+    if (plan.kTask.empty() && plan.vTask.empty()) { return true; }
     if (!mStoreV1_) {
         mLogger.log(LogLevel::ERROR, "|LastChunkMove| mStoreV1_ is nullptr, reqID=%s layerID=%d\n",
                     reqID.c_str(), layerID);
         return false;
     }
-    const size_t kBlockBytes =
-        static_cast<size_t>(mBlockSize) * static_cast<size_t>(mKVSizeBytesToken);
-    const size_t normalBlockCount = task.size();
-    auto hostResult = mStoreV1_->LoadToHostBuffer(std::move(task));
-    if (!hostResult) {
+    return SubmitUCMTokenLoad(plan, "LastChunkMove", layerID, reqID);
+}
+
+bool GSAPrefetchEngineC::SubmitUCMTokenLoad(const UCMTokenLoadPlan& plan, const char* stage,
+                                            int layerID, const std::string& reqID)
+{
+    if (!mStoreV1_) {
+        mLogger.log(LogLevel::ERROR, "|%s| mStoreV1_ is nullptr, reqID=%s layerID=%d\n", stage,
+                    reqID.c_str(), layerID);
+        return false;
+    }
+    if (!SubmitUCMTokenLoadLeg(plan.kTask, plan.kFilters, "K", stage, layerID, reqID)) {
+        return false;
+    }
+    if (!mISSPAC8 &&
+        !SubmitUCMTokenLoadLeg(plan.vTask, plan.vFilters, "V", stage, layerID, reqID)) {
+        return false;
+    }
+    return true;
+}
+
+bool GSAPrefetchEngineC::SubmitUCMTokenLoadLeg(const UC::Detail::TaskDesc& task,
+                                               const std::vector<UC::Detail::TokenFilter>& filters,
+                                               const char* tensorName, const char* stage,
+                                               int layerID, const std::string& reqID)
+{
+    if (task.empty()) { return true; }
+    if (!mStoreV1_) {
         mLogger.log(LogLevel::ERROR,
-                    "|LastChunkMove| LoadToHostBuffer failed, layerID=%d reqID=%s error=%s\n",
-                    layerID, reqID.c_str(), hostResult.Error().ToString().c_str());
+                    "|%s| LoadOnToken(%s) mStoreV1_ is nullptr, reqID=%s layerID=%d\n", stage,
+                    tensorName, reqID.c_str(), layerID);
         return false;
     }
-    auto result = std::move(hostResult.Value());
-    hostTaskId = result.taskId;
-    hasHostTask = true;
-    if (result.views.size() != normalBlockCount) {
-        mLogger.log(
-            LogLevel::ERROR,
-            "|LastChunkMove| HostBufferView size mismatch, reqID=%s views=%zu expected=%zu\n",
-            reqID.c_str(), result.views.size(), normalBlockCount);
-        mStoreV1_->ReleaseHostBuffer(hostTaskId);
+    if (filters.size() != task.size()) {
+        mLogger.log(LogLevel::ERROR,
+                    "|%s| LoadOnToken(%s) filter size mismatch, reqID=%s layerID=%d "
+                    "shards=%zu filters=%zu\n",
+                    stage, tensorName, reqID.c_str(), layerID, task.size(), filters.size());
         return false;
     }
-    for (size_t i = 0; i < normalBlockCount; ++i) {
-        if (!result.views[i].hostAddr) {
-            mLogger.log(LogLevel::ERROR,
-                        "|LastChunkMove| HostBufferView is nullptr, reqID=%s index=%zu\n",
-                        reqID.c_str(), i);
-            mStoreV1_->ReleaseHostBuffer(hostTaskId);
-            return false;
-        }
-        const auto* base = static_cast<const std::byte*>(result.views[i].hostAddr);
-        sourceBlocks[loadedBlockIndices[i]].kBase = base;
-        if (!mISSPAC8) { sourceBlocks[loadedBlockIndices[i]].vBase = base + kBlockBytes; }
+    UC::Detail::TaskDesc submitTask = task;
+    submitTask.brief = std::string(stage) + "LoadOnToken" + tensorName;
+    submitTask.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    auto loadResult = mStoreV1_->LoadOnToken(std::move(submitTask), filters);
+    if (!loadResult) {
+        mLogger.log(LogLevel::ERROR,
+                    "|%s| LoadOnToken(%s) failed, reqID=%s layerID=%d shards=%zu error=%s\n", stage,
+                    tensorName, reqID.c_str(), layerID, task.size(),
+                    loadResult.Error().ToString().c_str());
+        return false;
+    }
+    auto waitStatus = mStoreV1_->Wait(loadResult.Value());
+    if (waitStatus.Failure()) {
+        const std::string error = waitStatus.ToString();
+        mLogger.log(LogLevel::ERROR,
+                    "|%s| LoadOnToken(%s) Wait failed, reqID=%s layerID=%d shards=%zu error=%s\n",
+                    stage, tensorName, reqID.c_str(), layerID, task.size(), error.c_str());
+        return false;
     }
     return true;
 }
 
 void GSAPrefetchEngineC::CopyLastChunkTokens(int layerID, const std::string& reqID,
                                              const std::vector<int>& moveMap,
-                                             const std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                             UC::Detail::TaskHandle hostTaskId, bool hasHostTask)
+                                             const std::vector<LastChunkSourceBlock>& sourceBlocks)
 {
     constexpr size_t kTwoThreadTokenThreshold = 256;
     constexpr size_t kFourThreadTokenThreshold = 512;
@@ -1169,8 +1225,11 @@ void GSAPrefetchEngineC::CopyLastChunkTokens(int layerID, const std::string& req
     auto copyOneToken = [&](size_t i) {
         const int globalToken = moveMap[i];
         const size_t blockIdx = static_cast<size_t>(globalToken / mBlockSize);
-        const size_t tokenIdx = static_cast<size_t>(globalToken % mBlockSize);
+        if (blockIdx >= sourceBlocks.size()) { return; }
         const auto& src = sourceBlocks[blockIdx];
+        // UCM 块 kBase 为空：其 token 已由 LoadOnToken 在接口内完成落位。
+        if (src.kBase == nullptr) { return; }
+        const size_t tokenIdx = static_cast<size_t>(globalToken % mBlockSize);
         std::memcpy(kDstBase + i * kTokenBytes, src.kBase + tokenIdx * kTokenBytes, kTokenBytes);
         if (!mISSPAC8) {
             std::memcpy(vDstBase + i * vTokenBytes, src.vBase + tokenIdx * vTokenBytes,
@@ -1184,87 +1243,73 @@ void GSAPrefetchEngineC::CopyLastChunkTokens(int layerID, const std::string& req
 #pragma omp parallel for num_threads(tokenThreadNum) proc_bind(close) schedule(static)
         for (long long i = 0; i < count; ++i) copyOneToken(static_cast<size_t>(i));
     }
-    if (hasHostTask) {
-        auto status = mStoreV1_->ReleaseHostBuffer(hostTaskId);
-        if (status.Failure()) {
-            const std::string error = status.ToString();
-            mLogger.log(LogLevel::ERROR,
-                        "|LastChunkMove| ReleaseHostBuffer failed, reqID=%s status=%s\n",
-                        reqID.c_str(), error.c_str());
+}
+
+bool GSAPrefetchEngineC::BuildUCMMergeLoadPlan(
+    UCMTokenLoadPlan& plan, const std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
+    int streamIdx, const std::string& reqID, size_t previousLoadNum)
+{
+    // 当前 rank 无 UCM 加载任务时，plan 为空，不依赖 Store。
+    const auto& hashVec = mAllBlocksHash.at(reqID);
+    const auto& missGlobalIds = mMissGlobalToken[reqID][mTopkLayerMap[layerID]];
+    const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
+    const size_t vTokenBytes = static_cast<size_t>(mKVSizeBytesTokenRe);
+    if (streamIdx < 0 || static_cast<size_t>(streamIdx) >= mSharedKBufferHostPtr.size() ||
+        (!mISSPAC8 && static_cast<size_t>(streamIdx) >= mSharedVBufferHostPtr.size())) {
+        mLogger.log(LogLevel::ERROR,
+                    "|UCMTensorMerge| streamIdx out of range, reqID=%s streamIdx=%d\n",
+                    reqID.c_str(), streamIdx);
+        return false;
+    }
+    auto* kDstBase = reinterpret_cast<std::byte*>(mSharedKBufferHostPtr[streamIdx]);
+    std::byte* vDstBase =
+        mISSPAC8 ? nullptr : reinterpret_cast<std::byte*>(mSharedVBufferHostPtr[streamIdx]);
+    if (kDstBase == nullptr || (!mISSPAC8 && vDstBase == nullptr)) {
+        mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| shared buffer is nullptr, reqID=%s\n",
+                    reqID.c_str());
+        return false;
+    }
+    // 仅本 rank 拥有的 UCM 块需要 LoadOnToken；目的首地址为该块首个 token 在
+    // 共享 staging buffer 中的落位（base + (previousLoadNum + tokenBase) * tokenBytes），
+    // 块内每个 token 追加一条 TokenRange（dstOffset 相对 shard 首地址）。
+    for (const auto& context : blockContexts) {
+        if (!context.owned || context.isnoUCMblock) { continue; }
+        const auto& tokenIndices = *context.tokenIndices;
+        const size_t firstDst = previousLoadNum + context.tokenBase;
+        plan.kTask.emplace_back(UC::Detail::Shard{
+            hashVec[static_cast<size_t>(context.blockIdx)], static_cast<size_t>(layerID),
+            std::vector<void*>{kDstBase + firstDst * kTokenBytes}});
+        UC::Detail::TokenFilter kFilter;
+        kFilter.ranges.resize(kStoreTensorCount);
+        for (size_t localTokenIdx = 0; localTokenIdx < tokenIndices.size(); ++localTokenIdx) {
+            const int globalToken = missGlobalIds[tokenIndices[localTokenIdx]];
+            const size_t tokenIdxInBlock = static_cast<size_t>(globalToken % mBlockSize);
+            kFilter.ranges[kKTensorIndex].push_back(UC::Detail::TokenRange{
+                tokenIdxInBlock * kTokenBytes, kTokenBytes, localTokenIdx * kTokenBytes});
+        }
+        plan.kFilters.push_back(std::move(kFilter));
+        if (!mISSPAC8) {
+            plan.vTask.emplace_back(UC::Detail::Shard{
+                hashVec[static_cast<size_t>(context.blockIdx)], static_cast<size_t>(layerID),
+                std::vector<void*>{vDstBase + firstDst * vTokenBytes}});
+            UC::Detail::TokenFilter vFilter;
+            vFilter.ranges.resize(kStoreTensorCount);
+            for (size_t localTokenIdx = 0; localTokenIdx < tokenIndices.size(); ++localTokenIdx) {
+                const int globalToken = missGlobalIds[tokenIndices[localTokenIdx]];
+                const size_t tokenIdxInBlock = static_cast<size_t>(globalToken % mBlockSize);
+                vFilter.ranges[kVTensorIndex].push_back(UC::Detail::TokenRange{
+                    tokenIdxInBlock * vTokenBytes, vTokenBytes, localTokenIdx * vTokenBytes});
+            }
+            plan.vFilters.push_back(std::move(vFilter));
         }
     }
+    return true;
 }
 
-UCMMergeHostAddress::~UCMMergeHostAddress() { owner.ReleaseUCMMergeHostAddress(*this); }
-
-void GSAPrefetchEngineC::ReleaseUCMMergeHostAddress(UCMMergeHostAddress& address)
-{
-    if (!address.hasHostTask) { return; }
-    if (!mStoreV1_) {
-        mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| mStoreV1_ is nullptr");
-        address.hasHostTask = false;
-        return;
-    }
-    const auto status = mStoreV1_->ReleaseHostBuffer(address.taskId);
-    if (status.Failure()) {
-        mLogger.log(LogLevel::ERROR,
-                    "|UCMTensorMerge| ReleaseHostBuffer failed, "
-                    "taskId=%zu status=%s\n",
-                    static_cast<std::size_t>(address.taskId), status.ToString().c_str());
-    }
-    // 与原实现相同：释放失败仅记录错误，不自动重试。
-    address.hasHostTask = false;
-    address.addresses.clear();
-    address.views.clear();
-}
-
-bool GSAPrefetchEngineC::LoadUCMMergeHostAddress(UC::Detail::TaskDesc task,
-                                                 UCMMergeHostAddress& address, int layerID,
-                                                 const std::string& reqID)
-{
-    // 每次 merge 使用一个新的 address, 避免覆盖尚未释放的 task
-    if (address.hasHostTask || !address.views.empty() || !address.addresses.empty()) {
-        return false;
-    }
-    const size_t normalBlockCount = task.size();
-    // 当前 rank 无 UCM 加载任务时，不依赖 Store。
-    if (normalBlockCount == 0) { return true; }
-    if (!mStoreV1_) { return false; }
-    auto hostResult = mStoreV1_->LoadToHostBuffer(std::move(task));
-    if (!hostResult) {
-        mLogger.log(LogLevel::ERROR,
-                    "|UCMTensorMerge| LoadToHostBuffer failed, "
-                    "layerID=%d, reqID=%s, error=%s\n",
-                    layerID, reqID.c_str(), hostResult.Error().ToString().c_str());
-        return false;
-    }
-    auto result = std::move(hostResult.Value());
-    address.taskId = result.taskId;
-    address.hasHostTask = true;
-    address.views = std::move(result.views);
-    if (address.views.size() != normalBlockCount) {
-        mLogger.log(LogLevel::ERROR,
-                    "|UCMTensorMerge| host views count mismatch, expected=%zu actual=%zu \n",
-                    normalBlockCount, address.views.size());
-        return false;
-    }
-    address.addresses.reserve(normalBlockCount);
-    for (const auto& view : address.views) {
-        if (view.hostAddr == nullptr) {
-            mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| null hostAddr, layerID=%d reqID=%s\n",
-                        layerID, reqID.c_str());
-            return false;
-        }
-        address.addresses.push_back(static_cast<const std::byte*>(view.hostAddr));
-    }
-    return true;  // 此处不能释放，后面的 memcpy 仍需访问这些地址。
-}
-
-bool GSAPrefetchEngineC::MemcpyUCMMergeHostAddress(const UCMMergeHostAddress& address,
-                                                   std::vector<UCMMergeBlockContext>& blockContexts,
-                                                   int layerID, int streamIdx,
-                                                   std::vector<uint64_t>& hbmSlotIndex,
-                                                   const std::string& reqID, size_t previousLoadNum)
+bool GSAPrefetchEngineC::MemcpyUCMMergeTokens(std::vector<UCMMergeBlockContext>& blockContexts,
+                                              int layerID, int streamIdx,
+                                              std::vector<uint64_t>& hbmSlotIndex,
+                                              const std::string& reqID, size_t previousLoadNum)
 {
     constexpr int kMaxTokenThreadNum = 4;
     constexpr size_t kTwoThreadTokenThreshold = 256;
@@ -1276,7 +1321,7 @@ bool GSAPrefetchEngineC::MemcpyUCMMergeHostAddress(const UCMMergeHostAddress& ad
         hbmSlotIndex.reserve(static_cast<size_t>(mLoadIndexBufferLen));
     }
     hbmSlotIndex.resize(finalLoadNum);
-    if (!PrepareUCMMergeSources(address, blockContexts, layerID, reqID)) { return false; }
+    if (!PrepareUCMMergeSources(blockContexts, layerID, reqID)) { return false; }
     int tokenThreadNum = 1;
     if (tokenCount >= kFourThreadTokenThreshold) {
         tokenThreadNum = kMaxTokenThreadNum;
@@ -1293,8 +1338,7 @@ bool GSAPrefetchEngineC::MemcpyUCMMergeHostAddress(const UCMMergeHostAddress& ad
     return true;
 }
 
-bool GSAPrefetchEngineC::PrepareUCMMergeSources(const UCMMergeHostAddress& address,
-                                                std::vector<UCMMergeBlockContext>& blockContexts,
+bool GSAPrefetchEngineC::PrepareUCMMergeSources(std::vector<UCMMergeBlockContext>& blockContexts,
                                                 int layerID, const std::string& reqID)
 {
     const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
@@ -1303,8 +1347,10 @@ bool GSAPrefetchEngineC::PrepareUCMMergeSources(const UCMMergeHostAddress& addre
     const size_t vBlockBytes = static_cast<size_t>(mBlockSize) * vTokenBytes;
     const auto addressIt = mLastKVBlockAddress.find(reqID);
     for (auto& context : blockContexts) {
-        if (!context.owned) { continue; }
-        if (context.isnoUCMblock) {
+        /* 仅 owned 的非 UCM 块仍需引擎侧源地址：owned 的 UCM 块已由
+         * LoadOnToken 在接口内直接落位，非 owned 块由拥有它的 rank 填充。 */
+        if (!context.owned || !context.isnoUCMblock) { continue; }
+        {
             if (addressIt == mLastKVBlockAddress.end()) { return false; }
             auto blockAddressIt = addressIt->second.find(context.blockIdx);
             if (blockAddressIt == addressIt->second.end()) { return false; }
@@ -1317,10 +1363,6 @@ bool GSAPrefetchEngineC::PrepareUCMMergeSources(const UCMMergeHostAddress& addre
                 context.vSrc = reinterpret_cast<const std::byte*>(blockAddress.vAddr) +
                                static_cast<size_t>(layerID) * vBlockBytes;
             }
-        } else {
-            const auto* shardBase = address.addresses[context.viewIndex];
-            context.kSrc = shardBase;
-            if (!mISSPAC8) { context.vSrc = shardBase + kBlockBytes; }
         }
     }
     return true;
@@ -1348,7 +1390,8 @@ void GSAPrefetchEngineC::CopyUCMMergeTokensSerial(
             const int hbmIdx = blockTable[static_cast<size_t>(slotID / mBlockSize)];
             const int hbmSlot = slotID % mBlockSize;
             const size_t dstOffset = previousLoadNum + context.tokenBase + localTokenIdx;
-            if (context.owned) {
+            /* owned 的 UCM 块已由 LoadOnToken 落位，仅 owned 非 UCM 块需要本地拷贝。 */
+            if (context.owned && context.isnoUCMblock) {
                 CopySingleTokenKV(kDstBase, vDstBase, context, tokenOffset, dstOffset, kTokenBytes,
                                   vTokenBytes);
             }
@@ -1391,7 +1434,7 @@ void GSAPrefetchEngineC::CopyUCMMergeTokensParallel(
 #pragma omp parallel for num_threads(tokenThreadNum) proc_bind(close) schedule(static)
     for (long long i = 0; i < taskCount; ++i) {
         const auto& copyTask = tokenCopyTasks[static_cast<size_t>(i)];
-        if (copyTask.owned) {
+        if (copyTask.localCopy) {
             std::memcpy(kDstBase + copyTask.dstOffset * kTokenBytes, copyTask.kSrc, kTokenBytes);
             if (!mISSPAC8) {
                 std::memcpy(vDstBase + copyTask.dstOffset * vTokenBytes, copyTask.vSrc,
@@ -1419,20 +1462,22 @@ void GSAPrefetchEngineC::BuildTokenCopyTasks(const std::vector<UCMMergeBlockCont
             const int hbmIdx = blockTable[static_cast<size_t>(slotID / mBlockSize)];
             const int hbmSlot = slotID % mBlockSize;
             const size_t dstOffset = previousLoadNum + context.tokenBase + localTokenIdx;
+            /* owned 的 UCM 块已由 LoadOnToken 落位：仅 owned 非 UCM 块需要本地拷贝。 */
+            const bool localCopy = context.owned && context.isnoUCMblock;
             if (!mISSPAC8) {
                 tokenCopyTasks.push_back(
-                    {context.owned ? context.kSrc + tokenOffset * kTokenBytes : nullptr,
-                     context.owned ? context.vSrc + tokenOffset * vTokenBytes : nullptr, dstOffset,
+                    {localCopy ? context.kSrc + tokenOffset * kTokenBytes : nullptr,
+                     localCopy ? context.vSrc + tokenOffset * vTokenBytes : nullptr, dstOffset,
                      static_cast<uint64_t>(hbmIdx) * static_cast<uint64_t>(mBlockSize) +
                          static_cast<uint64_t>(hbmSlot),
-                     context.owned});
+                     localCopy});
             } else {
                 tokenCopyTasks.push_back(
-                    {context.owned ? context.kSrc + tokenOffset * kTokenBytes : nullptr, nullptr,
+                    {localCopy ? context.kSrc + tokenOffset * kTokenBytes : nullptr, nullptr,
                      dstOffset,
                      static_cast<uint64_t>(hbmIdx) * static_cast<uint64_t>(mBlockSize) +
                          static_cast<uint64_t>(hbmSlot),
-                     context.owned});
+                     localCopy});
             }
         }
     }
@@ -1502,22 +1547,22 @@ void GSAPrefetchEngineC::UCMTensorMerge(int layerID, int streamIdx,
     // map 必须存活到正常拷贝和失败兜底全部结束。
     std::map<int, std::vector<size_t>> blockIdxToTokenIdx;
     std::vector<UCMMergeBlockContext> blockContexts;
-    UC::Detail::TaskDesc task;
 
-    BuildUCMMergeBlockContexts(layerID, reqID, requestIndex, blockContexts, task,
-                               blockIdxToTokenIdx);
+    BuildUCMMergeBlockContexts(layerID, reqID, requestIndex, blockContexts, blockIdxToTokenIdx);
 
     const auto& missGlobalIds = mMissGlobalToken[reqID][mTopkLayerMap[layerID]];
     const size_t previousLoadNum = mLoadNum[layerID];
     const size_t finalLoadNum = previousLoadNum + missGlobalIds.size();
 
-    UCMMergeHostAddress address(*this);
+    UCMTokenLoadPlan plan;
     const char* failedStage = nullptr;
 
-    if (!LoadUCMMergeHostAddress(std::move(task), address, layerID, reqID)) {
+    if (!BuildUCMMergeLoadPlan(plan, blockContexts, layerID, streamIdx, reqID, previousLoadNum)) {
+        failedStage = "plan";
+    } else if (!SubmitUCMTokenLoad(plan, "UCMTensorMerge", layerID, reqID)) {
         failedStage = "load";
-    } else if (!MemcpyUCMMergeHostAddress(address, blockContexts, layerID, streamIdx, hbmSlotIndex,
-                                          reqID, previousLoadNum)) {
+    } else if (!MemcpyUCMMergeTokens(blockContexts, layerID, streamIdx, hbmSlotIndex, reqID,
+                                     previousLoadNum)) {
         failedStage = "prepare/copy";
     }
 
@@ -1563,7 +1608,7 @@ bool GSAPrefetchEngineC::ValidateUCMMergeRequest(int layerID, const std::string&
 
 void GSAPrefetchEngineC::BuildUCMMergeBlockContexts(
     int layerID, const std::string& reqID, uint32_t requestIndex,
-    std::vector<UCMMergeBlockContext>& blockContexts, UC::Detail::TaskDesc& task,
+    std::vector<UCMMergeBlockContext>& blockContexts,
     std::map<int, std::vector<size_t>>& blockIdxToTokenIdx)
 {
     const auto& hashVec = mAllBlocksHash.at(reqID);
@@ -1575,7 +1620,6 @@ void GSAPrefetchEngineC::BuildUCMMergeBlockContexts(
     }
 
     blockContexts.reserve(blockIdxToTokenIdx.size());
-    task.reserve(blockIdxToTokenIdx.size());
 
     size_t tokenBase = 0;
     for (const auto& [blockIdx, tokenIndices] : blockIdxToTokenIdx) {
@@ -1583,12 +1627,8 @@ void GSAPrefetchEngineC::BuildUCMMergeBlockContexts(
         const bool owned =
             ((blockContexts.size() + requestIndex) % mTpSize) == static_cast<size_t>(mRank);
 
-        blockContexts.push_back({&tokenIndices, task.size(), tokenBase, isnoUCMblock, blockIdx,
-                                 nullptr, nullptr, owned});
-
-        if (owned && !isnoUCMblock) {
-            task.push_back(UC::Detail::Shard{hashVec[blockIdx], static_cast<size_t>(layerID), {}});
-        }
+        blockContexts.push_back(
+            {&tokenIndices, tokenBase, isnoUCMblock, blockIdx, nullptr, nullptr, owned});
 
         tokenBase += tokenIndices.size();
     }

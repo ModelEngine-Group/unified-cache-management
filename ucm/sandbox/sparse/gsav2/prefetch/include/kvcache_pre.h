@@ -51,8 +51,6 @@ float average(const std::vector<float>& vec);
 float average2d(const std::vector<std::vector<float>>& matrix);
 
 class __attribute__((visibility("hidden"))) GSAPrefetchEngineC {
-    friend struct UCMMergeHostAddress;
-
 public:
     std::mutex mMutexUseToken;
     // Serializes access to the per-request maps (mReqUseBlockTable, mDocsTables,
@@ -415,15 +413,21 @@ public:
 
     // 0923 开始
     // UCMTensorMerge
-    bool LoadUCMMergeHostAddress(UC::Detail::TaskDesc task, UCMMergeHostAddress& address,
-                                 int layerID, const std::string& reqID);
+    bool BuildUCMMergeLoadPlan(UCMTokenLoadPlan& plan,
+                               const std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
+                               int streamIdx, const std::string& reqID, size_t previousLoadNum);
 
-    void ReleaseUCMMergeHostAddress(UCMMergeHostAddress& address);
+    bool SubmitUCMTokenLoad(const UCMTokenLoadPlan& plan, const char* stage, int layerID,
+                            const std::string& reqID);
 
-    bool MemcpyUCMMergeHostAddress(const UCMMergeHostAddress& address,
-                                   std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
-                                   int streamIdx, std::vector<uint64_t>& hbmSlotIndex,
-                                   const std::string& reqID, size_t previousLoadNum);
+    bool SubmitUCMTokenLoadLeg(const UC::Detail::TaskDesc& task,
+                               const std::vector<UC::Detail::TokenFilter>& filters,
+                               const char* tensorName, const char* stage, int layerID,
+                               const std::string& reqID);
+
+    bool MemcpyUCMMergeTokens(std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
+                              int streamIdx, std::vector<uint64_t>& hbmSlotIndex,
+                              const std::string& reqID, size_t previousLoadNum);
     size_t FillFailedUCMMerge(const std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
                               int streamIdx, std::vector<uint64_t>& hbmSlotIndex,
                               const std::string& reqID, size_t previousLoadNum);
@@ -432,7 +436,6 @@ public:
     bool ValidateUCMMergeRequest(int layerID, const std::string& reqID);
     void BuildUCMMergeBlockContexts(int layerID, const std::string& reqID, uint32_t requestIndex,
                                     std::vector<UCMMergeBlockContext>& blockContexts,
-                                    UC::Detail::TaskDesc& task,
                                     std::map<int, std::vector<size_t>>& blockIdxToTokenIdx);
     // IndexerInitLoad
     bool ProcessIndexerInitLoadLayer(std::vector<std::vector<int>>& blockTable,
@@ -447,16 +450,12 @@ public:
                                  const std::vector<int>& moveMap,
                                  const std::vector<int>& blockTable,
                                  std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                 UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+                                 UCMTokenLoadPlan& plan);
 
-    bool LoadLastChunkSources(int layerID, const std::string& reqID, UC::Detail::TaskDesc& task,
-                              const std::vector<int>& loadedBlockIndices,
-                              std::vector<LastChunkSourceBlock>& sourceBlocks,
-                              UC::Detail::TaskHandle& hostTaskId, bool& hasHostTask);
+    bool LoadLastChunkSources(int layerID, const std::string& reqID, const UCMTokenLoadPlan& plan);
 
     void CopyLastChunkTokens(int layerID, const std::string& reqID, const std::vector<int>& moveMap,
-                             const std::vector<LastChunkSourceBlock>& sourceBlocks,
-                             UC::Detail::TaskHandle hostTaskId, bool hasHostTask);
+                             const std::vector<LastChunkSourceBlock>& sourceBlocks);
 
     // CallPrefetchProcess
     void PreparePrefetchResults(const TaskInfo& taskInfo);
@@ -491,8 +490,7 @@ public:
     void FinishOneLayerPrefetch(const std::string& reqID, int layerID,
                                 std::map<int, int>& hitBlocksIdx, std::vector<int>& missIdxs);
 
-    bool PrepareUCMMergeSources(const UCMMergeHostAddress& address,
-                                std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
+    bool PrepareUCMMergeSources(std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
                                 const std::string& reqID);
 
     void CopyUCMMergeTokensSerial(const std::vector<UCMMergeBlockContext>& blockContexts,
@@ -512,7 +510,7 @@ public:
     bool BuildLastChunkSources(int layerID, const std::string& reqID,
                                const std::vector<int>& moveMap,
                                std::vector<LastChunkSourceBlock>& sourceBlocks,
-                               UC::Detail::TaskDesc& task, std::vector<int>& loadedBlockIndices);
+                               UCMTokenLoadPlan& plan);
 
     void AddIndexerMapForRequest(const std::string& reqID);
 

@@ -45,9 +45,21 @@ inline int KVPackFail(SharedKVPackHeader* header)
     return -1;
 }
 
+// Coverage flush helper: flushes gcov data before abort (for death-test coverage).
+// Declared without weak so the linker pulls __gcov_dump from libgcov.a; the
+// -lgcov link flag is added by run_tests.sh only in COVERAGE mode.
+
+#if defined(UCM_PREFETCH_COVERAGE)
+extern "C" void __gcov_dump(void);
+#endif
+
 [[noreturn]] inline void KVPackAbort(SharedKVPackHeader* header)
 {
     if (header != nullptr) { header->fatalError.store(-1, std::memory_order_release); }
+#if defined(UCM_PREFETCH_COVERAGE)
+    // Flush coverage data before abort so death-test lines are counted.
+    __gcov_dump();
+#endif
     std::abort();
 }
 
@@ -60,7 +72,6 @@ struct LastKVBlockAddress {
 
 struct UCMMergeBlockContext {
     const std::vector<size_t>* tokenIndices;
-    size_t viewIndex;
     size_t tokenBase;
     bool isnoUCMblock;
     int blockIdx;
@@ -69,27 +80,42 @@ struct UCMMergeBlockContext {
     bool owned;
 };
 
+/* UCM store cache-slot tensor layout expected by the GSA deployment
+ * (SharedIndexerKVCacheLayout, li_c8 mode): the layer block cache slot is
+ * laid out as [full K cache][full V cache][full indexer cache][full scale
+ * cache], matching the indexer load task whose shards carry
+ * {nullptr, nullptr, indexerAddr, nullptr}. LoadOnToken filters must
+ * therefore have exactly kStoreTensorCount range groups, with K ranges under
+ * kKTensorIndex and V ranges under kVTensorIndex (indexer/scale groups left
+ * empty). */
+constexpr size_t kKTensorIndex = 0;
+constexpr size_t kVTensorIndex = 1;
+constexpr size_t kIndexerTensorIndex = 2;
+constexpr size_t kScaleTensorIndex = 3;
+constexpr size_t kStoreTensorCount = 4;
+
+/* LoadOnToken plan. K and V are staged into two separate destination buffers
+ * (mLastCHunkKPtr/VPtr, mSharedKBufferHostPtr/VBufferHostPtr), so each tensor
+ * gets its own shard list plus a per-shard TokenFilter. Every shard carries
+ * exactly one host address: the base address of that shard's destination
+ * window, i.e. dst base + firstDstPos * tokenBytes. Every TokenRange
+ * {offset, length, dstOffset} describes one token: offset is the token's
+ * offset inside the source block's tensor, length is the per-token K/V byte
+ * size (mKVSizeBytesToken / mKVSizeBytesTokenRe) and dstOffset is relative
+ * to the shard's destination base address (the store copies to
+ * shard.addrs.front() + dstOffset). */
+struct UCMTokenLoadPlan {
+    UC::Detail::TaskDesc kTask;
+    std::vector<UC::Detail::TokenFilter> kFilters;
+    UC::Detail::TaskDesc vTask;
+    std::vector<UC::Detail::TokenFilter> vFilters;
+};
+
 struct UCMMergeTimeStatus {
     uint64_t preLoadUs = 0;
     uint64_t loadToHostUs = 0;
     uint64_t preMemcpyUs = 0;
     uint64_t memcpyUs = 0;
-};
-
-// address[i] 是 task[i] 对应 shard 的起始地址，布局仍为 [K block][V block]。
-// 对象不允许复制或移动；析构时释放对应的 HostBuffer task。
-struct UCMMergeHostAddress {
-    explicit UCMMergeHostAddress(GSAPrefetchEngineC& owner) : owner(owner) {}
-    ~UCMMergeHostAddress();
-    UCMMergeHostAddress(const UCMMergeHostAddress&) = delete;
-    UCMMergeHostAddress& operator=(const UCMMergeHostAddress&) = delete;
-    UCMMergeHostAddress(UCMMergeHostAddress&&) = delete;
-    UCMMergeHostAddress& operator=(UCMMergeHostAddress&&) = delete;
-    GSAPrefetchEngineC& owner;
-    UC::Detail::TaskHandle taskId{};
-    bool hasHostTask = false;
-    std::vector<UC::Detail::HostBufferView> views;
-    std::vector<const std::byte*> addresses;
 };
 
 struct LastChunkSourceBlock {
@@ -121,7 +147,10 @@ struct TokenCopyTask {
     const std::byte* vSrc;
     size_t dstOffset;
     uint64_t hbmSlot;
-    bool owned;
+    /* True when this rank must memcpy the token locally: the block is owned
+     * by this rank and is NOT a UCM block (UCM tokens are placed directly by
+     * the store's LoadOnToken). */
+    bool localCopy;
 };
 
 }  // namespace ucmprefetch
