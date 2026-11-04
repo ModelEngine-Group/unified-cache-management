@@ -270,7 +270,8 @@ with `PLATFORM` unset (`simu`), `--tokens 1024` / `--block-size 128`
 | DeepSeek-V4.1-Flash, `--layout-only` | `ascend_sim` | v2 | PASS — 12 groups: 1 MLA, 1 transient ring, 10 whole-block SWA |
 | Qwen-Flash-Next, bulk | `cpu` | v2 | PASS — 12 segments; black-box 5 groups / 194 blocks, including 4 `MambaSpec` groups; strict 96 blocks |
 | DeepSeek-V4.1-Flash | `cpu` | v2 | fails in construction (see *Known limitations*) |
-| any | `cuda_sim` | — | **not yet run**: the available host is aarch64 with no CUDA vLLM wheel installed |
+| Qwen3-0.6B, all three cases | `cuda_sim` | v2 | PASS — see the second host below |
+| Qwen3-0.6B, bulk + layerwise | `ascend_sim` | v2 | PASS — see the second host below |
 
 Every persistent group restored 100% of its poisoned bytes in these runs. The
 four `MambaSpec` groups are the ones the strict oracle reports as not natively
@@ -287,6 +288,23 @@ Fault injection (not committed): dropping one layer from every v2 transfer
 leaves the connector-derived comparison green (123 of 124 segments, PASS) and
 fails the native oracle, for a full-attention layer and for a sliding-window
 layer.
+
+Also checked on a second host (x86_64, RTX 5090 + 8×Ascend 910B3), Qwen3-0.6B,
+`--tokens 1024` / `--block-size 128`, UCM built with `PLATFORM` unset:
+
+| case | launcher | result |
+|---|---|---|
+| Qwen3-0.6B, all three cases | `cuda_sim` (capability 12.0, no GPU visible) | PASS |
+| Qwen3-0.6B, bulk + layerwise | `ascend_sim` (driver mounted read-only, no `/dev/davinci*`) | PASS |
+
+Both reported `restored 102760448/117440512 (87.5%)` — byte-identical across
+the two platforms — with no `PARTIALLY VERIFIED` and no `hit check skipped`.
+`cuda_sim` was additionally cross-checked against the same model on the real
+5090: identical `sim.json` md5, empty normalized log diffs, and an injected
+fault caught at `layers.9 / byte 0`.
+
+The acceptance criteria these runs are judged against, the baseline counters,
+and the evidence each run must produce are in [VERIFICATION.md](VERIFICATION.md).
 
 ## Standard verification flow
 
@@ -323,13 +341,19 @@ Re-checked on vLLM 0.30.0 / vLLM-Ascend 0.30.0rc1 unless noted.
   `get_kv_cache_groups` / `_get_kv_cache_groups_uniform_page_size`.) Use
   `ascend_sim.py` for the Ascend layout without a device, or `cuda.py` on a GPU
   for the official layout.
-- **`cuda_sim.py` has not been run yet.** It is written against the vLLM 0.30
-  source read on the host (platform resolution in
-  `vllm/platforms/__init__.py`, the module-level kernel import in
-  `vllm/v1/attention/backends/fa_utils.py`), but no CUDA build of vLLM was
-  available to execute it. Expect the same iterate-on-the-first-error work that
-  `ascend_sim.py` needed: its substitutions are the set that source predicts is
-  required, not a verified one.
+- **`cuda_sim.py` is verified for one model only.** It passes all three cases
+  for Qwen3-0.6B at capability 12.0 and was cross-checked against the real
+  5090 (see *Verified runs*). It has not been run against a model whose layout
+  branches on compute capability, so `--cuda-capability` is declared-and-
+  asserted but its effect on the layout is untested.
+- **vLLM 0.30+ resolves the platform during `import vllm`.** It used to resolve
+  lazily, on the first read of `current_platform`, so `cuda_sim.py` refused to
+  run if resolution had already happened. On 0.30 that refusal fired on every
+  run. Resolution order is a probe-timing question rather than a layout one, so
+  the launcher now clears the cached answer, declares CUDA, and lets the next
+  read re-resolve; `sim_bootstrap` repeats the declaration in child
+  interpreters. Verified layout-neutral: normalized `bulk` and `layerwise` logs
+  are byte-identical to the pre-change run.
 - **`cpu.py` is currently the only launcher that covers Mamba state groups.**
   `ascend_sim.py` cannot construct Qwen4Exp (`NotImplementedError: Qwen4Exp QSA
   requires FlashAttention`, a vLLM-Ascend limitation), so do not drop the CPU
