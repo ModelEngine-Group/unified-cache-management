@@ -602,7 +602,7 @@ public:
         return externally_initialized_;
     }
 
-    // after MOSDBoot sent, and revieved OSDMap from MON will the hb start.
+    // after MOSDBoot sent, and received OSDMap from MON will the hb start.
     int start_heartbeat() override
     {
         std::lock_guard l(state_lock);
