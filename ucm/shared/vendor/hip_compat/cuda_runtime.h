@@ -47,23 +47,30 @@ using cudaStream_t = hipStream_t;
 using cudaEvent_t = hipEvent_t;
 
 static constexpr hipError_t cudaSuccess = hipSuccess;
+static constexpr hipError_t cudaErrorNotReady = hipErrorNotReady;
 static constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyHostToDevice;
 static constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDeviceToHost;
+static constexpr hipMemcpyKind cudaMemcpyDeviceToDevice = hipMemcpyDeviceToDevice;
 static constexpr unsigned int cudaStreamNonBlocking = hipStreamNonBlocking;
 static constexpr unsigned int cudaHostRegisterDefault = hipHostRegisterDefault;
 
 #define cudaMalloc hipMalloc
 #define cudaFree hipFree
+#define cudaMemset hipMemset
 #define cudaMallocHost hipHostMalloc
 #define cudaFreeHost hipHostFree
 #define cudaMemcpy hipMemcpy
 #define cudaMemcpyAsync hipMemcpyAsync
 #define cudaSetDevice hipSetDevice
+#define cudaDeviceReset hipDeviceReset
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+#define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamAddCallback hipStreamAddCallback
 #define cudaStreamWaitEvent hipStreamWaitEvent
+#define cudaEventQuery hipEventQuery
+#define cudaEventSynchronize hipEventSynchronize
 #define cudaGetLastError hipGetLastError
 #define cudaGetErrorString hipGetErrorString
 #define cudaHostRegister hipHostRegister
