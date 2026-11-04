@@ -85,7 +85,7 @@ docker build --build-arg INSTALL_MODE=package \
     pip install -v -e . --no-build-isolation
     ```
 
-    > **Note:** On AMD GPUs set `export PLATFORM=rocm` instead of `cuda` to select the ROCm device backend (the KV-transfer and Hamming-distance kernels built with HIP). It requires a ROCm installation and a ROCm build of PyTorch; pass `-DCMAKE_HIP_ARCHITECTURES=<arch>` (e.g. `gfx90a`, `gfx1100`) if your GPU is not auto-detected. Validated on gfx90a and gfx1100.
+    > **Note:** On AMD GPUs set `export PLATFORM=rocm` instead of `cuda` to select the ROCm device backend (the KV-transfer and Hamming-distance kernels built with HIP). It requires a ROCm installation and a ROCm build of PyTorch. The GPU architecture is detected from the build host; to target a different GPU, configure with CMake directly and pass `-DCMAKE_HIP_ARCHITECTURES=<arch>` (e.g. `gfx90a`, `gfx1100`). The tested AMD GPUs are listed in the support matrix.
 
 
 ### Option 3: Install by pip
