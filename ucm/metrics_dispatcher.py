@@ -31,7 +31,9 @@ from ucm.metrics_config import (
     VLLM_CONNECTOR_CONSUMER,
     MetricDefinition,
     consumer_enabled,
+    dynamic_label_bases,
     get_metric_definitions,
+    split_dynamic_metric_name,
 )
 from ucm.shared.metrics import ucmmetrics
 
@@ -47,6 +49,7 @@ class MetricsDispatcher:
         self._definitions_by_name = {
             definition.name: definition for definition in self._definitions
         }
+        self._dynamic_bases = dynamic_label_bases(self._definitions)
         self._enabled = {
             consumer: consumer_enabled(self.config, consumer) for consumer in CONSUMERS
         }
@@ -108,7 +111,15 @@ class MetricsDispatcher:
         self, metric_name: str, metric_type: str, consumer: str
     ) -> MetricDefinition | None:
         definition = self._definitions_by_name.get(metric_name)
-        if definition is None or definition.metric_type != metric_type:
+        if definition is None:
+            # A dynamic-label variant (name_<digits>) resolves to its base
+            # definition, so each suffixed name flows through keyed by its own
+            # wire name and the export side decodes the label.
+            resolved = split_dynamic_metric_name(metric_name, self._dynamic_bases)
+            if resolved is None:
+                return None
+            definition = resolved[0]
+        if definition.metric_type != metric_type:
             return None
         if (
             consumer == VLLM_CONNECTOR_CONSUMER

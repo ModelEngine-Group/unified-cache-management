@@ -11,7 +11,6 @@
 namespace UC::Trans {
 
 namespace {
-constexpr size_t kSdmaDirectLaneNumber = 1;
 constexpr uint16_t kSdmaDirectMaxReadyLanes = 8;
 }  // namespace
 
@@ -21,30 +20,23 @@ Status AscendSdmaDirectCopier::Setup()
 {
     Cleanup();
 
-    auto s = Status::OK();
-    lanes_.resize(kSdmaDirectLaneNumber);
-    for (auto& lane : lanes_) {
-        s = AclStatus(aclrtCreateStream(&lane.fftsStream), "aclrtCreateStream(sdma-direct)");
-        if (s.Failure()) {
-            Cleanup();
-            return s;
-        }
+    auto s = AclStatus(aclrtCreateStream(&fftsStream_), "aclrtCreateStream(sdma-direct)");
+    if (s.Failure()) {
+        Cleanup();
+        return s;
     }
 
     setup_ = true;
     return Status::OK();
 }
 
-Status AscendSdmaDirectCopier::WaitEvent(void* event)
+Status AscendSdmaDirectCopier::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
+    if (!event.Valid()) { return Status::OK(); }
     if (!setup_) { return Status::OK(); }
-    for (auto& lane : lanes_) {
-        auto s = AclStatus(aclrtStreamWaitEvent(lane.fftsStream, static_cast<aclrtEvent>(event)),
-                           "aclrtStreamWaitEvent(sdma-direct)");
-        if (s.Failure()) { return s; }
-    }
-    return Status::OK();
+    return AclStatus(
+        aclrtStreamWaitEvent(fftsStream_, reinterpret_cast<aclrtEvent>(event.NativeHandle())),
+        "aclrtStreamWaitEvent(sdma-direct)");
 }
 
 Status AscendSdmaDirectCopier::SubmitLoadObject(const void* hostDevicePtr, void** devices,
@@ -53,23 +45,7 @@ Status AscendSdmaDirectCopier::SubmitLoadObject(const void* hostDevicePtr, void*
     std::vector<AscendFftsCopySpec> specs;
     auto s = BuildHostToDeviceSpecs(hostDevicePtr, devices, sizes, specs);
     if (s.Failure()) { return s; }
-    return LaunchSpecs(std::move(specs), NextLane());
-}
-
-Status AscendSdmaDirectCopier::SubmitLoadTask(const std::vector<void*>& hostDevicePtrs,
-                                              const std::vector<void**>& devices,
-                                              const std::vector<size_t>& sizes)
-{
-    if (hostDevicePtrs.size() != devices.size()) {
-        return Status::InvalidParam("invalid Cache SDMA Direct H2D task inputs");
-    }
-    std::vector<AscendFftsCopySpec> specs;
-    specs.reserve(hostDevicePtrs.size() * sizes.size());
-    for (size_t i = 0; i < hostDevicePtrs.size(); ++i) {
-        auto s = BuildHostToDeviceSpecs(hostDevicePtrs[i], devices[i], sizes, specs);
-        if (s.Failure()) { return s; }
-    }
-    return LaunchSpecs(std::move(specs), NextLane());
+    return LaunchSpecs(std::move(specs));
 }
 
 Status AscendSdmaDirectCopier::SubmitDumpObject(void** devices, void* hostDevicePtr,
@@ -78,49 +54,26 @@ Status AscendSdmaDirectCopier::SubmitDumpObject(void** devices, void* hostDevice
     std::vector<AscendFftsCopySpec> specs;
     auto s = BuildDeviceToHostSpecs(devices, hostDevicePtr, sizes, specs);
     if (s.Failure()) { return s; }
-    return LaunchSpecs(std::move(specs), NextLane());
-}
-
-Status AscendSdmaDirectCopier::SubmitDumpTask(const std::vector<void**>& devices,
-                                              const std::vector<void*>& hostDevicePtrs,
-                                              const std::vector<size_t>& sizes)
-{
-    if (hostDevicePtrs.size() != devices.size()) {
-        return Status::InvalidParam("invalid Cache SDMA Direct D2H task inputs");
-    }
-    std::vector<AscendFftsCopySpec> specs;
-    specs.reserve(hostDevicePtrs.size() * sizes.size());
-    for (size_t i = 0; i < hostDevicePtrs.size(); ++i) {
-        auto s = BuildDeviceToHostSpecs(devices[i], hostDevicePtrs[i], sizes, specs);
-        if (s.Failure()) { return s; }
-    }
-    return LaunchSpecs(std::move(specs), NextLane());
+    return LaunchSpecs(std::move(specs));
 }
 
 Status AscendSdmaDirectCopier::Synchronize()
 {
     if (!setup_) { return Status::OK(); }
-    for (auto& lane : lanes_) {
-        auto s = AclStatus(aclrtSynchronizeStream(lane.fftsStream),
-                           "aclrtSynchronizeStream(sdma-direct)");
-        if (s.Failure()) { return s; }
-        lane.inFlight.clear();
-    }
+    auto s = AclStatus(aclrtSynchronizeStream(fftsStream_), "aclrtSynchronizeStream(sdma-direct)");
+    if (s.Failure()) { return s; }
+    inFlight_.clear();
     return Status::OK();
 }
 
 void AscendSdmaDirectCopier::Cleanup() noexcept
 {
-    for (auto& lane : lanes_) {
-        if (lane.fftsStream != nullptr) {
-            (void)aclrtDestroyStream(lane.fftsStream);
-            lane.fftsStream = nullptr;
-        }
-        lane.inFlight.clear();
+    if (fftsStream_ != nullptr) {
+        (void)aclrtDestroyStream(fftsStream_);
+        fftsStream_ = nullptr;
     }
-    lanes_.clear();
+    inFlight_.clear();
     setup_ = false;
-    nextLaneIndex_ = 0;
 }
 
 Status AscendSdmaDirectCopier::BuildHostToDeviceSpecs(const void* hostDevicePtr, void** devices,
@@ -135,11 +88,10 @@ Status AscendSdmaDirectCopier::BuildHostToDeviceSpecs(const void* hostDevicePtr,
     specs.reserve(specs.size() + sizes.size());
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
-        if (sizes[i] == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid Cache SDMA Direct H2D tensor({})", i);
+        if (sizes[i] != 0 && devices[i] != nullptr) {
+            auto* src = static_cast<const std::byte*>(hostDevicePtr) + offset;
+            specs.push_back({devices[i], src, sizes[i]});
         }
-        auto* src = static_cast<const std::byte*>(hostDevicePtr) + offset;
-        specs.push_back({devices[i], src, sizes[i]});
         offset += sizes[i];
     }
     return Status::OK();
@@ -157,17 +109,16 @@ Status AscendSdmaDirectCopier::BuildDeviceToHostSpecs(void** devices, void* host
     specs.reserve(specs.size() + sizes.size());
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
-        if (sizes[i] == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid Cache SDMA Direct D2H tensor({})", i);
+        if (sizes[i] != 0 && devices[i] != nullptr) {
+            auto* dst = static_cast<std::byte*>(hostDevicePtr) + offset;
+            specs.push_back({dst, devices[i], sizes[i]});
         }
-        auto* dst = static_cast<std::byte*>(hostDevicePtr) + offset;
-        specs.push_back({dst, devices[i], sizes[i]});
         offset += sizes[i];
     }
     return Status::OK();
 }
 
-Status AscendSdmaDirectCopier::LaunchSpecs(std::vector<AscendFftsCopySpec>&& specs, Lane& lane)
+Status AscendSdmaDirectCopier::LaunchSpecs(std::vector<AscendFftsCopySpec>&& specs)
 {
     if (specs.empty()) { return Status::OK(); }
     auto object = std::make_unique<InFlightObject>();
@@ -175,17 +126,10 @@ Status AscendSdmaDirectCopier::LaunchSpecs(std::vector<AscendFftsCopySpec>&& spe
     uint16_t readyCount = 0;
     auto s = object->dispatcher.BuildCopies(object->specs, kSdmaDirectMaxReadyLanes, readyCount);
     if (s.Failure()) { return s; }
-    s = object->dispatcher.Launch(lane.fftsStream, readyCount);
+    s = object->dispatcher.Launch(fftsStream_, readyCount);
     if (s.Failure()) { return s; }
-    lane.inFlight.push_back(std::move(object));
+    inFlight_.push_back(std::move(object));
     return Status::OK();
-}
-
-AscendSdmaDirectCopier::Lane& AscendSdmaDirectCopier::NextLane()
-{
-    auto& lane = lanes_[nextLaneIndex_ % lanes_.size()];
-    ++nextLaneIndex_;
-    return lane;
 }
 
 Status AscendSdmaDirectCopier::AclStatus(aclError ret, const char* expr)

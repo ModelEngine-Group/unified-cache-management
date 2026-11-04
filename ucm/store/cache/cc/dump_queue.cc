@@ -45,10 +45,9 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
-    shardBytes_ = 0;
-    for (const auto size : tensorSizes_) { shardBytes_ += size; }
-    streamNumber_ = config.streamNumber;
+    streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
+    cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
@@ -73,9 +72,19 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
 
 void DumpQueue::DispatchStage(std::promise<Status>& started)
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_disp");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM dump dispatcher name.", nameStatus);
+    }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
-                              : stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = Status::OK();
+    if (cacheIOAggregation_) {
+        s = stream.SetupIoAggregation(deviceId_, useGdr_);
+    } else if (cacheSdmaDirect_) {
+        s = stream.SetupSdmaDirect(deviceId_, useGdr_);
+    } else {
+        s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+    }
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {
@@ -94,7 +103,10 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
-        if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
+        if (s.Failure()) [[unlikely]] {
+            if (s == Status::StoreUnhealthy()) { task->Fail(s); }
+            failureSet_->Insert(task->id);
+        }
     }
     waiter->Done();
 }
@@ -110,7 +122,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     dumpCtx.taskHandle = task->id;
     std::shared_ptr<std::atomic<double>> eventReadyTp;
     if (task->desc.prerequisiteHandle != 0) {
-        auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
+        auto s = stream.WaitEvent(Trans::Event{task->desc.prerequisiteHandle});
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s, task->id);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
@@ -141,8 +153,6 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         dumpCtx.bufferHandles.push_back(std::move(handle));
     }
     auto tpMakeBuffer = NowTime::Now();
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
-                             static_cast<double>(nShard));
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_shards_total"),
                              static_cast<double>(backendTaskDesc.size()));
     if (backendTaskDesc.empty()) { return Status::OK(); }
@@ -158,9 +168,13 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     for (auto& handle : dumpCtx.bufferHandles) { handle.MarkReady(); }
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"), 1.0);
-        return res.Error();
+        auto error = res.Error();
+        if (error != Status::StoreUnhealthy()) {
+            UC_ERROR("Failed({}) to submit dump task({}) to backend.", error, task->id);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"),
+                                     1.0);
+        }
+        return error;
     }
     dumpCtx.backendTaskHandle = res.Value();
     dumping_.Push(std::move(dumpCtx));
@@ -175,10 +189,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         }
     }
     if (copiedShards > 0 && d2hMs > 0.0) {
-        auto copiedBytes = static_cast<double>(copiedShards) * static_cast<double>(shardBytes_);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_duration_ms"), d2hMs);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_bandwidth_gbps"),
-                                 copiedBytes / (d2hMs * 1e-3) / 1e9);
     }
     UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, prereq={:.3f}ms, d2h={:.3f}ms, back={:.3f}ms.",
              task->id, (tpMakeBuffer - dumpStartTp) * 1e3, prereqWaitMs, d2hMs,
@@ -197,6 +208,8 @@ Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* hos
 
 void DumpQueue::BackendDumpStage()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_back");
+    if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM dump backend name.", nameStatus); }
     if (!cpuAffinityCores_.empty()) {
         auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
@@ -209,8 +222,10 @@ void DumpQueue::BackendDumpStage()
                                      (NowTime::Now() - tpWait) * 1e3);
             finishedBackendTaskHandle_ = task.backendTaskHandle;
             if (s.Failure()) {
-                UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
-                         task.taskHandle);
+                if (s != Status::StoreUnhealthy()) {
+                    UC_ERROR("Failed({}) to wait backend({}) for task({}).", s,
+                             task.backendTaskHandle, task.taskHandle);
+                }
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_wait_errors_total"),
                                          1.0);
                 return;

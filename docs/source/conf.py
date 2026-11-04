@@ -26,6 +26,7 @@ extensions = [
     "sphinx_design",
     "sphinx_togglebutton",
     "sphinx_substitution_extensions",
+    "sphinxcontrib.mermaid",
 ]
 
 myst_enable_extensions = ["colon_fence", "substitution"]

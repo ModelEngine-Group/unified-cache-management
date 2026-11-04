@@ -1,0 +1,22 @@
+# Pass this file through ECTransferConfig.ec_connector_extra_config:
+# {"UCM_CONFIG_FILE": "/workspace/ucm_ec_config.yaml"}
+# Set ECTransferConfig.ec_connector_module_path to
+# "ucm.integration.vllm.ucm_ec_connector" and ec_connector to "UCMECConnector".
+
+ucm_ec_connector:
+  ucm_connector_name: "UcmPipelineStore"
+
+  ucm_connector_config:
+    store_pipeline: "Cache|Posix"
+    storage_backends: "/mnt/test"
+    posix_capacity_gb: 10240
+    posix_io_engine: "psync"
+    posix_data_trans_concurrency: 128
+    cache_buffer_capacity_gb: 32
+
+  encoder_cache_config:
+    # Number of rows per chunk along the first dimension of [N, D].
+    chunk_size: 128
+
+    # Optional: encoder_cache_hidden_dim, cache_namespace, store_unique_id.
+    # Width and namespaces are inferred when these fields are omitted.

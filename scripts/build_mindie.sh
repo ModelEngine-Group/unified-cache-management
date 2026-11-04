@@ -37,7 +37,7 @@ if [ ! -f "${VERSION_FILE}" ]; then
     exit 1
 fi
 . ${VERSION_FILE}
-VERSION=$VLLM_UC_VERSION
+VERSION=$UCM_VERSION
 
 source "$ASCEND_HOME/ascend-toolkit/set_env.sh" || echo "0"
 source "$ASCEND_HOME/nnal/atb/set_env.sh" || echo "0"

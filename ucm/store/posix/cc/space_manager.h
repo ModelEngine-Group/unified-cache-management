@@ -24,6 +24,9 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
+#include <functional>
+#include "backend_manager.h"
+#include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
 #include "shard_gc.h"
@@ -34,32 +37,53 @@
 namespace UC::PosixStore {
 
 class SpaceManager {
+    struct LookupContext {
+        std::shared_ptr<const std::vector<Detail::BlockId>> blocks;
+        size_t begin;
+        size_t end;
+        size_t nWorker;
+        std::shared_ptr<std::vector<uint8_t>> results;
+        std::shared_ptr<std::atomic<int32_t>> status;
+        std::shared_ptr<Latch> waiter;
+        size_t backendIndex;
+    };
+
     struct PrefixLookupContext {
-        const Detail::BlockId* blocks;
+        std::shared_ptr<const std::vector<Detail::BlockId>> blocks;
         size_t begin;
         size_t end;
         size_t nWorker;
         std::shared_ptr<std::atomic<ssize_t>> firstFail;
         std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
+        size_t backendIndex;
     };
 
 private:
     SpaceLayout layout_;
-    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
+    BackendManager backendMgr_;
     HotnessTracker hotnessTracker_;
+    GcConfigGuard gcConfigGuard_;
     ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
+    ThreadPool<LookupContext> lookupSrv_;
+    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
 public:
     Status Setup(const Config& config);
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num);
+    void Prefetch(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }
+    const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
+    Status LookupOnBackends(const std::function<Status(size_t backendIndex)>& runRound);
+    uint8_t LookupBlock(const Detail::BlockId* block, size_t backendIndex);
+    void OnLookup(LookupContext& ctx);
+    void OnLookupTimeout(LookupContext& ctx);
     void OnLookupPrefix(PrefixLookupContext& ctx);
     void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };

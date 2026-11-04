@@ -93,6 +93,6 @@ private:
     alignas(64) std::atomic<Pointer> pointer_;
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

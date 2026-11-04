@@ -2,16 +2,26 @@ name: 'Lint and Unit Tests'
 
 on:
   workflow_call:
+    inputs:
+      run_checks:
+        description: Run lint, unit tests, and toolkit packaging.
+        type: boolean
+        default: true
 
 jobs:
+  toolkit-package:
+    if: ${{ inputs.run_checks }}
+    uses: ./.github/workflows/_build-toolkit.yml
+
   cpp-linter:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: cpp-linter/cpp-linter-action@main
+      - uses: cpp-linter/cpp-linter-action@v2.23.1
         id: linter
         continue-on-error: true
         env:
@@ -61,6 +71,7 @@ jobs:
           exit 1
 
   py-linter:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -84,6 +95,7 @@ jobs:
         extra_args: --all-files --hook-stage manual
 
   cpp_gtest:
+    if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest
     env:
       BUILD_TYPE: Debug
@@ -91,7 +103,25 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
+
+  cpp_v2_gtest:
+    if: ${{ inputs.run_checks }}
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TYPE: Debug
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DUCM_MAJOR_VERSION=2 -DBUILD_UNIT_TESTS=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j

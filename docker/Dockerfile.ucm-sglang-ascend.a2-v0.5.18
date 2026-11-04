@@ -1,0 +1,33 @@
+# Set to another registry or tag when required by the A2 runner.
+ARG IMAGE_SOURCE="quay.io/ascend"
+ARG IMAGE_NAME_VERSION="sglang:v0.5.18-cann9.0.0-910b"
+
+FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+ARG INSTALL_MODE="source"
+
+WORKDIR /workspace
+
+COPY . /workspace/unified-cache-management
+
+RUN pip config set global.index-url ${PIP_INDEX_URL}
+
+ENV UCM_ENGINE_TYPE=sglang \
+    PLATFORM=ascend
+
+RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        pip install --no-cache-dir build cmake && \
+        export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
+        bash /workspace/unified-cache-management/scripts/build_ascend.sh; \
+    else \
+        ln -s /workspace/unified-cache-management /workspace/package; \
+    fi
+
+RUN pip install /workspace/package/uc_manager-*.whl
+
+RUN if [ -f /workspace/package/install.sh ]; then \
+        bash /workspace/package/install.sh; \
+    fi
+
+ENTRYPOINT ["/bin/bash"]

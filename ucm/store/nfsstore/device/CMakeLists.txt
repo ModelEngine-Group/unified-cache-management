@@ -11,7 +11,7 @@ elseif(RUNTIME_ENVIRONMENT STREQUAL "rocm")
 elseif(RUNTIME_ENVIRONMENT STREQUAL "simu")
     add_subdirectory(simu)
 else()
-    message(FATAL_ERROR "RUNTIME_ENVIRONMENT must be one of: ascend, ascend-a3, maca, musa, cuda, rocm, simu. Current value: ${RUNTIME_ENVIRONMENT}")
+    message(FATAL_ERROR "RUNTIME_ENVIRONMENT must be one of: ascend, ascend-a3, ascend-a5, maca, musa, cuda, rocm, simu. Current value: ${RUNTIME_ENVIRONMENT}")
 endif()
 
 if(TARGET storedevice)

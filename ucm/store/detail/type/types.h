@@ -62,7 +62,7 @@ struct Shard {
 struct TaskDesc : std::vector<Shard> {
     using vector::vector; /* Inherit all ctors */
     std::string brief;    /* Description of Task */
-    /** Optional: prerequisite handle for dump. Cache stream waits before D2H. */
+    /** Optional compute-stream event; Cache waits before load H2D or dump D2H. */
     uintptr_t prerequisiteHandle{0};
 };
 

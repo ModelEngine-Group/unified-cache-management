@@ -80,12 +80,61 @@ TEST_F(UCCacheLoadQueueTest, LoadSameBlockTwice)
     ASSERT_FALSE(failureSet.Contains(task2->id));
 }
 
+TEST_F(UCCacheLoadQueueTest, SharedFailureStopsNonOwnerWait)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = buffer.Get(blockId, shardIdx, true, true);
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+
+    owner.MarkFailed(UC::Status::NotFound());
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_TRUE(failureSet.Contains(task->id));
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
 TEST_F(UCCacheLoadQueueTest, LoadWhileBackendSubmitFailed)
 {
     using namespace UC::CacheStore;
     using namespace testing;
+    std::promise<void> submitEntered;
+    std::promise<void> allowSubmitFailure;
+    auto allowSubmitFailureFuture = allowSubmitFailure.get_future().share();
     UC::Test::Detail::MockStore backend;
-    EXPECT_CALL(backend, Load).WillOnce(testing::Return(UC::Status::Error()));
+    EXPECT_CALL(backend, Load)
+        .WillOnce(Invoke([&](UC::Detail::TaskDesc) -> UC::Expected<UC::Detail::TaskHandle> {
+            submitEntered.set_value();
+            allowSubmitFailureFuture.wait();
+            return UC::Status::NotFound();
+        }));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
     config.storeBackend = &backend;
@@ -113,17 +162,32 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendSubmitFailed)
     auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter = std::make_shared<UC::Latch>();
     loadQ.Submit(task, waiter);
-    waiter->Wait();
+    submitEntered.get_future().wait();
+    auto observer = buffer.Get(blockId, shardIdx, true, true);
+
+    allowSubmitFailure.set_value();
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
     ASSERT_TRUE(failureSet.Contains(task->id));
+    ASSERT_EQ(observer.GetState(), TransBuffer::State::FAILED);
+    ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
 }
 
 TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
 {
     using namespace UC::CacheStore;
     using namespace testing;
+    std::promise<void> waitEntered;
+    std::promise<void> allowWaitFailure;
+    auto allowWaitFailureFuture = allowWaitFailure.get_future().share();
     UC::Test::Detail::MockStore backend;
     EXPECT_CALL(backend, Load).WillOnce(testing::Invoke(NextId));
-    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::Error()));
+    EXPECT_CALL(backend, Wait).WillOnce(Invoke([&](UC::Detail::TaskHandle) {
+        waitEntered.set_value();
+        allowWaitFailureFuture.wait();
+        return UC::Status::NotFound();
+    }));
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     Config config;
     config.storeBackend = &backend;
@@ -151,6 +215,14 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter = std::make_shared<UC::Latch>();
     loadQ.Submit(task, waiter);
-    waiter->Wait();
+    waitEntered.get_future().wait();
+    auto observer = buffer.Get(blockId, shardIdx, true, true);
+
+    allowWaitFailure.set_value();
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
     ASSERT_TRUE(failureSet.Contains(task->id));
+    ASSERT_EQ(observer.GetState(), TransBuffer::State::FAILED);
+    ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
 }

@@ -1,3 +1,4 @@
+import ucm.integration.vllm.patch.scheduler_metrics_patch  # noqa: F401
 from ucm.integration.vllm.patch.utils import when_imported
 from ucm.logger import init_logger
 

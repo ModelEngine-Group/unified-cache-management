@@ -24,8 +24,22 @@
 #include "trans_manager.h"
 #include <numeric>
 #include "logger/logger.h"
+#include "metrics_api.h"
 
 namespace UC::MooncakeStore {
+
+namespace {
+
+size_t TaskBytes(const TransTask& task)
+{
+    size_t bytes = 0;
+    for (const auto& shard : task.shards) {
+        bytes += std::accumulate(shard.sizes.begin(), shard.sizes.end(), size_t{0});
+    }
+    return bytes;
+}
+
+}  // namespace
 
 Status TransManager::Setup(const Config& config)
 {
@@ -91,6 +105,34 @@ Status TransManager::SetupRealClient(const Config& config)
 
 void TransManager::Dispatch(TaskPtr t, WaiterPtr w)
 {
+    const auto id = t->id;
+    const auto brief = t->brief;
+    const auto num = t->shards.size();
+    const auto size = TaskBytes(*t);
+    const auto tp = w->startTp;
+    const auto isLoad = t->type == TaskType::LOAD;
+    w->SetEpilog([id, brief, num, size, tp, isLoad] {
+        auto cost = NowTime::Now() - tp;
+        auto costMs = cost * 1e3;
+        auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
+        UC_DEBUG("Mooncake task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
+                 costMs);
+        if (isLoad) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_duration_ms"), costMs);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_bandwidth_gbps"), bwGbps);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_blocks_total"),
+                                     static_cast<double>(num));
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_load_bytes_total"),
+                                     static_cast<double>(size));
+        } else {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_duration_ms"), costMs);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_bandwidth_gbps"), bwGbps);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_blocks_total"),
+                                     static_cast<double>(num));
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_dump_bytes_total"),
+                                     static_cast<double>(size));
+        }
+    });
     if (t->type == TaskType::LOAD) {
         loadQ_.Submit(t, w);
     } else {

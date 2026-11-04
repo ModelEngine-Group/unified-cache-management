@@ -37,12 +37,12 @@ public:
         return OnLookup(num);
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) { return -1; }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) { return -1; }
     void Prefetch(const Detail::BlockId* blocks, size_t num) {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) { return NextId(); }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) { return NextId(); }
     Expected<bool> Check(Detail::TaskHandle taskId) { return true; }
     Status Wait(Detail::TaskHandle taskId) { return Status::OK(); }
-    Status RegisterMemory(void* base_addr, size_t total_size) { return Status::OK(); }
 
 private:
     static Detail::TaskHandle NextId() noexcept

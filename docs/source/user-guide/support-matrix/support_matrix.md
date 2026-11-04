@@ -20,18 +20,30 @@ This information serves as a reference for evaluating framework compatibility in
 
 | Model | vLLM<br>(main) | vLLM-Ascend<br>(main) | SGLang<br>(main) |
 |-------|:-----------:|:------------------:|:------:|
-| DeepSeek V3.2 | ✅ | ✅ | ✅ |
-| DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
-| Qwen3.5 | ❌ | ❌ | ❌ |
+| DeepSeek R1 | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ |
+| DeepSeek V4 Pro | ✅ | ✅ | ❌ |
+| DeepSeek V4 Flash | ✅ | ✅ | ❌ |
+| Qwen2.5 | ✅ | ✅ | ✅ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen3-Moe | ✅ | ✅ | ✅ |
-| Qwen3-Next | ❌ | ❌ | ❌ |
-| Qwen2.5 | ✅ | ✅ | ✅ |
-| GLM-5 | ✅ | ✅ | ❌ |
+| Qwen3-Next | ✅ | ✅ | ❌ |
+| Qwen3.5 | ✅ | ✅ | ❌ |
+| Qwen3.6 | ✅ | ✅ | ❌ |
+| Qwen3.8 | ✅ | ✅ | ❌ |
+| Qwen3.8-Flash-Next | 🟡 | 🟡 | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
+| GLM-5 | ✅ | ✅ | ❌ |
+| GLM-5.1 | ✅ | ✅ | ❌ |
+| GLM-5.2 | ✅ | ✅ | ❌ |
+| GLM-5.3 | ✅ | ✅ | ❌ |
+| GLM-5.3-Flash | 🟡 | 🟡 | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
-| Kimi-K2.5 | ❌ | ❌ | ❌ |
+| MiniMax-M2.7 | ✅ | ✅ | ✅ |
+| MiniMax-M3 | 🟡 | 🟡 | ❌ |
+| Kimi-K2.5 | ✅ | ✅ | ❌ |
+| Kimi-K3 | 🟡 | 🟡 | ❌ |
 
 > **Note**: The table lists a selected set of representative models.
 > See [**Prefix Cache**](../prefix-cache/index.md) for more details.
@@ -56,16 +68,17 @@ This section presents the currently supported compute platforms and devices.
 
 | Compute Platform | Vendor | Device |
 |:----------------:|:------:|:------:|
-| CANN | Ascend | 910C, 910B |
+| CANN | Ascend | 910C, 910B, 950PR, 950DT |
 | CUDA | NVIDIA | H100, H20, L40, L20 |
 | ROCm | AMD | MI250X (gfx90a), Radeon Pro W7800 (gfx1100), Radeon PRO V710 (gfx1101), Radeon RX 9070 XT (gfx1201), Radeon 8060S (gfx1151) |
 | MUSA | Mthreads | S5000 |
 | MACA | MetaX | C500 |
 
-> **Note**: The table shows only selected platforms.
+> **Note**: The table shows only selected platforms. Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash.
 
 ## Notes and Limitations 📌
 
 - This matrix is provided as a compatibility reference for the configurations listed on this page.
 - Actual behavior may vary depending on hardware, runtime settings, backend changes, and model variants.
 - This support matrix is continuously updated. **For the latest information, please refer to the GitHub issues and pull requests.**
+

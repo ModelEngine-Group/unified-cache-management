@@ -79,6 +79,8 @@ private:
 
     Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
                                    void* host);
+    size_t BlockBytes() const;
+    void RecordD2hMetrics(size_t copiedShards, double d2hMs) const;
 
 private:
     alignas(64) std::atomic_bool stop_{false};

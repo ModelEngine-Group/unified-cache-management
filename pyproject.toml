@@ -13,7 +13,8 @@ license = { file="LICENSE" }
 readme = "README.md"
 description = "Persist and reuse KV Cache to speedup your LLM."
 requires-python = ">=3.10"
-dynamic = [ "version", "dependencies", "optional-dependencies"]
+dependencies = ["wrapt==1.17.2"]
+dynamic = [ "version", "optional-dependencies"]
 
 [project.urls]
 Homepage="https://github.com/ModelEngine-Group/unified-cache-management"

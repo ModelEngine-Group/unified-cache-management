@@ -113,6 +113,25 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
                 return i - 1
         return len(res) - 1
 
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage (reverse scan).
+
+        Scans from the last block down to the first, stopping at the first
+        block that exists in storage.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            The index of the rightmost block present in storage.
+            Returns -1 if none of the blocks are found.
+        """
+        res = self.lookup(block_ids)
+        for i in range(len(res) - 1, -1, -1):
+            if res[i]:
+                return i
+        return -1
+
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.
 
@@ -258,12 +277,3 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             ``True`` if the task has finished, ``False`` if still in-flight.
         """
         return self.store.Check(task.task_id)
-
-    def register_memory(self, base_addr: int, total_size: int) -> None:
-        """Register device memory range for transfer operations.
-
-        Args:
-            base_addr: Base address of the memory region (as Python int).
-            total_size: Total size of the memory region in bytes.
-        """
-        pass

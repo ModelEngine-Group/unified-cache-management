@@ -60,10 +60,11 @@ ktc = KVTransferConfig(
         kv_connector_extra_config={
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
+                        "store_pipeline": "Cache|Posix",
+                        "io_direct": False,
                         "storage_backends": data_dir,
-                        "use_direct": False,
                     },
                 }
             ],

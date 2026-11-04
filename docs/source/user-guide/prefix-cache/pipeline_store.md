@@ -71,6 +71,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
+      store_health:
+        enabled: true
       storage_backends: "/mnt/test"
       io_direct: false
       # cache_buffer_capacity_gb: 256
@@ -107,6 +109,11 @@ persist_token_threshold: 0
 
 Parameters inside `ucm_connector_config`:
 
+* **store_health.enabled** *(optional, default: true)*
+  Whether to wrap each Store in the Pipeline with `HealthBreakerStore`.
+  Set it to `false` to disable automatic health probing, circuit breaking, and recovery.
+  This setting does not control a Breaker explicitly added as a Store by a custom Pipeline implementation.
+
 * **io_direct** (optional, default: `false`):  
   Whether to enable direct I/O. For Posix Store, this bypasses the OS page cache when reading/writing files to disk.
 
@@ -128,7 +135,7 @@ Parameters inside `ucm_connector_config`:
   I/O engine type for the Posix Store. Supported values: `"psync"` (pread/pwrite), `"aio"` (libaio).
 
 * **use_gdr** *(optional, default: false)*  
-  Enable GPUDirect RDMA transfers for Cache Store/Pc Store H2D and D2H copies.  
+  Enable GPUDirect RDMA transfers for Cache Store H2D and D2H copies.  
   This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,  
   and building UCM with `ENABLE_GDR=1`.
 
@@ -145,7 +152,6 @@ Top-level parameters (outside `ucm_connector_config`):
 
 * **enable_event_sync** *(optional, default: true)*  
   Whether to enable event synchronization.  
-  When using `UcmNfsStore`, this should be set to `false`.
 
 * **use_layerwise** *(optional, default: true)*  
   Whether to use layerwise loading/saving of KV cache blocks.  
@@ -209,6 +215,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
+      store_health:
+        enabled: true
       storage_backends: "/mnt/test"
       io_direct: false
       # cache_buffer_capacity_gb: 256

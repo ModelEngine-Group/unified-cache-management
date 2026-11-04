@@ -97,6 +97,8 @@ class OpenAIChatCompletionsClient:
                         error_msg = data["error"]["message"]
                         error_response_code = data["error"]["code"]
                         raise RuntimeError(error_msg)
+                    if not data["choices"]:
+                        continue
                     delta = data["choices"][0]["delta"]
                     content = delta.get("content", None) or delta.get(
                         "reasoning_content", ""

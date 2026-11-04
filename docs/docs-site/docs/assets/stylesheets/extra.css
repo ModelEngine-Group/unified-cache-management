@@ -1,0 +1,181 @@
+/* Wider content area for tables */
+.md-grid {
+  max-width: 1600px;
+}
+
+/* Match Material's original header menus while RTD supplies their destinations. */
+.ucm-rtd-version {
+  position: relative;
+  line-height: 2.4rem;
+}
+
+.ucm-rtd-version .md-version__current {
+  margin-inline: .4rem;
+}
+
+.ucm-rtd-version .md-version__list {
+  top: 100%;
+  margin: 0;
+}
+
+.ucm-rtd-language .md-select__link {
+  white-space: nowrap;
+}
+
+.ucm-rtd-version [aria-current],
+.ucm-rtd-language [aria-current] {
+  font-weight: 700;
+  color: var(--md-accent-fg-color);
+}
+
+html[data-rtd-navigation="header"] readthedocs-flyout {
+  display: none;
+}
+
+/* Keep section children indented; Material cancels their list padding by default. */
+@media screen and (min-width: 76.25em) {
+  /* Standalone pages and groups at the same navigation level share a weight. */
+  .md-nav--primary .md-nav[data-md-level="1"] > .md-nav__list > .md-nav__item > .md-nav__link {
+    font-weight: 700;
+  }
+
+  [dir] .md-nav--primary .md-nav__item--section > .md-nav,
+  [dir] .md-nav--lifted > .md-nav__list > .md-nav__item > .md-nav:not(.md-nav--secondary) {
+    margin-inline-start: 0;
+  }
+}
+
+/* Table styling - prevent horizontal scroll */
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+  table-layout: auto;
+  overflow-x: hidden;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  word-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Make code cells in tables not overflow */
+.md-typeset table:not([class]) code {
+  white-space: nowrap;
+}
+
+/* Support Matrix owns its layout; other documentation tables keep their style. */
+.ucm-support-matrix {
+  --matrix-border: var(--md-default-fg-color--lightest);
+  --matrix-header: var(--md-default-bg-color--light);
+  --matrix-group: rgba(0, 148, 133, 0.07);
+  --matrix-success-bg: #e8f5ed;
+  --matrix-success-fg: #236940;
+  --matrix-neutral-bg: #edf0f2;
+  --matrix-neutral-fg: #52616b;
+  --matrix-pending-bg: #fff3d9;
+  --matrix-pending-fg: #875d13;
+}
+
+[data-md-color-scheme="slate"] .ucm-support-matrix {
+  --matrix-header: #29323e;
+  --matrix-group: rgba(78, 190, 167, 0.1);
+  --matrix-success-bg: #24483b;
+  --matrix-success-fg: #b2e6c8;
+  --matrix-neutral-bg: #343e4a;
+  --matrix-neutral-fg: #c4ced7;
+  --matrix-pending-bg: #4e4027;
+  --matrix-pending-fg: #f3d79c;
+}
+
+.ucm-matrix-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.ucm-matrix-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--matrix-border);
+  border-radius: 6px;
+  margin: 0.7rem 0 1rem;
+}
+
+.ucm-support-table {
+  width: 100%;
+  min-width: 580px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.68rem;
+}
+
+.ucm-support-table th,
+.ucm-support-table td {
+  padding: 0.48rem 0.65rem;
+  border-bottom: 1px solid var(--matrix-border);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.ucm-support-table th:first-child {
+  text-align: left;
+}
+
+.ucm-support-table thead {
+  background: var(--matrix-header);
+}
+
+.ucm-support-table th[scope="row"] {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ucm-support-table tbody:last-child tr:last-child > * {
+  border-bottom: 0;
+}
+
+.ucm-support-table .ucm-matrix-family th {
+  padding-top: 0.42rem;
+  padding-bottom: 0.42rem;
+  background: var(--matrix-group);
+  color: var(--md-default-fg-color);
+  font-size: 0.63rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.ucm-support-table tbody tr:not(.ucm-matrix-family):hover {
+  background: var(--matrix-group);
+}
+
+.ucm-matrix-status {
+  display: inline-block;
+  padding: 0.12rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.ucm-matrix-status--supported {
+  background: var(--matrix-success-bg);
+  color: var(--matrix-success-fg);
+}
+
+.ucm-matrix-status--unsupported {
+  background: var(--matrix-neutral-bg);
+  color: var(--matrix-neutral-fg);
+}
+
+.ucm-matrix-status--unverified {
+  background: var(--matrix-pending-bg);
+  color: var(--matrix-pending-fg);
+}
+
+.ucm-platform-table td {
+  text-align: left;
+}

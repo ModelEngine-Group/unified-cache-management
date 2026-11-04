@@ -22,4 +22,40 @@
 # SOFTWARE.
 #
 
-from ucm.integration.vllm.patch.logger_patch import patch_logger
+import re
+
+from ucm.integration.vllm.patch.logger_patch import patch_logger as patch_logger
+
+_UCM_BACKEND_DIST = re.compile(
+    r"(?:[a-z0-9]+-)*uc-manager-"
+    r"(?:cuda(?:-[a-z0-9]+)*|cann(?:[0-9]+)?-a[0-9]+(?:-[a-z0-9]+)*)"
+)
+
+
+def _is_backend_distribution(name: str) -> bool:
+    normalized = name.lower().replace("_", "-")
+    return _UCM_BACKEND_DIST.fullmatch(normalized) is not None
+
+
+def _guard_single_backend() -> None:
+    """Prevent silent file overwrite when multiple backend dists co-exist."""
+    from importlib.metadata import distributions
+
+    found = sorted(
+        {
+            name
+            for dist in distributions()
+            if (name := (dist.metadata["Name"] or "").lower().replace("_", "-"))
+            and _is_backend_distribution(name)
+        }
+    )
+    if len(found) > 1:
+        raise ImportError(
+            f"Multiple UCM backend distributions are installed: {', '.join(found)}.\n"
+            f"They provide the same top-level 'ucm' package and will overwrite each "
+            f"other's files. Create a new virtual environment and install exactly "
+            f"one uc-manager extra."
+        )
+
+
+_guard_single_backend()

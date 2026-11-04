@@ -57,7 +57,7 @@ struct Config {
     size_t streamNumber{4};
     std::vector<ssize_t> cpuAffinityCores{};
 
-    bool ioDirect{false};
+    bool ioDirect{true};
 
     size_t localRankSize{1};
     std::string uniqueId{};
@@ -65,6 +65,9 @@ struct Config {
     size_t shareBufferNumber{0};
 
     StoreV1* storeBackend{nullptr};
+
+    std::vector<uintptr_t> gpuKvBufferAddrs{};
+    std::vector<size_t> gpuKvBufferSizes{};
 };
 
 }  // namespace UC::MooncakeStore

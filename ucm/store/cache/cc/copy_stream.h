@@ -24,6 +24,9 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_COPY_STREAM_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_COPY_STREAM_H
 
+#include <functional>
+#include <memory>
+#include <vector>
 #include "logger/logger.h"
 #include "status/status.h"
 #include "trans/device.h"
@@ -67,6 +70,30 @@ public:
         return Status::OK();
     }
 
+    Status SetupIoAggregation(const int32_t deviceId, const bool useGdr)
+    {
+        if (useGdr) {
+            return Status::InvalidParam("GDR stream is incompatible with cache IO aggregation");
+        }
+        Trans::Device device;
+        auto s = device.Setup(deviceId);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
+            return s;
+        }
+        auto stream = device.MakeIoAggregationStream();
+        if (!stream) [[unlikely]] {
+            UC_ERROR("Failed to make cache IO aggregation stream on device({}).", deviceId);
+            return Status::Error();
+        }
+        streams_.clear();
+        streams_.push_back(std::move(stream));
+        deviceId_ = deviceId;
+        streamNumber_ = 1;
+        streamIndex_ = 0;
+        return Status::OK();
+    }
+
     Status SetupSdmaDirect(const int32_t deviceId, const bool useGdr)
     {
         if (useGdr) {
@@ -78,15 +105,16 @@ public:
             UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
             return s;
         }
+        streams_.clear();
         auto stream = device.MakeSdmaDirectStream();
         if (!stream) [[unlikely]] {
-            UC_ERROR("Failed to make cache SDMA Direct stream on device({}).", deviceId);
+            UC_ERROR("Failed to make Cache SDMA Direct stream on device({}).", deviceId);
             return Status::Error();
         }
-        streams_.clear();
+        // Cache SDMA Direct intentionally uses one stream for stable performance.
         streams_.push_back(std::move(stream));
         deviceId_ = deviceId;
-        streamNumber_ = 1;
+        streamNumber_ = streams_.size();
         streamIndex_ = 0;
         return Status::OK();
     }
@@ -108,27 +136,13 @@ public:
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         return stream->HostToDeviceAsync(host, device, sizes);
     }
-    Status HostToDeviceAsync(const std::vector<void*>& hosts, const std::vector<void**>& devices,
-                             const std::vector<size_t>& sizes) noexcept
-    {
-        auto stream = NextStream();
-        if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
-        return stream->HostToDeviceAsync(hosts, devices, sizes);
-    }
     Status DeviceToHostAsync(void** device, void* host, const std::vector<size_t>& sizes) noexcept
     {
         auto stream = NextStream();
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         return stream->DeviceToHostAsync(device, host, sizes);
     }
-    Status DeviceToHostAsync(const std::vector<void**>& devices, const std::vector<void*>& hosts,
-                             const std::vector<size_t>& sizes) noexcept
-    {
-        auto stream = NextStream();
-        if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
-        return stream->DeviceToHostAsync(devices, hosts, sizes);
-    }
-    Status WaitEvent(void* event) noexcept
+    Status WaitEvent(const Trans::Event& event) noexcept
     {
         auto status = Status::OK();
         for (auto& stream : streams_) {

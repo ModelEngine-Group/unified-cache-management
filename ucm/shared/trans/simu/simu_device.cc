@@ -28,11 +28,21 @@
 
 namespace UC::Trans {
 
+Status Device::Init() { return Status::OK(); }
+
 Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
     return Status::OK();
 }
+
+Status Device::Reset(int32_t deviceId)
+{
+    if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
+    return Status::OK();
+}
+
+Status Device::Finalize() { return Status::OK(); }
 
 std::unique_ptr<Stream> Device::MakeStream()
 {
@@ -57,6 +67,8 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
     if (stream->Setup().Success()) { return stream; }
     return nullptr;
 }
+
+std::shared_ptr<Stream> Device::MakeIoAggregationStream() { return nullptr; }
 
 std::shared_ptr<Stream> Device::MakeSdmaDirectStream() { return nullptr; }
 

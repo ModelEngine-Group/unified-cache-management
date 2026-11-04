@@ -1,0 +1,417 @@
+{
+  "title": "Vllm Dashboard",
+  "metrics": [
+    {
+      "name": "Prefix Cache Query Breakdown: GPU/HBM Prefix Hit Tokens",
+      "type": "promql",
+      "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Prefix Cache Query Breakdown: UCM Prefix Hit Tokens",
+      "type": "promql",
+      "expr": "sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Prefix Cache Query Breakdown: Misses",
+      "type": "promql",
+      "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "E2E Request Latency: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "E2E Request Latency: P95",
+      "type": "promql",
+      "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "E2E Request Latency: P90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "E2E Request Latency: P50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:e2e_request_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "E2E Request Latency: Average",
+      "type": "promql",
+      "expr": "sum(rate(vllm:e2e_request_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:e2e_request_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Token Throughput: Prompt Tokens/Sec",
+      "type": "promql",
+      "expr": "sum(rate(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Token Throughput: Generation Tokens/Sec",
+      "type": "promql",
+      "expr": "sum(rate(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Inter Token Latency: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Inter Token Latency: P95",
+      "type": "promql",
+      "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Inter Token Latency: P90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Inter Token Latency: P50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:inter_token_latency_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Inter Token Latency: Mean",
+      "type": "promql",
+      "expr": "sum(rate(vllm:inter_token_latency_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:inter_token_latency_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Scheduler State: Num Running",
+      "type": "promql",
+      "expr": "sum(vllm:num_requests_running{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "none"
+    },
+    {
+      "name": "Scheduler State: Num Waiting",
+      "type": "promql",
+      "expr": "sum(vllm:num_requests_waiting{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "none"
+    },
+    {
+      "name": "Time To First Token Latency: P99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Time To First Token Latency: P95",
+      "type": "promql",
+      "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Time To First Token Latency: P90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Time To First Token Latency: P50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Time To First Token Latency: Average",
+      "type": "promql",
+      "expr": "sum(rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nsum(rate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "s"
+    },
+    {
+      "name": "Cache Utilization",
+      "type": "promql",
+      "expr": "avg(vllm:kv_cache_usage_perc{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: HBM",
+      "type": "promql",
+      "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: YuanRong DRAM",
+      "type": "promql",
+      "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* ((sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) / clamp_min(sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\nand on()\n((sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: YuanRong SSD",
+      "type": "promql",
+      "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* (sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\nand on()\n((sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: Cache",
+      "type": "promql",
+      "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (clamp_min(sum(rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) - sum(rate(ucm:cache_load_wait_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 0) / clamp_min(sum(rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\nand on()\n(sum(rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: Posix Store",
+      "type": "promql",
+      "expr": "((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0) * ((sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)))\nand on()\n((sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) > 0)\nor\n((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0) * (sum(rate(ucm:cache_load_wait_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)))\nand on()\n(sum(rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) > 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "KV Cache Hit Rate Breakdown: Total",
+      "type": "promql",
+      "expr": "(sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) + ((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "Request Prompt Length: {le}",
+      "type": "promql",
+      "expr": "sum by(le) (increase(vllm:request_prompt_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "le"
+      ]
+    },
+    {
+      "name": "Request Generation Length: {le}",
+      "type": "promql",
+      "expr": "sum by(le) (increase(vllm:request_generation_tokens_bucket{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "le"
+      ]
+    },
+    {
+      "name": "Finish Reason: {finished_reason}",
+      "type": "promql",
+      "expr": "sum by(finished_reason) (increase(vllm:request_success_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "finished_reason"
+      ]
+    },
+    {
+      "name": "Queue Time",
+      "type": "promql",
+      "expr": "sum(rate(vllm:request_queue_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Requests Prefill and Decode Time: Prefill",
+      "type": "promql",
+      "expr": "sum(rate(vllm:request_prefill_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Requests Prefill and Decode Time: Decode",
+      "type": "promql",
+      "expr": "sum(rate(vllm:request_decode_time_seconds_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Max Generation Token in Sequence Group",
+      "type": "promql",
+      "expr": "sum(rate(vllm:request_max_num_generation_tokens_sum{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum"
+    },
+    {
+      "name": "Store Capacity Watermark: YuanRong DRAM",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_dram_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "Store Capacity Watermark: YuanRong SSD",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_ssd_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "percentunit"
+    },
+    {
+      "name": "Store Used and Capacity: YuanRong DRAM used",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_dram_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "bytes"
+    },
+    {
+      "name": "Store Used and Capacity: YuanRong DRAM capacity",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_dram_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "bytes"
+    },
+    {
+      "name": "Store Used and Capacity: YuanRong SSD used",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_ssd_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "bytes"
+    },
+    {
+      "name": "Store Used and Capacity: YuanRong SSD capacity",
+      "type": "promql",
+      "expr": "max(ucm:yuanrong_ssd_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "bytes"
+    },
+    {
+      "name": "Store Health: Healthy",
+      "type": "promql",
+      "expr": "(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) + (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health: Unhealthy",
+      "type": "promql",
+      "expr": "clamp_min((count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0) + clamp_min((count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health Details: {store} {state}",
+      "type": "promql",
+      "expr": "label_replace(label_replace(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(clamp_min(count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(clamp_min(count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\")",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "store",
+        "state"
+      ],
+      "unit": "short"
+    },
+    {
+      "name": "Healthy and Unhealthy Store Count: Healthy",
+      "type": "promql",
+      "expr": "sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"})",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Healthy and Unhealthy Store Count: Unhealthy",
+      "type": "promql",
+      "expr": "clamp_min(count({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health Probes: Posix Healthy",
+      "type": "promql",
+      "expr": "sum(increase(ucm:posix_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health Probes: Posix Unhealthy",
+      "type": "promql",
+      "expr": "sum(increase(ucm:posix_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health Probes: Mooncake Healthy",
+      "type": "promql",
+      "expr": "sum(increase(ucm:mooncake_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    },
+    {
+      "name": "Store Health Probes: Mooncake Unhealthy",
+      "type": "promql",
+      "expr": "sum(increase(ucm:mooncake_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "short"
+    }
+  ]
+}

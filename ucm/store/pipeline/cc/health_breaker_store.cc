@@ -1,0 +1,235 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+#include "health_breaker_store.h"
+#include <random>
+#include "logger/logger.h"
+#include "metrics_api.h"
+#include "thread/cpu_affinity.h"
+
+namespace UC::PipelineStore {
+
+namespace {
+
+std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
+{
+    thread_local std::mt19937 generator{std::random_device{}()};
+    std::uniform_int_distribution<std::chrono::milliseconds::rep> distribution{0, interval.count()};
+    return std::chrono::milliseconds{distribution(generator)};
+}
+
+}  // namespace
+
+HealthBreakerStore::~HealthBreakerStore() { Stop(); }
+
+Status HealthBreakerStore::Start()
+{
+    if (!store_ || !healthCheck_) {
+        return Status::InvalidParam("health breaker store is not set up");
+    }
+    if (!config_.enabled) { return Status::InvalidParam("health breaker store is disabled"); }
+    std::lock_guard<std::mutex> lock(stopMutex_);
+    if (probeThread_.joinable()) { return Status::OK(); }
+    stop_ = false;
+    try {
+        probeThread_ = std::thread(&HealthBreakerStore::ProbeLoop, this);
+    } catch (const std::exception& e) {
+        return Status::Error(fmt::format("failed({}) to start health breaker probe", e.what()));
+    }
+    RecordEffectiveHealth();
+    UC_INFO("Started store health breaker({}).", storeId_);
+    return Status::OK();
+}
+
+void HealthBreakerStore::Stop()
+{
+    {
+        std::lock_guard<std::mutex> lock(stopMutex_);
+        stop_ = true;
+    }
+    stopCv_.notify_all();
+    if (probeThread_.joinable()) {
+        probeThread_.join();
+        UC_INFO("Stopped store health breaker({}).", storeId_);
+    }
+}
+
+size_t HealthBreakerStore::FailureCount() const
+{
+    return health_ ? health_->Snapshot().probeFailures : 0;
+}
+
+size_t HealthBreakerStore::SampleCount() const
+{
+    return health_ ? health_->Snapshot().probeSamples : 0;
+}
+
+Status HealthBreakerStore::Setup(const Detail::Dictionary&)
+{
+    return Status::InvalidParam("health breaker store requires typed setup");
+}
+
+Status HealthBreakerStore::Setup(StoreV1* store, std::string storeId,
+                                 const Detail::StoreHealthConfig& config)
+{
+    if (healthCheck_ || probeThread_.joinable()) {
+        return Status::InvalidParam("health breaker store is already set up");
+    }
+    if (!store) { return Status::InvalidParam("health breaker store target is null"); }
+    if (storeId.empty()) { return Status::InvalidParam("health breaker store id is empty"); }
+    auto status = config.Validate();
+    if (status.Failure()) { return status; }
+    store_ = store;
+    storeId_ = std::move(storeId);
+    config_ = config;
+    health_ = std::make_unique<Detail::HealthTracker>("PipelineStore", storeId_, config_);
+    healthCheck_ = std::make_unique<Detail::HealthCheckExecutor>(config_.healthCheckTimeout);
+    return Status::OK();
+}
+
+std::string HealthBreakerStore::Readme() const { return "HealthBreakerStore(" + storeId_ + ")"; }
+
+Expected<std::vector<uint8_t>> HealthBreakerStore::Lookup(const Detail::BlockId* blocks, size_t num)
+{
+    if (!Enabled()) { return std::vector<uint8_t>(num, 0); }
+    const auto generation = health_->Generation();
+    auto result = store_->Lookup(blocks, num);
+    RecordPassiveResult(result ? Status::OK() : result.Error(), generation);
+    return result;
+}
+
+Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+{
+    if (!Enabled()) { return static_cast<ssize_t>(-1); }
+    const auto generation = health_->Generation();
+    auto result = store_->LookupOnPrefix(blocks, num);
+    RecordPassiveResult(result ? Status::OK() : result.Error(), generation);
+    return result;
+}
+
+Expected<ssize_t> HealthBreakerStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (!Enabled()) { return static_cast<ssize_t>(-1); }
+    const auto generation = health_->Generation();
+    auto result = store_->LookupOnReverse(blocks, num);
+    RecordPassiveResult(result ? Status::OK() : result.Error(), generation);
+    return result;
+}
+
+void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
+{
+    if (Enabled()) { store_->Prefetch(blocks, num); }
+}
+
+Status HealthBreakerStore::CheckHealth()
+{
+    if (!healthCheck_) { return Status::InvalidParam("health breaker store is not set up"); }
+    const auto generation = health_->Generation();
+    auto status = healthCheck_->Run([this] { return store_->CheckHealth(); });
+    health_->RecordProbe(generation, status);
+    RecordProbeMetrics(status.Success());
+    return status;
+}
+
+Expected<Detail::TaskHandle> HealthBreakerStore::Load(Detail::TaskDesc task)
+{
+    if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
+    return store_->Load(std::move(task));
+}
+
+Expected<Detail::TaskHandle> HealthBreakerStore::Dump(Detail::TaskDesc task)
+{
+    if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
+    return store_->Dump(std::move(task));
+}
+
+Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId)
+{
+    return store_->Check(taskId);
+}
+
+Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
+{
+    const auto generation = health_->Generation();
+    auto status = store_->Wait(taskId);
+    if (RecordPassiveResult(status, generation) && status.Failure()) {
+        // change to unhealthy so it will not be count as failure again in upper store
+        return Status::StoreUnhealthy(fmt::format("{}: {}", storeId_, status));
+    } else {
+        return status;
+    }
+}
+
+// Returns whether the result was counted as a passive health sample.
+bool HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t generation)
+{
+    if (config_.passiveEnabled && Detail::ShouldRecordResult(status)) {
+        if (health_->RecordIo(generation, status)) { RecordEffectiveHealth(); }
+        if (status.Failure() && storeId_.find(":MooncakeStore") != std::string::npos) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_passive_failures_total"), 1.0);
+        }
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void HealthBreakerStore::RecordProbeMetrics(bool healthy)
+{
+    if (storeId_.find(":MooncakeStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(healthy ? NAME_TO_METRIC_ID("mooncake_healthy_count_total")
+                                         : NAME_TO_METRIC_ID("mooncake_unhealthy_count_total"),
+                                 1.0);
+    }
+    RecordEffectiveHealth();
+}
+
+void HealthBreakerStore::RecordEffectiveHealth()
+{
+    if (storeId_.find(":MooncakeStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_store_health"), Enabled() ? 1.0 : 0.0);
+    }
+}
+
+void HealthBreakerStore::ProbeLoop()
+{
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_health_mon");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM health monitor thread name.", nameStatus);
+    }
+    std::unique_lock<std::mutex> lock(stopMutex_);
+    auto delay = config_.healthCheckInterval + RandomProbeDelay(config_.healthCheckInterval);
+    while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
+        lock.unlock();
+        const auto start = std::chrono::steady_clock::now();
+        if (config_.passiveEnabled) { health_->SamplePassiveWindow(start); }
+        CheckHealth();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        lock.lock();
+        delay = elapsed < config_.healthCheckInterval ? config_.healthCheckInterval - elapsed
+                                                      : std::chrono::milliseconds{0};
+    }
+}
+
+}  // namespace UC::PipelineStore

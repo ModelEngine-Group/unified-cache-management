@@ -1,0 +1,39 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $pd := default (dict) $modelSpec.pd -}}
+{{- $pdEnabled := eq (include "chart.pdEnabled" (list $modelSpec)) "true" -}}
+{{- $router := default (dict) $modelSpec.router -}}
+{{- if or $pdEnabled $router.enabled -}}
+{{- $name := include "chart.kthenaName" (list $modelSpec $) -}}
+{{- $modelName := include "chart.servedModelName" $modelSpec -}}
+apiVersion: networking.serving.volcano.sh/v1alpha1
+kind: ModelRoute
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  modelName: {{ $modelName | quote }}
+  {{- with $router.loraAdapters }}
+  loraAdapters:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $router.parentRefs }}
+  parentRefs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if $router.rules }}
+  rules:
+    {{- toYaml $router.rules | nindent 4 }}
+  {{- else }}
+  rules:
+    - name: default
+      targetModels:
+        - modelServerName: {{ $name }}
+          weight: 100
+  {{- end }}
+  {{- with $router.rateLimit }}
+  rateLimit:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

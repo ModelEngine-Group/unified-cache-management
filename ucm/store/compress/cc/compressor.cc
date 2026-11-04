@@ -95,7 +95,17 @@ Expected<ssize_t> Compressor::LookupOnPrefix(const Detail::BlockId* blocks, size
     return res;
 }
 
-void Compressor::Prefetch(const Detail::BlockId*, size_t) {}
+Expected<ssize_t> Compressor::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    auto res = impl_->backend->LookupOnReverse(blocks, num);
+    if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+    return res;
+}
+
+void Compressor::Prefetch(const Detail::BlockId* blocks, size_t num)
+{
+    impl_->backend->Prefetch(blocks, num);
+}
 
 Expected<Detail::TaskHandle> Compressor::Load(Detail::TaskDesc task)
 {
@@ -129,12 +139,6 @@ Status Compressor::Wait(Detail::TaskHandle taskId)
     auto s = impl_->transMgr.Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
-}
-
-Status Compressor::RegisterMemory(void* base_addr, size_t total_size)
-{
-    if (!impl_->backend) { return Status::OK(); }
-    return impl_->backend->RegisterMemory(base_addr, total_size);
 }
 
 }  // namespace UC::Compressor

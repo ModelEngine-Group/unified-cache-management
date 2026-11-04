@@ -135,6 +135,16 @@ Expected<ssize_t> Ds3fsStore::LookupOnPrefix(const Detail::BlockId* blocks, size
     return static_cast<ssize_t>(num) - 1;
 }
 
+Expected<ssize_t> Ds3fsStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (num == 0) { return static_cast<ssize_t>(-1); }
+    auto results = impl_->spaceMgr.Lookup(blocks, num);
+    for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+        if (results[i]) { return i; }
+    }
+    return static_cast<ssize_t>(-1);
+}
+
 void Ds3fsStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}
 
 Expected<Detail::TaskHandle> Ds3fsStore::Load(Detail::TaskDesc task)
@@ -169,13 +179,6 @@ Status Ds3fsStore::Wait(Detail::TaskHandle taskId)
     auto s = impl_->transMgr.Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
-}
-
-Status Ds3fsStore::RegisterMemory(void* base_addr, size_t total_size)
-{
-    (void)base_addr;
-    (void)total_size;
-    return Status::OK();
 }
 
 }  // namespace UC::Ds3fsStore
