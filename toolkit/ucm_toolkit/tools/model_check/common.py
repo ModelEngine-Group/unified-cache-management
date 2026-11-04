@@ -2096,6 +2096,22 @@ def _fa_plan_chunks(metadata: Any, phase: str) -> list[tuple[bytes, int]]:
     return chunks
 
 
+def scheduled_source_tokens(dispatch: Any) -> int:
+    """Tokens the scheduler actually computed for the source request.
+
+    FA stores every complete chunk of the *computed* range, which is the whole
+    prompt only while the prompt fits one scheduling step. With chunked prefill
+    a long prompt is split, and taking the request length instead would expect
+    chunks the connector was never asked to store. Falls back to the request
+    length when the installed vLLM does not report per-request token counts.
+    """
+
+    scheduled = getattr(dispatch.scheduler_output, "num_scheduled_tokens", None)
+    if isinstance(scheduled, dict) and dispatch.request_id in scheduled:
+        return int(scheduled[dispatch.request_id])
+    return len(dispatch.request.all_token_ids)
+
+
 def check_v2_hit(
     worker: Any,
     save_metadata: Any,
@@ -2146,7 +2162,7 @@ def check_v2_hit(
         raise AssertionError(
             "dumped FA chunks disagree with the source request's scheduled "
             f"range: dumped={len(dumped)}, expected={expected_dump} "
-            f"(source_tokens={source_tokens}, tokens_per_chunk={chunk_tokens})"
+            f"(scheduled_tokens={source_tokens}, tokens_per_chunk={chunk_tokens})"
         )
     # vLLM always recomputes at least the request's last token, so the longest
     # restorable prefix is bounded by the chunks before it. Read from the
@@ -2205,6 +2221,32 @@ def allow_native_target_blocks(
                     return False
                 snapshot.allow_tensor(block)
     return True
+
+
+def verify_transfer_ranges(
+    fixture: Any,
+    worker: Any,
+    load_metadata: Any,
+    target_ids: tuple[list[int], ...],
+    native_blocks: bool,
+) -> int | None:
+    """Check the connector's load ranges against vLLM's target blocks.
+
+    Runs **before** anything writes through those addresses. Poisoning a range
+    the connector reported and only then asking whether it was legal would
+    already have written outside the request's blocks -- possibly over another
+    group's source data, which then fails the comparison and points at the
+    wrong place.
+
+    Returns the number of ranges checked, or None when the allowed set cannot
+    be built completely (an unaddressable layer geometry), in which case the
+    caller must report the check as skipped rather than passed.
+    """
+
+    allowed = make_storage_snapshot(fixture)
+    if not allow_native_target_blocks(allowed, fixture, target_ids, native_blocks):
+        return None
+    return check_transfers_inside_native_blocks(allowed, worker, load_metadata)
 
 
 def check_transfers_inside_native_blocks(
@@ -2465,6 +2507,7 @@ def verify(
     # Layers whose block geometry this checker cannot address. Non-empty means
     # the transfer-range check has no complete allowed set to verify against.
     unverified: list[str] = []
+    checked_ranges = 0
     if is_v2:
         if _enabled("UCM_MODEL_CHECK_NATIVE_ORACLE") and native_oracle_supported(
             fixture
@@ -2551,7 +2594,7 @@ def verify(
                 worker,
                 save_metadata,
                 load_metadata,
-                len(dispatch.request.all_token_ids),
+                scheduled_source_tokens(dispatch),
                 len(dispatch.prompt_token_ids),
                 target.num_computed_tokens,
             )
@@ -2579,6 +2622,25 @@ def verify(
                 f"strict: full_attention={full_attention}, "
                 f"whole_block_window={whole_block_window}, blocks={strict_indices}"
             )
+        # Legality first: these are the connector's own addresses, and the
+        # next line writes through them.
+        if unverified:
+            log(
+                "transfer-range check: skipped, these layers have no "
+                f"addressable geometry: {unverified}"
+            )
+        else:
+            checked_ranges = verify_transfer_ranges(
+                fixture, worker, load_metadata, target_ids, False
+            )
+            if checked_ranges is None:
+                log("transfer-range check: skipped, unknown native block geometry")
+                checked_ranges = 0
+            else:
+                log(
+                    f"transfer-range check: {checked_ranges} connector load "
+                    "ranges all inside vLLM's target blocks"
+                )
         poisoned = poison_v2_load_segments(fixture, worker, load_metadata)
         log(f"poisoned target v2 ranges: segments={poisoned}")
     else:
@@ -2598,7 +2660,6 @@ def verify(
                         poison(block)
 
     snapshot = None
-    checked_ranges = 0
     if _enabled("UCM_MODEL_CHECK_STRAY_CHECK"):
         synchronize()
         snapshot = make_storage_snapshot(fixture)
@@ -2611,20 +2672,6 @@ def verify(
         ):
             log("stray-write check: skipped, unknown native block geometry")
             snapshot = None
-        elif is_v2:
-            if unverified:
-                log(
-                    "transfer-range check: skipped, these layers have no "
-                    f"addressable geometry: {unverified}"
-                )
-            else:
-                checked_ranges = check_transfers_inside_native_blocks(
-                    snapshot, worker, load_metadata
-                )
-                log(
-                    f"transfer-range check: {checked_ranges} connector load "
-                    "ranges all inside vLLM's target blocks"
-                )
 
     worker.bind_connector_metadata(load_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))

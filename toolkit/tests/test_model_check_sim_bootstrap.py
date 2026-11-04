@@ -246,6 +246,14 @@ class InstallBootstrapTest(unittest.TestCase):
         self.assertIn("/and/me", entries)
         self.assertTrue((directory / "sitecustomize.py").is_file())
 
+    def test_two_runs_on_one_host_do_not_share_a_directory(self):
+        """A shared name would let one run's declarations reach the other's."""
+
+        temp = TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        directory = sim_bootstrap.write_child_bootstrap(temp.name)
+        self.assertIn(str(os.getpid()), directory.name)
+
     def test_the_generated_file_is_importable_on_its_own(self):
         """A syntax or name error here fails silently at interpreter startup."""
 
