@@ -131,11 +131,13 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_tensor: List[List[torch.Tensor]],
+        *,
+        distribute_backend_load: bool = False,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(dst_tensor)
-        task_id = self.store_.Load(ids, indexes, addrs)
+        task_id = self.store_.Load(ids, indexes, addrs, 0, distribute_backend_load)
         return UcmPipelineStoreTransTask(task_id)
 
     def dump(
@@ -156,6 +158,8 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
         prerequisite_handle: int = 0,
+        *,
+        distribute_backend_load: bool = False,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
@@ -163,7 +167,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             addrs = dst_addr
         else:
             addrs = np.array(dst_addr, dtype=np.uint64)
-        task_id = self.store_.Load(ids, indexes, addrs, prerequisite_handle)
+        task_id = self.store_.Load(
+            ids, indexes, addrs, prerequisite_handle, distribute_backend_load
+        )
         return UcmPipelineStoreTransTask(task_id)
 
     def dump_data(

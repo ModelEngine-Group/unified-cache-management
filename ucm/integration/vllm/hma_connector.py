@@ -2142,6 +2142,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             keys,
             shard_indices,
             ptrs,
+            distribute_backend_load=self.is_mla,
         )
         return FAWALoadTask(
             request_id=request_id,

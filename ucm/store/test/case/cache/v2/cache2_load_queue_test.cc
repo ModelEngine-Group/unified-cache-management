@@ -726,11 +726,12 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
     auto config = config_;
     config.localRankSize = 4;
     config.deviceId = 2;
-    config.shareBufferEnable = true;
+    config.shareBufferEnable = false;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
     UC::Detail::TaskDesc desc;
+    desc.distributeBackendLoad = true;
     desc.prerequisiteHandle = 0x5678;
     FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
         EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x5678});
@@ -765,6 +766,7 @@ TEST_F(UCCache2LoadQueueTest, PreallocNextShardSlots)
     TestedQueue loadQ;
     auto config = config_;
     config.blockSize = 4 * kShardSize;
+    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
@@ -796,7 +798,7 @@ TEST_F(UCCache2LoadQueueTest, PreallocNextShardSlots)
     EXPECT_EQ(preallocs[2].preferredRank, UC::Cache2::kInvalid);
 }
 
-TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
+TEST_F(UCCache2LoadQueueTest, DistributedPreallocUsesPreferredRankDespiteRemoteCacheHit)
 {
     TestedQueue loadQ;
     auto config = config_;
@@ -806,6 +808,7 @@ TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     UC::Detail::TaskDesc desc;
+    desc.distributeBackendLoad = true;
     for (size_t i = 0; i < config.localRankSize; ++i) {
         const auto block = TypesHelper::MakeBlockIdRandomly();
         buffer_.SetExisting(block, SlotState::Ready, 0, (i + 1) % config.localRankSize);
@@ -825,7 +828,45 @@ TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
         EXPECT_EQ(preallocs[i].block, task->desc[i].owner);
         EXPECT_EQ(preallocs[i].offset, 1);
         EXPECT_TRUE(preallocs[i].allowReserved);
-        EXPECT_EQ(preallocs[i].preferredRank, (i + 1) % config.localRankSize);
+        EXPECT_EQ(preallocs[i].preferredRank, i % config.localRankSize);
+        EXPECT_EQ(buffer_.GetCalls()[i].preferredRank, preallocs[i].preferredRank);
+    }
+}
+
+TEST_F(UCCache2LoadQueueTest, PrivateTaskKeepsOriginalOrderWithSharedBuffer)
+{
+    TestedQueue loadQ;
+    auto config = config_;
+    config.localRankSize = 4;
+    config.deviceId = 2;
+    config.shareBufferEnable = true;
+    config.blockSize = 2 * kShardSize;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    UC::Detail::TaskDesc desc;
+    for (size_t i = 0; i < 4; ++i) {
+        desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0,
+                       {reinterpret_cast<void*>(0x1000 * (i + 1))}});
+    }
+    EXPECT_CALL(backend_, Load).Times(4).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).Times(4).WillRepeatedly(testing::Return(UC::Status::OK()));
+    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ.Close();
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    ASSERT_EQ(buffer_.GetCalls().size(), 4);
+    ASSERT_EQ(buffer_.PreallocCalls().size(), 4);
+    ASSERT_EQ(FakeStream::scatters.size(), 4);
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(buffer_.GetCalls()[i].block, task->desc[i].owner);
+        EXPECT_EQ(buffer_.GetCalls()[i].preferredRank, UC::Cache2::kInvalid);
+        EXPECT_EQ(buffer_.PreallocCalls()[i].block, task->desc[i].owner);
+        EXPECT_EQ(buffer_.PreallocCalls()[i].preferredRank, UC::Cache2::kInvalid);
+        EXPECT_EQ(FakeStream::scatters[i].dsts, task->desc[i].addrs);
     }
 }
 

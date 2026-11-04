@@ -1696,7 +1696,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         return self._dump_plan
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        """Direct load: one whole-block task per request, then wait for all."""
+        """Direct load: separate shared MLA and private state tasks, then wait."""
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self._reset_transfer_state()
@@ -1713,7 +1713,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
         num_loaded_block = 0
-        num_loaded_request = 0
         request_tasks: list[tuple[str, Task, int]] = []
         for (
             request_id,
@@ -1724,29 +1723,44 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
-            num_loaded_block += len(scoped_ucm)
-            num_loaded_request += 1
-            try:
-                ptrs = layout.extract_block_addrs(scoped_vllm, scoped_groups)
-                task = self._rank_consistency.submit_load(
-                    self.store,
-                    {request_id: unscoped_ucm},
-                    scoped_ucm,
-                    [0] * len(scoped_ucm),
-                    ptrs,
-                )
-                request_tasks.append((request_id, task, len(scoped_ucm)))
-                self._load_bytes_total += sum(
-                    layout.direct_group_bytes.get(gid, 0) for gid in scoped_groups
-                )
-            except Exception as e:
-                logger.error(
-                    f"request {request_id} submit direct load task error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                self._mark_load_failed(metadata, request_id)
-                num_loaded_block -= len(scoped_ucm)
-                num_loaded_request -= 1
+            mla_count = (
+                getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
+                if self.is_mla
+                else 0
+            )
+            # Load metadata puts shared MLA keys before rank-scoped state keys.
+            # A task with private keys cannot assign fills to other ranks.
+            for start, end, distribute_load in (
+                (0, mla_count, True),
+                (mla_count, len(scoped_ucm), False),
+            ):
+                if start == end:
+                    continue
+                try:
+                    ptrs = layout.extract_block_addrs(
+                        scoped_vllm[start:end], scoped_groups[start:end]
+                    )
+                    task = self._rank_consistency.submit_load(
+                        self.store,
+                        {request_id: unscoped_ucm[start:end]},
+                        scoped_ucm[start:end],
+                        [0] * (end - start),
+                        ptrs,
+                        distribute_backend_load=distribute_load,
+                    )
+                    request_tasks.append((request_id, task, end - start))
+                    num_loaded_block += end - start
+                    self._load_bytes_total += sum(
+                        layout.direct_group_bytes.get(gid, 0)
+                        for gid in scoped_groups[start:end]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"request {request_id} submit direct load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._mark_load_failed(metadata, request_id)
+                    break
 
         for request_id, task, n_blocks in request_tasks:
             try:
@@ -1764,7 +1778,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         load_speed = self._load_bytes_total / max(load_duration_ms, 1) / 1024 / 1024
         ucmmetrics.update_stats(
             {
-                "load_requests_num": num_loaded_request,
+                "load_requests_num": len(
+                    {request_id for request_id, _, _ in request_tasks}
+                    - self._failure_req_ids
+                ),
                 "load_blocks_num": num_loaded_block,
                 "load_duration": load_duration_ms,
                 "load_speed": load_speed,
@@ -2005,6 +2022,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     sel_scoped,
                     [slot] * len(sel_scoped),
                     ptrs,
+                    distribute_backend_load=(
+                        self.is_mla
+                        and not is_mamba_align_kv_cache_spec(
+                            self._kv_cache_config.kv_cache_groups[gid].kv_cache_spec
+                        )
+                    ),
                 )
                 self.load_tasks[pair_key][request_id] = task
                 self._load_bytes_by_pair[pair_key] += (

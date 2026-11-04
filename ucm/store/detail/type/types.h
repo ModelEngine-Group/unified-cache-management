@@ -64,6 +64,8 @@ struct TaskDesc : std::vector<Shard> {
     std::string brief;    /* Description of Task */
     /** Optional compute-stream event; Cache waits before load H2D or dump D2H. */
     uintptr_t prerequisiteHandle{0};
+    /** Shared keys requested by every rank may distribute backend fills. */
+    bool distributeBackendLoad{false};
 };
 
 }  // namespace UC::Detail
