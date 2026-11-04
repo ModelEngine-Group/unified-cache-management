@@ -48,11 +48,9 @@ using cudaEvent_t = hipEvent_t;
 
 static constexpr hipError_t cudaSuccess = hipSuccess;
 static constexpr hipError_t cudaErrorNotReady = hipErrorNotReady;
-/* The CUDA runtime does not reject a copy whose kind disagrees with where the
- * pointers live; hipMemcpyDefault gives HIP the same behaviour. */
-static constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyDefault;
-static constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDefault;
-static constexpr hipMemcpyKind cudaMemcpyDeviceToDevice = hipMemcpyDefault;
+static constexpr hipMemcpyKind cudaMemcpyHostToDevice = hipMemcpyHostToDevice;
+static constexpr hipMemcpyKind cudaMemcpyDeviceToHost = hipMemcpyDeviceToHost;
+static constexpr hipMemcpyKind cudaMemcpyDeviceToDevice = hipMemcpyDeviceToDevice;
 static constexpr unsigned int cudaStreamNonBlocking = hipStreamNonBlocking;
 static constexpr unsigned int cudaHostRegisterDefault = hipHostRegisterDefault;
 
