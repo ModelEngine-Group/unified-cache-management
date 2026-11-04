@@ -1,18 +1,18 @@
-#include <nds_interface.h>
-#include <memory>
-#include <chrono>
-#include <cstdint>
-#include <vector>
-#include <atomic>
 #include <algorithm>
-#include <cstdlib>          // for getenv, atoi
-#include <cstdarg>          // for va_list
-#include <cstdio>           // for vfprintf
-#include <cstring>          // for strcmp
-#include <cerrno>           // for errno, ERANGE
-#include <limits>           // for std::numeric_limits
-#include <unordered_map>    // for per-nsid valueSize 覆盖表
-#include <utility>          // for std::pair（MR 范围表）
+#include <atomic>
+#include <cerrno>  // for errno, ERANGE
+#include <chrono>
+#include <cstdarg>  // for va_list
+#include <cstdint>
+#include <cstdio>   // for vfprintf
+#include <cstdlib>  // for getenv, atoi
+#include <cstring>  // for strcmp
+#include <limits>   // for std::numeric_limits
+#include <memory>
+#include <nds_interface.h>
+#include <unordered_map>  // for per-nsid valueSize 覆盖表
+#include <utility>        // for std::pair（MR 范围表）
+#include <vector>
 
 // xxhash（vendored 单头文件，XXH_INLINE_ALL 头文件内联，无需改构建脚本）：
 // 用于 80-bit block_key 的默认打散（见 scatter_key）
@@ -70,12 +70,12 @@ static_assert(offsetof(NDS_REQ, nsid) == 20, "NDS_REQ.nsid ABI mismatch");
 static_assert(offsetof(NDS_REQ, addr_pair_list) == 24, "NDS_REQ.addr_pair_list ABI mismatch");
 static_assert(sizeof(NDS_REQ) == 24 + MAX_ADDR_NUM_IPC * 36, "NDS_REQ size ABI mismatch");
 
-NDS_ERROR_T nds_init(void **kv_cache, int mr_num);
-uint64_t nds_kv_exist(NDS_REQ *req);
-NDS_ERROR_T nds_kv_get(NDS_REQ *req);
-NDS_ERROR_T nds_kv_put(NDS_REQ *req);
+NDS_ERROR_T nds_init(void** kv_cache, int mr_num);
+uint64_t nds_kv_exist(NDS_REQ* req);
+NDS_ERROR_T nds_kv_get(NDS_REQ* req);
+NDS_ERROR_T nds_kv_put(NDS_REQ* req);
 CODE_SET nds_kv_wait(uint64_t task_id, uint32_t total_blocks);
-void nds_kv_get_nds_config(const char *path_nds_config);
+void nds_kv_get_nds_config(const char* path_nds_config);
 
 // 全局配置变量（默认值与原先硬编码一致，可被 nds_wrapper.conf 覆盖）
 static size_t g_max_exist_addr_num = 256;
@@ -129,7 +129,9 @@ static bool g_nds_wrapper_debug_enabled = false;
 static bool g_error_print_enabled = true;
 
 // 辅助函数：输出带位置信息的调试信息（受环境变量控制）
-static inline void nds_debug_print(const char* file, int line, const char* func, const char* fmt, ...) {
+static inline void nds_debug_print(const char* file, int line, const char* func, const char* fmt,
+                                   ...)
+{
     if (!g_nds_wrapper_debug_enabled) return;
     fprintf(stderr, "[DEBUG] %s:%d [%s] ", file, line, func);
     va_list args;
@@ -139,7 +141,9 @@ static inline void nds_debug_print(const char* file, int line, const char* func,
 }
 
 // 辅助函数：输出带位置信息的错误信息（受 conf error_print 控制，默认输出）
-static inline void nds_error_print(const char* file, int line, const char* func, const char* fmt, ...) {
+static inline void nds_error_print(const char* file, int line, const char* func, const char* fmt,
+                                   ...)
+{
     if (!g_error_print_enabled) return;
     fprintf(stderr, "[ERROR] %s:%d [%s] ", file, line, func);
     va_list args;
@@ -163,14 +167,12 @@ static inline void nds_error_print(const char* file, int line, const char* func,
 // 输入相同的 key 永远映射到相同的盘上 key，isExists 前缀命中语义不受影响。
 // 碰撞说明：80->80 位重哈希非单射，理论存在新碰撞，但按盘框容量（几十万 key
 // 量级）碰撞概率约 1e-10，可忽略；key 量到 1e9 级别时需重新评估。
-static inline void scatter_key(uint64_t &key_low, uint16_t &key_high)
+static inline void scatter_key(uint64_t& key_low, uint16_t& key_high)
 {
     if (!g_key_scatter) return;
     // 显式小端序列化，保证不同平台/编译器下哈希输入一致
     uint8_t buf[10];
-    for (int i = 0; i < 8; ++i) {
-        buf[i] = static_cast<uint8_t>((key_low >> (8 * i)) & 0xFF);
-    }
+    for (int i = 0; i < 8; ++i) { buf[i] = static_cast<uint8_t>((key_low >> (8 * i)) & 0xFF); }
     buf[8] = static_cast<uint8_t>(key_high & 0xFF);
     buf[9] = static_cast<uint8_t>((key_high >> 8) & 0xFF);
     const uint64_t h1 = XXH64(buf, sizeof(buf), 0);
@@ -184,15 +186,17 @@ static int32_t checkCodeSet(const CODE_SET& code_set, uint64_t task_id, bool rea
 {
     for (size_t i = 0; i < code_set.batch_code_set.size(); ++i) {
         if (code_set.batch_code_set[i] != 0) {
-            NDS_ERROR_PRINT("nds_kv_wait failed, is read:%d, cid_idx:%zu, cid_err:%d, task_id:%lu\n",
-                            read, i, code_set.batch_code_set[i], task_id);
+            NDS_ERROR_PRINT(
+                "nds_kv_wait failed, is read:%d, cid_idx:%zu, cid_err:%d, task_id:%lu\n", read, i,
+                code_set.batch_code_set[i], task_id);
             return 1;
         }
     }
     for (size_t i = 0; i < code_set.key_code_set.size(); ++i) {
         if (code_set.key_code_set[i] != 0) {
-            NDS_ERROR_PRINT("nds_kv_wait failed, is read:%d, key_idx:%zu, key_err:%d, task_id:%lu\n",
-                            read, i, code_set.key_code_set[i], task_id);
+            NDS_ERROR_PRINT(
+                "nds_kv_wait failed, is read:%d, key_idx:%zu, key_err:%d, task_id:%lu\n", read, i,
+                code_set.key_code_set[i], task_id);
             return 1;
         }
     }
@@ -210,20 +214,17 @@ struct NdsReqWrapper {
 // base_addr 为该 region 在内存中的起始地址；region_offset 为该 region 在 slot 中的全局偏移。
 // key 在此统一直接打散（scatter_key）：所有写盘/读盘的 addr_pair 只出现打散后的 key，
 // 原始 key 仅存在于上层日志与本函数的 debug 映射打印中。
-static void appendRegionPairs(uint64_t keyLow, uint16_t keyHigh, uint8_t* base_addr, size_t region_offset,
-                              size_t region_length, size_t lengthPerBatch,
+static void appendRegionPairs(uint64_t keyLow, uint16_t keyHigh, uint8_t* base_addr,
+                              size_t region_offset, size_t region_length, size_t lengthPerBatch,
                               std::vector<addr_pair>& out)
 {
-    if (region_length == 0) {
-        return;
-    }
+    if (region_length == 0) { return; }
     const uint64_t origLow = keyLow;
     const uint16_t origHigh = keyHigh;
     scatter_key(keyLow, keyHigh);
     if (g_key_scatter && (keyLow != origLow || keyHigh != origHigh)) {
         NDS_DEBUG_PRINT("key scatter: orig=(low:%llu, high:%u) -> scattered=(low:%llu, high:%u)\n",
-                        (unsigned long long)origLow, origHigh,
-                        (unsigned long long)keyLow, keyHigh);
+                        (unsigned long long)origLow, origHigh, (unsigned long long)keyLow, keyHigh);
     }
     size_t numPairs = (region_length + lengthPerBatch - 1) / lengthPerBatch;
     size_t oldSize = out.size();
@@ -235,7 +236,8 @@ static void appendRegionPairs(uint64_t keyLow, uint16_t keyHigh, uint8_t* base_a
         pair.length = (j == numPairs - 1) ? (region_length - offset_in_region) : lengthPerBatch;
         pair.block_id.key_high = keyHigh;
         pair.block_id.key_low = keyLow;
-        pair.hbm_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(base_addr + offset_in_region));
+        pair.hbm_addr =
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(base_addr + offset_in_region));
     }
 }
 
@@ -243,7 +245,7 @@ static void appendRegionPairs(uint64_t keyLow, uint16_t keyHigh, uint8_t* base_a
 // 把 pair 覆盖范围扩到 [blockAddr, blockAddr+value_size)，一次单调递增写满整个
 // slot，保证 is_exists 前缀命中（NDS 要求 key 写满才能命中）。
 // 注意：[length, value_size) 尾部不做任何清零/填充，写的是 buffer 里的残留数据
-//（don't-care，reader 按真实 length 读）；调用方必须保证 block 的 buffer 容量
+// （don't-care，reader 按真实 length 读）；调用方必须保证 block 的 buffer 容量
 // >= value_size（调用方已对 [blockAddr, blockAddr+value_size) 做 MR 边界校验）。
 // 池末尾兜底：value_size 按 KB 取整必然略大于非 KB 对齐的页（如 SWA 页
 // 6288.75KiB 配 6400KB），池内最后一页 contiguous 扩展必越出 MR 末尾；此时 pad 段
@@ -254,15 +256,16 @@ static void appendRegionPairs(uint64_t keyLow, uint16_t keyHigh, uint8_t* base_a
 
 // debug 辅助：写长度不是 write_batch 整数倍时提示尾 pair 为短 pair。
 // 盘框若按 batch 粒度校验 pair 或按段记账，短尾 pair 可能导致 slot 不被视为写满
-//（is_exists 不命中）；只在 debug 模式（NDS_WRAP_DEBUG=1）打印。
+// （is_exists 不命中）；只在 debug 模式（NDS_WRAP_DEBUG=1）打印。
 static inline void debugNoteShortTail(uint64_t blockId, uint32_t nsid, size_t length,
                                       size_t lengthPerBatch)
 {
     if (lengthPerBatch != 0 && length % lengthPerBatch != 0) {
-        NDS_DEBUG_PRINT("write tail pair not batch-aligned: blockId=%lu, nsid=%u, length=%zu, "
-                        "write_batch=%zu; if is_exists misses, check box pair-granularity "
-                        "requirements\n",
-                        blockId, nsid, length, lengthPerBatch);
+        NDS_DEBUG_PRINT(
+            "write tail pair not batch-aligned: blockId=%lu, nsid=%u, length=%zu, "
+            "write_batch=%zu; if is_exists misses, check box pair-granularity "
+            "requirements\n",
+            blockId, nsid, length, lengthPerBatch);
     }
 }
 
@@ -270,9 +273,7 @@ static inline void debugNoteShortTail(uint64_t blockId, uint32_t nsid, size_t le
 static size_t value_size_for_nsid(uint32_t nsid)
 {
     auto it = g_value_size_by_nsid.find(nsid);
-    if (it != g_value_size_by_nsid.end()) {
-        return it->second;
-    }
+    if (it != g_value_size_by_nsid.end()) { return it->second; }
     return g_value_size;
 }
 
@@ -296,14 +297,11 @@ static int find_mr_index_nolog(uint64_t addr, size_t length)
 static int find_mr_index(uint64_t addr, size_t length)
 {
     int idx = find_mr_index_nolog(addr, length);
-    if (idx >= 0) {
-        return idx;
-    }
+    if (idx >= 0) { return idx; }
     NDS_ERROR_PRINT("data range outside registered MRs: addr=%llu, length=%zu, mr_count=%zu\n",
                     (unsigned long long)addr, length, g_mr_ranges.size());
     for (size_t i = 0; i < g_mr_ranges.size(); ++i) {
-        NDS_ERROR_PRINT("  mr[%zu]=[%llu,+%llu)\n", i,
-                        (unsigned long long)g_mr_ranges[i].first,
+        NDS_ERROR_PRINT("  mr[%zu]=[%llu,+%llu)\n", i, (unsigned long long)g_mr_ranges[i].first,
                         (unsigned long long)g_mr_ranges[i].second);
     }
     return -1;
@@ -327,7 +325,7 @@ static bool parse_mb_to_bytes(const char* str, size_t& out)
     errno = 0;
     double mb = strtod(str, &end);
     if (end == str || *end != '\0' || errno == ERANGE) return false;  // 要求整串消耗
-    if (!(mb > 0.0)) return false;  // 拒绝 0 / 负数 / NaN
+    if (!(mb > 0.0)) return false;                                    // 拒绝 0 / 负数 / NaN
     double bytes = mb * 1024.0 * 1024.0;
     if (bytes >= 9007199254740992.0) return false;  // 2^53，超出 double 精确整数范围
     out = static_cast<size_t>(bytes + 0.5);
@@ -405,9 +403,7 @@ static bool load_nds_wrapper_config(const char* nds_config_path)
         if (sscanf(p, "%63[^=]=%127s", key, valstr) == 2) {
             // 去除 key 尾部空白
             size_t len = strlen(key);
-            while (len > 0 && (key[len - 1] == ' ' || key[len - 1] == '\t')) {
-                key[--len] = '\0';
-            }
+            while (len > 0 && (key[len - 1] == ' ' || key[len - 1] == '\t')) { key[--len] = '\0'; }
 
             size_t parsed = 0;
             bool ok = true;
@@ -496,8 +492,8 @@ static bool load_nds_wrapper_config(const char* nds_config_path)
 
             if (!ok) {
                 // 解析失败：保留默认值/前值，显式报错避免静默截断类问题
-                NDS_ERROR_PRINT("invalid value for '%s': '%s', keeping previous setting\n",
-                                key, valstr);
+                NDS_ERROR_PRINT("invalid value for '%s': '%s', keeping previous setting\n", key,
+                                valstr);
             }
         }
     }
@@ -508,42 +504,42 @@ static bool load_nds_wrapper_config(const char* nds_config_path)
     // 表现为 batchPut 成功但 is_exists 永不命中（如 5616KB = 43.875 x 128KB）。
     // wrapper 的 pair 覆盖是完整的（尾 pair 为短 pair），不丢数据；但若盘框按
     // batch 粒度记账，唯一稳妥做法是 value_size 按 write_batch_size 对齐。
-    if (g_length_per_write_batch != 0 &&
-        g_value_size % g_length_per_write_batch != 0) {
-        NDS_ERROR_PRINT("WARNING: value_size=%zu is not a multiple of write_batch=%zu; "
-                        "short tail pair may not count toward a full slot on the box "
-                        "(is_exists may never hit). Recommend aligning value_size to a "
-                        "multiple of write_batch_size_kb\n",
-                        g_value_size, g_length_per_write_batch);
+    if (g_length_per_write_batch != 0 && g_value_size % g_length_per_write_batch != 0) {
+        NDS_ERROR_PRINT(
+            "WARNING: value_size=%zu is not a multiple of write_batch=%zu; "
+            "short tail pair may not count toward a full slot on the box "
+            "(is_exists may never hit). Recommend aligning value_size to a "
+            "multiple of write_batch_size_kb\n",
+            g_value_size, g_length_per_write_batch);
     }
     for (const auto& entry : g_value_size_by_nsid) {
-        if (g_length_per_write_batch != 0 &&
-            entry.second % g_length_per_write_batch != 0) {
-            NDS_ERROR_PRINT("WARNING: nsid=%u value_size=%zu is not a multiple of write_batch=%zu; "
-                            "is_exists may never hit. Recommend aligning to a multiple of "
-                            "write_batch_size_kb\n",
-                            entry.first, entry.second, g_length_per_write_batch);
+        if (g_length_per_write_batch != 0 && entry.second % g_length_per_write_batch != 0) {
+            NDS_ERROR_PRINT(
+                "WARNING: nsid=%u value_size=%zu is not a multiple of write_batch=%zu; "
+                "is_exists may never hit. Recommend aligning to a multiple of "
+                "write_batch_size_kb\n",
+                entry.first, entry.second, g_length_per_write_batch);
         }
     }
 
     // value_size 与 read_batch 对齐性检查（常驻警告）：读路径把尾 pair 补齐到
     // read_batch 整数倍，clamp 到 slot 末尾时的对齐依赖 value_size 是 read_batch
     // 的整数倍；否则读请求仍带非对齐尾 pair，盘框返回 1842 (NOTFULLYCOMPLETED)。
-    if (g_length_per_read_batch != 0 &&
-        g_value_size % g_length_per_read_batch != 0) {
-        NDS_ERROR_PRINT("WARNING: value_size=%zu is not a multiple of read_batch=%zu; "
-                        "extended read tail pair stays unaligned and the box may return "
-                        "1842. Recommend aligning value_size to a multiple of "
-                        "read_batch_size_kb\n",
-                        g_value_size, g_length_per_read_batch);
+    if (g_length_per_read_batch != 0 && g_value_size % g_length_per_read_batch != 0) {
+        NDS_ERROR_PRINT(
+            "WARNING: value_size=%zu is not a multiple of read_batch=%zu; "
+            "extended read tail pair stays unaligned and the box may return "
+            "1842. Recommend aligning value_size to a multiple of "
+            "read_batch_size_kb\n",
+            g_value_size, g_length_per_read_batch);
     }
     for (const auto& entry : g_value_size_by_nsid) {
-        if (g_length_per_read_batch != 0 &&
-            entry.second % g_length_per_read_batch != 0) {
-            NDS_ERROR_PRINT("WARNING: nsid=%u value_size=%zu is not a multiple of read_batch=%zu; "
-                            "extended read may return 1842. Recommend aligning to a multiple of "
-                            "read_batch_size_kb\n",
-                            entry.first, entry.second, g_length_per_read_batch);
+        if (g_length_per_read_batch != 0 && entry.second % g_length_per_read_batch != 0) {
+            NDS_ERROR_PRINT(
+                "WARNING: nsid=%u value_size=%zu is not a multiple of read_batch=%zu; "
+                "extended read may return 1842. Recommend aligning to a multiple of "
+                "read_batch_size_kb\n",
+                entry.first, entry.second, g_length_per_read_batch);
         }
     }
 
@@ -552,31 +548,35 @@ static bool load_nds_wrapper_config(const char* nds_config_path)
     // （实测 234MB/16KB=14976 >> 4096，batchPut ≥12 blocks 崩溃）。装箱路径已按
     // max_addr_num_per_req clamp（功能正确，REQ 数变多），但建议调 req/batch 消除
     // 额外拆分。
-    const size_t derivedWriteAddrNum = g_length_per_write_batch != 0
-        ? g_length_per_write_req / g_length_per_write_batch : 0;
-    const size_t derivedReadAddrNum = g_length_per_read_batch != 0
-        ? g_length_per_read_req / g_length_per_read_batch : 0;
+    const size_t derivedWriteAddrNum =
+        g_length_per_write_batch != 0 ? g_length_per_write_req / g_length_per_write_batch : 0;
+    const size_t derivedReadAddrNum =
+        g_length_per_read_batch != 0 ? g_length_per_read_req / g_length_per_read_batch : 0;
     if (derivedWriteAddrNum > g_max_addr_num_per_req ||
         derivedReadAddrNum > g_max_addr_num_per_req) {
-        NDS_ERROR_PRINT("WARNING: derived maxAddrNum (write=%zu, read=%zu) exceeds "
-                        "max_addr_num_per_req=%zu (SDK addr_pair_list capacity); "
-                        "clamping per-REQ pair count (safe, but more REQs). Recommend "
-                        "lowering *_req_size_mb or raising *_batch_size_kb so "
-                        "req_size/batch_size <= %zu\n",
-                        derivedWriteAddrNum, derivedReadAddrNum,
-                        g_max_addr_num_per_req, g_max_addr_num_per_req);
+        NDS_ERROR_PRINT(
+            "WARNING: derived maxAddrNum (write=%zu, read=%zu) exceeds "
+            "max_addr_num_per_req=%zu (SDK addr_pair_list capacity); "
+            "clamping per-REQ pair count (safe, but more REQs). Recommend "
+            "lowering *_req_size_mb or raising *_batch_size_kb so "
+            "req_size/batch_size <= %zu\n",
+            derivedWriteAddrNum, derivedReadAddrNum, g_max_addr_num_per_req,
+            g_max_addr_num_per_req);
     }
 
-    NDS_DEBUG_PRINT("nds_wrapper config: read_req=%zuM, write_req=%zuM, read_batch=%zuK, write_batch=%zuK, value_size=%zu bytes (%.3f MB), max_exist=%zu, key_scatter=%d, max_inflight_reqs=%zu, max_addr_num_per_req=%zu, error_print=%d\n",
-                    g_length_per_read_req / (1024 * 1024), g_length_per_write_req / (1024 * 1024),
-                    g_length_per_read_batch / 1024, g_length_per_write_batch / 1024,
-                    g_value_size, g_value_size / 1048576.0, g_max_exist_addr_num,
-                    g_key_scatter ? 1 : 0, g_max_inflight_reqs, g_max_addr_num_per_req,
-                    g_error_print_enabled ? 1 : 0);
+    NDS_DEBUG_PRINT(
+        "nds_wrapper config: read_req=%zuM, write_req=%zuM, read_batch=%zuK, write_batch=%zuK, "
+        "value_size=%zu bytes (%.3f MB), max_exist=%zu, key_scatter=%d, max_inflight_reqs=%zu, "
+        "max_addr_num_per_req=%zu, error_print=%d\n",
+        g_length_per_read_req / (1024 * 1024), g_length_per_write_req / (1024 * 1024),
+        g_length_per_read_batch / 1024, g_length_per_write_batch / 1024, g_value_size,
+        g_value_size / 1048576.0, g_max_exist_addr_num, g_key_scatter ? 1 : 0, g_max_inflight_reqs,
+        g_max_addr_num_per_req, g_error_print_enabled ? 1 : 0);
     // per-nsid valueSize 覆盖逐项打印（unordered_map 顺序不定，仅调试用）
     for (const auto& entry : g_value_size_by_nsid) {
-        NDS_DEBUG_PRINT("nds_wrapper config: nsid=%u value_size=%zu bytes (%.3f MB) [per-nsid override]\n",
-                        entry.first, entry.second, entry.second / 1048576.0);
+        NDS_DEBUG_PRINT(
+            "nds_wrapper config: nsid=%u value_size=%zu bytes (%.3f MB) [per-nsid override]\n",
+            entry.first, entry.second, entry.second / 1048576.0);
     }
     return true;
 }
@@ -598,17 +598,15 @@ static inline uint64_t next_task_id()
 // 调用线程内先批量提交 win 个 REQ 填充管线，再逐个 wait 最老的 + submit 下一个；
 // 每线程同时有 g_max_inflight_reqs 个 REQ 在飞（conf 键，默认 8）。
 // 旧两阶段模型（全部下发再全部 wait）已被替换，因其多线程并发时一次性压入大量 REQ
-//（8 线程 × 128 REQ/批 = 1024 在飞），超出 NDS SDK QP / 在途 task 容量致 hang。
+// （8 线程 × 128 REQ/批 = 1024 在飞），超出 NDS SDK QP / 在途 task 容量致 hang。
 // 读/写线程池已全部移除，conf 中的 get_threads / put_threads / put_core_start 键
 // 随之废弃（不再读取，保留键仅为兼容旧 conf 文件）。
 
 // init / initMulti 共享的初始化前导：加载 nds config、NDS_WRAP_DEBUG 调试开关、wrapper conf
-static void initPreamble(const char *path_nds_config)
+static void initPreamble(const char* path_nds_config)
 {
     const char* config_path = path_nds_config;
-    if (config_path == nullptr || strcmp(config_path, "") == 0) {
-        config_path = "nds_config.conf";
-    }
+    if (config_path == nullptr || strcmp(config_path, "") == 0) { config_path = "nds_config.conf"; }
 
     nds_kv_get_nds_config(config_path);
 
@@ -618,7 +616,8 @@ static void initPreamble(const char *path_nds_config)
     load_nds_wrapper_config(config_path);
 }
 
-int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> lengths, const char *path_nds_config)
+int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> lengths,
+                       const char* path_nds_config)
 {
     if (memAddrs.empty()) {
         NDS_ERROR_PRINT("initMulti: memAddrs is empty\n");
@@ -644,9 +643,10 @@ int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> length
     for (size_t i = 0; i < memAddrs.size(); ++i) {
         auto addrVal = reinterpret_cast<uintptr_t>(memAddrs[i]);
         if (addrVal % 4096 != 0) {
-            NDS_ERROR_PRINT("initMulti: address at index %zu (0x%llx) is not 4096-aligned; "
-                            "refusing to register any MR (partial registration is unsafe)\n",
-                            i, (unsigned long long)static_cast<uint64_t>(addrVal));
+            NDS_ERROR_PRINT(
+                "initMulti: address at index %zu (0x%llx) is not 4096-aligned; "
+                "refusing to register any MR (partial registration is unsafe)\n",
+                i, (unsigned long long)static_cast<uint64_t>(addrVal));
             return -1;
         }
     }
@@ -679,8 +679,8 @@ int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> length
     // dangling（1s 断连测试能过可能只是栈槽位碰巧残留旧值）。内层数组和外层
     // 指针都必须进程级存活，两种 SDK 实现都安全。
     const size_t mrNum = memAddrs.size();
-    static std::vector<kv_mr> *g_mr_array = new std::vector<kv_mr>();  // 有意泄漏，进程生命周期
-    static kv_mr *g_mr_base = nullptr;  // 外层指针同样进程级存活（nds_init 存的是它的地址）
+    static std::vector<kv_mr>* g_mr_array = new std::vector<kv_mr>();  // 有意泄漏，进程生命周期
+    static kv_mr* g_mr_base = nullptr;  // 外层指针同样进程级存活（nds_init 存的是它的地址）
     g_mr_array->clear();
     g_mr_array->reserve(mrNum);
     for (size_t i = 0; i < mrNum; ++i) {
@@ -689,7 +689,7 @@ int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> length
         g_mr_array->push_back(kv_mr{static_cast<uint64_t>(addrVal), lengths[i]});
     }
     g_mr_base = g_mr_array->data();
-    auto ret = nds_init(reinterpret_cast<void **>(&g_mr_base), static_cast<int>(mrNum));
+    auto ret = nds_init(reinterpret_cast<void**>(&g_mr_base), static_cast<int>(mrNum));
     if (ret != 0) {
         NDS_ERROR_PRINT("Failed to register dram pool\n");
         return -1;
@@ -707,13 +707,14 @@ int32_t NDS::initMulti(std::vector<void*> memAddrs, std::vector<uint64_t> length
     return 0;
 }
 
-int32_t NDS::init(void *memAddr, uint64_t length, const char *path_nds_config)
+int32_t NDS::init(void* memAddr, uint64_t length, const char* path_nds_config)
 {
     // 单 buffer 即单元素 initMulti（与原实现行为一致：成功返回 0，失败打印并返回 -1）
     return NDS::initMulti({memAddr}, {length}, path_nds_config);
 }
 
-int32_t NDS::isExists(std::vector<uint64_t> blockIdLows, std::vector<uint16_t> blockIdHighs, uint32_t nsid)
+int32_t NDS::isExists(std::vector<uint64_t> blockIdLows, std::vector<uint16_t> blockIdHighs,
+                      uint32_t nsid)
 {
     if (blockIdLows.size() != blockIdHighs.size()) {
         NDS_ERROR_PRINT("isExists: blockIdLows/blockIdHighs size mismatch: %zu vs %zu\n",
@@ -726,7 +727,8 @@ int32_t NDS::isExists(std::vector<uint64_t> blockIdLows, std::vector<uint16_t> b
     std::vector<NDS_REQ> reqs(reqNum);
     auto idx = 0;
     for (uint64_t i = 0; i < reqNum; ++i) {
-        auto addrNum = i < (reqNum - 1) ? maxExistAddrNum : (blockIdLows.size() - i * maxExistAddrNum);
+        auto addrNum =
+            i < (reqNum - 1) ? maxExistAddrNum : (blockIdLows.size() - i * maxExistAddrNum);
         reqs[i].task_id = next_task_id();
         reqs[i].addr_num = addrNum;
         reqs[i].mr_id = 0;
@@ -744,50 +746,50 @@ int32_t NDS::isExists(std::vector<uint64_t> blockIdLows, std::vector<uint16_t> b
 
     int32_t res = 0;
     uint64_t cur;
-    for (auto &req : reqs) {
+    for (auto& req : reqs) {
         cur = nds_kv_exist(&req);
         res += static_cast<int32_t>(cur);
-        if (cur < req.addr_num) {
-            break;
-        }
+        if (cur < req.addr_num) { break; }
     }
     return res;
 }
 
 std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& blockIds,
-                                     const std::vector<uint16_t>& blockIdHighs,
-                                     const std::vector<uint8_t*>& blockAddrs,
-                                     const std::vector<size_t>& offsets,
-                                     const std::vector<size_t>& lengths,
-                                     const std::vector<uint32_t>& nsids,
-                                     bool read)
+                                               const std::vector<uint16_t>& blockIdHighs,
+                                               const std::vector<uint8_t*>& blockAddrs,
+                                               const std::vector<size_t>& offsets,
+                                               const std::vector<size_t>& lengths,
+                                               const std::vector<uint32_t>& nsids, bool read)
 {
-    if (blockIds.empty()) {
-        return {};
-    }
+    if (blockIds.empty()) { return {}; }
     const size_t expectedSize = blockIds.size();
-    if (blockIdHighs.size() != expectedSize ||
-        blockAddrs.size() != expectedSize || offsets.size() != expectedSize ||
-        lengths.size() != expectedSize || nsids.size() != expectedSize) {
-        NDS_ERROR_PRINT("input vector size mismatch: blockIds=%zu, blockIdHighs=%zu, blockAddrs=%zu, offsets=%zu, lengths=%zu, nsids=%zu\n",
-                        blockIds.size(), blockIdHighs.size(), blockAddrs.size(), offsets.size(), lengths.size(), nsids.size());
+    if (blockIdHighs.size() != expectedSize || blockAddrs.size() != expectedSize ||
+        offsets.size() != expectedSize || lengths.size() != expectedSize ||
+        nsids.size() != expectedSize) {
+        NDS_ERROR_PRINT(
+            "input vector size mismatch: blockIds=%zu, blockIdHighs=%zu, blockAddrs=%zu, "
+            "offsets=%zu, lengths=%zu, nsids=%zu\n",
+            blockIds.size(), blockIdHighs.size(), blockAddrs.size(), offsets.size(), lengths.size(),
+            nsids.size());
         return {};
     }
     const size_t lengthPerBatch = read ? g_length_per_read_batch : g_length_per_write_batch;
     // clamp 到 SDK addr_pair_list 物理上限（max_addr_num_per_req，默认 4096），
     // 防止 conf 推导值（req/batch）超过定长数组导致栈溢出；超过时自然拆成更多 REQ
-    const size_t maxAddrNum = clamp_addr_num(read ? (g_length_per_read_req / g_length_per_read_batch) : (g_length_per_write_req / g_length_per_write_batch));
+    const size_t maxAddrNum =
+        clamp_addr_num(read ? (g_length_per_read_req / g_length_per_read_batch)
+                            : (g_length_per_write_req / g_length_per_write_batch));
     std::vector<std::vector<addr_pair>> blockPairsCache;
     std::vector<int> mrs(expectedSize, -1);  // 各 block 数据区间命中的 MR 下标（即 mr_id）
     size_t totalPairs = 0;
     for (size_t i = 0; i < expectedSize; ++i) {
         if (lengths[i] == 0) {
-            NDS_ERROR_PRINT("invalid io size: blockId=%lu, length=%zu\n",
-                            blockIds[i], lengths[i]);
+            NDS_ERROR_PRINT("invalid io size: blockId=%lu, length=%zu\n", blockIds[i], lengths[i]);
             return {};
         }
         const size_t expectValueSize = value_size_for_nsid(nsids[i]);
-        mrs[i] = find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i])), lengths[i]);
+        mrs[i] = find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i])),
+                               lengths[i]);
         if (mrs[i] < 0) {
             NDS_ERROR_PRINT("block addr not in any registered MR: blockId=%lu\n", blockIds[i]);
             return {};
@@ -803,8 +805,9 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
             // 调用方 block buffer 内（容量 >= value_size，与 partial-slot write
             // 同一前提），调用方只取前 length 字节。
             if (offsets[i] + lengths[i] > expectValueSize) {
-                NDS_ERROR_PRINT("offset overflow: blockId=%lu, offset=%zu, length=%zu, value_size=%zu\n",
-                                blockIds[i], offsets[i], lengths[i], expectValueSize);
+                NDS_ERROR_PRINT(
+                    "offset overflow: blockId=%lu, offset=%zu, length=%zu, value_size=%zu\n",
+                    blockIds[i], offsets[i], lengths[i], expectValueSize);
                 return {};
             }
             size_t readLen = (lengths[i] + lengthPerBatch - 1) / lengthPerBatch * lengthPerBatch;
@@ -817,17 +820,19 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
                 if (readLen < lengths[i]) {
                     // clamp 后短于请求长度 = slotRemain 非 batch 对齐（offset 未按
                     // batch 对齐），读全必然 1842；显式报错而非静默截断数据
-                    NDS_ERROR_PRINT("aligned read: blockId=%lu, slot remainder %zu not batch-aligned "
-                                    "(offset=%zu, length=%zu, value_size=%zu, read_batch=%zu); "
-                                    "align read offset to read_batch_size_kb\n",
-                                    blockIds[i], slotRemain, offsets[i], lengths[i],
-                                    expectValueSize, lengthPerBatch);
+                    NDS_ERROR_PRINT(
+                        "aligned read: blockId=%lu, slot remainder %zu not batch-aligned "
+                        "(offset=%zu, length=%zu, value_size=%zu, read_batch=%zu); "
+                        "align read offset to read_batch_size_kb\n",
+                        blockIds[i], slotRemain, offsets[i], lengths[i], expectValueSize,
+                        lengthPerBatch);
                     return {};
                 }
             }
             // 扩范围后必须单独校验整段落在 MR 内（mrs[i] 只校验了 [addr, addr+length)）
             if (readLen > lengths[i] &&
-                find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i])), readLen) < 0) {
+                find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i])),
+                              readLen) < 0) {
                 NDS_ERROR_PRINT("aligned read: blockId=%lu, addr=%p, readLen=%zu outside MR\n",
                                 blockIds[i], (void*)blockAddrs[i], readLen);
                 return {};
@@ -837,22 +842,26 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
                                 blockIds[i], nsids[i], lengths[i], readLen);
             }
             currentPairs.reserve((readLen + lengthPerBatch - 1) / lengthPerBatch);
-            appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], offsets[i], readLen, lengthPerBatch, currentPairs);
+            appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], offsets[i], readLen,
+                              lengthPerBatch, currentPairs);
         } else if (lengths[i] > expectValueSize) {
             // 超长写：盘框拒绝（ret:1842），提前拦截并给出建议配置值
             size_t suggest_kb = (lengths[i] + 1023) / 1024;
-            const char* roundNote = (lengths[i] % 1024 == 0) ? "" : "（length 非 KB 对齐，已向上取整）";
+            const char* roundNote =
+                (lengths[i] % 1024 == 0) ? "" : "（length 非 KB 对齐，已向上取整）";
             if (g_value_size_by_nsid.count(nsids[i]) != 0) {
-                NDS_ERROR_PRINT("length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
-                                "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb_nsid%u 配置为 %zu%s\n",
-                                blockIds[i], nsids[i], lengths[i], expectValueSize,
-                                nsids[i], nsids[i], suggest_kb, roundNote);
+                NDS_ERROR_PRINT(
+                    "length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
+                    "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb_nsid%u 配置为 %zu%s\n",
+                    blockIds[i], nsids[i], lengths[i], expectValueSize, nsids[i], nsids[i],
+                    suggest_kb, roundNote);
             } else {
-                NDS_ERROR_PRINT("length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
-                                "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb 配置为 %zu，"
-                                "或新增 value_size_kb_nsid%u=%zu%s\n",
-                                blockIds[i], nsids[i], lengths[i], expectValueSize,
-                                nsids[i], suggest_kb, nsids[i], suggest_kb, roundNote);
+                NDS_ERROR_PRINT(
+                    "length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
+                    "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb 配置为 %zu，"
+                    "或新增 value_size_kb_nsid%u=%zu%s\n",
+                    blockIds[i], nsids[i], lengths[i], expectValueSize, nsids[i], suggest_kb,
+                    nsids[i], suggest_kb, roundNote);
             }
             return {};
         } else if (lengths[i] < expectValueSize) {
@@ -861,44 +870,50 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
             // 数据，don't-care，reader 按真实 length 读，不做任何清零动作）。
             // 策略演进见 appendRegionPairs 上方的注释。
             if (offsets[i] != 0) {
-                NDS_ERROR_PRINT("non-zero write offset not allowed for padded write: blockId=%lu, offset=%zu\n",
-                                blockIds[i], offsets[i]);
+                NDS_ERROR_PRINT(
+                    "non-zero write offset not allowed for padded write: blockId=%lu, offset=%zu\n",
+                    blockIds[i], offsets[i]);
                 return {};
             }
             // 补齐后 RDMA READ 范围扩到 value_size。优先 contiguous 扩展（pair 偏移
             // 单调递增，性能最佳）；但当 block 落在池末尾、扩范围越出所属 MR 时
-            //（value_size 按 KB 取整必然略大于非 KB 对齐的页，如 SWA 页
+            // （value_size 按 KB 取整必然略大于非 KB 对齐的页，如 SWA 页
             // 6288.75KiB 配 6400KB，最后一页必越界），pad 段改借该 MR 头部的
             // 已注册内存（同一 mr_id，内容 don't-care），让末页也能写满 slot、
             // is_exists 语义不受损。借头部移植自 archive/padding-offset-align
-            //（0a82317），当年正是为解决同一问题引入。
-            uint64_t blockAddrVal = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i]));
+            // （0a82317），当年正是为解决同一问题引入。
+            uint64_t blockAddrVal =
+                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddrs[i]));
             if (find_mr_index_nolog(blockAddrVal, expectValueSize) >= 0) {
-                NDS_DEBUG_PRINT("padded write: blockId=%lu, nsid=%u, dataLen=%zu, writing full slot=%zu\n",
-                                blockIds[i], nsids[i], lengths[i], expectValueSize);
+                NDS_DEBUG_PRINT(
+                    "padded write: blockId=%lu, nsid=%u, dataLen=%zu, writing full slot=%zu\n",
+                    blockIds[i], nsids[i], lengths[i], expectValueSize);
                 currentPairs.reserve((expectValueSize + lengthPerBatch - 1) / lengthPerBatch);
-                appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], 0, expectValueSize, lengthPerBatch, currentPairs);
+                appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], 0, expectValueSize,
+                                  lengthPerBatch, currentPairs);
             } else {
                 // mrs[i] 已校验 [addr, addr+length) 落在该 MR 内，直接借其头部
                 const uint64_t mrBase = g_mr_ranges[mrs[i]].first;
                 const uint64_t mrSize = g_mr_ranges[mrs[i]].second;
                 if (mrSize < expectValueSize) {
-                    NDS_ERROR_PRINT("padded write: blockId=%lu, addr=%p, value_size=%zu exceeds "
-                                    "its MR [%llu,+%llu) and MR is smaller than value_size; "
-                                    "cannot borrow MR head for padding\n",
-                                    blockIds[i], (void*)blockAddrs[i], expectValueSize,
-                                    (unsigned long long)mrBase, (unsigned long long)mrSize);
+                    NDS_ERROR_PRINT(
+                        "padded write: blockId=%lu, addr=%p, value_size=%zu exceeds "
+                        "its MR [%llu,+%llu) and MR is smaller than value_size; "
+                        "cannot borrow MR head for padding\n",
+                        blockIds[i], (void*)blockAddrs[i], expectValueSize,
+                        (unsigned long long)mrBase, (unsigned long long)mrSize);
                     return {};
                 }
                 // 注意：pad 段在 lengths[i] 处引入新的 pair 边界，length 非
                 // write_batch 对齐时 pad 段首 pair 为短 pair（与旧实现语义一致，
                 // test_padding 实测 is_exists 可命中）。
-                NDS_DEBUG_PRINT("padded write borrow MR head: blockId=%lu, nsid=%u, dataLen=%zu, "
-                                "padLen=%zu borrowed from mr[%d] base\n",
-                                blockIds[i], nsids[i], lengths[i],
-                                expectValueSize - lengths[i], mrs[i]);
+                NDS_DEBUG_PRINT(
+                    "padded write borrow MR head: blockId=%lu, nsid=%u, dataLen=%zu, "
+                    "padLen=%zu borrowed from mr[%d] base\n",
+                    blockIds[i], nsids[i], lengths[i], expectValueSize - lengths[i], mrs[i]);
                 currentPairs.reserve((expectValueSize + lengthPerBatch - 1) / lengthPerBatch + 1);
-                appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], 0, lengths[i], lengthPerBatch, currentPairs);
+                appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], 0, lengths[i],
+                                  lengthPerBatch, currentPairs);
                 uint8_t* padSrc = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(mrBase));
                 appendRegionPairs(blockIds[i], blockIdHighs[i], padSrc, lengths[i],
                                   expectValueSize - lengths[i], lengthPerBatch, currentPairs);
@@ -906,7 +921,8 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
         } else {
             debugNoteShortTail(blockIds[i], nsids[i], lengths[i], lengthPerBatch);
             currentPairs.reserve((lengths[i] + lengthPerBatch - 1) / lengthPerBatch);
-            appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], offsets[i], lengths[i], lengthPerBatch, currentPairs);
+            appendRegionPairs(blockIds[i], blockIdHighs[i], blockAddrs[i], offsets[i], lengths[i],
+                              lengthPerBatch, currentPairs);
         }
         totalPairs += currentPairs.size();
     }
@@ -915,8 +931,10 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
     std::vector<size_t> nextPairIdx(blockPairsCache.size(), 0);
     size_t blockIdx = 0;
 
-    NDS_DEBUG_PRINT("****** prepareNdsReqsBatch, is_read: %d, lengthPerBatch: %zu, maxAddrNum: %zu, blockCount: %zu, totalPairs: %zu\n",
-                    read, lengthPerBatch, maxAddrNum, blockPairsCache.size(), totalPairs);
+    NDS_DEBUG_PRINT(
+        "****** prepareNdsReqsBatch, is_read: %d, lengthPerBatch: %zu, maxAddrNum: %zu, "
+        "blockCount: %zu, totalPairs: %zu\n",
+        read, lengthPerBatch, maxAddrNum, blockPairsCache.size(), totalPairs);
 
     // 按 block 轮转混装：同一 (nsid, mr_id) 连续段内，每个 REQ 以 pair 为粒度轮流取各 block
     // 的下一个 pair，直到装满 maxAddrNum。单个 REQ 因此横跨多个 key，经哈希环自然
@@ -960,7 +978,8 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
                         countedGen[b] = reqSeq;
                         wrapper.total_blocks++;  // 本 REQ 首次覆盖该 block
                     }
-                    wrapper.req.addr_pair_list[filledPairs++] = blockPairsCache[b][nextPairIdx[b]++];
+                    wrapper.req.addr_pair_list[filledPairs++] =
+                        blockPairsCache[b][nextPairIdx[b]++];
                     anyLeft = true;
                 }
             }
@@ -982,19 +1001,24 @@ std::vector<NdsReqWrapper> prepareNdsReqsBatch(const std::vector<uint64_t>& bloc
     return reqs;
 }
 
-std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh, uint8_t *blockAddr, size_t offset, size_t length, uint32_t nsid, bool read)
+std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh,
+                                          uint8_t* blockAddr, size_t offset, size_t length,
+                                          uint32_t nsid, bool read)
 {
     const size_t lengthPerBatch = read ? g_length_per_read_batch : g_length_per_write_batch;
     // clamp 到 SDK addr_pair_list 物理上限（max_addr_num_per_req，默认 4096），
     // 防止 conf 推导值（req/batch）超过定长数组导致栈溢出；超过时自然拆成更多 REQ
-    const size_t maxAddrNum = clamp_addr_num(read ? (g_length_per_read_req / g_length_per_read_batch) : (g_length_per_write_req / g_length_per_write_batch));
+    const size_t maxAddrNum =
+        clamp_addr_num(read ? (g_length_per_read_req / g_length_per_read_batch)
+                            : (g_length_per_write_req / g_length_per_write_batch));
 
     if (length == 0) {
         NDS_ERROR_PRINT("invalid io size: length is zero\n");
         return {};
     }
     const size_t expectValueSize = value_size_for_nsid(nsid);
-    const int mr = find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddr)), length);
+    const int mr =
+        find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddr)), length);
     if (mr < 0) {
         NDS_ERROR_PRINT("block addr not in any registered MR: blockId=%lu\n", blockId);
         return {};
@@ -1009,8 +1033,9 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
         // 调用方 block buffer 内（容量 >= value_size，与 partial-slot write
         // 同一前提），调用方只取前 length 字节。
         if (offset + length > expectValueSize) {
-            NDS_ERROR_PRINT("offset overflow: blockId=%lu, offset=%zu, length=%zu, value_size=%zu\n",
-                            blockId, offset, length, expectValueSize);
+            NDS_ERROR_PRINT(
+                "offset overflow: blockId=%lu, offset=%zu, length=%zu, value_size=%zu\n", blockId,
+                offset, length, expectValueSize);
             return {};
         }
         size_t readLen = (length + lengthPerBatch - 1) / lengthPerBatch * lengthPerBatch;
@@ -1023,19 +1048,20 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
             if (readLen < length) {
                 // clamp 后短于请求长度 = slotRemain 非 batch 对齐（offset 未按
                 // batch 对齐），读全必然 1842；显式报错而非静默截断数据
-                NDS_ERROR_PRINT("aligned read: blockId=%lu, slot remainder %zu not batch-aligned "
-                                "(offset=%zu, length=%zu, value_size=%zu, read_batch=%zu); "
-                                "align read offset to read_batch_size_kb\n",
-                                blockId, slotRemain, offset, length,
-                                expectValueSize, lengthPerBatch);
+                NDS_ERROR_PRINT(
+                    "aligned read: blockId=%lu, slot remainder %zu not batch-aligned "
+                    "(offset=%zu, length=%zu, value_size=%zu, read_batch=%zu); "
+                    "align read offset to read_batch_size_kb\n",
+                    blockId, slotRemain, offset, length, expectValueSize, lengthPerBatch);
                 return {};
             }
         }
         // 扩范围后必须单独校验整段落在 MR 内（mr 只校验了 [addr, addr+length)）
         if (readLen > length &&
-            find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddr)), readLen) < 0) {
-            NDS_ERROR_PRINT("aligned read: blockId=%lu, addr=%p, readLen=%zu outside MR\n",
-                            blockId, (void*)blockAddr, readLen);
+            find_mr_index(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddr)), readLen) <
+                0) {
+            NDS_ERROR_PRINT("aligned read: blockId=%lu, addr=%p, readLen=%zu outside MR\n", blockId,
+                            (void*)blockAddr, readLen);
             return {};
         }
         if (readLen != length) {
@@ -1049,16 +1075,17 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
         size_t suggest_kb = (length + 1023) / 1024;
         const char* roundNote = (length % 1024 == 0) ? "" : "（length 非 KB 对齐，已向上取整）";
         if (g_value_size_by_nsid.count(nsid) != 0) {
-            NDS_ERROR_PRINT("length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
-                            "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb_nsid%u 配置为 %zu%s\n",
-                            blockId, nsid, length, expectValueSize,
-                            nsid, nsid, suggest_kb, roundNote);
+            NDS_ERROR_PRINT(
+                "length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
+                "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb_nsid%u 配置为 %zu%s\n",
+                blockId, nsid, length, expectValueSize, nsid, nsid, suggest_kb, roundNote);
         } else {
-            NDS_ERROR_PRINT("length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
-                            "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb 配置为 %zu，"
-                            "或新增 value_size_kb_nsid%u=%zu%s\n",
-                            blockId, nsid, length, expectValueSize,
-                            nsid, suggest_kb, nsid, suggest_kb, roundNote);
+            NDS_ERROR_PRINT(
+                "length > value_size: blockId=%lu, nsid=%u, length=%zu, value_size=%zu; "
+                "建议将盘框 nsid=%u 的 valueSize 与 value_size_kb 配置为 %zu，"
+                "或新增 value_size_kb_nsid%u=%zu%s\n",
+                blockId, nsid, length, expectValueSize, nsid, suggest_kb, nsid, suggest_kb,
+                roundNote);
         }
         return {};
     } else if (length < expectValueSize) {
@@ -1066,8 +1093,9 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
         // 单调递增一次写满整个 slot（尾部为 buffer 残留数据，don't-care，
         // 不做任何清零动作）。策略演进见 appendRegionPairs 上方的注释。
         if (offset != 0) {
-            NDS_ERROR_PRINT("non-zero write offset not allowed for padded write: blockId=%lu, offset=%zu\n",
-                            blockId, offset);
+            NDS_ERROR_PRINT(
+                "non-zero write offset not allowed for padded write: blockId=%lu, offset=%zu\n",
+                blockId, offset);
             return {};
         }
         // 补齐后 RDMA READ 范围扩到 value_size。优先 contiguous 扩展；block 落在
@@ -1075,29 +1103,33 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
         // mr_id，内容 don't-care），让末页也能写满 slot。详见批量路径同名注释。
         uint64_t blockAddrVal = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blockAddr));
         if (find_mr_index_nolog(blockAddrVal, expectValueSize) >= 0) {
-            NDS_DEBUG_PRINT("padded write: blockId=%lu, nsid=%u, dataLen=%zu, writing full slot=%zu\n",
-                            blockId, nsid, length, expectValueSize);
+            NDS_DEBUG_PRINT(
+                "padded write: blockId=%lu, nsid=%u, dataLen=%zu, writing full slot=%zu\n", blockId,
+                nsid, length, expectValueSize);
             pairs.reserve((expectValueSize + lengthPerBatch - 1) / lengthPerBatch);
-            appendRegionPairs(blockId, blockIdHigh, blockAddr, 0, expectValueSize, lengthPerBatch, pairs);
+            appendRegionPairs(blockId, blockIdHigh, blockAddr, 0, expectValueSize, lengthPerBatch,
+                              pairs);
         } else {
             const uint64_t mrBase = g_mr_ranges[mr].first;
             const uint64_t mrSize = g_mr_ranges[mr].second;
             if (mrSize < expectValueSize) {
-                NDS_ERROR_PRINT("padded write: blockId=%lu, addr=%p, value_size=%zu exceeds "
-                                "its MR [%llu,+%llu) and MR is smaller than value_size; "
-                                "cannot borrow MR head for padding\n",
-                                blockId, (void*)blockAddr, expectValueSize,
-                                (unsigned long long)mrBase, (unsigned long long)mrSize);
+                NDS_ERROR_PRINT(
+                    "padded write: blockId=%lu, addr=%p, value_size=%zu exceeds "
+                    "its MR [%llu,+%llu) and MR is smaller than value_size; "
+                    "cannot borrow MR head for padding\n",
+                    blockId, (void*)blockAddr, expectValueSize, (unsigned long long)mrBase,
+                    (unsigned long long)mrSize);
                 return {};
             }
-            NDS_DEBUG_PRINT("padded write borrow MR head: blockId=%lu, nsid=%u, dataLen=%zu, "
-                            "padLen=%zu borrowed from mr[%d] base\n",
-                            blockId, nsid, length, expectValueSize - length, mr);
+            NDS_DEBUG_PRINT(
+                "padded write borrow MR head: blockId=%lu, nsid=%u, dataLen=%zu, "
+                "padLen=%zu borrowed from mr[%d] base\n",
+                blockId, nsid, length, expectValueSize - length, mr);
             pairs.reserve((expectValueSize + lengthPerBatch - 1) / lengthPerBatch + 1);
             appendRegionPairs(blockId, blockIdHigh, blockAddr, 0, length, lengthPerBatch, pairs);
             uint8_t* padSrc = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(mrBase));
-            appendRegionPairs(blockId, blockIdHigh, padSrc, length,
-                              expectValueSize - length, lengthPerBatch, pairs);
+            appendRegionPairs(blockId, blockIdHigh, padSrc, length, expectValueSize - length,
+                              lengthPerBatch, pairs);
         }
     } else {
         debugNoteShortTail(blockId, nsid, length, lengthPerBatch);
@@ -1105,8 +1137,10 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
         appendRegionPairs(blockId, blockIdHigh, blockAddr, offset, length, lengthPerBatch, pairs);
     }
 
-    NDS_DEBUG_PRINT("****** prepareNdsReqs, is_read: %d, lengthPerBatch: %zu, maxAddrNum: %zu, pairCount: %zu\n",
-                    read, lengthPerBatch, maxAddrNum, pairs.size());
+    NDS_DEBUG_PRINT(
+        "****** prepareNdsReqs, is_read: %d, lengthPerBatch: %zu, maxAddrNum: %zu, pairCount: "
+        "%zu\n",
+        read, lengthPerBatch, maxAddrNum, pairs.size());
 
     // 单个 NDS_REQ 的 addr_pair 数量不能超过 maxAddrNum，按 maxAddrNum 拆分为多个 NDS_REQ；
     // 但每个 NDS_REQ 仍只对应同一个逻辑 block。
@@ -1137,7 +1171,7 @@ std::vector<NdsReqWrapper> prepareNdsReqs(uint64_t blockId, uint16_t blockIdHigh
 // wait 最老的（完成一个）→ submit 下一个（填回空位），管线保持 win 个在飞。
 // task_id 由全局原子计数器分配（见 next_task_id），每个 REQ 唯一。
 // 返回失败 REQ 数（0 为全部成功）。
-int32_t submitAsyncAndWait(std::vector<NdsReqWrapper> &reqs, bool read)
+int32_t submitAsyncAndWait(std::vector<NdsReqWrapper>& reqs, bool read)
 {
     int32_t error_num = 0;
     size_t win = g_max_inflight_reqs;
@@ -1150,13 +1184,16 @@ int32_t submitAsyncAndWait(std::vector<NdsReqWrapper> &reqs, bool read)
 
     // Phase 1: 填充管线 — 先提交 win 个 REQ（不 wait）
     for (; submitIdx < n && submitIdx < win; submitIdx++) {
-        auto &w = reqs[submitIdx];
+        auto& w = reqs[submitIdx];
         NDS_DEBUG_PRINT("****** submitAsyncAndWait phase1 submit, reqs id: %lu \n", w.req.task_id);
         int32_t ret = read ? nds_kv_get(&w.req) : nds_kv_put(&w.req);
         if (ret != 0) {
-            NDS_ERROR_PRINT("nds kv operation failed, is read:%d, mrId:%u, blockId:%lu, blockAddr:%lu, offset:%u, length:%u\n",
-                    read, w.req.mr_id, w.req.addr_pair_list[0].block_id.key_low,
-                    w.req.addr_pair_list[0].hbm_addr, w.req.addr_pair_list[0].offset, w.req.addr_pair_list[0].length);
+            NDS_ERROR_PRINT(
+                "nds kv operation failed, is read:%d, mrId:%u, blockId:%lu, blockAddr:%lu, "
+                "offset:%u, length:%u\n",
+                read, w.req.mr_id, w.req.addr_pair_list[0].block_id.key_low,
+                w.req.addr_pair_list[0].hbm_addr, w.req.addr_pair_list[0].offset,
+                w.req.addr_pair_list[0].length);
             error_num++;
             submitOk[submitIdx] = -1;
         } else {
@@ -1167,15 +1204,21 @@ int32_t submitAsyncAndWait(std::vector<NdsReqWrapper> &reqs, bool read)
     // Phase 2: 滑动窗口 — wait 最老的，submit 下一个
     for (size_t i = 0; i < n; i++) {
         if (submitOk[i] == 1) {
-            auto &w = reqs[i];
-            NDS_DEBUG_PRINT("****** submitAsyncAndWait nds_kv_wait start, reqs id: %lu \n", w.req.task_id);
+            auto& w = reqs[i];
+            NDS_DEBUG_PRINT("****** submitAsyncAndWait nds_kv_wait start, reqs id: %lu \n",
+                            w.req.task_id);
             CODE_SET code_set = nds_kv_wait(w.req.task_id, w.total_blocks);
-            NDS_DEBUG_PRINT("****** submitAsyncAndWait nds_kv_wait end, reqs id: %lu, batch_size: %zu, key_size: %zu \n",
-                            w.req.task_id, code_set.batch_code_set.size(), code_set.key_code_set.size());
+            NDS_DEBUG_PRINT(
+                "****** submitAsyncAndWait nds_kv_wait end, reqs id: %lu, batch_size: %zu, "
+                "key_size: %zu \n",
+                w.req.task_id, code_set.batch_code_set.size(), code_set.key_code_set.size());
             if (checkCodeSet(code_set, w.req.task_id, read) != 0) {
-                NDS_ERROR_PRINT("nds_kv_wait failed, is read:%d, blockId:%lu, blockAddr:%lu, offset:%u, length:%u\n",
-                        read, w.req.addr_pair_list[0].block_id.key_low, w.req.addr_pair_list[0].hbm_addr,
-                        w.req.addr_pair_list[0].offset, w.req.addr_pair_list[0].length);
+                NDS_ERROR_PRINT(
+                    "nds_kv_wait failed, is read:%d, blockId:%lu, blockAddr:%lu, offset:%u, "
+                    "length:%u\n",
+                    read, w.req.addr_pair_list[0].block_id.key_low,
+                    w.req.addr_pair_list[0].hbm_addr, w.req.addr_pair_list[0].offset,
+                    w.req.addr_pair_list[0].length);
                 error_num++;
             }
         }
@@ -1184,13 +1227,17 @@ int32_t submitAsyncAndWait(std::vector<NdsReqWrapper> &reqs, bool read)
 
         // 管线有空位就填下一个
         if (submitIdx < n) {
-            auto &w = reqs[submitIdx];
-            NDS_DEBUG_PRINT("****** submitAsyncAndWait phase2 submit, reqs id: %lu \n", w.req.task_id);
+            auto& w = reqs[submitIdx];
+            NDS_DEBUG_PRINT("****** submitAsyncAndWait phase2 submit, reqs id: %lu \n",
+                            w.req.task_id);
             int32_t ret = read ? nds_kv_get(&w.req) : nds_kv_put(&w.req);
             if (ret != 0) {
-                NDS_ERROR_PRINT("nds kv operation failed, is read:%d, mrId:%u, blockId:%lu, blockAddr:%lu, offset:%u, length:%u\n",
-                        read, w.req.mr_id, w.req.addr_pair_list[0].block_id.key_low,
-                        w.req.addr_pair_list[0].hbm_addr, w.req.addr_pair_list[0].offset, w.req.addr_pair_list[0].length);
+                NDS_ERROR_PRINT(
+                    "nds kv operation failed, is read:%d, mrId:%u, blockId:%lu, blockAddr:%lu, "
+                    "offset:%u, length:%u\n",
+                    read, w.req.mr_id, w.req.addr_pair_list[0].block_id.key_low,
+                    w.req.addr_pair_list[0].hbm_addr, w.req.addr_pair_list[0].offset,
+                    w.req.addr_pair_list[0].length);
                 error_num++;
                 submitOk[submitIdx] = -1;
             } else {
@@ -1202,7 +1249,8 @@ int32_t submitAsyncAndWait(std::vector<NdsReqWrapper> &reqs, bool read)
     return error_num;
 }
 
-int32_t NDS::get(uint64_t blockId, uint16_t blockIdHigh, uint8_t *blockAddr, size_t offset, size_t length, uint32_t nsid)
+int32_t NDS::get(uint64_t blockId, uint16_t blockIdHigh, uint8_t* blockAddr, size_t offset,
+                 size_t length, uint32_t nsid)
 {
     auto reqs = prepareNdsReqs(blockId, blockIdHigh, blockAddr, offset, length, nsid, true);
     if (reqs.empty()) {
@@ -1211,30 +1259,35 @@ int32_t NDS::get(uint64_t blockId, uint16_t blockIdHigh, uint8_t *blockAddr, siz
         return -1;
     }
     int ret = 0;
-    for (uint64_t i = 0; i < reqs.size(); ++i){
+    for (uint64_t i = 0; i < reqs.size(); ++i) {
         ret = nds_kv_get(&reqs[i].req);
         if (ret != 0) {
-            NDS_ERROR_PRINT("nds_kv_get failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%u, nsid: %d\n",
-                    blockId, i, blockAddr, offset, length, nsid);
+            NDS_ERROR_PRINT(
+                "nds_kv_get failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%u, "
+                "nsid: %d\n",
+                blockId, i, blockAddr, offset, length, nsid);
             break;
         }
         CODE_SET code_set = nds_kv_wait(reqs[i].req.task_id, reqs[i].total_blocks);
         if (checkCodeSet(code_set, reqs[i].req.task_id, true) != 0) {
-            NDS_ERROR_PRINT("nds_kv_wait failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%lu\n",
-                    blockId, i, blockAddr, offset, length);
+            NDS_ERROR_PRINT(
+                "nds_kv_wait failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%lu\n",
+                blockId, i, blockAddr, offset, length);
             return -1;
         }
     }
     return ret;
 }
 
-int32_t NDS::batchGet(std::vector<uint64_t> blockIds, std::vector<uint16_t> blockIdHighs, std::vector<uint8_t *> blockAddrs,
-                      std::vector<size_t> offsets, std::vector<size_t> lengths,
-                      std::vector<uint32_t> nsids)
+int32_t NDS::batchGet(std::vector<uint64_t> blockIds, std::vector<uint16_t> blockIdHighs,
+                      std::vector<uint8_t*> blockAddrs, std::vector<size_t> offsets,
+                      std::vector<size_t> lengths, std::vector<uint32_t> nsids)
 {
-    std::vector<NdsReqWrapper> allReqs = prepareNdsReqsBatch(blockIds, blockIdHighs, blockAddrs, offsets, lengths, nsids, true);
+    std::vector<NdsReqWrapper> allReqs =
+        prepareNdsReqsBatch(blockIds, blockIdHighs, blockAddrs, offsets, lengths, nsids, true);
     if (allReqs.empty() && !blockIds.empty()) {
-        NDS_ERROR_PRINT("prepareNdsReqsBatch failed (empty reqs): blockCount=%zu\n", blockIds.size());
+        NDS_ERROR_PRINT("prepareNdsReqsBatch failed (empty reqs): blockCount=%zu\n",
+                        blockIds.size());
         return -1;
     }
     NDS_DEBUG_PRINT("****** NDS::batchGet start \n");
@@ -1243,7 +1296,8 @@ int32_t NDS::batchGet(std::vector<uint64_t> blockIds, std::vector<uint16_t> bloc
     return ret;
 }
 
-int32_t NDS::put(uint64_t blockId, uint16_t blockIdHigh, uint8_t *blockAddr, size_t offset, size_t length, uint32_t nsid)
+int32_t NDS::put(uint64_t blockId, uint16_t blockIdHigh, uint8_t* blockAddr, size_t offset,
+                 size_t length, uint32_t nsid)
 {
     auto reqs = prepareNdsReqs(blockId, blockIdHigh, blockAddr, offset, length, nsid, false);
     if (reqs.empty()) {
@@ -1252,30 +1306,35 @@ int32_t NDS::put(uint64_t blockId, uint16_t blockIdHigh, uint8_t *blockAddr, siz
         return -1;
     }
     int ret = 0;
-    for (uint64_t i = 0; i < reqs.size(); ++i){
+    for (uint64_t i = 0; i < reqs.size(); ++i) {
         ret = nds_kv_put(&reqs[i].req);
         if (ret != 0) {
-            NDS_ERROR_PRINT("nds_kv_put failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%u, nsid: %d\n",
-                    blockId, i, blockAddr, offset, length, nsid);
+            NDS_ERROR_PRINT(
+                "nds_kv_put failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%u, "
+                "nsid: %d\n",
+                blockId, i, blockAddr, offset, length, nsid);
             break;
         }
         CODE_SET code_set = nds_kv_wait(reqs[i].req.task_id, reqs[i].total_blocks);
         if (checkCodeSet(code_set, reqs[i].req.task_id, false) != 0) {
-            NDS_ERROR_PRINT("nds_kv_wait failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%lu\n",
-                    blockId, i, blockAddr, offset, length);
+            NDS_ERROR_PRINT(
+                "nds_kv_wait failed, blockId:%lu, idx:%lu, blockAddr:%p, offset:%lu, length:%lu\n",
+                blockId, i, blockAddr, offset, length);
             return -1;
         }
     }
     return ret;
 }
 
-int32_t NDS::batchPut(std::vector<uint64_t> blockIds, std::vector<uint16_t> blockIdHighs, std::vector<uint8_t *> blockAddrs,
-                      std::vector<size_t> offsets, std::vector<size_t> lengths,
-                      std::vector<uint32_t> nsids)
+int32_t NDS::batchPut(std::vector<uint64_t> blockIds, std::vector<uint16_t> blockIdHighs,
+                      std::vector<uint8_t*> blockAddrs, std::vector<size_t> offsets,
+                      std::vector<size_t> lengths, std::vector<uint32_t> nsids)
 {
-    std::vector<NdsReqWrapper> allReqs = prepareNdsReqsBatch(blockIds, blockIdHighs, blockAddrs, offsets, lengths, nsids, false);
+    std::vector<NdsReqWrapper> allReqs =
+        prepareNdsReqsBatch(blockIds, blockIdHighs, blockAddrs, offsets, lengths, nsids, false);
     if (allReqs.empty() && !blockIds.empty()) {
-        NDS_ERROR_PRINT("prepareNdsReqsBatch failed (empty reqs): blockCount=%zu\n", blockIds.size());
+        NDS_ERROR_PRINT("prepareNdsReqsBatch failed (empty reqs): blockCount=%zu\n",
+                        blockIds.size());
         return -1;
     }
     int32_t ret = submitAsyncAndWait(allReqs, false);

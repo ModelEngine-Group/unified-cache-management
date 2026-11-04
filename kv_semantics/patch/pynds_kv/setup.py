@@ -1,7 +1,8 @@
-from pybind11.setup_helpers import Pybind11Extension, build_ext
-from setuptools import setup
 import os
 import sys
+
+from pybind11.setup_helpers import Pybind11Extension, build_ext
+from setuptools import setup
 
 __version__ = "1.7.1"
 

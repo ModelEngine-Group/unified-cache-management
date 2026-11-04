@@ -1,24 +1,51 @@
 import argparse
 import gc
+import logging
 import mmap
+import threading
+import time
+from collections import defaultdict
+
 import numpy as np
 import pynds_kv
-import time
-import threading
-from collections import defaultdict
-import logging
 
 parser = argparse.ArgumentParser(description="KV多线程性能测试")
 parser.add_argument("--num_blocks", type=int, default=128, help="每批次block数量")
-parser.add_argument("--token_size", type=int, default=128 * 1024, help="单个token大小(字节), 默认128KB")
-parser.add_argument("--num_tokens_per_block", type=int, default=256, help="每个block中token数量, 默认256 (128KB*256=32MB)")
+parser.add_argument(
+    "--token_size", type=int, default=128 * 1024, help="单个token大小(字节), 默认128KB"
+)
+parser.add_argument(
+    "--num_tokens_per_block",
+    type=int,
+    default=256,
+    help="每个block中token数量, 默认256 (128KB*256=32MB)",
+)
 parser.add_argument("--put_threads", type=int, default=8, help="PUT线程数")
 parser.add_argument("--get_threads", type=int, default=8, help="GET线程数")
 parser.add_argument("--duration", type=int, default=30, help="测试时长(秒)")
-parser.add_argument("--mode", type=str, default="w", choices=["w", "r", "rw"], help="读写模式: w只写, r只读, rw混合")
-parser.add_argument("--monitor_interval", type=float, default=1, help="监控时间窗口(秒), 大数据建议增大以减少误差")
-parser.add_argument("--nds_config_path", type=str, default=None, help="NDS配置文件路径(nds_config.conf)")
-parser.add_argument("--nsids", type=int, nargs='+', default=[3618096867], help="NSID列表，多个时按线程轮询分配")
+parser.add_argument(
+    "--mode",
+    type=str,
+    default="w",
+    choices=["w", "r", "rw"],
+    help="读写模式: w只写, r只读, rw混合",
+)
+parser.add_argument(
+    "--monitor_interval",
+    type=float,
+    default=1,
+    help="监控时间窗口(秒), 大数据建议增大以减少误差",
+)
+parser.add_argument(
+    "--nds_config_path", type=str, default=None, help="NDS配置文件路径(nds_config.conf)"
+)
+parser.add_argument(
+    "--nsids",
+    type=int,
+    nargs="+",
+    default=[3618096867],
+    help="NSID列表，多个时按线程轮询分配",
+)
 args = parser.parse_args()
 
 NUM_BLOCKS = args.num_blocks
@@ -44,6 +71,7 @@ logger = logging.getLogger(__name__)
 stop_event = threading.Event()
 
 pre_loaded_block_ids = []
+
 
 class ThreadStats:
     def __init__(self):
@@ -86,6 +114,7 @@ class ThreadStats:
         self.total_latency = 0
         self.success_ops = 0
         self.error_count = 0
+
 
 class GlobalStats:
     def __init__(self):
@@ -185,10 +214,12 @@ class GlobalStats:
             bandwidth = total_bytes / elapsed_time / GB
         return bandwidth
 
+
 current_block_index = 0
 pre_loaded_block_ids = []
 
 thread_blocks = {}
+
 
 def load_block_ids_from_file():
     global pre_loaded_block_ids
@@ -219,26 +250,30 @@ def load_block_ids_from_file():
         pre_loaded_block_ids = list(range(NUM_BLOCKS * 1024))
         print(f"    已生成 {len(pre_loaded_block_ids)} 个顺序blockID")
 
+
 def get_next_block_ids(current_block_index: int, count: int) -> list:
     start_index = current_block_index
     end_index = start_index + count
     block_ids = []
     if end_index <= len(pre_loaded_block_ids):
-        block_ids = pre_loaded_block_ids[start_index:start_index + count]
-        current_block_index +=  count
+        block_ids = pre_loaded_block_ids[start_index : start_index + count]
+        current_block_index += count
     else:
         remaining = end_index - len(pre_loaded_block_ids)
-        block_ids = pre_loaded_block_ids[start_index:len(pre_loaded_block_ids)]
+        block_ids = pre_loaded_block_ids[start_index : len(pre_loaded_block_ids)]
         block_ids.extend(pre_loaded_block_ids[:remaining])
         current_block_index = end_index % len(pre_loaded_block_ids)
     return block_ids, current_block_index
+
 
 def batch_put_phase(thread_idx: int):
     global thread_blocks, global_stats
     current_block_index = 0
     while not stop_event.is_set():
         try:
-            block_ids, current_block_index = get_next_block_ids(current_block_index, NUM_BLOCKS)
+            block_ids, current_block_index = get_next_block_ids(
+                current_block_index, NUM_BLOCKS
+            )
 
             offsets = [0] * NUM_BLOCKS
             lengths = [ONE_LAYER_CACHE_SIZE] * NUM_BLOCKS
@@ -248,19 +283,22 @@ def batch_put_phase(thread_idx: int):
             start_time = time.time()
             ret = pynds_kv.batchPut(block_ids, batch_blocks, offsets, lengths, nsids)
             end_time = time.time()
-            latency  = end_time - start_time
-            success = (ret == 0)
+            latency = end_time - start_time
+            success = ret == 0
             global_stats.add_batch_stats(thread_idx, TOTAL_SIZE, latency, success)
         except Exception as e:
             print(f"    线程{thread_idx} batchPut异常：{e}")
             stop_event.set()
+
 
 def batch_get_phase(thread_idx: int):
     global thread_blocks, global_stats
     current_block_index = 0
     while not stop_event.is_set():
         try:
-            block_ids, current_block_index = get_next_block_ids(current_block_index, NUM_BLOCKS)
+            block_ids, current_block_index = get_next_block_ids(
+                current_block_index, NUM_BLOCKS
+            )
 
             offsets = [0] * NUM_BLOCKS
             lengths = [ONE_LAYER_CACHE_SIZE] * NUM_BLOCKS
@@ -270,12 +308,13 @@ def batch_get_phase(thread_idx: int):
             start_time = time.time()
             ret = pynds_kv.batchGet(block_ids, batch_blocks, offsets, lengths, nsids)
             end_time = time.time()
-            latency  = end_time - start_time
-            success = (ret == 0)
+            latency = end_time - start_time
+            success = ret == 0
             global_stats.add_batch_stats(thread_idx, TOTAL_SIZE, latency, success)
         except Exception as e:
             print(f"    线程{thread_idx} batchPut异常：{e}")
             stop_event.set()
+
 
 def monitor_thread():
     global global_stats
@@ -296,7 +335,12 @@ def monitor_thread():
                 zero_io_ratio = 0
             else:
                 zero_io_ratio = total_errors / total_ops
-            print(f"[监控] {elapsed_time:6.1f}s - 带宽: {bandwidth_gbs:3.2f} GB/s, " f"平均延迟: {avg_latency_s:2.6f}s, " f"错误: {total_errors:3d}, " f"零IO率: {zero_io_ratio:5.1f}%")
+            print(
+                f"[监控] {elapsed_time:6.1f}s - 带宽: {bandwidth_gbs:3.2f} GB/s, "
+                f"平均延迟: {avg_latency_s:2.6f}s, "
+                f"错误: {total_errors:3d}, "
+                f"零IO率: {zero_io_ratio:5.1f}%"
+            )
         except KeyboardInterrupt:
             print(f"    监控线程收到中断信号...")
             stop_event.set()
@@ -306,10 +350,12 @@ def monitor_thread():
             stop_event.set()
             break
 
+
 def worker_thread(thread_idx: int):
     try:
         if READ_WRITE_MODE == "rw":
             import random
+
             operation = "put" if random.random() < 0.7 else "get"
             if operation == "put":
                 batch_put_phase(thread_idx)
@@ -320,8 +366,9 @@ def worker_thread(thread_idx: int):
         elif READ_WRITE_MODE == "r":
             batch_get_phase(thread_idx)
     except Exception as e:
-            print(f"    线程{thread_idx}异常：{e}")
-            stop_event.set()
+        print(f"    线程{thread_idx}异常：{e}")
+        stop_event.set()
+
 
 def print_final_report():
     global global_stats
@@ -334,7 +381,9 @@ def print_final_report():
     print(f"运行方式:           {READ_WRITE_MODE}")
     print(f"TOKEN_SIZE:           {TOKEN_SIZE} 字节 ({TOKEN_SIZE / 1024:.0f} KB)")
     print(f"NUM_TOKENS_PER_BLOCK:           {NUM_TOKENS_PER_BLOCK}")
-    print(f"ONE_LAYER_CACHE_SIZE:           {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB)")
+    print(
+        f"ONE_LAYER_CACHE_SIZE:           {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB)"
+    )
     print(f"使用预定义keys:           {len(pre_loaded_block_ids)} 个")
     print("-" * 80)
 
@@ -352,6 +401,7 @@ def print_final_report():
     print(f"平均延迟:           {avg_latency_s:3.6f} s")
     print("-" * 80)
 
+
 def run_performance_test():
     global stop_event, global_stats, buf, blocks, thread_blocks
     print("=" * 80)
@@ -360,7 +410,9 @@ def run_performance_test():
     print(f"NUM_BLOCKS:        {NUM_BLOCKS}")
     print(f"TOKEN_SIZE:        {TOKEN_SIZE} 字节 ({TOKEN_SIZE / 1024:.0f} KB)")
     print(f"NUM_TOKENS_PER_BLOCK:        {NUM_TOKENS_PER_BLOCK}")
-    print(f"ONE_LAYER_CACHE_SIZE:        {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB) = TOKEN_SIZE * NUM_TOKENS_PER_BLOCK")
+    print(
+        f"ONE_LAYER_CACHE_SIZE:        {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB) = TOKEN_SIZE * NUM_TOKENS_PER_BLOCK"
+    )
     print(f"TOTAL_SIZE:        {TOTAL_SIZE} 字节 ({TOTAL_SIZE / 1024 / 1024:.2f} MB)")
     print(f"TEST_DURATION:        {TEST_DURATION}")
     print(f"PUT线程数:        {BATCH_PUT_THREAD_NUM}")
@@ -380,17 +432,23 @@ def run_performance_test():
     total_errors = 0
     load_block_ids_from_file()
     print("=" * 80)
-    total_threads  = BATCH_PUT_THREAD_NUM if READ_WRITE_MODE == "w" else 0
-    total_threads  = BATCH_GET_THREAD_NUM if READ_WRITE_MODE == "r" else total_threads
-    total_threads  = BATCH_PUT_THREAD_NUM + BATCH_GET_THREAD_NUM if READ_WRITE_MODE == "rw" else total_threads
+    total_threads = BATCH_PUT_THREAD_NUM if READ_WRITE_MODE == "w" else 0
+    total_threads = BATCH_GET_THREAD_NUM if READ_WRITE_MODE == "r" else total_threads
+    total_threads = (
+        BATCH_PUT_THREAD_NUM + BATCH_GET_THREAD_NUM
+        if READ_WRITE_MODE == "rw"
+        else total_threads
+    )
 
     print(f"NSID列表:        {NSIDS} (共 {len(NSIDS)} 个)")
     for thread_idx in range(total_threads):
         print(f"    线程{thread_idx:3d} -> nsid {NSIDS[thread_idx % len(NSIDS)]}")
 
     print(f">>> Phase I: 分配 {TOTAL_SIZE * total_threads} 字节的页面对齐缓冲区")
-    mm = mmap.mmap(-1, TOTAL_SIZE * total_threads, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-    buf = np.frombuffer(mm, dtype=np.uint8, count = TOTAL_SIZE * total_threads)
+    mm = mmap.mmap(
+        -1, TOTAL_SIZE * total_threads, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS
+    )
+    buf = np.frombuffer(mm, dtype=np.uint8, count=TOTAL_SIZE * total_threads)
     addr = buf.__array_interface__["data"][0]
     print(f"    缓冲区地址 = 0x{addr:x}")
     print(f"    4096字节对齐? {'YES' if addr % 4096 == 0 else 'NO'}")
@@ -413,11 +471,16 @@ def run_performance_test():
     for thread_idx in range(total_threads):
         thread_blocks[thread_idx] = []
         for i in range(NUM_BLOCKS):
-            offset = thread_idx * NUM_BLOCKS * ONE_LAYER_CACHE_SIZE + i * ONE_LAYER_CACHE_SIZE
+            offset = (
+                thread_idx * NUM_BLOCKS * ONE_LAYER_CACHE_SIZE
+                + i * ONE_LAYER_CACHE_SIZE
+            )
             if offset + ONE_LAYER_CACHE_SIZE > TOTAL_SIZE * total_threads:
-                print(f"    警告: 线程{thread_idx}的blocks超出缓冲区范围, 减少block数量")
+                print(
+                    f"    警告: 线程{thread_idx}的blocks超出缓冲区范围, 减少block数量"
+                )
                 break
-            block = buf[offset:offset + ONE_LAYER_CACHE_SIZE]
+            block = buf[offset : offset + ONE_LAYER_CACHE_SIZE]
             # 零拷贝: 直接使用mmap零初始化的缓冲区视图, 不填充数据
             thread_blocks[thread_idx].append(block)
     print(f"    block预生成完成, 共{total_threads}个线程的blocks")
@@ -452,7 +515,7 @@ def run_performance_test():
         print(f"    共启动 {thread_count} 个工作线程 + 1 个监控线程")
 
         start_time = time.time()
-        while time.time() - start_time <  TEST_DURATION:
+        while time.time() - start_time < TEST_DURATION:
             if stop_event.is_set():
                 print(f"    检测到异常, 提前退出测试")
                 break
@@ -478,6 +541,7 @@ def run_performance_test():
         del global_stats
         print(">>>测试完成")
 
+
 if __name__ == "__main__":
     try:
         run_performance_test()
@@ -487,7 +551,7 @@ if __name__ == "__main__":
         print(f"程序异常：{e}")
     finally:
         try:
-            if 'stop_event' in globals():
+            if "stop_event" in globals():
                 stop_event.set()
         except:
             pass

@@ -1,19 +1,37 @@
 import argparse
 import mmap
 import sys
+
 import numpy as np
 import pynds_kv
 
 parser = argparse.ArgumentParser(description="KV读写一致性验证测试")
 parser.add_argument("--num_blocks", type=int, default=128, help="每批次block数量")
-parser.add_argument("--token_size", type=int, default=128 * 1024, help="单个token大小(字节), 默认128KB")
-parser.add_argument("--num_tokens_per_block", type=int, default=256, help="每个block中token数量, 默认256")
-parser.add_argument("--nds_config_path", type=str, default=None, help="NDS 配置文件路径")
-parser.add_argument("--nsid", type=int, default=3618096867,
-                    help="NDS namespace id；盘框不覆盖写，每轮测试应换不同 nsid 避免跨轮 slot 污染")
-parser.add_argument("--key_high", type=int, default=0,
-                    help="80-bit block_key 的高 16 位（0-65535），模拟 tp_rank 编码场景；"
-                         "所有 block_id 会加上 key_high << 64，用于验证 80-bit key 读写查一致性")
+parser.add_argument(
+    "--token_size", type=int, default=128 * 1024, help="单个token大小(字节), 默认128KB"
+)
+parser.add_argument(
+    "--num_tokens_per_block",
+    type=int,
+    default=256,
+    help="每个block中token数量, 默认256",
+)
+parser.add_argument(
+    "--nds_config_path", type=str, default=None, help="NDS 配置文件路径"
+)
+parser.add_argument(
+    "--nsid",
+    type=int,
+    default=3618096867,
+    help="NDS namespace id；盘框不覆盖写，每轮测试应换不同 nsid 避免跨轮 slot 污染",
+)
+parser.add_argument(
+    "--key_high",
+    type=int,
+    default=0,
+    help="80-bit block_key 的高 16 位（0-65535），模拟 tp_rank 编码场景；"
+    "所有 block_id 会加上 key_high << 64，用于验证 80-bit key 读写查一致性",
+)
 args = parser.parse_args()
 
 if not 0 <= args.key_high <= 0xFFFF:
@@ -28,6 +46,7 @@ TOTAL_SIZE = NUM_BLOCKS * ONE_LAYER_CACHE_SIZE
 NSID_G = args.nsid
 PATTERNS = ["sequential", "alternating", "incremental"]
 
+
 def generate_expected(block_idx, size, pattern_name):
     if pattern_name == "sequential":
         return (np.arange(size, dtype=np.uint32) % 251 + 1).astype(np.uint8)
@@ -37,10 +56,12 @@ def generate_expected(block_idx, size, pattern_name):
         return ((np.arange(size, dtype=np.uint32) + block_idx) % 256).astype(np.uint8)
     raise ValueError(f"未知模式: {pattern_name}")
 
+
 def fill_buffer_with_pattern(buf, blocks, pattern_name):
     for i, block in enumerate(blocks):
         expected = generate_expected(i, ONE_LAYER_CACHE_SIZE, pattern_name)
         block[:] = expected
+
 
 def load_block_ids_from_file():
     block_ids = []
@@ -68,6 +89,7 @@ def load_block_ids_from_file():
         block_ids = list(range(NUM_BLOCKS))
     return block_ids[:NUM_BLOCKS]
 
+
 def run_correctness_test():
     print("=" * 80)
     print("KV读写一致性验证测试".center(80))
@@ -75,8 +97,12 @@ def run_correctness_test():
     print(f"NUM_BLOCKS:           {NUM_BLOCKS}")
     print(f"TOKEN_SIZE:           {TOKEN_SIZE} 字节 ({TOKEN_SIZE / 1024:.0f} KB)")
     print(f"NUM_TOKENS_PER_BLOCK: {NUM_TOKENS_PER_BLOCK}")
-    print(f"ONE_LAYER_CACHE_SIZE: {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB)")
-    print(f"TOTAL_SIZE:           {TOTAL_SIZE} 字节 ({TOTAL_SIZE / 1024 / 1024:.2f} MB)")
+    print(
+        f"ONE_LAYER_CACHE_SIZE: {ONE_LAYER_CACHE_SIZE} 字节 ({ONE_LAYER_CACHE_SIZE / 1024 / 1024:.2f} MB)"
+    )
+    print(
+        f"TOTAL_SIZE:           {TOTAL_SIZE} 字节 ({TOTAL_SIZE / 1024 / 1024:.2f} MB)"
+    )
     print(f"NSID:                 {NSID_G}")
     print(f"测试模式:             {PATTERNS}")
     print("=" * 80)
@@ -85,9 +111,13 @@ def run_correctness_test():
     if args.key_high != 0:
         # 80-bit key：高 16 位编入 key_high（模拟 tp_rank 编码），低 64 位保持原样
         block_ids = [bid | (args.key_high << 64) for bid in block_ids]
-        print(f"    已启用 80-bit key: key_high={args.key_high}，示例 block_id={block_ids[0]}")
+        print(
+            f"    已启用 80-bit key: key_high={args.key_high}，示例 block_id={block_ids[0]}"
+        )
     if len(block_ids) < NUM_BLOCKS:
-        print(f"    警告: blockID数量({len(block_ids)})不足({NUM_BLOCKS}), 减少测试block数")
+        print(
+            f"    警告: blockID数量({len(block_ids)})不足({NUM_BLOCKS}), 减少测试block数"
+        )
         NUM_BLOCKS_ACTUAL = len(block_ids)
     else:
         NUM_BLOCKS_ACTUAL = NUM_BLOCKS
@@ -131,7 +161,7 @@ def run_correctness_test():
         blocks = []
         for i in range(NUM_BLOCKS_ACTUAL):
             offset = i * ONE_LAYER_CACHE_SIZE
-            block = buf[offset:offset + ONE_LAYER_CACHE_SIZE]
+            block = buf[offset : offset + ONE_LAYER_CACHE_SIZE]
             blocks.append(block)
         print(f"    block预生成完成, 共{NUM_BLOCKS_ACTUAL}个block")
 
@@ -154,7 +184,9 @@ def run_correctness_test():
             print(f"    步骤2a: is_exists 检查 block 存在性 (nsid={NSID_G})")
             exists_count = pynds_kv.is_exists(block_ids, NSID_G)
             if exists_count != NUM_BLOCKS_ACTUAL:
-                print(f"!!! is_exists 返回 {exists_count}/{NUM_BLOCKS_ACTUAL}, 存在性检查失败")
+                print(
+                    f"!!! is_exists 返回 {exists_count}/{NUM_BLOCKS_ACTUAL}, 存在性检查失败"
+                )
                 results[pattern_name] = False
                 continue
             print(f"    is_exists 通过, 全部 {NUM_BLOCKS_ACTUAL} 个 block 存在")
@@ -162,7 +194,9 @@ def run_correctness_test():
             print(f"    步骤2b: is_exists 用错误 nsid 验证隔离性 (nsid=999)")
             wrong_exists = pynds_kv.is_exists(block_ids, 999)
             if wrong_exists != 0:
-                print(f"!!! is_exists 用错误 nsid 返回 {wrong_exists}, 预期 0, 隔离性检查失败")
+                print(
+                    f"!!! is_exists 用错误 nsid 返回 {wrong_exists}, 预期 0, 隔离性检查失败"
+                )
                 results[pattern_name] = False
                 continue
             print(f"    隔离性通过, 错误 nsid 返回 0")
@@ -189,15 +223,21 @@ def run_correctness_test():
                     total_mismatch_bytes += mismatch
                     failed_blocks += 1
                     first_mismatch_idx = np.where(actual != expected)[0][0]
-                    print(f"    block[{i}] 不匹配: 预期={expected[first_mismatch_idx]}, 实际={actual[first_mismatch_idx]}, "
-                          f"位置={first_mismatch_idx}, 不匹配字节数={mismatch}")
+                    print(
+                        f"    block[{i}] 不匹配: 预期={expected[first_mismatch_idx]}, 实际={actual[first_mismatch_idx]}, "
+                        f"位置={first_mismatch_idx}, 不匹配字节数={mismatch}"
+                    )
 
             if failed_blocks == 0:
-                print(f"    ✓ {pattern_name} 模式验证通过! 所有 {NUM_BLOCKS_ACTUAL} 个block数据一致")
+                print(
+                    f"    ✓ {pattern_name} 模式验证通过! 所有 {NUM_BLOCKS_ACTUAL} 个block数据一致"
+                )
                 results[pattern_name] = True
             else:
-                print(f"    ✗ {pattern_name} 模式验证失败! {failed_blocks}/{NUM_BLOCKS_ACTUAL} 个block不匹配, "
-                      f"总不匹配字节数={total_mismatch_bytes}")
+                print(
+                    f"    ✗ {pattern_name} 模式验证失败! {failed_blocks}/{NUM_BLOCKS_ACTUAL} 个block不匹配, "
+                    f"总不匹配字节数={total_mismatch_bytes}"
+                )
                 results[pattern_name] = False
 
         print("=" * 80)
@@ -218,6 +258,7 @@ def run_correctness_test():
         print("=" * 80)
     finally:
         mm.close()
+
 
 if __name__ == "__main__":
     try:
