@@ -301,14 +301,6 @@ std::uint64_t HistogramCount(const UC::Metrics::HistogramStat& histogram)
                            std::uint64_t{0});
 }
 
-TEST(UCCache2ConfigTest, ReadsSharedBufferMode)
-{
-    UC::Detail::Dictionary dict;
-    EXPECT_FALSE(UC::Cache2::Config::From(dict).shareBufferEnable);
-    dict.Set("share_buffer_enable", true);
-    EXPECT_TRUE(UC::Cache2::Config::From(dict).shareBufferEnable);
-}
-
 TEST(UCCache2ConfigTest, ReadsFallbackNumaWorkerGeometry)
 {
     UC::Detail::Dictionary dict;
@@ -726,7 +718,6 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
     auto config = config_;
     config.localRankSize = 4;
     config.deviceId = 2;
-    config.shareBufferEnable = false;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
@@ -766,7 +757,6 @@ TEST_F(UCCache2LoadQueueTest, PreallocNextShardSlots)
     TestedQueue loadQ;
     auto config = config_;
     config.blockSize = 4 * kShardSize;
-    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
@@ -804,7 +794,6 @@ TEST_F(UCCache2LoadQueueTest, DistributedPreallocUsesPreferredRankDespiteRemoteC
     auto config = config_;
     config.blockSize = 2 * kShardSize;
     config.localRankSize = 4;
-    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     UC::Detail::TaskDesc desc;
@@ -833,13 +822,12 @@ TEST_F(UCCache2LoadQueueTest, DistributedPreallocUsesPreferredRankDespiteRemoteC
     }
 }
 
-TEST_F(UCCache2LoadQueueTest, PrivateTaskKeepsOriginalOrderWithSharedBuffer)
+TEST_F(UCCache2LoadQueueTest, PrivateTaskKeepsOriginalOrderAndLocalPrealloc)
 {
     TestedQueue loadQ;
     auto config = config_;
     config.localRankSize = 4;
     config.deviceId = 2;
-    config.shareBufferEnable = true;
     config.blockSize = 2 * kShardSize;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
