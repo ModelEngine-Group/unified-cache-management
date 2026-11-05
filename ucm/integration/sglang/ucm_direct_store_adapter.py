@@ -10,7 +10,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import yaml
@@ -42,17 +42,20 @@ class UcmLayerTransfer:
     shard_size: int
     tensor_size_list: tuple[int, ...]
     page_keys: tuple[str, ...]
-    # I/O uses a contiguous (layer, page, fragment) uint64 array.
-    # Lookup does not materialize pointers.
+    # Eager I/O uses a contiguous (layer, page, fragment) uint64 array.
+    # Loads can instead build one layer on submission; lookup needs no pointers.
     addresses: np.ndarray | None
     fragments: tuple[tuple[int, int], ...]
     hit_policy: str = "all_pages"
+    address_builder: Callable[[int], np.ndarray] | None = None
 
 
 @dataclass(frozen=True)
 class _StoreTask:
     store: UcmKVStoreBaseV1
     task: Task
+    # Keep address arrays alive until the native task is reaped.
+    addresses: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -70,20 +73,27 @@ class _PreparedPipelineTransfer:
     task_type: type[Task]
     distribute_backend_load: bool
 
-    def load_data(self, shard_index: int, addresses: np.ndarray) -> Task:
-        indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
-        return self.task_type(
-            self.store.Load(
-                self.ids, indexes, addresses, 0, self.distribute_backend_load
-            )
-        )
-
-    def dump_data(
+    def load_data(
         self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
     ) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
         return self.task_type(
-            self.store.Dump(self.ids, indexes, addresses, prerequisite_handle)
+            self.store.Load(
+                self.ids,
+                indexes,
+                addresses,
+                prerequisite_handle,
+                self.distribute_backend_load,
+            )
+        )
+
+    def dump_data(self, addresses: np.ndarray, prerequisite_handle: int = 0) -> Task:
+        # The flattened address rows are ordered by Store shard, then page.
+        rows = np.arange(len(addresses), dtype=np.uint64)
+        indexes = rows // self.page_count
+        ids = self.ids.reshape(self.page_count, -1)[rows % self.page_count].reshape(-1)
+        return self.task_type(
+            self.store.Dump(ids, indexes, addresses, prerequisite_handle)
         )
 
 
@@ -108,16 +118,6 @@ def _safe_name(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value))
 
 
-def _pool_names_key(members: Iterable[UcmPoolMetadata]) -> tuple[str, ...]:
-    pool_order = {"kv": 0, "indexer": 1, "swa": 2, "mamba": 3}
-    return tuple(
-        sorted(
-            {_safe_name(pool.pool_name).strip("._-").lower() for pool in members},
-            key=lambda name: (pool_order.get(name, 4), name),
-        )
-    )
-
-
 class UcmDirectStoreAdapter:
     """Map SGLang device-address rows to UCM Store V1 operations.
 
@@ -139,23 +139,15 @@ class UcmDirectStoreAdapter:
         self._identity = dict(identity)
         self._block_identity_prefix = self._identity_suffix()
         self._store_config = copy.deepcopy(store_config)
-        # Cache's D2H stream waits on this CUDA event before reading KV data.
-        # Other connectors/pipelines have not established that contract.
-        self.supports_dump_prerequisite = (
+        # Forward GPU events only for the stock Cache|Posix pipeline. Custom
+        # Stores and other pipelines use the CPU-wait fallback.
+        self.supports_transfer_prerequisite = (
             connector_name == "UcmPipelineStore"
+            and not module_path
             and self._store_config.get("store_pipeline") == "Cache|Posix"
         )
-        prefetch_layers_config = self._store_config.pop(
-            "sglang_load_prefetch_layers", 2
-        )
-        try:
-            self.load_prefetch_layers = min(8, max(0, int(prefetch_layers_config)))
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid sglang_load_prefetch_layers=%r; fallback to 2.",
-                prefetch_layers_config,
-            )
-            self.load_prefetch_layers = 2
+        # Accepted for compatibility; loads now submit beyond the old window.
+        self._store_config.pop("sglang_load_prefetch_layers", None)
         self._stores: dict[str, UcmKVStoreBaseV1] = {}
         self._lookup_store_signatures: dict[str, tuple[str, tuple[str, ...]]] = {}
         self._schemas: dict[str, tuple[tuple[int, int], ...]] = {}
@@ -349,9 +341,10 @@ class UcmDirectStoreAdapter:
         """Return a bounded, deterministic ID for Cache/Fake shm objects.
 
         The C++ backends prepend ``uc_shm_cache_`` or ``uc_shm_fake_`` to this
-        value.  Hash the complete sharing identity and layout instead of
-        passing the long layer-expanded ``store_group`` directly, while
-        preserving the full group in persistent block IDs.
+        value. Hash the sharing identity and tensor layout together with
+        ``store_group``: its base name contains the shortest pool name, shard
+        bytes and shard count. Only colliding base names gain a layout suffix;
+        the full tensor layout is always included in this ID.
         """
         identity = {
             "model": str(self._identity.get("model") or "model"),
@@ -396,9 +389,7 @@ class UcmDirectStoreAdapter:
         # ordered fragments for every layer in the page.
         return tuple((size, 0) for size, _ in raw_schema)
 
-    def _prepare_backend_paths(
-        self, by_group: dict[str, list[UcmPoolMetadata]]
-    ) -> dict[str, list[str]]:
+    def _prepare_backend_paths(self, groups: Iterable[str]) -> dict[str, list[str]]:
         configured = self._store_config.get("storage_backends")
         if isinstance(configured, str):
             roots = [item for item in configured.split(":") if item]
@@ -408,55 +399,10 @@ class UcmDirectStoreAdapter:
             raise ValueError("UCM connector config requires storage_backends.")
         if not roots:
             raise ValueError("UCM connector config has no storage_backends.")
-        groups_by_pools: dict[tuple[str, ...], list[str]] = {}
-        for group, members in by_group.items():
-            pool_names = _pool_names_key(members)
-            if any(not name for name in pool_names):
-                raise ValueError(
-                    f"UCM store group {group} has an empty physical pool name."
-                )
-            groups_by_pools.setdefault(pool_names, []).append(group)
-
-        backends: dict[str, list[str]] = {}
-        for pool_names, groups in groups_by_pools.items():
-            base_name = "_".join(pool_names)
-            # A single Store for this physical pool set keeps the simple name.
-            if len(groups) == 1:
-                backends[groups[0]] = [str(Path(root) / base_name) for root in roots]
-                continue
-
-            groups_by_layers: dict[tuple[int, ...], list[str]] = {}
-            for group in groups:
-                layers = tuple(
-                    sorted(
-                        {
-                            layer
-                            for pool in by_group[group]
-                            for layer, _ in pool.layer_schemas
-                        }
-                    )
-                )
-                groups_by_layers.setdefault(layers, []).append(group)
-            for layers, matching_groups in groups_by_layers.items():
-                directory_name = base_name
-                if layers:
-                    contiguous = layers == tuple(range(layers[0], layers[-1] + 1))
-                    label = (
-                        f"{layers[0]}-{layers[-1]}"
-                        if contiguous
-                        else "_".join(map(str, layers))
-                    )
-                    directory_name = f"{directory_name}_layers_{label}"
-                for group in matching_groups:
-                    name = directory_name
-                    # Same pool set and layer range require a layout fingerprint.
-                    if len(matching_groups) > 1:
-                        fingerprint = hashlib.sha256(group.encode("utf-8")).hexdigest()[
-                            :10
-                        ]
-                        name = f"{name}_layout_{fingerprint}"
-                    backends[group] = [str(Path(root) / name) for root in roots]
-        return backends
+        return {
+            group: [str(Path(root) / "sglang_linker" / group) for root in roots]
+            for group in groups
+        }
 
     def _ensure_store_schema(
         self,
@@ -771,7 +717,10 @@ class UcmDirectStoreAdapter:
             try:
                 layout = self._transfer_layout(transfer)
                 addresses = transfer.addresses
-                if (
+                if addresses is None:
+                    if is_offload or transfer.address_builder is None:
+                        raise ValueError("address/schema mismatch")
+                elif (
                     not isinstance(addresses, np.ndarray)
                     or addresses.shape
                     != (
@@ -816,6 +765,37 @@ class UcmDirectStoreAdapter:
                 by_layer.setdefault(layer, []).append(item)
         return by_layer
 
+    def _submit_dump(
+        self,
+        item: _PreparedStoreTransfer,
+        tasks: list[_StoreTask],
+        prerequisite_handle: int,
+    ) -> None:
+        transfer = item.transfer
+        addresses = transfer.addresses.reshape(-1, len(transfer.tensor_size_list))
+        if not len(addresses):
+            return
+        if item.prepared_io is not None:
+            task = item.prepared_io.dump_data(addresses, prerequisite_handle)
+        else:
+            # Keep custom Stores on their public interface. Native Pipeline
+            # consumes these descriptors before returning the task handle.
+            page_count = len(item.block_ids)
+            rows = range(len(addresses))
+            block_ids = [item.block_ids[row % page_count] for row in rows]
+            indexes = [row // page_count for row in rows]
+            task = (
+                item.store.dump_data(
+                    block_ids,
+                    indexes,
+                    addresses,
+                    prerequisite_handle=prerequisite_handle,
+                )
+                if prerequisite_handle
+                else item.store.dump_data(block_ids, indexes, addresses)
+            )
+        tasks.append(_StoreTask(item.store, task, addresses))
+
     def _submit_prepared(
         self,
         prepared: list[_PreparedStoreTransfer],
@@ -828,30 +808,32 @@ class UcmDirectStoreAdapter:
         for item in prepared:
             transfer = item.transfer
             try:
+                if is_offload:
+                    # Submit one task per node/group; Cache owns buffer management.
+                    self._submit_dump(item, tasks, prerequisite_handle)
+                    continue
                 target = (
                     item.prepared_io if item.prepared_io is not None else item.store
                 )
-                operation = target.dump_data if is_offload else target.load_data
+                operation = target.load_data
                 transfer_options: dict[str, Any] = {}
-                if is_offload and prerequisite_handle:
+                if prerequisite_handle:
                     transfer_options["prerequisite_handle"] = prerequisite_handle
-                elif (
-                    not is_offload
-                    and item.prepared_io is None
-                    and getattr(item.store, "supports_distributed_backend_load", False)
+                if item.prepared_io is None and getattr(
+                    item.store, "supports_distributed_backend_load", False
                 ):
                     transfer_options["distribute_backend_load"] = bool(
                         self._identity.get("rank_replicated", False)
                     )
-                shard_indices = (
-                    range(len(transfer.layers))
-                    if logical_layer is None
-                    else item.shards_by_layer.get(logical_layer, ())
-                )
+                shard_indices = item.shards_by_layer.get(logical_layer, ())
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
                     # contains the corresponding SGLang logical layer.
-                    addresses = transfer.addresses[shard_index]
+                    addresses = (
+                        transfer.address_builder(shard_index)
+                        if transfer.address_builder is not None
+                        else transfer.addresses[shard_index]
+                    )
                     args = (
                         (shard_index, addresses)
                         if item.prepared_io is not None
@@ -862,9 +844,9 @@ class UcmDirectStoreAdapter:
                         )
                     )
                     task = operation(*args, **transfer_options)
-                    tasks.append(_StoreTask(item.store, task))
+                    tasks.append(_StoreTask(item.store, task, addresses))
             except Exception:
-                # A later shard may fail to submit after earlier shards have
+                # A later layer, batch or group can fail after earlier tasks
                 # started. Reap those handles before their device buffers can
                 # be reused by the caller.
                 try:
@@ -887,12 +869,16 @@ class UcmDirectStoreAdapter:
         return tasks
 
     def submit_prepared_load_layer(
-        self, prepared: dict[int, list[_PreparedStoreTransfer]], logical_layer: int
+        self,
+        prepared: dict[int, list[_PreparedStoreTransfer]],
+        logical_layer: int,
+        prerequisite_handle: int = 0,
     ) -> list[_StoreTask]:
         return self._submit_prepared(
             prepared.get(logical_layer, []),
             is_offload=False,
             logical_layer=logical_layer,
+            prerequisite_handle=prerequisite_handle,
         )
 
     def submit_offload(

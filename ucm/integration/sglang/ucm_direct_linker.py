@@ -13,7 +13,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from queue import Empty, Queue
 from typing import Any
 
@@ -44,20 +44,10 @@ _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
 
 
-def _pool_group_name(
-    source: str, pools: tuple[str, ...], shape_index: int, layers: tuple[int, ...]
-) -> str:
-    """Build a bounded, deterministic Store group name."""
-    base = "__".join((source, *pools))
-    if len(base) > 64:
-        digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
-        base = f"{base[:46]}__h{digest}"
-    if not layers:
-        raise ValueError("A Store group must contain at least one layer")
-    # Keep layer membership in the identity without expanding it in the name.
-    layer_key = ",".join(map(str, layers))
-    digest = hashlib.sha256(layer_key.encode("ascii")).hexdigest()[:16]
-    return f"{base}__s{shape_index}__h{digest}"
+def _pool_group_name(pools: tuple[str, ...], shard_bytes: int, shard_count: int) -> str:
+    """Build the Store group base name from the shortest pool and shard geometry."""
+    name = min(pools, key=lambda value: (len(value), value))
+    return f"{name}_{shard_bytes}x{shard_count}"
 
 
 @dataclass(frozen=True)
@@ -121,7 +111,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         adapter: UcmDirectStoreAdapter | None = None,
     ):
         del server_args
-        self._forward_stream = forward_stream
+        self.forward_stream = forward_stream
         self.page_size = params.page_size
         self._kv_allocator = params.token_to_kv_pool_allocator
         kvcache = self._kv_allocator.get_kvcache()
@@ -141,7 +131,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], object] | None
+            tuple[int, dict[str, list[PoolTransfer]], list[object]] | None
         ] = Queue()
         self._completed_loads: Queue[list[str]] = Queue()
         self._requires_load_finish = hasattr(
@@ -164,18 +154,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._tp_rank = torch.distributed.get_rank(group=tp_group)
             self._tp_size = torch.distributed.get_world_size(group=tp_group)
         self._lookup_owner = True
-        self._offload_owner = not self.pool_group.rank_replicated or self._tp_rank == 0
+        self._dump_ranks = (0,) if self.pool_group.rank_replicated else (self._tp_rank,)
         self._log_pool_topology()
         try:
             self.adapter = adapter or self._create_adapter(params, extra_config)
             self.adapter.register_device_pools(self._pool_metadata())
-            self._select_lookup_owner(tp_group, params.attn_cp_size)
-            self._load_prefetch_layers = getattr(
-                self.adapter, "load_prefetch_layers", 2
-            )
-            logger.info(
-                "UCM linker load prefetch layers=%d", self._load_prefetch_layers
-            )
+            self._select_store_ranks(tp_group, params.attn_cp_size)
         except Exception:
             logger.exception(
                 "UCM linker initialization failed: layers=%d tp=%d/%d replicated=%s.",
@@ -203,8 +187,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._load_thread.start()
         self._offload_thread.start()
 
-    def _select_lookup_owner(self, tp_group: Any, attn_cp_size: int) -> None:
-        """Elect one reader per shared Cache within this attention-TP group."""
+    def _select_store_ranks(self, tp_group: Any, attn_cp_size: int) -> None:
+        """Find shared-Cache peers for lookup deduplication and dump partitioning."""
         if (
             not self.pool_group.rank_replicated
             or attn_cp_size != 1
@@ -238,15 +222,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
         identities: list[Any] = [None] * self._tp_size
         torch.distributed.all_gather_object(identities, cache_identity, group=tp_group)
         if cache_identity is not None:
-            self._lookup_owner = self._tp_rank == identities.index(cache_identity)
+            self._dump_ranks = tuple(
+                rank
+                for rank, identity in enumerate(identities)
+                if identity == cache_identity
+            )
+            self._lookup_owner = self._tp_rank == self._dump_ranks[0]
         if self._lookup_owner:
             logger.info(
                 "UCM linker lookup owner dp_rank=%d tp_rank=%d tp_size=%d "
-                "shared_cache_identified=%s",
+                "shared_cache_identified=%s dump_ranks=%s",
                 self._dp_rank,
                 self._tp_rank,
                 self._tp_size,
                 cache_identity is not None,
+                self._dump_ranks,
             )
 
     def _create_adapter(
@@ -312,9 +302,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 )
         return metadata
 
-    def _build_pool_bundles(
-        self,
-    ) -> tuple[_PoolBundle, ...]:
+    def _build_pool_bundles(self) -> tuple[_PoolBundle, ...]:
         """Group entries that can share one page/layer Store block schema."""
         grouped: dict[
             tuple[PoolName, tuple[tuple[int, int | tuple[int, ...]], ...]],
@@ -338,6 +326,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         for (source_pool, mapping), entries in grouped.items():
             layers = tuple(layer for layer, _ in mapping)
             ordered = tuple(sorted(entries, key=lambda entry: str(entry.name)))
+            pool_names = tuple(str(entry.name) for entry in ordered)
             by_schema: dict[tuple[int, ...], list[int]] = {}
             for layer in layers:
                 schema = tuple(
@@ -350,17 +339,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         f"UCM pool group {source_pool} has no fragments at layer {layer}."
                     )
                 by_schema.setdefault(schema, []).append(layer)
-            for index, (tensor_sizes, schema_layers) in enumerate(
-                sorted(by_schema.items())
-            ):
+            for tensor_sizes, schema_layers in sorted(by_schema.items()):
+                shard_size = sum(tensor_sizes)
+                name = _pool_group_name(pool_names, shard_size, len(schema_layers))
                 bundles.append(
                     _PoolBundle(
-                        _pool_group_name(
-                            str(source_pool),
-                            tuple(str(entry.name) for entry in ordered),
-                            index,
-                            tuple(schema_layers),
-                        ),
+                        name,
                         source_pool,
                         tuple(schema_layers),
                         ordered,
@@ -371,9 +355,36 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             for fragment in self._entry_layer_schema(entry, layer)
                         ),
                         tensor_sizes,
-                        sum(tensor_sizes),
+                        shard_size,
                     )
                 )
+        name_counts: dict[str, int] = {}
+        for bundle in bundles:
+            name_counts[bundle.name] = name_counts.get(bundle.name, 0) + 1
+        if any(count > 1 for count in name_counts.values()):
+            # Keep short names unless distinct bundles have the same shortest
+            # pool name, total shard bytes, and layer count.
+            disambiguated = []
+            for bundle in bundles:
+                if name_counts[bundle.name] > 1:
+                    layout = (
+                        str(bundle.source_pool),
+                        tuple(str(entry.name) for entry in bundle.entries),
+                        bundle.layers,
+                        bundle.tensor_size_list,
+                        bundle.fragments,
+                    )
+                    suffix = hashlib.sha256(repr(layout).encode("utf-8")).hexdigest()[
+                        :10
+                    ]
+                    bundle = replace(bundle, name=f"{bundle.name}__h{suffix}")
+                disambiguated.append(bundle)
+            bundles = disambiguated
+        names = [bundle.name for bundle in bundles]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "UCM Store group names remain ambiguous after layout hashing."
+            )
         return tuple(bundles)
 
     def _log_pool_topology(self) -> None:
@@ -471,9 +482,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
         transfers: list[PoolTransfer],
         *,
         for_io: bool,
+        lazy_addresses: bool = False,
     ) -> list[UcmLayerTransfer]:
         by_name = {transfer.name: transfer for transfer in transfers}
         result: list[UcmLayerTransfer] = []
+        locations_by_pool: dict[PoolName, np.ndarray] = {}
+        cpu_indices: dict[int, torch.Tensor] = {}
         for bundle in self._bundles:
             members = [(entry, by_name.get(entry.name)) for entry in bundle.entries]
             if any(transfer is None or not transfer.keys for _, transfer in members):
@@ -488,8 +502,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     f"UCM store bundle {bundle.name} has inconsistent source transfer metadata."
                 )
 
-            fragments = bundle.fragments
-            layer_tensor_size_list = bundle.tensor_size_list
+            addresses = None
+            address_builder = None
             if for_io:
                 prepared_locations = []
                 for entry, transfer in members:
@@ -497,37 +511,59 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         raise ValueError(
                             f"UCM {entry.name} transfer has no device indices."
                         )
-                    prepared_locations.append(
-                        np.asarray(
-                            entry.prepare_locations(transfer.host_indices),
+                    if entry.name not in locations_by_pool:
+                        # KV and sidecar pools can share one source tensor.
+                        # Snapshot it once, but preserve each pool's row geometry.
+                        indices = transfer.host_indices
+                        source_id = id(indices)
+                        if source_id not in cpu_indices:
+                            cpu_indices[source_id] = indices.detach().cpu()
+                        locations_by_pool[entry.name] = np.asarray(
+                            entry.prepare_locations(cpu_indices[source_id]),
                             dtype=np.uint64,
                         )
-                    )
-                # Each layer slice is contiguous and can be passed to Store
-                # without converting every page's pointers to Python lists.
-                tensor_count = len(layer_tensor_size_list)
-                addresses = np.empty(
-                    (len(bundle.layers), len(page_keys), tensor_count),
-                    dtype=np.uint64,
-                )
-                for layer_index, layer in enumerate(bundle.layers):
-                    column = 0
-                    for (entry, transfer), locations in zip(
-                        members, prepared_locations
-                    ):
-                        entry_rows, schema = self._entry_layer_rows(
-                            entry, layer, locations
+                    prepared_locations.append(locations_by_pool[entry.name])
+
+                def build_addresses(
+                    layer_index,
+                    rows=None,
+                    bundle=bundle,
+                    locations=tuple(prepared_locations),
+                    page_count=len(page_keys),
+                ):
+                    layer = bundle.layers[layer_index]
+                    if rows is None:
+                        rows = np.empty(
+                            (page_count, len(bundle.tensor_size_list)), dtype=np.uint64
                         )
-                        if entry_rows.shape != (len(page_keys), len(schema)):
+                    column = 0
+                    for entry, pool_locations in zip(bundle.entries, locations):
+                        entry_rows, schema = self._entry_layer_rows(
+                            entry, layer, pool_locations
+                        )
+                        if entry_rows.shape != (page_count, len(schema)):
                             raise ValueError(
                                 f"UCM bundle {bundle.name} is missing "
                                 f"{entry.name} layer={layer}."
                             )
                         next_column = column + len(schema)
-                        addresses[layer_index, :, column:next_column] = entry_rows
+                        rows[:, column:next_column] = entry_rows
                         column = next_column
-            else:
-                addresses = None
+                    return rows
+
+                if lazy_addresses:
+                    address_builder = build_addresses
+                else:
+                    addresses = np.empty(
+                        (
+                            len(bundle.layers),
+                            len(page_keys),
+                            len(bundle.tensor_size_list),
+                        ),
+                        dtype=np.uint64,
+                    )
+                    for i in range(len(bundle.layers)):
+                        build_addresses(i, rows=addresses[i])
             result.append(
                 UcmLayerTransfer(
                     store_group=bundle.name,
@@ -535,10 +571,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     pools=tuple(str(entry.name) for entry in bundle.entries),
                     layers=bundle.layers,
                     shard_size=bundle.shard_size,
-                    tensor_size_list=layer_tensor_size_list,
+                    tensor_size_list=bundle.tensor_size_list,
                     page_keys=page_keys,
                     addresses=addresses,
-                    fragments=fragments,
+                    address_builder=address_builder,
+                    fragments=bundle.fragments,
                     hit_policy=str(getattr(hit_policy, "value", hit_policy)),
                 )
             )
@@ -627,6 +664,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
             freeze_gc("UCM direct linker")
             self._gc_frozen = True
 
+    def _record_transfer_events(self) -> list[object]:
+        record_ready = getattr(self, "record_transfer_ready", None)
+        if record_ready is not None:
+            return record_ready().events
+
+        # Fall back when this SGLang build has no record_transfer_ready helper.
+        indices_ready = device_module.Event()
+        indices_ready.record()
+        events = [indices_ready]
+        if self.forward_stream is not None:
+            forward_done = device_module.Event()
+            forward_done.record(self.forward_stream)
+            events.append(forward_done)
+        return events
+
+    def _wait_transfer_events(self, events: list[object]) -> int:
+        # Address preparation reads indices on CPU. Only the dependency on
+        # earlier device-page use can be delegated to Cache's copy streams.
+        events[0].synchronize()
+        if len(events) == 1:
+            return 0
+        forward_done = events[1]
+        if getattr(self.adapter, "supports_transfer_prerequisite", False):
+            handle = int(getattr(forward_done, "cuda_event", 0) or 0)
+            if handle:
+                return handle
+        forward_done.synchronize()
+        return 0
+
     def start_layer_wise_loading(self) -> int:
         if not self._pending_loads:
             return -1
@@ -636,9 +702,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         counter_index = self.layer_done_counter.update_producer()
         if self._requires_load_finish:
             self._load_results[counter_index] = Future()
-        ready_event = device_module.Event()
-        ready_event.record()
-        self._load_queue.put((counter_index, pending, ready_event))
+        ready_events = self._record_transfer_events()
+        self._load_queue.put((counter_index, pending, ready_events))
         return counter_index
 
     def finish_layer_wise_loading(self, counter_index: int) -> bool:
@@ -657,43 +722,49 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 if task is None:
                     return
-                counter_index, pending, ready_event = task
+                counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
                 try:
-                    ready_event.synchronize()
+                    prerequisite_handle = self._wait_transfer_events(ready_events)
                     page_transfers = [
                         transfer
                         for request in pending.values()
-                        for transfer in self._page_transfers(request, for_io=True)
+                        for transfer in self._page_transfers(
+                            request, for_io=True, lazy_addresses=True
+                        )
                     ]
                     prepared_transfers = self.adapter.prepare_load(page_transfers)
-                    # Submit a bounded number of future layers, but publish
-                    # readiness in logical-layer order. CacheStore can progress
-                    # queued tasks in C++ while Python waits for this layer.
+                    # Keep submitting without blocking on an earlier layer.
+                    # Reap ready layers between submissions so the first layer
+                    # can start computing before the entire batch is submitted.
                     in_flight: dict[int, list[Any]] = {}
-                    next_layer = 0
+                    next_complete = 0
                     try:
                         for layer in range(self.num_layers):
                             active_layer = layer
-                            if page_transfers:
-                                limit = min(
-                                    self.num_layers,
-                                    layer + self._load_prefetch_layers + 1,
+                            in_flight[layer] = self.adapter.submit_prepared_load_layer(
+                                prepared_transfers,
+                                layer,
+                                prerequisite_handle=prerequisite_handle,
+                            )
+                            while next_complete <= layer:
+                                tasks = in_flight[next_complete]
+                                if not all(self.adapter.check(t) for t in tasks):
+                                    break
+                                self.adapter.wait(in_flight.pop(next_complete))
+                                self.layer_done_counter.complete(
+                                    counter_index, next_complete
                                 )
-                                while next_layer < limit:
-                                    tasks = self.adapter.submit_prepared_load_layer(
-                                        prepared_transfers, next_layer
-                                    )
-                                    in_flight[next_layer] = tasks
-                                    next_layer += 1
+                                next_complete += 1
 
-                                # A logical layer can span several pool bundles
-                                # and requests; release it only after every task
-                                # for that layer has finished.
-                                tasks = in_flight.pop(layer)
-                                self.adapter.wait(tasks)
-                            self.layer_done_counter.complete(counter_index, layer)
+                        while next_complete < self.num_layers:
+                            active_layer = next_complete
+                            self.adapter.wait(in_flight.pop(next_complete))
+                            self.layer_done_counter.complete(
+                                counter_index, next_complete
+                            )
+                            next_complete += 1
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
@@ -723,6 +794,68 @@ class UcmDirectLinker(UnifiedCacheLinker):
             finally:
                 self._load_queue.task_done()
 
+    def _partition_offload(self, expanded: list[PoolTransfer]) -> list[PoolTransfer]:
+        # Empty transfers cannot be dumped or supply a tail key for owner selection.
+        if not all(transfer.keys for transfer in expanded):
+            expanded = [transfer for transfer in expanded if transfer.keys]
+        if not expanded:
+            return []
+        if len(self._dump_ranks) == 1:
+            return expanded if self._tp_rank == self._dump_ranks[0] else []
+
+        rank_index = self._dump_ranks.index(self._tp_rank)
+        rank_count = len(self._dump_ranks)
+        selected = []
+        index_views: dict[tuple[int, int, int], torch.Tensor] = {}
+        tail_owner = None
+        for transfer in expanded:
+            entry = self.pools[transfer.name]
+            if entry.indices_from_pool != PoolName.KV:
+                if tail_owner is None:
+                    # Keep every auxiliary pool at a node boundary together.
+                    # Prefer a nonempty KV tail key; otherwise use an auxiliary
+                    # tail key. The choice is independent of local GPU addresses.
+                    key_transfer = min(
+                        expanded,
+                        key=lambda t: (
+                            self.pools[t.name].indices_from_pool != PoolName.KV,
+                            str(t.name),
+                        ),
+                    )
+                    digest = hashlib.sha256(
+                        key_transfer.keys[-1].encode("utf-8")
+                    ).digest()
+                    tail_owner = self._dump_ranks[
+                        int.from_bytes(digest[:8], "little") % rank_count
+                    ]
+                if self._tp_rank == tail_owner:
+                    selected.append(transfer)
+                continue
+
+            pages = len(transfer.keys)
+            start = pages * rank_index // rank_count
+            end = pages * (rank_index + 1) // rank_count
+            if start == end:
+                continue
+            if start == 0 and end == pages:
+                selected.append(transfer)
+                continue
+            # Slice complete physical pages before any CPU snapshot. Reuse the
+            # view when KV/indexer pools share the same source and page range.
+            indices = transfer.host_indices
+            first, last = start * entry.page_size, end * entry.page_size
+            view_key = (id(indices), first, last)
+            if view_key not in index_views:
+                index_views[view_key] = indices.reshape(-1)[first:last]
+            selected.append(
+                replace(
+                    transfer,
+                    keys=transfer.keys[start:end],
+                    host_indices=index_views[view_key],
+                )
+            )
+        return selected
+
     def offload(
         self, transfers: list[PoolTransfer], session_id: str | None = None
     ) -> bool:
@@ -733,17 +866,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if not expanded:
             return False
         self._freeze_gc_once()
-        if not self._offload_owner:
-            self._offload_results.put(True)
+        selected = self._partition_offload(expanded)
+        if not selected:
+            # Empty ranks still occupy their position in the node-result FIFO.
+            self._offload_queue.put(([], []))
             return True
-        indices_ready = device_module.Event()
-        indices_ready.record()
-        ready_events = [indices_ready]
-        if self._forward_stream is not None:
-            kv_written = device_module.Event()
-            kv_written.record(self._forward_stream)
-            ready_events.append(kv_written)
-        self._offload_queue.put((expanded, ready_events))
+        ready_events = self._record_transfer_events()
+        self._offload_queue.put((selected, ready_events))
         return True
 
     def _offload_worker(self) -> None:
@@ -758,27 +887,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
             nonlocal sequence
             sequence += 1
             expanded, ready_events = task
+            if not expanded:
+                in_flight.append(_PendingOffload(sequence, [], [], [], result=True))
+                return
             transfers: list[UcmLayerTransfer] = []
             try:
-                # The index is read on CPU while building transfers. The KV
-                # event can instead be waited on by Cache's D2H stream.
-                ready_events[0].synchronize()
-                prerequisite_handle = 0
-                if len(ready_events) > 1:
-                    kv_event = ready_events[1]
-                    if getattr(self.adapter, "supports_dump_prerequisite", False):
-                        prerequisite_handle = int(
-                            getattr(kv_event, "cuda_event", 0) or 0
-                        )
-                    if not prerequisite_handle:
-                        kv_event.synchronize()
+                prerequisite_handle = self._wait_transfer_events(ready_events)
                 transfers = self._page_transfers(expanded, for_io=True)
-                tasks = (
-                    self.adapter.submit_offload(
-                        transfers, prerequisite_handle=prerequisite_handle
-                    )
-                    if prerequisite_handle
-                    else self.adapter.submit_offload(transfers)
+                tasks = self.adapter.submit_offload(
+                    transfers, prerequisite_handle=prerequisite_handle
                 )
             except BaseException:
                 logger.exception(
