@@ -14,6 +14,22 @@ from typing import Any
 
 # fmt: off
 _COUNTER_METRICS = [
+    ("asu_lookup_requests_total", "AsuStore Lookup, prefix lookup and reverse lookup calls"),
+    ("asu_lookup_errors_total", "Failed AsuStore lookup calls; excludes timeout fallback to misses"),
+    ("asu_lookup_query_blocks_total", "Blocks queried by normally returned Lookup calls, including timeout fallback"),
+    ("asu_lookup_hit_blocks_total", "Hit blocks returned by Lookup; timeout fallback contributes zero hits"),
+    ("asu_lookup_prefix_query_blocks_total", "Blocks queried by normally returned prefix lookup calls, including timeout fallback"),
+    ("asu_lookup_prefix_hit_blocks_total", "Contiguous prefix hit blocks, computed as returned index + 1; timeout fallback contributes zero hits"),
+    ("asu_lookup_timeout_fallback_total", "AsuStore lookup calls returning cache misses after query timeout"),
+    ("asu_load_requests_total", "AsuStore Load calls, including validation and submission failures"),
+    ("asu_load_submit_errors_total", "Failed AsuStore Load submissions, including buffer validation failures"),
+    ("asu_load_submitted_bytes_total", "Payload bytes accepted by AsuStore Load; not successfully completed bytes"),
+    ("asu_dump_requests_total", "AsuStore Dump calls, including validation and submission failures"),
+    ("asu_dump_submit_errors_total", "Failed AsuStore Dump submissions, including buffer validation failures"),
+    ("asu_dump_submitted_bytes_total", "Payload bytes accepted by AsuStore Dump; not successfully completed bytes"),
+    ("asu_wait_requests_total", "AsuStore Wait calls; repeated waits are counted separately"),
+    ("asu_wait_errors_total", "AsuStore Wait calls returning errors, including timeouts and task failures"),
+    ("asu_wait_timeouts_total", "AsuStore Wait calls returning timeout; a subset of wait errors"),
     # BEGIN GENERATED KV counter
     ("kv_client_query_requests_total", "Total KV client query submissions", {"prometheus_name": "kv:kv_client_query_requests_total"}),
     ("kv_client_query_entries_total", "Total keys submitted to KV client query", {"prometheus_name": "kv:kv_client_query_entries_total"}),
@@ -799,6 +815,10 @@ _CONNECTOR_INTERFACE_DURATION_BUCKETS = [
     2000, 5000, 10000,
 ]
 _HISTOGRAM_METRICS = [
+    ("asu_lookup_duration_ms", "AsuStore lookup call duration including key conversion, query wait and result processing (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
+    ("asu_load_submit_duration_ms", "AsuStore Load submission duration including buffer conversion and failed submissions (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
+    ("asu_dump_submit_duration_ms", "AsuStore Dump submission duration including buffer conversion and failed submissions (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
+    ("asu_wait_duration_ms", "AsuStore Wait call duration including failed and timed-out waits (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
     # BEGIN GENERATED KV histogram
     ("kv_client_task_enqueue_duration_seconds", "KV client API-to-enqueue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_enqueue_duration_seconds"}),
     ("kv_client_task_queue_duration_seconds", "KV client task queue duration", [0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0], {"prometheus_name": "kv:kv_client_task_queue_duration_seconds"}),

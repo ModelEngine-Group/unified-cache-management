@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
-from test_sglang_direct_preparation import load_source
+from common.sglang_utils import load_source
 
 patch_module = load_source(
     "ucm/integration/sglang/patch/apply_patch.py",

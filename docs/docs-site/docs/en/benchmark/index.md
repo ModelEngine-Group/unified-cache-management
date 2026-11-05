@@ -1,3 +1,0 @@
-# Benchmark
-
-To be added.
