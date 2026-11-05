@@ -797,13 +797,18 @@ TEST(KvClientImplTest, Dispatch_WaitFailurePreventsSendAndWorkerContinues)
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
     TaskId taskId = kInvalidTaskId;
     TaskResult result;
-    const std::vector<KVBuffer> entries{KVBuffer{MakeCacheKey("wait-key"), {}}};
+    const std::vector<KVBuffer> entries{
+        KVBuffer{MakeCacheKey("wait-key"), {}}
+    };
     bool waited = false;
-    ASSERT_TRUE(client->StoreAsync(entries, taskId, [&]() {
-        waited = true;
-        EXPECT_TRUE(state->submittedOpTypes.empty());
-        return Status::Error(StatusCode::IO_ERROR, "wait failed");
-    }).ok());
+    ASSERT_TRUE(client
+                    ->StoreAsync(entries, taskId,
+                                 [&]() {
+                                     waited = true;
+                                     EXPECT_TRUE(state->submittedOpTypes.empty());
+                                     return Status::Error(StatusCode::IO_ERROR, "wait failed");
+                                 })
+                    .ok());
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::IO_ERROR);
     EXPECT_TRUE(waited);
     EXPECT_TRUE(state->submittedOpTypes.empty());
@@ -812,10 +817,13 @@ TEST(KvClientImplTest, Dispatch_WaitFailurePreventsSendAndWorkerContinues)
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::INTERNAL_ERROR);
     EXPECT_TRUE(state->submittedOpTypes.empty());
 
-    ASSERT_TRUE(client->StoreAsync(entries, taskId, [&]() {
-        EXPECT_TRUE(state->submittedOpTypes.empty());
-        return Status::OK();
-    }).ok());
+    ASSERT_TRUE(client
+                    ->StoreAsync(entries, taskId,
+                                 [&]() {
+                                     EXPECT_TRUE(state->submittedOpTypes.empty());
+                                     return Status::OK();
+                                 })
+                    .ok());
     EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
     EXPECT_EQ(state->submittedOpTypes.size(), 1U);
 }

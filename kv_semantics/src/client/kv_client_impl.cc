@@ -24,12 +24,12 @@
 #include "kv_client_impl.h"
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <thread>
 #include <utility>
 #include "device.h"
-#include <exception>
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "logger.h"

@@ -40,8 +40,8 @@
 #include "kv_metrics/ucm_metrics_backend.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "ucmstore_v1.h"
 #include "trans/event.h"
+#include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
 
