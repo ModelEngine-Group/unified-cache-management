@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import pytest
 import trigger_rtd
@@ -12,6 +14,18 @@ import yaml
 from manifest_fixtures import manifest_fixture
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture
+def rtd_clock(monkeypatch):
+    clock = SimpleNamespace(elapsed=0)
+
+    def sleep(seconds):
+        clock.elapsed += seconds
+
+    monkeypatch.setattr(trigger_rtd.time, "monotonic", lambda: clock.elapsed)
+    monkeypatch.setattr(trigger_rtd.time, "sleep", sleep)
+    return clock
 
 
 @pytest.mark.parametrize(
@@ -156,6 +170,86 @@ def test_release_rebuild_does_not_move_stable_alias(
         assert f"{project}/v0.9.0" in triggered
         assert f"{project}/latest" in triggered
         assert (f"{project}/stable" in triggered) == (current_stable == "v0.9.0")
+
+
+def test_release_activates_version_after_delayed_sync(monkeypatch, tmp_path, rtd_clock):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_fixture("0.9.0")))
+    monkeypatch.setattr(trigger_rtd, "validate_projects", lambda *args: None)
+    synced_at = {}
+    activated = set()
+
+    def request(path, *, method="GET", data=None):
+        project = path.split("/")[2]
+        if path.endswith("/sync-versions/"):
+            assert method == "POST"
+            synced_at[project] = rtd_clock.elapsed
+            return None
+        if path.endswith("/versions/v0.9.0/"):
+            if method == "GET":
+                if rtd_clock.elapsed - synced_at[project] < 40:
+                    raise HTTPError(path, 404, "Not Found", {}, None)
+                return {"active": False}
+            assert method == "PATCH" and data == {"active": True, "hidden": False}
+            activated.add(project)
+            return None
+        if path.endswith("/builds/?limit=20"):
+            return {
+                "results": (
+                    [{"id": 1, "version": "v0.9.0"}] if project in activated else []
+                )
+            }
+        if path.endswith("/versions/latest/builds/"):
+            assert method == "POST"
+            return {"build": {"id": 2}}
+        if path.endswith("/versions/stable/"):
+            return {"active": False}
+        pytest.fail(f"Unexpected RTD request: {method} {path}")
+
+    monkeypatch.setattr(trigger_rtd, "request", request)
+    triggered = trigger_rtd.notify_release(
+        "example/ucm", manifest_path, ["docs-en", "docs-zh"]
+    )
+    assert activated == {"docs-en", "docs-zh"}
+    assert {(item["project"], item["version"]) for item in triggered} == {
+        (project, version)
+        for project in ("docs-en", "docs-zh")
+        for version in ("v0.9.0", "latest")
+    }
+
+
+@pytest.mark.parametrize("status", [404, 403])
+def test_release_sync_failure_is_bounded_and_identifies_version(
+    monkeypatch, tmp_path, rtd_clock, capsys, status
+):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_fixture("0.9.0")))
+    monkeypatch.setattr(trigger_rtd, "validate_projects", lambda *args: None)
+    error = HTTPError("/projects/docs-en/versions/v0.9.0/", status, "Error", {}, None)
+
+    def request(path, *, method="GET", data=None):
+        if path.endswith("/sync-versions/"):
+            assert method == "POST"
+            return None
+        assert path == error.url and method == "GET"
+        raise error
+
+    monkeypatch.setattr(trigger_rtd, "request", request)
+    if status == 404:
+        with pytest.raises(TimeoutError, match="docs-en/v0.9.0.*300s") as caught:
+            trigger_rtd.notify_release(
+                "example/ucm", manifest_path, ["docs-en", "docs-zh"]
+            )
+        assert caught.value.__cause__ is error
+        assert rtd_clock.elapsed == 300
+        assert "Waiting for version sync: docs-en/v0.9.0" in capsys.readouterr().out
+    else:
+        with pytest.raises(HTTPError) as caught:
+            trigger_rtd.notify_release(
+                "example/ucm", manifest_path, ["docs-en", "docs-zh"]
+            )
+        assert caught.value is error
+        assert rtd_clock.elapsed == 0
 
 
 def test_rtd_project_must_belong_to_the_release_repository(monkeypatch, tmp_path):
