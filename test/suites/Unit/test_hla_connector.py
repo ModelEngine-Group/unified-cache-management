@@ -75,6 +75,9 @@ def hla():
         "participates_in_prefix_caching",
         "extend_non_null",
         "kv_cache_layout_name",
+        "is_npu_layer_major_blnhc",
+        "npu_flash_next_store_columns",
+        "npu_flash_next_column_owners",
         "blnhc_layer_role",
         "blnhc_group_role",
     }
@@ -1104,3 +1107,50 @@ def test_glm_preload_waits_all_state_rows_before_returning(
     # for every row, while the unused speculative tail remains untouched.
     for values in memory.values():
         assert values == {22: b"checkpoint", 23: b"checkpoint", 99: b"scratch"}
+
+
+def test_npu_flash_next_whole_store_columns(hla):
+    columns, shard, block = hla.npu_flash_next_store_columns(
+        12, 524288, 32768, 184320, False
+    )
+    assert columns == [524288] * 12 + [32768] * 12 + [184320]
+    assert shard == block == 6868992
+
+
+def test_npu_flash_next_layerwise_columns(hla):
+    columns, shard, block = hla.npu_flash_next_store_columns(
+        12, 524288, 32768, 184320, True
+    )
+    assert columns == [524288, 32768]
+    assert shard == 557056
+    assert block == 6684672
+
+
+def test_npu_flash_next_column_owners(hla):
+    whole = hla.npu_flash_next_column_owners(12, 0, [1, 2, 3], 4, False)
+    assert whole[0] == {(index, 0) for index in range(24)}
+    assert whole[1] == {(index, 0) for index in range(12)}
+    assert whole[4] == {(24, 0)}
+    layerwise = hla.npu_flash_next_column_owners(12, 0, [1], 4, True)
+    assert layerwise[0] == {(type_id, slot) for type_id in (0, 1) for slot in range(12)}
+    assert layerwise[1] == {(0, slot) for slot in range(12)}
+    assert layerwise[4] == {(0, 0)}
+
+
+def test_is_npu_layer_major_blnhc(hla):
+    def config(name, tensors):
+        return SimpleNamespace(kv_cache_layout=name, kv_cache_tensors=tensors)
+
+    multi = SimpleNamespace(
+        layers=["a", "b"], layer_stride=2104881696, block_stride=524288
+    )
+    assert hla.is_npu_layer_major_blnhc(config("BLNHC", [multi]))
+    block_first = SimpleNamespace(
+        layers=["a", "b"], layer_stride=100, block_stride=524288
+    )
+    assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [block_first]))
+    assert not hla.is_npu_layer_major_blnhc(config("LBNHC", [multi]))
+    ple_only = SimpleNamespace(
+        layers=["ple"], layer_stride=695070720, block_stride=184320
+    )
+    assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [ple_only]))

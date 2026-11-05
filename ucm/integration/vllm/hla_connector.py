@@ -146,6 +146,82 @@ def is_cuda_blnhc_layout(kv_cache_config: "KVCacheConfig") -> bool:
     )
 
 
+def is_npu_layer_major_blnhc(kv_cache_config: "KVCacheConfig") -> bool:
+    """NPU flash-next whose BLNHC name still stores each layer's blocks contiguously."""
+    if getattr(current_platform, "device_type", None) != "npu":
+        return False
+    if kv_cache_layout_name(kv_cache_config) != "BLNHC":
+        return False
+    saw_multi_layer = False
+    for raw in getattr(kv_cache_config, "kv_cache_tensors", []) or []:
+        names = _kv_cache_tensor_layers(raw)
+        if len(names) <= 1:
+            continue
+        layer_stride = int(getattr(raw, "layer_stride", 0) or 0)
+        block_stride = int(getattr(raw, "block_stride", 0) or 0)
+        if layer_stride <= 0 or block_stride <= 0 or layer_stride <= block_stride:
+            return False
+        saw_multi_layer = True
+    return saw_multi_layer
+
+
+def npu_flash_next_store_columns(
+    n_slots: int,
+    full_page: int,
+    compressed_page: int,
+    ple_page: int,
+    layerwise: bool,
+) -> tuple[list[int], int, int]:
+    """Column sizes, one shard, and the single UCM block size.
+
+    Whole-store lists every column of the block. Layerwise lists one shard;
+    the block is ``n_slots`` of those shards.
+    """
+    if layerwise:
+        columns = [full_page, compressed_page]
+        shard = full_page + compressed_page
+        return columns, shard, shard * n_slots
+    columns = [full_page] * n_slots + [compressed_page] * n_slots + [ple_page]
+    total = sum(columns)
+    return columns, total, total
+
+
+def npu_flash_next_column_owners(
+    n_slots: int,
+    full_gid: int,
+    linear_gids: list[int],
+    ple_gid: Optional[int],
+    layerwise: bool,
+) -> dict[int, set[tuple[int, int]]]:
+    """Group id to the ``(type_id, slot)`` columns that group fills."""
+    owned: dict[int, set[tuple[int, int]]] = {}
+    if layerwise:
+        owned[full_gid] = {
+            (type_id, slot) for type_id in (0, 1) for slot in range(n_slots)
+        }
+        for gid in linear_gids:
+            owned[gid] = {(0, slot) for slot in range(n_slots)}
+        if ple_gid is not None:
+            owned[ple_gid] = {(0, 0)}
+        return owned
+    owned[full_gid] = {(type_id, 0) for type_id in range(n_slots * 2)}
+    for gid in linear_gids:
+        owned[gid] = {(type_id, 0) for type_id in range(n_slots)}
+    if ple_gid is not None:
+        owned[ple_gid] = {(n_slots * 2, 0)}
+    return owned
+
+
+def _layer_ordinal(layer_name: str) -> Optional[int]:
+    parts = layer_name.split(".")
+    if "layers" not in parts:
+        return None
+    index = parts.index("layers") + 1
+    if index < len(parts) and parts[index].isdigit():
+        return int(parts[index])
+    return None
+
+
 def blnhc_layer_role(layer_name: str) -> str:
     """Classify one flash-next layer as raw_key, compressed, ple, or plain."""
     parts = [part for part in layer_name.lower().replace("-", "_").split(".") if part]
@@ -253,11 +329,11 @@ class KVCacheGroupManager:
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
             is_mamba_align = is_mamba_align_kv_cache_spec(spec)
-            role = (
-                blnhc_group_role(group.layer_names)
-                if is_cuda_blnhc_layout(kv_cache_config)
-                else ""
-            )
+            role = ""
+            if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+                kv_cache_config
+            ):
+                role = blnhc_group_role(group.layer_names)
             seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
@@ -516,6 +592,9 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         if is_cuda_blnhc_layout(self.kv_cache_config):
             self._build_cuda_blnhc_layout(kvcaches)
             return
+        if is_npu_layer_major_blnhc(self.kv_cache_config):
+            self._build_npu_flash_next_layout(kvcaches)
+            return
         specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
         self._map_layers_to_slots()
         self._build_layer_anchors(kvcaches, specs)
@@ -707,6 +786,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 self.layer_column_bytes[name] = int(column["block_stride"])
         if not self.layer_anchors:
             raise ValueError("CUDA BLNHC layout found no cacheable layers.")
+        self.group_pair_bases = None
         logger.info(
             "CUDA BLNHC block-first layout: columns=%s",
             [
@@ -719,6 +799,346 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 for column in columns
             ],
         )
+
+    def _npu_layer_block0(
+        self,
+        name: str,
+        offset: int,
+        layer_index: int,
+        layer_stride: int,
+        kvcaches,
+    ) -> int:
+        """Block 0 of one layer.
+
+        A sliced view already points at that layer. A storage-base view
+        still needs the layer offset.
+        """
+        kv_layer = kvcaches.get(name)
+        if kv_layer is None:
+            raise ValueError(f"NPU flash-next layer has no KV cache: {name}")
+        tensors = list(self._iter_kv_tensors(kv_layer))
+        if not tensors:
+            raise ValueError(f"NPU flash-next layer has no live tensor: {name}")
+        origins: list[int] = []
+        for tensor in tensors:
+            ptr = int(tensor.data_ptr())
+            storage_ptr = int(tensor.untyped_storage().data_ptr())
+            if ptr != storage_ptr:
+                origins.append(ptr)
+            else:
+                origins.append(ptr + int(offset) + int(layer_index) * int(layer_stride))
+        return min(origins)
+
+    def _build_npu_flash_next_layout(self, kvcaches) -> None:
+        """Layer-major flash-next columns. One UCM block size for every group.
+
+        Whole-store columns are 12 full pages, 12 compressed pages, and one
+        PLE page. Layerwise keeps the same 12 slots, but each slot is one
+        shard of ``[full_page, compressed_page]``. PLE is its own block: only
+        slot 0 is filled, and its page is copied through a ``full_page``
+        buffer because the store copies the whole column.
+        """
+        self.layer_name_to_slot = {}
+        self.layer_name_to_group = {}
+        self.layer_anchors = {}
+        self.layer_column_bytes = {}
+        self.group_pair_bases = {}
+        self.ple_layer_name = None
+        self.ple_group_id = None
+        self._ple_stage = None
+        self._ple_tensor = None
+        self._ple_block0 = 0
+        self._ple_block_stride = 0
+
+        groups = self.kv_cache_config.kv_cache_groups
+        for gid, group in enumerate(groups):
+            for name in group.layer_names:
+                self.layer_name_to_group[name] = gid
+
+        records = []
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            if not names or blnhc_group_role(names) == "raw_key":
+                continue
+            block_stride = int(getattr(raw, "block_stride", 0) or 0)
+            layer_stride = int(getattr(raw, "layer_stride", 0) or 0)
+            offset = int(getattr(raw, "offset", 0) or 0)
+            if block_stride <= 0:
+                raise ValueError(
+                    "NPU flash-next KV tensor is missing block_stride: "
+                    f"layers={_short_list(names)}"
+                )
+            for index, name in enumerate(names):
+                gid = self.layer_name_to_group.get(name)
+                if gid is None:
+                    raise ValueError(
+                        "NPU flash-next layer is not in a cache group: " f"{name}"
+                    )
+                records.append(
+                    {
+                        "name": name,
+                        "role": blnhc_layer_role(name),
+                        "gid": gid,
+                        "block_stride": block_stride,
+                        "block0": self._npu_layer_block0(
+                            name, offset, index, layer_stride, kvcaches
+                        ),
+                        "tensor": next(self._iter_kv_tensors(kvcaches[name]), None),
+                    }
+                )
+
+        def ordered(gid: int, role: str) -> list[dict]:
+            positions = {
+                name: index
+                for index, name in enumerate(groups[gid].layer_names)
+            }
+            rows = [
+                row
+                for row in records
+                if row["gid"] == gid and row["role"] == role
+            ]
+            return sorted(rows, key=lambda row: positions[row["name"]])
+
+        full_gids = []
+        linear_gids = []
+        ple_gids = []
+        for gid, group in enumerate(groups):
+            role = blnhc_group_role(group.layer_names)
+            if role == "raw_key":
+                continue
+            if role == "ple":
+                ple_gids.append(gid)
+            elif role == "compressed":
+                continue
+            elif is_mamba_align_kv_cache_spec(group.kv_cache_spec):
+                linear_gids.append(gid)
+            elif role == "" and participates_in_prefix_caching(group.kv_cache_spec):
+                full_gids.append(gid)
+        if len(full_gids) != 1:
+            raise ValueError(
+                "NPU flash-next expects one full-attention group, "
+                f"found {len(full_gids)}."
+            )
+        full_gid = full_gids[0]
+        full_rows = ordered(full_gid, "")
+        compressed_rows = [row for row in records if row["role"] == "compressed"]
+        compressed_rows.sort(key=lambda row: _layer_ordinal(row["name"]) or 0)
+        if not full_rows or len(compressed_rows) != len(full_rows):
+            raise ValueError(
+                "NPU flash-next full and compressed layer counts differ: "
+                f"full={len(full_rows)}, compressed={len(compressed_rows)}."
+            )
+        for full_row, compressed_row in zip(full_rows, compressed_rows):
+            full_ordinal = _layer_ordinal(full_row["name"])
+            compressed_ordinal = _layer_ordinal(compressed_row["name"])
+            if full_ordinal is None or full_ordinal != compressed_ordinal:
+                raise ValueError(
+                    "NPU flash-next full and compressed layers are not paired: "
+                    f"{full_row['name']} vs {compressed_row['name']}."
+                )
+        n_slots = len(full_rows)
+        linear_rows: dict[int, list[dict]] = {}
+        for gid in linear_gids:
+            rows = ordered(gid, "")
+            if len(rows) != n_slots:
+                raise ValueError(
+                    "NPU flash-next linear group does not have "
+                    f"{n_slots} layers: group={gid}, layers={len(rows)}."
+                )
+            linear_rows[gid] = rows
+        if len(ple_gids) != 1:
+            raise ValueError(
+                f"NPU flash-next expects one PLE group, found {len(ple_gids)}."
+            )
+        ple_gid = ple_gids[0]
+        ple_rows = ordered(ple_gid, "ple")
+        if len(ple_rows) != 1:
+            raise ValueError(
+                f"NPU flash-next expects one PLE layer, found {len(ple_rows)}."
+            )
+        ple_row = ple_rows[0]
+        full_page = self._uniform_page(full_rows, "full attention")
+        compressed_page = self._uniform_page(compressed_rows, "compressed")
+        ple_page = ple_row["block_stride"]
+        for gid, rows in linear_rows.items():
+            self._uniform_page(rows, f"linear group {gid}")
+            if rows[0]["block_stride"] != full_page:
+                raise ValueError(
+                    "NPU flash-next linear page differs from full attention: "
+                    f"group={gid}, page={rows[0]['block_stride']}, full={full_page}."
+                )
+
+        columns, shard_size, block_size = npu_flash_next_store_columns(
+            n_slots, full_page, compressed_page, ple_page, self.use_layerwise
+        )
+        owners = npu_flash_next_column_owners(
+            n_slots, full_gid, linear_gids, ple_gid, self.use_layerwise
+        )
+        self.page_types = list(columns)
+        self.width = len(columns)
+        self.num_slots = n_slots if self.use_layerwise else 1
+        self.slot_shard_size = shard_size if self.use_layerwise else block_size
+        self.tensor_size_lists = np.asarray(
+            [columns] if self.use_layerwise else columns, dtype=np.uint64
+        )
+        self.ple_layer_name = ple_row["name"]
+        self.ple_group_id = ple_gid
+        self._ple_block0 = int(ple_row["block0"])
+        self._ple_block_stride = int(ple_page)
+        self._ple_tensor = ple_row["tensor"]
+        ple_base = int(ple_row["block0"])
+        if self.use_layerwise:
+            if self._ple_tensor is None:
+                raise ValueError("NPU flash-next PLE layer has no live tensor.")
+            self._ple_stage = torch.empty(
+                self.num_blocks * full_page,
+                dtype=torch.uint8,
+                device=self._ple_tensor.device,
+            )
+            ple_base = int(self._ple_stage.data_ptr())
+
+        bases: dict[tuple[int, int, int], int] = {}
+        for slot, row in enumerate(full_rows):
+            self._npu_anchor(row["name"], row["gid"], slot, row["block0"], full_page)
+            if self.use_layerwise:
+                bases[(full_gid, 0, slot)] = int(row["block0"])
+                bases[(full_gid, 1, slot)] = int(compressed_rows[slot]["block0"])
+            else:
+                bases[(full_gid, slot, 0)] = int(row["block0"])
+                bases[(full_gid, n_slots + slot, 0)] = int(
+                    compressed_rows[slot]["block0"]
+                )
+            self.layer_column_bytes[row["name"]] = (
+                full_page + compressed_page if self.use_layerwise else full_page
+            )
+        for gid, rows in linear_rows.items():
+            for slot, row in enumerate(rows):
+                self._npu_anchor(row["name"], gid, slot, row["block0"], full_page)
+                if self.use_layerwise:
+                    bases[(gid, 0, slot)] = int(row["block0"])
+                else:
+                    bases[(gid, slot, 0)] = int(row["block0"])
+                self.layer_column_bytes[row["name"]] = full_page
+        self._npu_anchor(
+            ple_row["name"],
+            ple_gid,
+            0,
+            ple_base,
+            full_page if self.use_layerwise else ple_page,
+        )
+        if self.use_layerwise:
+            bases[(ple_gid, 0, 0)] = ple_base
+            self.layer_column_bytes[ple_row["name"]] = full_page
+        else:
+            bases[(ple_gid, n_slots * 2, 0)] = ple_base
+            self.layer_column_bytes[ple_row["name"]] = ple_page
+        self.group_pair_bases = bases
+        self.group_owns_type = {
+            (gid, type_id): True
+            for gid, cells in owners.items()
+            for type_id, _slot in cells
+        }
+        self.group_pairs = defaultdict(set)
+        for gid, cells in owners.items():
+            for _type_id, slot in cells:
+                self.group_pairs[gid].add(slot if self.use_layerwise else 0)
+        self.direct_group_bytes = {}
+        for gid, cells in owners.items():
+            self.direct_group_bytes[gid] = sum(
+                self.page_types[type_id] for type_id, _slot in cells
+            )
+        self.pair_bases = {}
+        buffers: dict[int, int] = {}
+        for (gid, type_id, _slot), base in bases.items():
+            page = self.page_types[type_id]
+            buffers[base] = max(buffers.get(base, 0), self.num_blocks * page)
+        self.base_ptrs = np.asarray(list(buffers), dtype=np.uint64)
+        self.buffer_sizes = np.asarray(
+            [buffers[base] for base in buffers], dtype=np.uint64
+        )
+        self.block_stride_lists = np.asarray(self.page_types, dtype=np.uint64)
+        logger.info(
+            "NPU flash-next %s layout: slots=%s block_size=%s",
+            "layerwise" if self.use_layerwise else "whole-store",
+            n_slots,
+            block_size,
+        )
+
+    @staticmethod
+    def _uniform_page(rows: list[dict], label: str) -> int:
+        pages = {int(row["block_stride"]) for row in rows}
+        if len(pages) != 1:
+            raise ValueError(f"NPU flash-next {label} pages differ: {sorted(pages)}.")
+        return pages.pop()
+
+    def _npu_anchor(
+        self, name: str, gid: int, slot: int, block0: int, page: int
+    ) -> None:
+        self.layer_name_to_group[name] = gid
+        self.layer_name_to_slot[name] = slot
+        self.layer_anchors[name] = [
+            KVCacheSegment(
+                ptr=int(block0),
+                copy_size=int(page),
+                block_stride=int(page),
+                buffer_size=self.num_blocks * int(page),
+            )
+        ]
+
+    def pack_ple_blocks(self, block_ids: list[int]) -> None:
+        """Copy PLE pages into the layerwise full-page column, then zero-pad."""
+        stage = getattr(self, "_ple_stage", None)
+        if stage is None:
+            return
+        page = int(self.page_types[0])
+        stride = int(self._ple_block_stride)
+        for block_id in block_ids:
+            if int(block_id) == 0:
+                continue
+            block_id = int(block_id)
+            dst = stage[block_id * page : (block_id + 1) * page]
+            dst.zero_()
+            dst[:stride].copy_(self._ple_block_view(block_id))
+
+    def unpack_ple_blocks(self, block_ids: list[int]) -> None:
+        """Copy the loaded PLE prefix out of the padded layerwise column."""
+        stage = getattr(self, "_ple_stage", None)
+        if stage is None:
+            return
+        page = int(self.page_types[0])
+        stride = int(self._ple_block_stride)
+        for block_id in block_ids:
+            if int(block_id) == 0:
+                continue
+            block_id = int(block_id)
+            src = stage[block_id * page : block_id * page + stride]
+            self._ple_block_view(block_id).copy_(src)
+
+    def _ple_block_view(self, block_id: int) -> torch.Tensor:
+        tensor = self._ple_tensor
+        stride = int(self._ple_block_stride)
+        if (
+            tensor.dim() >= 1
+            and int(tensor.shape[0]) > block_id
+            and int(tensor.stride(0)) * int(tensor.element_size()) == stride
+        ):
+            flat = tensor[block_id].reshape(-1).contiguous().view(torch.uint8)
+            if int(flat.numel()) != stride:
+                raise ValueError(
+                    "NPU flash-next PLE block is not a dense page: "
+                    f"bytes={int(flat.numel())}, page={stride}."
+                )
+            return flat
+        storage = tensor.untyped_storage()
+        start = self._ple_block0 + block_id * stride - int(storage.data_ptr())
+        if start < 0:
+            raise ValueError(
+                "NPU flash-next PLE block falls outside its storage: "
+                f"block_id={block_id}."
+            )
+        view = torch.empty(0, dtype=torch.uint8, device=tensor.device)
+        view.set_(storage, int(start), (stride,), (1,))
+        return view
 
     def _map_layers_to_slots(self) -> None:
         """Assign every cached layer its pair index and page type.
@@ -1014,6 +1434,16 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             [self.page_types[key[0]] for key in pairs], dtype=np.uint64
         )
 
+    def _column_base(self, gid: int, type_id: int, pair: int) -> Optional[int]:
+        """Pointer for one column.
+
+        Per-group bases stay on that group. A missing key is a null column.
+        """
+        group_bases = getattr(self, "group_pair_bases", None)
+        if group_bases:
+            return group_bases.get((int(gid), int(type_id), int(pair)))
+        return self.pair_bases.get((type_id, pair))
+
     def extract_layer_addrs(
         self,
         layer_name: str,
@@ -1036,7 +1466,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         for type_id, page in enumerate(self.page_types):
             if not self.group_owns_type.get((gid, type_id)):
                 continue
-            base = self.pair_bases.get((type_id, pair))
+            base = self._column_base(gid, type_id, pair)
             if base is None:
                 continue
             addrs[:, type_id] = base + block_ids * page
@@ -1084,7 +1514,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 for type_id, page in enumerate(self.page_types):
                     if not self.group_owns_type.get((int(gid), type_id)):
                         continue
-                    base = self.pair_bases.get((type_id, pair))
+                    base = self._column_base(int(gid), type_id, pair)
                     if base is None:
                         continue
                     addrs[selected, pair * self.width + type_id] = (
@@ -1772,11 +2202,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         Returns ``(layout, worker_cores, store_cores)``; the store itself is
         mode-specific and created by each subclass's ``register_kv_caches``.
         """
-        # Block-first whole-page copy overruns the last block, except CUDA
-        # BLNHC, which copies one full block_stride segment per column.
+        # Block-first whole-page copy overruns the last block. CUDA BLNHC
+        # copies one block_stride segment per column. NPU layer-major BLNHC
+        # stores each layer's blocks contiguously and uses the same copy.
         layout_name = kv_cache_layout_name(self._kv_cache_config)
-        if layout_name.startswith("B") and not is_cuda_blnhc_layout(
-            self._kv_cache_config
+        if (
+            layout_name.startswith("B")
+            and not is_cuda_blnhc_layout(self._kv_cache_config)
+            and not is_npu_layer_major_blnhc(self._kv_cache_config)
         ):
             raise ValueError(
                 f"Block-first KV cache layout '{layout_name}' is not supported"
@@ -1788,8 +2221,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         else:
             self.kv_caches = kv_caches
 
+        launch_config = self.launch_config
+        if not self.use_layerwise and is_npu_layer_major_blnhc(self._kv_cache_config):
+            launch_config = copy.deepcopy(self.launch_config)
+            launch_config["use_layerwise"] = False
         self.kv_cache_layout = HybridLinearAttentionLayout(
-            self.kv_caches, self.launch_config, self._vllm_config, self._kv_cache_config
+            self.kv_caches, launch_config, self._vllm_config, self._kv_cache_config
         )
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
@@ -2226,6 +2663,9 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
         self._group_commit_layer: dict[int, str] = {}
+        self._ple_load_ids: dict[tuple[int, int], dict[str, list[int]]] = defaultdict(
+            dict
+        )
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Layerwise registration: per-pair store + deferred commit plan.
@@ -2310,6 +2750,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     ),
                 )
                 self.load_tasks[pair_key][request_id] = task
+                if layer_name == getattr(layout, "ple_layer_name", None):
+                    self._ple_load_ids[pair_key][request_id] = list(sel_vllm)
                 self._load_bytes_by_pair[pair_key] += (
                     len(sel_scoped) * layout.layer_column_bytes[layer_name]
                 )
@@ -2342,6 +2784,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"{type(e).__name__}: {e}"
                 )
                 self._mark_load_failed(metadata, request_id)
+            else:
+                ple_ids = self._ple_load_ids.get(pair_key, {}).pop(request_id, None)
+                if ple_ids:
+                    layout = self.kv_cache_layout
+                    assert isinstance(layout, HybridLinearAttentionLayout)
+                    layout.unpack_ple_blocks(ple_ids)
         self._load_bytes_total += self._load_bytes_by_pair.pop(pair_key, 0)
 
     def _record_load_bytes(self) -> None:
@@ -2387,6 +2835,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         sel_ucm = [scoped_ucm_ids[i] for i in selected]
         slot = self.layer_to_slot[layer_name]
         try:
+            if layer_name == getattr(layout, "ple_layer_name", None):
+                layout.pack_ple_blocks(sel_vllm)
             ptrs = layout.extract_layer_addrs(layer_name, sel_vllm)
             event_handle = self._get_dump_event_handle()
             task = self._rank_consistency.submit_dump(
@@ -2415,13 +2865,87 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 f"{type(e).__name__}: {e}"
             )
 
+    def _submit_unowned_slot_dumps(self) -> None:
+        """Null-fill shard indexes a group never writes.
+
+        Posix archives a block only after every shard is marked done.
+        PLE owns slot 0 only, so slots ``1 .. num_slots-2`` reuse that
+        same block id with a zero address matrix. Slot ``num_slots-1``
+        stays on the commit task.
+        """
+        plan = self._dump_plan
+        if plan is None or self._max_slot <= 0:
+            return
+        (
+            scoped_ucm_ids,
+            _scoped_vllm_ids,
+            scoped_group_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        ) = plan
+        if not scoped_ucm_ids:
+            return
+        layout = self.kv_cache_layout
+        assert isinstance(layout, HybridLinearAttentionLayout)
+        owned = getattr(layout, "group_pairs", None) or {}
+        hole_ids: list[bytes] = []
+        hole_slots: list[int] = []
+        group_ids_np = np.asarray(scoped_group_ids, dtype=np.int64)
+        for gid_raw in np.unique(group_ids_np):
+            gid = int(gid_raw)
+            if gid not in owned:
+                continue
+            missing = [
+                slot for slot in range(self._max_slot) if slot not in owned[gid]
+            ]
+            if not missing:
+                continue
+            selected = [
+                scoped_ucm_ids[i]
+                for i in np.flatnonzero(group_ids_np == gid).tolist()
+            ]
+            for slot in missing:
+                hole_ids.extend(selected)
+                hole_slots.extend([slot] * len(selected))
+        if not hole_ids:
+            return
+        logger.info(
+            "HLA layerwise pad shards: blocks=%s rows=%s slots=%s",
+            len(set(hole_ids)),
+            len(hole_ids),
+            sorted(set(hole_slots)),
+        )
+        addrs = np.zeros((len(hole_ids), layout.width), dtype=np.uint64)
+        try:
+            event_handle = self._get_dump_event_handle()
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                hole_ids,
+                hole_slots,
+                addrs,
+                event_handle,
+            )
+            self._dump_tasks.append(
+                PendingDumpTask(
+                    task=task,
+                    request_ids=set(dump_request_ids),
+                    event_handle=event_handle,
+                )
+            )
+            self.is_save = True
+        except Exception as e:
+            logger.error(
+                f"submit unowned slot dump task failed. {type(e).__name__}: {e}"
+            )
+
     def _submit_commit_dump(self) -> None:
         """One ordered write of the max-pair shard for every dumped block.
 
         Blocks whose group owns a max-pair layer get that layer's real
         component addresses; blocks of groups without a max-pair layer get
-        null rows — nothing was ever written to that shard for them, and the
-        null write only triggers the block-file commit.
+        null rows. PLE's middle shards are padded first, so this shard is
+        the last MarkDone the block needs.
         """
         plan = self._dump_plan
         if plan is None:
@@ -2565,6 +3089,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._submit_layer_dump(layer_name)
 
         if self._dump_plan is not None:
+            self._submit_unowned_slot_dumps()
             self._submit_commit_dump()
         self._wait_dump_tasks()
 
