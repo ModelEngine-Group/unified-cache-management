@@ -132,7 +132,8 @@ Not yet in CI. It remains the single most valuable of the four criteria below.
 
 Run the same model on the device-less launcher and on a real card, and compare:
 
-1. **`sim.json` md5 identical** — the layout snapshot (shapes, strides, groups)
+1. **`sim.json` md5 identical** — the vLLM `KVCacheConfig`: block and layer
+   strides, group specs, tensor sizes
 2. **normalized log diff empty** for every case — normalization strips
    timestamps, pids and temporary paths
 3. **counters reproduce from first principles** — derivable from layer and
@@ -142,9 +143,33 @@ Run the same model on the device-less launcher and on a real card, and compare:
 Criteria 1–3 only establish that two runs agree. Criterion 4 is the one that
 establishes they agree *on something real*.
 
-Established so far: `cuda_sim` is faithful for Qwen3-0.6B at capability 12.0
-(RTX 5090). All four criteria passed; the three `sim.json` files were md5
-identical and all normalized log diffs were empty.
+**Criterion 1 is the weakest of the four, and must not be reported as the
+headline.** `sim.json` records vLLM's `KVCacheConfig` and nothing above it, so
+it does not contain the UCM-level layout. The K/V split in particular lives in
+how a platform hands tensors to `register_kv_caches`, which this file never
+sees: for Qwen3-0.6B the `ascend_sim` and `cuda_sim` snapshots are **byte
+identical**, even though the two layouts demonstrably differ (`poisoned_blocks`
+448 vs 224). Within one platform the match is real evidence that the
+device-less path produced the same engine-level config; across platforms it
+proves nothing.
+
+What carries the platform-specific claim is criterion 2 — the normalized logs
+include the per-group tensor signature, with shapes and strides — and criterion
+3, where `poisoned_blocks` and `strict_oracle_blocks` differ by platform
+precisely because of the K/V split. A cross-check that produces criterion 1
+alone has not established faithfulness.
+
+Established so far, both for Qwen3-0.6B (capability 12.0 on an RTX 5090, A2 on
+a 910B3), all four criteria passed:
+
+- `cuda_sim`: criteria 1–4, including empty normalized diffs over logs that
+  carry the tensor signature (`(30, 8, 128, 256)`, strides
+  `(262144, 256, 2048, 1)`).
+- `ascend_sim`: criteria 1, 3 and 4. No normalized log diff was produced, so
+  the platform-specific claim rests on the counters, where real-card and
+  device-less runs matched on all seven — including `poisoned_blocks=448` and
+  `strict_oracle_blocks=392`, the two values the K/V split produces and that
+  CUDA does not. Worth closing with a log diff on the next Ascend run.
 
 **Not established:** that `--cuda-capability` changes anything for this model.
 The attempted control — run 9.0 against 12.0 and expect different layouts —
@@ -170,6 +195,44 @@ counts `(group, layer, part, index)` entries, where `part` is the K/V split:
 vLLM-Ascend gives each layer two separate KV tensors (part = 2), official vLLM
 one `[2, …]` tensor (part = 1). The decisive check is the byte total, which is
 identical on both platforms — same bytes, counted at a different granularity.
+
+## Service verification (real engine, real card)
+
+Device-less verification establishes that the connector's dump/load bytes are
+correct. It says nothing about a real engine serving end to end, so the two
+runs are complementary rather than alternatives.
+
+Generate the same prompt twice through `LLM.generate` with `temperature=0` and
+a fixed seed, and require:
+
+- **identical output token ids** between the two runs
+- **external hit tokens > 0** on the second run, with
+  **`enable_prefix_caching=False`** so a local HBM prefix hit cannot be
+  mistaken for an external one
+
+Both passed for Qwen3-0.6B on a 910B3 (A2) and an RTX 5090 (B2): 64 token ids
+identical, and 1920 tokens hit on the second pass. 1920 is the structurally
+expected value — a 2008-token prompt yields `2008 // 128 = 15` full chunks, and
+the partial 16th cannot be hit, the same arithmetic as the checker's 8-dumped /
+7-loaded.
+
+**Read the hit from `RequestOutput.num_cached_tokens`, not from a connector
+log.** The v2 scheduler emits no hit line at all: `connector_scheduler.py`'s
+`get_num_new_matched_tokens` returns `result.external_hit_tokens` without
+logging, and the `hit external` string exists only in the three legacy
+connectors. `num_cached_tokens` is vLLM's own field and is the independent
+evidence; a read-only wrapper around the lookup is a logging convenience and
+proves nothing the field does not already prove.
+
+Two harness notes from those runs, neither touching UCM code:
+
+- `LLM(**asdict(EngineArgs(...)))` fails pydantic validation on vLLM 0.30
+  (`CompilationConfig.cudagraph_capture_sizes=None`). Pass the arguments to
+  `LLM()` directly.
+- A wrapper that wants to observe the scheduler in-process needs
+  `VLLM_ENABLE_V1_MULTIPROCESSING=0`, **which leaves the production
+  multiprocess path unexercised.** Since `num_cached_tokens` needs neither the
+  wrapper nor the flag, prefer a run without them.
 
 ## Evidence a run must produce
 
@@ -206,9 +269,17 @@ Do not read a PASS as covering these:
 
 - **Mamba state groups and non-whole-block sliding windows** have no
   independent required-restore set; they are reported `PARTIALLY VERIFIED`.
-- **Fault injection is manual**, not in CI.
+- **Fault injection is manual**, not in CI. It has only ever been injected on
+  the whole-model transfer path (`UCMTransferBuilder._build` with
+  `names is None`), which by construction leaves layerwise unaffected — a
+  layerwise-only fault has never been injected.
 - **The worker hook sequence is hand-rolled**, not driven by a real engine
-  loop. This is the baseline design's known cost.
-- **Device-less verification does not replace service verification.** It
-  establishes that the connector's dump/load bytes are correct; it says nothing
-  about a real engine serving end to end. The two are complementary.
+  loop. This is the baseline design's known cost; service verification is what
+  covers the real loop.
+- **The multiprocess engine path is unexercised** in the service runs so far,
+  which set `VLLM_ENABLE_V1_MULTIPROCESSING=0`.
+- **`ascend_sim` has no normalized-log cross-check yet** (see criterion 2
+  above); its faithfulness rests on matching counters.
+- **Only Qwen3-0.6B has been cross-checked end to end.** A model with sliding
+  windows, Mamba state groups or MLA has not been through the real-card
+  comparison on either platform.
