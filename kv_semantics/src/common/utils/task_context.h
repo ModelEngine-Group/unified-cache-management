@@ -125,7 +125,7 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::LOAD};
-    std::function<Status()> prerequisiteWait;
+    std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
     std::vector<KVBuffer> entries;
     std::vector<CacheKey> keys;

@@ -535,9 +535,9 @@ private:
         auto entries = BuildKvBuffers(task);
         if (!entries) { return entries.Error(); }
         kv::TaskId taskId = kv::kInvalidTaskId;
-        std::function<kv::Status()> wait;
+        std::function<kv::Status()> prerequisite;
         if (store && task.prerequisiteHandle != 0) {
-            wait = [handle = task.prerequisiteHandle]() {
+            prerequisite = [handle = task.prerequisiteHandle]() {
                 const auto status = Trans::Event(handle).Synchronize();
                 return status.Success()
                            ? kv::Status::OK()
@@ -545,7 +545,7 @@ private:
                                                "prerequisite event synchronization failed");
             };
         }
-        auto status = store ? client_->StoreAsync(entries.Value(), taskId, std::move(wait))
+        auto status = store ? client_->StoreAsync(entries.Value(), taskId, std::move(prerequisite))
                             : client_->LoadAsync(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);

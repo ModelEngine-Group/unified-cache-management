@@ -244,12 +244,12 @@ Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& tas
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                std::function<Status()> wait)
+                                std::function<Status()> prerequisite)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
-    auto status = SubmitAsync(opType, entries, taskId, std::move(wait));
+    auto status = SubmitAsync(opType, entries, taskId, std::move(prerequisite));
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
@@ -391,7 +391,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId, std::function<Status()> wait)
+                                 TaskId& taskId, std::function<Status()> prerequisite)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -410,7 +410,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     auto ctx = std::make_unique<ClientTask>();
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
-    ctx->prerequisiteWait = std::move(wait);
+    ctx->prerequisite = std::move(prerequisite);
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
     {
@@ -521,13 +521,13 @@ void KvClientImpl::WorkerLoop()
             KV_METRIC("kv_client_task_queue_duration_seconds"),
             std::chrono::duration<double>(ctx->processingStartedAt - ctx->enqueuedAt).count());
         auto status = deviceStatus;
-        if (status.ok() && ctx->prerequisiteWait) {
+        if (status.ok() && ctx->prerequisite) {
             try {
-                status = ctx->prerequisiteWait();
+                status = ctx->prerequisite();
             } catch (const std::exception& error) {
                 status = Status::Error(StatusCode::INTERNAL_ERROR, error.what());
             } catch (...) {
-                status = Status::Error(StatusCode::INTERNAL_ERROR, "prerequisite wait threw");
+                status = Status::Error(StatusCode::INTERNAL_ERROR, "prerequisite callback threw");
             }
         }
         if (status.ok()) {

@@ -125,9 +125,9 @@ public:
     }
 
     kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
-                          std::function<kv::Status()> wait) override
+                          std::function<kv::Status()> prerequisite) override
     {
-        state_->lastStoreWait = std::move(wait);
+        state_->lastStoreWait = std::move(prerequisite);
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
