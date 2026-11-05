@@ -75,6 +75,7 @@ def hla():
         "participates_in_prefix_caching",
         "extend_non_null",
         "kv_cache_layout_name",
+        "is_cuda_blnhc_layout",
         "is_npu_layer_major_blnhc",
         "npu_flash_next_store_columns",
         "npu_flash_next_column_owners",
@@ -181,6 +182,8 @@ def hla():
         ast.Module(body=[future, *nodes], type_ignores=[])
     )
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
+    # Assigned at module level, so the function filter never picks it up.
+    namespace["_BLNHC_UNHASHED_ROLES"] = ("compressed", "raw_key")
     namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
         namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
     )
@@ -1019,10 +1022,19 @@ def test_new_request_restores_only_external_hit_increment(
         state_connector.group_manager.compute_mamba_align_state_hash.assert_not_called()
 
 
-def test_dump_writes_state_at_every_crossed_lcm_boundary(hla, state_connector):
+@pytest.mark.parametrize(
+    "new_tokens,expected",
+    [
+        (8, [16]),
+        (14, []),
+    ],
+)
+def test_dump_writes_state_only_when_step_ends_on_lcm_boundary(
+    hla, state_connector, new_tokens, expected
+):
     req_meta = _restore_request_meta(hla)
     state_connector._generate_hla_dispatch_meta(
-        req_meta, 16, ([], []), request_id="req", need_load=False
+        req_meta, new_tokens, ([], []), request_id="req", need_load=False
     )
     seq_lens = [
         call.args[1]
@@ -1030,7 +1042,7 @@ def test_dump_writes_state_at_every_crossed_lcm_boundary(hla, state_connector):
             state_connector.group_manager.compute_mamba_align_state_hash.call_args_list
         )
     ]
-    assert seq_lens == [12, 16, 20]
+    assert seq_lens == expected
 
 
 @pytest.mark.parametrize("row_count", [2, 3])

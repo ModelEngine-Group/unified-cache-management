@@ -990,8 +990,10 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         if self.use_layerwise:
             if self._ple_tensor is None:
                 raise ValueError("NPU flash-next PLE layer has no live tensor.")
+            stage_bytes = self.num_blocks * full_page
+            logger.info("NPU flash-next PLE stage: bytes=%s", stage_bytes)
             self._ple_stage = torch.empty(
-                self.num_blocks * full_page,
+                stage_bytes,
                 dtype=torch.uint8,
                 device=self._ple_tensor.device,
             )
@@ -1117,12 +1119,15 @@ class HybridLinearAttentionLayout(KVCacheLayout):
     def _ple_block_view(self, block_id: int) -> torch.Tensor:
         tensor = self._ple_tensor
         stride = int(self._ple_block_stride)
+        block = None
+        if tensor.dim() >= 1 and int(tensor.shape[0]) > block_id:
+            block = tensor[block_id]
         if (
-            tensor.dim() >= 1
-            and int(tensor.shape[0]) > block_id
+            block is not None
             and int(tensor.stride(0)) * int(tensor.element_size()) == stride
+            and block.is_contiguous()
         ):
-            flat = tensor[block_id].reshape(-1).contiguous().view(torch.uint8)
+            flat = block.view(torch.uint8).reshape(-1)
             if int(flat.numel()) != stride:
                 raise ValueError(
                     "NPU flash-next PLE block is not a dense page: "
@@ -1956,12 +1961,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba and PLE state at every LCM boundary this step
-            # has fully crossed. The step end does not have to sit on the
-            # boundary; otherwise a chunk that passes 64 and stops at 100
-            # never stores the state lookup will ask for.
-            state_boundaries = list(range(first_lcm_b, last_lcm_b + 1, lcm_block_size))
-            for seq_len in state_boundaries:
+            # Pass 2: mamba and PLE state only when this step ends exactly on
+            # an LCM boundary. The state at last_lcm_b is then the running
+            # state. A step that merely crosses a boundary leaves that slot
+            # overwritten by the partial block, so it is not dumped.
+            if dump_tok_end == last_lcm_b and last_lcm_b >= first_lcm_b:
                 for gid, group in enumerate(groups_by_id):
                     if not group.is_state_hash:
                         continue
@@ -1972,7 +1976,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta,
                         request_id,
                         gid,
-                        seq_len,
+                        last_lcm_b,
                         "dump",
                     )
         else:
@@ -2223,6 +2227,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         launch_config = self.launch_config
         if not self.use_layerwise and is_npu_layer_major_blnhc(self._kv_cache_config):
+            # KVCacheLayout defaults use_layerwise to True. Pin whole-store
+            # so that default does not rebuild this layout as layerwise.
             launch_config = copy.deepcopy(self.launch_config)
             launch_config["use_layerwise"] = False
         self.kv_cache_layout = HybridLinearAttentionLayout(
@@ -2308,6 +2314,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def _reset_transfer_state(self) -> None:
         """Per-step reset of the worker-side load/dump transfer state."""
         self.load_tasks.clear()
+        ple_load_ids = getattr(self, "_ple_load_ids", None)
+        if ple_load_ids is not None:
+            ple_load_ids.clear()
         self._load_bytes_by_pair.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
@@ -2909,12 +2918,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 hole_slots.extend([slot] * len(selected))
         if not hole_ids:
             return
-        logger.info(
-            "HLA layerwise pad shards: blocks=%s rows=%s slots=%s",
-            len(set(hole_ids)),
-            len(hole_ids),
-            sorted(set(hole_slots)),
-        )
         addrs = np.zeros((len(hole_ids), layout.width), dtype=np.uint64)
         try:
             event_handle = self._get_dump_event_handle()
@@ -3024,6 +3027,60 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._submit_layer_load(0)
         self._submit_layer_load(1)
 
+    def _wait_ple_on_same_layer(self, layer_name: str) -> None:
+        """Wait PLE when this model layer's hook fired but PLE's did not.
+
+        PLE lives on one layer that also has linear attention. The linear
+        hook is what vLLM calls; unpack still has to run before that layer
+        reads the PLE tensor.
+        """
+        layout = self.kv_cache_layout
+        ple_name = getattr(layout, "ple_layer_name", None)
+        if (
+            not ple_name
+            or ple_name == layer_name
+            or ple_name not in self.layer_pos
+            or ple_name in self._waited_layers
+        ):
+            return
+        if self.layer_name_to_id.get(ple_name) != self.layer_name_to_id.get(
+            layer_name
+        ):
+            return
+        self._waited_layers.add(ple_name)
+        self._submit_layer_load(self.layer_pos[ple_name])
+        pair_key = (self.layer_to_group[ple_name], self.layer_to_slot[ple_name])
+        if pair_key in self._waited_group_slots:
+            return
+        self._waited_group_slots.add(pair_key)
+        self._wait_layer_load_pair(pair_key)
+
+    def _drain_unwaited_loads(self) -> None:
+        """Finish load tasks whose layer hook never ran."""
+        pending = [
+            pair_key
+            for pair_key in list(self.load_tasks)
+            if pair_key not in self._waited_group_slots
+        ]
+        if pending:
+            logger.warning(
+                "HLA layerwise load drain: unwaited pairs=%s",
+                pending,
+            )
+        for pair_key in pending:
+            self._waited_group_slots.add(pair_key)
+            self._wait_layer_load_pair(pair_key)
+        ple_load_ids = getattr(self, "_ple_load_ids", None)
+        if not ple_load_ids:
+            return
+        leftover = [pair_key for pair_key, ids in ple_load_ids.items() if ids]
+        if leftover:
+            logger.warning(
+                "HLA layerwise PLE load was not unpacked: pairs=%s",
+                leftover,
+            )
+        ple_load_ids.clear()
+
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata or not self.need_load:
             return
@@ -3046,6 +3103,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
                 self._record_load_bytes()
+        self._wait_ple_on_same_layer(layer_name)
         # Keep at most two layers in flight: the next position was normally
         # submitted two waits ago; resubmitting is a no-op and covers a gap
         # where an earlier layer's wait hook never fired.
@@ -3076,6 +3134,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
     def wait_for_save(self) -> None:
         """Layerwise dump: catch up undumped layers, then the max-pair commit."""
+        if self.need_load:
+            self._drain_unwaited_loads()
         if self._connector_metadata:
             self._ensure_dump_plan()
             # Dump every layer not yet dumped (hooks that never fired,

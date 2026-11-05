@@ -3659,7 +3659,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         if cuda_blnhc and use_hybrid_linear_attention_layerwise:
             raise RuntimeError(
                 "CUDA BLNHC does not support layerwise. "
-                "Disable layerwise to use whole-store."
+                "Set hybrid_linear_attention_layerwise to false "
+                "to use whole-store."
             )
         if use_hybrid_linear_attention_layerwise:
             layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
