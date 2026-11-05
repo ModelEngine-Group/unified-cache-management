@@ -2842,13 +2842,87 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 f"{type(e).__name__}: {e}"
             )
 
+    def _submit_unowned_slot_dumps(self) -> None:
+        """Null-fill shard indexes a group never writes.
+
+        Posix archives a block only after every shard is marked done.
+        PLE owns slot 0 only, so slots ``1 .. num_slots-2`` reuse that
+        same block id with a zero address matrix. Slot ``num_slots-1``
+        stays on the commit task.
+        """
+        plan = self._dump_plan
+        if plan is None or self._max_slot <= 0:
+            return
+        (
+            scoped_ucm_ids,
+            _scoped_vllm_ids,
+            scoped_group_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        ) = plan
+        if not scoped_ucm_ids:
+            return
+        layout = self.kv_cache_layout
+        assert isinstance(layout, HybridLinearAttentionLayout)
+        owned = getattr(layout, "group_pairs", None) or {}
+        hole_ids: list[bytes] = []
+        hole_slots: list[int] = []
+        group_ids_np = np.asarray(scoped_group_ids, dtype=np.int64)
+        for gid_raw in np.unique(group_ids_np):
+            gid = int(gid_raw)
+            if gid not in owned:
+                continue
+            missing = [
+                slot for slot in range(self._max_slot) if slot not in owned[gid]
+            ]
+            if not missing:
+                continue
+            selected = [
+                scoped_ucm_ids[i]
+                for i in np.flatnonzero(group_ids_np == gid).tolist()
+            ]
+            for slot in missing:
+                hole_ids.extend(selected)
+                hole_slots.extend([slot] * len(selected))
+        if not hole_ids:
+            return
+        logger.info(
+            "HLA layerwise pad shards: blocks=%s rows=%s slots=%s",
+            len(set(hole_ids)),
+            len(hole_ids),
+            sorted(set(hole_slots)),
+        )
+        addrs = np.zeros((len(hole_ids), layout.width), dtype=np.uint64)
+        try:
+            event_handle = self._get_dump_event_handle()
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                hole_ids,
+                hole_slots,
+                addrs,
+                event_handle,
+            )
+            self._dump_tasks.append(
+                PendingDumpTask(
+                    task=task,
+                    request_ids=set(dump_request_ids),
+                    event_handle=event_handle,
+                )
+            )
+            self.is_save = True
+        except Exception as e:
+            logger.error(
+                f"submit unowned slot dump task failed. {type(e).__name__}: {e}"
+            )
+
     def _submit_commit_dump(self) -> None:
         """One ordered write of the max-pair shard for every dumped block.
 
         Blocks whose group owns a max-pair layer get that layer's real
         component addresses; blocks of groups without a max-pair layer get
-        null rows — nothing was ever written to that shard for them, and the
-        null write only triggers the block-file commit.
+        null rows. PLE's middle shards are padded first, so this shard is
+        the last MarkDone the block needs.
         """
         plan = self._dump_plan
         if plan is None:
@@ -2992,6 +3066,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._submit_layer_dump(layer_name)
 
         if self._dump_plan is not None:
+            self._submit_unowned_slot_dumps()
             self._submit_commit_dump()
         self._wait_dump_tasks()
 
