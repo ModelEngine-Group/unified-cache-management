@@ -4,6 +4,9 @@
 connector 源自 `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8`。
 本轮只移植接口，不沿用旧测试结论；按用户要求，不新增、迁移或运行测试，不做端到端验证。
 
+当前交接入口见 [Connector v2 / Store 接口交接](connector-v2-store-handoff.md)，
+汇总 Store 阻塞项、已实现范围、单节点限制与后续工作；本文保留具体布局和调用契约。
+
 ## 文件职责
 
 模块直接位于 `ucm/integration/vllm/v2/`，删除 `layout/` 子包。
