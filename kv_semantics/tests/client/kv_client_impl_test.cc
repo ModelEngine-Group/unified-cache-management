@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "kv_metrics/metrics.h"
 #include "router/router.h"
 #include "utils/config_utils.h"
 
@@ -552,6 +553,72 @@ std::vector<KVBuffer> BuildRoutedEntries(const std::vector<NodeId>& routeOrder)
         entries.emplace_back(KVBuffer{FindKeyForAsu(routeOrder, nodeId), {}});
     }
     return entries;
+}
+
+TEST(KvClientImplTest, Metrics_CombineSingleAndBatchProtocols)
+{
+    struct Backend : metrics::KvMetricsBackend {
+        std::mutex mutex;
+        std::unordered_map<std::string, double> values;
+        void UpdateStats(metrics::CachedMetric& metric, double value) noexcept override
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            values[metric.Name()] += value;
+        }
+        void UpdateStats(const metrics::MetricUpdate* updates, std::size_t count) noexcept override
+        {
+            for (std::size_t i = 0; i < count; ++i) {
+                UpdateStats(*updates[i].metric, updates[i].value);
+            }
+        }
+    };
+    auto backend = std::make_shared<Backend>();
+    ASSERT_TRUE(metrics::InstallBackend(backend));
+    struct Cleanup {
+        ~Cleanup() { metrics::Shutdown(); }
+    } cleanup;
+    for (bool useBatch : {false, true}) {
+        auto state = std::make_shared<TestState>();
+        auto client = CreateKvClient(MakeFactory(state));
+        auto config = MakeConfig({10});
+        config.useBatchIoForSingleKey = useBatch;
+        ASSERT_TRUE(client->Init(config).ok());
+        for (std::size_t count : {1U, 2U}) {
+            std::vector<KVBuffer> entries(count, KVBuffer{MakeCacheKey("metric"), {}});
+            TaskId id = kInvalidTaskId;
+            TaskResult result;
+            ASSERT_TRUE(client->StoreAsync(entries, id).ok());
+            ASSERT_TRUE(client->Wait(id, 1000, result).ok());
+            ASSERT_TRUE(client->LoadAsync(entries, id).ok());
+            ASSERT_TRUE(client->Wait(id, 1000, result).ok());
+        }
+        ASSERT_TRUE(client->Shutdown().ok());
+        TaskId id = kInvalidTaskId;
+        EXPECT_FALSE(client
+                         ->StoreAsync(
+                             {
+                                 KVBuffer{MakeCacheKey("metric"), {}}
+        },
+                             id)
+                         .ok());
+        EXPECT_FALSE(client
+                         ->LoadAsync(
+                             {
+                                 KVBuffer{MakeCacheKey("metric"), {}}
+        },
+                             id)
+                         .ok());
+    }
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    for (const auto* op : {"load", "store"}) {
+        const auto prefix = std::string("kv_client_") + op;
+        EXPECT_DOUBLE_EQ(backend->values[prefix + "_requests_total"], 6.0);
+        EXPECT_DOUBLE_EQ(backend->values[prefix + "_entries_total"], 8.0);
+        EXPECT_DOUBLE_EQ(backend->values[prefix + "_errors_total"], 2.0);
+    }
+    for (const auto& item : backend->values) {
+        EXPECT_EQ(item.first.find("kv_client_batch_"), std::string::npos);
+    }
 }
 
 TEST(KvClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)

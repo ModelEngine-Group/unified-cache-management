@@ -56,24 +56,16 @@ bool GetSubmitMetrics(AsuOpType opType, SubmitMetrics& ids)
                    &KV_METRIC("kv_client_query_errors_total")};
             return true;
         case AsuOpType::LOAD:
+        case AsuOpType::BATCH_LOAD:
             ids = {&KV_METRIC("kv_client_load_requests_total"),
                    &KV_METRIC("kv_client_load_entries_total"),
                    &KV_METRIC("kv_client_load_errors_total")};
             return true;
         case AsuOpType::STORE:
+        case AsuOpType::BATCH_STORE:
             ids = {&KV_METRIC("kv_client_store_requests_total"),
                    &KV_METRIC("kv_client_store_entries_total"),
                    &KV_METRIC("kv_client_store_errors_total")};
-            return true;
-        case AsuOpType::BATCH_LOAD:
-            ids = {&KV_METRIC("kv_client_batch_load_requests_total"),
-                   &KV_METRIC("kv_client_batch_load_entries_total"),
-                   &KV_METRIC("kv_client_batch_load_errors_total")};
-            return true;
-        case AsuOpType::BATCH_STORE:
-            ids = {&KV_METRIC("kv_client_batch_store_requests_total"),
-                   &KV_METRIC("kv_client_batch_store_entries_total"),
-                   &KV_METRIC("kv_client_batch_store_errors_total")};
             return true;
         case AsuOpType::DELETE:
             ids = {&KV_METRIC("kv_client_delete_requests_total"),
