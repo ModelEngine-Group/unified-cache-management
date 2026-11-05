@@ -149,7 +149,7 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
 
         const auto key = TrimConfigValue(line.substr(0, pos));
         const auto value = TrimConfigValue(line.substr(pos + 1));
-        if (key == "clientId" || key == "client_id") {
+        if (key == "client.clientId" || key == "client.client_id") {
             config.clientId = value;
         } else if (key == "client.maxInflightTasks" || key == "client.max_inflight_tasks") {
             config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
@@ -162,12 +162,13 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
-        } else if (key == "useBatchIoForSingleKey" || key == "use_batch_io_for_single_key") {
+        } else if (key == "client.useBatchIoForSingleKey" ||
+                   key == "client.use_batch_io_for_single_key") {
             config.useBatchIoForSingleKey = ParseClientBool(value);
-        } else if (key == "asuSharedProvider" || key == "asu_shared_provider") {
+        } else if (key == "client.asuSharedProvider" || key == "client.asu_shared_provider") {
             config.sharedProviderMode = static_cast<SharedProviderMode>(ParseConfigUint64(value));
-        } else if (key == "router.type" || key == "routerType" || key == "hashTable.type" ||
-                   key == "hash_table.type") {
+        } else if (key == "client.router.type" || key == "client.routerType" ||
+                   key == "client.hashTable.type" || key == "client.hash_table.type") {
             auto type = value;
             std::transform(type.begin(), type.end(), type.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
@@ -180,25 +181,26 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             } else {
                 config.attrs["hash_table.type"] = "RING_HASH";
             }
-        } else if (key == "hashTable.ringHash.virtualNodeCount" ||
-                   key == "ring_hash.virtual_node_count") {
+        } else if (key == "client.hashTable.ringHash.virtualNodeCount" ||
+                   key == "client.ring_hash.virtual_node_count") {
             config.attrs["ring_hash.virtual_node_count"] = value;
-        } else if (key == "hashTable.maglev.tableSize" || key == "maglev.table_size") {
+        } else if (key == "client.hashTable.maglev.tableSize" ||
+                   key == "client.maglev.table_size") {
             config.attrs["maglev.table_size"] = value;
-        } else if (key == "hashTable.contiguousBlockAffinity.blockCount" ||
-                   key == "contiguous_block_affinity.block_count") {
+        } else if (key == "client.hashTable.contiguousBlockAffinity.blockCount" ||
+                   key == "client.contiguous_block_affinity.block_count") {
             config.attrs["contiguous_block_affinity.block_count"] = value;
-        } else if (key == "hashTable.contiguousBlockAffinity.fullSpreadType" ||
-                   key == "contiguous_block_affinity.full_spread_type") {
+        } else if (key == "client.hashTable.contiguousBlockAffinity.fullSpreadType" ||
+                   key == "client.contiguous_block_affinity.full_spread_type") {
             config.attrs["contiguous_block_affinity.full_spread_type"] = value;
-        } else if (key == "hashTable.contiguousBlockAffinity.dynamicAdjustEnabled" ||
-                   key == "contiguous_block_affinity.dynamic_adjust_enabled") {
+        } else if (key == "client.hashTable.contiguousBlockAffinity.dynamicAdjustEnabled" ||
+                   key == "client.contiguous_block_affinity.dynamic_adjust_enabled") {
             config.attrs["contiguous_block_affinity.dynamic_adjust_enabled"] = value;
-        } else if (key == "hashTable.batchTopKAffinity.topK" ||
-                   key == "batch_topk_affinity.top_k") {
+        } else if (key == "client.hashTable.batchTopKAffinity.topK" ||
+                   key == "client.batch_topk_affinity.top_k") {
             config.attrs["batch_topk_affinity.top_k"] = value;
-        } else if (key == "hashTable.batchTopKAffinity.dynamicAdjustEnabled" ||
-                   key == "batch_topk_affinity.dynamic_adjust_enabled") {
+        } else if (key == "client.hashTable.batchTopKAffinity.dynamicAdjustEnabled" ||
+                   key == "client.batch_topk_affinity.dynamic_adjust_enabled") {
             config.attrs["batch_topk_affinity.dynamic_adjust_enabled"] = value;
         } else if (key == "transport.asuIds" || key == "transport.asu_ids" || key == "asuIds" ||
                    key == "asu_ids") {

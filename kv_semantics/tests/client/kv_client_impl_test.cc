@@ -1014,8 +1014,10 @@ TEST(KvClientImplTest, Config_LoadFromFileProvidesClientInitConfig)
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "clientId=file-init-test\n";
-        configFile << "asu_shared_provider=1\n";
+        configFile << "client.client_id=file-init-test\n";
+        configFile << "client.asu_shared_provider=1\n";
+        configFile << "client.hash_table.type=RING_HASH\n";
+        configFile << "client.ring_hash.virtual_node_count=128\n";
         configFile << "transport.asuIds=10,20\n";
         configFile << "transport.send_buffer_slot_size=8192\n";
         configFile << "transport.send_buffer_slot_num=2\n";
@@ -1042,6 +1044,10 @@ TEST(KvClientImplTest, Config_LoadFromFileProvidesClientInitConfig)
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(config.clientId, "file-init-test");
+    EXPECT_EQ(config.sharedProviderMode, SharedProviderMode::SHARED);
+    EXPECT_EQ(config.attrs.at("hash_table.type"), "RING_HASH");
+    EXPECT_EQ(config.attrs.at("ring_hash.virtual_node_count"), "128");
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_EQ(state->createdProviders, std::uint32_t{1});
     EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
@@ -1070,7 +1076,7 @@ TEST(KvClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
         configFile << "client.maxInflightTasks=3\n";
-        configFile << "use_batch_io_for_single_key=false\n";
+        configFile << "client.use_batch_io_for_single_key=false\n";
         configFile << "wait_timeout_ms=321\n";
         configFile << "transport.asuIds=10\n";
         configFile << "transport.maxInflightTasks=7\n";
@@ -1096,7 +1102,7 @@ TEST(KvClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "asu_shared_provider=2\n";
+        configFile << "client.asu_shared_provider=2\n";
         configFile << "transport.asuIds=10,20\n";
     }
 
@@ -1118,7 +1124,7 @@ TEST(KvClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMulti
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "asu_shared_provider=0\n";
+        configFile << "client.asu_shared_provider=0\n";
         configFile << "transport.asuIds=10,20\n";
     }
 

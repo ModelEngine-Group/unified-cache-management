@@ -174,7 +174,7 @@ The config file format is `key=value`. Empty lines and lines beginning with
 Example:
 
 ```ini
-client_id=kv-test-client-0
+client.client_id=kv-test-client-0
 wait_timeout_ms=5000
 # Optional when libasu_client.so/libasu_transport.so are not discoverable.
 # asu.client_library_path=/path/to/libasu_client.so
@@ -186,8 +186,10 @@ fake_backend.worker_threads=4
 fake_backend.complete_immediately=true
 
 view.config_path=./kv_semantics/kv_test/kv_client_view.conf
-hash_table.type=RING_HASH
-ring_hash.virtual_node_count=128
+client.use_batch_io_for_single_key=true
+client.hash_table.type=RING_HASH
+client.ring_hash.virtual_node_count=128
+client.asu_shared_provider=0
 
 transport.asu_ids=1,2,3
 transport.provider_type=FAKE
