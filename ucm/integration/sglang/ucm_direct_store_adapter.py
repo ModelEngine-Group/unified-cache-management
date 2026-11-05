@@ -335,8 +335,9 @@ class UcmDirectStoreAdapter:
 
         The C++ backends prepend ``uc_shm_cache_`` or ``uc_shm_fake_`` to this
         value. Hash the sharing identity and tensor layout together with
-        ``store_group``: the short group name contains only the pool name,
-        shard bytes and shard count, not the complete tensor layout.
+        ``store_group``: its base name contains the shortest pool name, shard
+        bytes and shard count. Only colliding base names gain a layout suffix;
+        the full tensor layout is always included in this ID.
         """
         identity = {
             "model": str(self._identity.get("model") or "model"),

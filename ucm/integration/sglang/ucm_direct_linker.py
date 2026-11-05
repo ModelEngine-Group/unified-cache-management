@@ -45,7 +45,7 @@ _OFFLOAD_POLL_INTERVAL_S = 0.005
 
 
 def _pool_group_name(pools: tuple[str, ...], shard_bytes: int, shard_count: int) -> str:
-    """Name a Store by its shortest physical pool and shard geometry."""
+    """Build the Store group base name from the shortest pool and shard geometry."""
     name = min(pools, key=lambda value: (len(value), value))
     return f"{name}_{shard_bytes}x{shard_count}"
 
@@ -323,7 +323,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             grouped.setdefault((entry.indices_from_pool, mapping), []).append(entry)
 
         bundles = []
-        names = set()
         for (source_pool, mapping), entries in grouped.items():
             layers = tuple(layer for layer, _ in mapping)
             ordered = tuple(sorted(entries, key=lambda entry: str(entry.name)))
@@ -343,9 +342,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             for tensor_sizes, schema_layers in sorted(by_schema.items()):
                 shard_size = sum(tensor_sizes)
                 name = _pool_group_name(pool_names, shard_size, len(schema_layers))
-                if name in names:
-                    raise ValueError(f"Duplicate UCM Store group name: {name}")
-                names.add(name)
                 bundles.append(
                     _PoolBundle(
                         name,
@@ -362,6 +358,33 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         shard_size,
                     )
                 )
+        name_counts: dict[str, int] = {}
+        for bundle in bundles:
+            name_counts[bundle.name] = name_counts.get(bundle.name, 0) + 1
+        if any(count > 1 for count in name_counts.values()):
+            # Keep short names unless distinct bundles have the same shortest
+            # pool name, total shard bytes, and layer count.
+            disambiguated = []
+            for bundle in bundles:
+                if name_counts[bundle.name] > 1:
+                    layout = (
+                        str(bundle.source_pool),
+                        tuple(str(entry.name) for entry in bundle.entries),
+                        bundle.layers,
+                        bundle.tensor_size_list,
+                        bundle.fragments,
+                    )
+                    suffix = hashlib.sha256(repr(layout).encode("utf-8")).hexdigest()[
+                        :10
+                    ]
+                    bundle = replace(bundle, name=f"{bundle.name}__h{suffix}")
+                disambiguated.append(bundle)
+            bundles = disambiguated
+        names = [bundle.name for bundle in bundles]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "UCM Store group names remain ambiguous after layout hashing."
+            )
         return tuple(bundles)
 
     def _log_pool_topology(self) -> None:
@@ -772,6 +795,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 self._load_queue.task_done()
 
     def _partition_offload(self, expanded: list[PoolTransfer]) -> list[PoolTransfer]:
+        # Empty transfers cannot be dumped or supply a tail key for owner selection.
+        if not all(transfer.keys for transfer in expanded):
+            expanded = [transfer for transfer in expanded if transfer.keys]
+        if not expanded:
+            return []
         if len(self._dump_ranks) == 1:
             return expanded if self._tp_rank == self._dump_ranks[0] else []
 
@@ -785,7 +813,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
             if entry.indices_from_pool != PoolName.KV:
                 if tail_owner is None:
                     # Keep every auxiliary pool at a node boundary together.
-                    # Prefer a KV tail key, independent of local GPU addresses.
+                    # Prefer a nonempty KV tail key; otherwise use an auxiliary
+                    # tail key. The choice is independent of local GPU addresses.
                     key_transfer = min(
                         expanded,
                         key=lambda t: (

@@ -171,6 +171,18 @@ class DumpPartitionTest(unittest.TestCase):
             all(not ts or {t.name for t in ts} == {"swa", "state"} for ts in selected)
         )
 
+    def test_empty_keys_are_skipped_before_tail_owner_selection(self):
+        transfers = self.transfers(1, [])
+        transfers[0].keys = []
+        transfers[1].keys = []
+        selected = [self.linker(r)._partition_offload(transfers) for r in range(4)]
+        self.assertEqual(sum(bool(items) for items in selected), 1)
+        self.assertEqual(
+            {transfer.name for items in selected for transfer in items},
+            {"swa", "state"},
+        )
+        self.assertEqual(self.linker(0)._partition_offload(transfers[:2]), [])
+
     def test_tail_only_rank_prepares_no_full_kv_indices(self):
         copies = []
         obj = self.linker(1)

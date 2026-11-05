@@ -65,7 +65,7 @@ class LayoutPreparationTest(unittest.TestCase):
             linker_module._pool_group_name(("indexer", "kv"), 16, 4), "kv_16x4"
         )
 
-    def test_equal_geometry_group_name_collision_is_rejected(self):
+    def test_equal_geometry_group_names_include_layout_hash(self):
         linker = object.__new__(linker_module.UcmDirectLinker)
         linker.num_layers = 2
         linker.pools = {
@@ -77,10 +77,14 @@ class LayoutPreparationTest(unittest.TestCase):
                 _component_offsets=[[0, 0], [0, 0]],
             )
         }
-        with self.assertRaisesRegex(
-            ValueError, "Duplicate UCM Store group name: kv_16x1"
-        ):
-            linker._build_pool_bundles()
+        bundles = linker._build_pool_bundles()
+        names = [bundle.name for bundle in bundles]
+        self.assertEqual(len(names), 2)
+        self.assertEqual(len(set(names)), 2)
+        self.assertTrue(all(name.startswith("kv_16x1__h") for name in names))
+        self.assertEqual(
+            names, [bundle.name for bundle in linker._build_pool_bundles()]
+        )
 
     def test_registered_backend_paths_use_group_names(self):
         adapter = self.adapter()
