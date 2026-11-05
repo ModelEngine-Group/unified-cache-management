@@ -2558,13 +2558,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         # Scheduler side method.
-        # Return this request's ucm_block_ids (prefetch handle) with the response
+        # Return this request's block hashes (prefetch handle) with the response
         # so the upper layer can prefetch on demand. Short requests that were not
         # dumped have no requests_meta entry and yield None.
-        # prefetch_rank is the DP replica index serving this request.
         req_meta = self.requests_meta.get(request.request_id)
-        prefetch_rank = int(self._vllm_config.parallel_config.data_parallel_index)
-        return True, build_kv_block_info(req_meta, prefetch_rank)
+        return True, build_kv_block_info(req_meta)
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):

@@ -407,22 +407,11 @@ class RequestMeta:
     token_processed: int = 0
 
 
-def build_kv_block_info(
-    req_meta: "RequestMeta | None", prefetch_rank: Optional[int] = None
-) -> dict[str, Any] | None:
-    """Build the prefetch handle returned with the response.
-
-    prefetch_rank: 0-based DP replica index serving the request; omitted from
-    the result when None.
-    """
+def build_kv_block_info(req_meta: "RequestMeta | None") -> dict[str, Any] | None:
+    """Build the prefetch handle returned with the response."""
     if req_meta is None or not req_meta.ucm_block_ids:
         return None
-    info: dict[str, Any] = {
-        "ucm_block_ids": [b.hex() for b in req_meta.ucm_block_ids],
-    }
-    if prefetch_rank is not None:
-        info["prefetch_rank"] = prefetch_rank
-    return info
+    return {"hash_keys": [b.hex() for b in req_meta.ucm_block_ids]}
 
 
 @dataclass
