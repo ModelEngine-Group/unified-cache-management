@@ -85,7 +85,6 @@ class ParallelTopology:
 @dataclass(frozen=True)
 class UCMStorageHandshake(KVConnectorHandshakeMetadata):
     rank: ParallelRank
-    fingerprint: str
     stored_policies: tuple[RestorePolicy, ...] = ()
 
 

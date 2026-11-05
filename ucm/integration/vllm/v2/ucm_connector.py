@@ -1,4 +1,4 @@
-"""vLLM SPI facade; state belongs to the scheduler or worker role."""
+"""vLLM callbacks with base metadata and separate Scheduler/Worker state."""
 
 from __future__ import annotations
 
@@ -109,29 +109,38 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector_worker.register_kv_caches(kv_caches)
 
     def bind_connector_metadata(self, connector_metadata):
-        self.connector_worker.bind_connector_metadata(connector_metadata)
+        self.connector_worker.begin_step(connector_metadata)
         super().bind_connector_metadata(connector_metadata)
 
     def clear_connector_metadata(self):
-        self.connector_worker.clear_connector_metadata()
+        self.connector_worker.check_io_drained()
         super().clear_connector_metadata()
 
     def start_load_kv(self, forward_context, **kwargs):
-        self.connector_worker.start_load_kv(forward_context, **kwargs)
+        if self.has_connector_metadata():
+            self.connector_worker.start_load_kv(
+                self._get_connector_metadata(), forward_context, **kwargs
+            )
 
     def wait_for_layer_load(self, layer_name):
-        self.connector_worker.wait_for_layer_load(layer_name)
+        if self.has_connector_metadata():
+            self.connector_worker.wait_for_layer_load(layer_name)
 
     def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
-        self.connector_worker.save_kv_layer(
-            layer_name, kv_layer, attn_metadata, **kwargs
-        )
+        if self.has_connector_metadata():
+            self.connector_worker.save_kv_layer(
+                self._get_connector_metadata(),
+                layer_name,
+                kv_layer,
+                attn_metadata,
+                **kwargs,
+            )
 
     def wait_for_save(self):
-        self.connector_worker.wait_for_save()
+        if self.has_connector_metadata():
+            self.connector_worker.wait_for_save(self._get_connector_metadata())
 
     def get_transfer_results(self, finished_req_ids):
-        self.connector_worker.finalize_no_forward()
         self.connector_worker.poll_finished()
         return super().get_transfer_results(finished_req_ids)
 
@@ -143,9 +152,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
         return None
-
-    def handle_preemptions(self, kv_connector_metadata):
-        self.connector_worker.handle_preemptions(kv_connector_metadata)
 
     def request_finished_all_groups(self, request, block_ids):
         self.connector_scheduler.request_finished(request.request_id)
