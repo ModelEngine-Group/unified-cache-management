@@ -23,6 +23,7 @@ class LoadWorkerTest(unittest.TestCase):
         submitted = []
         reaped = set()
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj.num_layers = 4
         obj._tp_rank = 0
         obj._requires_load_finish = True
@@ -87,7 +88,7 @@ class LoadWorkerTest(unittest.TestCase):
                     synchronize=lambda: events.append(("forward_done", None)),
                 )
             )
-        obj._load_queue.put((0, {"req": [object()]}, ready_events))
+        obj._load_queue.put((0, {"req": [object()]}, ready_events, None))
         obj._load_queue.put(None)
         obj._load_worker()
         self.assertEqual(obj._load_queue.unfinished_tasks, 0)
@@ -142,6 +143,7 @@ class LoadWorkerTest(unittest.TestCase):
             )
 
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj._pending_loads = {"req": [object()]}
         obj.forward_stream = forward_stream
         obj._requires_load_finish = False
@@ -157,6 +159,7 @@ class LoadWorkerTest(unittest.TestCase):
 
     def test_native_transfer_ready_is_reused_for_load_and_dump(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         ready_events = [object(), object()]
         obj.forward_stream = object()
         obj._pending_loads = {"req": [object()]}
@@ -181,13 +184,14 @@ class LoadWorkerTest(unittest.TestCase):
             create=True,
         ):
             obj.start_layer_wise_loading()
-            self.assertTrue(obj.offload([object()]))
+            self.assertTrue(obj.offload([types.SimpleNamespace(keys=["page"])]))
         self.assertIs(obj._load_queue.get()[2], ready_events)
         self.assertIs(obj._offload_queue.get()[1], ready_events)
         self.assertEqual(streams, [obj.forward_stream, obj.forward_stream])
 
     def test_legacy_transfer_ready_without_forward_stream(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj.forward_stream = None
         recorded = []
         event = types.SimpleNamespace(record=lambda: recorded.append(True))
