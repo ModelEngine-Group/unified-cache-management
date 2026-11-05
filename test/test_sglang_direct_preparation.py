@@ -1,5 +1,6 @@
 """Exercise Python preparation without SGLang, torch or native UCM libraries."""
 
+import array
 import os
 import sys
 import types
@@ -400,8 +401,8 @@ class LayoutPreparationTest(unittest.TestCase):
         calls = []
 
         class Native:
-            def Load(self, ids, indexes, addresses, event=0):
-                calls.append((ids, indexes, addresses, event))
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((ids, indexes, addresses, event, distribute_backend_load))
                 return len(calls)
 
             def Dump(self, ids, indexes, addresses, event):
@@ -430,16 +431,57 @@ class LayoutPreparationTest(unittest.TestCase):
         np.testing.assert_array_equal(calls[1][2], transfer.addresses[1])
         self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
         self.assertTrue(np.shares_memory(calls[1][2], transfer.addresses))
+        self.assertEqual([call[3:] for call in calls], [(43, False), (43, False)])
+        adapter._identity["rank_replicated"] = True
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            shared_prepared = adapter.prepare_load([transfer])
+        adapter.submit_prepared_load_layer(shared_prepared, 0, prerequisite_handle=44)
+        self.assertEqual(calls[-1][3:], (44, True))
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
             adapter.submit_offload([transfer], prerequisite_handle=42)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(calls[2][3], 42)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[3][3], 42)
         self.assertEqual(
-            calls[2][0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
+            calls[3][0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
         )
-        np.testing.assert_array_equal(calls[2][1], [0, 0, 1, 1])
-        np.testing.assert_array_equal(calls[2][2], transfer.addresses.reshape(4, 1))
-        self.assertTrue(np.shares_memory(calls[2][2], transfer.addresses))
+        np.testing.assert_array_equal(calls[3][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(calls[3][2], transfer.addresses.reshape(4, 1))
+        self.assertTrue(np.shares_memory(calls[3][2], transfer.addresses))
+
+    def test_inherited_pipeline_public_load_receives_replication_option(self):
+        calls = []
+
+        class Native:
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((event, distribute_backend_load))
+                return len(calls)
+
+        class InheritedPipeline(pipeline_module.UcmPipelineStore):
+            pass
+
+        store = object.__new__(InheritedPipeline)
+        store.store_ = Native()
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        transfer = self.transfer()
+        for replicated in (False, True):
+            for event in (0, 43):
+                with self.subTest(replicated=replicated, event=event):
+                    adapter._identity["rank_replicated"] = replicated
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"ucm.store.pipeline.connector": pipeline_module},
+                        ),
+                        patch.object(pipeline_module, "array", array, create=True),
+                    ):
+                        prepared = adapter.prepare_load([transfer])
+                        self.assertIsNone(prepared[0][0].prepared_io)
+                        adapter.submit_prepared_load_layer(
+                            prepared, 0, prerequisite_handle=event
+                        )
+                    self.assertEqual(calls[-1], (event, replicated))
 
     def dump_adapter(self, fail_call=None):
         calls, waited = [], []

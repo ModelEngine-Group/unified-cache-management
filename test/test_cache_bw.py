@@ -119,7 +119,16 @@ class MemoryStore:
                 for pointer, size in zip(row, self.workload.tensor_sizes)
             )
 
-    def Load(self, ids, shards, pointers):
+    def Load(
+        self,
+        ids,
+        shards,
+        pointers,
+        prerequisite_handle=0,
+        distribute_backend_load=False,
+    ):
+        assert prerequisite_handle == 0
+        assert distribute_backend_load == self.workload.shared
         ids = self.unpack(ids, shards, pointers)
         self.records.append(tuple(ids))
         for block_id, shard, row in zip(ids, shards, pointers):
@@ -678,6 +687,19 @@ class CacheBandwidthTest(unittest.TestCase):
         submitted = [call.args for call in store.store_.Load.call_args_list]
         self.assertEqual([list(args[1]) for args in submitted], [[0], [1], [2]])
         self.assertTrue(all(args[2] is submitted[0][2] for args in submitted))
+        self.assertTrue(all(args[3:] == (0, workload.shared) for args in submitted))
+
+    def test_transfer_marks_only_mla_loads_for_backend_distribution(self):
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                workload = bw.Workload((4096,), 1, shared)
+                rows = make_fake_rows(None, workload, "mock", 1)
+                request = bw.prepare_transfer(rows, [b"a" * 16], workload)
+                store, runtime = mock.Mock(), mock.Mock()
+                bw.transfer_request(store, runtime, request)
+                self.assertEqual(store.store_.Load.call_args.args[3:], (0, shared))
+                bw.transfer_request(store, runtime, request, dump=True)
+                self.assertEqual(len(store.store_.Dump.call_args.args), 3)
 
     def test_every_posix_epoch_and_every_layer_is_cold(self):
         args, workload = self.small("posix-hit")

@@ -7,6 +7,7 @@ or establish the safety of every model-selection/state-copy configuration.
 
 import ast
 import math
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,8 +98,11 @@ def hla():
             "_append_mamba_align_state_block",
             "_generate_hla_dispatch_meta",
             "build_connector_meta",
+            "start_load_kv",
+            "_mark_load_failed",
         },
         "UCMHybridLinearAttentionLayerWiseConnector": {
+            "_submit_layer_load",
             "_plan_row_saves",
             "wait_for_save",
             "start_load_kv",
@@ -144,6 +148,7 @@ def hla():
     namespace = {
         "__name__": __name__,
         "math": math,
+        "time": time,
         "np": np,
         "defaultdict": defaultdict,
         "dataclass": dataclass,
@@ -170,11 +175,186 @@ def hla():
         ast.Module(body=[future, *nodes], type_ignores=[])
     )
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
+    namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
+        namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
+    )
     return SimpleNamespace(**namespace)
 
 
 def group(spec, *names):
     return SimpleNamespace(kv_cache_spec=spec, layer_names=list(names))
+
+
+@pytest.fixture
+def direct_load_connector(hla):
+    connector = hla.UCMHybridLinearAttentionConnector()
+    unscoped = [b"kv0", b"kv1", b"state", b"state"]
+    scoped = [b"kv0", b"kv1", b"state@1", b"state@1"]
+    blocks = [10, 11, 20, 21]
+    groups = [0, 0, 1, 1]
+    dispatch = SimpleNamespace(
+        load_full_attn_count=2, load_block_ids=(unscoped, blocks)
+    )
+    metadata = hla.UCMConnectorMetadata(request_meta={"req": dispatch})
+    connector._get_connector_metadata = lambda: metadata
+    connector._reset_transfer_state = lambda: None
+    connector._prepare_load_plan = lambda _: None
+    connector.request_data = [("req", unscoped, scoped, blocks, groups)]
+    connector.is_mla = True
+    connector.need_load = True
+    connector.layer_order = ["mla", "state"]
+    connector.store = object()
+    connector._failure_req_ids = set()
+    connector._invalid_block_ids = set()
+    connector._connector_worker_meta = SimpleNamespace(mark_failed=MagicMock())
+    connector._load_bytes_total = 0
+    connector.device = SimpleNamespace(synchronize=MagicMock())
+    layout = hla.HybridLinearAttentionLayout.__new__(hla.HybridLinearAttentionLayout)
+    layout.direct_group_bytes = {0: 64, 1: 16}
+    layout.extract_block_addrs = lambda ids, gids: np.array(
+        list(zip(ids, gids)), dtype=np.uint64
+    )
+    connector.kv_cache_layout = layout
+    return connector
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "submit_mla", "submit_state", "wait_mla", "wait_state"]
+)
+def test_direct_load_splits_shared_and_private_tasks_and_drains_failures(
+    hla, direct_load_connector, failure
+):
+    connector = direct_load_connector
+    submissions = []
+    waits = []
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        label = "mla" if distribute_backend_load else "state"
+        assert store is connector.store
+        submissions.append((label, requests, keys, shards, ptrs.tolist()))
+        if failure == f"submit_{label}":
+            raise RuntimeError("submit failed")
+        return SimpleNamespace(label=label)
+
+    def wait(task):
+        waits.append(task.label)
+        if failure == f"wait_{task.label}":
+            raise RuntimeError("wait failed")
+
+    connector._rank_consistency = SimpleNamespace(submit_load=submit, wait_load=wait)
+    connector.start_load_kv(SimpleNamespace())
+    connector.device.synchronize.assert_called_once()
+    assert submissions[0] == (
+        "mla",
+        {"req": [b"kv0", b"kv1"]},
+        [b"kv0", b"kv1"],
+        [0, 0],
+        [[10, 0], [11, 0]],
+    )
+    if failure != "submit_mla":
+        assert submissions[1] == (
+            "state",
+            {"req": [b"state", b"state"]},
+            [b"state@1", b"state@1"],
+            [0, 0],
+            [[20, 1], [21, 1]],
+        )
+    expected_waits = [] if failure == "submit_mla" else ["mla"]
+    if failure not in ("submit_mla", "submit_state"):
+        expected_waits.append("state")
+    assert waits == expected_waits
+    stats = hla.ucmmetrics.update_stats.call_args.args[0]
+    assert stats["load_requests_num"] == (0 if failure else 1)
+    if failure:
+        assert connector._failure_req_ids == {"req"}
+        assert connector._invalid_block_ids == {10, 11, 20, 21}
+    else:
+        assert stats["load_blocks_num"] == 4
+        assert stats["load_bytes_total"] == 160
+        assert not connector._failure_req_ids
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_direct_load_skips_empty_task_type(hla, direct_load_connector, shared):
+    connector = direct_load_connector
+    start, end = (0, 2) if shared else (2, 4)
+    request_id, unscoped, scoped, blocks, groups = connector.request_data[0]
+    connector.request_data = [
+        (
+            request_id,
+            unscoped[start:end],
+            scoped[start:end],
+            blocks[start:end],
+            groups[start:end],
+        )
+    ]
+    dispatch = connector._get_connector_metadata().request_meta[request_id]
+    dispatch.load_full_attn_count = 2 if shared else 0
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=MagicMock(return_value=object()), wait_load=MagicMock()
+    )
+    connector.start_load_kv(SimpleNamespace())
+    connector._rank_consistency.submit_load.assert_called_once()
+    assert connector._rank_consistency.submit_load.call_args.kwargs == {
+        "distribute_backend_load": shared
+    }
+    connector._rank_consistency.wait_load.assert_called_once()
+
+
+def test_gqa_direct_load_keeps_all_rank_scoped_keys_in_one_task(direct_load_connector):
+    connector = direct_load_connector
+    connector.is_mla = False
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=MagicMock(return_value=object()), wait_load=MagicMock()
+    )
+    connector.start_load_kv(SimpleNamespace())
+    connector._rank_consistency.submit_load.assert_called_once()
+    call = connector._rank_consistency.submit_load.call_args
+    assert call.args[2] == [b"kv0", b"kv1", b"state@1", b"state@1"]
+    assert call.kwargs == {"distribute_backend_load": False}
+    connector._rank_consistency.wait_load.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "is_mla,group_id,expected", [(True, 0, True), (True, 1, False), (False, 0, False)]
+)
+def test_layerwise_load_distributes_only_shared_mla_group(
+    hla, is_mla, group_id, expected
+):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.is_mla = is_mla
+    connector.layer_order = ["layer"]
+    connector.layer_to_group = {"layer": group_id}
+    connector.layer_to_slot = {"layer": 0}
+    connector._submitted_positions = set()
+    connector._submitted_group_slots = set()
+    connector._failure_req_ids = set()
+    connector._load_bytes_by_pair = defaultdict(int)
+    connector.load_tasks = defaultdict(dict)
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            group(MLAAttentionSpec()),
+            group(MambaSpec(mamba_cache_mode="align")),
+        ]
+    )
+    metadata = hla.UCMConnectorMetadata(request_meta={})
+    connector._get_connector_metadata = lambda: metadata
+    connector.request_data = [("req", [b"key"], [b"scoped"], [10], [group_id])]
+    connector.store = object()
+    layout = hla.HybridLinearAttentionLayout.__new__(hla.HybridLinearAttentionLayout)
+    layout.extract_layer_addrs = lambda name, blocks: np.array([[10]], dtype=np.uint64)
+    layout.layer_column_bytes = {"layer": 16}
+    connector.kv_cache_layout = layout
+    task = object()
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=MagicMock(return_value=task)
+    )
+    connector._submit_layer_load(0)
+    assert connector._rank_consistency.submit_load.call_args.kwargs == {
+        "distribute_backend_load": expected
+    }
+    assert connector.load_tasks[(group_id, 0)]["req"] is task
+    assert connector._load_bytes_by_pair[(group_id, 0)] == 16
 
 
 @pytest.mark.parametrize(

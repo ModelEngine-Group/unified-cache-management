@@ -181,7 +181,7 @@ class LoadWorkerTest(unittest.TestCase):
             create=True,
         ):
             obj.start_layer_wise_loading()
-            self.assertTrue(obj.offload([object()]))
+            self.assertTrue(obj.offload([types.SimpleNamespace(keys=("a",))]))
         self.assertIs(obj._load_queue.get()[2], ready_events)
         self.assertIs(obj._offload_queue.get()[1], ready_events)
         self.assertEqual(streams, [obj.forward_stream, obj.forward_stream])

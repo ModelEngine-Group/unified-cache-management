@@ -157,6 +157,8 @@ class RankConsistencyManager:
         block_ids: list[bytes],
         shard_indices: list[int],
         ptrs: Any,
+        *,
+        distribute_backend_load: bool = False,
     ) -> Any:
         """Retain request block IDs and classify immediate NotFound errors."""
         request_context = (
@@ -167,8 +169,16 @@ class RankConsistencyManager:
             if self.enabled
             else {}
         )
+        load_options: dict[str, Any] = {}
+        if getattr(store, "supports_distributed_backend_load", False):
+            load_options["distribute_backend_load"] = distribute_backend_load
         try:
-            task = store.load_data(block_ids, shard_indices, ptrs)
+            task = store.load_data(
+                block_ids,
+                shard_indices,
+                ptrs,
+                **load_options,
+            )
         except Exception as error:
             if self.enabled and isinstance(error, StoreNotFoundError):
                 self._mark_load_context_missing(request_context)
