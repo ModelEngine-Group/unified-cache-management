@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>  // for errno, ERANGE
