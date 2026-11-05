@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,6 @@
 #pragma once
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
 #include "kv_types.h"
 
@@ -35,18 +34,12 @@ public:
     virtual ~KvClient() = default;
 
     virtual Status Init(const KvClientConfig& config) = 0;
-    virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
 
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
     virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
     virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                              std::uintptr_t eventHandle) = 0;
-    virtual Status BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                   std::uintptr_t eventHandle) = 0;
+                              std::uintptr_t eventHandle = 0) = 0;
     virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
 
     // Returns false only while the task is still in progress. Wait retrieves the final result.

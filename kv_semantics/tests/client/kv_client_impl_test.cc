@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 #include "kv_client_impl.h"
 #include <algorithm>
 #include <array>
@@ -740,7 +741,9 @@ TEST(KvClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateKvClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+    auto config = MakeConfig({10});
+    config.useBatchIoForSingleKey = false;
+    ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
     ASSERT_TRUE(client
@@ -763,7 +766,7 @@ TEST(KvClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
     ASSERT_TRUE(client
-                    ->BatchStoreAsync(
+                    ->StoreAsync(
                         {
                             KVBuffer{MakeCacheKey("store-batch-0"), {}},
                             KVBuffer{MakeCacheKey("store-batch-1"), {}}
@@ -773,7 +776,7 @@ TEST(KvClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
     ASSERT_TRUE(client
-                    ->BatchLoadAsync(
+                    ->LoadAsync(
                         {
                             KVBuffer{MakeCacheKey("load-batch-0"), {}},
                             KVBuffer{MakeCacheKey("load-batch-1"), {}}
@@ -791,7 +794,9 @@ TEST(KvClientImplTest, Dispatch_EventAwareStoreUsesStoreProtocols)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateKvClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+    auto config = MakeConfig({10});
+    config.useBatchIoForSingleKey = false;
+    ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
     ASSERT_TRUE(client
@@ -805,9 +810,10 @@ TEST(KvClientImplTest, Dispatch_EventAwareStoreUsesStoreProtocols)
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
     ASSERT_TRUE(client
-                    ->BatchStoreAsync(
+                    ->StoreAsync(
                         {
-                            KVBuffer{MakeCacheKey("store-batch"), {}}
+                            KVBuffer{MakeCacheKey("store-batch-0"), {}},
+                            KVBuffer{MakeCacheKey("store-batch-1"), {}}
     },
                         taskId, 0)
                     .ok());
@@ -815,6 +821,36 @@ TEST(KvClientImplTest, Dispatch_EventAwareStoreUsesStoreProtocols)
 
     EXPECT_EQ(state->submittedOpTypes,
               std::vector<AsuOpType>({AsuOpType::STORE, AsuOpType::BATCH_STORE}));
+}
+
+TEST(KvClientImplTest, Dispatch_DefaultsToBatchProtocolForSingleEntry)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-single"), {}}
+    },
+                        taskId)
+                    .ok());
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_TRUE(client
+                    ->LoadAsync(
+                        {
+                            KVBuffer{MakeCacheKey("load-single"), {}}
+    },
+                        taskId)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    EXPECT_EQ(state->submittedOpTypes,
+              std::vector<AsuOpType>({AsuOpType::BATCH_STORE, AsuOpType::BATCH_LOAD}));
 }
 
 TEST(KvClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
@@ -867,7 +903,7 @@ TEST(KvClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
     EXPECT_TRUE(state->registerCalls.empty());
 }
 
-TEST(KvClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
+TEST(KvClientImplTest, Config_LoadFromFileProvidesClientInitConfig)
 {
     constexpr const char* kConfigPath = "kv_client_impl_client_config_test.conf";
     {
@@ -895,7 +931,9 @@ TEST(KvClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     auto state = std::make_shared<TestState>();
     std::unique_ptr<KvClient> client =
         CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
-    auto status = client->Init(kConfigPath);
+    KvClientConfig config;
+    auto status = KvClientConfig::LoadFromFile(kConfigPath, config);
+    if (status.ok()) { status = client->Init(config); }
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
@@ -927,17 +965,19 @@ TEST(KvClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
         configFile << "client.maxInflightTasks=3\n";
+        configFile << "use_batch_io_for_single_key=false\n";
         configFile << "wait_timeout_ms=321\n";
         configFile << "transport.asuIds=10\n";
         configFile << "transport.maxInflightTasks=7\n";
     }
 
     KvClientConfig config;
-    const auto status = LoadKvClientConfig(kConfigPath, config);
+    const auto status = KvClientConfig::LoadFromFile(kConfigPath, config);
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(config.maxInflightTasks, std::uint32_t{3});
+    EXPECT_FALSE(config.useBatchIoForSingleKey);
     EXPECT_EQ(config.defaultWaitTimeoutMs, std::uint64_t{321});
     EXPECT_EQ(config.timeoutMs, std::uint64_t{321});
     ASSERT_EQ(config.transportConfigs.size(), std::size_t{1});
@@ -957,7 +997,9 @@ TEST(KvClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
 
     auto state = std::make_shared<TestState>();
     auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
-    const auto status = client->Init(kConfigPath);
+    KvClientConfig config;
+    auto status = KvClientConfig::LoadFromFile(kConfigPath, config);
+    if (status.ok()) { status = client->Init(config); }
     std::remove(kConfigPath);
 
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
@@ -977,7 +1019,9 @@ TEST(KvClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMulti
 
     auto state = std::make_shared<TestState>();
     auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
-    auto status = client->Init(kConfigPath);
+    KvClientConfig config;
+    auto status = KvClientConfig::LoadFromFile(kConfigPath, config);
+    if (status.ok()) { status = client->Init(config); }
     std::remove(kConfigPath);
     ASSERT_TRUE(status.ok()) << status.message;
 

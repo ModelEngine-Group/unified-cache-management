@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,14 +87,6 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status Init(const std::string& configPath) override
-    {
-        (void)configPath;
-        if (state_->failInit) { return NotInitialized(); }
-        initialized_ = true;
-        return kv::Status::OK();
-    }
-
     kv::Status Shutdown() override
     {
         ++state_->shutdownCalls;
@@ -132,36 +124,13 @@ public:
         return Submit(entries, taskId);
     }
 
-    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
-    {
-        state_->lastStoreEntries = entries;
-        for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
-        return Submit(entries, taskId);
-    }
-
     kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
                           std::uintptr_t eventHandle) override
     {
         state_->lastStoreEventHandle = eventHandle;
-        return StoreAsync(entries, taskId);
-    }
-
-    kv::Status BatchLoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
-    {
-        return LoadAsync(entries, taskId);
-    }
-
-    kv::Status BatchStoreAsync(const std::vector<kv::KVBuffer>& entries,
-                               kv::TaskId& taskId) override
-    {
-        return StoreAsync(entries, taskId);
-    }
-
-    kv::Status BatchStoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
-                               std::uintptr_t eventHandle) override
-    {
-        state_->lastStoreEventHandle = eventHandle;
-        return BatchStoreAsync(entries, taskId);
+        state_->lastStoreEntries = entries;
+        for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
+        return Submit(entries, taskId);
     }
 
     kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
@@ -701,6 +670,7 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
     config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{17});
+    config.Set("asu_use_batch_io_for_single_key", false);
     config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{23});
     config.SetNumber("asu_completion_poll_spin_limit", std::uint64_t{19});
 
@@ -709,6 +679,7 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
 
     const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
     EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
+    EXPECT_FALSE(asuConfig.useBatchIoForSingleKey);
     ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
     EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
     EXPECT_EQ(asuConfig.transportConfigs.front().completionPollSpinLimit, std::size_t{19});

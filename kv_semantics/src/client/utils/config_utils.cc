@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +33,12 @@
 
 namespace kv {
 namespace {
+
+bool ParseClientBool(const std::string& value)
+{
+    const auto normalized = ToLower(value);
+    return normalized == "1" || normalized == "true";
+}
 
 void ApplyClientViewEndpointField(NodeEndpoint& endpoint, const std::string& key,
                                   const std::string& value)
@@ -122,7 +128,7 @@ NodeEndpoint ParseClientViewEndpoint(const std::string& value)
     return endpoint;
 }
 
-Status LoadKvClientConfig(const std::string& configPath, KvClientConfig& config)
+Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfig& config)
 {
     std::ifstream configFile{configPath};
     if (!configFile.is_open()) {
@@ -156,6 +162,8 @@ Status LoadKvClientConfig(const std::string& configPath, KvClientConfig& config)
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
+        } else if (key == "useBatchIoForSingleKey" || key == "use_batch_io_for_single_key") {
+            config.useBatchIoForSingleKey = ParseClientBool(value);
         } else if (key == "asuSharedProvider" || key == "asu_shared_provider") {
             config.sharedProviderMode = static_cast<SharedProviderMode>(ParseConfigUint64(value));
         } else if (key == "router.type" || key == "routerType" || key == "hashTable.type" ||

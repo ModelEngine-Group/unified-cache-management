@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -113,14 +113,6 @@ KvClientImpl::KvClientImpl(TransportFactory transportFactory, ViewServerFactory 
 }
 
 KvClientImpl::~KvClientImpl() { Shutdown(); }
-
-Status KvClientImpl::Init(const std::string& configPath)
-{
-    KvClientConfig config;
-    auto status = LoadConfig(configPath, config);
-    if (!status.ok()) { return status; }
-    return Init(config);
-}
 
 Status KvClientImpl::Init(const KvClientConfig& config)
 {
@@ -251,42 +243,23 @@ Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskI
 
 Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    auto status = SubmitAsync(AsuOpType::LOAD, entries, taskId);
-    RecordSubmit(AsuOpType::LOAD, entries.size(), status);
+    const auto useBatchIo =
+        entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
+    const auto opType = useBatchIo ? AsuOpType::BATCH_LOAD : AsuOpType::LOAD;
+    auto status = SubmitAsync(opType, entries, taskId);
+    RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
                                 std::uintptr_t eventHandle)
 {
-    auto status = SubmitAsync(AsuOpType::STORE, entries, taskId, eventHandle);
-    RecordSubmit(AsuOpType::STORE, entries.size(), status);
+    const auto useBatchIo =
+        entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
+    const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
+    auto status = SubmitAsync(opType, entries, taskId, eventHandle);
+    RecordSubmit(opType, entries.size(), status);
     return status;
-}
-
-Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
-{
-    return StoreAsync(entries, taskId, 0);
-}
-
-Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
-{
-    auto status = SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
-    RecordSubmit(AsuOpType::BATCH_LOAD, entries.size(), status);
-    return status;
-}
-
-Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                     std::uintptr_t eventHandle)
-{
-    auto status = SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
-    RecordSubmit(AsuOpType::BATCH_STORE, entries.size(), status);
-    return status;
-}
-
-Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
-{
-    return BatchStoreAsync(entries, taskId, 0);
 }
 
 Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
@@ -930,11 +903,6 @@ std::vector<NodeId> KvClientImpl::GetSortedAsuIds(const GlobalView& view)
     return asuIds;
 }
 
-Status KvClientImpl::LoadConfig(const std::string& configPath, KvClientConfig& config)
-{
-    return LoadKvClientConfig(configPath, config);
-}
-
 Status KvClientImpl::WithContext(Status status, const std::string& context)
 {
     if (context.empty()) { return status; }
@@ -980,7 +948,7 @@ extern "C" Status UcmAsuLoadKvClientConfig(const char* configPath, KvClientConfi
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "UcmAsuLoadKvClientConfig received null argument");
     }
-    return LoadKvClientConfig(configPath, *config);
+    return KvClientConfig::LoadFromFile(configPath, *config);
 }
 
 }  // namespace kv
