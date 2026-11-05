@@ -41,6 +41,7 @@
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "ucmstore_v1.h"
+#include "trans/event.h"
 
 namespace UC::AsuStore {
 
@@ -534,7 +535,17 @@ private:
         auto entries = BuildKvBuffers(task);
         if (!entries) { return entries.Error(); }
         kv::TaskId taskId = kv::kInvalidTaskId;
-        auto status = store ? client_->StoreAsync(entries.Value(), taskId, task.prerequisiteHandle)
+        std::function<kv::Status()> wait;
+        if (store && task.prerequisiteHandle != 0) {
+            wait = [handle = task.prerequisiteHandle]() {
+                const auto status = Trans::Event(handle).Synchronize();
+                return status.Success()
+                           ? kv::Status::OK()
+                           : kv::Status::Error(kv::StatusCode::IO_ERROR,
+                                               "prerequisite event synchronization failed");
+            };
+        }
+        auto status = store ? client_->StoreAsync(entries.Value(), taskId, std::move(wait))
                             : client_->LoadAsync(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);

@@ -82,7 +82,7 @@ public:
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits store operations to routed transports.
     Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      std::uintptr_t eventHandle = 0) override;
+                      std::function<Status()> wait = {}) override;
     // Submits delete operations to routed transports.
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
@@ -105,7 +105,7 @@ private:
 
     // Creates and queues one entry-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId,
-                       std::uintptr_t eventHandle = 0);
+                       std::function<Status()> wait = {});
     // Creates and queues one key-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 

@@ -206,6 +206,7 @@ struct TransportConfig {
 enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
 
 struct KvClientConfig {
+    // Loads client configuration from a key-value file without initializing a client.
     static Status LoadFromFile(const std::string& configPath, KvClientConfig& config);
 
     std::string clientId;

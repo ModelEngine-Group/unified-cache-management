@@ -29,7 +29,7 @@
 #include <thread>
 #include <utility>
 #include "device.h"
-#include "event.h"
+#include <exception>
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "logger.h"
@@ -252,12 +252,12 @@ Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& tas
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                std::uintptr_t eventHandle)
+                                std::function<Status()> wait)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
-    auto status = SubmitAsync(opType, entries, taskId, eventHandle);
+    auto status = SubmitAsync(opType, entries, taskId, std::move(wait));
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
@@ -399,7 +399,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId, std::uintptr_t eventHandle)
+                                 TaskId& taskId, std::function<Status()> wait)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -418,7 +418,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     auto ctx = std::make_unique<ClientTask>();
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
-    ctx->prerequisiteEventHandle = eventHandle;
+    ctx->prerequisiteWait = std::move(wait);
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
     {
@@ -529,8 +529,14 @@ void KvClientImpl::WorkerLoop()
             KV_METRIC("kv_client_task_queue_duration_seconds"),
             std::chrono::duration<double>(ctx->processingStartedAt - ctx->enqueuedAt).count());
         auto status = deviceStatus;
-        if (status.ok() && ctx->prerequisiteEventHandle != 0) {
-            status = runtime::SynchronizeEvent(ctx->prerequisiteEventHandle);
+        if (status.ok() && ctx->prerequisiteWait) {
+            try {
+                status = ctx->prerequisiteWait();
+            } catch (const std::exception& error) {
+                status = Status::Error(StatusCode::INTERNAL_ERROR, error.what());
+            } catch (...) {
+                status = Status::Error(StatusCode::INTERNAL_ERROR, "prerequisite wait threw");
+            }
         }
         if (status.ok()) {
             status = taskManager_.Process(ctx);

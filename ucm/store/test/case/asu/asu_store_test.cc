@@ -63,7 +63,7 @@ struct FakeKvClientState {
     std::vector<kv::MemoryRegion> registeredRegions;
     std::size_t registrationCalls{0};
     std::size_t shutdownCalls{0};
-    std::uintptr_t lastStoreEventHandle{0};
+    std::function<kv::Status()> lastStoreWait;
     bool failRegistration{false};
     bool failInit{false};
     bool omitRegisteredHandle{false};
@@ -125,9 +125,9 @@ public:
     }
 
     kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
-                          std::uintptr_t eventHandle) override
+                          std::function<kv::Status()> wait) override
     {
-        state_->lastStoreEventHandle = eventHandle;
+        state_->lastStoreWait = std::move(wait);
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
@@ -528,7 +528,7 @@ TEST_F(AsuStoreMetricsTest, DisabledStoreDoesNotEmitNativeSamplesWithActiveColle
     EXPECT_EQ(Count("asu_lookup_requests_total"), 1);
 }
 
-TEST(UCAsuStoreTest, DumpPassesPrerequisiteEventToClient)
+TEST(UCAsuStoreTest, DumpWrapsPrerequisiteEventInWaitCallback)
 {
     UC::AsuStore::AsuStore store;
     auto state = UseFakeClient(store);
@@ -545,7 +545,7 @@ TEST(UCAsuStoreTest, DumpPassesPrerequisiteEventToClient)
     auto dump = store.Dump(std::move(task));
     ASSERT_TRUE(dump.HasValue());
     EXPECT_TRUE(store.Wait(dump.Value()).Success());
-    EXPECT_EQ(state->lastStoreEventHandle, std::uintptr_t{123});
+    EXPECT_TRUE(static_cast<bool>(state->lastStoreWait));
 }
 
 TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)

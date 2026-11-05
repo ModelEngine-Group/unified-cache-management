@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -125,7 +125,7 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::LOAD};
-    std::uintptr_t prerequisiteEventHandle{0};
+    std::function<Status()> prerequisiteWait;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
     std::vector<KVBuffer> entries;
     std::vector<CacheKey> keys;
