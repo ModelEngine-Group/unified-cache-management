@@ -238,13 +238,21 @@ def _layer_ordinal(layer_name: str) -> Optional[int]:
 
 
 def blnhc_layer_role(layer_name: str) -> str:
-    """Classify one flash-next layer as raw_key, compressed, ple, or plain."""
+    """Classify one flash-next layer as raw_key, compressed, ple, or plain.
+
+    ``raw_key`` matches a dotted segment that is exactly ``raw_key`` or starts
+    with ``raw_key_`` (engine QSA owner uses ``...indexer.raw_key_cache``).
+    Underscore-splitting alone would turn ``raw_key_cache`` into
+    ``raw``/``key``/``cache`` and miss the role.
+    """
     parts = [part for part in layer_name.lower().replace("-", "_").split(".") if part]
     tokens: list[str] = []
     for part in parts:
         tokens.append(part)
         tokens.extend(piece for piece in part.split("_") if piece)
-    if "raw_key" in parts or "raw_key" in tokens:
+    if any(part == "raw_key" or part.startswith("raw_key_") for part in parts):
+        return "raw_key"
+    if "raw_key" in tokens:
         return "raw_key"
     if any("compress" in token for token in tokens):
         return "compressed"
@@ -3095,6 +3103,17 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                 )
 
+    def _is_full_cudagraph(self) -> bool:
+        """True when the engine captures a full model graph.
+
+        Full-graph replay does not run per-layer Python wait hooks, so the
+        depth-2 load pipeline cannot submit later positions or wait before
+        the model reads KV.
+        """
+        cc = getattr(self._vllm_config, "compilation_config", None)
+        cg_mode = getattr(getattr(cc, "cudagraph_mode", None), "name", None)
+        return str(cg_mode or "NONE") == "FULL"
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -3108,6 +3127,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         # has completed before load DMA (store stream) can overwrite the
         # state it copies.
         self.device.synchronize()
+        if self._is_full_cudagraph():
+            # Finish every layer load before forward enters the captured
+            # graph; wait_for_save drain cannot recover unsubmitted layers.
+            for pos in range(len(self.layer_order)):
+                self._submit_layer_load(pos)
+            self._drain_unwaited_loads()
+            self._record_load_bytes()
+            return
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.

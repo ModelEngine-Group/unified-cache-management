@@ -115,6 +115,7 @@ def hla():
             "_submit_layer_load",
             "_plan_row_saves",
             "wait_for_save",
+            "_is_full_cudagraph",
             "start_load_kv",
             "_submit_request_load_tasks_for_row",
             "_wait_row_load",
@@ -403,9 +404,12 @@ def test_tensor_layer_names_preserve_values_and_handle_none(hla, fields, expecte
     "layer_name,expected",
     [
         ("model.layers.0.linear_attn.raw_key", "raw_key"),
+        # Engine QSA owner name: dotted segment is raw_key_cache, not raw_key.
+        ("model.layers.0.indexer.raw_key_cache", "raw_key"),
         ("model.layers.0.linear_attn.k_compress", "compressed"),
         ("model.layers.0.linear_attn.ple_state", "ple"),
         ("model.layers.0.self_attn.attn", ""),
+        ("model.layers.0.linear_attn.raw_keypad", ""),
     ],
 )
 def test_blnhc_layer_role(hla, layer_name, expected):
@@ -1203,3 +1207,46 @@ def test_is_npu_layer_major_blnhc(hla):
         layers=["ple"], layer_stride=695070720, block_stride=184320
     )
     assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [ple_only]))
+
+
+def _layerwise_start_load_fixture(hla, cudagraph_mode: str):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector.layer_order = ["l0", "l1", "l2", "l3"]
+    connector._vllm_config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(name=cudagraph_mode)
+        )
+    )
+    connector.device = SimpleNamespace(synchronize=MagicMock())
+    connector._reset_transfer_state = MagicMock()
+    connector._prepare_load_plan = MagicMock()
+    connector._get_connector_metadata = MagicMock(
+        return_value=hla.UCMConnectorMetadata(request_meta={})
+    )
+    submitted: list[int] = []
+    drained: list[bool] = []
+    connector._submit_layer_load = lambda pos: submitted.append(pos)
+    connector._drain_unwaited_loads = lambda: drained.append(True)
+    connector._record_load_bytes = MagicMock()
+    return connector, submitted, drained
+
+
+def test_layerwise_full_cudagraph_loads_all_positions_before_forward(hla):
+    connector, submitted, drained = _layerwise_start_load_fixture(hla, "FULL")
+    connector.start_load_kv(SimpleNamespace())
+    assert submitted == [0, 1, 2, 3]
+    assert drained == [True]
+    connector._record_load_bytes.assert_called_once()
+    # Depth-2 alone would leave [2, 3] unsubmitted; FULL must not do that.
+    assert 2 in submitted and 3 in submitted
+
+
+def test_layerwise_non_full_keeps_depth2_prefetch(hla):
+    connector, submitted, drained = _layerwise_start_load_fixture(
+        hla, "FULL_DECODE_ONLY"
+    )
+    connector.start_load_kv(SimpleNamespace())
+    assert submitted == [0, 1]
+    assert drained == []
+    connector._record_load_bytes.assert_not_called()
