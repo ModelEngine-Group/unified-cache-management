@@ -284,9 +284,6 @@ void LoadQueue::TransferDdrLoadOnToken(ShardTask&& task)
             s = Status::InvalidParam();
             UC_ERROR("DDR load-on-token shard({}) requires one host address.", task.shard.index);
         } else {
-            // TODO: for each tensor t, use tensorSizes_[t] layout in the cache slot (src)
-            // and task.tokenFilter.ranges[t] to select TokenRanges, then concatenate the
-            // covered bytes into the caller DDR buffer (dst).
             size_t tokenNum = task.tokenFilter.ranges.size();
             for (size_t t = 0; t < tokenNum; ++t) {
                 const auto& ranges = task.tokenFilter.ranges[t];

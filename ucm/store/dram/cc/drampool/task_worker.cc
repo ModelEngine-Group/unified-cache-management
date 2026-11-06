@@ -204,12 +204,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
         DeleteItemsMetadata(transfer_items);
         for (const auto& item : transfer_items) {
-            if (item.index_in_request < results.size()) {
-                results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
-            } else {
-                UC_ERROR("TaskWorker result index out of range, request_id={}, index={}",
-                         request.request_id, item.index_in_request);
-            }
+            results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
         return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, enqueueUs);
@@ -312,12 +307,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
         LoadEndItems(transfer_items);
         for (const auto& item : transfer_items) {
-            if (item.index_in_request < results.size()) {
-                results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
-            } else {
-                UC_ERROR("TaskWorker result index out of range, request_id={}, index={}",
-                         request.request_id, item.index_in_request);
-            }
+            results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
         return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, enqueueUs);
