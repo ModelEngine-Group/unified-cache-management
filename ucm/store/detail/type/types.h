@@ -85,6 +85,8 @@ struct TaskDesc : std::vector<Shard> {
     uintptr_t prerequisiteHandle{0};
     /** Optional: memory type of the shard addresses, defaults to HBM. */
     MemoryType memoryType{MemoryType::HBM};
+    /** Shared keys requested by every rank may distribute backend fills. */
+    bool distributeBackendLoad{false};
 };
 
 }  // namespace UC::Detail

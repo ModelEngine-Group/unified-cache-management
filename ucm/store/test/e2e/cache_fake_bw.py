@@ -496,7 +496,12 @@ def load(
     shard_indexes = [0 for _ in range(block_number)]
     synchronize_device()
     tp = time.perf_counter()
-    task = worker.load(block_ids, shard_indexes, dst_tensors)
+    task = worker.load(
+        block_ids,
+        shard_indexes,
+        dst_tensors,
+        distribute_backend_load=worker_mode == "mla",
+    )
     worker.wait(task)
     synchronize_device()
     cost = time.perf_counter() - tp

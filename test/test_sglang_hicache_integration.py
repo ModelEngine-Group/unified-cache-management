@@ -403,9 +403,11 @@ def test_v2_exists_intersects_all_required_components(connector):
     assert len(stores[0].lookup_on_prefix_calls) == 1
 
 
-def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
+@pytest.mark.parametrize("logical", [False, True])
+def test_mla_side_pool_keys_follow_native_writer_policy(tmp_path, logical):
     logical_pool = FakeHostPool(page_size=2, component_sizes=[])
-    logical_pool.kv_buffer = None
+    if logical:
+        logical_pool.kv_buffer = None
     pool_name = sglang_hicache.PoolName.DEEPSEEK_V4_C4
 
     def make_connector(tp_rank):
@@ -423,6 +425,42 @@ def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
     assert tp0._component_key("page-0", pool_name, 0) == tp3._component_key(
         "page-0", pool_name, 0
     )
+    pool_name = sglang_hicache.PoolName.INDEXER
+    assert tp0._component_key("page-0", pool_name, 0) == tp3._component_key(
+        "page-0", pool_name, 0
+    )
+    pool_name = sglang_hicache.PoolName.MAMBA
+    assert tp0._component_key("page-0", pool_name, 0) != tp3._component_key(
+        "page-0", pool_name, 0
+    )
+
+
+def test_replicated_indexer_write_lookup_and_load_across_tp():
+    shared = FakeStore({})
+    pool_name = sglang_hicache.PoolName.INDEXER
+    keys = ["page-0", "page-1"]
+    transfer = sglang_hicache.PoolTransfer(
+        name=pool_name,
+        keys=keys,
+        host_indices=torch.arange(4),
+        hit_policy=sglang_hicache.PoolHitPolicy.ALL_PAGES,
+    )
+    ranks = [
+        make_v1_connector(is_mla=True, tp_rank=rank, tp_size=2)[0] for rank in range(2)
+    ]
+    for rank in ranks:
+        rank.registered_pools[pool_name] = FakeHostPool(2, [64])
+        rank.pool_components[pool_name] = [(shared, 64)]
+        rank.pool_component_sizes[pool_name] = [64]
+        rank.batch_exists = lambda keys, extra_info=None: len(keys)
+        assert rank.batch_exists_v2(keys, [transfer]).kv_hit_pages == 0
+    assert ranks[1].batch_io_v2([transfer], True)[pool_name] == [True, True]
+    assert not shared.dump_calls
+    assert ranks[0].batch_io_v2([transfer], True)[pool_name] == [True, True]
+    for rank in ranks:
+        assert rank.batch_exists_v2(keys, [transfer]).kv_hit_pages == 2
+        assert rank.batch_io_v2([transfer], False)[pool_name] == [True, True]
+    assert all(call[0] == shared.dump_calls[0][0] for call in shared.load_calls)
 
 
 def test_physical_anchor_v2_keys_remain_isolated_by_tp_rank(tmp_path):

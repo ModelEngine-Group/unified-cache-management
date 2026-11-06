@@ -2475,6 +2475,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     store_block_ids,
                     shard_indexs,
                     total_ptrs,
+                    distribute_backend_load=self.is_mla,
                 )
                 if request.load_async:
                     self._pending_load_tasks[request_id] = PendingLoadTask(
@@ -2959,6 +2960,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     store_block_ids,
                     shard_indexs,
                     layer_ptrs,
+                    distribute_backend_load=self.is_mla,
                 )
                 self.load_tasks[layer_id][request_id] = task
                 submitted = True
