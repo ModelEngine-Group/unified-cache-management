@@ -53,8 +53,8 @@ clear 前调用 check_io_drained 保护未终止的 IO。Worker 回调显式接�
 删除 `UCMTransferBuilder`。`UCMConnectorWorker._build_transfer_batches` 直接接收
 单个 `UCMDispatchPlan`，按计划与本地 Layout 生成 `TransferBatch`，不再临时包装完整
 `UCMConnectorMetadata`、再按请求拆分或合并描述。`TransferBatch` 明确携带
-`ucm_keys`、`device_ptrs`、`byte_sizes`、`store_offsets` 和完整对象的
-`store_sizes`；矩阵维度是 `[object, segment]`。多个 group/目标范围按 key
+`ucm_keys`、`device_ptrs`、`byte_sizes` 和 `store_offsets`；矩阵维度是
+`[object, segment]`。多个 group/目标范围按 key
 直接追加到 native BlockPayload，一次 bulk Submit 仍覆盖同一 Prepare 的全部范围。
 
 引擎钩子的 `layer_name` 在 Worker 入口转换为 `layer_id`。load/dump 内部统一按
@@ -78,12 +78,14 @@ Prepare 使用这份计划按 PP 顺序展开的 key 集合。Worker 仅选择�
 Worker 只为本 PP stage 提供实际传输范围，其他 PP stage 的 payload 保留为空。
 删除 PP 布局 all-gather。`UCMShard(tp_shard, dcp_shard)` 不再包含 PP；
 `ParallelRank(tp_rank, pp_rank, pcp_rank)` 仍保留完整 Worker 身份。
-每个 stage 在握手中声明实际存储的策略，空 stage/group 不产生空对象。
+每个 stage 在握手中上报实际存储的策略及其完整对象大小（`store_sizes_by_policy`），
+空 stage/group 不产生空对象。Scheduler 只为上报了该策略的 stage 生成 key，
+Worker 以 plan 中有无本 stage 的 key 判断是否参与，二者同源于 Worker 的 store layout。
 Scheduler 对全部参与 stage 查询 FA 共同前缀、WA/State 共同恢复边界。
 hasher 在 Scheduler 初始化时按其 fingerprint 创建，完整 key 由 Scheduler 统一生成。
 首次 lookup 创建 RequestState 并写入 common_chunk_hashes，后续预取轮询和建计划直接复用。
 抢占时清除旧 RequestState，恢复查询时按当前 token 序列重建；请求结束后清理。
-握手仅声明各 PP stage 的实际存储策略，每个 TP 坐标由 PCP rank 0 代表上报。
+握手仅声明各 PP stage 的存储策略和对象大小，每个 TP 坐标由 PCP rank 0 代表上报。
 这样 CUDA 的 (pp_rank, tp_rank) 握手 key 保持唯一，不要求每个 PCP 副本都握手。
 IO 完成聚合仍等待配置中的全部 TP×PP×PCP rank，包括没有参与握手的 PCP 副本。
 Worker 本地 fingerprint 不参与握手比较。
@@ -114,25 +116,33 @@ Prepare/Complete；远端 Lookup 命中不能解决远端准入，不声明配�
 | 请求结束且最后窗口已关闭 | `on_request_finished` |
 
 `update_state_after_alloc` 保持 no-op，block tables 来自本步
-`SchedulerOutput.kv_connector_block_state`。第一版默认固定为预取阶段、重新查命中、
-layerwise Get：首次查询始终向 vLLM 返回 `(None, False)`，本轮不为该请求调度 forward。
-预取完成后的查询才返回 `(N, False)`，按 layer ID 提交 Get 并在对应层执行前等待。
+`SchedulerOutput.kv_connector_block_state`。第一版默认按需预取、完成后重新查命中、
+layerwise Get：明确命中/未命中直接向 vLLM 返回 `(N, False)` / `(0, False)`；
+只有需要预取或其任务未结束时返回 `(None, False)`，暂缓该请求的 forward 调度。
+需要预取的请求在预取完成后重新查询，再按 layer ID 提交 Get 并在对应层执行前等待。
 `use_layerwise` 未配置时默认为 true，cudagraph 的 piecewise 要求使用同一默认值。
 needs_load 在首次 scheduled_tokens>0 且已生成初始 Get 计划后置为 false，避免后续
 chunked prefill 重复加载已导入前缀。该标志只控制计划生成，IO 成败由 JobResult 回报。
-make_dispatch_plan 创建单个策略或单个 State 目标时立即 Prepare，返回的
+make_dispatch_plan 创建单个策略 plan 时立即 Prepare，返回的
 UCMDispatchPlan.prepared_job 携带该 plan 独立的 job_id、输入 keys 和 AddressedToken。
 RequestMetadata 只汇总 load_plans/dump_plans，删除请求级 load_job/dump_job。
-State 的 running/checkpoint 双目标各有独立 Connector Get job 和 Prepare 结果，pin 由 Store 管理；
+State 的 running/checkpoint 已合为同一个 Get plan、一次 Prepare 和一个主 job，pin 由 Store 管理。
+vllm_block_ids_by_group 保存 running 目标，state_checkpoint_block_ids_by_group 保存 checkpoint 目标；
+两份目标共用同一源 keys/token，Worker 将两份目标范围合入同次 Submit，全部目标和 rank 终止后才能 Complete。
 State dump 按原生 boundary_state_offloads 创建 plan，并在创建时 Prepare 独立的 Put job。
 
 现有 `PreparePrefetch(request_id)` 不携带 keys，需要内部 Lookup 先登记查询范围。
 内部 Lookup 返回 None 时下发预取 token，由 rank0 同步执行 `submit_prefetch/wait`，
 其余 rank 回报 no-op 成功；全部 rank 终态齐全后 `complete_prefetch` 并重新查询。
-内部 Lookup 已返回确定命中/未命中时，预取阶段直接完成，无需生成虚假的 Store job；
-本次仍返回 None，下次查询才把命中数交给 vLLM。
+内部 Lookup 已返回确定命中/未命中时，直接向 vLLM 返回命中 token 数或 0，
+无需生成虚假的 Store job，也不额外返回一次 None。PreparePrefetch 明确失败时本次即按 miss 返回 0；
+已经提交的预取则必须等终态，未知 IO 状态不能按 miss 提前回收。
 native Lookup 的 None 表示需要预取，-1 表示未命中，非负数是命中 key 的索引。
 中间查询按原样传递 None，直到 Scheduler 为它创建预取任务。
+同一 request 会顺序查询 FA、WA/State，并可能缩短候选范围后再次查询，不对应固定的一组 keys。
+任何一次 Lookup 返回 None 就先退出查询并驱动该次预取，CompletePrefetch 后再重新查询。
+Store 需要允许同 request 顺序查询不同 keys，并将待预取范围固定到该次 CompletePrefetch；
+现有 Prefetchable 注释仍要求 requestId 只对应一个 block 集合，此契约尚未对齐。
 这里是 Store 下层到当前层的 prefetch，CacheStore 的典型目标是 DRAM/shm，
 具体源/目标由 Store 解释 token 决定；随后仍需 Get 到设备，并非异步 HBM load。
 即使本步为 0-token，MRV2 的 no-forward 路径仍绑定 connector metadata、调用
@@ -178,7 +188,21 @@ Put Prepare 失败只跳过对应 plan，其余已成功 Prepare 的 Put plan �
 K/V 投影的输入 hidden state 来自前面层，历史 KV 加载失败可污染 attention 输出，
 再影响后续层的新 K/V；因此即使字节 dump 成功，也不能发布整份依赖该前缀的记录。
 显式配置为 recompute 时，单 KV group 的同步 load failure 由引擎回滚进度并重算。
-本地 MRV2 的多 KV group 同步失败恢复尚不支持扁平 invalid_block_ids，发生失败时引擎报错。
+多 KV group 初始化时要求 kv_load_failure_policy='fail'，不实现混合模型的重算。
+Worker 只上报 group 0 的 invalid block IDs，与已有 load_failure_patch 的单 group
+视图保持一致，不混入其他 group 的 block IDs。任意加载 plan 失败仍保留
+failed_load_request_ids，用于 UCM 自己的状态清理和 Put 失败聚合。
+
+复用 patch/load_failure_patch.py 的现有统一加载入口（需启用 ENABLE_UCM_PATCH），
+不在 Connector 初始化中另行安装。只将原生 _handle_invalid_blocks 的多 group 拒绝条件
+收紧为多 group 且 recompute；fail 可以继续进入现有处理流程。
+通过替换原生方法源码中的这一条件保留其余方法体，原有 _update_requests_with_invalid_blocks
+wrapper 继续提供 group 0 视图，由原生流程识别请求、跳过输出并以 FINISHED_ERROR 结束。
+该 patch 沿用现有的全局 Scheduler patch 范围，不提供独立的 v2 请求定位分支。
+group 0 的 token 粒度与原生单 group 计算是否一致、其他 group 的 prefix-cache 清理是否充分，
+仍需单独 review；本次不扩展这些语义，不能据此宣称混合模型失败恢复已验证。
+单 group 的 policy 继续由 vLLM 配置决定，推荐显式设置 recompute；未配置时原生默认仍是 fail。
+此改动仅做静态/格式检查，没有执行失败注入、引擎或设备验证。
 
 Scheduler 保留请求引用，每轮保存范围使用 vLLM 当前的 num_computed_tokens，跟随失败回滚。
 load 失败后清除外存命中与 needs_load，保留请求状态以继续为重算部分生成保存计划。
@@ -200,7 +224,8 @@ token.keys 做业务匹配；token 字段的复制/还原只保留在 binding �
 主 job_id 由 Connector Scheduler 产生，随 PreparedJob(job_id, ucm_keys, token)
 下发到 Worker；一次主 job 对应一次成功 Prepare，不使用额外的 UUID 保存标识。
 Get/Put 的 job_id 在 Prepare 前分配，由 Connector 管理并用于 Worker Submit/完成关联。
-同一 request_id 的不同 step、策略和 State 目标使用独立 Connector job。
+同一 request_id 的不同 step、策略和 State dump 边界使用独立 Connector job；
+同一 State 源快照的 running/checkpoint 恢复目标共用一个 Get job。
 Scheduler 的 itertools.count 从 1 开始、每次增加 2，主编号依次为 1、3、5 等奇数。
 
 bulk 将本 rank 的全部 group/chunk 描述合并为一次 Submit，直接使用主 job_id。
@@ -239,6 +264,12 @@ Connector 收齐同一 request/kind 下全部 job 的所有 rank 终态后，才
 在全部相关 IO 终止后 CompletePut(request_id, False)。各 Connector job 分别记录完成状态。
 chunked prefill 后续 step 的新增 Prepare 依赖 Store 后续确定的追加或多窗口能力。
 真实跨 step 异步 dump 的源 KV pin 生命周期仍待实现。
+request 级 Complete 关闭的是当前同类窗口，不是整个推理请求结束；现接口不能指定部分 keys 或某次 Prepare。
+未来异步 dump 若要先 Complete 已结束的 plan，就需要比 request/kind 更细的完成标识。
+2026-11-06 已确定一次 Prepare 应能独立 Complete，具体用 job/window 或 opaque token 标识仍待 Store 对齐；
+只传 keys 无法区分同 key 的多次 Prepare，本轮不要求一次 Prepare 内部分 keys 提前发布。
+窗口内某些 layerwise 子 IO 完成不等于该 key/plan 已完整，必须确认所有必要片段和 rank 终态后才能发布。
+详细待确认项记录于 [Store 接口交接](connector-v2-store-handoff.md#48-异步-dump-需要更细的-complete-边界)。
 请求结束可能早于最后一次 no-forward 保存，最终 metadata 准备且所有窗口关闭后
 才调用 on_request_finished。未来异步 dump 的真实 block pin 生命周期不在本轮实现。
 引擎在释放 blocks 前调用 request_finished_all_groups，随后才把 ID 放入 finished_req_ids。
@@ -249,11 +280,10 @@ _close_finished_requests 等请求已结束且所有窗口已关闭后，注销 
 
 ## 字节描述与配置
 
-native BlockPayload 增加 Python 字段 `offsets` 和 `total_size`：
-offsets 与 pointers/sizes 一一对应；total_size 是完整 PP 对象的大小，
-包含其他 shard 和本次未提交的层。空 pointers 是 no-op。
-PreparePut 的现有签名未携带 sizes，变长对象在 Alloc 时如何获知大小仍需后端落实，
-不能使用本层 sum(sizes) 代替。原有 memory_region_indices/group_sizes 保持可选。
+native BlockPayload 增加 Python 字段 `offsets`，与 pointers/sizes 一一对应；
+空 pointers 是 no-op。完整对象大小不随 Submit 传递：Alloc 在 Prepare 时就需要它，
+Submit 时才给已经太晚。Scheduler 从握手获得 `(pp_rank, restore_policy) → 对象大小`，
+二者已编码在 key 尾字节；交给 Store 的注册入口待 Store 侧确定，不能用本层 sum(sizes) 代替。原有 memory_region_indices/group_sizes 保持可选。
 
 配置继续通过 ucm.utils.Config 或 UCM_CONFIG_FILE 读取：
 
@@ -274,6 +304,6 @@ Assembler 持有至 IO 终止，Scheduler/Worker 接口是借用引用。
 ## 验证边界
 
 本地 CacheStore/PosixStore 的 Setup/Load/Dump 仍是 Unsupported 占位；本轮不实现后端。
-offsets/total_size 需要重新编译 native binding 才可用。
+offsets 需要重新编译 native binding 才可用。
 未新增、迁移或运行测试，未做设备、分布式、forward 或端到端验证。
 静态语法、引用和格式检查不作为功能验收。

@@ -36,9 +36,9 @@ class AddressedToken:
     def from_native(cls, token: Any) -> AddressedToken:
         return cls(tuple(key.to_bytes() for key in token.keys), bytes(token.payload))
 
-    def to_native(self, module: Any) -> Any:
-        token = module.AddressedToken()
-        token.keys = [module.BlockId(key) for key in self.keys]
+    def to_native(self, proxy: Any) -> Any:
+        token = proxy.AddressedToken()
+        token.keys = [proxy.BlockId(key) for key in self.keys]
         token.payload = self.payload
         return token
 
@@ -66,7 +66,6 @@ class TransferBatch:
     device_ptrs: np.ndarray
     byte_sizes: np.ndarray
     store_offsets: np.ndarray
-    store_sizes: np.ndarray | None = None
 
 
 @dataclass
@@ -88,10 +87,10 @@ class _StoreBinding:
     """Own the native assembler and translate recoverable call failures."""
 
     def __init__(self, launch_config: dict[str, Any]) -> None:
-        self._module = importlib.import_module(
+        self._proxy = importlib.import_module(
             launch_config.get("store_module", "ucm_proxy")
         )
-        self._assembler = self._module.StoreAssembler(launch_config["store_config"])
+        self._assembler = self._proxy.StoreAssembler(launch_config["store_config"])
 
     @contextmanager
     def _translate_errors(self) -> Iterator[None]:
@@ -99,7 +98,7 @@ class _StoreBinding:
             yield
         except (OSError, MemoryError) as exc:
             raise StoreIOError(str(exc)) from exc
-        except self._module.UcmError as exc:
+        except self._proxy.UcmError as exc:
             # The current binding exposes Status as a text-only exception.
             # Contract/setup failures remain fatal; only explicit IO/resource
             # failures can be handled as misses or best-effort failed saves.
@@ -125,7 +124,7 @@ class StoreSchedulerClient(_StoreBinding):
         self._scheduler = self._assembler.get_scheduler()
 
     def on_new_request(self, request_id: str) -> None:
-        request_context = self._module.RequestContext()
+        request_context = self._proxy.RequestContext()
         request_context.request_id = request_id
         with self._translate_errors():
             self._scheduler.on_new_request(request_context)
@@ -208,26 +207,26 @@ class StoreWorkerClient(_StoreBinding):
         # Payload order follows the Prepare input, independently of the token.
         # Keep the complete opaque token; empty payloads leave other objects
         # untouched. Only the binding conversion copies token fields.
-        payloads = [self._module.BlockPayload() for _ in job.ucm_keys]
+        payloads = [self._proxy.BlockPayload() for _ in job.ucm_keys]
         payload_index_by_key = {
             ucm_key: index for index, ucm_key in enumerate(job.ucm_keys)
         }
         for transfer_batch in transfer_batches:
-            for chunk_row, ucm_key in enumerate(transfer_batch.ucm_keys):
+            for batch_key_index, ucm_key in enumerate(transfer_batch.ucm_keys):
                 payload = payloads[payload_index_by_key[ucm_key]]
                 payload.pointers = list(payload.pointers) + [
-                    int(pointer) for pointer in transfer_batch.device_ptrs[chunk_row]
+                    int(pointer)
+                    for pointer in transfer_batch.device_ptrs[batch_key_index]
                 ]
                 payload.sizes = list(payload.sizes) + [
-                    int(size) for size in transfer_batch.byte_sizes[chunk_row]
+                    int(size) for size in transfer_batch.byte_sizes[batch_key_index]
                 ]
                 payload.offsets = list(payload.offsets) + [
-                    int(offset) for offset in transfer_batch.store_offsets[chunk_row]
+                    int(offset)
+                    for offset in transfer_batch.store_offsets[batch_key_index]
                 ]
-                if transfer_batch.store_sizes is not None:
-                    payload.total_size = int(transfer_batch.store_sizes[chunk_row])
-        native_token = job.token.to_native(self._module)
-        io_context = self._module.IoContext()
+        native_token = job.token.to_native(self._proxy)
+        io_context = self._proxy.IoContext()
         io_context.prerequisite_handle = prerequisite_handle
         return TransferTask(
             job_id=job.job_id,
@@ -276,7 +275,7 @@ class StoreWorkerClient(_StoreBinding):
         return task
 
     def submit_prefetch(self, job: PreparedJob) -> TransferTask:
-        native_token = job.token.to_native(self._module)
+        native_token = job.token.to_native(self._proxy)
         with self._translate_errors():
             self._worker.submit_prefetch(job.job_id, native_token)
         task = TransferTask(

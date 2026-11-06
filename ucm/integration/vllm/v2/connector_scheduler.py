@@ -61,6 +61,9 @@ class UCMDispatchPlan:
     group_ids: tuple[int, ...]
     # None only when this plan's Prepare failed.
     prepared_job: PreparedJob | None
+    # State loads share the running target's keys, Prepare and job with this
+    # checkpoint target. Empty for other loads and all dumps.
+    state_checkpoint_block_ids_by_group: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,10 +150,11 @@ class UCMConnectorScheduler:
         self._job_ids = count(1, JOB_ID_STRIDE)
         self._pending_jobs: dict[int, PendingJob] = {}
         self._prefetch_job_ids_by_request: dict[str, int] = {}
-        self._prefetch_completed_request_ids: set[str] = set()
         self._prefetch_failed_request_ids: set[str] = set()
         self._registered_request_ids: set[str] = set()
-        self._stage_policies: dict[int, tuple[RestorePolicy, ...]] = {}
+        # Keys select the policies each PP stage stores; values are the complete
+        # stage-local object sizes that Store admission will need.
+        self._store_sizes_by_stage: dict[int, dict[RestorePolicy, int]] = {}
         self._finished_request_ids: set[str] = set()
         self._retired_request_ids: set[str] = set()
 
@@ -159,8 +163,9 @@ class UCMConnectorScheduler:
     ) -> None:
         # Handshake representatives declare policies; IO completion still needs
         # every configured rank, including PCP replicas that do not handshake.
-        self._stage_policies = {
-            worker.rank.pp_rank: worker.stored_policies for worker in metadata.values()
+        self._store_sizes_by_stage = {
+            worker.rank.pp_rank: worker.store_sizes_by_policy
+            for worker in metadata.values()
         }
 
     def on_new_request(self, request: Request) -> None:
@@ -207,26 +212,20 @@ class UCMConnectorScheduler:
             try:
                 prefetch_token = self._store_scheduler.prepare_prefetch(request_id)
             except StoreIOError:
-                # No Get hit was promised. Recompute on the next query instead
-                # of repeatedly retrying the failed prefetch window.
+                # No Get hit was promised. Recompute instead of repeatedly
+                # retrying the failed prefetch window.
                 logger.warning(
                     "UCM PreparePrefetch failed; recomputing this request",
                     exc_info=True,
                 )
                 self._prefetch_failed_request_ids.add(request_id)
-                self._prefetch_completed_request_ids.add(request_id)
+                hit_tokens = 0
+            else:
+                prefetch_job = self._track_prepared_job(
+                    job_id, JobOperation.PREFETCH, request_id, prefetch_token
+                )
+                self._prefetch_job_ids_by_request[request_id] = prefetch_job.job_id
                 return UCMLookupResult(None, common_chunk_hashes)
-            prefetch_job = self._track_prepared_job(
-                job_id, JobOperation.PREFETCH, request_id, prefetch_token
-            )
-            self._prefetch_job_ids_by_request[request_id] = prefetch_job.job_id
-            return UCMLookupResult(None, common_chunk_hashes)
-        if request_id not in self._prefetch_completed_request_ids:
-            # The first query initializes Store prefetch. A definite result
-            # means no transfer is needed, but admission still waits until
-            # the next query, just as it does for an actual prefetch job.
-            self._prefetch_completed_request_ids.add(request_id)
-            return UCMLookupResult(None, common_chunk_hashes)
         external_hit_tokens = (
             hit_tokens if hit_tokens > self.load_threshold_tokens else 0
         )
@@ -257,8 +256,8 @@ class UCMConnectorScheduler:
         must reach lookup() before hit-index arithmetic can continue.
         """
         hit_indices = []
-        for pp_rank, stage_policies in self._stage_policies.items():
-            if restore_policy not in stage_policies:
+        for pp_rank, store_sizes_by_policy in self._store_sizes_by_stage.items():
+            if restore_policy not in store_sizes_by_policy:
                 continue
             ucm_keys = make_ucm_chunk_ids(common_chunk_hashes, restore_policy, pp_rank)
             if reverse:
@@ -326,8 +325,8 @@ class UCMConnectorScheduler:
     ) -> dict[int, tuple[bytes, ...]]:
         return {
             pp_rank: make_ucm_chunk_ids(common_chunk_hashes, restore_policy, pp_rank)
-            for pp_rank, stage_policies in self._stage_policies.items()
-            if restore_policy in stage_policies
+            for pp_rank, store_sizes_by_policy in self._store_sizes_by_stage.items()
+            if restore_policy in store_sizes_by_policy
         }
 
     def _allocate_job_id(self) -> int:
@@ -433,7 +432,6 @@ class UCMConnectorScheduler:
 
     def _reset_preempted_request(self, request_id: str) -> None:
         self._request_states.pop(request_id, None)
-        self._prefetch_completed_request_ids.discard(request_id)
         self._prefetch_failed_request_ids.discard(request_id)
         for pending_job in self._pending_jobs.values():
             if (
@@ -476,7 +474,6 @@ class UCMConnectorScheduler:
                 self._store_scheduler.complete_put(request_id, success)
             else:
                 self._store_scheduler.complete_prefetch(request_id, success)
-                self._prefetch_completed_request_ids.add(request_id)
                 if not success:
                     self._prefetch_failed_request_ids.add(request_id)
                 del self._prefetch_job_ids_by_request[request_id]
@@ -495,7 +492,6 @@ class UCMConnectorScheduler:
                 self._store_scheduler.on_request_finished(request_id)
                 self._registered_request_ids.remove(request_id)
             self._finished_request_ids.discard(request_id)
-            self._prefetch_completed_request_ids.discard(request_id)
             self._prefetch_failed_request_ids.discard(request_id)
             self._retired_request_ids.remove(request_id)
 
@@ -697,30 +693,12 @@ class UCMConnectorScheduler:
                     block_tables,
                     start_chunk_index,
                     end_chunk_index,
-                    # State loads fill the running slot for this step first.
-                    # The snapshot itself still belongs to token_end.
+                    # State uses this step's running slot and adds the imported
+                    # checkpoint target to the same prepared plan.
                     state_target_tokens=token_end + scheduled_tokens,
                     is_load=is_load,
                 )
             )
-            if restore_policy is RestorePolicy.STATE:
-                # Precopy has already run, so restoring only the imported
-                # boundary cannot initialize the running state. Restoring
-                # only the running block leaves a local cached boundary unfilled.
-                # Complete restore boundaries and a positive scheduled span
-                # place these in distinct slots for every State group.
-                plans.append(
-                    self.make_dispatch_plan(
-                        restore_policy,
-                        groups,
-                        request_state,
-                        block_tables,
-                        start_chunk_index,
-                        end_chunk_index,
-                        token_end,
-                        is_load=True,
-                    )
-                )
         return tuple(plans)
 
     def make_dispatch_plan(
@@ -741,6 +719,21 @@ class UCMConnectorScheduler:
             request_state.common_chunk_hashes[start_chunk_index:end_chunk_index],
             restore_policy,
         )
+        state_checkpoint_block_ids_by_group = ()
+        if restore_policy is RestorePolicy.STATE and is_load:
+            # The engine's pre-copy already ran. Load this source snapshot into
+            # both the running slot and its imported checkpoint, with one pin.
+            state_checkpoint_block_ids_by_group = tuple(
+                self._select_group_block_ids(
+                    restore_policy,
+                    group,
+                    block_tables[group.group_id],
+                    start_chunk_index,
+                    end_chunk_index,
+                    state_target_tokens=end_chunk_index * chunk_size,
+                )
+                for group in groups
+            )
         return UCMDispatchPlan(
             restore_policy,
             ucm_keys_by_pp_rank,
@@ -763,6 +756,7 @@ class UCMConnectorScheduler:
                 ucm_keys_by_pp_rank,
                 is_load=is_load,
             ),
+            state_checkpoint_block_ids_by_group=state_checkpoint_block_ids_by_group,
         )
 
     def _select_group_block_ids(
