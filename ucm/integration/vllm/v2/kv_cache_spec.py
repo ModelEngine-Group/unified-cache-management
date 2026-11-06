@@ -482,8 +482,6 @@ def parse_kv_cache_config(
     rebuilding scratch caches belongs to the engine. Native group positions
     remain block-table IDs, including non-persistent and empty PP groups.
     """
-    from vllm.v1.core.kv_cache_utils import dcp_world_size_for_kv_cache_spec
-
     device_type = device_type.lower()
     native_groups = kv_cache_config.kv_cache_groups
     if not native_groups:
@@ -526,9 +524,14 @@ def parse_kv_cache_config(
             )
         else:
             tail_tokens = None
-        group_dcp_size = dcp_world_size_for_kv_cache_spec(
-            native_group.kv_cache_spec, dcp_size
-        )
+        native_spec = native_group.kv_cache_spec
+        if hasattr(native_spec, "dcp_sharded"):
+            group_dcp_size = dcp_size if native_spec.dcp_sharded else 1
+        else:
+            # Older MRV2 versions declare DCP ownership through a helper.
+            from vllm.v1.core.kv_cache_utils import dcp_world_size_for_kv_cache_spec
+
+            group_dcp_size = dcp_world_size_for_kv_cache_spec(native_spec, dcp_size)
         group_specs.append(
             UCMKVCacheGroupSpec(
                 group_id=group_id,

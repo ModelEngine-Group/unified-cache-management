@@ -8,7 +8,7 @@ has terminated. It does not implement a Python proxy or a storage backend.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count
@@ -191,8 +191,9 @@ class StoreWorkerClient(_StoreBinding):
         self._tasks: dict[int, TransferTask] = {}
         self._sub_job_ids = count(2, JOB_ID_STRIDE)
 
-    def _build_task(
+    def _submit_transfer(
         self,
+        native_submit: Callable[..., None],
         job: PreparedJob,
         transfer_batches: tuple[TransferBatch, ...],
         *,
@@ -228,13 +229,17 @@ class StoreWorkerClient(_StoreBinding):
         native_token = job.token.to_native(self._proxy)
         io_context = self._proxy.IoContext()
         io_context.prerequisite_handle = prerequisite_handle
-        return TransferTask(
+        task = TransferTask(
             job_id=job.job_id,
             sub_job_id=sub_job_id,
             transfer_batches=transfer_batches,
             native_arguments=(payloads, native_token, io_context),
             prerequisite_handle=prerequisite_handle,
         )
+        with self._translate_errors():
+            native_submit(task.io_job_id, *task.native_arguments)
+        self._tasks[task.io_job_id] = task
+        return task
 
     def submit_get(
         self,
@@ -244,16 +249,13 @@ class StoreWorkerClient(_StoreBinding):
         is_layerwise: bool = False,
         prerequisite_handle: int = 0,
     ) -> TransferTask:
-        task = self._build_task(
+        return self._submit_transfer(
+            self._worker.submit_get,
             job,
             transfer_batches,
             is_layerwise=is_layerwise,
             prerequisite_handle=prerequisite_handle,
         )
-        with self._translate_errors():
-            self._worker.submit_get(task.io_job_id, *task.native_arguments)
-        self._tasks[task.io_job_id] = task
-        return task
 
     def submit_put(
         self,
@@ -263,16 +265,13 @@ class StoreWorkerClient(_StoreBinding):
         is_layerwise: bool = False,
         prerequisite_handle: int = 0,
     ) -> TransferTask:
-        task = self._build_task(
+        return self._submit_transfer(
+            self._worker.submit_put,
             job,
             transfer_batches,
             is_layerwise=is_layerwise,
             prerequisite_handle=prerequisite_handle,
         )
-        with self._translate_errors():
-            self._worker.submit_put(task.io_job_id, *task.native_arguments)
-        self._tasks[task.io_job_id] = task
-        return task
 
     def submit_prefetch(self, job: PreparedJob) -> TransferTask:
         native_token = job.token.to_native(self._proxy)
