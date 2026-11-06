@@ -93,6 +93,7 @@ still reported PASS, which is more dangerous than a FAIL:
 | line | what it means |
 |---|---|
 | `PARTIALLY VERIFIED` | that group has no independent required-restore set, so its PASS is not completeness. Expected only for Mamba state groups and non-whole-block sliding windows |
+| `transfer_ranges_checked=skipped (...)` | the connector's load addresses were not checked against vLLM's block tables, because a layer's block geometry cannot be addressed. Also followed by a `PARTIALLY VERIFIED` line |
 | `hit check skipped` | the checker did not find the v2 worker internals, so every v2 check was bypassed |
 | `stray_write_check=off` | writes outside the allowed ranges were not detected |
 
