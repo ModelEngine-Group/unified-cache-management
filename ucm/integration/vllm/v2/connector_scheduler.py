@@ -78,8 +78,6 @@ class RequestMetadata:
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     requests: dict[str, RequestMetadata] = field(default_factory=dict)
-    preempted_req_ids: set[str] = field(default_factory=set)
-    finished_req_ids: set[str] = field(default_factory=set)
 
 
 class JobOperation(Enum):
@@ -100,14 +98,6 @@ class PendingJob:
     completed_ranks: set[ParallelRank] = field(default_factory=set)
     failed: bool = False
     dispatched: bool = False
-
-
-@dataclass(frozen=True)
-class UCMLookupResult:
-    """None defers vLLM admission until the prefetch phase is resolved."""
-
-    external_hit_tokens: int | None
-    common_chunk_hashes: tuple[bytes, ...]
 
 
 @dataclass
@@ -173,7 +163,10 @@ class UCMConnectorScheduler:
         self._store_scheduler.on_new_request(request_id)
         self._registered_request_ids.add(request_id)
 
-    def lookup(self, request: Request, num_computed_tokens: int) -> UCMLookupResult:
+    def get_num_new_matched_tokens(
+        self, request: Request, num_computed_tokens: int
+    ) -> tuple[int | None, bool]:
+        """Return external hit tokens or None for prefetch. KV loads are synchronous."""
         request_id = str(request.request_id)
         request_state = self._request_states.get(request_id)
         # reset_prefix_cache can preempt before schedule(), so waiting-request
@@ -194,15 +187,14 @@ class UCMConnectorScheduler:
                 ),
             )
             self._request_states[request_id] = request_state
-        common_chunk_hashes = request_state.common_chunk_hashes
         if request_id in self._prefetch_job_ids_by_request:
-            return UCMLookupResult(None, common_chunk_hashes)
+            return None, False
         hit_tokens = (
             0
             if request_id in self._prefetch_failed_request_ids
             else self._lookup_hit_tokens(
                 request_id,
-                common_chunk_hashes,
+                request_state.common_chunk_hashes,
                 len(request.all_token_ids),
                 num_computed_tokens,
             )
@@ -225,22 +217,14 @@ class UCMConnectorScheduler:
                     job_id, JobOperation.PREFETCH, request_id, prefetch_token
                 )
                 self._prefetch_job_ids_by_request[request_id] = prefetch_job.job_id
-                return UCMLookupResult(None, common_chunk_hashes)
+                return None, False
         external_hit_tokens = (
             hit_tokens if hit_tokens > self.load_threshold_tokens else 0
         )
         request_state.hbm_hit_tokens = num_computed_tokens
         request_state.external_hit_tokens = external_hit_tokens
         request_state.needs_load = external_hit_tokens > 0
-        return UCMLookupResult(external_hit_tokens, common_chunk_hashes)
-
-    def get_num_new_matched_tokens(
-        self, request: Request, num_computed_tokens: int
-    ) -> tuple[int | None, bool]:
-        lookup_result = self.lookup(request, num_computed_tokens)
-        # IO may use asynchronous native jobs, but this connector drains loads
-        # within the step. It does not claim cross-step asynchronous loading.
-        return lookup_result.external_hit_tokens, False
+        return external_hit_tokens, False
 
     def _lookup_across_pp_stages(
         self,
@@ -252,8 +236,7 @@ class UCMConnectorScheduler:
     ) -> int | None:
         """Return the shared hit index, or None when a stage needs prefetch.
 
-        Store uses -1 for a miss. None is the native prefetchable signal and
-        must reach lookup() before hit-index arithmetic can continue.
+        Store uses -1 for a miss. None defers the lookup until prefetch completes.
         """
         hit_indices = []
         for pp_rank, store_sizes_by_policy in self._store_sizes_by_stage.items():
@@ -384,11 +367,8 @@ class UCMConnectorScheduler:
     ) -> UCMConnectorMetadata:
         block_state = scheduler_output.kv_connector_block_state
         assert block_state is not None
-        metadata = UCMConnectorMetadata(
-            preempted_req_ids=set(scheduler_output.preempted_req_ids or ()),
-            finished_req_ids=set(scheduler_output.finished_req_ids),
-        )
-        for request_id in metadata.preempted_req_ids:
+        metadata = UCMConnectorMetadata()
+        for request_id in scheduler_output.preempted_req_ids or ():
             request_state = self._request_states.get(request_id)
             # Preserve a state already rebuilt by lookup after a cache reset.
             if (
@@ -424,9 +404,9 @@ class UCMConnectorScheduler:
                 pending_job.dispatched = True
         # The finish callback may precede a final no-forward dump plan. Only
         # retire the store request once that plan has been prepared above.
-        self._retired_request_ids.update(metadata.finished_req_ids)
+        self._retired_request_ids.update(scheduler_output.finished_req_ids)
         self._close_finished_requests()
-        for request_id in metadata.finished_req_ids:
+        for request_id in scheduler_output.finished_req_ids:
             self._request_states.pop(request_id, None)
         return metadata
 

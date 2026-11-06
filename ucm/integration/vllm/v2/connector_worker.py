@@ -343,22 +343,35 @@ class UCMConnectorWorker:
         if layer_id in self._dump_submitted_layer_ids:
             return
         for request_metadata in connector_metadata.requests.values():
-            if request_metadata.request_id in self._failed_load_request_ids:
-                continue
-            for dump_plan in request_metadata.dump_plans:
-                dump_job = dump_plan.prepared_job
-                if dump_job is None or dump_job.job_id in self._failed_dump_jobs:
-                    continue
-                transfer_batches = self._build_transfer_batches(
-                    dump_plan, is_dump=True, layer_id=layer_id
-                )
-                if not transfer_batches:
-                    continue
-                try:
-                    self._submit_dump(dump_job, transfer_batches, is_layerwise=True)
-                except StoreIOError:
-                    self._failed_dump_jobs.add(dump_job.job_id)
+            self._submit_request_dumps(request_metadata, layer_id)
         self._dump_submitted_layer_ids.add(layer_id)
+
+    def _submit_request_dumps(
+        self, request_metadata: RequestMetadata, layer_id: int | None = None
+    ) -> None:
+        if request_metadata.request_id in self._failed_load_request_ids:
+            return
+        for dump_plan in request_metadata.dump_plans:
+            dump_job = dump_plan.prepared_job
+            if dump_job is None or dump_job.job_id in self._failed_dump_jobs:
+                continue
+            transfer_batches = self._build_transfer_batches(
+                dump_plan, is_dump=True, layer_id=layer_id
+            )
+            if not transfer_batches:
+                continue
+            try:
+                self._submit_dump(
+                    dump_job, transfer_batches, is_layerwise=layer_id is not None
+                )
+            except StoreIOError:
+                self._failed_dump_jobs.add(dump_job.job_id)
+                logger.warning(
+                    "UCM dump submission failed for request %s, job %d",
+                    request_metadata.request_id,
+                    dump_job.job_id,
+                    exc_info=True,
+                )
 
     def _submit_dump(
         self,
@@ -409,28 +422,7 @@ class UCMConnectorWorker:
                 self._drain_dump_tasks()
         else:
             for request_metadata in connector_metadata.requests.values():
-                if request_metadata.request_id in self._failed_load_request_ids:
-                    continue
-                for dump_plan in request_metadata.dump_plans:
-                    dump_job = dump_plan.prepared_job
-                    if dump_job is None:
-                        continue
-                    transfer_batches = self._build_transfer_batches(
-                        dump_plan, is_dump=True
-                    )
-                    if not transfer_batches:
-                        continue
-                    try:
-                        # One bulk submission for this plan's Prepare on this rank.
-                        self._submit_dump(
-                            dump_job, transfer_batches, is_layerwise=False
-                        )
-                    except StoreIOError:
-                        self._failed_dump_jobs.add(dump_job.job_id)
-                        logger.warning(
-                            "UCM dump submission failed; skipping this job",
-                            exc_info=True,
-                        )
+                self._submit_request_dumps(request_metadata)
                 self._drain_dump_tasks()
         for request_metadata in connector_metadata.requests.values():
             load_succeeded = (
