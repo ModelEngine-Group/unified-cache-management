@@ -165,6 +165,21 @@ def is_npu_layer_major_blnhc(kv_cache_config: "KVCacheConfig") -> bool:
     return saw_multi_layer
 
 
+def ple_stage_row_map(block_ids: list[int]) -> dict[int, int]:
+    """Map each live block id to a dense row in the layerwise PLE stage.
+
+    Block id 0 is the vLLM null slot and is omitted. Rows follow first-seen
+    order so the stage is one full page per block in this dump or load.
+    """
+    rows: dict[int, int] = {}
+    for block_id in block_ids:
+        block_id = int(block_id)
+        if block_id == 0 or block_id in rows:
+            continue
+        rows[block_id] = len(rows)
+    return rows
+
+
 def npu_flash_next_store_columns(
     n_slots: int,
     full_page: int,
@@ -835,8 +850,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         Whole-store columns are 12 full pages, 12 compressed pages, and one
         PLE page. Layerwise keeps the same 12 slots, but each slot is one
         shard of ``[full_page, compressed_page]``. PLE is its own block: only
-        slot 0 is filled, and its page is copied through a ``full_page``
-        buffer because the store copies the whole column.
+        slot 0 is filled. The store still copies a full page, so each dump or
+        load packs the blocks it touches into a stage of one row per block.
         """
         self.layer_name_to_slot = {}
         self.layer_name_to_group = {}
@@ -846,6 +861,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self.ple_layer_name = None
         self.ple_group_id = None
         self._ple_stage = None
+        self._ple_rows: dict[int, int] = {}
         self._ple_tensor = None
         self._ple_block0 = 0
         self._ple_block_stride = 0
@@ -987,17 +1003,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self._ple_block_stride = int(ple_page)
         self._ple_tensor = ple_row["tensor"]
         ple_base = int(ple_row["block0"])
-        if self.use_layerwise:
-            if self._ple_tensor is None:
-                raise ValueError("NPU flash-next PLE layer has no live tensor.")
-            stage_bytes = self.num_blocks * full_page
-            logger.info("NPU flash-next PLE stage: bytes=%s", stage_bytes)
-            self._ple_stage = torch.empty(
-                stage_bytes,
-                dtype=torch.uint8,
-                device=self._ple_tensor.device,
-            )
-            ple_base = int(self._ple_stage.data_ptr())
+        if self.use_layerwise and self._ple_tensor is None:
+            raise ValueError("NPU flash-next PLE layer has no live tensor.")
 
         bases: dict[tuple[int, int, int], int] = {}
         for slot, row in enumerate(full_rows):
@@ -1029,7 +1036,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             full_page if self.use_layerwise else ple_page,
         )
         if self.use_layerwise:
-            bases[(ple_gid, 0, 0)] = ple_base
+            # The stage does not exist yet. Its base is published when the
+            # blocks for a dump or load are known.
             self.layer_column_bytes[ple_row["name"]] = full_page
         else:
             bases[(ple_gid, n_slots * 2, 0)] = ple_base
@@ -1087,9 +1095,49 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             )
         ]
 
-    def pack_ple_blocks(self, block_ids: list[int]) -> None:
-        """Copy PLE pages into the layerwise full-page column, then zero-pad."""
+    def _bind_ple_stage(self, block_ids: list[int]) -> None:
+        """Allocate one full-page row per live block in this dump or load."""
+        if not self.use_layerwise:
+            return
+        rows = ple_stage_row_map(block_ids)
         stage = getattr(self, "_ple_stage", None)
+        if rows == getattr(self, "_ple_rows", None) and (
+            stage is not None or not rows
+        ):
+            return
+        self._ple_rows = rows
+        if not rows:
+            self._ple_stage = None
+            return
+        if self._ple_tensor is None:
+            raise ValueError("NPU flash-next PLE layer has no live tensor.")
+        page = int(self.page_types[0])
+        stage_bytes = len(rows) * page
+        logger.info(
+            "NPU flash-next PLE stage: blocks=%s bytes=%s",
+            len(rows),
+            stage_bytes,
+        )
+        self._ple_stage = torch.empty(
+            stage_bytes,
+            dtype=torch.uint8,
+            device=self._ple_tensor.device,
+        )
+        bases = getattr(self, "group_pair_bases", None)
+        if isinstance(bases, dict) and self.ple_group_id is not None:
+            bases[(self.ple_group_id, 0, 0)] = int(self._ple_stage.data_ptr())
+
+    def _ple_stage_addr(self, block_id: int) -> int:
+        row = self._ple_rows.get(int(block_id))
+        stage = self._ple_stage
+        if row is None or stage is None:
+            return 0
+        return int(stage.data_ptr()) + row * int(self.page_types[0])
+
+    def pack_ple_blocks(self, block_ids: list[int]) -> None:
+        """Copy PLE pages into dense full-page rows, then zero-pad."""
+        self._bind_ple_stage(block_ids)
+        stage = self._ple_stage
         if stage is None:
             return
         page = int(self.page_types[0])
@@ -1098,13 +1146,14 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             if int(block_id) == 0:
                 continue
             block_id = int(block_id)
-            dst = stage[block_id * page : (block_id + 1) * page]
+            row = self._ple_rows[block_id]
+            dst = stage[row * page : (row + 1) * page]
             dst.zero_()
             dst[:stride].copy_(self._ple_block_view(block_id))
 
     def unpack_ple_blocks(self, block_ids: list[int]) -> None:
-        """Copy the loaded PLE prefix out of the padded layerwise column."""
-        stage = getattr(self, "_ple_stage", None)
+        """Copy the loaded PLE prefix out of the dense full-page rows."""
+        stage = self._ple_stage
         if stage is None:
             return
         page = int(self.page_types[0])
@@ -1113,7 +1162,10 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             if int(block_id) == 0:
                 continue
             block_id = int(block_id)
-            src = stage[block_id * page : block_id * page + stride]
+            row = self._ple_rows.get(block_id)
+            if row is None:
+                continue
+            src = stage[row * page : row * page + stride]
             self._ple_block_view(block_id).copy_(src)
 
     def _ple_block_view(self, block_id: int) -> torch.Tensor:
@@ -1468,6 +1520,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         gid = self.layer_name_to_group[layer_name]
         block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
         addrs = np.zeros((block_ids.shape[0], self.width), dtype=np.uint64)
+        if (
+            getattr(self, "_ple_rows", None)
+            and layer_name == getattr(self, "ple_layer_name", None)
+        ):
+            for index, block_id in enumerate(vllm_block_ids):
+                addrs[index, 0] = self._ple_stage_addr(int(block_id))
+            return np.ascontiguousarray(addrs)
         for type_id, page in enumerate(self.page_types):
             if not self.group_owns_type.get((gid, type_id)):
                 continue
@@ -2726,6 +2785,23 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         assert isinstance(layout, HybridLinearAttentionLayout)
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
+        if layer_name == getattr(layout, "ple_layer_name", None):
+            ple_block_ids: list[int] = []
+            for (
+                request_id,
+                _unscoped_ucm,
+                _scoped_ucm,
+                scoped_vllm,
+                scoped_groups,
+            ) in self.request_data:
+                if request_id in self._failure_req_ids:
+                    continue
+                ple_block_ids.extend(
+                    block_id
+                    for block_id, group_id in zip(scoped_vllm, scoped_groups)
+                    if group_id == gid
+                )
+            layout._bind_ple_stage(ple_block_ids)
         for (
             request_id,
             unscoped_ucm,

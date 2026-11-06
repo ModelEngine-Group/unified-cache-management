@@ -79,6 +79,7 @@ def hla():
         "is_npu_layer_major_blnhc",
         "npu_flash_next_store_columns",
         "npu_flash_next_column_owners",
+        "ple_stage_row_map",
         "blnhc_layer_role",
         "blnhc_group_role",
     }
@@ -1147,6 +1148,11 @@ def test_npu_flash_next_column_owners(hla):
     assert layerwise[0] == {(type_id, slot) for type_id in (0, 1) for slot in range(12)}
     assert layerwise[1] == {(0, slot) for slot in range(12)}
     assert layerwise[4] == {(0, 0)}
+
+
+def test_ple_stage_row_map_skips_null_and_duplicates(hla):
+    assert hla.ple_stage_row_map([0, 7, 7, 3, 0]) == {7: 0, 3: 1}
+    assert hla.ple_stage_row_map([]) == {}
 
 
 def test_is_npu_layer_major_blnhc(hla):
