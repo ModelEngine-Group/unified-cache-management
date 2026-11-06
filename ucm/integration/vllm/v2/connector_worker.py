@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -165,18 +166,24 @@ class UCMConnectorWorker:
             raise RuntimeError("Register KV caches before the storage handshake")
         return UCMStorageHandshake(
             rank=self._parallel_rank,
-            stored_policies=tuple(self.layout.store_sizes_by_policy),
+            store_sizes_by_policy=dict(self.layout.store_sizes_by_policy),
         )
 
     def _mark_load_failed(self, request_metadata: RequestMetadata) -> None:
         request_id = request_metadata.request_id
         self._failed_load_request_ids.add(request_id)
         self._completion_metadata.mark_load_failed(request_id)
+        # Match the existing load_failure_patch's group 0 block table.
         self._invalid_vllm_block_ids.update(
             int(block_id)
             for load_plan in request_metadata.load_plans
-            for group_block_ids in load_plan.vllm_block_ids_by_group
+            for group_id, group_block_ids in chain(
+                zip(load_plan.group_ids, load_plan.vllm_block_ids_by_group),
+                zip(load_plan.group_ids, load_plan.state_checkpoint_block_ids_by_group),
+            )
+            if group_id == 0
             for block_id in group_block_ids
+            if block_id != 0
         )
 
     def begin_step(self, connector_metadata: UCMConnectorMetadata) -> None:
@@ -474,10 +481,23 @@ class UCMConnectorWorker:
         layer_id: int | None = None,
     ) -> tuple[TransferBatch, ...]:
         """Resolve one prepared plan into this rank's device-to-store ranges."""
+        # Scheduler emits keys only for stages whose handshake declared this
+        # policy; that declaration comes from this stage's store layouts.
+        stage_ucm_keys = dispatch_plan.ucm_keys_by_pp_rank.get(
+            self._parallel_rank.pp_rank
+        )
+        if stage_ucm_keys is None:
+            return ()
         transfer_batches = []
         chunk_indices = dispatch_plan.token_starts // self.spec.chunk_size
-        for group_id, group_block_ids in zip(
-            dispatch_plan.group_ids, dispatch_plan.vllm_block_ids_by_group
+        # A State plan restores the same source ranges to running and checkpoint
+        # targets in one Submit. Both targets stay under this plan's single job.
+        for group_id, group_block_ids in chain(
+            zip(dispatch_plan.group_ids, dispatch_plan.vllm_block_ids_by_group),
+            zip(
+                dispatch_plan.group_ids,
+                dispatch_plan.state_checkpoint_block_ids_by_group,
+            ),
         ):
             # PP stages may have no layers in a participating native group.
             store_layout = self.layout.store_layouts.get(group_id)
@@ -508,9 +528,6 @@ class UCMConnectorWorker:
                 + np.uint64(self.layout.store_offsets_by_group[group_id]),
                 store_offsets.shape,
             )
-            stage_ucm_keys = dispatch_plan.ucm_keys_by_pp_rank[
-                self._parallel_rank.pp_rank
-            ]
             transfer_batches.append(
                 TransferBatch(
                     ucm_keys=tuple(
@@ -519,17 +536,6 @@ class UCMConnectorWorker:
                     device_ptrs=device_ptrs,
                     byte_sizes=byte_sizes,
                     store_offsets=store_offsets,
-                    store_sizes=(
-                        np.full(
-                            len(selected_chunk_rows),
-                            self.layout.store_sizes_by_policy[
-                                dispatch_plan.restore_policy
-                            ],
-                            dtype=np.uint64,
-                        )
-                        if is_dump
-                        else None
-                    ),
                 )
             )
         return tuple(transfer_batches)

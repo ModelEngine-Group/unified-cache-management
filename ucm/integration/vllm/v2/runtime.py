@@ -85,7 +85,8 @@ class ParallelTopology:
 @dataclass(frozen=True)
 class UCMStorageHandshake(KVConnectorHandshakeMetadata):
     rank: ParallelRank
-    stored_policies: tuple[RestorePolicy, ...] = ()
+    # Complete stage-local object size of each restore policy this stage stores.
+    store_sizes_by_policy: dict[RestorePolicy, int]
 
 
 def make_common_ucm_chunk_ids(chunk_hashes: Iterable[bytes]) -> tuple[bytes, ...]:

@@ -36,6 +36,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         kv_cache_config: KVCacheConfig,
     ) -> None:
         super().__init__(vllm_config, role, kv_cache_config)
+        if (
+            len(kv_cache_config.kv_cache_groups) > 1
+            and vllm_config.kv_transfer_config.kv_load_failure_policy != "fail"
+        ):
+            raise ValueError(
+                "UCM v2 multi-group KV cache requires kv_load_failure_policy='fail'"
+            )
         self.context = UCMRuntimeContext.from_vllm_config(
             vllm_config, role, kv_cache_config
         )

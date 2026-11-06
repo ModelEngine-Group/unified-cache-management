@@ -295,7 +295,6 @@ struct BlockPayload {
     std::vector<void*> pointers;               // xPU 字节指针(支持多指针布局)
     std::vector<std::size_t> sizes;            // 每指针字节长度
     std::vector<std::size_t> offsets;          // 每指针对应的对象内字节偏移
-    std::size_t totalSize{0};                  // Dump 完整对象大小
     std::vector<std::size_t> memoryRegionIndices;  // 可选:注册 MemoryRegion 的索引(RDMA 预留)
     std::vector<std::size_t> groupSizes;       // 可选:注册分组的指针数(分层内存预留)
 };
@@ -303,7 +302,7 @@ struct BlockPayload {
 
 一个块可由多个指针构成（多卡 / 多层显存布局）；MR 索引与分组两个可选字段把注册成本从“每次传输”摊薄到“初始化一次”（定义见 `v2/common/type/block.h` `BlockPayload`）。
 
-`offsets` 与 `pointers/sizes` 一一对应；空 pointers 表示本 Worker 没有本地范围，后端须按 no-op 处理，不清空或截断对象。Python binding 对应字段为 `offsets` 和 `total_size`。这只补充传输描述，变长对象在 Alloc 时的容量预约仍需后端落实。
+`offsets` 与 `pointers/sizes` 一一对应；空 pointers 表示本 Worker 没有本地范围，后端须按 no-op 处理，不清空或截断对象。Python binding 对应字段为 `offsets`。完整对象大小不随 Submit 传递；Alloc 需要的容量来源仍待后端确定。
 
 ### 4.3 AddressedToken —— 自寻址不透明凭据
 

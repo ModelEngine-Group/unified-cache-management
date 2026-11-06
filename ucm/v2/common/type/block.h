@@ -53,8 +53,6 @@ struct BlockPayload {
     std::vector<std::size_t> sizes;
     /** Object-relative byte offset of each pointer, parallel to sizes. */
     std::vector<std::size_t> offsets;
-    /** Complete object size on Dump, including ranges sent by other workers. */
-    std::size_t totalSize{0};
     /**
      * Optional: when MemoryRegions were registered at initialization, the index of the
      * MemoryRegion each pointer belongs to.
