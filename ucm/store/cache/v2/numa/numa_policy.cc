@@ -230,6 +230,61 @@ Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan)
     return Status::OK();
 }
 
+ScopedThreadPolicy::~ScopedThreadPolicy()
+{
+    if (active_) {
+        const auto result = Restore();
+        if (result.Failure()) { UC_ERROR("cache2 NUMA thread policy restore failed: {}", result); }
+    }
+}
+
+Status ScopedThreadPolicy::Bind(const Plan& plan)
+{
+    if (active_ || plan.node < 0) {
+        return Status::InvalidParam("cache2 numa: invalid temporary thread binding");
+    }
+    // get_mempolicy requires space for all kernel node IDs, including offline
+    // nodes. Probe the size instead of assuming the online node count fits.
+    constexpr size_t bitsPerWord = sizeof(unsigned long) * 8;
+    for (size_t bits = bitsPerWord; bits <= 65536; bits *= 2) {
+        originalMask_.assign(bits / bitsPerWord, 0);
+        if (::syscall(SYS_get_mempolicy, &originalMode_, originalMask_.data(), bits, nullptr,
+                      0UL) == 0) {
+            const auto target = SingleNodeMask(static_cast<size_t>(plan.node));
+            if (::syscall(SYS_set_mempolicy, MPOL_BIND | MPOL_F_STATIC_NODES, target.words.data(),
+                          target.maxNode) != 0) {
+                const auto error = errno;
+                return Status::OsApiError(fmt::format("set_mempolicy node={} failed: errno={} ({})",
+                                                      plan.node, error, std::strerror(error)));
+            }
+            active_ = true;
+            return Status::OK();
+        }
+        const auto error = errno;
+        if (error != EINVAL || bits == 65536) {
+            return Status::OsApiError(
+                fmt::format("get_mempolicy failed: errno={} ({})", error, std::strerror(error)));
+        }
+    }
+    return Status::Error("cache2 numa: cannot determine thread policy mask size");
+}
+
+Status ScopedThreadPolicy::Restore()
+{
+    if (!active_) { return Status::OK(); }
+    const bool useMask =
+        (originalMode_ & ~(MPOL_F_STATIC_NODES | MPOL_F_RELATIVE_NODES)) != MPOL_DEFAULT;
+    const auto maxNode = originalMask_.size() * sizeof(unsigned long) * 8 + 1;
+    if (::syscall(SYS_set_mempolicy, originalMode_, useMask ? originalMask_.data() : nullptr,
+                  useMask ? maxNode : 0UL) != 0) {
+        const auto error = errno;
+        return Status::OsApiError(fmt::format("restore set_mempolicy failed: errno={} ({})", error,
+                                              std::strerror(error)));
+    }
+    active_ = false;
+    return Status::OK();
+}
+
 Status Verify(void* base, size_t bytes, const Plan& plan)
 {
     if (base == nullptr || bytes == 0 || plan.node < 0) {

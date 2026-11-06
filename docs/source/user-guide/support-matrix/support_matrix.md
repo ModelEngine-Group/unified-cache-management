@@ -24,7 +24,8 @@ This information serves as a reference for evaluating framework compatibility in
 | DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek V4 Pro | ✅ | ✅ | ❌ |
-| DeepSeek V4 Flash | ✅ | ✅ | ❌ |
+| DeepSeek V4 Flash | ✅ | ✅ | ✅ |
+| DeepSeek V4.1 Flash | ✅ | ✅ | ❌ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen3-Moe | ✅ | ✅ | ✅ |
@@ -32,21 +33,25 @@ This information serves as a reference for evaluating framework compatibility in
 | Qwen3.5 | ✅ | ✅ | ❌ |
 | Qwen3.6 | ✅ | ✅ | ❌ |
 | Qwen3.8 | ✅ | ✅ | ❌ |
-| Qwen3.8-Flash-Next | 🟡 | 🟡 | ❌ |
+| Qwen3.8-Flash-Next | 🟡 | ✅ | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
 | GLM-5 | ✅ | ✅ | ❌ |
 | GLM-5.1 | ✅ | ✅ | ❌ |
-| GLM-5.2 | ✅ | ✅ | ❌ |
+| GLM-5.2 | ✅ | ✅ | ✅ |
 | GLM-5.3 | ✅ | ✅ | ❌ |
-| GLM-5.3-Flash | 🟡 | 🟡 | ❌ |
+| GLM-5.3-Flash | ✅ | ✅ | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
-| MiniMax-M3 | 🟡 | 🟡 | ❌ |
+| MiniMax-M3 | ✅ | ✅ | ❌ |
+| MiniMax-M3.1 | ✅ | 🟡 | ❌ |
 | Kimi-K2.5 | ✅ | ✅ | ❌ |
+| Kimi-K2.7 | ✅ | ✅ | ❌ |
 | Kimi-K3 | 🟡 | 🟡 | ❌ |
 
 > **Note**: The table lists a selected set of representative models.
 > See [**Prefix Cache**](../prefix-cache/index.md) for more details.
+> Qwen3.8-Flash-Next runs on vLLM-Ascend with the dedicated image `qwen3.8-next-a3-openeuler`.
+> MiniMax-M3.1 runs on vLLM with the dedicated image `minimax-m31-flash`.
 
 ### Inference Enhancement Features
 
@@ -73,7 +78,7 @@ This section presents the currently supported compute platforms and devices.
 | MUSA | Mthreads | S5000 |
 | MACA | MetaX | C500 |
 
-> **Note**: The table shows only selected platforms. Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash.
+> **Note**: The table shows only selected platforms. Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash and GLM-5.2.
 
 ## Notes and Limitations 📌
 
