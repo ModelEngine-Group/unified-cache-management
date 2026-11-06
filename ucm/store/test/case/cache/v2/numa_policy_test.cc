@@ -4,11 +4,102 @@
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  */
 #include "cache/v2/numa/numa_policy.h"
+#include <cerrno>
 #include <gtest/gtest.h>
+#include <linux/mempolicy.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <vector>
+#include "ipc/mem_fd.h"
 
 namespace UC::Cache2::Numa {
 namespace {
+
+class ThreadPolicyTest : public ::testing::Test {
+protected:
+    // The kernel rejects a userspace mask larger than one 4KiB page.
+    static constexpr size_t kMaskBits = 32768;
+    int originalMode_{};
+    std::vector<unsigned long> originalMask_ =
+        std::vector<unsigned long>(kMaskBits / (sizeof(unsigned long) * 8), 0);
+    Plan plan_;
+
+    void SetUp() override
+    {
+        if (::syscall(SYS_get_mempolicy, &originalMode_, originalMask_.data(), kMaskBits, nullptr,
+                      0UL) != 0) {
+            if (errno == EPERM) { GTEST_SKIP() << "NUMA policy syscalls are restricted"; }
+            FAIL() << "get_mempolicy failed: errno=" << errno;
+        }
+        auto plan = Resolve(std::nullopt, 0, 1);
+        ASSERT_TRUE(plan) << plan.Error().ToString();
+        plan_ = plan.Value();
+    }
+
+    void ExpectPolicy(int expectedMode, const std::vector<unsigned long>& expectedMask)
+    {
+        int mode = -1;
+        std::vector<unsigned long> mask(kMaskBits / (sizeof(unsigned long) * 8), 0);
+        ASSERT_EQ(0, ::syscall(SYS_get_mempolicy, &mode, mask.data(), kMaskBits, nullptr, 0UL));
+        EXPECT_EQ(expectedMode, mode);
+        EXPECT_EQ(expectedMask, mask);
+    }
+};
+
+TEST_F(ThreadPolicyTest, ExplicitRestorePreservesOriginalPolicy)
+{
+    ScopedThreadPolicy policy;
+    auto status = policy.Bind(plan_);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    std::vector<unsigned long> mask(originalMask_.size(), 0);
+    mask[plan_.node / (sizeof(unsigned long) * 8)] = 1UL
+                                                     << (plan_.node % (sizeof(unsigned long) * 8));
+    ExpectPolicy(MPOL_BIND | MPOL_F_STATIC_NODES, mask);
+    EXPECT_TRUE(policy.Bind(plan_).Failure());
+    ASSERT_TRUE(policy.Restore().Success());
+    ExpectPolicy(originalMode_, originalMask_);
+    EXPECT_TRUE(policy.Restore().Success());
+}
+
+TEST_F(ThreadPolicyTest, ScopedExitRestoresNonDefaultPolicy)
+{
+    ScopedThreadPolicy outer;
+    ASSERT_TRUE(outer.Bind(plan_).Success());
+    int boundMode = -1;
+    std::vector<unsigned long> boundMask(originalMask_.size(), 0);
+    ASSERT_EQ(0,
+              ::syscall(SYS_get_mempolicy, &boundMode, boundMask.data(), kMaskBits, nullptr, 0UL));
+    {
+        ScopedThreadPolicy inner;
+        ASSERT_TRUE(inner.Bind(plan_).Success());
+    }
+    ExpectPolicy(boundMode, boundMask);
+    ASSERT_TRUE(outer.Restore().Success());
+    ExpectPolicy(originalMode_, originalMask_);
+}
+
+TEST_F(ThreadPolicyTest, PreallocationFailureRestoresOriginalPolicy)
+{
+    const auto pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    const int fd = ::memfd_create("ucm_policy_failure", MFD_ALLOW_SEALING | MFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    MemFd mem;
+    ASSERT_TRUE(mem.Adopt(fd, pageSize * 2).Success());
+    ASSERT_EQ(0, ::ftruncate(fd, static_cast<off_t>(pageSize)));
+    ASSERT_EQ(0, ::fcntl(fd, F_ADD_SEALS, F_SEAL_GROW));
+    ScopedThreadPolicy policy;
+    ASSERT_TRUE(policy.Bind(plan_).Success());
+    EXPECT_TRUE(mem.Preallocate().Failure());
+    ASSERT_TRUE(policy.Restore().Success());
+    ExpectPolicy(originalMode_, originalMask_);
+}
+
+TEST_F(ThreadPolicyTest, InvalidBindingLeavesPolicyUnchanged)
+{
+    ScopedThreadPolicy policy;
+    EXPECT_TRUE(policy.Bind(Plan{}).Failure());
+    ExpectPolicy(originalMode_, originalMask_);
+}
 
 TEST(NumaPolicyTest, SlicesSixteenRanksAcrossEightNodes)
 {
