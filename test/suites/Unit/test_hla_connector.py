@@ -80,6 +80,8 @@ def hla():
         "npu_flash_next_store_columns",
         "npu_flash_next_column_owners",
         "ple_stage_row_map",
+        "group_state_flags",
+        "state_group_ids",
         "blnhc_layer_role",
         "blnhc_group_role",
     }
@@ -121,6 +123,7 @@ def hla():
         },
     }
     nodes = []
+    found_unhashed_roles = False
     for node in ast.parse(HLA_PATH.read_text(encoding="utf-8-sig")).body:
         if getattr(node, "name", None) in functions | {
             "GroupInfo",
@@ -136,6 +139,16 @@ def hla():
                 if getattr(item, "name", None) in methods[node.name]
             ]
             nodes.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_BLNHC_UNHASHED_ROLES"
+            for target in node.targets
+        ):
+            nodes.append(node)
+            found_unhashed_roles = True
+    if not found_unhashed_roles:
+        raise AssertionError(
+            "_BLNHC_UNHASHED_ROLES assignment missing from hla_connector.py"
+        )
     connector_path = ROOT / "ucm/integration/vllm/ucm_connector.py"
     base_nodes = [
         node
@@ -183,8 +196,6 @@ def hla():
         ast.Module(body=[future, *nodes], type_ignores=[])
     )
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
-    # Assigned at module level, so the function filter never picks it up.
-    namespace["_BLNHC_UNHASHED_ROLES"] = ("compressed", "raw_key")
     namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
         namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
     )
@@ -347,6 +358,7 @@ def test_layerwise_load_distributes_only_shared_mla_group(
             group(MambaSpec(mamba_cache_mode="align")),
         ]
     )
+    connector._state_group_ids = hla.state_group_ids(connector._kv_cache_config)
     metadata = hla.UCMConnectorMetadata(request_meta={})
     connector._get_connector_metadata = lambda: metadata
     connector.request_data = [("req", [b"key"], [b"scoped"], [10], [group_id])]
@@ -1153,6 +1165,25 @@ def test_npu_flash_next_column_owners(hla):
 def test_ple_stage_row_map_skips_null_and_duplicates(hla):
     assert hla.ple_stage_row_map([0, 7, 7, 3, 0]) == {7: 0, 3: 1}
     assert hla.ple_stage_row_map([]) == {}
+
+
+def test_non_mamba_ple_is_a_state_group(hla):
+    config = SimpleNamespace(
+        kv_cache_layout="BLNHC",
+        kv_cache_groups=[
+            group(FullAttentionSpec(), "layers.0.self_attn"),
+            group(FullAttentionSpec(), "layers.1.ple"),
+        ],
+        kv_cache_tensors=[
+            SimpleNamespace(
+                layers=["layers.0.self_attn", "layers.1.linear"],
+                layer_stride=200,
+                block_stride=50,
+            )
+        ],
+    )
+    assert hla.state_group_ids(config) == {1}
+    assert hla.group_state_flags(config, config.kv_cache_groups[1]) == (False, True)
 
 
 def test_is_npu_layer_major_blnhc(hla):

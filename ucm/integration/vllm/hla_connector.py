@@ -268,6 +268,33 @@ def blnhc_group_role(layer_names: list[str]) -> str:
     return ""
 
 
+def group_state_flags(kv_cache_config: "KVCacheConfig", group) -> tuple[bool, bool]:
+    """Return ``(is_mamba_align, is_ple)`` for one cache group.
+
+    PLE keeps the state-hash role even when its spec is not mamba-align.
+    A mamba-align spec with a PLE, compressed, or raw_key role does not.
+    """
+    role = ""
+    if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+        kv_cache_config
+    ):
+        role = blnhc_group_role(group.layer_names)
+    is_mamba_align = is_mamba_align_kv_cache_spec(group.kv_cache_spec) and role not in (
+        "ple",
+        *_BLNHC_UNHASHED_ROLES,
+    )
+    return is_mamba_align, role == "ple"
+
+
+def state_group_ids(kv_cache_config: "KVCacheConfig") -> set[int]:
+    """Group ids whose load must stay on the submitting rank."""
+    return {
+        group_id
+        for group_id, group in enumerate(kv_cache_config.kv_cache_groups)
+        if any(group_state_flags(kv_cache_config, group))
+    }
+
+
 def extend_non_null(
     dst_ucm_block_ids: list[bytes],
     dst_vllm_block_ids: list[int],
@@ -343,21 +370,20 @@ class KVCacheGroupManager:
         for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
-            is_mamba_align = is_mamba_align_kv_cache_spec(spec)
             role = ""
             if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
                 kv_cache_config
             ):
                 role = blnhc_group_role(group.layer_names)
+            is_mamba_align, is_ple = group_state_flags(kv_cache_config, group)
             seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
                 block_size=block_size,
                 layer_names=tuple(group.layer_names),
                 seed=seed,
-                is_mamba_align=is_mamba_align
-                and role not in ("ple", *_BLNHC_UNHASHED_ROLES),
-                is_ple=role == "ple",
+                is_mamba_align=is_mamba_align,
+                is_ple=is_ple,
                 is_compressed=role == "compressed",
                 is_raw_key=role == "raw_key",
                 participates_in_prefix_caching=participates_in_prefix_caching(spec)
@@ -905,14 +931,9 @@ class HybridLinearAttentionLayout(KVCacheLayout):
 
         def ordered(gid: int, role: str) -> list[dict]:
             positions = {
-                name: index
-                for index, name in enumerate(groups[gid].layer_names)
+                name: index for index, name in enumerate(groups[gid].layer_names)
             }
-            rows = [
-                row
-                for row in records
-                if row["gid"] == gid and row["role"] == role
-            ]
+            rows = [row for row in records if row["gid"] == gid and row["role"] == role]
             return sorted(rows, key=lambda row: positions[row["name"]])
 
         full_gids = []
@@ -994,9 +1015,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self.width = len(columns)
         self.num_slots = n_slots if self.use_layerwise else 1
         self.slot_shard_size = shard_size if self.use_layerwise else block_size
-        self.tensor_size_lists = np.asarray(
-            [columns] if self.use_layerwise else columns, dtype=np.uint64
-        )
+        self.tensor_size_lists = np.asarray([columns], dtype=np.uint64)
         self.ple_layer_name = ple_row["name"]
         self.ple_group_id = ple_gid
         self._ple_block0 = int(ple_row["block0"])
@@ -1101,9 +1120,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             return
         rows = ple_stage_row_map(block_ids)
         stage = getattr(self, "_ple_stage", None)
-        if rows == getattr(self, "_ple_rows", None) and (
-            stage is not None or not rows
-        ):
+        if rows == getattr(self, "_ple_rows", None) and (stage is not None or not rows):
             return
         self._ple_rows = rows
         if not rows:
@@ -1520,9 +1537,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         gid = self.layer_name_to_group[layer_name]
         block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
         addrs = np.zeros((block_ids.shape[0], self.width), dtype=np.uint64)
-        if (
-            getattr(self, "_ple_rows", None)
-            and layer_name == getattr(self, "ple_layer_name", None)
+        if getattr(self, "_ple_rows", None) and layer_name == getattr(
+            self, "ple_layer_name", None
         ):
             for index, block_id in enumerate(vllm_block_ids):
                 addrs[index, 0] = self._ple_stage_addr(int(block_id))
@@ -2734,6 +2750,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._ple_load_ids: dict[tuple[int, int], dict[str, list[int]]] = defaultdict(
             dict
         )
+        self._state_group_ids = state_group_ids(kv_cache_config)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Layerwise registration: per-pair store + deferred commit plan.
@@ -2828,10 +2845,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     [slot] * len(sel_scoped),
                     ptrs,
                     distribute_backend_load=(
-                        self.is_mla
-                        and not is_mamba_align_kv_cache_spec(
-                            self._kv_cache_config.kv_cache_groups[gid].kv_cache_spec
-                        )
+                        self.is_mla and gid not in self._state_group_ids
                     ),
                 )
                 self.load_tasks[pair_key][request_id] = task
@@ -2980,14 +2994,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             gid = int(gid_raw)
             if gid not in owned:
                 continue
-            missing = [
-                slot for slot in range(self._max_slot) if slot not in owned[gid]
-            ]
+            missing = [slot for slot in range(self._max_slot) if slot not in owned[gid]]
             if not missing:
                 continue
             selected = [
-                scoped_ucm_ids[i]
-                for i in np.flatnonzero(group_ids_np == gid).tolist()
+                scoped_ucm_ids[i] for i in np.flatnonzero(group_ids_np == gid).tolist()
             ]
             for slot in missing:
                 hole_ids.extend(selected)
@@ -3119,9 +3130,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             or ple_name in self._waited_layers
         ):
             return
-        if self.layer_name_to_id.get(ple_name) != self.layer_name_to_id.get(
-            layer_name
-        ):
+        if self.layer_name_to_id.get(ple_name) != self.layer_name_to_id.get(layer_name):
             return
         self._waited_layers.add(ple_name)
         self._submit_layer_load(self.layer_pos[ple_name])
