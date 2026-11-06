@@ -284,8 +284,10 @@ private:
             Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_wait_duration_ms"),
                                  (NowTime::Now() - startTp) * 1e3);
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to wait backend({}) for dump task({}).", s,
-                         ctx.backendTaskHandle, ctx.taskHandle);
+                if (s != Status::StoreUnhealthy()) {
+                    UC_ERROR("Failed({}) to wait backend({}) for dump task({}).", s,
+                             ctx.backendTaskHandle, ctx.taskHandle);
+                }
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_wait_errors_total"),
                                      1.0);
                 return;

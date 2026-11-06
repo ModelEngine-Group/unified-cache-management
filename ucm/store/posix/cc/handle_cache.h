@@ -26,7 +26,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <limits>
 #include <mutex>
@@ -137,24 +136,35 @@ public:
     ~LoadHandleCache() { CloseAll(); }
 
     Status Setup(size_t capacity, bool ioDirect);
-    BorrowedFd GetOrOpen(const Detail::BlockId& id, const std::string& path);
+    BorrowedFd GetOrOpen(const Detail::BlockId& id, size_t backendIndex, const std::string& path);
     void Release(BorrowedFd& borrowed);
     void CloseAll();
 
 private:
+    struct Key {
+        Detail::BlockId id{};
+        size_t backendIndex{0};
+        bool operator==(const Key& other) const noexcept
+        {
+            return backendIndex == other.backendIndex && id == other.id;
+        }
+    };
+    struct KeyHasher {
+        size_t operator()(const Key& key) const noexcept { return Detail::BlockIdHasher{}(key.id); }
+    };
     struct alignas(64) Slot {
         static constexpr uint32_t kWriterBit = 1u << 31;
         std::atomic<uint32_t> pin{0};
         int32_t fd{-1};
-        Detail::BlockId id{};
+        Key key{};
     };
 
-    bool TryPinReader(uint32_t slot, const Detail::BlockId& id);
+    bool TryPinReader(uint32_t slot, const Key& key);
     void UnpinReader(uint32_t slot);
     bool TryAcquireWriter(uint32_t slot);
     void ReleaseWriter(uint32_t slot);
-    BorrowedFd OptimisticGet(const Detail::BlockId& id);
-    BorrowedFd TryInsert(const Detail::BlockId& id, int32_t fd);
+    BorrowedFd OptimisticGet(const Key& key);
+    BorrowedFd TryInsert(const Key& key, int32_t fd);
     bool TryOccupyVictim(uint32_t slot, int32_t* closedFd);
     BorrowedFd MakeBorrowed(int32_t fd, int32_t error, bool cached, uint32_t slot);
     static void CloseFd(int32_t fd);
@@ -167,21 +177,8 @@ private:
     std::atomic<size_t> hand_{0};
     int32_t openFlags_{0};
     mutable std::shared_mutex indexMutex_;
-    std::unordered_map<Detail::BlockId, uint32_t, Detail::BlockIdHasher> index_;
+    std::unordered_map<Key, uint32_t, KeyHasher> index_;
 };
-
-// Sets up one handle cache per backend, so a load retried on another backend opens the file
-// through that backend. The backends share the configured cache size.
-inline Status SetupLoadHandles(std::deque<LoadHandleCache>& caches, size_t backendCount,
-                               size_t capacity, bool ioDirect)
-{
-    const auto capacityPerBackend = (capacity + backendCount - 1) / backendCount;
-    for (size_t i = 0; i < backendCount; ++i) {
-        auto status = caches.emplace_back().Setup(capacityPerBackend, ioDirect);
-        if (status.Failure()) { return status; }
-    }
-    return Status::OK();
-}
 
 }  // namespace UC::PosixStore
 
