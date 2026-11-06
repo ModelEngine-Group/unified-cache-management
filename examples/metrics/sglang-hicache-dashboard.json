@@ -1,0 +1,1327 @@
+{
+  "id": null,
+  "uid": "sglang-ucm-hicache",
+  "title": "SGLang + UCM / HiCache",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "30s",
+  "tags": [
+    "sglang",
+    "ucm"
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "sglang_prefix",
+        "label": "SGLang prefix",
+        "type": "textbox",
+        "query": "sglang:",
+        "current": {
+          "text": "sglang:",
+          "value": "sglang:"
+        },
+        "hide": 2
+      },
+      {
+        "name": "model_name",
+        "label": "model_name",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",model_name!=\"\"}, model_name)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",model_name!=\"\"}, model_name)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {},
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "label": "job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",model_name=~\"$model_name\"}, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",model_name=~\"$model_name\"}, job)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "instance",
+        "label": "instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",model_name=~\"$model_name\",job=~\"$job\"}, instance)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",model_name=~\"$model_name\",job=~\"$job\"}, instance)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "tp_rank",
+        "label": "tp_rank",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, tp_rank)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, tp_rank)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "pp_rank",
+        "label": "pp_rank",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, pp_rank)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, pp_rank)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "dp_rank",
+        "label": "dp_rank",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, dp_rank)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values({__name__=~\"${sglang_prefix}.*\",job=~\"$job\",instance=~\"$instance\"}, dp_rank)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "About this dashboard",
+      "options": {
+        "mode": "markdown",
+        "content": "HiCache scheduling and cache behavior only: L2 device/host transfers, eviction, and L3 prefetch/backup. Use job, instance and TP/PP/DP rank filters. Token counts retain rank and pool dimensions and are not globally deduplicated. Physical UCM storage-call metrics are on the Connector & Store dashboard. No Linker-specific metrics are included. Missing series remain No data."
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      }
+    },
+    {
+      "type": "row",
+      "title": "L2 host cache / load, backup and eviction",
+      "collapsed": false,
+      "panels": [],
+      "id": 2,
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "title": "Host cache eviction duration",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "End-to-end time of a device eviction pass in seconds; under --hicache-write-policy write_back this includes the blocking D->H backup (see sglang:hicache_backup_duration_seconds for the copy alone).\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}eviction_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])) / sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}eviction_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}eviction_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}eviction_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}eviction_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Evicted host-cache tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The number of device KV token slots freed by eviction, regardless of whether the data was backed up to host (see sglang:hicache_backup_tokens_total) or destroyed (see sglang:hicache_dropped_tokens_total).\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}evicted_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Host-to-device load duration",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "GPU-stream span of a merged host-to-device load-back copy loop, including gaps between per-layer I/O submissions but excluding pre-transfer queue and fence waits.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])) / sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Host-to-device loaded tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The number of tokens loaded back from local host DRAM (L2) to GPU, by host pool (kv, swa, mamba, ...). Every TP rank reports the same logical count under its own rank labels; read one rank rather than summing ranks.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Device-to-host backup duration",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Time taken to back up KV cache from GPU to local host DRAM (L2) in seconds, per merged write op. Covers all D->H backups regardless of --hicache-write-policy. Distinct from the host-to-storage (L3) sglang:backuped_tokens_total.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])) / sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval])))",
+          "legendFormat": "__auto",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Device-to-host backup throughput",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bytes backed up from GPU to local host DRAM (L2), all pools combined, including draft/sidecar transfers that the token counter excludes. Each rank reports its own KV shard; sum ranks for the physical total. A window's byte delta divided by the same window's hicache_backup_duration_seconds sum is the bytes-weighted active bandwidth; the plain rate is wall-clock payload traffic that includes idle time.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_bytes_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 8,
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Host-to-device load throughput",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bytes loaded back from local host DRAM (L2) to GPU, all pools combined, including draft/sidecar transfers that the token counter excludes. Each rank reports its own KV shard; sum ranks for the physical total. A window's byte delta divided by the same window's load_back_duration_seconds sum is the bytes-weighted active bandwidth; the plain rate is wall-clock payload traffic that includes idle time.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}load_back_bytes_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Device-to-host backed-up tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The number of tokens backed up from GPU to local host DRAM (L2), by host pool (kv, swa, mamba, ...). Covers all D->H backups regardless of --hicache-write-policy. Distinct from the host-to-storage (L3) sglang:backuped_tokens_total. Every TP rank reports the same logical count under its own rank labels; read one rank rather than summing ranks.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Dropped host-cache tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The number of logical device KV tokens destroyed without a host backup. The pool label is always kv; reason is host_pressure for write-back failure, or write_through_unbacked_eviction when eager write-through did not complete before eviction.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_dropped_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "row",
+      "title": "L3 storage / prefetch and backup",
+      "collapsed": false,
+      "panels": [],
+      "id": 12,
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "title": "L3 prefetched tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Prompt tokens successfully transferred from L3 storage into host memory, before admission-time reuse or discard.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}prefetched_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 13,
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "L3 backed-up tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Number of backuped tokens.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}backuped_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 14,
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "L3 prefetch hits",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Storage-hit tokens returned by an L3 query before host allocation, transfer, or cache insertion.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}storage_prefetch_hit_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 15,
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "L3 unfulfilled prefetch",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Attempt-level storage-hit tokens that did not become a usable prefetch result, by diagnostic reason. This is not a final prefill cache-miss counter. anchor_lost means the original device prefix was no longer present when the prefetch needed it; aux_window_trim means a staged aux trailing window could not be trimmed to the shorter splice, so the loaded span was released; device_overlap means the live device prefix diverged from the request's view at splice time, so the span beyond it was released; cache_admission_shortfall means an L3-loaded L2 span was no longer reusable when cache-mode admission ran; deadline means the storage prefetch stop policy ended the read before it completed.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}storage_prefetch_unfulfilled_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 16,
+      "gridPos": {
+        "x": 12,
+        "y": 54,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "L3 deferred prefetch",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Storage-prefetch token-attempts deferred for later reuse, by transient capacity reason.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}storage_prefetch_deferred_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 17,
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Dropped L3 backup tokens",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Buffer-mode backup tokens that never reached L3 because admission rejected them or the source became stale before the D2H staging launched; the write path lagging device churn is the common cause, and the span rewrites only on a later recompute.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_backup_dropped_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 18,
+      "gridPos": {
+        "x": 12,
+        "y": 62,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "title": "Prefetch auxiliary allocation failures",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Prefetch tokens abandoned because an aux pool (e.g. the SWA trailing window) could not allocate host staging — the whole storage fetch is forfeited, not just the aux part.\n\nMissing series means not emitted, not zero.",
+      "targets": [
+        {
+          "expr": "sum by (job, instance, tp_rank, pp_rank, dp_rank, pool, reason, storage_backend, cache_type) (rate(${sglang_prefix}hicache_prefetch_aux_alloc_failed_tokens_total{job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}[$__rate_interval]))",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 19,
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "row",
+      "title": "HiCache / cumulative counters and observations",
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "HiCache cumulative counter",
+          "type": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Cumulative samples per rank; logical token counts must not be summed across TP ranks.",
+          "targets": [
+            {
+              "expr": "{__name__=~\"${sglang_prefix}(prefetched_tokens_total|backuped_tokens_total|storage_prefetch_hit_tokens_total|storage_prefetch_unfulfilled_tokens_total|storage_prefetch_deferred_tokens_total|hicache_backup_dropped_tokens_total|hicache_prefetch_aux_alloc_failed_tokens_total|evicted_tokens_total|load_back_tokens_total|hicache_backup_bytes_total|load_back_bytes_total|hicache_backup_tokens_total|hicache_dropped_tokens_total)\",job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}",
+              "legendFormat": "__auto",
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 21,
+          "gridPos": {
+            "x": 0,
+            "y": 79,
+            "w": 24,
+            "h": 8
+          }
+        },
+        {
+          "title": "HiCache cumulative histogram",
+          "type": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Cumulative samples per rank; logical token counts must not be summed across TP ranks.",
+          "targets": [
+            {
+              "expr": "{__name__=~\"${sglang_prefix}(eviction_duration_seconds_count|load_back_duration_seconds_count|hicache_backup_duration_seconds_count)\",job=~\"$job\",instance=~\"$instance\",tp_rank=~\"$tp_rank\",pp_rank=~\"$pp_rank\",dp_rank=~\"$dp_rank\"}",
+              "legendFormat": "__auto",
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "id": 22,
+          "gridPos": {
+            "x": 0,
+            "y": 87,
+            "w": 24,
+            "h": 8
+          }
+        }
+      ],
+      "id": 20,
+      "gridPos": {
+        "x": 0,
+        "y": 78,
+        "w": 24,
+        "h": 1
+      }
+    }
+  ],
+  "links": [
+    {
+      "type": "link",
+      "title": "SGLang + UCM / Overview",
+      "url": "/d/sglang-dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    },
+    {
+      "type": "link",
+      "title": "SGLang + UCM / Connector & Store",
+      "url": "/d/sglang-ucm-store",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ]
+}
