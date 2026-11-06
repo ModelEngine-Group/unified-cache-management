@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # Standalone defaults; embedded in default_metric_descriptors.h at build time.
 metric_prefix: "kv:"
 
@@ -5,18 +6,12 @@ counter:
   - {name: "kv_client_query_requests_total", documentation: "Total KV client query submissions"}
   - {name: "kv_client_query_entries_total", documentation: "Total keys submitted to KV client query"}
   - {name: "kv_client_query_errors_total", documentation: "Total failed KV client query submissions"}
-  - {name: "kv_client_load_requests_total", documentation: "Total KV client load submissions"}
-  - {name: "kv_client_load_entries_total", documentation: "Total entries submitted to KV client load"}
-  - {name: "kv_client_load_errors_total", documentation: "Total failed KV client load submissions"}
-  - {name: "kv_client_store_requests_total", documentation: "Total KV client store submissions"}
-  - {name: "kv_client_store_entries_total", documentation: "Total entries submitted to KV client store"}
-  - {name: "kv_client_store_errors_total", documentation: "Total failed KV client store submissions"}
-  - {name: "kv_client_batch_load_requests_total", documentation: "Total KV client batch-load submissions"}
-  - {name: "kv_client_batch_load_entries_total", documentation: "Total entries submitted to KV client batch-load"}
-  - {name: "kv_client_batch_load_errors_total", documentation: "Total failed KV client batch-load submissions"}
-  - {name: "kv_client_batch_store_requests_total", documentation: "Total KV client batch-store submissions"}
-  - {name: "kv_client_batch_store_entries_total", documentation: "Total entries submitted to KV client batch-store"}
-  - {name: "kv_client_batch_store_errors_total", documentation: "Total failed KV client batch-store submissions"}
+  - {name: "kv_client_load_requests_total", documentation: "Total KV client load API calls across single and batch protocols"}
+  - {name: "kv_client_load_entries_total", documentation: "Total entries in KV client load API calls across single and batch protocols"}
+  - {name: "kv_client_load_errors_total", documentation: "Total failed KV client load API submissions, excluding asynchronous execution failures"}
+  - {name: "kv_client_store_requests_total", documentation: "Total KV client store API calls across single and batch protocols"}
+  - {name: "kv_client_store_entries_total", documentation: "Total entries in KV client store API calls across single and batch protocols"}
+  - {name: "kv_client_store_errors_total", documentation: "Total failed KV client store API submissions, excluding asynchronous execution failures"}
   - {name: "kv_client_delete_requests_total", documentation: "Total KV client delete submissions"}
   - {name: "kv_client_delete_entries_total", documentation: "Total keys submitted to KV client delete"}
   - {name: "kv_client_delete_errors_total", documentation: "Total failed KV client delete submissions"}

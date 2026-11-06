@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -206,6 +206,9 @@ struct TransportConfig {
 enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
 
 struct KvClientConfig {
+    // Loads client configuration from a key-value file without initializing a client.
+    static Status LoadFromFile(const std::string& configPath, KvClientConfig& config);
+
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
 
@@ -214,6 +217,8 @@ struct KvClientConfig {
     std::uint32_t maxInflightTasks{1024};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
+    // Keep single-key requests on the currently supported batch IO path by default.
+    bool useBatchIoForSingleKey{true};
     SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};
     std::unordered_map<std::string, std::string> attrs;
 };
