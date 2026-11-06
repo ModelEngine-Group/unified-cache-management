@@ -185,9 +185,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         }
         shardTask.task = task;
         shardTask.shard = std::move(shard);
-        if (task->type == TransTask::Type::LOAD_ON_TOKEN) {
-            shardTask.filterIndex = indexes[i];
-        }
+        if (task->type == TransTask::Type::LOAD_ON_TOKEN) { shardTask.filterIndex = indexes[i]; }       
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
         shardTask.firstShard = i == 0;
         running_.Push(std::move(shardTask));
