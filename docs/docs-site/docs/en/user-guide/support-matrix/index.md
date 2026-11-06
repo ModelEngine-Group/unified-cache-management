@@ -18,7 +18,8 @@ Prefix Cache integration status by model. All three engine columns describe comp
 <tr><th scope="row">DeepSeek R1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
 <tr><th scope="row">DeepSeek V3.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
 <tr><th scope="row">DeepSeek V4 Pro</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
-<tr><th scope="row">DeepSeek V4 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">DeepSeek V4 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
+<tr><th scope="row">DeepSeek V4.1 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">Qwen</th></tr>
@@ -29,25 +30,27 @@ Prefix Cache integration status by model. All three engine columns describe comp
 <tr><th scope="row">Qwen3.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">Qwen3.6</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">Qwen3.8</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
-<tr><th scope="row">Qwen3.8-Flash-Next</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">Qwen3.8-Flash-Next</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">GLM</th></tr>
 <tr><th scope="row">GLM-4.x</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
 <tr><th scope="row">GLM-5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">GLM-5.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
-<tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
-<tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
+<tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">MiniMax</th></tr>
 <tr><th scope="row">MiniMax-M2.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
 <tr><th scope="row">MiniMax-M2.7</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
-<tr><th scope="row">MiniMax-M3</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">MiniMax-M3</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">MiniMax-M3.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">Kimi</th></tr>
 <tr><th scope="row">Kimi-K2.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
+<tr><th scope="row">Kimi-K2.7</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">Kimi-K3</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 </table>
@@ -70,6 +73,6 @@ See [Model Tour](../model-tour/index.md) for model families and the [developer g
 
 The tables list representative models and devices. Engine versions, model variants, runtime settings and backends affect behavior. Unverified means no corresponding validation conclusion is available.
 
-**Note**: Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash.
+**Note**: Ascend 950PR and 950DT have only been validated with DeepSeek-V4-Flash and GLM-5.2. Qwen3.8-Flash-Next runs on vLLM-Ascend with the dedicated image `qwen3.8-next-a3-openeuler`; MiniMax-M3.1 runs on vLLM with the dedicated image `minimax-m31-flash`.
 
 </div>
