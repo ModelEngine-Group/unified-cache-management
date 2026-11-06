@@ -45,7 +45,7 @@ class LoadQueue {
     struct ShardTask {
         TaskPtr task;
         Detail::Shard shard;
-        Detail::TokenFilter tokenFilter;
+        size_t filterIndex{0};
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;

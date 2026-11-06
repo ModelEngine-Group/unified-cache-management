@@ -186,7 +186,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         shardTask.task = task;
         shardTask.shard = std::move(shard);
         if (task->type == TransTask::Type::LOAD_ON_TOKEN) {
-            shardTask.tokenFilter = task->filter[indexes[i]];
+            shardTask.filterIndex = indexes[i];
         }
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
         shardTask.firstShard = i == 0;
@@ -284,9 +284,10 @@ void LoadQueue::TransferDdrLoadOnToken(ShardTask&& task)
             s = Status::InvalidParam();
             UC_ERROR("DDR load-on-token shard({}) requires one host address.", task.shard.index);
         } else {
-            size_t tokenNum = task.tokenFilter.ranges.size();
+            const auto& tokenFilter = parentTask->filter[task.filterIndex];
+            size_t tokenNum = tokenFilter.ranges.size();
             for (size_t t = 0; t < tokenNum; ++t) {
-                const auto& ranges = task.tokenFilter.ranges[t];
+                const auto& ranges = tokenFilter.ranges[t];
                 for (const auto& range : ranges) {
                     std::memcpy(static_cast<std::byte*>(dst) + range.dstOffset,
                                 static_cast<std::byte*>(src) + range.offset, range.length);
