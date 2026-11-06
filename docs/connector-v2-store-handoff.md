@@ -1,24 +1,46 @@
 # Connector v2 / Store 接口交接
 
-更新：2026-11-05。本文面向 Connector、Proxy 和 Store 开发者，记录当前实现、接口缺口和部署边界。
+更新：2026-11-06。本文面向 Connector、Proxy 和 Store 开发者，记录当前实现、接口缺口和部署边界。
 
 ## 1. 快照与结论
 
 | 项目 | 当前基线 |
 | --- | --- |
 | 实施仓库 / 分支 | `ModelEngine-Group/unified-cache-management` / `feature_ucm_v2` |
-| 本文核对的代码提交 | `c00e75e54d3db7a24dc525de06cced9c07349b4f`，已推送 `qyh/feature_ucm_v2` |
+| 本文核对的代码提交 | `0464e767a23b2cd506b1cedee55c6c34437c6b0b`，已推送 `qyh/feature_ucm_v2` |
 | PR | [#1608](https://github.com/ModelEngine-Group/unified-cache-management/pull/1608)，目标主仓库 `feature_ucm_v2` |
 | Connector 移植来源 | `dev_connector@485916d2e70e7d3640fa9574572b0f06935a4cb8` |
 | CUDA MRV2 源码 | 本地 vLLM `5df63a7203cdb9328d824a27b682e77c7b9928be` |
-| Ascend MRV2 源码 | 本地 vLLM-Ascend `ffca1c99bb28d9c92dd5dcf327f8b242404a5055` |
+| Ascend MRV2 既有分析基线 | vLLM-Ascend `ffca1c99bb28d9c92dd5dcf327f8b242404a5055` |
+| 当前 Ascend checkout | `releases/v0.32.0rc@23799760bb596d07f33eff56baa28fcfa66d5957`，本轮只核对状态，未按新版重新验证适配 |
 
 当前完成的是 Connector 到 native Store 的接口层实现，尚未形成可验收的存储闭环。
-最先需要解决的是同 request/kind 多次 Prepare、Put 完整大小的准入来源、实际 Store 后端和同节点 shm 共享契约。
+最先需要解决的是同 request/kind 多次 Prepare、同 request 多次 Lookup 的预取状态、
+Put 完整大小的准入来源、实际 Store 后端和同节点 shm 共享契约。
 当前快照里的 CacheStore/PosixStore 主要入口仍返回 Unsupported，不能把其他分支已有的 shm 后端实现算成本分支已接通。
 
-第一版限定同步预取、同步 Load 和同步 Dump；一个 DP 副本内的全部 TP/PP/PCP/DCP Worker 必须位于同一节点。
+第一版限定同步预取、同步 Load 和同步 Dump。本轮部署约定先按 PP=1、TP/PCP/DCP 在单节点内处理。
+代码仍保留单节点 PP 布局，一个 DP 副本内的全部 TP/PP/PCP/DCP Worker 必须位于同一节点。
 同节点并行的布局与聚合代码已实现，但没有设备或多 Worker 运行验证，不能等同于已验证支持。
+
+本轮已完成 State running/checkpoint 共用一次 PrepareGet、明确 hit/miss 直接返回、
+复用旧 load-failure patch 放行多 group 的 fail、完整大小经握手传到 Scheduler，以及 Store client 命名整理。
+完整大小尚未交给 Store 注册，load-failure 仍有下表列出的 review 项；这些代码改动不代表存储闭环已跑通。
+
+### 未解决问题总览
+
+| 阶段 | 问题及当前状态 | 下一步 / 主要责任 | 详细说明 |
+| --- | --- | --- | --- |
+| 同步联调前 | 同 request/kind 的第二次非空 Prepare 仍可能被 native 拒绝；State 已减少为一次 Prepare，但 FA/WA/State 之间仍有重叠 | Store 支持多窗口/追加 Prepare，明确 token 有效期和引用计数 | 4.1、4.7 |
+| 同步联调前 | FA、WA/State 顺序 Lookup 使用不同 keys，与 native 固定查询集合的注释冲突 | Store 区分请求与查询生命周期，固定本次预取范围到 CompletePrefetch，之后允许继续查询 | 4.6 |
+| 同步联调前 | 完整大小已到 Scheduler，PreparePut 内 Alloc 仍不知道应预留多少字节 | Store/Proxy 确定按策略/stage 注册大小或其他准入入口，Connector 再接入 | 4.2 |
+| 同步联调前 | 本分支 CacheStore/PosixStore 仍有 Unsupported 占位，未接通真实后端和共享 shm session | Store 接通后端，确认 Scheduler/Worker 指向同一 shm，各 DP/实例隔离 | 4.3 |
+| 同步联调前 | offsets、同源多目标、空 payload、发布隔离、event 等字段已有，但执行语义未经后端验证 | Store 落实范围读写和终态语义；State 同源 offset 必须能写入两个目标 | 4.4、4.5、4.7 |
+| Review / 验证 | 多 group fail 已接入，但仍依赖 group 0 定位；其参与情况、token 粒度、其他 group 的缓存清理和源码 patch 生效情况未验 | Connector/引擎单独 review 并在可用环境验证；不宣称支持多 group recompute | 6 |
+| 异步前 | 一次 Prepare 独立 Complete 已达成设计约定，当前 ABI 仍只接受 request_id | 双方确定 opaque token 或窗口 ID，Store 实现后再改 Connector 完成聚合 | 4.8 |
+| 异步前 | Dump、预取仍同步，任务保留和源 KV 防释放/防原地覆盖未做 | Connector/引擎实现跨 step 生命周期，定义取消/抢占/结束排空和超时确认 | 4.9、6 |
+| 后续优化 | NumPy 描述符仍逐元素转 list/vector；角色 client 仍各自创建组合 Assembler | Store/Proxy 提供连续数组 ABI，或多段数组输入，明确 IO 期间引用所有权；角色工厂拆分 | 2、6 |
+| 验证边界 | 无 native 编译、运行测试或设备联调；Ascend checkout 已升级，尚未重新分析新版 MRV2 | 后端接口确定后安排独立验证；当前源码结论不得替代服务验证 | 7 |
 
 详细布局和生命周期契约见 [Connector v2 与 native Store 接口](connector-v2-storage-groups.md)。
 
@@ -69,7 +91,7 @@ native 工厂还没有只构建 Scheduler 或只构建 Worker 的角色参数。
 | 计划与 Prepare | 创建每个策略 plan 时分配主 job_id 并 Prepare；State running/checkpoint 已合为一个 Get plan、一次 Prepare，State dump 仍按边界独立准备；依赖下文未完成的 Store 追加能力 |
 | token | AddressedToken 对业务是黑盒；Worker 使用 PreparedJob.ucm_keys 对齐 payload，原样携带整个 token，不按业务切分 token |
 | 主子任务 | Scheduler 主 ID 为奇数，Worker layerwise 子 ID 为偶数；bulk/prefetch 用主 ID；保留每个子任务结果，按主 job 汇总 |
-| 默认读路径 | 2026-11-06 未提交增量：明确 miss 直接 `(0, False)`，明确命中直接 `(N, False)`；仅需要预取或预取未结束时返回 `(None, False)`，预取后重新查询并进入同步 layerwise Get |
+| 默认读路径 | 明确 miss 直接 `(0, False)`，明确命中直接 `(N, False)`；仅需要预取或预取未结束时返回 `(None, False)`，预取后重新查询并进入同步 layerwise Get |
 | 预取下发 | 预取请求独立写入 metadata，不依赖该请求已被调度进 forward；0-token step 也走 MRV2 Connector 回调 |
 | 预取执行 | 同一 DP 内只有 `(TP=0, PP=0, PCP=0)` 提交并等待共享 shm 预取，其余 rank 回报 no-op 成功 |
 | HBM Get | layerwise 在对应层使用前等待；所有 State 层在 start_load_kv 返回前等待；bulk 原地等待 |
@@ -110,7 +132,7 @@ request R
 ```
 
 上例反映当前 Connector 的分组方式，不是当前 native Store 已能执行的行为。当前第二次非空 Get Prepare 即可能失败。
-2026-11-06 本地增量已将相同 State 源 keys 的 running/checkpoint 合为一次 Prepare，见 4.7。
+相同 State 源 keys 的 running/checkpoint 已合为一次 Prepare，见 4.7。
 InvalidParam 属于契约错误，client 不将它降级为可恢复 StoreIOError，因此不能指望自动按 miss 跑通。
 Put 同样存在多策略、多 State 边界及未来跨 step 任务重叠的问题。
 
@@ -190,7 +212,7 @@ SubmitPrefetch → IO 终态 → CompletePrefetch(R, success)
 Lookup(R, FA keys) → Lookup(R, State keys) → 汇总共同恢复边界
 ```
 
-2026-11-06 未提交代码已删掉首次明确命中或 miss 后额外返回一次 None 的分支，
+当前代码已删掉首次明确命中或 miss 后额外返回一次 None 的分支，
 并删掉仅用于该延迟的 completed-request 集合；PreparePrefetch 明确失败也直接返回 0。
 真实预取仍同步等待，此处不宣称完成了异步预取或 native 多查询支持。
 
@@ -200,7 +222,7 @@ Lookup(R, FA keys) → Lookup(R, State keys) → 汇总共同恢复边界
 FA、WA 各自一个 plan；State 的 running/checkpoint 是相同源 key、不同设备目标，已合入同一个 Get plan。
 每个成功 Prepare 对应独立 Connector 主 job 和一份 AddressedToken，同一个 token 可被多个 rank、多个 layerwise Submit 使用。
 
-2026-11-06 本地实现：对于同一份 State 源 keys，PrepareGet 只有一次，因为 Prepare 固定的是 Store 源，
+对于同一份 State 源 keys，PrepareGet 只有一次，因为 Prepare 固定的是 Store 源，
 不是设备目标。running/checkpoint 两个目标复用这一份 token，归到同一个主 job；
 两份目标的所有必要层/片段、所有相关 rank 都终止后，该 Prepare 才能 CompleteGet。
 plan 的 vllm_block_ids_by_group 保存 running 目标，state_checkpoint_block_ids_by_group 保存 checkpoint 目标。
@@ -208,7 +230,7 @@ Worker 为两份目标分别生成传输范围，Store client 按同一 key 把�
 bulk 一次 Submit 使用主 ID，layerwise 每层一次 Submit 使用对应子 ID，不会为两个目标并行复用同一个 IO ID。
 因此 Get payload 允许同一源 offset 对应多个设备指针；Store 必须逐段恢复，不能按重复源 offset 去掉其中一个目标。
 两个目标共用该次 IO 的前置 event；终态覆盖两份目标，任一目标失败按整个 State Get job 失败上报。
-失败 block IDs 的收集也覆盖两份目标，但仍只上报原生 group 0。该增量未提交，也未做设备或端到端验证。
+失败 block IDs 的收集也覆盖两份目标，但仍只上报原生 group 0。该改动已随代码快照推送，未做设备或端到端验证。
 
 token 在 Python binding 适配层可见其 keys/payload 字段，仅用于序列化与还原；业务代码不解析 payload，
 不读取 token.keys 决定 keys 或 offsets，也不根据 token 内容选择 shard。
@@ -291,6 +313,8 @@ Connector 主 job_id 目前没有传入 Store Scheduler，仅增加 Complete 的
 即使远端 Store 能 Lookup 到另一个 PP stage 的记录，也只证明数据存在，没有完成远端节点的准入、pin、预取落点和完成回收。
 同理，把 TP/PCP rank 扩展到另一台机器也会破坏“单份 shm、零号 rank 统一预取”的假设。
 event handle 也是 Worker 本地设备资源，不能作为跨节点可直接使用的句柄。
+nnodes_within_dp 只是配置预检查，当前没有通过实际 host 身份和 shm session 握手验证所有 Worker 共址。
+本轮将 PP=1、TP/PCP/DCP 同节点作为部署前提，不新增跨节点支持或运行时探测。
 
 以后支持跨机器，需要另行设计节点级 Store 控制/路由，决定哪个节点执行 Prepare/Complete、token 指向哪个 shm，
 如何按节点预取并聚合完成，以及部分节点失败后的资源回收。不能只删除配置 guard 或增加 key 字段。
@@ -303,23 +327,26 @@ PP rank 已编码进 key，UCMShard 继续只描述 stage 内 TP/DCP 分片；�
 - 跨 step 异步 HBM Load：当前 layerwise 等待只是分层同步依赖，返回的 load_kv_async 仍为 false。
 - Ascend 延迟 Mamba copy 接管：当前不启用 after-load/逐层 copy 钩子，维持默认 pre-copy、双槽恢复、State 提前 wait。
 - Load failure：单 group 沿用原生 policy，推荐显式配置 recompute，原生默认仍为 fail。
-  2026-11-06 本地增量复用现有 patch/load_failure_patch.py 及统一加载入口（需启用 ENABLE_UCM_PATCH）：多 group 只允许 fail，
+  当前复用现有 patch/load_failure_patch.py 及统一加载入口（需启用 ENABLE_UCM_PATCH）：多 group 只允许 fail，
   Worker 仅上报 group 0 的 block IDs。外层多 group 检查只拒绝 recompute，内层继续复用已有
   group 0 解包 patch 和原生请求结束逻辑；没有新增独立安装入口或请求定位分支，不改引擎 checkout 文件。
-  group 0 token 粒度及其他 group 的 prefix-cache 清理问题留待单独 review。
-  本增量尚未提交或运行验证，不属于本文顶部的已推送快照；多 group 重算仍未实现。
+  group 0 是否参与该请求的 load、token 粒度及其他 group 的 prefix-cache 清理问题留待单独 review。
+  外层 patch 依赖原生方法源码中可匹配的检查条件，尚未运行验证安装和实际失败路径；多 group 重算仍未实现。
 - native 角色工厂拆分、连续内存 payload ABI：尚未实现；后者按讨论交给 Store/Proxy 处理。
+  当前 payload.pointers/sizes/offsets 的 backing 是 C++ vector，Python 读取返回 list，
+  每个 batch 追加时会重复复制已积累的描述符。后续应收集 NumPy 段后一次拼接，或由 binding 直接接受多段数组，
+  避免循环内反复 concatenate；数组及 event 的所有权必须覆盖 IO 全生命周期。未做性能测量。
 - 真设备的 MTP 重复调用、State copy 与 slot 语义、CP 数据分片、请求取消/抢占以及多 Worker 结果聚合仍待联调验证。
 
 ## 7. 建议交接顺序与验证边界
 
 | 顺序 | 主要责任 | 应先明确或完成的事项 |
 | --- | --- | --- |
-| 1 | Store / Proxy 与 Connector 共同确认 | 多 Prepare + request 级 Complete 的边界、重复 key pin 计数、完整大小的准入来源 |
+| 1 | Store / Proxy 与 Connector 共同确认 | 多 Prepare、顺序多次 Lookup、完整大小准入来源；一次 Prepare 可独立 Complete 的目标标识与 token 生命周期 |
 | 2 | Store / Proxy | 接通真实 CacheStore/shm 和后端，确认跨进程 token、片段 offsets、空 payload、event 与终态保证 |
 | 3 | 双方联调 | 先在单节点 TP1 跑通预取、重查、Get、Dump、Complete，再扩到单节点并行和 State/窗口策略 |
 | 4 | Connector / 引擎 / Store | 再设计异步保存/预取的 block 生命周期；跨节点控制面作为独立后续工作 |
 
-当前只完成了格式、静态语法和引用检查：codespell、Black、isort、Ruff、11 个模块 AST parse/compile、git diff --check。
+当前只完成了格式、静态语法和引用检查：codespell、Black、isort、Ruff、12 个模块 AST parse/compile（v2 的 11 个模块及 load_failure_patch）、git diff --check。
 按本轮约定，没有新增、迁移或运行测试，没有编译 native，也没有设备 IO、forward、分布式通信或端到端验证。
 本文的“已实现”仅指当前代码存在对应路径，不引用 dev_connector 或其他历史分支的测试数量作为本分支证据。
