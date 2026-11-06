@@ -78,15 +78,17 @@ write_fake_backend_config() {
     } > "${view_path}"
 
     {
-        echo "client_id=kv-test-fake-backend-script"
+        echo "client.client_id=kv-test-fake-backend-script"
         echo "wait_timeout_ms=5000"
         echo
         echo "fake_backend.path=${store_path}"
         echo "fake_backend.latency_us=1000"
         echo
         echo "view.config_path=${view_path}"
-        echo "hash_table.type=RING_HASH"
-        echo "ring_hash.virtual_node_count=128"
+        echo "client.use_batch_io_for_single_key=true"
+        echo "client.hash_table.type=RING_HASH"
+        echo "client.ring_hash.virtual_node_count=128"
+        echo "client.asu_shared_provider=0"
         echo "transport.asuIds=${asu_ids}"
         echo "transport.provider_type=FAKE"
         IFS=',' read -ra ids <<< "${asu_ids}"

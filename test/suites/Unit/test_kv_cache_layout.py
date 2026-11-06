@@ -1,4 +1,5 @@
 import ast
+import ctypes
 import math
 import re
 import unittest
@@ -326,6 +327,115 @@ def _create_direct_layout(
 
 
 class KVCacheLayoutTest(unittest.TestCase):
+    @staticmethod
+    def _generic_layout(entries, *, layerwise=False, dcp_size=1, num_blocks=3):
+        return KVCacheLayout(
+            entries,
+            {"use_layerwise": layerwise},
+            SimpleNamespace(
+                parallel_config=SimpleNamespace(
+                    pipeline_parallel_size=1, decode_context_parallel_size=dcp_size
+                ),
+                model_config=SimpleNamespace(
+                    hf_text_config=SimpleNamespace(num_hidden_layers=len(entries))
+                ),
+            ),
+            SimpleNamespace(num_blocks=num_blocks),
+        )
+
+    def test_generic_interleaved_views_copy_selected_blocks_only(self):
+        # Three physical pages contain K, V, then padding. The configured
+        # pool uses two pages, so registration must also cover the spare page.
+        for layerwise in (False, True):
+            with self.subTest(layerwise=layerwise):
+                source = (ctypes.c_ubyte * 72)(*range(72))
+                target = (ctypes.c_ubyte * 72)(*([0xCD] * 72))
+
+                def make_layout(storage):
+                    views = tuple(
+                        FakeTensor(
+                            ctypes.addressof(storage) + offset,
+                            8,
+                            element_size=2,
+                            shape=(3, 2, 2),
+                            strides=(12, 2, 1),
+                        )
+                        for offset in (0, 8)
+                    )
+                    return self._generic_layout(
+                        {"model.layers.0.self_attn": views},
+                        layerwise=layerwise,
+                        num_blocks=2,
+                    )
+
+                src, dst = make_layout(source), make_layout(target)
+                self.assertEqual(src.tensor_size_list, [8, 8])
+                self.assertEqual(src.block_stride_lists.reshape(-1).tolist(), [24, 24])
+                self.assertEqual(src.buffer_sizes.reshape(-1).tolist(), [56, 56])
+                src_addrs = src.extract_block_addrs([1]).reshape(-1)
+                dst_addrs = dst.extract_block_addrs([1]).reshape(-1)
+                for read, write, size in zip(
+                    src_addrs, dst_addrs, src.tensor_size_list
+                ):
+                    ctypes.memmove(int(write), int(read), size)
+                expected = bytearray([0xCD] * 72)
+                expected[24:40] = bytes(source)[24:40]
+                self.assertEqual(bytes(target), expected)
+
+    def test_generic_legacy_kv_first_view_uses_physical_stride(self):
+        tensor = FakeTensor(
+            0x100000,
+            8,
+            element_size=2,
+            shape=(2, 3, 1, 2, 2),
+            strides=(4, 8, 4, 2, 1),
+        )
+        layout = self._generic_layout({"model.layers.0.self_attn": tensor})
+        self.assertEqual(layout.tensor_size_list, [8, 8])
+        self.assertEqual(layout.block_stride_lists.tolist(), [16, 16])
+        self.assertEqual(layout.buffer_sizes.tolist(), [40, 40])
+        self.assertEqual(
+            layout.extract_block_addrs([2]).tolist(), [[0x100020, 0x100028]]
+        )
+
+    def test_generic_dcp_uses_physical_rows_instead_of_buffer_span(self):
+        for layerwise in (False, True):
+            for replicated in (False, True):
+                with self.subTest(layerwise=layerwise, replicated=replicated):
+                    tensor = FakeTensor(
+                        0x100000,
+                        8,
+                        element_size=2,
+                        shape=(6 if replicated else 3, 2, 2),
+                        strides=(4 if replicated else 10, 2, 1),
+                    )
+                    layout = self._generic_layout(
+                        {"model.layers.0.self_attn": tensor},
+                        layerwise=layerwise,
+                        dcp_size=2,
+                    )
+                    self.assertEqual(layout.tensor_size_list, [16 if replicated else 8])
+                    self.assertEqual(
+                        layout.block_stride_lists.reshape(-1).tolist(),
+                        [16 if replicated else 20],
+                    )
+                    self.assertEqual(layout.buffer_sizes.reshape(-1).tolist(), [48])
+
+    def test_generic_rejects_copy_geometry_that_needs_gather(self):
+        for shape, strides, dcp, message in (
+            ((3, 2, 2), (8, 3, 1), 1, "not a dense page"),
+            ((3, 2, 2), (2, 2, 1), 1, "Overlapping"),
+            ((6, 2, 2), (8, 2, 1), 2, "DCP-replicated"),
+        ):
+            with self.subTest(strides=strides, dcp=dcp):
+                tensor = FakeTensor(
+                    0x100000, 8, element_size=2, shape=shape, strides=strides
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    self._generic_layout(
+                        {"model.layers.0.self_attn": tensor}, dcp_size=dcp
+                    )
+
     def test_store_io_sizes_align_unconditionally(self):
         shard_size, block_size = get_store_io_sizes(
             116992,

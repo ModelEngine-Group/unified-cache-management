@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,7 @@
 #include "kv_metrics/ucm_metrics_backend.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "trans/event.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
@@ -255,6 +256,7 @@ kv::KvClientConfig BuildKvClientConfig(const Config& config)
     asuConfig.maxInflightTasks = static_cast<std::uint32_t>(config.clientMaxInflightTasks);
     asuConfig.defaultWaitTimeoutMs = config.waitTimeoutMs;
     asuConfig.timeoutMs = config.waitTimeoutMs;
+    asuConfig.useBatchIoForSingleKey = config.useBatchIoForSingleKey;
     asuConfig.sharedProviderMode = static_cast<kv::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
     asuConfig.transportConfigs.reserve(config.asuIds.size());
@@ -299,8 +301,11 @@ public:
         config_ = std::move(config);
         client_ = CreateClient(config_);
 
-        auto asuStatus = config_.configPath.empty() ? client_->Init(BuildKvClientConfig(config_))
-                                                    : client_->Init(config_.configPath);
+        auto asuConfig = BuildKvClientConfig(config_);
+        auto asuStatus = config_.configPath.empty()
+                             ? kv::Status::OK()
+                             : kv::KvClientConfig::LoadFromFile(config_.configPath, asuConfig);
+        if (asuStatus.ok()) { asuStatus = client_->Init(asuConfig); }
         if (!asuStatus.ok()) {
             UC_ERROR("Failed to init ASU client: {}.", asuStatus.message);
             client_.reset();
@@ -530,9 +535,18 @@ private:
         auto entries = BuildKvBuffers(task);
         if (!entries) { return entries.Error(); }
         kv::TaskId taskId = kv::kInvalidTaskId;
-        auto status =
-            store ? client_->BatchStoreAsync(entries.Value(), taskId, task.prerequisiteHandle)
-                  : client_->BatchLoadAsync(entries.Value(), taskId);
+        std::function<kv::Status()> prerequisite;
+        if (store && task.prerequisiteHandle != 0) {
+            prerequisite = [handle = task.prerequisiteHandle]() {
+                const auto status = Trans::Event(handle).Synchronize();
+                return status.Success()
+                           ? kv::Status::OK()
+                           : kv::Status::Error(kv::StatusCode::IO_ERROR,
+                                               "prerequisite event synchronization failed");
+            };
+        }
+        auto status = store ? client_->StoreAsync(entries.Value(), taskId, std::move(prerequisite))
+                            : client_->LoadAsync(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
             return ConvertStatus(status);
@@ -566,6 +580,7 @@ private:
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_max_error_count", config.maxErrorCount);
         inConfig.GetNumber("asu_client_max_inflight_tasks", config.clientMaxInflightTasks);
+        inConfig.Get("asu_use_batch_io_for_single_key", config.useBatchIoForSingleKey);
         inConfig.GetNumber("asu_transport_max_inflight_tasks", config.transportMaxInflightTasks);
         inConfig.GetNumber("asu_completion_poll_spin_limit", config.completionPollSpinLimit);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
@@ -953,6 +968,7 @@ private:
         UC_INFO("Set AsuStore::Mode to {}.", config.mode);
         UC_INFO("Set AsuStore::ConfigPath to {}.", config.configPath);
         UC_INFO("Set AsuStore::ClientId to {}.", config.clientId);
+        UC_INFO("Set AsuStore::UseBatchIoForSingleKey to {}.", config.useBatchIoForSingleKey);
         UC_INFO("Set AsuStore::AsuIds to {}.", config.asuIds);
         UC_INFO("Set AsuStore::AsuIps to {}.", config.asuIps);
         UC_INFO("Set AsuStore::KvNsIds to {}.", config.kvNsIds);

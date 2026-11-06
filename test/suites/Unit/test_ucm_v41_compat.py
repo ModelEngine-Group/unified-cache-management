@@ -10,6 +10,8 @@ import types
 import unittest
 from collections import namedtuple
 from collections.abc import Callable
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -69,6 +71,8 @@ def _load_hma_methods(names):
             "_v41_whole_page_sizes",
             "_ascend_v41_whole_page_sizes",
             "select_transfer_views",
+            "FAWALoadTask",
+            "FAWAPendingLoad",
         )
     ]
     module = ast.Module(body=helpers + nodes, type_ignores=[])
@@ -82,6 +86,11 @@ def _load_hma_methods(names):
             self.tail_tokens = tail_tokens
 
     namespace = {
+        "__name__": __name__,
+        "dataclass": dataclass,
+        "field": field,
+        "Task": object,
+        "Future": Future,
         "math": math,
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
@@ -426,6 +435,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             with self.subTest(is_v41=is_v41, has_hit=has_hit, has_window=has_window):
                 events = []
                 request = types.SimpleNamespace(
+                    load_async=False,
                     load_keys=[b"key"] if has_hit else [],
                     load_hash_start=0,
                     load_hash_end=1,
@@ -435,7 +445,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
                 def submit(_request_id, kind, *_args):
                     events.append(kind)
-                    return kind
+                    return types.SimpleNamespace(request_id=_request_id, label=kind)
 
                 connector = types.SimpleNamespace(
                     is_v41_layout=is_v41,
@@ -449,7 +459,10 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     _extract_fa_ptr=lambda *_args: [],
                     _extract_wa_ptr=lambda *_args: [],
                     _submit_load_task=submit,
-                    _wait_all_load_task=lambda tasks: events.append(tuple(tasks)),
+                    _pending_fawa_loads={},
+                    _wait_all_load_task=lambda tasks: events.append(
+                        tuple(task.label for task in tasks)
+                    ),
                 )
                 methods["start_load_kv"](connector, None)
                 expected = ["sync"] if is_v41 and has_hit else []
@@ -1241,6 +1254,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
 
             request_meta = {}
             self_obj = types.SimpleNamespace(
+                use_request_async_load=False,
+                _pending_async_load_dispatches={},
+                _async_load_req_ids=set(),
                 hash_block_size=32,
                 is_v41_layout=is_v41,
                 persist_token_threshold=0,
@@ -1510,6 +1526,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         connector = types.SimpleNamespace(
             prefix_replay_tokens=128,
+            _pending_async_load_dispatches={},
+            _async_load_req_ids=set(),
             hash_block_size=64,
             transient_group_ids={1},
             window_group_ids=[],
@@ -1551,6 +1569,91 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             ]
             self.assertEqual(dispatch.dump_keys, expected)
             self.assertEqual(request.token_processed, computed + 64)
+
+    def test_async_resume_uses_full_snapshot_then_appends_cached_blocks(self):
+        methods = _load_hma_methods(
+            {
+                "update_state_after_alloc",
+                "build_connector_meta",
+                "_generate_dispatch_meta",
+                "_slice_group_block_ids",
+            }
+        )
+        methods["UCMFAWAConnectorMetadata"] = lambda requests, preempted: (
+            types.SimpleNamespace(request_meta=requests, preempted_req_ids=preempted)
+        )
+        for block_wise in (False, True):
+            with self.subTest(block_wise=block_wise):
+                request = types.SimpleNamespace(
+                    ucm_block_ids=[bytes([i]) for i in range(4)],
+                    total_hit_block_num=2,
+                    hbm_hit_block_num=0,
+                    token_processed=128,
+                    num_token_ids=256,
+                    vllm_block_ids=(),
+                )
+                connector = types.SimpleNamespace(
+                    use_request_async_load=True,
+                    prefix_replay_tokens=0,
+                    _pending_async_load_dispatches={},
+                    _async_load_req_ids=set(),
+                    hash_block_size=64,
+                    transient_group_ids=set(),
+                    window_group_ids=[1],
+                    group_metas={
+                        0: types.SimpleNamespace(token_block_size=64),
+                        1: types.SimpleNamespace(
+                            token_block_size=64, tail_tokens=64, tail_blocks=1
+                        ),
+                    },
+                    requests_meta={"req": request},
+                    wa_dump_block_wise=block_wise,
+                )
+                for name in ("_generate_dispatch_meta", "_slice_group_block_ids"):
+                    setattr(connector, name, types.MethodType(methods[name], connector))
+                methods["update_state_after_alloc"](
+                    connector,
+                    types.SimpleNamespace(request_id="req"),
+                    types.SimpleNamespace(get_block_ids=lambda: ([10, 11], [20, 21])),
+                    128,
+                )
+                output = types.SimpleNamespace(
+                    scheduled_new_reqs=[],
+                    scheduled_cached_reqs=types.SimpleNamespace(req_ids=[]),
+                    num_scheduled_tokens={},
+                    finished_req_ids=set(),
+                    preempted_req_ids=set(),
+                )
+                load = methods["build_connector_meta"](connector, output).request_meta[
+                    "req"
+                ]
+                self.assertTrue(load.load_async)
+                self.assertEqual(load.load_vllm_block_ids, ([10, 11], [21]))
+                # After remote completion, vLLM sends the entire block table.
+                output.scheduled_new_reqs = [
+                    types.SimpleNamespace(
+                        req_id="req", block_ids=([10, 11, 12], [20, 21, 22])
+                    )
+                ]
+                output.num_scheduled_tokens = {"req": 64}
+                resumed = methods["build_connector_meta"](
+                    connector, output
+                ).request_meta["req"]
+                self.assertEqual(request.vllm_block_ids, ([10, 11, 12], [20, 21, 22]))
+                self.assertEqual(resumed.load_keys, [])
+                self.assertEqual(resumed.dump_vllm_block_ids, ([12], [22]))
+                output.scheduled_new_reqs = []
+                output.scheduled_cached_reqs = types.SimpleNamespace(
+                    req_ids=["req"], new_block_ids=[([13], [23])], resumed_req_ids=set()
+                )
+                cached = methods["build_connector_meta"](
+                    connector, output
+                ).request_meta["req"]
+                self.assertEqual(
+                    request.vllm_block_ids, ([10, 11, 12, 13], [20, 21, 22, 23])
+                )
+                self.assertEqual(cached.load_keys, [])
+                self.assertEqual(cached.dump_vllm_block_ids, ([13], [23]))
 
     def test_invalid_resolver_result_fails_closed(self):
         methods = _load_hma_methods({"_init_group_metas"})
