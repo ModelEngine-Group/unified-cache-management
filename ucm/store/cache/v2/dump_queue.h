@@ -117,6 +117,7 @@ public:
         UC_ERROR("Waiting queue full, submit dump task({}) failed.", task->id);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_full_total"), 1.0);
         failureSet_->Insert(task->id);
+        if (task->dumpSource) { task->dumpSource->Publish(); }
         waiter->Done();
     }
     void Close()
@@ -157,10 +158,14 @@ private:
         if (!failureSet_->Contains(task->id)) {
             auto s = DumpOneTask(stream, task);
             if (s.Failure()) [[unlikely]] {
+                // A failed gather may have submitted reads on other streams.
+                // Do not publish fallback until all such reads are drained.
+                if (task->dumpSource) { (void)stream.Synchronize(); }
                 task->Fail(s);
                 failureSet_->Insert(task->id);
             }
         }
+        if (task->dumpSource) { task->dumpSource->Publish(); }
         waiter->Done();
     }
     Status DumpOneTask(StreamT& stream, const TaskPtr& task)
@@ -175,6 +180,23 @@ private:
         size_t copiedShards = 0;
         s = GatherShards(stream, task, ctx, backendDesc, copiedShards);
         if (s.Failure()) [[unlikely]] { return s; }
+        if (task->dumpSource) {
+            auto fence = std::make_shared<Detail::DumpSourceFence>();
+            if (copiedShards > 0) {
+                auto result = stream.RecordCompletion();
+                if (result) {
+                    fence->events = std::move(result.Value());
+                    for (const auto& event : fence->events) {
+                        fence->handles.push_back(event->NativeHandle());
+                    }
+                } else {
+                    fence.reset();
+                }
+            }
+            // Publish only AFTER every event record is submitted. Consumers
+            // must never wait on a merely-created (unrecorded) device event.
+            task->dumpSource->Publish(std::move(fence));
+        }
         if (ctx.bufferHandles.empty()) { return Status::OK(); }
         s = CompleteD2h(stream, task, ctx, copiedShards);
         if (s.Failure()) [[unlikely]] { return s; }
@@ -214,6 +236,9 @@ private:
                 if (s.Failure()) [[unlikely]] {
                     UC_ERROR("Failed({}) to copy shard for dump task({}).", s, task->id);
                     Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
+                    // Keep pinned slots alive while reads on other copy
+                    // streams are drained on the fence-enabled error path.
+                    if (task->dumpSource) { (void)stream.Synchronize(); }
                     FailOwnedHandles(ctx);
                     return s;
                 }
@@ -298,6 +323,7 @@ private:
         while (waiting_.TryPop(pair)) {
             UC_WARN("Cache2 dump task({}) discarded on close.", pair.first->id);
             failureSet_->Insert(pair.first->id);
+            if (pair.first->dumpSource) { pair.first->dumpSource->Publish(); }
             pair.second->Done();
         }
     }

@@ -71,6 +71,7 @@ struct Config {
      * cache_sdma_direct overrides either way. */
     bool sdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
     bool useGdr{false};
+    bool dumpSourceFence{false};
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     std::vector<ssize_t> cpuAffinityCores{};
@@ -122,6 +123,7 @@ struct Config {
         config.streamNumberExplicit = dict.Contains("cache_stream_number");
         dict.Get("cache_sdma_direct", config.sdmaDirect);
         dict.Get("use_gdr", config.useGdr);
+        dict.Get("cache_dump_source_fence", config.dumpSourceFence);
         dict.GetNumbers("gpu_kv_buffer_addrs", config.gpuKvBufferAddrs);
         dict.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         dict.Get("cpu_affinity_cores", config.cpuAffinityCores);
@@ -243,6 +245,7 @@ struct Config {
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, sdmaDirect);
         UC_INFO("Set {}::CacheIOAggregation to {}.", ns, ioAggregation);
         UC_INFO("Set {}::UseGdr to {}.", ns, useGdr);
+        UC_INFO("Set {}::DumpSourceFence to {}.", ns, dumpSourceFence);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
         if (detectedNumaNode.has_value()) {
             UC_INFO("Set {}::DetectedNumaNode to {}.", ns, *detectedNumaNode);

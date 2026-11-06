@@ -48,6 +48,7 @@ public:
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;
     Status WaitEvent(const Event& event) override;
+    Expected<std::shared_ptr<Event>> RecordCompletion() override;
 
 private:
     std::unique_ptr<AscendSdmaDirectCopier> copier_{nullptr};

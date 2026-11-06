@@ -35,6 +35,7 @@ public:
                             const std::vector<size_t>& sizes);
     Status SubmitDumpObject(void** devices, void* hostDevicePtr, const std::vector<size_t>& sizes);
     Status Synchronize();
+    Expected<std::shared_ptr<Event>> RecordCompletion();
 
 private:
     void Cleanup() noexcept;

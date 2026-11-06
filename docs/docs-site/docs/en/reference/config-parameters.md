@@ -23,6 +23,7 @@ These fields belong at the YAML root. Descriptions identify model- or engine-spe
 | --- | --- | --- | --- | --- |
 | `use_layerwise` | Optional | bool | Default: `true` | Enable layer-wise (per-layer) load/save mode. Recommended `true`; DeepSeek V4 series recommends `false`. |
 | `enable_event_sync` | Optional | bool | Default: `true` | Performance optimization switch. Recommended to enable. |
+| `enable_async_dump_source_fence` | Optional | bool | Default: `false` | Experimental Ascend V4.1 FAWA optimization. Requires `enable_event_sync=true`; uses Cache2 SDMA Direct source-read events to protect subsequent KV writes without waiting for the current dump's device completion on the host. Unsupported stores/copy paths fall back to host waits. See [lifecycle and validation](../developer-guide/request-lifecycle.md#experimental-dump-source-fences). |
 | `persist_token_threshold` | Optional | int | `0` | When request length < `persist_token_threshold`, UCM does not process the request. |
 | `wa_dump_block_wise` | Optional | bool | `true` | Only used in FAWA connector. `true`: every block's WA cache is dumped (high frequency); `false`: only dump last block's WA cache of each chunk prefill (low frequency). |
 | `load_tokens_threshold` | Optional | int | `0` | Minimum token threshold for triggering KV cache loading. Only effective for DeepSeek V4 series. When external hit tokens > `load_tokens_threshold`, triggers KV Cache loading. |

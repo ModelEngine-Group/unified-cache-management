@@ -24,14 +24,41 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include "detail/dump_source_fence.h"
 #include "status/status.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
 #include "type/types.h"
 
 namespace UC::Cache2 {
+
+class DumpSourceState {
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    bool published_{false};
+    std::shared_ptr<Detail::DumpSourceFence> fence_;
+
+public:
+    void Publish(std::shared_ptr<Detail::DumpSourceFence> fence = nullptr)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (published_) { return; }
+        fence_ = std::move(fence);
+        published_ = true;
+        ready_.notify_all();
+    }
+    std::shared_ptr<Detail::DumpSourceFence> Wait(size_t timeoutMs)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this] { return published_; });
+        return fence_;
+    }
+};
 
 struct Task {
     enum class Type : uint8_t { LOAD, DUMP };
@@ -43,7 +70,8 @@ struct Task {
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
-          failureStatus{other.failureStatus.load()}
+          failureStatus{other.failureStatus.load()},
+          dumpSource{std::move(other.dumpSource)}
     {
     }
 
@@ -51,6 +79,7 @@ struct Task {
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    std::shared_ptr<DumpSourceState> dumpSource;
 
     void Fail(const Status& status)
     {

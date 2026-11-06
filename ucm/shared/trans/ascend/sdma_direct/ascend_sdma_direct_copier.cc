@@ -66,6 +66,24 @@ Status AscendSdmaDirectCopier::Synchronize()
     return Status::OK();
 }
 
+Expected<std::shared_ptr<Event>> AscendSdmaDirectCopier::RecordCompletion()
+{
+    if (!setup_) { return Status::Error("Cache SDMA Direct copier is not setup"); }
+    aclrtEvent event = nullptr;
+    auto s = AclStatus(aclrtCreateEvent(&event), "aclrtCreateEvent(dump source fence)");
+    if (s.Failure()) { return s; }
+    s = AclStatus(aclrtRecordEvent(event, fftsStream_), "aclrtRecordEvent(dump source fence)");
+    if (s.Failure()) {
+        (void)aclrtSynchronizeStream(fftsStream_);
+        (void)aclrtDestroyEvent(event);
+        return s;
+    }
+    return std::shared_ptr<Event>(new Event{reinterpret_cast<uintptr_t>(event)}, [](Event* view) {
+        (void)aclrtDestroyEvent(reinterpret_cast<aclrtEvent>(view->NativeHandle()));
+        delete view;
+    });
+}
+
 void AscendSdmaDirectCopier::Cleanup() noexcept
 {
     if (fftsStream_ != nullptr) {

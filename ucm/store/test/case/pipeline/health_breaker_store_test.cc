@@ -71,6 +71,20 @@ Status SetupBreaker(HealthBreakerStore& breaker, StoreV1* store, const std::stri
     return breaker.Setup(store, storeId, config);
 }
 
+class FenceStore : public Detail::MockStore, public UC::Detail::DumpSourceFenceProvider {
+public:
+    std::shared_ptr<UC::Detail::DumpSourceFence> fence =
+        std::make_shared<UC::Detail::DumpSourceFence>();
+    size_t calls{0};
+
+    Expected<std::shared_ptr<UC::Detail::DumpSourceFence>> GetDumpSourceFence(
+        UC::Detail::TaskHandle) override
+    {
+        ++calls;
+        return std::shared_ptr<UC::Detail::DumpSourceFence>{fence};
+    }
+};
+
 void Trip(HealthBreakerStore& breaker, Detail::MockStore& store)
 {
     EXPECT_CALL(store, CheckHealth()).Times(3).WillRepeatedly(Return(Status::Error()));
@@ -110,6 +124,28 @@ TEST(UCHealthBreakerStoreTest, RequiresSetupBeforeUse)
 
     EXPECT_EQ(breaker.Start(), Status::InvalidParam());
     EXPECT_EQ(breaker.CheckHealth(), Status::InvalidParam());
+}
+
+TEST(UCDumpSourceFenceHealthBreakerTest, SourceFencesAreOptional)
+{
+    Detail::MockStore store;
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "optional-fence", TestConfig()).Success());
+    auto result = breaker.GetDumpSourceFence(1);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.Value(), nullptr);
+}
+
+TEST(UCDumpSourceFenceHealthBreakerTest, ExistingTaskSourceFencesSurviveOpenBreaker)
+{
+    FenceStore store;
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "source-fence", TestConfig()).Success());
+    Trip(breaker, store);
+    auto result = breaker.GetDumpSourceFence(1);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.Value(), store.fence);
+    EXPECT_EQ(store.calls, 1);
 }
 
 TEST(UCHealthBreakerStoreTest, SetupValidatesConfig)

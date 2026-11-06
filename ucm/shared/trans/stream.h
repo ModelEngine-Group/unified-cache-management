@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 #include "event.h"
 #include "status/status.h"
@@ -94,6 +95,9 @@ public:
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
     virtual Status WaitEvent(const Event& event) = 0;
+    // Return an owning event whose record is already submitted on this stream.
+    // Unsupported streams retain the existing host-synchronized dump path.
+    virtual Expected<std::shared_ptr<Event>> RecordCompletion() { return Status::Unsupported(); }
 };
 
 }  // namespace UC::Trans

@@ -26,6 +26,7 @@
 #include <pybind11/stl.h>
 #include <stdexcept>
 #include "config_parser.h"
+#include "detail/dump_source_fence.h"
 #include "detail/store_health_config.h"
 #include "health_breaker_store.h"
 #include "library_loader.h"
@@ -278,6 +279,18 @@ public:
         }
         ThrowIfFailed(status);
     }
+    std::shared_ptr<Detail::DumpSourceFence> GetDumpSourceFence(Detail::TaskHandle taskId)
+    {
+        if (taskId == UNHEALTHY_DUMP_TASK) { return nullptr; }
+        auto* provider = dynamic_cast<Detail::DumpSourceFenceProvider*>(StoreBack());
+        if (provider == nullptr) { return nullptr; }
+        auto result = [&] {
+            pybind11::gil_scoped_release release;
+            return provider->GetDumpSourceFence(taskId);
+        }();
+        if (result) { return std::move(result.Value()); }
+        ThrowError(result.Error());
+    }
 };
 
 }  // namespace UC::PipelineStore
@@ -290,6 +303,9 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     m.attr("commit_id") = UCM_COMMIT_ID;
     m.attr("build_type") = UCM_BUILD_TYPE;
     auto errors = py::module_::import("ucm.store.pipeline.errors");
+    py::class_<UC::Detail::DumpSourceFence, std::shared_ptr<UC::Detail::DumpSourceFence>>(
+        m, "DumpSourceFence")
+        .def_property_readonly("event_handles", &UC::Detail::DumpSourceFence::NativeHandles);
     py::register_exception<StoreNotFoundError>(m, "StoreNotFoundError",
                                                errors.attr("StoreNotFoundError").ptr());
     py::register_exception<StoreUnhealthyError>(m, "StoreUnhealthyError",
@@ -309,4 +325,5 @@ PYBIND11_MODULE(ucmpipelinestore, m)
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);
     s.def("Wait", &PipelineStore::Wait);
+    s.def("GetDumpSourceFence", &PipelineStore::GetDumpSourceFence);
 }

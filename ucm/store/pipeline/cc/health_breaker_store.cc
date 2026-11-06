@@ -168,6 +168,15 @@ Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId)
     return store_->Check(taskId);
 }
 
+Expected<std::shared_ptr<Detail::DumpSourceFence>> HealthBreakerStore::GetDumpSourceFence(
+    Detail::TaskHandle taskId)
+{
+    // Existing tasks still need protection even when the breaker is open.
+    auto* provider = dynamic_cast<Detail::DumpSourceFenceProvider*>(store_);
+    if (provider == nullptr) { return std::shared_ptr<Detail::DumpSourceFence>{}; }
+    return provider->GetDumpSourceFence(taskId);
+}
+
 Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
 {
     const auto generation = health_->Generation();

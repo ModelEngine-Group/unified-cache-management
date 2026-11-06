@@ -36,11 +36,12 @@
 
 namespace UC::Cache2 {
 
-class Store : public StoreV1 {
+class Store : public StoreV1, public Detail::DumpSourceFenceProvider {
     BufferManager<> bufferMgr_;
     std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_;
     TransManager<> transMgr_;
     bool transEnable_{false};
+    bool dumpSourceFence_{false};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -52,6 +53,7 @@ public:
             return s;
         }
         config.Show();
+        dumpSourceFence_ = config.dumpSourceFence;
         s = Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
         if (s.Failure()) { return s; }
         if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
@@ -92,10 +94,19 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enabled"); }
-        return transMgr_.Submit({Task::Type::DUMP, std::move(task)});
+        Task transfer{Task::Type::DUMP, std::move(task)};
+        if (dumpSourceFence_ && transfer.desc.prerequisiteHandle != 0) {
+            transfer.dumpSource = std::make_shared<DumpSourceState>();
+        }
+        return transMgr_.Submit(std::move(transfer));
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override { return transMgr_.Check(taskId); }
     Status Wait(Detail::TaskHandle taskId) override { return transMgr_.Wait(taskId); }
+    Expected<std::shared_ptr<Detail::DumpSourceFence>> GetDumpSourceFence(
+        Detail::TaskHandle taskId) override
+    {
+        return transMgr_.GetDumpSourceFence(taskId);
+    }
 };
 
 }  // namespace UC::Cache2

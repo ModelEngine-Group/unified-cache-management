@@ -50,3 +50,63 @@ Scheduler 调用 `request_finished()` 时，Connector 检查请求是否涉及�
 | SGLang | HiCache 提供主机缓冲，存储适配器对接 Posix；使用其存储接口调用链 |
 
 源码从 `ucm/integration/vllm/ucm_connector.py` 的 `UCMConnector` 进入，再沿 `UCMDirectConnector`、`UCMLayerWiseConnector` 和所选模型 Connector 阅读。Store 的完成与错误语义见[扩展 Store](extending-store.md)。
+
+## 实验性 dump 源读取完成事件 {#experimental-dump-source-fences}
+
+Ascend V4.1 FAWA Connector 通常在 `handle_preemptions()` 中等待之前的 dump 完成，
+随后引擎才能清零、复用、加载或覆盖设备 KV 页。运行中的请求也需要这层保护：
+滑动窗口和压缩状态即使没有发生显式抢占，也可能被原地更新。
+
+对于使用 Cache2 SDMA Direct 的 A3 构建，可以通过实验性选项将当前 dump 的 Host Wait
+改为设备 stream 依赖：
+
+```yaml
+enable_event_sync: true
+enable_async_dump_source_fence: true  # 默认 false
+use_layerwise: false
+ucm_connectors:
+  - ucm_connector_name: UcmPipelineStore
+    ucm_connector_config:
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/path/to/kv-cache"
+      cache_buffer_capacity_gb: 32
+      posix_io_engine: psync
+```
+
+上游现有的 `handle_preemptions()` 调用位置保持不变，vLLM 和 vLLM Ascend 不需要导入
+UCM 类型或新增回调。该开关仅面向 Ascend V4.1 FAWA 布局，并要求启用事件同步。
+其他 Store、Cache 实现或不支持 fence 的复制 stream 继续使用 Host Wait。
+关闭选项即可恢复原来的等待方式。
+
+### 时序和资源归属
+
+1. 计算 stream 写完旧 KV 后记录 producer-ready 事件。
+2. 每个 Cache 复制 stream 等待该事件，提交源读取，再记录自己的完成事件。
+   dispatcher 在所有 record 调用返回后才发布 fence，不能向消费者暴露仅创建、尚未记录的事件。
+3. 在 `handle_preemptions()` 中，Connector 等待事件的**提交**完成，随后在当前计算 stream
+   插入对所有复制 stream 事件的等待。CPU 可以在设备复制完成前继续准备输入和元数据。
+4. Connector 紧接这些等待记录一个消费确认事件，在确认事件完成前保留 native fence。
+   复制完成本身不足以证明计算 stream 已经消费等待，不能据此提前销毁事件。
+5. Store `check()`/`wait()`、rank 一致性错误跟踪以及请求结束反馈仍以真实任务完成为准。
+   请求结束时，仍需排空相关任务和消费确认事件，再允许释放 KV。
+   外层 UCM Connector 转发上游已有的 `shutdown()` hook，在 Worker 正常退出时排空 FAWA fence。
+
+可选的 C++ `DumpSourceFenceProvider` 接口保持 `StoreV1` 不变，Python 对应默认方法返回
+`None`。即使健康断路器已打开，也会转发已有任务的 fence 请求，因为这些任务的源内存仍需保护。
+使用新增 Python/native 接口时，应完整重新编译并安装 UCM。
+
+本版保留 dispatcher 原有的 stream 同步和 SDMA descriptor 生命周期，没有让同一复制
+dispatcher 同时流水处理多个任务。获取 fence 时仍可能等待更早的任务、Cache 容量或后端压力。
+设备仍需在覆盖 KV 前满足复制依赖，同一计算 stream 上的 metadata 设备算子也仍排在 fence
+之后。这项优化针对 CPU 准备阶段的重叠，不会消除这些数据依赖，也不保证吞吐提升。
+
+### 启用前的验证
+
+需在实际 A3 部署上验证主/辅助 KV 写入 stream、draft/speculative 工作、graph 模式及其他
+MultiConnector 子项。后续所有 KV 写入必须在受保护的 stream 上执行，或继承该 stream 的依赖。
+独立提交、未继承依赖的写入 stream 不受本选项保护。加载路径保留原有同步。
+
+对比开关关闭与开启时的缓存内容和生成结果，覆盖 chunked prefill、SWA/ring 复用、抢占、
+请求结束和重复外部缓存命中，并采集相同负载的 trace。确认 CPU metadata 提前执行、所有 D2H
+源读取先于后续 KV 写入、事件句柄和任务数量保持有界。CPU 测试和 native 编译成功不能证明
+这些设备时序或性能收益。

@@ -27,6 +27,20 @@ class Device(ABC):
     def __init__(self):
         self.events = {}
 
+    def wait_for_dump_source(self, event_handles: List[int]) -> Optional[int]:
+        """Enqueue source-read waits and return a consumer acknowledgement.
+
+        None means unsupported; zero means no waits were needed. A nonzero
+        acknowledgement must complete before the native source fence is freed.
+        """
+        return None
+
+    def query_event_handle(self, event_handle: int) -> bool:
+        raise NotImplementedError
+
+    def synchronize_event_handle(self, event_handle: int) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     def get_event_handle(self) -> int:
         """Return event handle for stream sync. 0 means no event (use synchronize instead)."""
@@ -247,6 +261,51 @@ class CudaDevice(Device):
 
 
 class NpuDevice(Device):
+    def wait_for_dump_source(self, event_handles: List[int]) -> Optional[int]:
+        import acl
+        import torch_npu
+
+        if not event_handles:
+            return 0
+        stream = torch_npu.npu.current_stream().npu_stream
+        acknowledgement, ret = acl.rt.create_event()
+        if ret != 0:
+            raise RuntimeError(f"Create dump source acknowledgement failed: {ret}")
+        handle = int(acknowledgement)
+        self.events[handle] = acknowledgement
+        try:
+            for event_handle in event_handles:
+                ret = acl.rt.stream_wait_event(stream, event_handle)
+                if ret != 0:
+                    raise RuntimeError(f"Wait for dump source event failed: {ret}")
+            ret = acl.rt.record_event(acknowledgement, stream)
+            if ret != 0:
+                raise RuntimeError(f"Record dump source acknowledgement failed: {ret}")
+        except Exception:
+            # A prefix of the waits may already be queued. Drain that prefix
+            # before its owning fence can be released. If this fails, propagate
+            # the device error rather than continuing with unprotected KV.
+            torch_npu.npu.current_stream().synchronize()
+            self.destroy_event_handle(handle)
+            raise
+        return handle
+
+    def query_event_handle(self, event_handle: int) -> bool:
+        import acl
+
+        status, ret = acl.rt.query_event_status(event_handle)
+        if ret != 0:
+            raise RuntimeError(f"Query dump source acknowledgement failed: {ret}")
+        # aclrtEventRecordedStatus: NOT_READY=0, COMPLETE=1.
+        return status == 1
+
+    def synchronize_event_handle(self, event_handle: int) -> None:
+        import acl
+
+        ret = acl.rt.synchronize_event(event_handle)
+        if ret != 0:
+            raise RuntimeError(f"Synchronize dump source acknowledgement failed: {ret}")
+
     @dataclass
     class NpuDeviceInfo:
         npu_id: int

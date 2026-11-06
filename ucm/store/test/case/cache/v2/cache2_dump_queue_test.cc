@@ -194,6 +194,8 @@ public:
     static inline std::function<UC::Status(const GatherCall&)> onGather;
     static inline std::function<UC::Status()> onSync;
     static inline std::function<UC::Status(uintptr_t)> onWaitEvent;
+    static inline std::function<UC::Expected<std::vector<std::shared_ptr<UC::Trans::Event>>>()>
+        onRecordCompletion;
 
     UC::Status Setup(const int32_t deviceId, const size_t streamNumber, bool = false)
     {
@@ -232,6 +234,11 @@ public:
         syncs.fetch_add(1, std::memory_order_relaxed);
         return onSync ? onSync() : UC::Status::OK();
     }
+    UC::Expected<std::vector<std::shared_ptr<UC::Trans::Event>>> RecordCompletion()
+    {
+        if (onRecordCompletion) { return onRecordCompletion(); }
+        return UC::Status::Unsupported();
+    }
     static void Reset()
     {
         gathers.clear();
@@ -245,6 +252,7 @@ public:
         onGather = nullptr;
         onSync = nullptr;
         onWaitEvent = nullptr;
+        onRecordCompletion = nullptr;
     }
 };
 
@@ -314,9 +322,11 @@ protected:
         desc.push_back({block, index, {reinterpret_cast<void*>(addr)}});
         return desc;
     }
-    std::pair<TaskPtr, UC::Cache2::WaiterPtr> SubmitOne(UC::Detail::TaskDesc desc)
+    std::pair<TaskPtr, UC::Cache2::WaiterPtr> SubmitOne(UC::Detail::TaskDesc desc,
+                                                        bool sourceFence = false)
     {
         auto task = std::make_shared<Task>(Task::Type::DUMP, std::move(desc));
+        if (sourceFence) { task->dumpSource = std::make_shared<UC::Cache2::DumpSourceState>(); }
         auto waiter = std::make_shared<UC::Latch>();
         dumpQ_.Submit(task, waiter);
         return {std::move(task), std::move(waiter)};
@@ -739,6 +749,114 @@ TEST_F(UCCache2DumpQueueTest, DumpStageMetrics)
     EXPECT_EQ(counters.count("cache_d2h_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_dump_submit_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_dump_wait_errors_total"), 0);
+}
+
+TEST_F(UCCache2DumpQueueTest, PublishesEveryRecordedEventBeforeDeviceCompletion)
+{
+    EXPECT_CALL(backend_, Dump)
+        .WillOnce(testing::Return(UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle())));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    std::promise<void> completeCopies;
+    auto completed = completeCopies.get_future().share();
+    FakeStream::onSync = [completed] {
+        completed.wait();
+        return UC::Status::OK();
+    };
+    FakeStream::onRecordCompletion = [] {
+        return UC::Expected<std::vector<std::shared_ptr<UC::Trans::Event>>>(
+            {std::make_shared<UC::Trans::Event>(101), std::make_shared<UC::Trans::Event>(202)});
+    };
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    auto [task, waiter] = SubmitOne(MakeDesc(block), true);
+    auto fence = task->dumpSource->Wait(kWaitMs);
+    ASSERT_NE(fence, nullptr);
+    EXPECT_EQ(fence->NativeHandles(), (std::vector<uintptr_t>{101, 202}));
+    EXPECT_FALSE(waiter->Check());
+    EXPECT_EQ(buffer_.MarkedReady(), 0);
+    completeCopies.set_value();
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(buffer_.MarkedReady(), 1);
+}
+
+TEST_F(UCCache2DumpQueueTest, SkippedCopiesPublishAnEmptyFence)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting({block});
+    auto [task, waiter] = SubmitOne(MakeDesc(block), true);
+    auto fence = task->dumpSource->Wait(kWaitMs);
+    ASSERT_NE(fence, nullptr);
+    EXPECT_TRUE(fence->events.empty());
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+}
+
+TEST_F(UCCache2DumpQueueTest, UnsupportedRecordingFallsBackWithoutCompletingTaskEarly)
+{
+    EXPECT_CALL(backend_, Dump)
+        .WillOnce(testing::Return(UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle())));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    std::promise<void> completeCopies;
+    auto completed = completeCopies.get_future().share();
+    FakeStream::onSync = [completed] {
+        completed.wait();
+        return UC::Status::OK();
+    };
+    auto [task, waiter] = SubmitOne(MakeDesc(TypesHelper::MakeBlockIdRandomly()), true);
+    EXPECT_EQ(task->dumpSource->Wait(kWaitMs), nullptr);
+    EXPECT_FALSE(waiter->Check());
+    completeCopies.set_value();
+    EXPECT_TRUE(waiter->WaitFor(kWaitMs));
+}
+
+TEST_F(UCCache2DumpQueueTest, FailedGatherDrainsBeforePublishingFallback)
+{
+    FakeStream::onSync = [this] {
+        if (FakeStream::syncs.load() == 1) { EXPECT_GT(buffer_.LiveHandles(), 0); }
+        return UC::Status::OK();
+    };
+    FakeStream::onGather = [](const FakeStream::GatherCall&) {
+        return UC::Status::Error("injected gather failure");
+    };
+    auto [task, waiter] = SubmitOne(MakeDesc(TypesHelper::MakeBlockIdRandomly()), true);
+    EXPECT_EQ(task->dumpSource->Wait(kWaitMs), nullptr);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_GE(FakeStream::syncs.load(), 1);
+}
+
+TEST(UCCache2DumpSourceStateTest, TimeoutAndDuplicatePublication)
+{
+    UC::Cache2::DumpSourceState state;
+    EXPECT_EQ(state.Wait(0), nullptr);
+    auto fence = std::make_shared<UC::Detail::DumpSourceFence>();
+    state.Publish(fence);
+    state.Publish();
+    EXPECT_EQ(state.Wait(0), fence);
+}
+
+TEST_F(UCCache2DumpQueueTest, FenceIsNotPublishedUntilAllRecordCallsReturn)
+{
+    EXPECT_CALL(backend_, Dump)
+        .WillOnce(testing::Return(UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle())));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    std::promise<void> finishRecording;
+    auto recorded = finishRecording.get_future().share();
+    std::promise<void> recordingStarted;
+    auto started = recordingStarted.get_future();
+    FakeStream::onRecordCompletion = [recorded, &recordingStarted] {
+        recordingStarted.set_value();
+        recorded.wait();
+        return UC::Expected<std::vector<std::shared_ptr<UC::Trans::Event>>>(
+            {std::make_shared<UC::Trans::Event>(303)});
+    };
+    auto [task, waiter] = SubmitOne(MakeDesc(TypesHelper::MakeBlockIdRandomly()), true);
+    ASSERT_EQ(started.wait_for(std::chrono::milliseconds(kWaitMs)), std::future_status::ready);
+    EXPECT_EQ(task->dumpSource->Wait(0), nullptr);
+    finishRecording.set_value();
+    auto fence = task->dumpSource->Wait(kWaitMs);
+    ASSERT_NE(fence, nullptr);
+    EXPECT_EQ(fence->NativeHandles(), (std::vector<uintptr_t>{303}));
+    EXPECT_TRUE(waiter->WaitFor(kWaitMs));
 }
 
 }  // namespace

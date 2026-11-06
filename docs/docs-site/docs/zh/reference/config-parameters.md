@@ -23,6 +23,7 @@ enable_metrics: true
 | --- | --- | --- | --- | --- |
 | `use_layerwise` | 选填 | bool | 默认 `true` | 是否启用分层（逐层）加载和保存模式。推荐设置为 `true`，DeepSeek v4 系列模型推荐设置为 `false`。 |
 | `enable_event_sync` | 选填 | bool | 默认 `true` | 性能优化开关，推荐开启。 |
+| `enable_async_dump_source_fence` | 选填 | bool | 默认 `false` | 实验性 Ascend V4.1 FAWA 优化，要求 `enable_event_sync=true`。使用 Cache2 SDMA Direct 的源读取完成事件保护后续 KV 写入，使 CPU 无需等待当前 dump 的设备复制完成即可继续准备元数据。不支持的 Store 或复制路径回退到 Host Wait。详见[生命周期和验证](../developer-guide/request-lifecycle.md#experimental-dump-source-fences)。 |
 | `persist_token_threshold` | 选填 | int | `0` | 当请求长度小于 `persist_token_threshold` 时，UCM 软件不对该请求进行处理。 |
 | `wa_dump_block_wise` | 选填 | bool | `true` | 仅在 FAWA connector 中使用。`true`: 每个 block 的 WA cache 都会被 dump（高频 dump）；`false`: 只 dump 每个 chunk prefill 最后 block 的 WA cache（低频 dump）。 |
 | `load_tokens_threshold` | 选填 | int | `0` | 设置触发 KV cache 加载的最小 token 阈值，仅在 DeepSeek V4 系列模型生效。当外部命中 tokens 数 > `load_tokens_threshold` 时触发 KV Cache 加载。 |

@@ -45,6 +45,15 @@ class UcmKVStoreBaseV1(ABC):
     the unified-cache-management (UCM) system.
     """
 
+    def get_dump_source_fence(self, task: Task):
+        """Return an owning, already-recorded source-read fence, or None.
+
+        Optional capability. The caller must keep the returned object alive
+        until all device waits consuming its events have executed. This does
+        not consume the task or replace wait()/check() and error reporting.
+        """
+        return None
+
     def __init__(self, config: Dict[str, object]) -> None:
         """Initialize the store with vendor-specific configuration.
 

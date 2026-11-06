@@ -41,6 +41,19 @@ class TransManager : public Detail::TaskWrapper<Task, Detail::TaskHandle> {
     DumpQT dumpQ_;
 
 public:
+    Expected<std::shared_ptr<Detail::DumpSourceFence>> GetDumpSourceFence(Detail::TaskHandle taskId)
+    {
+        std::shared_ptr<DumpSourceState> source;
+        {
+            std::shared_lock<std::shared_mutex> lock(mutex_);
+            const auto iter = tasks_.find(taskId);
+            if (iter == tasks_.end()) { return Status::NotFound(); }
+            source = iter->second.first->dumpSource;
+        }
+        // Wait only for publication of submitted records, never for the current
+        // task's device copies. A queue stall/timeout falls back to Store::Wait.
+        return source ? source->Wait(timeoutMs_) : std::shared_ptr<Detail::DumpSourceFence>{};
+    }
     Status Setup(const Config& config, Buffer* buffer)
     {
         timeoutMs_ = config.timeoutMs;

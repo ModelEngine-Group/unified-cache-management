@@ -158,4 +158,10 @@ Status AscendSdmaDirectStream::WaitEvent(const Event& event)
     return copier_->WaitEvent(event);
 }
 
+Expected<std::shared_ptr<Event>> AscendSdmaDirectStream::RecordCompletion()
+{
+    if (!copier_) { return Status::Error("Cache SDMA Direct stream is not setup"); }
+    return copier_->RecordCompletion();
+}
+
 }  // namespace UC::Trans

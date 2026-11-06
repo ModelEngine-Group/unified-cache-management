@@ -44,6 +44,7 @@ TEST(UCCache2CopyConfigTest, DefaultsFollowRuntime)
 
     EXPECT_EQ(config.bufferCapacity, 160ULL << 30);
     EXPECT_FALSE(config.ioAggregation);
+    EXPECT_FALSE(config.dumpSourceFence);
     EXPECT_EQ(config.sdmaDirect, bool(UCM_RUNTIME_ASCEND_SDMA_DIRECT));
     EXPECT_TRUE(config.Validate().Success());
 }
@@ -95,6 +96,13 @@ TEST(UCCache2CopyConfigTest, ValidationStillRejectsConflictingCopyModes)
 #if UCM_RUNTIME_ASCEND_SDMA_DIRECT
     EXPECT_NE(status.ToString().find("incompatible"), std::string::npos);
 #endif
+}
+
+TEST(UCCache2CopyConfigTest, SourceFenceIsExplicitOptIn)
+{
+    auto dict = MakeWorkerConfig();
+    dict.Set("cache_dump_source_fence", true);
+    EXPECT_TRUE(UC::Cache2::Config::From(dict).dumpSourceFence);
 }
 
 }  // namespace

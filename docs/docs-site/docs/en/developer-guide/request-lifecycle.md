@@ -50,3 +50,81 @@ This feedback ends transfer ownership; failed tasks also need a completed resour
 | SGLang | HiCache provides host buffers and the storage adapter uses Posix; follow its storage calls |
 
 Start at `UCMConnector` in `ucm/integration/vllm/ucm_connector.py`, then follow `UCMDirectConnector`, `UCMLayerWiseConnector` and the selected model Connector. See [Store extension](extending-store.md) for task and error semantics.
+
+## Experimental dump source fences
+
+The Ascend V4.1 FAWA connector normally drains earlier dumps in
+`handle_preemptions()`, before the engine can zero, recycle, load or overwrite
+device KV pages. Running requests also require this protection: sliding-window
+and compressed state can be updated in place without an explicit preemption.
+
+For an A3 build using Cache2 SDMA Direct, an experimental option replaces the
+current dump's host completion wait with device-stream dependencies:
+
+```yaml
+enable_event_sync: true
+enable_async_dump_source_fence: true  # default: false
+use_layerwise: false
+ucm_connectors:
+  - ucm_connector_name: UcmPipelineStore
+    ucm_connector_config:
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/path/to/kv-cache"
+      cache_buffer_capacity_gb: 32
+      posix_io_engine: psync
+```
+
+The existing upstream `handle_preemptions()` hook is unchanged. The engine and
+vLLM Ascend do not import UCM types or need new callbacks. The option is limited
+to the Ascend V4.1 FAWA layout and requires event synchronization. Other stores,
+Cache implementations and copy streams without the optional fence capability
+retain host waits. Turn the option off to restore the original behavior.
+
+### Ordering and ownership
+
+1. The compute stream records the producer-ready event after writing the old KV.
+2. Every Cache copy stream waits for that event, submits its source reads, then
+   records its own completion event. The dispatcher publishes the fence only
+   after all record calls have returned; a created but unrecorded event is never
+   exposed to the consumer.
+3. In `handle_preemptions()`, the connector waits for record **submission**, then
+   queues waits for all copy-stream events on the current compute stream. The
+   CPU can continue input and metadata preparation before the copies complete.
+4. A consumer acknowledgement is recorded immediately after those waits. The
+   connector retains the native fence until that acknowledgement completes.
+   Copy completion alone is insufficient to destroy events still referenced by
+   queued compute-stream waits.
+5. Ordinary Store `check()`/`wait()`, rank-consistency failure tracking and
+   request-finish reporting remain authoritative for task completion. Finishing
+   requests still drain their tasks and acknowledgements before releasing KV.
+   The existing upstream `shutdown()` hook is forwarded by the outer UCM
+   connector and drains outstanding FAWA fences during graceful worker shutdown.
+
+The optional C++ `DumpSourceFenceProvider` interface leaves `StoreV1` unchanged.
+Its default Python counterpart returns `None`. The health breaker forwards
+fence requests for existing tasks even after opening, because those source
+buffers still require protection. Rebuild the complete UCM package when using
+the new native/Python interfaces together.
+
+This version keeps the dispatcher's existing stream synchronization and SDMA
+descriptor lifetime. It does not pipeline multiple tasks through a busy copy
+dispatcher: waiting for submission can still block behind an earlier task or
+cache/back-end pressure. Devices still wait before overwriting KV; metadata
+device operations on the same compute stream also remain behind the fence.
+This optimization targets CPU preparation overlap and does not remove those
+data dependencies or guarantee a throughput improvement.
+
+### Validation before enabling
+
+Validate on the actual A3 deployment, including its main/auxiliary writer
+streams, draft/speculative work, graph mode and other MultiConnector children.
+All later KV writers must execute on the guarded stream or inherit its
+dependency. Independently submitted writer streams are not protected by this
+option. Loads retain their existing synchronization.
+
+Compare cache contents and generated outputs with the option disabled, cover
+chunked prefill, SWA/ring reuse, preemption, request completion and repeated
+external cache hits, and collect a trace for the same workload. Confirm that
+CPU metadata starts earlier, all D2H reads precede subsequent KV writes, and
+event handles/task counts remain bounded. CPU-only tests and a successful
+native build do not establish these device properties or performance gains.

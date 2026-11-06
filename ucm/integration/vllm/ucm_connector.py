@@ -3896,6 +3896,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
         self.connector.handle_preemptions(kv_connector_metadata)
 
+    def shutdown(self) -> None:
+        # Preserve the upstream lifecycle hook for implementations with pending
+        # transfers; custom/older implementations may have no cleanup hook.
+        shutdown = getattr(self.connector, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
+
     @_record_connector_interface_duration
     def has_connector_metadata(self) -> bool:
         """Check whether the connector metadata is currently set.

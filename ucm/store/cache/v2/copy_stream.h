@@ -218,6 +218,23 @@ public:
         return status;
     }
 
+    Expected<std::vector<std::shared_ptr<Trans::Event>>> RecordCompletion()
+    {
+        std::vector<std::shared_ptr<Trans::Event>> events;
+        events.reserve(streams_.size());
+        for (const auto& stream : streams_) {
+            auto result = stream->RecordCompletion();
+            if (!result) {
+                // Earlier streams may already have event records in flight.
+                // Drain before destroying those events or falling back to Wait.
+                (void)Synchronize();
+                return result.Error();
+            }
+            events.push_back(std::move(result.Value()));
+        }
+        return std::move(events);
+    }
+
 private:
     /* Trans::Stream submits a batch fragment by fragment and returns on the
      * first failure, so a failed copy can still have earlier fragments in

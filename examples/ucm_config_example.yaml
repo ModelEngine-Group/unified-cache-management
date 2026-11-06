@@ -9,6 +9,10 @@
 # Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
 # for backward compatibility.
 
+# Experimental Ascend V4.1 FAWA / Cache2 SDMA Direct source-read fences.
+# Requires enable_event_sync: true. Default false; validate on NPU before use.
+# enable_async_dump_source_fence: false
+
 ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:

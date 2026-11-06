@@ -256,4 +256,38 @@ TEST_F(UCCache2TransManagerTest, WaitTimesOutWhenQueueStalls)
     completer.join();
 }
 
+TEST_F(UCCache2TransManagerTest, SourceFenceDoesNotConsumeOrCompleteDumpTask)
+{
+    auto fence = std::make_shared<UC::Detail::DumpSourceFence>();
+    FakeDumpQueue::action = [fence](const TaskPtr& task, const WaiterPtr& waiter) {
+        waiter->Up();
+        task->dumpSource->Publish(fence);
+    };
+    Task task{Task::Type::DUMP, MakeDesc(1)};
+    task.dumpSource = std::make_shared<UC::Cache2::DumpSourceState>();
+    auto handle = mgr_.Submit(std::move(task));
+    ASSERT_TRUE(handle);
+    auto result = mgr_.GetDumpSourceFence(handle.Value());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.Value(), fence);
+    auto checked = mgr_.Check(handle.Value());
+    ASSERT_TRUE(checked);
+    EXPECT_FALSE(checked.Value());
+    FakeDumpQueue::submitted.front().second->Done();
+    EXPECT_EQ(mgr_.Wait(handle.Value()), UC::Status::OK());
+}
+
+TEST_F(UCCache2TransManagerTest, SourceFenceIsOptionalAndUnknownTasksFail)
+{
+    auto handle = mgr_.Submit({Task::Type::DUMP, MakeDesc(1)});
+    ASSERT_TRUE(handle);
+    auto result = mgr_.GetDumpSourceFence(handle.Value());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.Value(), nullptr);
+    EXPECT_EQ(mgr_.Wait(handle.Value()), UC::Status::OK());
+    auto unknown = mgr_.GetDumpSourceFence(handle.Value());
+    ASSERT_FALSE(unknown);
+    EXPECT_EQ(unknown.Error(), UC::Status::NotFound());
+}
+
 }  // namespace

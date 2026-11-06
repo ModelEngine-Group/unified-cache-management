@@ -781,6 +781,8 @@ class FAWADumpTask:
     task: Task
     key_count: int
     event_handle: int
+    source_fence: object | None = None
+    source_wait_handle: int = 0
 
 
 @dataclass(frozen=True)
@@ -855,6 +857,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
+        self.enable_async_dump_source_fence = self.launch_config.get(
+            "enable_async_dump_source_fence", False
+        )
+        if not isinstance(self.enable_async_dump_source_fence, bool):
+            raise ValueError("enable_async_dump_source_fence must be a boolean.")
+        if self.enable_async_dump_source_fence and (
+            not self.is_ascend_v41_layout or not self.enable_event_sync
+        ):
+            raise ValueError(
+                "Async dump source fences require Ascend V4.1 and enable_event_sync=true."
+            )
 
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
@@ -1474,6 +1487,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
+        config["cache_dump_source_fence"] = self.enable_async_dump_source_fence
         # This selects shared MLA keys versus rank-specific GQA keys in Cache2.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
@@ -2560,19 +2574,74 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     continue
 
                 if task_finished:
-                    try:
-                        self._rank_consistency.wait_dump(dump_task.task)
-                    except Exception as e:
-                        logger.error(
-                            "Best-effort FAWA dump task failed; external cache may miss. "
-                            f"label={dump_task.label}, keys={dump_task.key_count}, "
-                            f"{type(e).__name__}: {e}"
+                    # A completed D2H does not prove the compute stream has
+                    # consumed its wait. Keep native events alive until it has.
+                    if (
+                        dump_task.source_wait_handle
+                        and not self.device.query_event_handle(
+                            dump_task.source_wait_handle
                         )
-                    finally:
-                        self.device.destroy_event_handle(dump_task.event_handle)
+                    ):
+                        in_flight_tasks.append(dump_task)
+                        continue
+                    self._finish_dump_task(dump_task)
                 else:
                     in_flight_tasks.append(dump_task)
 
+            if in_flight_tasks:
+                self.tp_dump_tasks[request_ids] = in_flight_tasks
+            else:
+                self.tp_dump_tasks.pop(request_ids, None)
+
+    def _finish_dump_task(self, dump_task: FAWADumpTask) -> None:
+        try:
+            self._rank_consistency.wait_dump(dump_task.task)
+        except Exception as e:
+            logger.error(
+                "Best-effort FAWA dump task failed; external cache may miss. "
+                f"label={dump_task.label}, keys={dump_task.key_count}, "
+                f"{type(e).__name__}: {e}"
+            )
+            self._record_counter("connector_dump_wait_errors_total")
+        finally:
+            if dump_task.source_wait_handle:
+                # Usually already complete after polling; request finish may
+                # need a host wait before releasing native event ownership.
+                self.device.synchronize_event_handle(dump_task.source_wait_handle)
+                self.device.destroy_event_handle(dump_task.source_wait_handle)
+                dump_task.source_wait_handle = 0
+            self.device.destroy_event_handle(dump_task.event_handle)
+            dump_task.source_fence = None
+
+    def _fence_pending_dump_tasks(self) -> None:
+        self._poll_completed_dump_tasks()
+        for request_ids, dump_tasks in list(self.tp_dump_tasks.items()):
+            in_flight_tasks = []
+            for dump_task in dump_tasks:
+                if dump_task.source_fence is not None:
+                    in_flight_tasks.append(dump_task)
+                    continue
+                try:
+                    fence = dump_task.store.get_dump_source_fence(dump_task.task)
+                except Exception as e:
+                    logger.warning(
+                        f"Dump source fence unavailable; falling back to Wait: {e}"
+                    )
+                    fence = None
+                if fence is not None:
+                    # Device wait failures propagate: continuing after a partial
+                    # stream dependency would make subsequent KV writes unsafe.
+                    wait_handle = self.device.wait_for_dump_source(fence.event_handles)
+                    if wait_handle is not None:
+                        dump_task.source_fence = fence
+                        dump_task.source_wait_handle = wait_handle
+                        logger.info_once("FAWA dump source device fences are active.")
+                        in_flight_tasks.append(dump_task)
+                        continue
+                logger.warning_once(
+                    "FAWA dump source fence unavailable; using the host Wait path."
+                )
+                self._finish_dump_task(dump_task)
             if in_flight_tasks:
                 self.tp_dump_tasks[request_ids] = in_flight_tasks
             else:
@@ -2596,17 +2665,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if request_ids is None or request_ids.intersection(chunk_request_ids):
                 finished_chunk_req_ids.append(chunk_request_ids)
                 for dump_task in dump_tasks:
-                    try:
-                        self._rank_consistency.wait_dump(dump_task.task)
-                    except Exception as e:
-                        logger.error(
-                            "Best-effort FAWA dump task failed; external cache may miss. "
-                            f"label={dump_task.label}, keys={dump_task.key_count}, "
-                            f"{type(e).__name__}: {e}"
-                        )
-                        self._record_counter("connector_dump_wait_errors_total")
-                    finally:
-                        self.device.destroy_event_handle(dump_task.event_handle)
+                    self._finish_dump_task(dump_task)
 
         for request_ids in finished_chunk_req_ids:
             self.tp_dump_tasks.pop(request_ids, None)
@@ -2614,10 +2673,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
         # Worker side method
         # This hook runs before the next load/forward can overwrite cache data.
-        # Drain all previous-step dumps, not only explicitly preempted requests:
+        # Protect all previous-step dumps, not only explicitly preempted requests:
         # a running request's sliding-window blocks may also be recycled by the
         # next allocate_slots() call.
-        self._drain_best_effort_dump_tasks()
+        if self.enable_async_dump_source_fence:
+            self._fence_pending_dump_tasks()
+        else:
+            self._drain_best_effort_dump_tasks()
 
     def get_finished(
         self,
@@ -2627,6 +2689,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._drain_best_effort_dump_tasks(finished_req_ids)
         self._rank_consistency.finish_dump(finished_req_ids)
         return finished_req_ids, None
+
+    def shutdown(self) -> None:
+        if self.enable_async_dump_source_fence:
+            self._drain_best_effort_dump_tasks()
 
     def request_finished_all_groups(
         self,

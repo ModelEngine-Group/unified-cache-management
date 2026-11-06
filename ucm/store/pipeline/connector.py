@@ -196,6 +196,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def wait(self, task: Task) -> None:
         return self.store_.Wait(task.task_id)
 
+    def get_dump_source_fence(self, task: Task):
+        return self.store_.GetDumpSourceFence(task.task_id)
+
     def check(self, task: Task) -> bool:
         return self.store_.Check(task.task_id)
 

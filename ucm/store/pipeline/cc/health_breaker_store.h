@@ -30,6 +30,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "detail/dump_source_fence.h"
 #include "detail/health_tracker.h"
 #include "detail/store_health_config.h"
 #include "health_check_executor.h"
@@ -37,7 +38,7 @@
 
 namespace UC::PipelineStore {
 
-class HealthBreakerStore : public StoreV1 {
+class HealthBreakerStore : public StoreV1, public Detail::DumpSourceFenceProvider {
 public:
     HealthBreakerStore() = default;
     ~HealthBreakerStore() override;
@@ -60,6 +61,8 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
+    Expected<std::shared_ptr<Detail::DumpSourceFence>> GetDumpSourceFence(
+        Detail::TaskHandle taskId) override;
 
 private:
     bool RecordPassiveResult(const Status& status, uint64_t generation);
