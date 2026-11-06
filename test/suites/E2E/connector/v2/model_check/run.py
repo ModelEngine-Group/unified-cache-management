@@ -48,6 +48,13 @@ def arguments():
         help="assumed external prefix hit in plan-only mode (default 0)",
     )
     p.add_argument(
+        "--expect-policy",
+        nargs="+",
+        choices=("FA", "WA", "STATE"),
+        default=[],
+        help="require checked Dump windows on a cold run or Get windows on a hit",
+    )
+    p.add_argument(
         "--block-size",
         type=int,
         help="native vLLM block size (platform default if omitted)",
@@ -227,6 +234,7 @@ def run(args, cleanup, scratch):
     )
 
     steps = num_get = num_dump = 0
+    covered_policies = set()
     cursor = hit
     while cursor < args.tokens:
         step = None
@@ -259,6 +267,7 @@ def run(args, cleanup, scratch):
         check_batches(
             worker.connector_worker, meta.dump_plans, dumps, hashes, is_dump=True
         )
+        covered_policies.update(policy.name for policy, _ in (loads if hit else dumps))
         print(f"step {steps + 1}: Get windows={len(loads)}, Dump windows={len(dumps)}")
         if root:
             model_output = make_empty_encoder_model_runner_output(output)
@@ -288,6 +297,12 @@ def run(args, cleanup, scratch):
     if not (num_get or num_dump):
         raise AssertionError(
             "No complete Get or Dump window was checked for this request"
+        )
+    missing = set(args.expect_policy) - covered_policies
+    if missing:
+        op = "Get" if hit else "Dump"
+        raise AssertionError(
+            f"No checked {op} windows for {sorted(missing)}; observed {sorted(covered_policies)}"
         )
     return steps, num_get, num_dump
 
