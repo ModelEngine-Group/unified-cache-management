@@ -32,16 +32,18 @@
 namespace UC::Cache2 {
 
 /* Ascend-a5 backend: host DDR physical allocations exported as driver share
- * handles and mapped into one reserved VA region, rank-strided. Only the local
- * rank's segment is host-accessible; peer segments are device-mapped only. */
+ * handles. Each rank gets its own reserved VA range and is mapped from the start
+ * of that range, because some A5 drivers fail to map at an offset inside a
+ * larger reservation. Only the local rank's segment is host-accessible; peer
+ * segments are device-mapped only. */
 class AscendHalDataBackend : public DataBackend {
     struct Mapping {
         Trans::Hal::MemHandle handle{nullptr};
+        void* addr{nullptr};
         bool mapped{false};
     };
 
     std::vector<Mapping> mappings_{};
-    void* base_{nullptr};
     size_t owner_{};
     int32_t deviceId_{-1};
     size_t nRanks_{0};
@@ -65,7 +67,7 @@ public:
 
 private:
     Status Allocate(Trans::Hal::PageType pageType);
-    std::byte* RankAddr(size_t rank) const;
+    Status ReserveRankAddress(size_t rank);
 };
 
 }  // namespace UC::Cache2

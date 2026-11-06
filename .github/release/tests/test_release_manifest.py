@@ -74,12 +74,14 @@ def _plan() -> dict[str, object]:
                 "manylinux": "manylinux_2_28",
                 "target_platform_tag": "manylinux_2_28_x86_64",
                 "external_runtime_exclude_patterns": ["libcudart.so.12"],
+                "host_driver_libraries": [],
                 "runtime_requirements": ["wrapt==1.17.2"],
                 "repair": {
                     "tool": "auditwheel",
                     "version": "6.7.0",
                     "target_platform": "manylinux_2_28_x86_64",
                     "excluded_patterns": ["libcudart.so.12"],
+                    "host_driver_libraries": [],
                 },
                 "builder": {
                     "repository": "ghcr.io/example/ucm-builder",
@@ -191,6 +193,7 @@ def _write_artifact_inputs(
                     "version": "6.7.0",
                     "target_platform": "manylinux_2_28_x86_64",
                     "excluded_patterns": ["libcudart.so.12"],
+                    "host_driver_libraries": [],
                 },
                 "dependencies": ["wrapt==1.17.2"],
                 "auditwheel_report": {
