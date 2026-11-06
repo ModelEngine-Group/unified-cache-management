@@ -11,7 +11,8 @@ git checkout -- .
 
 cd /vllm-workspace/vllm-ascend
 git checkout -- .
-git apply $current_dir/ucm/integration/vllm/patch/gsa/v0.23.0/vllm-ascend-csrc-build-1020-c8.patch
+
+git apply $current_dir/ucm/sandbox/sparse/gsav2/patch/v0230/vllm-ascend-csrc-build-1020-c8.patch
 export SETUPTOOLS_SCM_PRETEND_VERSION="0.23.0"
 pip install -v -e . --no-build-isolation
 

@@ -1,17 +1,4 @@
 """Replace the vLLM-Ascend 0.23.0 SFA forward with the GSA-aware KV-save fix.
-
-This is the GSA counterpart of
-``ucm/integration/vllm/patch/v0230/vllm_ascend/sfa_kv_transfer_patch.py``.
-It is toggled by ``ENABLE_GSA_PATCH=1`` (in addition to ``ENABLE_UCM_PATCH=1``)
-via ``apply_patch.apply_all_patches`` and patches ``AscendSFAImpl.forward`` with
-the GSA-aware implementation that drives
-``maybe_execute_sparse_attention_begin/finished`` and the
-``gsa_prefetch/warmup/swap`` top-k bookkeeping introduced by
-``vllm-ascend-adapt-1020-c8.patch``.
-
-The remaining GSA SFA patches (``__init__``, ``_build``,
-``indexer_select_post_process``, ``_execute_sparse_flash_attention_process``)
-live in ``gsa/v0_23_0/vllm_ascend/sfa_v1_patch.py``.
 """
 
 from __future__ import annotations

@@ -216,14 +216,14 @@ def apply_all_patches() -> None:
                 if ENABLE_GSA_PATCH:
                     logger.info("UCM patching vllm 0.23.0 for GSA sparse attention...")
 
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.block_table_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.engine_core_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.gpu_model_runner_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.gpu_worker_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.kv_cache_manager_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.mla_attention_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.sched_output_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm.scheduler_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.block_table_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.engine_core_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.gpu_model_runner_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.gpu_worker_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.kv_cache_manager_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.mla_attention_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.sched_output_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.scheduler_patch
                 else:
                     logger.info(
                         "UCM GSA vllm patches skipped (ENABLE_GSA_PATCH is not set)."
@@ -324,12 +324,12 @@ def apply_all_patches() -> None:
                     # patch vllm-ascend-csrc-build-1020-c8.patch to be applied
                     # before `pip install -v -e .` so the gsa_* ops are
                     # compiled in.
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.block_table_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.device_op_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.model_runner_v1_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.sfa_kv_transfer_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.sfa_v1_patch
-                    import ucm.integration.vllm.patch.gsa.v0_23_0.vllm_ascend.worker_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.block_table_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.device_op_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.model_runner_v1_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.sfa_v1_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.worker_patch
                 else:
                     # Plain SFA KV-transfer forward (no GSA hooks).
                     logger.info(
