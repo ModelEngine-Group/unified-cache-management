@@ -18,6 +18,7 @@ PYBIND11_MODULE(ucmcompressor, module)
     config.def_readwrite("deviceId", &Config::deviceId);
     config.def_readwrite("tensorSize", &Config::tensorSize);
     config.def_readwrite("shardSize", &Config::shardSize);
+    config.def_readwrite("compressedShardSize", &Config::compressedShardSize);
     config.def_readwrite("blockSize", &Config::blockSize);
     config.def_readwrite("streamNumber", &Config::streamNumber);
     config.def_readwrite("timeoutMs", &Config::timeoutMs);
