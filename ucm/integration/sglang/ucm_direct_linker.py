@@ -32,13 +32,15 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import freeze_gc, get_device_module
 
+from ucm.integration.sglang.patch.cache_match_logging import install_cache_match_logging
 from ucm.integration.sglang.ucm_direct_store_adapter import (
     UcmDirectStoreAdapter,
     UcmLayerTransfer,
     UcmPoolMetadata,
 )
+from ucm.logger import init_logger
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 device_module = get_device_module()
 _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
@@ -154,6 +156,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._tp_rank = torch.distributed.get_rank(group=tp_group)
             self._tp_size = torch.distributed.get_world_size(group=tp_group)
         self._lookup_owner = True
+        self._cache_match_log_rank = (
+            self._tp_rank == 0 and params.attn_cp_rank == 0 and params.pp_rank == 0
+        )
+        install_cache_match_logging(UcmDirectLinker)
         self._dump_ranks = (0,) if self.pool_group.rank_replicated else (self._tp_rank,)
         self._log_pool_topology()
         try:
@@ -627,6 +633,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         ):
             resume_from_pages = previous.hit_pages
+        lookup_log_started = (
+            time.perf_counter() if logger.isEnabledFor(logging.DEBUG) else None
+        )
         result = self.adapter.lookup(
             lookup_transfers,
             page_keys,
@@ -638,6 +647,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._lookup_progress.move_to_end(rid)
         if len(self._lookup_progress) > _LOOKUP_PROGRESS_MAX_REQUESTS:
             self._lookup_progress.popitem(last=False)
+        if lookup_log_started is not None:
+            # Tail-relative local boundary; SGLang intersects ranks afterwards.
+            logger.debug(
+                "[LookUp] request_id=%s remaining_query_pages=%d "
+                "hit_external_pages=%d page_size=%d lookup_ms=%.3f "
+                "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
+                rid,
+                len(page_keys),
+                result[-1] if result else 0,
+                self.page_size,
+                (time.perf_counter() - lookup_log_started) * 1000,
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+            )
         return result
 
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
@@ -648,6 +672,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if rid in self._pending_loads:
             raise RuntimeError(f"UCM load for rid={rid} is already queued.")
         self._pending_loads[rid] = expanded
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[Load] request_id=%s pools=%s "
+                "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
+                rid,
+                [transfer.name for transfer in expanded],
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+            )
         return True
 
     def cancel_queued_load(self, rid: str) -> bool:
@@ -725,6 +759,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
+                load_log_started = (
+                    time.perf_counter() if logger.isEnabledFor(logging.INFO) else None
+                )
                 try:
                     prerequisite_handle = self._wait_transfer_events(ready_events)
                     page_transfers = [
@@ -780,17 +817,32 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     self.layer_done_counter.fail(counter_index, error)
                     logger.exception(
                         "UCM layer-wise load batch failed tp_rank=%d batch=%d "
-                        "layer=%d requests=%d",
+                        "layer=%d requests=%d request_ids=%s",
                         self._tp_rank,
                         counter_index,
                         active_layer,
                         len(pending),
+                        list(pending),
                     )
                 finally:
                     if self._requires_load_finish:
                         self._load_results[counter_index].set_result(landed)
                     else:
                         self._completed_loads.put(list(pending))
+                    if load_log_started is not None:
+                        # Worker execution includes dependency waits and failure
+                        # cleanup, but excludes time spent waiting in the queue.
+                        logger.info(
+                            "[CacheLoad] load_completed request_ids=%s "
+                            "success=%s load_ms=%.3f "
+                            "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
+                            list(pending),
+                            landed,
+                            (time.perf_counter() - load_log_started) * 1000,
+                            self._dp_rank,
+                            self._attn_dp_rank,
+                            self._tp_rank,
+                        )
             finally:
                 self._load_queue.task_done()
 
