@@ -263,6 +263,10 @@ public:
     size_t SlotsPerRank() const { return slotsPerRank_; }
     size_t BucketCount() const { return bucketCount_; }
 
+    /* Invalidate every cached key of this control region. Works from any
+     * participant, including the scheduler side that never owns slot data. */
+    void Reset() { ctrl_.Layout().ResetGeneration(); }
+
 private:
     static void BlockKeyWords(const Detail::BlockId& blockId, size_t (&words)[2])
     {
@@ -299,11 +303,12 @@ private:
                meta.key[1].load(std::memory_order_acquire) == words[1];
     }
 
-    static bool MatchKey(const SlotMeta& meta, size_t iBucket, const Detail::BlockId& blockId,
-                         size_t offset)
+    static bool MatchKey(const CtrlLayout& layout, const SlotMeta& meta, size_t iBucket,
+                         const Detail::BlockId& blockId, size_t offset)
     {
         return MatchBlock(meta, iBucket, blockId) &&
-               meta.key[2].load(std::memory_order_acquire) == offset;
+               meta.key[2].load(std::memory_order_acquire) == offset &&
+               meta.generation.load(std::memory_order_acquire) == layout.Generation();
     }
 
     // On success, the caller owns one reference and must transfer it into a Handle.
@@ -362,7 +367,7 @@ private:
     {
         auto* meta = &layout.SlotMetaArr()[iNode];
         for (size_t spin = 0; spin < spinBudget;) {
-            if (!MatchKey(*meta, iBucket, blockId, offset)) { return false; }
+            if (!MatchKey(layout, *meta, iBucket, blockId, offset)) { return false; }
             auto reference = meta->reference.load(std::memory_order_acquire);
             if (reference == kSlotClaimed) {
                 ++spin;
@@ -380,7 +385,7 @@ private:
                 ++spin;
                 continue;
             }
-            if (!MatchKey(*meta, iBucket, blockId, offset)) {
+            if (!MatchKey(layout, *meta, iBucket, blockId, offset)) {
                 meta->reference.fetch_sub(1, std::memory_order_release);
                 return false;
             }
@@ -403,7 +408,7 @@ private:
         size_t walked = 0;
         while (iNode != kInvalid && iNode < layout.SlotCount() && walked++ < layout.SlotCount()) {
             auto* meta = &layout.SlotMetaArr()[iNode];
-            if (MatchKey(*meta, iBucket, blockId, offset)) { return iNode; }
+            if (MatchKey(layout, *meta, iBucket, blockId, offset)) { return iNode; }
             iNode = meta->next.load(Order);
         }
         return kInvalid;
@@ -454,6 +459,7 @@ private:
                 StoreKey(*meta, blockId, offset);
                 meta->state.store(State::Loading, std::memory_order_relaxed);
             }
+            meta->generation.store(layout.Generation(), std::memory_order_release);
             meta->accessed.store(1, std::memory_order_relaxed);
             meta->reference.store(initialReference, std::memory_order_release);
             return iNode;

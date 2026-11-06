@@ -126,6 +126,13 @@ public:
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override { return transMgr_.Check(taskId); }
     Status Wait(Detail::TaskHandle taskId) override { return transMgr_.Wait(taskId); }
+    Status ResetCache() override
+    {
+        // The control region exists on every participant, including the
+        // scheduler side that never maps slot data.
+        bufferMgr_.Reset();
+        return Status::OK();
+    }
 };
 
 }  // namespace UC::Cache2

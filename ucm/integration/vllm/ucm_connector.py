@@ -1585,6 +1585,8 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
+    # One-shot: asks the worker to clear its local Cache tier before loading.
+    reset_cache: bool = False
 
 
 @dataclass
@@ -2863,6 +2865,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return finished_recving
 
+    def reset_cache(self) -> bool:
+        """Clear this participant's local Cache tier.
+
+        Returns True when a local cache tier was invalidated. Participants that
+        only speak to the backend (a scheduler without a shared host buffer, or
+        a deferred scheduler store) return False, so the caller can dispatch
+        the reset to the workers.
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return False
+        return bool(store.reset_cache())
+
     def get_finished(
         self,
         finished_req_ids: set[str],
@@ -3988,6 +4003,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     "Use the default kv_load_failure_policy='fail'."
                 )
         self.connector: KVConnectorBase_V1
+        # Set when a scheduler-side reset could not reach the worker-local
+        # Cache tier; the next metadata carries it to the workers.
+        self._pending_reset_cache = False
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
@@ -4329,7 +4347,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
-        return self.connector.build_connector_meta(scheduler_output)
+        metadata = self.connector.build_connector_meta(scheduler_output)
+        if self._pending_reset_cache:
+            self._pending_reset_cache = False
+            try:
+                metadata.reset_cache = True
+            except AttributeError:
+                logger.warning("UCM metadata has no reset_cache field; skipping.")
+        return metadata
 
     @_record_connector_interface_duration
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
@@ -4342,7 +4367,35 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             connector_metadata (dict): the connector metadata.
         """
+        if getattr(connector_metadata, "reset_cache", False):
+            reset = getattr(self.connector, "reset_cache", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception as e:
+                    logger.warning(
+                        f"UCM worker cache reset failed: {type(e).__name__}: {e}"
+                    )
         self.connector.bind_connector_metadata(connector_metadata)
+
+    def reset_cache(self) -> bool | None:
+        """Clear the UCM Cache tier; the stacked backend is left intact.
+
+        The scheduler-side store clears the shared Cache tier when it owns one.
+        Otherwise the reset is carried to the workers by the next connector
+        metadata, so the worker clears its tier before loading that step.
+        """
+        cleared = False
+        try:
+            reset = getattr(self.connector, "reset_cache", None)
+            if callable(reset):
+                cleared = bool(reset())
+        except Exception as e:
+            logger.warning(f"UCM cache reset failed: {type(e).__name__}: {e}")
+            return False
+        if self._role == KVConnectorRole.SCHEDULER and not cleared:
+            self._pending_reset_cache = True
+        return True
 
     @_record_connector_interface_duration
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):

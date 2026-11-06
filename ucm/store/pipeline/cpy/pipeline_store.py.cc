@@ -278,6 +278,13 @@ public:
         }
         ThrowIfFailed(status);
     }
+    bool ResetCache()
+    {
+        auto status = StoreBack()->ResetCache();
+        if (status.Success()) { return true; }
+        if (status == Status::Unsupported()) { return false; }
+        ThrowError(status);
+    }
 };
 
 }  // namespace UC::PipelineStore
@@ -309,4 +316,5 @@ PYBIND11_MODULE(ucmpipelinestore, m)
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);
     s.def("Wait", &PipelineStore::Wait);
+    s.def("ResetCache", &PipelineStore::ResetCache);
 }

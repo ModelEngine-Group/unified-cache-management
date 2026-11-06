@@ -233,3 +233,11 @@ class UcmKVStoreBaseV1(ABC):
             ``True`` if the task has finished, ``False`` if still in-flight.
         """
         pass
+
+    def reset_cache(self) -> bool:
+        """Invalidate the blocks held in this store's local cache tier.
+
+        Backend data must be preserved; a reset only makes the fast tier cold.
+        Stores without a resettable tier keep the default and return ``False``.
+        """
+        return False

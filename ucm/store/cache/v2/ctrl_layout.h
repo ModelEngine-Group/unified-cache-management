@@ -61,6 +61,8 @@ public:
         alignas(64) std::atomic<State> state{State::Loading};
         /* Hot line: CLOCK second-chance bit. */
         alignas(64) std::atomic<uint8_t> accessed{0};
+        /* Control generation this slot's key belongs to. */
+        std::atomic<uint64_t> generation{0};
 
         void Init()
         {
@@ -73,6 +75,7 @@ public:
             next.store(kInvalid, std::memory_order_relaxed);
             state.store(State::Loading, std::memory_order_relaxed);
             accessed.store(0, std::memory_order_relaxed);
+            generation.store(0, std::memory_order_relaxed);
         }
     };
     struct RankDataDesc {
@@ -109,6 +112,8 @@ private:
         size_t slotSize{0};
         size_t bucketCount{0};
         size_t lockStripeCount{0};
+        /* Bumped by ResetCache; slots from an older generation are invisible. */
+        alignas(64) std::atomic<uint64_t> generation{0};
         alignas(64) RankDataDesc rankDescs[kMaxRanks];
         alignas(64) std::atomic<size_t> clockHands[kMaxRanks];
     };
@@ -181,6 +186,7 @@ public:
         header->slotSize = slotSize;
         header->bucketCount = bucketCount_;
         header->lockStripeCount = lockStripeCount_;
+        header->generation.store(0, std::memory_order_relaxed);
         for (size_t rank = 0; rank < rankCount_; ++rank) {
             header->rankDescs[rank].handle.store(kInvalid, std::memory_order_relaxed);
             header->rankDescs[rank].ready.store(0, std::memory_order_relaxed);
@@ -276,6 +282,11 @@ public:
 
     size_t BucketCount() const { return bucketCount_; }
     size_t SlotCount() const { return slotCount_; }
+    uint64_t Generation() const { return Hdr()->generation.load(std::memory_order_acquire); }
+
+    /* Invalidates every published key without touching slot data or the
+     * backend. Any participant of the control region may call this. */
+    void ResetGeneration() { Hdr()->generation.fetch_add(1, std::memory_order_acq_rel); }
 
 private:
     std::atomic<size_t>* ClockHand(size_t rank) const

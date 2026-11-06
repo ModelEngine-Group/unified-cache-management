@@ -195,6 +195,19 @@ public:
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
 
+    /**
+     * @brief Invalidate the blocks held in this store's own fast tier.
+     *
+     * A reset must not cascade into the backend store: the persistent data is
+     * what callers want to keep after clearing the cache in front of it.
+     * Implementations without a resettable tier return Status::Unsupported()
+     * so callers can tell "nothing to reset" apart from a failed reset.
+     *
+     * Resetting while transfers are in flight is allowed. Entries completed
+     * after the reset stay invisible and are reclaimed by later allocation.
+     */
+    virtual Status ResetCache() { return Status::Unsupported(); }
+
 protected:
     /**
      * @brief Protected default constructor.

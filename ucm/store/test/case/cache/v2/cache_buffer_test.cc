@@ -652,5 +652,32 @@ TEST(Cache2BufferOptimisticTest, PinnedHitPreventsSlotReconfigurationUntilReleas
     ::operator delete(memory, std::align_val_t{64});
 }
 
+TEST_F(Cache2BufferTest, ResetHidesReadySlotsUntilTheyAreRefilled)
+{
+    auto blockId = MakeBlockId(0x51u);
+    bool owner = false;
+    auto slot = BufferTestAccess::TryAcquireSlot(buffer_, blockId, 0, 8, owner);
+    ASSERT_NE(slot, kInvalid);
+    ASSERT_TRUE(owner);
+    BufferTestAccess::MarkReady(buffer_, slot);
+    BufferTestAccess::Release(buffer_, slot);
+    ASSERT_TRUE(buffer_.Exist(blockId, 0));
+    ASSERT_NE(BufferTestAccess::FindSlot(buffer_, blockId, 0), kInvalid);
+
+    buffer_.Reset();
+
+    // Every published key now belongs to the previous generation.
+    ASSERT_FALSE(buffer_.Exist(blockId, 0));
+    ASSERT_EQ(BufferTestAccess::FindSlot(buffer_, blockId, 0), kInvalid);
+
+    bool ownerAfterReset = false;
+    auto slotAfterReset = BufferTestAccess::TryAcquireSlot(buffer_, blockId, 0, 8, ownerAfterReset);
+    ASSERT_NE(slotAfterReset, kInvalid);
+    ASSERT_TRUE(ownerAfterReset);
+    BufferTestAccess::MarkReady(buffer_, slotAfterReset);
+    BufferTestAccess::Release(buffer_, slotAfterReset);
+    ASSERT_TRUE(buffer_.Exist(blockId, 0));
+}
+
 }  // namespace
 }  // namespace UC::Cache2

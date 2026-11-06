@@ -130,6 +130,9 @@ public:
         if (backend_) { backend_->Prefetch(blocks, num); }
     }
 
+    /* Invalidates this store's cache tier only; the backend stays untouched. */
+    void Reset() { buffer_.Reset(); }
+
 private:
     void ReportLookupStats(const StopWatch& sw, size_t hits, size_t misses)
     {
