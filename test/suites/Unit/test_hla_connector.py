@@ -1209,13 +1209,23 @@ def test_is_npu_layer_major_blnhc(hla):
     assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [ple_only]))
 
 
+class _FakeCUDAGraphMode:
+    """Mirrors vLLM CUDAGraphMode.has_full_cudagraphs() semantics."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def has_full_cudagraphs(self) -> bool:
+        return self.name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
+
+
 def _layerwise_start_load_fixture(hla, cudagraph_mode: str):
     connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
     connector.need_load = True
     connector.layer_order = ["l0", "l1", "l2", "l3"]
     connector._vllm_config = SimpleNamespace(
         compilation_config=SimpleNamespace(
-            cudagraph_mode=SimpleNamespace(name=cudagraph_mode)
+            cudagraph_mode=_FakeCUDAGraphMode(cudagraph_mode)
         )
     )
     connector.device = SimpleNamespace(synchronize=MagicMock())
@@ -1232,20 +1242,23 @@ def _layerwise_start_load_fixture(hla, cudagraph_mode: str):
     return connector, submitted, drained
 
 
-def test_layerwise_full_cudagraph_loads_all_positions_before_forward(hla):
-    connector, submitted, drained = _layerwise_start_load_fixture(hla, "FULL")
+@pytest.mark.parametrize(
+    "cudagraph_mode",
+    ["FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"],
+)
+def test_layerwise_full_cudagraph_loads_all_positions_before_forward(
+    hla, cudagraph_mode
+):
+    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
     connector.start_load_kv(SimpleNamespace())
     assert submitted == [0, 1, 2, 3]
     assert drained == [True]
     connector._record_load_bytes.assert_called_once()
-    # Depth-2 alone would leave [2, 3] unsubmitted; FULL must not do that.
-    assert 2 in submitted and 3 in submitted
 
 
-def test_layerwise_non_full_keeps_depth2_prefetch(hla):
-    connector, submitted, drained = _layerwise_start_load_fixture(
-        hla, "FULL_DECODE_ONLY"
-    )
+@pytest.mark.parametrize("cudagraph_mode", ["NONE", "PIECEWISE"])
+def test_layerwise_non_full_keeps_depth2_prefetch(hla, cudagraph_mode):
+    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
     connector.start_load_kv(SimpleNamespace())
     assert submitted == [0, 1]
     assert drained == []

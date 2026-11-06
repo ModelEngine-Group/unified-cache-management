@@ -3104,15 +3104,22 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 )
 
     def _is_full_cudagraph(self) -> bool:
-        """True when the engine captures a full model graph.
+        """True when the engine may replay a full model graph this process.
 
-        Full-graph replay does not run per-layer Python wait hooks, so the
-        depth-2 load pipeline cannot submit later positions or wait before
-        the model reads KV.
+        ``FULL``, ``FULL_DECODE_ONLY``, and ``FULL_AND_PIECEWISE`` all report
+        ``has_full_cudagraphs()`` / decode-side FULL. Those replays skip
+        per-layer Python wait hooks, so the depth-2 load pipeline cannot
+        submit later positions or wait before the model reads KV.
         """
         cc = getattr(self._vllm_config, "compilation_config", None)
-        cg_mode = getattr(getattr(cc, "cudagraph_mode", None), "name", None)
-        return str(cg_mode or "NONE") == "FULL"
+        cg_mode = getattr(cc, "cudagraph_mode", None)
+        if cg_mode is None:
+            return False
+        has_full = getattr(cg_mode, "has_full_cudagraphs", None)
+        if callable(has_full):
+            return bool(has_full())
+        name = str(getattr(cg_mode, "name", cg_mode) or "NONE")
+        return name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
