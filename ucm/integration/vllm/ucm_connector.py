@@ -28,6 +28,13 @@ try:
 except ImportError:
     KVConnectorWorkerMetadata = object
 
+try:
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+        KVConnectorTransferResults,
+    )
+except ImportError:
+    KVConnectorTransferResults = None
+
 from vllm.distributed.parallel_state import get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
@@ -424,6 +431,8 @@ class KVCacheTensorInfo:
     ptr: int
     bytes_per_block: int
     buffer_size: int
+    block_stride: int
+    physical_blocks: int
 
 
 @dataclass(frozen=True)
@@ -486,11 +495,33 @@ class KVCacheLayout:
             bytes_per_block = math.prod(int(dim) for dim in tensor.shape[1:]) * int(
                 tensor.element_size()
             )
+            # A page may use any dense inner dimension order (HND/NHD), but
+            # copying one contiguous segment cannot represent holes inside it.
+            packing = sorted(
+                (int(tensor.stride(dim)), int(tensor.shape[dim]))
+                for dim in range(1, tensor.dim())
+                if int(tensor.shape[dim]) > 1
+            )
+            expected_stride = 1
+            for stride, size in packing:
+                if stride != expected_stride:
+                    raise ValueError(
+                        f"KV cache block is not a dense page: {layer_name}"
+                    )
+                expected_stride *= size
+            block_stride = int(tensor.stride(0)) * int(tensor.element_size())
+            if block_stride < bytes_per_block:
+                raise ValueError(f"Overlapping KV cache blocks: {layer_name}")
+            physical_blocks = int(tensor.shape[0])
             tensor_infos.append(
                 KVCacheTensorInfo(
                     ptr=int(tensor[0].data_ptr()),
                     bytes_per_block=bytes_per_block,
-                    buffer_size=int(tensor.shape[0]) * bytes_per_block,
+                    # K/V views can interleave: the span includes the gaps,
+                    # but must not extend beyond the final component's bytes.
+                    buffer_size=(physical_blocks - 1) * block_stride + bytes_per_block,
+                    block_stride=block_stride,
+                    physical_blocks=physical_blocks,
                 )
             )
 
@@ -563,13 +594,14 @@ class KVCacheLayout:
             "decode_context_parallel_size",
             1,
         )
-        if (
-            dcp_size <= 1
-            or tensor.bytes_per_block == 0
-            or tensor.buffer_size % tensor.bytes_per_block
-        ):
+        if dcp_size <= 1 or tensor.bytes_per_block == 0:
             return 1
-        if tensor.buffer_size // tensor.bytes_per_block == self.num_blocks * dcp_size:
+        if tensor.physical_blocks == self.num_blocks * dcp_size:
+            if tensor.block_stride != tensor.bytes_per_block:
+                raise ValueError(
+                    "DCP-replicated KV rows must be contiguous to combine them "
+                    "in one transfer segment"
+                )
             return dcp_size
         return 1
 
@@ -597,7 +629,13 @@ class KVCacheLayout:
             self.buffer_sizes = np.asarray(
                 [info.buffer_size for info in flat_tensors], dtype=np.uint64
             )
-            self.block_stride_lists = self.tensor_size_lists
+            self.block_stride_lists = np.asarray(
+                [
+                    info.block_stride * self._dcp_replicated_scale(info)
+                    for info in flat_tensors
+                ],
+                dtype=np.uint64,
+            )
             logger.info(
                 f"base_ptrs: {self.base_ptrs.shape}, "
                 f"tensor_size_lists: {self.tensor_size_lists.shape}"
@@ -640,7 +678,16 @@ class KVCacheLayout:
             dtype=np.uint64,
         )
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
-        self.block_stride_lists = self.tensor_size_lists
+        self.block_stride_lists = np.asarray(
+            [
+                [
+                    tensor.block_stride * self._dcp_replicated_scale(tensor)
+                    for tensor in row
+                ]
+                for row in tensor_rows
+            ],
+            dtype=np.uint64,
+        )
 
         logger.info(
             f"base_ptrs: {self.base_ptrs.shape}, tensor_size_lists: {self.tensor_size_lists.shape}"
@@ -769,7 +816,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         return KVCacheSegment(
             ptr=tensor.ptr,
             copy_size=tensor.bytes_per_block,
-            block_stride=tensor.bytes_per_block,
+            block_stride=tensor.block_stride,
             buffer_size=tensor.buffer_size,
         )
 
@@ -1602,6 +1649,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     cross-rank consistency metadata.
     """
 
+    @classmethod
+    def _supports_request_async_load(cls) -> bool:
+        return cls is UCMDirectConnector
+
     @staticmethod
     def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
         return launch_config.get("use_consistency_manager", not is_mla)
@@ -1719,16 +1770,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_async_configured = bool(
             self.launch_config.get("use_request_async_load", False)
         )
-        # Keep the first implementation deliberately scoped to the direct
-        # connector. Layerwise, CP and HMA connectors have different task and
-        # block-layout semantics and must opt in separately.
         self.use_request_async_load = (
-            request_async_configured and type(self) is UCMDirectConnector
+            request_async_configured and self._supports_request_async_load()
         )
         if request_async_configured and not self.use_request_async_load:
             logger.warning(
-                "Request-async loading is currently supported only by "
-                "UCMDirectConnector; disabling it for %s.",
+                "Request-async loading is not supported by %s; disabling it.",
                 type(self).__name__,
             )
         # Scheduler-side plans waiting to be included in connector metadata.
@@ -3996,6 +4043,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         return self.connector.get_finished(finished_req_ids)
+
+    def get_transfer_results(self, finished_req_ids: set[str]):
+        return self.connector.get_transfer_results(finished_req_ids)
+
+    def shutdown(self) -> None:
+        shutdown = getattr(self.connector, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
 
     @_record_connector_interface_duration
     def build_connector_worker_meta(self):

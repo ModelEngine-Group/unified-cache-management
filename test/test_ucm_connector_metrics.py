@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 from collections import defaultdict
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -169,6 +170,13 @@ class KVConnectorMetadata:
 
 
 @dataclass
+class KVConnectorTransferResults:
+    finished_sending: set[str] = field(default_factory=set)
+    finished_recving: set[str] = field(default_factory=set)
+    failed_recving: set[str] = field(default_factory=set)
+
+
+@dataclass
 class KVConnectorStats:
     data: dict = field(default_factory=dict)
 
@@ -215,6 +223,9 @@ class FakeUcmMetrics:
 
 class _Logger:
     def info(self, *args, **kwargs):
+        pass
+
+    def info_once(self, *args, **kwargs):
         pass
 
     def debug(self, *args, **kwargs):
@@ -321,12 +332,15 @@ def _install_stubs():
         Histogram=FakeHistogram,
     )
     _install_module("wrapt", ObjectProxy=object)
+    # Keep CPU protocol tests isolated even when a real vLLM is installed.
+    _install_module("vllm", __path__=[])
     _install_module("vllm.config", VllmConfig=type("VllmConfig", (), {}))
     _install_module(
         "vllm.distributed.kv_transfer.kv_connector.v1.base",
         KVConnectorBase_V1=KVConnectorBase_V1,
         KVConnectorMetadata=KVConnectorMetadata,
         KVConnectorRole=KVConnectorRole,
+        KVConnectorTransferResults=KVConnectorTransferResults,
         SupportsHMA=SupportsHMA,
     )
     _install_module(
@@ -1805,7 +1819,9 @@ def test_request_async_poll_failure_unblocks_and_invalidates_blocks():
 
 
 @pytest.mark.parametrize("public_names", [False, True])
-def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path, public_names):
+def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(
+    tmp_path, public_names, monkeypatch
+):
     _reset_fakes()
     import ucm.observability as observability
 
@@ -1819,7 +1835,7 @@ def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path, public_n
     observability._metric_mappings.clear()
     observability.load_metrics_config = lambda _: config
     observability.logger = capture_logger
-    observability.threading.Thread = FakeThread
+    monkeypatch.setattr(observability.threading, "Thread", FakeThread)
     original_sleep = observability.time.sleep
     logger = observability.PrometheusStatsLogger("model-a", "worker-0", "unused.yaml")
     fake_ucmmetrics.snapshot = (
@@ -2964,6 +2980,233 @@ def test_sparse_utils_annotations_resolve_with_torch_stub():
     # stub attributes that fail at import time on the CI's Python 3.12.
     for function in (get_type_size, align_to_256bytes):
         assert get_type_hints(function)["return"] is int
+
+
+class DeferredLoadWaits:
+    """Control completion without racing real threads in protocol tests."""
+
+    def __init__(self):
+        self.futures = {}
+
+    def submit(self, wait, task):
+        future = Future()
+        self.futures[task] = future
+        return future
+
+
+def _async_fawa_worker(has_window=True):
+    from ucm.integration.vllm.hma_connector import (
+        FAWARequestDispatchMeta,
+        UCMFAWAConnector,
+        UCMFAWAConnectorMetadata,
+    )
+    from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+
+    connector = object.__new__(UCMFAWAConnector)
+    connector.is_v41_layout = True
+    connector.is_mla = False
+    connector.device = SimpleNamespace(synchronize=Mock())
+    connector.fa_store = SimpleNamespace(
+        wait=Mock(), load_data=Mock(return_value=object())
+    )
+    connector.wa_store = (
+        SimpleNamespace(wait=Mock(), load_data=Mock(return_value=object()))
+        if has_window
+        else None
+    )
+    connector.window_group_ids = [1] if has_window else []
+    connector.file_size = {"FA": 100, "WA": 40}
+    connector._pending_fawa_loads = {}
+    connector._failed_fawa_loads = set()
+    connector._load_wait_executor = DeferredLoadWaits()
+    connector._load_wait_workers = 2
+    connector._finished_async_load_req_ids = set()
+    connector._invalid_block_ids = set()
+    connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
+    connector._drain_best_effort_dump_tasks = Mock()
+    connector._extract_fa_ptr = Mock(return_value=[])
+    connector._extract_wa_ptr = Mock(return_value=[])
+    # IDs deliberately overlap between groups: they cannot identify failures.
+    connector._connector_metadata = UCMFAWAConnectorMetadata(
+        {
+            "req": FAWARequestDispatchMeta(
+                load_keys=[b"a", b"b"],
+                load_hash_end=2,
+                load_vllm_block_ids=([10, 11], [10]) if has_window else ([10, 11],),
+                load_async=True,
+            )
+        }
+    )
+    connector._rank_consistency = RankConsistencyManager(
+        is_scheduler=False, use_consistency_manager=True
+    )
+    connector._rank_consistency.finish_dump = Mock()
+    connector._rank_consistency.check_load = Mock(
+        side_effect=AssertionError("async loads must run Store.wait, not check")
+    )
+    return connector
+
+
+@pytest.mark.parametrize("has_window", [False, True])
+@pytest.mark.parametrize("failure", [None, "submit", "wait", "both_wait"])
+def test_fawa_async_load_drains_before_releasing_cancelled_request(has_window, failure):
+    _reset_fakes()
+    connector = _async_fawa_worker(has_window)
+    failing_store = connector.wa_store if has_window else connector.fa_store
+    if failure == "submit":
+        failing_store.load_data.side_effect = RuntimeError("submit failed")
+    connector.start_load_kv(None)
+    submitted = list(connector._load_wait_executor.futures.items())
+    if submitted:
+        calls = connector.fa_store.load_data.call_count
+        connector.start_load_kv(None)
+        assert connector.fa_store.load_data.call_count == calls
+        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
+        assert not connector._failed_fawa_loads
+        connector._connector_worker_meta.mark_failed.assert_not_called()
+        for index, (task, future) in enumerate(submitted):
+            if failure == "both_wait" or (
+                failure == "wait" and task is failing_store.load_data.return_value
+            ):
+                future.set_exception(RuntimeError("wait failed"))
+            else:
+                future.set_result(None)
+            if index < len(submitted) - 1:
+                assert (
+                    connector.get_transfer_results(set())
+                    == KVConnectorTransferResults()
+                )
+                assert not connector._failed_fawa_loads
+                connector._connector_worker_meta.mark_failed.assert_not_called()
+
+    # Completion survives replacement of the dispatch step's metadata.
+    connector.clear_connector_metadata()
+    assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults(
+        finished_recving={"req"}, failed_recving={"req"} if failure else set()
+    )
+    assert connector.get_transfer_results(set()) == KVConnectorTransferResults()
+    assert not connector._pending_fawa_loads
+    assert not connector._rank_consistency._load_task_contexts
+    assert connector.get_block_ids_with_load_errors() == set()
+    if failure:
+        connector._connector_worker_meta.mark_failed.assert_called_once_with("req")
+        assert not any("load_bytes_total" in stats for stats in fake_ucmmetrics.updated)
+    else:
+        connector._connector_worker_meta.mark_failed.assert_not_called()
+        assert fake_ucmmetrics.updated == [
+            {"load_bytes_total": 240 if has_window else 200}
+        ]
+
+
+def test_fawa_background_wait_times_out_but_keeps_hbm_until_both_tasks_drain():
+    """An always-incomplete Store.check must not bypass timeout/cancel/drain."""
+    connector = _async_fawa_worker()
+    connector._load_wait_executor = None
+    timed_out = {label: threading.Event() for label in ("FA", "WA")}
+    drain = {label: threading.Event() for label in ("FA", "WA")}
+    cancelled = []
+
+    def wait(label):
+        # Emulate the Store contract: deadline -> cancel -> drain -> exception.
+        assert not drain[label].wait(0.02)
+        cancelled.append(label)
+        timed_out[label].set()
+        assert drain[label].wait(5), "test did not release the simulated I/O"
+        raise TimeoutError("Store timeout after draining")
+
+    for label, store in (("FA", connector.fa_store), ("WA", connector.wa_store)):
+        store.check = Mock(return_value=False)
+        store.wait = lambda task, label=label: wait(label)
+    try:
+        connector.start_load_kv(None)
+        futures = {
+            t.label: t.wait_future for t in connector._pending_fawa_loads["req"].tasks
+        }
+        assert all(event.wait(2) for event in timed_out.values())
+        assert set(cancelled) == {"FA", "WA"}
+        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
+        drain["FA"].set()
+        with pytest.raises(TimeoutError):
+            futures["FA"].result(timeout=2)
+        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
+        assert connector.get_block_ids_with_load_errors() == set()
+        drain["WA"].set()
+        with pytest.raises(TimeoutError):
+            futures["WA"].result(timeout=2)
+        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults(
+            finished_recving={"req"}, failed_recving={"req"}
+        )
+        assert not connector._rank_consistency._load_task_contexts
+        connector.fa_store.check.assert_not_called()
+        connector.wa_store.check.assert_not_called()
+    finally:
+        for event in drain.values():
+            event.set()
+        connector.shutdown()
+    assert connector._load_wait_executor is None
+
+
+def test_fawa_legacy_protocol_fails_closed_only_after_io_drains(monkeypatch):
+    import ucm.integration.vllm.hma_connector as hma
+
+    monkeypatch.setattr(hma, "KVConnectorTransferResults", None)
+    connector = _async_fawa_worker()
+    connector.start_load_kv(None)
+    futures = list(connector._load_wait_executor.futures.values())
+    futures[0].set_exception(RuntimeError("FA failed"))
+    assert connector.get_finished({"req"}) == (None, None)
+    futures[1].set_result(None)
+    with pytest.raises(
+        RuntimeError, match="lacks KVConnectorTransferResults.failed_recving"
+    ):
+        connector.get_finished({"req"})
+    assert not connector._pending_fawa_loads
+    assert connector.get_block_ids_with_load_errors() == set()
+
+
+def test_fawa_legacy_protocol_still_reports_successful_async_completion(monkeypatch):
+    import ucm.integration.vllm.hma_connector as hma
+
+    monkeypatch.setattr(hma, "KVConnectorTransferResults", None)
+    connector = _async_fawa_worker()
+    connector.start_load_kv(None)
+    assert connector.get_finished({"req"}) == (None, None)
+    for future in connector._load_wait_executor.futures.values():
+        future.set_result(None)
+    assert connector.get_finished({"req"}) == (None, {"req"})
+    assert connector.get_finished(set()) == (None, None)
+
+
+def test_fawa_background_not_found_updates_rank_consistency_on_worker_thread():
+    from ucm.store.pipeline.errors import StoreNotFoundError
+
+    connector = _async_fawa_worker(False)
+    connector.start_load_kv(None)
+    future = next(iter(connector._load_wait_executor.futures.values()))
+    # Completion in the background does not mutate the rank-consistency state.
+    mark_missing = Mock()
+    connector._rank_consistency._mark_load_context_missing = mark_missing
+    future.set_exception(StoreNotFoundError("missing"))
+    mark_missing.assert_not_called()
+    result = connector.get_transfer_results(set())
+    assert result.failed_recving == {"req"}
+    mark_missing.assert_called_once_with({"req": [b"a", b"b"]})
+
+
+def test_outer_connector_exposes_failed_recving_after_all_groups_drain():
+    worker = _async_fawa_worker()
+    outer = object.__new__(UCMConnector)
+    outer.connector = worker
+    worker.start_load_kv(None)
+    futures = list(worker._load_wait_executor.futures.values())
+    futures[0].set_exception(RuntimeError("FA failed"))
+    assert outer.get_transfer_results(set()) == KVConnectorTransferResults()
+    futures[1].set_result(None)
+    assert outer.get_transfer_results(set()) == KVConnectorTransferResults(
+        finished_recving={"req"}, failed_recving={"req"}
+    )
+    assert outer.get_block_ids_with_load_errors() == set()
+    assert outer.get_transfer_results(set()) == KVConnectorTransferResults()
 
 
 def test_fawa_records_only_successful_load_task_bytes():

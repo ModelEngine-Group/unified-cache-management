@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from typing import Any
+from typing import Any, Callable
 
 from ucm.logger import init_logger
 from ucm.store.pipeline.errors import StoreNotFoundError, StoreUnhealthyError
@@ -186,14 +186,17 @@ class RankConsistencyManager:
         self._load_task_contexts[id(task)] = (store, request_context)
         return task
 
-    def wait_load(self, task: Any) -> None:
-        """Wait through the task's Store and record blocks missing at wait time."""
+    def wait_load(self, task: Any, *, wait: Callable[[], Any] | None = None) -> None:
+        """Consume a Store wait (or its background result) on the worker thread."""
         task_key = id(task)
         if task_key not in self._load_task_contexts:
             raise RuntimeError("Load task was not submitted through submit_load().")
         store, request_context = self._load_task_contexts.pop(task_key)
         try:
-            store.wait(task)
+            if wait is None:
+                store.wait(task)
+            else:
+                wait()
         except Exception as error:
             if self.enabled and isinstance(error, StoreNotFoundError):
                 self._mark_load_context_missing(request_context)
