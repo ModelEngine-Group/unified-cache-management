@@ -21,11 +21,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ucm_toolkit.tools.model_check.common import (  # noqa: E402
+    check_transfers_inside_native_blocks,
+    connector_is_v2,
     group_block_tokens,
     plan_restore_policy,
+    require_metadata_kind,
     spec_chunk_tokens,
     v2_worker_internals,
 )
+from ucm_toolkit.tools.model_check.config import LEGACY_CONNECTOR_MODULE  # noqa: E402
+
+V2_MODULE = "ucm.integration.vllm.v2.ucm_connector"
+
+
+def _vllm_config(module):
+    return SimpleNamespace(
+        kv_transfer_config=SimpleNamespace(kv_connector_module_path=module)
+    )
 
 
 def _internals(**overrides):
@@ -131,9 +143,7 @@ class GroupBlockTokensTest(unittest.TestCase):
         self.assertEqual(group_block_tokens(SimpleNamespace(block_size=128)), 128)
 
     def test_still_reads_the_previous_name(self):
-        self.assertEqual(
-            group_block_tokens(SimpleNamespace(tokens_per_block=64)), 64
-        )
+        self.assertEqual(group_block_tokens(SimpleNamespace(tokens_per_block=64)), 64)
 
     def test_refuses_to_guess(self):
         with self.assertRaises(AssertionError):
@@ -192,6 +202,65 @@ class LayoutDescriptionTest(unittest.TestCase):
     def test_still_reports_it_when_present(self):
         text = self._describe(self._spec(scheduler_block_size=128))
         self.assertIn("scheduler_block_size=128", text)
+
+
+class MetadataKindTest(unittest.TestCase):
+    """The launch config decides v2 vs legacy; the metadata must agree."""
+
+    def test_v2_module_is_v2(self):
+        self.assertTrue(connector_is_v2(_vllm_config(V2_MODULE)))
+
+    def test_legacy_module_is_not_v2(self):
+        self.assertFalse(connector_is_v2(_vllm_config(LEGACY_CONNECTOR_MODULE)))
+
+    def test_matching_metadata_is_accepted(self):
+        v2_meta = SimpleNamespace(requests={})
+        legacy_meta = SimpleNamespace(request_meta={})
+        self.assertTrue(require_metadata_kind(_vllm_config(V2_MODULE), v2_meta, "dump"))
+        self.assertFalse(
+            require_metadata_kind(
+                _vllm_config(LEGACY_CONNECTOR_MODULE), legacy_meta, "dump"
+            )
+        )
+
+    def test_renamed_v2_metadata_is_refused_not_downgraded(self):
+        renamed = SimpleNamespace(request_plans={})
+        with self.assertRaises(AssertionError) as ctx:
+            require_metadata_kind(_vllm_config(V2_MODULE), renamed, "dump")
+        self.assertIn(V2_MODULE, str(ctx.exception))
+        self.assertIn("requests", str(ctx.exception))
+
+    def test_v2_metadata_on_a_legacy_run_is_refused(self):
+        with self.assertRaises(AssertionError):
+            require_metadata_kind(
+                _vllm_config(LEGACY_CONNECTOR_MODULE),
+                SimpleNamespace(requests={}),
+                "load",
+            )
+
+
+class TransferRangeCheckTest(unittest.TestCase):
+    """The range check must fail, not report 0, when it has nothing to check."""
+
+    def _worker(self, transfers=()):
+        builder = SimpleNamespace(build_load_transfers=lambda metadata: transfers)
+        return _internals(
+            layout=SimpleNamespace(layer_id_by_name={}),
+            transfer_builder=builder,
+            use_layerwise=False,
+        )
+
+    def test_legacy_metadata_is_refused(self):
+        with self.assertRaises(ValueError):
+            check_transfers_inside_native_blocks(
+                None, self._worker(), SimpleNamespace(request_meta={})
+            )
+
+    def test_no_load_ranges_is_an_error_not_zero(self):
+        with self.assertRaises(AssertionError):
+            check_transfers_inside_native_blocks(
+                None, self._worker(), SimpleNamespace(requests={})
+            )
 
 
 if __name__ == "__main__":

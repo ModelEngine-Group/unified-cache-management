@@ -118,6 +118,15 @@ exactly 251 bytes was invisible.
 address the connector reports is checked against the ranges derived from vLLM's
 own block tables. This must run **before** poisoning — poisoning uses those
 same addresses, so poisoning first and checking after would be self-confirming.
+When a layer's block geometry cannot be addressed, the check cannot build a
+complete allowed set and is skipped. The PASS line then shows
+`transfer_ranges_checked=skipped (...)` and a `PARTIALLY VERIFIED` line follows,
+never a bare `0`; a check that ran but found no ranges fails instead.
+
+Whether a run takes the v2 or legacy branch is decided by the launch config
+(`kv_connector_module_path`), not by sniffing the metadata. Metadata of the
+other kind -- for example after a field rename -- fails the run instead of
+silently switching branches and skipping the v2 checks.
 
 ### Fault injection
 

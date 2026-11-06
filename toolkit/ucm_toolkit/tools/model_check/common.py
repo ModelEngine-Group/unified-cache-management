@@ -1215,9 +1215,8 @@ def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
 
     if not hasattr(metadata, "requests"):
         return None
-    connector = getattr(worker, "connector", worker)
-    connector = getattr(connector, "connector_worker", None) or connector
-    layout = getattr(connector, "layout", None)
+    connector = v2_worker_internals(worker)
+    layout = connector.layout
     if layout is None:
         raise ValueError("connector v2 worker has no registered KV-cache layout")
     builder = getattr(connector.transfer_builder, f"build_{phase}_transfers")
@@ -1345,6 +1344,8 @@ def poison_v2_load_segments(fixture: Any, worker: Any, metadata: Any) -> int:
     from ucm.integration.vllm.v2.test_stores import TorchTensorByteAccess
 
     batch = _v2_batch(worker, metadata, "load")
+    if batch is None:
+        raise ValueError("poison_v2_load_segments received legacy metadata")
     access = TorchTensorByteAccess()
     access.register_tensors(fixture.kv_caches)
     for ptr, size in zip(batch.ptrs, batch.sizes, strict=True):
@@ -2167,6 +2168,43 @@ def v2_worker_internals(worker: Any) -> Any:
     )
 
 
+def connector_is_v2(vllm_config: Any) -> bool:
+    """Whether the run was launched with connector v2, read from its config."""
+
+    from .config import LEGACY_CONNECTOR_MODULE
+
+    transfer = getattr(vllm_config, "kv_transfer_config", None)
+    module = getattr(transfer, "kv_connector_module_path", None)
+    return module not in (None, LEGACY_CONNECTOR_MODULE)
+
+
+def require_metadata_kind(vllm_config: Any, metadata: Any, phase: str) -> bool:
+    """Return whether this is a v2 run, refusing metadata of the other kind.
+
+    The launch config, not the metadata's shape, decides which checks run.
+    Sniffing the shape alone would send a v2 run down the legacy branch -- and
+    past every v2 check -- the next time the metadata is renamed.
+    """
+
+    expected = connector_is_v2(vllm_config)
+    looks_v2 = hasattr(metadata, "requests")
+    if looks_v2 != expected:
+        module = getattr(
+            getattr(vllm_config, "kv_transfer_config", None),
+            "kv_connector_module_path",
+            None,
+        )
+        raise AssertionError(
+            f"the run was launched with connector module {module!r} "
+            f"({'v2' if expected else 'legacy'}), but the {phase} metadata "
+            f"{type(metadata).__name__} {'has' if looks_v2 else 'has no'} "
+            "`requests`, which is how v2 metadata is recognised. The metadata "
+            "shape probably changed; update the checker rather than letting "
+            "it run the other path's checks."
+        )
+    return expected
+
+
 def spec_chunk_tokens(spec: Any) -> int:
     """Tokens per UCM record. ``tokens_per_chunk`` was renamed ``chunk_size``."""
 
@@ -2396,7 +2434,14 @@ def check_transfers_inside_native_blocks(
 
     batch = _v2_batch(worker, load_metadata, "load")
     if batch is None:
-        return 0
+        raise ValueError(
+            "check_transfers_inside_native_blocks received legacy metadata"
+        )
+    if not batch.sizes:
+        raise AssertionError(
+            "the scheduler selected load keys, but the connector reported no "
+            "load ranges, so there is nothing to check its addresses against."
+        )
     outside = [
         (int(ptr), int(size))
         for ptr, size in zip(batch.ptrs, batch.sizes, strict=True)
@@ -2637,6 +2682,7 @@ def verify(
     source_ids = dispatch.block_ids
     save_metadata = dispatch.scheduler_output.kv_connector_metadata
     assert_shared_dispatch(save_metadata)
+    is_v2 = require_metadata_kind(fixture.vllm_config, save_metadata, "dump")
     save_metadata = share_v2_save_attempts(dispatch.scheduler, save_metadata)
     dump_count = metadata_key_count(save_metadata, "dump")
     if dump_count == 0:
@@ -2645,8 +2691,6 @@ def verify(
             "check UCM persist thresholds."
         )
 
-    v2_dump_batch = _v2_batch(worker, save_metadata, "dump")
-    is_v2 = v2_dump_batch is not None
     blackbox_groups: list[int] = []
     full_attention: list[int] = []
     whole_block_window: list[int] = []
@@ -2655,7 +2699,9 @@ def verify(
     # Layers whose block geometry this checker cannot address. Non-empty means
     # the transfer-range check has no complete allowed set to verify against.
     unverified: list[str] = []
-    checked_ranges = 0
+    # A count when the check ran; otherwise why it did not, so the PASS line
+    # can never show a skipped check as a number.
+    checked_ranges: int | str = "n/a (legacy connector)"
     if is_v2:
         if _enabled("UCM_MODEL_CHECK_NATIVE_ORACLE") and native_oracle_supported(
             fixture
@@ -2725,6 +2771,7 @@ def verify(
             )
     load_metadata = target.scheduler_output.kv_connector_metadata
     assert_shared_dispatch(load_metadata)
+    require_metadata_kind(fixture.vllm_config, load_metadata, "load")
     load_count = metadata_key_count(load_metadata, "load")
     if load_count == 0:
         raise UnsupportedEnvironment(
@@ -2774,18 +2821,20 @@ def verify(
         # Legality first: these are the connector's own addresses, and the
         # next line writes through them.
         if unverified:
+            checked_ranges = f"skipped ({len(unverified)} unaddressable layers)"
             log(
                 "transfer-range check: skipped, these layers have no "
                 f"addressable geometry: {unverified}"
             )
         else:
-            checked_ranges = verify_transfer_ranges(
+            ranges = verify_transfer_ranges(
                 fixture, worker, load_metadata, target_ids, False
             )
-            if checked_ranges is None:
+            if ranges is None:
+                checked_ranges = "skipped (unknown native block geometry)"
                 log("transfer-range check: skipped, unknown native block geometry")
-                checked_ranges = 0
             else:
+                checked_ranges = ranges
                 log(
                     f"transfer-range check: {checked_ranges} connector load "
                     "ranges all inside vLLM's target blocks"
@@ -2871,6 +2920,11 @@ def verify(
         f"transfer_ranges_checked={checked_ranges}, "
         f"stray_write_check={'on' if snapshot is not None else 'off'}"
     )
+    if isinstance(checked_ranges, str) and checked_ranges.startswith("skipped"):
+        log(
+            "PARTIALLY VERIFIED: the connector's load addresses were not checked "
+            f"against vLLM's block tables -- {checked_ranges}"
+        )
     if partial:
         log(
             "PARTIALLY VERIFIED: no independent required-restore set for groups "

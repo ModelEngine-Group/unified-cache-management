@@ -63,10 +63,10 @@ from typing import Any
 
 import torch
 
+from . import sim_bootstrap
 from .common import CacheFixture, UnsupportedEnvironment, describe_ucm_layout, log
 from .common import make_cache as make_common_cache
 from .common import make_worker, schedule, verify
-from . import sim_bootstrap
 from .config import load_config
 from .sim_runtime import (
     HOST,
@@ -161,7 +161,7 @@ def _force_cuda_platform() -> None:
         platforms._init_trace = ""
         log(
             "cuda-sim: cleared vLLM platform cache warmed by import "
-            "(v0.30+ eager resolve); re-declaring CUDA"
+            "(v0.30+ eager resolve); declaring CUDA again"
         )
     log("cuda-sim: CUDA declared as the simulated platform (NVML probe bypassed)")
 

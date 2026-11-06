@@ -19,9 +19,9 @@ import subprocess
 import sys
 import textwrap
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -277,9 +277,7 @@ class CudaChildDeclarationTest(unittest.TestCase):
         stub._current_platform = object()
         stub._init_trace = "resolved during import vllm"
         stub.builtin_platform_plugins = {"cpu": lambda: "cpu"}
-        with patch.object(
-            sim_bootstrap.importlib, "import_module", return_value=stub
-        ):
+        with patch.object(sim_bootstrap.importlib, "import_module", return_value=stub):
             replaced = sim_bootstrap.declare_cuda_platform()
         self.assertEqual(list(stub.builtin_platform_plugins), ["cuda"])
         self.assertIsNone(stub._current_platform)
@@ -288,9 +286,7 @@ class CudaChildDeclarationTest(unittest.TestCase):
     def test_refuses_when_the_plugin_map_is_gone(self):
         stub = type(sys)("vllm.platforms")
         stub.builtin_platform_plugins = None
-        with patch.object(
-            sim_bootstrap.importlib, "import_module", return_value=stub
-        ):
+        with patch.object(sim_bootstrap.importlib, "import_module", return_value=stub):
             with self.assertRaises(sim_bootstrap.BootstrapError):
                 sim_bootstrap.declare_cuda_platform()
 
