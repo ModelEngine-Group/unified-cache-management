@@ -239,11 +239,13 @@ public:
         StoreBack()->Prefetch(idArr.data, idArr.num);
     }
     Detail::TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
-                            const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)
+                            const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0,
+                            bool distribute_backend_load = false)
     {
         auto desc = MakeTaskDesc(ids, indexes, addrs);
         desc.brief = "Load";
         desc.prerequisiteHandle = prerequisite_handle;
+        desc.distributeBackendLoad = distribute_backend_load;
         auto res = StoreBack()->Load(std::move(desc));
         if (res) { return res.Value(); }
         ThrowError(res.Error());
@@ -301,7 +303,8 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());
     s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
     s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
-          py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
+          py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0,
+          py::arg("distribute_backend_load") = false);
     s.def("Dump", &PipelineStore::Dump, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);

@@ -71,6 +71,52 @@ class LinkerMetricsTest(unittest.TestCase):
         first[0].observation.finish()
         self.assertEqual(self.total("sglang_connector_load_requests_total"), 2)
 
+    def test_distributed_load_options_preserve_completion_metrics(self):
+        self.store.supports_distributed_backend_load = True
+        for replicated in (False, True):
+            for event in (0, 43):
+                with self.subTest(replicated=replicated, event=event):
+                    self.samples.clear()
+                    self.adapter._identity["rank_replicated"] = replicated
+                    prepared = self.adapter.prepare_load([self.fixture.transfer()])
+                    tasks = self.adapter.submit_prepared_load_layer(
+                        prepared, 0, prerequisite_handle=event
+                    )
+                    expected = {"distribute_backend_load": replicated}
+                    if event:
+                        expected["prerequisite_handle"] = event
+                    self.assertEqual(self.store.load_data.call_args.kwargs, expected)
+                    self.assertEqual(self.samples, [])
+                    self.adapter.wait(tasks)
+                    self.assertEqual(
+                        self.total("sglang_connector_load_requests_total"), 1
+                    )
+                    self.assertEqual(
+                        self.total("sglang_connector_load_bytes_total"), 16
+                    )
+
+    def test_distributed_load_submit_failure_drains_and_records_metrics(self):
+        self.store.supports_distributed_backend_load = True
+        self.adapter._identity["rank_replicated"] = True
+        self.store.load_data.side_effect = [1, RuntimeError("submit")]
+        prepared = self.adapter.prepare_load(
+            [self.fixture.transfer(), self.fixture.transfer()]
+        )
+        with self.assertLogs(adapter_module.logger, "ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "submit"):
+                self.adapter.submit_prepared_load_layer(
+                    prepared, 0, prerequisite_handle=43
+                )
+        for call in self.store.load_data.call_args_list:
+            self.assertEqual(
+                call.kwargs,
+                {"prerequisite_handle": 43, "distribute_backend_load": True},
+            )
+        self.store.wait.assert_called_once_with(1)
+        self.assertEqual(self.total("sglang_connector_load_requests_total"), 2)
+        self.assertEqual(self.total("sglang_connector_load_submit_errors_total"), 1)
+        self.assertEqual(self.total("sglang_connector_load_bytes_total"), 16)
+
     def test_partial_submit_failure_drains_success_and_records_failed_attempt(self):
         self.store.dump_data.side_effect = [1, RuntimeError("submit")]
         with self.assertLogs(adapter_module.logger, "ERROR"):

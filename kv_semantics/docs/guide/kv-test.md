@@ -1,3 +1,4 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
 # kv-test command line tool
 
 `kv-test` is a command line validation tool for the ASU KV client path. The
@@ -174,7 +175,7 @@ The config file format is `key=value`. Empty lines and lines beginning with
 Example:
 
 ```ini
-client_id=kv-test-client-0
+client.client_id=kv-test-client-0
 wait_timeout_ms=5000
 # Optional when libasu_client.so/libasu_transport.so are not discoverable.
 # asu.client_library_path=/path/to/libasu_client.so
@@ -186,8 +187,10 @@ fake_backend.worker_threads=4
 fake_backend.complete_immediately=true
 
 view.config_path=./kv_semantics/kv_test/kv_client_view.conf
-hash_table.type=RING_HASH
-ring_hash.virtual_node_count=128
+client.use_batch_io_for_single_key=true
+client.hash_table.type=RING_HASH
+client.ring_hash.virtual_node_count=128
+client.asu_shared_provider=0
 
 transport.asu_ids=1,2,3
 transport.provider_type=FAKE
@@ -218,23 +221,42 @@ output.realtime_file_max_bytes=104857600
 
 ### ASU client fields
 
-These fields are parsed by the ASU client config parser:
+Use the complete canonical file keys below, including the `client.` and
+`transport.` prefixes. Internal Router attrs such as `hash_table.type` are not
+standalone file keys. Compatibility aliases are omitted.
 
 | Field | Description |
 | --- | --- |
-| `client_id` | Client identifier. |
-| `view_service_addrs` | View service addresses. |
-| `view.config_path` | File used by the default `ConfigFileViewServer`. |
-| `wait_timeout_ms` | Client wait and transport task timeout in milliseconds. |
-| `transport.asu_ids` | ASU ids. |
-| `transport.provider_type` | Transport provider used by `AsuTransportImpl`. Supported values are `AICPU`, `FAKE`, and `AIV`. The selected provider must also be enabled in CMake. The aliases `transport.provider_backend`, `transport.trans_provider_type`, and `transport.trans_provider_backend` are also accepted. |
-| `transport.device_id` | Local logical device id used to initialize the transport provider. |
-| `asu_info.<id>` | Endpoint config for one ASU. |
-| `hash_table.type` | Router hash table type. |
-| `ring_hash.virtual_node_count` | Ring hash virtual node count. |
-| `maglev.table_size` | Maglev table size. |
-| `contiguous_block_affinity.*` | Contiguous block affinity options. |
-| `batch_topk_affinity.*` | Batch top-k affinity options. |
+| `client.client_id` | Client identifier. |
+| `client.max_inflight_tasks` | Client submission queue capacity; not the total number of unfinished tasks. |
+| `client.use_batch_io_for_single_key` | Use batch Load/Store protocol for one entry; defaults to true. |
+| `client.asu_shared_provider` | 0: independent provider per transport; 1: shared provider. |
+| `view_service_addrs` | Comma-separated view service addresses. |
+| `view.config_path` | File used by the default ConfigFileViewServer. |
+| `wait_timeout_ms` | Default Client Wait/drain timeout and initial transport timeout, in milliseconds. |
+| `client.hash_table.type` | Router type; documented supported types are RING_HASH and MAGLEV. |
+| `client.ring_hash.virtual_node_count` | Number of Ring Hash virtual nodes per ASU. |
+| `client.maglev.table_size` | Number of slots in the Maglev lookup table. |
+| `client.contiguous_block_affinity.block_count` | Affinity block count; parser option outside the documented supported Router scope. |
+| `client.contiguous_block_affinity.full_spread_type` | Underlying full-spread Router for contiguous-block affinity. |
+| `client.contiguous_block_affinity.dynamic_adjust_enabled` | Parsed dynamic-adjust flag; does not imply a complete dynamic control plane. |
+| `client.batch_topk_affinity.top_k` | Number of candidate ASUs for batch top-k affinity; outside the documented supported Router scope. |
+| `client.batch_topk_affinity.dynamic_adjust_enabled` | Parsed dynamic-adjust flag for batch top-k affinity. |
+| `transport.asu_ids` | Comma-separated ASU IDs for which transport configurations are created. |
+| `transport.provider_type` | AICPU, FAKE, or AIV; the provider must be enabled at build time. |
+| `transport.device_id` | Local logical device ID; AICPU first uses the caller's current ACL device. |
+| `transport.max_inflight_tasks` | Per-transport task capacity. |
+| `transport.max_error_count` | Consecutive channel failure threshold before draining. |
+| `transport.completion_poll_spin_limit` | Empty completion polling rounds before yielding the CPU. |
+| `transport.batch_load_io_num` | Configured maximum entries per batch-load sub-batch; server capabilities may lower it. |
+| `transport.batch_store_io_num` | Configured maximum entries per batch-store sub-batch; server capabilities may lower it. |
+| `transport.delete_io_num` | Configured maximum keys per delete sub-batch. |
+| `transport.query_io_num` | Configured maximum keys per query sub-batch. |
+| `transport.send_buffer_slot_size` | Bytes per send-buffer slot. |
+| `transport.send_buffer_slot_num` | Number of send-buffer slots. |
+| `transport.flag_buffer_slot_size` | Bytes per response/flag-buffer slot. |
+| `transport.flag_buffer_slot_num` | Number of response/flag-buffer slots. |
+| `asu_info.<id>` | Endpoint configuration for one ASU; multiple endpoints are separated by semicolons. |
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
 `KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`
@@ -242,6 +264,82 @@ entry so Client can build a transport for it. Non-mocked transports also need
 endpoint information such as `asu_info.<id>`. If `view.config_path` is omitted
 and `view_service_addrs` is empty, the default view is derived from
 `transport.asu_ids`.
+
+### SQE and provider send fields
+
+Unknown `transport.` keys are retained as provider attrs; being retained does not
+mean a consumer exists. The following fields have explicit consumers.
+
+| Field | Actual meaning |
+| --- | --- |
+| `transport.kv_ns_id` | KV namespace encoded in SQEs; does not select a separate Client Router. |
+| `transport.dtype` | Store SQE data-type field (3 bits); must match the server protocol. |
+| `transport.dspec` | Store SQE data-specification field (5 bits); must match the server protocol. |
+| `transport.lr` | SQE LR flag for Load/Store, passed through without a Client-level policy. |
+| `transport.sc` | Query seek-control flag; true requests per-key results. |
+| `transport.kernel_count` | Send kernel-count argument passed to the provider; kv-test supplies 1 if absent. AICPU currently ignores this argument. |
+| `transport.quiet_count` | Send quiet-count argument passed to the provider; kv-test supplies 1 if absent. AICPU currently ignores this argument. |
+| `transport.timeout` | Legacy AICPU send-timeout fallback in milliseconds; not TransportConfig.timeoutMs. Use wait_timeout_ms for Client/transport task timeout. |
+
+### AICPU fields not all shown in the sample
+
+| Field | Actual meaning |
+| --- | --- |
+| `transport.aicpu_hcomm_protocol` | Required data protocol selector: ubg or ubc_ctp (ub / ub_ctp are CTP aliases). Endpoint protocol does not select this path. |
+| `transport.aicpu_local_eid.<logical_device_id>` | Local UBG EID for an ACL logical device. |
+| `transport.aicpu_local_eid` | Common UBG EID fallback when the device-specific key is absent. |
+| `transport.aicpu_local_ip.<logical_device_id>` | Local UBC_CTP address for an ACL logical device. |
+| `transport.aicpu_local_ip` | Common UBC_CTP address fallback. |
+| `transport.local_ip` | Final local endpoint address fallback after protocol-specific settings and the CreateConnection local-address argument. |
+| `transport.logical_device_id` | Compatibility logical-device selector read by AICPU; prefer transport.device_id. |
+| `transport.aicpu_notify_num` | HCOMM channel notification-resource count, not an IO concurrency setting. |
+| `transport.aicpu_ub_sq_depth` | Requested UB send-queue depth; the default sentinel delegates selection to HCOMM. |
+| `transport.aicpu_qos` | HCOMM channel QoS value; not a bandwidth rate. |
+| `transport.aicpu_send_timeout_ms` | HIXL send timeout in milliseconds; separate from Client Wait and transport task timeout. |
+| `transport.aicpu_channel_name` | Name used when creating HCOMM channel resources. |
+| `transport.aicpu_hixl_kernel_json` | HIXL kernel JSON path; otherwise HIXL_KERNEL_JSON then ASCEND_HOME_PATH-based resolution is used. |
+| `transport.aicpu_staged_oob_host` | Staged control-plane address override; defaults to the remote endpoint address. |
+| `transport.aicpu_staged_oob_port` | Staged control-plane port override; defaults to the remote endpoint port. |
+| `transport.aicpu_staged_client_id` | Requested staged client ID; defaults to the ASU node ID. Negotiation may return a different effective client ID. |
+| `transport.aicpu_staged_kato` | Staged channel keep-alive field passed to HCOMM, default 0; not the Client Wait timeout. |
+| `transport.aicpu_staged_rm_uasid` | Staged channel RM UASID field, default 0. |
+| `transport.aicpu_staged_mami_tag` | Staged channel MAMI tag field, default 0. |
+| `transport.endpoint_loc` | HCOMM endpoint location: host selects HOST; other values select DEVICE. |
+
+Current local and remote EIDs must be written explicitly into config/view files.
+Future work must discover EIDs automatically, without writing EIDs into config;
+that capability is not implemented yet. AICPU accepts compatibility aliases
+without the `aicpu_` prefix for notify_num, ub_sq_depth, qos, send_timeout_ms,
+channel_name, staged_oob_host, staged_oob_port, staged_client_id, staged_kato,
+staged_rm_uasid, and staged_mami_tag (each still prefixed with `transport.`).
+`transport.hixl_kernel_json` aliases `transport.aicpu_hixl_kernel_json`;
+`transport.localIp` aliases `transport.local_ip`. The shorter `transport.oob_host`,
+`transport.oob_port`, and `transport.client_id` are further staged-setting aliases.
+
+### Fields inside asu_info.<id>
+
+These are comma-separated subfields, not top-level file keys. Separate endpoint
+records with semicolons. The file parser only retains its recognized subfields.
+Fields accepted by the C++ NodeEndpoint attrs API are not necessarily accepted
+inside an asu_info file record.
+
+| Field | Actual meaning |
+| --- | --- |
+| `local.comm_id` | Remote communication address (EID/IP according to provider and protocol). |
+| `port` | Remote port. |
+| `protocol` | Parsed endpoint protocol metadata; does not replace transport.aicpu_hcomm_protocol. |
+| `placement` | Parsed endpoint location metadata. |
+| `tc` | Parsed endpoint traffic-class attr. |
+| `sl` | Parsed endpoint service-level attr. |
+| `send_size` | Parsed endpoint send-size attr. |
+| `flag_size` | Parsed endpoint flag-size attr. |
+| `remote_send_addr` | Parsed remote send address attr. |
+| `remote_flag_addr` | Parsed remote flag address attr. |
+
+Endpoint attrs are parsed metadata, not a guarantee that every provider uses
+each attr. AICPU staged overrides should use the top-level transport keys above.
+AIV has no additional provider-specific .conf keys in its adapter; its device,
+endpoint and send-count inputs come from the common fields.
 
 ### kv-test-only fields
 
@@ -270,6 +368,26 @@ These fields are parsed by `kv-test` itself:
 | `bench.batch_size` | Entries per batch operation. |
 | `output.path` | Base output directory. Empty value uses `.`. |
 | `output.realtime_file_max_bytes` | Maximum realtime CSV size before rolling. Default is 100 MiB. |
+
+Additional kv-test keys supported even when absent from the sample:
+
+| Field | Actual meaning |
+| --- | --- |
+| `bench.io_count` | Measured entry count (not batch count); a positive value selects count-based measurement instead of duration. |
+| `metrics.enabled` | Enable the standalone kv-test Prometheus endpoint. |
+| `metrics.config_path` | Metric-definition YAML path; metrics.definition_path is a compatibility alias. |
+| `metrics.listen_address` | Prometheus listener bind address; must not be empty when enabled. |
+| `metrics.port` | Prometheus listener TCP port, range 1–65535. |
+| `metrics.path` | HTTP metrics path; must start with / when enabled. |
+| `metrics.aggregation_interval_ms` | Metric aggregation interval in milliseconds; must be positive when enabled. |
+| `metrics.shutdown_grace_ms` | Standalone metrics HTTP-server shutdown grace period in milliseconds. |
+
+For FAKE, kv-test fills provider attrs from the top-level fake_backend keys above.
+`transport.fake_backend.path`, `transport.fake_backend.latency_us`,
+`transport.fake_backend.worker_threads`, `transport.fake_backend.complete_immediately`,
+and `transport.fake_backend.device_id` are direct-provider attrs, overwritten by
+kv-test runtime preparation; configure the top-level fields instead. The provider
+device ID is derived at runtime, not a separate fake_backend.device_id tool key.
 
 Batch and sub-batch limits are left to Client and Transport. New kv-test configs
 should not include older `limits.batch_store_max`, `limits.batch_retrieve_max`,

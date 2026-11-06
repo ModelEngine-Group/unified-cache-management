@@ -73,13 +73,20 @@ class _PreparedPipelineTransfer:
     ids: np.ndarray
     page_count: int
     task_type: type[Task]
+    distribute_backend_load: bool
 
     def load_data(
         self, shard_index: int, addresses: np.ndarray, prerequisite_handle: int = 0
     ) -> Task:
         indexes = np.full(self.page_count, shard_index, dtype=np.uint64)
         return self.task_type(
-            self.store.Load(self.ids, indexes, addresses, prerequisite_handle)
+            self.store.Load(
+                self.ids,
+                indexes,
+                addresses,
+                prerequisite_handle,
+                self.distribute_backend_load,
+            )
         )
 
     def dump_data(self, addresses: np.ndarray, prerequisite_handle: int = 0) -> Task:
@@ -713,6 +720,7 @@ class UcmDirectStoreAdapter:
             np.frombuffer(b"".join(block_ids), dtype=np.uint8),
             len(block_ids),
             UcmPipelineStoreTransTask,
+            bool(self._identity.get("rank_replicated", False)),
         )
 
     def _prepare_transfers(
@@ -832,6 +840,15 @@ class UcmDirectStoreAdapter:
                     item.prepared_io if item.prepared_io is not None else item.store
                 )
                 operation = target.load_data
+                transfer_options: dict[str, Any] = {}
+                if prerequisite_handle:
+                    transfer_options["prerequisite_handle"] = prerequisite_handle
+                if item.prepared_io is None and getattr(
+                    item.store, "supports_distributed_backend_load", False
+                ):
+                    transfer_options["distribute_backend_load"] = bool(
+                        self._identity.get("rank_replicated", False)
+                    )
                 shard_indices = item.shards_by_layer.get(logical_layer, ())
                 for shard_index in shard_indices:
                     # The Store index is local to this bundle; transfer.layers
@@ -857,11 +874,7 @@ class UcmDirectStoreAdapter:
                         transfer.shard_size,
                     )
                     try:
-                        task = (
-                            operation(*args, prerequisite_handle=prerequisite_handle)
-                            if prerequisite_handle
-                            else operation(*args)
-                        )
+                        task = operation(*args, **transfer_options)
                     except BaseException:
                         if observation is not None:
                             observation.finish(failed=True)

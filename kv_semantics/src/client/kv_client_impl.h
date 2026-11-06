@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -71,9 +71,7 @@ public:
     // Shuts down the client during destruction.
     ~KvClientImpl() override;
 
-    // Initializes routing and transport resources.
-    Status Init(const std::string& configPath) override;
-    // Initializes from an already parsed config; intended for internal tests and adapters.
+    // Initializes routing and transport resources from an already parsed config.
     Status Init(const KvClientConfig& config) override;
     // Gracefully drains tracked client tasks and releases resources.
     Status Shutdown() override;
@@ -83,15 +81,8 @@ public:
     // Submits load operations to routed transports.
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits store operations to routed transports.
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      std::uintptr_t eventHandle) override;
-    // Submits batch load operations to routed transports.
-    Status BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
-    // Submits batch store operations to routed transports.
-    Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
-    Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                           std::uintptr_t eventHandle) override;
+                      std::function<Status()> prerequisite = {}) override;
     // Submits delete operations to routed transports.
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
@@ -114,7 +105,7 @@ private:
 
     // Creates and queues one entry-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId,
-                       std::uintptr_t eventHandle = 0);
+                       std::function<Status()> prerequisite = {});
     // Creates and queues one key-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 
@@ -152,8 +143,6 @@ private:
     bool IsRefreshNeeded(const Status& status) const;
     // Extracts sorted ASU ids from a view.
     static std::vector<NodeId> GetSortedAsuIds(const GlobalView& view);
-    // Parses client config from a file path supplied through the public interface.
-    static Status LoadConfig(const std::string& configPath, KvClientConfig& config);
     // Adds context to a status message.
     static Status WithContext(Status status, const std::string& context);
     // Builds the standard not-initialized status.

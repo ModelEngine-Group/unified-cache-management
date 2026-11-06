@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # AICPU ASU backend for vLLM / vLLM-Ascend. No external conf/view is required.
 # Replace the sample server and local device addresses before running.
 ucm_connectors:
@@ -5,6 +6,9 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "ASU"
       asu_mode: "client"
+      # Use batch Load/Store protocol even for a single entry (default: true).
+      # Set false to use single-key protocol for single-entry requests.
+      asu_use_batch_io_for_single_key: true
       asu_client_id: "ucm-vllm-asu-aicpu"
       asu_ids: [1]
       asu_trans_provider_backend: "aicpu"
