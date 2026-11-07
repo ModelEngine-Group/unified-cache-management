@@ -141,9 +141,10 @@ void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
     if (Enabled()) { store_->Prefetch(blocks, num); }
 }
 
-void HealthBreakerStore::Warm(const Detail::BlockId* blocks, size_t num)
+Expected<Detail::TaskHandle> HealthBreakerStore::Warm(const Detail::BlockId* blocks, size_t num)
 {
-    if (Enabled()) { store_->Warm(blocks, num); }
+    if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
+    return store_->Warm(blocks, num);
 }
 
 Status HealthBreakerStore::CheckHealth()

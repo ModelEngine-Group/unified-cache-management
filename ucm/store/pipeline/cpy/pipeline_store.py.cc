@@ -238,10 +238,12 @@ public:
         BufferArrayView<Detail::BlockId> idArr{ids};
         StoreBack()->Prefetch(idArr.data, idArr.num);
     }
-    void Warm(const pybind11::buffer& ids)
+    Detail::TaskHandle Warm(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
-        StoreBack()->Warm(idArr.data, idArr.num);
+        auto res = StoreBack()->Warm(idArr.data, idArr.num);
+        if (res) { return res.Value(); }
+        ThrowError(res.Error());
     }
     Detail::TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
                             const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)

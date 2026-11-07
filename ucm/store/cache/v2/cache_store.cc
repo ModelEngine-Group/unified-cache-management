@@ -86,10 +86,9 @@ public:
     {
         bufferMgr_.Prefetch(blocks, num);
     }
-    void Warm(const Detail::BlockId* blocks, size_t num) override
+    Expected<Detail::TaskHandle> Warm(const Detail::BlockId* blocks, size_t num) override
     {
-        if (!transEnable_) { return; }  // Scheduler side (no device)
-        if (num == 0) { return; }       // Empty prefetch must not block
+        if (!transEnable_) { return Status::Error("transfer is not enabled"); }
         Detail::TaskDesc desc;
         for (size_t i = 0; i < num; i++) {
             for (size_t shard = 0; shard < nShardPerBlock_; shard++) {
@@ -97,10 +96,8 @@ public:
                 desc.push_back(Detail::Shard{blocks[i], shard, {}});
             }
         }
-        if (desc.empty()) { return; }  // Guard against nShardPerBlock_ == 0
         desc.brief = "Prefetch";
-        auto res = transMgr_.Submit({Task::Type::PREFETCH, std::move(desc)});
-        if (res) { transMgr_.Wait(res.Value()); }  // Blocking wait for prefetch
+        return transMgr_.Submit({Task::Type::PREFETCH, std::move(desc)});
     }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
