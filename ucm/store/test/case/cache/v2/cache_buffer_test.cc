@@ -63,7 +63,7 @@ struct BufferTestAccess {
     {
         auto& layout = buffer.ctrl_.Layout();
         layout.Bind(memory, rankCount, slotsPerRank, bucketCount, lockCount);
-        layout.InitSlotRange(rank);
+        if (rank != kInvalid) { layout.InitSlotRange(rank); }
         buffer.myRank_ = rank;
         buffer.rankCount_ = rankCount;
         buffer.slotsPerRank_ = slotsPerRank;
@@ -652,7 +652,7 @@ TEST(Cache2BufferOptimisticTest, PinnedHitPreventsSlotReconfigurationUntilReleas
     ::operator delete(memory, std::align_val_t{64});
 }
 
-TEST_F(Cache2BufferTest, ResetHidesReadySlotsUntilTheyAreRefilled)
+TEST_F(Cache2BufferTest, ResetUnlinksReadySlotsUntilTheyAreRefilled)
 {
     auto blockId = MakeBlockId(0x51u);
     bool owner = false;
@@ -666,9 +666,16 @@ TEST_F(Cache2BufferTest, ResetHidesReadySlotsUntilTheyAreRefilled)
 
     buffer_.Reset();
 
-    // Every published key now belongs to the previous generation.
     ASSERT_FALSE(buffer_.Exist(blockId, 0));
     ASSERT_EQ(BufferTestAccess::FindSlot(buffer_, blockId, 0), kInvalid);
+    auto& layout = BufferTestAccess::Layout(buffer_);
+    auto& meta = layout.SlotMetaArr()[slot];
+    EXPECT_EQ(layout.Buckets()[BufferTestAccess::BucketOf(buffer_, blockId)].load(), kInvalid);
+    EXPECT_EQ(meta.hash.load(), kInvalid);
+    EXPECT_EQ(meta.prev.load(), kInvalid);
+    EXPECT_EQ(meta.next.load(), kInvalid);
+    EXPECT_EQ(meta.reference.load(), 0);
+    EXPECT_EQ(meta.accessed.load(), 0);
 
     bool ownerAfterReset = false;
     auto slotAfterReset = BufferTestAccess::TryAcquireSlot(buffer_, blockId, 0, 8, ownerAfterReset);
@@ -677,6 +684,130 @@ TEST_F(Cache2BufferTest, ResetHidesReadySlotsUntilTheyAreRefilled)
     BufferTestAccess::MarkReady(buffer_, slotAfterReset);
     BufferTestAccess::Release(buffer_, slotAfterReset);
     ASSERT_TRUE(buffer_.Exist(blockId, 0));
+}
+
+TEST_F(Cache2BufferTest, ResetPreservesPinnedSlotsAndTheirCompletion)
+{
+    const auto block = MakeBlockId(0x52u);
+    auto owner = buffer_.Get(block, 0);
+    auto reader = buffer_.Get(block, 0);
+    const auto slot = owner.SlotIndex();
+    auto& meta = BufferTestAccess::Layout(buffer_).SlotMetaArr()[slot];
+    ASSERT_EQ(meta.reference.load(), 2);
+
+    buffer_.Reset();
+
+    EXPECT_EQ(meta.reference.load(), 2);
+    EXPECT_EQ(owner.GetState(), CtrlLayout::SlotMeta::State::Loading);
+    EXPECT_EQ(meta.hash.load(), kInvalid);
+    EXPECT_FALSE(buffer_.Exist(block, 0));
+    owner.MarkReady();
+    EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Ready);
+    EXPECT_FALSE(buffer_.Exist(block, 0));
+
+    auto replacement = buffer_.Get(block, 0);
+    EXPECT_TRUE(replacement.Owner());
+    EXPECT_NE(replacement.SlotIndex(), slot);
+    replacement.MarkReady();
+    EXPECT_TRUE(buffer_.Exist(block, 0));
+    EXPECT_EQ(meta.reference.load(), 2);
+}
+
+TEST_F(Cache2BufferTest, RepeatedResetAndRefillLeaveNoStaleBucketLinks)
+{
+    constexpr size_t kKeys{4};
+    std::vector<Detail::BlockId> blocks;
+    const auto bucket = BufferTestAccess::BucketOf(buffer_, MakeBlockId(0));
+    for (uint32_t value = 0; blocks.size() < kKeys; ++value) {
+        auto block = MakeBlockId(value);
+        if (BufferTestAccess::BucketOf(buffer_, block) == bucket) { blocks.push_back(block); }
+    }
+    auto& layout = BufferTestAccess::Layout(buffer_);
+    for (size_t round = 0; round < 64; ++round) {
+        for (const auto& block : blocks) {
+            auto handle = buffer_.Get(block, 0);
+            ASSERT_TRUE(handle.Owner());
+            handle.MarkReady();
+        }
+        buffer_.Reset();
+        for (size_t i = 0; i < layout.BucketCount(); ++i) {
+            ASSERT_EQ(layout.Buckets()[i].load(), kInvalid) << "round " << round;
+        }
+        for (size_t i = 0; i < layout.SlotCount(); ++i) {
+            const auto& meta = layout.SlotMetaArr()[i];
+            ASSERT_EQ(meta.hash.load(), kInvalid);
+            ASSERT_EQ(meta.prev.load(), kInvalid);
+            ASSERT_EQ(meta.next.load(), kInvalid);
+            ASSERT_EQ(meta.reference.load(), 0);
+        }
+    }
+}
+
+TEST(Cache2BufferResetTest, SchedulerObserverClearsEveryRankPartition)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{8};
+    constexpr size_t kLocks{4};
+    const auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    {
+        Buffer rank0, rank1, observer;
+        BufferTestAccess::Init(rank0, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+        BufferTestAccess::Attach(rank1, memory, kRanks, kSlotsPerRank, kBuckets, kLocks, 1);
+        BufferTestAccess::Attach(observer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks,
+                                 kInvalid);
+        const auto block0 = MakeBlockId(0x53u);
+        const auto block1 = MakeBlockId(0x54u);
+        {
+            auto first = rank0.Get(block0, 0);
+            auto second = rank1.Get(block1, 0);
+            first.MarkReady();
+            second.MarkReady();
+            EXPECT_EQ(first.Segment(), 0);
+            EXPECT_EQ(second.Segment(), 1);
+        }
+        ASSERT_TRUE(observer.Exist(block0, 0));
+        ASSERT_TRUE(observer.Exist(block1, 0));
+
+        observer.Reset();
+
+        EXPECT_FALSE(rank0.Exist(block0, 0));
+        EXPECT_FALSE(rank1.Exist(block1, 0));
+        const auto& layout = BufferTestAccess::Layout(observer);
+        for (size_t i = 0; i < layout.BucketCount(); ++i) {
+            EXPECT_EQ(layout.Buckets()[i].load(), kInvalid);
+        }
+    }
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST_F(Cache2BufferTest, ConcurrentResetAndRefillPreserveBucketLinks)
+{
+    std::atomic<bool> start{false};
+    std::thread writer([&] {
+        while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+        for (uint32_t round = 0; round < 2048; ++round) {
+            auto handle = buffer_.Get(MakeBlockId(round % 32), 0);
+            handle.MarkReady();
+        }
+    });
+    start.store(true, std::memory_order_release);
+    for (size_t round = 0; round < 256; ++round) { buffer_.Reset(); }
+    writer.join();
+    buffer_.Reset();
+
+    auto& layout = BufferTestAccess::Layout(buffer_);
+    for (size_t i = 0; i < layout.BucketCount(); ++i) {
+        EXPECT_EQ(layout.Buckets()[i].load(), kInvalid);
+    }
+    for (size_t i = 0; i < layout.SlotCount(); ++i) {
+        const auto& meta = layout.SlotMetaArr()[i];
+        EXPECT_EQ(meta.hash.load(), kInvalid);
+        EXPECT_EQ(meta.prev.load(), kInvalid);
+        EXPECT_EQ(meta.next.load(), kInvalid);
+        EXPECT_EQ(meta.reference.load(), 0);
+    }
 }
 
 }  // namespace

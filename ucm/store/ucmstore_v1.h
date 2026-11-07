@@ -203,8 +203,8 @@ public:
      * Implementations without a resettable tier return Status::Unsupported()
      * so callers can tell "nothing to reset" apart from a failed reset.
      *
-     * Resetting while transfers are in flight is allowed. Entries completed
-     * after the reset stay invisible and are reclaimed by later allocation.
+     * Callers should quiesce cache traffic before resetting. Existing transfer
+     * references remain valid; concurrent new fills can repopulate the cache.
      */
     virtual Status ResetCache() { return Status::Unsupported(); }
 
