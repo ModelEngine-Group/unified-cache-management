@@ -136,9 +136,17 @@ def schedule_step(scheduler, req, cursor, hit, first, args):
             f"Invalid step budget or no progress: {output.num_scheduled_tokens}"
         )
     end = req.num_computed_tokens
-    if end != cursor + scheduled or end > args.tokens:
+    compute_start = end - scheduled
+    replay = cursor - compute_start
+    if (
+        end > args.tokens
+        or replay < 0
+        or (replay and (not first or replay > scheduler.prefix_replay_tokens))
+        or (replay and req.replay_start != compute_start)
+    ):
         raise AssertionError(
-            f"Expected step [{cursor}, {cursor + scheduled}), got end={end}"
+            f"Unexpected step: prior={cursor}, scheduled={scheduled}, "
+            f"compute_start={compute_start}, end={end}, replay={replay}"
         )
     stats = req.prefill_stats
     if (
@@ -149,7 +157,14 @@ def schedule_step(scheduler, req, cursor, hit, first, args):
     ):
         raise AssertionError(f"Unexpected native prefix-cache decision: {stats}")
     meta = output.kv_connector_metadata.requests[req.request_id]
-    return output, (end, meta, manager.get_block_ids(req.request_id), offloads)
+    return output, (
+        compute_start,
+        end,
+        scheduled,
+        meta,
+        manager.get_block_ids(req.request_id),
+        offloads,
+    )
 
 
 def run(args, cleanup, scratch):
@@ -240,13 +255,14 @@ def run(args, cleanup, scratch):
         step = None
         if root:
             output, step = schedule_step(scheduler, req, cursor, hit, steps == 0, args)
-        end, meta, tables, offloads = broadcast(step)
+        compute_start, end, scheduled, meta, tables, offloads = broadcast(step)
         print(
-            f"rank {dist.get_rank()} step {steps + 1}: prefill [{cursor}, {end}), scheduled={end-cursor}"
+            f"rank {dist.get_rank()} step {steps + 1}: "
+            f"compute [{compute_start}, {end}), scheduled={scheduled}"
         )
         geometry = layout, cfg, views, tables, placements
         dumps = expected_records(
-            *geometry, cursor, end, state_offloads=offloads, hit_tokens=hit
+            *geometry, max(cursor, hit), end, state_offloads=offloads, hit_tokens=hit
         )
         if meta.prepare_get_failed or meta.prefetch_job:
             raise AssertionError("Unexpected Get preparation failure or prefetch")

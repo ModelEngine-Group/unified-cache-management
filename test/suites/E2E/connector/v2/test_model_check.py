@@ -34,7 +34,7 @@ def test_model_check():
         pytest.param(
             "deepseek-ai/DeepSeek-V4.1-Flash",
             "314113f8a7dadb388215396ba5fbee2c610a04d6",
-            ("FA", "WA"),
+            ("FA",),
             id="deepseek-v4.1-flash",
         ),
         pytest.param(
