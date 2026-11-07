@@ -596,7 +596,10 @@ class UCMConnectorScheduler:
         load_start_token = (
             request_state.hbm_hit_tokens if should_load else load_end_token
         )
-        dump_start_token = step_start_token
+        # A bounded prefix replay rewinds the scheduler's compute cursor into
+        # already cached KV. Forward rebuilds scratch windows there without
+        # producing new persistent KV, so never dump the replayed prefix again.
+        dump_start_token = max(step_start_token, load_end_token)
         dump_end_token = step_end_token
         load_plans = self.build_dispatch_plans(
             request_state,

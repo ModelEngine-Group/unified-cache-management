@@ -1,5 +1,6 @@
 """Build the real model on meta and allocate its MRV2 KV views on the host."""
 
+import json
 import os
 from contextlib import ExitStack
 from copy import deepcopy
@@ -22,9 +23,14 @@ def make_engine(args):
         extra = {"UCM_CONFIG_FILE": str(args.ucm_config.resolve())}
     elif args.chunk_size:
         extra["chunk_size"] = args.chunk_size
+    model_config = json.loads((args.model / "config.json").read_text())
+    is_v41 = any(
+        "DeepseekV41" in name for name in model_config.get("architectures", ())
+    )
     engine = EngineArgs(
         model=str(args.model.resolve()),
-        skip_tokenizer_init=True,
+        # The V4.1 multimodal scheduler constructs a processor even for text.
+        skip_tokenizer_init=not is_v41,
         trust_remote_code=args.trust_remote_code,
         load_format="dummy",
         max_model_len=args.tokens + 1,
@@ -58,8 +64,13 @@ def install_ascend_worker(engine):
     from vllm_ascend.ascend_config import init_ascend_config
     from vllm_ascend.ascend_forward_context import sync_v2_extra_kwargs
     from vllm_ascend.mrv2_utils import apply_v2_model_runner_config_patch
-    from vllm_ascend.utils import adapt_patch, register_ascend_customop
+    from vllm_ascend.utils import (
+        adapt_patch,
+        register_ascend_customop,
+        set_potential_max_tokens,
+    )
 
+    set_potential_max_tokens(engine)
     apply_v2_model_runner_config_patch()
     sync_v2_extra_kwargs(engine)
     adapt_patch()
@@ -100,7 +111,45 @@ def make_model(engine):
         set_default_torch_dtype(engine.model_config.dtype),
         torch.device("meta"),
         MetaPlacement(),
+        ExitStack() as model_patches,
     ):
+        architectures = engine.model_config.architectures or ()
+        if any("DeepseekV41" in name for name in architectures):
+            if engine.device_config.device_type == "npu":
+                from vllm_ascend.models.deepseek_v41.engram.embedding import (
+                    AscendParallelEngramEmbedding as EngramEmbedding,
+                )
+
+            else:
+                from vllm.models.deepseek_v41.common import engram
+
+                EngramEmbedding = engram.ParallelEngramEmbedding
+                model_patches.enter_context(
+                    patch.object(engram, "is_uva_available", lambda: True)
+                )
+
+            def meta_engram_weights(embedding):
+                dtype = getattr(embedding, "storage_dtype", torch.float8_e4m3fn)
+                codes = torch.empty(
+                    (embedding.part_num_embeddings, embedding.dim),
+                    dtype=dtype,
+                    device="meta",
+                )
+                scales = None
+                if dtype != torch.bfloat16:
+                    scales = torch.empty(
+                        (
+                            embedding.part_num_embeddings,
+                            embedding.dim // embedding.block_size,
+                        ),
+                        dtype=getattr(embedding, "scale_dtype", torch.uint8),
+                        device="meta",
+                    )
+                return codes, scales
+
+            model_patches.enter_context(
+                patch.object(EngramEmbedding, "_allocate_weights", meta_engram_weights)
+            )
         model = initialize_model(engine)
     if any(not param.is_meta for param in model.parameters()):
         raise RuntimeError("Model construction materialized weights outside meta")
