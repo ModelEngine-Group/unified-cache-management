@@ -3717,36 +3717,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         if store is not None:
             store.prefetch_data(block_ids)
 
-    def _maybe_start_prefetch_server(self) -> None:
-        """Start the prefetch HTTP server on the worker side if enabled.
-
-        The UCM store (including the cache buffer) only exists on workers, so
-        the scheduler side is skipped. Under DP x TP each worker needs a unique
-        port: base_port + dp_rank * tp_size + tp_rank.
-        """
-        cfg = (self.launch_config or {}).get("prefetch_http") or {}
-        if not cfg.get("enable"):
-            return
-        if self._role != KVConnectorRole.WORKER:  # Requires the cache buffer
-            return
-        host = cfg.get("host", "0.0.0.0")  # Reachable by the router via node IP
-        base_port = int(cfg.get("base_port", 6997))
-        token = cfg.get("token") or None
-        dp_rank = int(
-            self._vllm_config.parallel_config.data_parallel_index
-        )  # 0-based
-        tp_size = int(self._vllm_config.parallel_config.tensor_parallel_size)
-        tp_rank = max(get_world_group().local_rank, 0)
-        port = base_port + dp_rank * tp_size + tp_rank  # Globally unique
-        try:
-            from ucm.integration.vllm.prefetch_server import UcmPrefetchServer
-
-            self._prefetch_server = UcmPrefetchServer(
-                self.prefetch_data, host, port, token
-            ).start()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("UCM prefetch HTTP failed to start: %s", e)
-
     def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         self._vllm_metrics_enabled = False
         self._vllm_metric_definitions = []
@@ -3910,7 +3880,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             dictionary of layer names, kv cache
         """
         self.connector.register_kv_caches(kv_caches)
-        self._maybe_start_prefetch_server()  # Store is ready, start prefetch
 
     @_record_connector_interface_duration
     def build_connector_meta(
