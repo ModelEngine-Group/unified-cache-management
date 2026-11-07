@@ -21,6 +21,7 @@ from release_manifest import (
 
 API = "https://app.readthedocs.org/api/v3"
 VERSION_SYNC_TIMEOUT = 300
+VERSION_SYNC_POLL_INTERVAL = 10
 
 
 def request(path: str, *, method: str = "GET", data=None):
@@ -122,7 +123,7 @@ def notify_release(
                     f"({elapsed:.0f}s elapsed, {VERSION_SYNC_TIMEOUT}s limit)",
                     flush=True,
                 )
-                time.sleep(min(10, sync_deadline - now))
+                time.sleep(min(VERSION_SYNC_POLL_INTERVAL, sync_deadline - now))
         if not version["active"]:
             previous = request(prefix + "/builds/?limit=20")["results"]
             last_id = max((build["id"] for build in previous), default=0)
