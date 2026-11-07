@@ -97,6 +97,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self.store_ = ucmpipelinestore.PipelineStore()
+        self._pending_prefetch_tasks: List[int] = []
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
@@ -121,6 +122,25 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         self.store_.Prefetch(flat)
+
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        # Warm is asynchronous and returns a task handle, like load/dump. No one
+        # waits on it here, so reap finished handles lazily on later calls to
+        # keep TransManager::tasks_ bounded.
+        self._reap_prefetch_tasks()
+        self._pending_prefetch_tasks.append(self.store_.Warm(flat))
+
+    def _reap_prefetch_tasks(self) -> None:
+        if not self._pending_prefetch_tasks:
+            return
+        pending = []
+        for task_id in self._pending_prefetch_tasks:
+            if self.store_.Check(task_id):
+                self.store_.Wait(task_id)
+            else:
+                pending.append(task_id)
+        self._pending_prefetch_tasks = pending
 
     def _tensor_normalize(self, tensors: List[List[torch.Tensor]]) -> np.ndarray:
         n_rows = len(tensors)

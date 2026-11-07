@@ -107,9 +107,17 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         waiter->Done();
         return;
     }
+    const auto nShard = task->desc.size();
+    if (nShard == 0) {
+        // Empty task (e.g. Warm with 0 blocks) must complete immediately,
+        // otherwise Wait would block forever.
+        UC_WARN("Cache task({}) dispatched with 0 shards, completing immediately.",
+                task->id);
+        waiter->Done();
+        return;
+    }
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
-    const auto nShard = task->desc.size();
     size_t backendSubmitCount = 0;
     size_t waitShardCount = 0;
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
@@ -222,32 +230,38 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             }
         }
 
-        auto* host = cacheSdmaDirect_ ? task.bufferHandle.DeviceData() : task.bufferHandle.Data();
-        s = HostToDeviceAsync(stream, host, task.shard.addrs.data());
-        auto tpH2dSubmitted = NowTime::Now();
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
-            RecordShardResults(holder_, &task, false);
-            break;
+        const bool isPrefetch = parentTask->type == TransTask::Type::PREFETCH;
+        if (!isPrefetch) {
+            auto* host = cacheSdmaDirect_ ? task.bufferHandle.DeviceData()
+                                          : task.bufferHandle.Data();
+            s = HostToDeviceAsync(stream, host, task.shard.addrs.data());
+            auto tpH2dSubmitted = NowTime::Now();
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
+                RecordShardResults(holder_, &task, false);
+                break;
+            }
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
+                                     (tpH2dSubmitted - tpBackendReady) * 1e3);
         }
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
-                                 (tpH2dSubmitted - tpBackendReady) * 1e3);
         if (!waiter) {
             holder_.push_back(std::move(task));
             return;
         }
-        auto tpH2dSyncStart = NowTime::Now();
-        s = stream.Synchronize();
-        auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
-        RecordH2dSyncMetrics(h2dSyncMs);
+        if (!isPrefetch) {
+            auto tpH2dSyncStart = NowTime::Now();
+            s = stream.Synchronize();
+            auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
+            RecordH2dSyncMetrics(h2dSyncMs);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
+                break;
+            }
+        }
         RecordShardResults(holder_, &task, s.Success());
         holder_.clear();
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
-            break;
-        }
     } while (0);
     if (s.Failure()) [[unlikely]] {
         parentTask->Fail(s);

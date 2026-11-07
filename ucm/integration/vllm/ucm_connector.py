@@ -414,6 +414,13 @@ class RequestMeta:
     token_processed: int = 0
 
 
+def build_kv_block_info(req_meta: "RequestMeta | None") -> dict[str, Any] | None:
+    """Build the prefetch handle returned with the response."""
+    if req_meta is None or not req_meta.ucm_block_ids:
+        return None
+    return {"hash_keys": [b.hex() for b in req_meta.ucm_block_ids]}
+
+
 @dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
@@ -2806,10 +2813,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
+        req_meta = self.requests_meta.get(request.request_id)
+        kv_transfer_params = build_kv_block_info(req_meta)
         if request.request_id in self._async_dump_req_ids:
             self._async_dump_req_ids.discard(request.request_id)
-            return True, None
-        return False, None
+            return True, kv_transfer_params
+        return False, kv_transfer_params
 
     def request_finished_all_groups(
         self,
@@ -3517,8 +3526,8 @@ class UCMLiteConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
-        self.requests_meta.pop(request.request_id, None)
-        return False, None
+        req_meta = self.requests_meta.pop(request.request_id, None)
+        return False, build_kv_block_info(req_meta)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         pass
@@ -3754,6 +3763,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     @_record_connector_interface_duration
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
+
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        """Warm blocks into the host DDR buffer (Backend2Cache), no H2D.
+
+        Forwards to the inner connector's store.prefetch_data (worker side only).
+        """
+        inner = getattr(self, "connector", None)
+        store = getattr(inner, "store", None)
+        if store is not None:
+            store.prefetch_data(block_ids)
 
     def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         self._vllm_metrics_enabled = False

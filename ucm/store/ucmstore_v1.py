@@ -127,6 +127,13 @@ class UcmKVStoreBaseV1(ABC):
         """
         pass
 
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        """Warm blocks into the host DDR buffer (Backend2Cache), no H2D.
+
+        Default no-op; overridden by UcmPipelineStore.
+        """
+        pass
+
     @abstractmethod
     def load(
         self,

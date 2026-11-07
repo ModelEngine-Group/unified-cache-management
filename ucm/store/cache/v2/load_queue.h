@@ -158,6 +158,14 @@ private:
             waiter->Done();
             return;
         }
+        if (task->desc.empty()) {
+            // Empty task (e.g. Warm with 0 blocks) must complete immediately,
+            // otherwise Wait would block forever.
+            UC_WARN("Cache task({}) dispatched with 0 shards, completing immediately.",
+                    task->id);
+            waiter->Done();
+            return;
+        }
         DispatchShards(task, waiter);
     }
     void DispatchShards(const TaskPtr& task, const WaiterPtr& waiter)
@@ -293,7 +301,14 @@ private:
                          task.task->id);
             }
         }
-        if (s.Success()) { s = ScatterShard(stream, task); }
+        if (s.Success()) {
+            if (task.task->type == Task::Type::PREFETCH) {
+                // Blocks are only warmed into the host cache buffer: no H2D.
+                s = Status::OK();
+            } else {
+                s = ScatterShard(stream, task);
+            }
+        }
         if (s.Failure()) [[unlikely]] {
             RecordShardResults(holder_, &task, false);
             FinishShard(stream, std::move(task), s);
@@ -303,7 +318,9 @@ private:
             holder_.push_back(std::move(task));
             return;
         }
-        s = SynchronizeH2d(stream, task);
+        if (task.task->type != Task::Type::PREFETCH) {
+            s = SynchronizeH2d(stream, task);
+        }
         RecordShardResults(holder_, &task, s.Success());
         holder_.clear();
         FinishShard(stream, std::move(task), s);

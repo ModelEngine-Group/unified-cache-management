@@ -38,6 +38,38 @@ public:
     }
 };
 
+TEST_F(UCCacheLoadQueueTest, EmptyDescTaskCompletesImmediately)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    // An empty task (possible when Warm receives 0 blocks) must complete
+    // immediately instead of blocking Wait forever.
+    UC::Detail::TaskDesc desc{};
+    auto task = std::make_shared<TransTask>(TransTask::Type::PREFETCH, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_FALSE(failureSet.Contains(task->id));
+}
+
 TEST_F(UCCacheLoadQueueTest, LoadSameBlockTwice)
 {
     using namespace UC::CacheStore;

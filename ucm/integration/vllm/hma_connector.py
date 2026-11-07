@@ -32,6 +32,7 @@ from ucm.integration.vllm.ucm_connector import (
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    build_kv_block_info,
     build_kv_hash_meta,
 )
 from ucm.logger import init_logger
@@ -2828,8 +2829,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
-        # Scheduler side method
-        return True, None
+        # Scheduler side method.
+        # Return this request's block hashes (prefetch handle) with the response
+        # so the upper layer can prefetch on demand. Short requests that were not
+        # dumped have no requests_meta entry and yield None.
+        req_meta = self.requests_meta.get(request.request_id)
+        return True, build_kv_block_info(req_meta)
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):
