@@ -241,6 +241,7 @@ PYBIND11_MODULE(ucm_proxy, m)
                 }
             })
         .def_readwrite("sizes", &BlockPayload::sizes)
+        .def_readwrite("offsets", &BlockPayload::offsets)
         .def_readwrite("memory_region_indices", &BlockPayload::memoryRegionIndices)
         .def_readwrite("group_sizes", &BlockPayload::groupSizes);
 
