@@ -497,6 +497,7 @@ class PreparedTransfer:
     rows: list
     block_ids: tuple[bytes, ...]
     tasks: tuple
+    distribute_backend_load: bool
 
 
 def prepare_transfer(rows, ids, workload):
@@ -511,7 +512,7 @@ def prepare_transfer(rows, ids, workload):
         (packed_ids, (ctypes.c_uint64 * len(ids))(*([shard] * len(ids))), addresses)
         for shard in range(workload.shards)
     )
-    return PreparedTransfer(rows, ids, tasks)
+    return PreparedTransfer(rows, ids, tasks, workload.shared)
 
 
 def transfer_request(store, runtime, request, *, dump=False, verify=False):
@@ -532,7 +533,11 @@ def transfer_request(store, runtime, request, *, dump=False, verify=False):
         if dump or verify:
             runtime.synchronize()
         start = time.perf_counter()
-        task = operation(*parameters)
+        task = (
+            operation(*parameters)
+            if dump
+            else operation(*parameters, 0, request.distribute_backend_load)
+        )
         wait(task)
         # Cache task completion already synchronizes its copy streams. A second
         # device-wide sync here would charge unrelated runtime work to the load.

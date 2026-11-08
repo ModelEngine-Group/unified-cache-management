@@ -32,7 +32,7 @@ class _SGLangImportTrigger(importlib.abc.MetaPathFinder):
             spec = importlib.util.find_spec(fullname, path)
         finally:
             sys.meta_path = saved
-        if spec is not None and spec.loader is not None:
+        if spec and spec.loader:
             spec.loader = _SGLangPatchLoader(spec.loader)
         return spec
 

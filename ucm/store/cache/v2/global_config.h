@@ -77,10 +77,6 @@ struct Config {
     /* Keeps the cc core's single-stream aggregation instead of rotating copies. */
     bool ioAggregation{false};
     size_t localRankSize{8};
-    /* MLA workers share cache keys and can deterministically assign each
-     * missing key to one rank-local segment. GQA workers use rank-specific
-     * keys and must keep allocating from their own segment. */
-    bool shareBufferEnable{false};
     /* Connector-derived hints, never user configuration. deviceNumaNode is the
      * accelerator's real NUMA affinity, absent when topology does not expose
      * one; fallbackNumaRank and fallbackNumaRankCount describe this worker's
@@ -133,7 +129,6 @@ struct Config {
         // Match cc: HMA's FA default must not enable an unsupported copy path.
         config.ioAggregation = config.ioAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
         dict.GetNumber("local_rank_size", config.localRankSize);
-        dict.Get("share_buffer_enable", config.shareBufferEnable);
         if (dict.Contains("cache_detected_numa_node")) {
             int32_t numaNode = 0;
             dict.GetNumber("cache_detected_numa_node", numaNode);
@@ -249,7 +244,6 @@ struct Config {
         UC_INFO("Set {}::CacheIOAggregation to {}.", ns, ioAggregation);
         UC_INFO("Set {}::UseGdr to {}.", ns, useGdr);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
-        UC_INFO("Set {}::ShareBufferEnable to {}.", ns, shareBufferEnable);
         if (detectedNumaNode.has_value()) {
             UC_INFO("Set {}::DetectedNumaNode to {}.", ns, *detectedNumaNode);
         }

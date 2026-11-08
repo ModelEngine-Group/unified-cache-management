@@ -60,7 +60,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, DumpThenLoad)
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = true;
     BufferManager<> buffer;
     auto s = buffer.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
@@ -108,7 +107,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, BackendNotFoundIsPreserved)
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = false;
 
     BufferManager<> buffer;
     ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
@@ -144,7 +142,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, BackendSubmitNotFoundIsPreserved)
     config.deviceId = 0;
     config.bufferCapacity = config.shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = false;
 
     BufferManager<> buffer;
     ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
@@ -189,7 +186,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, DumpThenLoadWithLayerWise)
     config.deviceId = 0;
     config.bufferCapacity = shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = true;
     config.timeoutMs = 10 * 60 * 1000;
     BufferManager<> buffer;
     auto s = buffer.Setup(config);
@@ -259,7 +255,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, DumpThenLoadWithLayerAndChunk)
     config.deviceId = 0;
     config.bufferCapacity = shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = true;
     config.timeoutMs = 10 * 60 * 1000;
     BufferManager<> buffer;
     auto s = buffer.Setup(config);
@@ -343,7 +338,6 @@ TEST_F(UCCache2TransManagerIntegrationTest, DumpThenLoadWithVariableLengthIo)
     config.deviceId = 0;
     config.bufferCapacity = shardSize * 2049;
     config.uniqueId = rd.RandomString(10);
-    config.shareBufferEnable = true;
     BufferManager<> buffer;
     auto s = buffer.Setup(config);
     ASSERT_EQ(s, UC::Status::OK());
