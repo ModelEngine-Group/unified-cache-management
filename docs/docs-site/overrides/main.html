@@ -32,6 +32,15 @@
   {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
     <link rel="stylesheet" href="{{ 'assets/stylesheets/home.css' | url }}">
   {% endif %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <style>
+      .md-content__inner {
+        max-width: 1120px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+    </style>
+  {% endif %}
   <link rel="stylesheet" href="https://unpkg.com/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700&display=swap">
   <style>
@@ -84,9 +93,36 @@
   </style>
 {% endblock %}
 
+{% block site_nav %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <div class="md-sidebar md-sidebar--primary ucm-blog-sidebar" data-md-component="sidebar" data-md-type="navigation">
+      <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+          {% include "partials/blog-timeline.html" %}
+        </div>
+      </div>
+    </div>
+    {% if not page.file.src_uri.endswith('blog/index.md') and "toc.integrate" not in features %}
+      <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+        <div class="md-sidebar__scrollwrap">
+          <div class="md-sidebar__inner">
+            {% include "partials/toc.html" %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
 {% block content %}
   {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
     <div class="ucm-home">
+      {{ super() }}
+    </div>
+  {% elif page and page.file.src_uri.endswith('blog/index.md') %}
+    <div class="ucm-blog-content">
       {{ super() }}
     </div>
   {% else %}
@@ -98,6 +134,9 @@
   {{ super() }}
   {% if page and page.file.src_uri in ["en/user-guide/quick_start/index.md", "zh/user-guide/quick_start/index.md"] %}
     <script src="{{ 'assets/quickstart.js' | url }}"></script>
+  {% endif %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <script src="{{ 'assets/blog.js' | url }}?v=15"></script>
   {% endif %}
   <script src="https://unpkg.com/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js"></script>

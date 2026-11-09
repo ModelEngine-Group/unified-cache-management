@@ -17,6 +17,7 @@ hooks:
   - tools/shared_assets.py
   - tools/navigation.py
   - tools/runtime_images.py
+  - tools/blog.py
 
 extra_css:
   - assets/stylesheets/extra.css
@@ -131,6 +132,7 @@ plugins:
             NIC Monitor: 网卡监控
             Dev Sandbox: 开发沙箱
             KV Cache Calculator: KV Cache 计算器
+            Blog: 博客
   - search:
       separator: '[\s\u200b\-]'
 
@@ -173,6 +175,8 @@ extra:
 
 nav:
   - Home: index.md
+  - Blog:
+      - blog/index.md
   - User Guide:
       - user-guide/index.md
       - Quickstart: user-guide/quick_start/index.md
