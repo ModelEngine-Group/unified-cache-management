@@ -278,7 +278,8 @@ def run(args, cleanup, scratch):
     print(
         f"prompt={args.tokens}, max_num_batched_tokens={args.max_num_batched_tokens}, "
         f"chunk={chunk}, external_hit={hit} ({args.assume_hit_percent}% requested, "
-        f"alignment={alignment}), fresh_prefill={args.tokens - hit}"
+        f"alignment={alignment}, actual={100 * hit / args.tokens:.2f}%), "
+        f"fresh_prefill={args.tokens - hit}"
     )
 
     steps = num_get = num_dump = 0
@@ -358,6 +359,7 @@ def run(args, cleanup, scratch):
 
 def main():
     args = arguments()
+    print(f"Model-check arguments: {vars(args)}", flush=True)
     from parallel import launch
 
     if launch(args):

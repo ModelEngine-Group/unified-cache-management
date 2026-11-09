@@ -322,6 +322,7 @@ def allocate(engine, kv_mib, scratch_dir, cleanup):
         config.kv_cache_layout = packing.name
     config = configs[rank]
     scheduler_config = kv_cache_utils.generate_scheduler_kv_cache_config(configs)
+    requested_service_block = engine.cache_config.block_size
     engine.cache_config.num_gpu_blocks = scheduler_config.num_blocks
     groups = (
         scheduler_config.prefix_cacheable_groups or scheduler_config.kv_cache_groups
@@ -375,6 +376,19 @@ def allocate(engine, kv_mib, scratch_dir, cleanup):
             ]
         )
     sizes = attn_utils.prepare_kernel_block_sizes(physical, attn_groups)
+    print(
+        f"Cache planning: pre_group_cache_block={requested_service_block}, "
+        f"cache_config_block={engine.cache_config.block_size}, "
+        f"scheduler_block={block_size}, hash_block={hash_size}, "
+        f"hit_alignment={alignment}, kernel_blocks={sizes}",
+        flush=True,
+    )
+    for group_id, group in enumerate(scheduler_config.kv_cache_groups):
+        print(
+            f"Scheduler KV group {group_id}: spec={group.kv_cache_spec!r}, "
+            f"layers={len(group.layer_names)}",
+            flush=True,
+        )
     views = model_runner.init_kv_cache(
         layers, physical, torch.device("cpu"), sizes, engine
     )
