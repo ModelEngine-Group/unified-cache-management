@@ -318,15 +318,18 @@ html[data-rtd-navigation="header"] readthedocs-flyout {
   display: block;
   min-height: 8.5rem;
   overflow: hidden;
-  background: linear-gradient(135deg, #0f766e, #1e3a8a);
+  background: #ffffff;
 }
 
 .ucm-blog-banner__media img {
   position: absolute;
   inset: 0;
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  padding: 0.45rem;
+  background: #ffffff;
+  object-fit: contain;
   object-position: center;
 }
 
