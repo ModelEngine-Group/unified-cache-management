@@ -1,5 +1,6 @@
 """Layer submission, completion ordering and failure draining."""
 
+from concurrent.futures import Future
 import queue
 import types
 import unittest
@@ -18,6 +19,8 @@ class LoadWorkerTest(unittest.TestCase):
         forward_event=False,
         supports_prerequisite=False,
         handle=42,
+        prefetch=False,
+        cancelled=False,
     ):
         events = []
         submitted = []
@@ -87,12 +90,66 @@ class LoadWorkerTest(unittest.TestCase):
                     synchronize=lambda: events.append(("forward_done", None)),
                 )
             )
-        obj._load_queue.put((0, {"req": [object()]}, ready_events))
+        if prefetch:
+            future = Future()
+            future.add_done_callback(lambda f: events.append(
+                ("result", "cancelled" if f.cancelled() else f.result())
+            ))
+            if cancelled:
+                future.cancel()
+            obj._load_queue.put(linker_module._PrefetchLoad(
+                [object()], ready_events, future
+            ))
+        else:
+            obj._load_queue.put((0, {"req": [object()]}, ready_events))
         obj._load_queue.put(None)
         obj._load_worker()
         self.assertEqual(obj._load_queue.unfinished_tasks, 0)
         self.assertEqual(reaped, set(submitted))
         return events
+
+    def test_prefetch_completes_after_all_layers_without_layer_notifications(self):
+        with patch.object(linker_module, "Future", Future, create=True):
+            events = self.run_worker(prefetch=True)
+        self.assertEqual(events[-1], ("result", True))
+        self.assertEqual(len([e for e in events if e[0] == "wait"]), 4)
+        self.assertFalse(any(e[0] in ("complete", "fail") for e in events))
+
+    def test_prefetch_failures_drain_before_future_completion(self):
+        for failure in ({"fail_submit": 2}, {"fail_wait": 1}, {"fail_check": 0}):
+            with self.subTest(**failure):
+                events = self.run_worker(prefetch=True, **failure)
+                self.assertEqual(events[-1], ("result", False))
+                self.assertFalse(any(e[0] in ("complete", "fail") for e in events))
+
+    def test_cancelled_prefetch_never_touches_device(self):
+        events = self.run_worker(prefetch=True, cancelled=True)
+        self.assertEqual(events, [("result", "cancelled")])
+
+    def test_prefetch_entry_records_dependencies_and_rejects_unavailable_worker(self):
+        obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._closed = False
+        obj._load_thread = types.SimpleNamespace(is_alive=lambda: True)
+        obj._load_queue = queue.Queue()
+        obj._expand = lambda transfers, **kwargs: transfers
+        obj._freeze_gc_once = lambda: None
+        ready = [object()]
+        obj._record_transfer_events = lambda: ready
+        transfers = [object()]
+        with patch.object(linker_module, "Future", Future, create=True):
+            future = obj.prefetch(transfers)
+            task = obj._load_queue.get_nowait()
+            self.assertIs(task.future, future)
+            self.assertIs(task.ready_events, ready)
+            self.assertIs(task.transfers, transfers)
+            self.assertFalse(future.done())
+            self.assertIsNone(obj.prefetch([]))
+            obj._closed = True
+            self.assertIsNone(obj.prefetch(transfers))
+            obj._closed = False
+            obj._load_thread = types.SimpleNamespace(is_alive=lambda: False)
+            self.assertIsNone(obj.prefetch(transfers))
+        self.assertTrue(obj._load_queue.empty())
 
     def test_submission_continues_and_ready_layers_publish_early(self):
         events = self.run_worker()
