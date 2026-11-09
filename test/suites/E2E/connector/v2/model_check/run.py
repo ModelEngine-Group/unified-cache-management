@@ -1,6 +1,7 @@
 """Card-less Connector v2 model-check for chunked prefill and external prefix hits."""
 
 import argparse
+import json
 import os
 import re
 from contextlib import ExitStack, nullcontext
@@ -68,6 +69,21 @@ def arguments():
     p.add_argument("--pcp", type=int, default=1, help="prefill context parallel size")
     p.add_argument("--dcp", type=int, default=1, help="decode context parallel size")
     p.add_argument("--dtype", default="auto")
+    p.add_argument(
+        "--quantization", help="weight quantization used by the target model"
+    )
+    p.add_argument("--kv-cache-dtype", default="auto", help="target KV cache dtype")
+    p.add_argument("--indexer-kv-dtype", default="auto", help="sparse indexer KV dtype")
+    p.add_argument(
+        "--mamba-ssm-cache-dtype",
+        default="auto",
+        help="Mamba/State cache dtype used by the official Kimi recipes",
+    )
+    p.add_argument(
+        "--speculative-config",
+        type=json.loads,
+        help="JSON MTP/DSpark config; registers draft KV but does not run forward",
+    )
     p.add_argument("--trust-remote-code", action="store_true")
     modes = p.add_mutually_exclusive_group()
     modes.add_argument(
@@ -89,6 +105,23 @@ def arguments():
         p.error("--assume-hit-percent must be in [0, 100]")
     if args.ucm_config and args.assume_hit_percent:
         p.error("--assume-hit-percent requires plan-only mode (omit --ucm-config)")
+    if args.speculative_config is not None:
+        if args.speculative_config.get("method") not in (
+            "mtp",
+            "deepseek_mtp",
+            "qwen3_5_mtp",
+            "dspark",
+        ):
+            p.error("--speculative-config supports only MTP or DSpark")
+        if args.ucm_config:
+            p.error("Speculative model inspection supports plan-only mode")
+        if args.speculative_config.get("method") == "dspark":
+            # DeepSeek-V4/V4.1 ship their DSpark stages inside the target
+            # checkpoint, so a draft directory is optional there. Kimi-K3 uses
+            # a separate draft checkpoint and must name it.
+            draft = args.speculative_config.get("model")
+            if draft and not (Path(draft) / "config.json").is_file():
+                p.error("DSpark draft must be a local model directory")
     sizes = (
         args.tokens,
         args.max_num_batched_tokens,

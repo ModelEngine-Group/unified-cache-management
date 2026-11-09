@@ -15,7 +15,7 @@ def make_engine(args):
 
         adapt_patch(is_global_patch=True)
 
-    from vllm.config import KVTransferConfig
+    from vllm.config import AttentionConfig, KVTransferConfig
     from vllm.engine.arg_utils import EngineArgs
 
     extra = {"use_layerwise": True}
@@ -24,13 +24,15 @@ def make_engine(args):
     elif args.chunk_size:
         extra["chunk_size"] = args.chunk_size
     model_config = json.loads((args.model / "config.json").read_text())
-    is_v41 = any(
-        "DeepseekV41" in name for name in model_config.get("architectures", ())
+    architectures = model_config.get("architectures", ())
+    needs_tokenizer = any(
+        name.startswith(("DeepseekV41", "Glm5Next", "Qwen3_5", "Qwen4Exp"))
+        for name in architectures
     )
     engine = EngineArgs(
         model=str(args.model.resolve()),
-        # The V4.1 multimodal scheduler constructs a processor even for text.
-        skip_tokenizer_init=not is_v41,
+        # These multimodal schedulers construct a processor even for text.
+        skip_tokenizer_init=not needs_tokenizer,
         trust_remote_code=args.trust_remote_code,
         load_format="dummy",
         max_model_len=args.tokens + 1,
@@ -42,6 +44,11 @@ def make_engine(args):
         decode_context_parallel_size=args.dcp,
         distributed_executor_backend="mp" if args.tp * args.pcp > 1 else None,
         dtype=args.dtype,
+        quantization=args.quantization,
+        speculative_config=args.speculative_config,
+        kv_cache_dtype=args.kv_cache_dtype,
+        mamba_ssm_cache_dtype=args.mamba_ssm_cache_dtype,
+        attention_config=AttentionConfig(indexer_kv_dtype=args.indexer_kv_dtype),
         enforce_eager=True,
         enable_prefix_caching=True,
         async_scheduling=False,
@@ -94,6 +101,10 @@ def make_model(engine):
         def __torch_function__(self, func, types, args=(), kwargs=None):
             kwargs = dict(kwargs or {})
             device = kwargs.get("device")
+            if "device" in kwargs and (
+                isinstance(device, int) or (func is torch.empty and device is None)
+            ):
+                kwargs["device"] = torch.device("meta")
             if isinstance(device, (str, torch.device)) and torch.device(
                 device
             ).type in ("cuda", "npu"):
@@ -150,7 +161,38 @@ def make_model(engine):
             model_patches.enter_context(
                 patch.object(EngramEmbedding, "_allocate_weights", meta_engram_weights)
             )
+        if engine.device_config.device_type == "cuda" and any(
+            name.startswith("Qwen4Exp") for name in architectures
+        ):
+            # PLE weights are not used by cache planning. Avoid pinning their
+            # potentially huge tables or requiring CUDA UVA during inspection.
+            from vllm.models.qwen4_exp.nvidia import ngram_embedding
+
+            model_patches.enter_context(
+                patch.object(
+                    ngram_embedding,
+                    "Qwen4ExpPLEPinnedHostEmbedding",
+                    ngram_embedding.Qwen4ExpPLEDeviceEmbedding,
+                )
+            )
         model = initialize_model(engine)
+        if engine.speculative_config is not None:
+            if engine.device_config.device_type == "npu":
+                from vllm_ascend.worker.v2.spec_decode import init_speculator
+            else:
+                from vllm.v1.worker.gpu.spec_decode import init_speculator
+
+            # Buffers are CPU-only. The platform's real MRV2 speculator loads
+            # its dummy-weight draft on meta and registers its attention layers.
+            speculator = init_speculator(engine, torch.device("cpu"), None)
+            speculator.load_model(model)
+            draft_layers = speculator.draft_attn_layer_names
+            if not draft_layers:
+                raise ValueError("Speculative draft registered no attention layers")
+            if any(not param.is_meta for param in speculator.model.parameters()):
+                raise RuntimeError("Draft model materialized weights outside meta")
+            model._ucm_test_speculator = speculator
+            print(f"Registered draft cache layers: {sorted(draft_layers)}", flush=True)
     if any(not param.is_meta for param in model.parameters()):
         raise RuntimeError("Model construction materialized weights outside meta")
     return model

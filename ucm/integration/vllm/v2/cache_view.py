@@ -196,7 +196,7 @@ def _build_bhnc_view(
     shape: tuple[int, ...],
     strides: tuple[int, ...],
 ) -> ComponentView:
-    """Keep compact pages together; split only physically separated heads.
+    """Keep compact pages together; split physically separated rows or heads.
 
     Physical NHC and singleton-head views support partial-token IO.
     Multi-head HNC requires whole blocks, including the separated-head
@@ -227,7 +227,25 @@ def _build_bhnc_view(
         row_payload = states * heads * channels * element_size
         row_stride = strides[0] * element_size
         if rows_per_block > 1 and row_stride != row_payload:
-            raise ValueError("Multi-row BHNC blocks require contiguous kernel rows")
+            if row_stride < row_payload:
+                raise ValueError("BHNC kernel rows must not overlap")
+            # Rows may be interleaved with another component or contain
+            # padding. Describe only their payload; LayerView can merge
+            # adjacent K/V spans once all components have been collected.
+            segments = tuple(
+                MemorySegment(
+                    base_ptr=base_ptr + row * row_stride,
+                    block_stride_bytes=rows_per_block * row_stride,
+                    states_per_block=states,
+                    bytes_per_state=heads * channels * element_size,
+                    payload_bytes=row_payload,
+                    storage_base_ptr=storage_base_ptr,
+                )
+                for row in range(rows_per_block)
+            )
+            return ComponentView(
+                shape, strides, segments, supports_partial_tokens=False
+            )
         return ComponentView(
             shape=shape,
             strides=strides,
