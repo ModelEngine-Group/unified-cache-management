@@ -635,13 +635,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         except Exception:
             logger.exception(
-                "[CacheLookup] lookup_failed request_id=%s "
-                "external_query_tokens=%d dp_rank=%d attn_dp_rank=%d tp_rank=%d",
-                rid,
-                len(page_keys) * self.page_size,
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLookup] lookup_failed request_id=%s external_query_tokens=%d",
                 self._dp_rank,
                 self._attn_dp_rank,
                 self._tp_rank,
+                rid,
+                len(page_keys) * self.page_size,
             )
             raise
         self._lookup_progress[rid] = _LookupProgress(
@@ -660,24 +660,24 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         except Exception:
             logger.exception(
-                "[CacheLoad] load_failed request_id=%s stage=resolve_transfers "
-                "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
-                rid,
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_failed request_id=%s",
                 self._dp_rank,
                 self._attn_dp_rank,
                 self._tp_rank,
+                rid,
             )
             raise
         if not expanded:
             return False
         if rid in self._pending_loads:
             logger.error(
-                "[CacheLoad] load_rejected request_id=%s reason=already_queued "
-                "dp_rank=%d attn_dp_rank=%d tp_rank=%d",
-                rid,
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_rejected request_id=%s reason=already_queued",
                 self._dp_rank,
                 self._attn_dp_rank,
                 self._tp_rank,
+                rid,
             )
             raise RuntimeError(f"UCM load for rid={rid} is already queued.")
         self._pending_loads[rid] = expanded
@@ -758,10 +758,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
-                load_stage = "wait_dependencies"
                 try:
                     prerequisite_handle = self._wait_transfer_events(ready_events)
-                    load_stage = "prepare"
                     page_transfers = [
                         transfer
                         for request in pending.values()
@@ -778,7 +776,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     try:
                         for layer in range(self.num_layers):
                             active_layer = layer
-                            load_stage = "submit"
                             in_flight[layer] = self.adapter.submit_prepared_load_layer(
                                 prepared_transfers,
                                 layer,
@@ -786,13 +783,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             )
                             while next_complete <= layer:
                                 active_layer = next_complete
-                                load_stage = "check"
                                 tasks = in_flight[next_complete]
                                 if not all(self.adapter.check(t) for t in tasks):
                                     break
-                                load_stage = "wait"
                                 self.adapter.wait(in_flight.pop(next_complete))
-                                load_stage = "publish_layer"
                                 self.layer_done_counter.complete(
                                     counter_index, next_complete
                                 )
@@ -800,9 +794,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
                         while next_complete < self.num_layers:
                             active_layer = next_complete
-                            load_stage = "wait"
                             self.adapter.wait(in_flight.pop(next_complete))
-                            load_stage = "publish_layer"
                             self.layer_done_counter.complete(
                                 counter_index, next_complete
                             )
@@ -815,28 +807,30 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 self.adapter.wait(tasks)
                             except Exception:
                                 logger.exception(
+                                    "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
                                     "[CacheLoad] cleanup_failed request_ids=%s "
-                                    "load_batch_id=%d layer=%d tp_rank=%d",
+                                    "load_batch_id=%d layer=%d",
+                                    self._dp_rank,
+                                    self._attn_dp_rank,
+                                    self._tp_rank,
                                     list(pending),
                                     counter_index,
                                     drain_layer,
-                                    self._tp_rank,
                                 )
                 except BaseException as error:
                     landed = False
                     self.layer_done_counter.fail(counter_index, error)
                     logger.exception(
-                        "[CacheLoad] load_failed tp_rank=%d load_batch_id=%d "
-                        "layer=%d requests=%d request_ids=%s stage=%s "
-                        "dp_rank=%d attn_dp_rank=%d",
+                        "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                        "[CacheLoad] load_failed load_batch_id=%d "
+                        "layer=%d requests=%d request_ids=%s",
+                        self._dp_rank,
+                        self._attn_dp_rank,
                         self._tp_rank,
                         counter_index,
                         active_layer,
                         len(pending),
                         list(pending),
-                        load_stage,
-                        self._dp_rank,
-                        self._attn_dp_rank,
                     )
                 finally:
                     if self._requires_load_finish:

@@ -76,6 +76,11 @@ def test_lookup_failure_does_not_report_success(linker, caplog):
     assert len(caplog.records) == 1
     assert caplog.records[0].levelno == logging.ERROR
     assert caplog.records[0].exc_info
+    assert (
+        caplog.records[0]
+        .getMessage()
+        .startswith("[dp_rank=1 attn_dp_rank=2 tp_rank=3] [CacheLookup]")
+    )
     assert "lookup_failed request_id=request-a" in caplog.records[0].getMessage()
     assert not linker._lookup_progress
 
@@ -104,7 +109,9 @@ def test_load_queue_and_rejection_logs(linker, caplog):
     record = caplog.records[0]
     assert record.levelno == logging.ERROR
     assert "request_id=request-a reason=already_queued" in record.getMessage()
-    assert "dp_rank=1 attn_dp_rank=2 tp_rank=3" in record.getMessage()
+    assert record.getMessage().startswith(
+        "[dp_rank=1 attn_dp_rank=2 tp_rank=3] [CacheLoad]"
+    )
 
 
 def test_load_resolution_failure_preserves_exception(linker, caplog):
@@ -115,19 +122,21 @@ def test_load_resolution_failure_preserves_exception(linker, caplog):
     assert len(caplog.records) == 1
     record = caplog.records[0]
     assert record.levelno == logging.ERROR and record.exc_info
-    assert "request_id=request-a stage=resolve_transfers" in record.getMessage()
+    assert "load_failed request_id=request-a" in record.getMessage()
+    assert "stage=" not in record.getMessage()
+    assert str(record.exc_info[1]) == "bad transfers"
 
 
 @pytest.mark.parametrize(
-    "failure, stage",
+    "failure",
     [
-        ({}, None),
-        ({"fail_wait": 1}, "wait"),
-        ({"fail_submit": 2}, "submit"),
-        ({"fail_check": 0}, "check"),
+        {},
+        {"fail_wait": 1},
+        {"fail_submit": 2},
+        {"fail_check": 0},
     ],
 )
-def test_load_only_logs_failures_after_cleanup(monkeypatch, caplog, failure, stage):
+def test_load_only_logs_failures_after_cleanup(monkeypatch, caplog, failure):
     caplog.set_level(logging.DEBUG, logger=linker_module.logger.name)
     clock = Mock(side_effect=AssertionError("load logging must not read clock"))
     monkeypatch.setattr(
@@ -145,5 +154,11 @@ def test_load_only_logs_failures_after_cleanup(monkeypatch, caplog, failure, sta
         assert len(errors) == 1
         assert errors[0].levelno == logging.ERROR
         assert "request_ids=['req']" in errors[0].getMessage()
-        assert f"stage={stage}" in errors[0].getMessage()
+        assert "stage=" not in errors[0].getMessage()
+        assert (
+            errors[0]
+            .getMessage()
+            .startswith("[dp_rank=0 attn_dp_rank=0 tp_rank=0] [CacheLoad]")
+        )
+        assert f"layer={next(iter(failure.values()))}" in errors[0].getMessage()
         assert "load_batch_id=0" in errors[0].getMessage()

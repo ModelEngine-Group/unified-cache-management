@@ -13,7 +13,7 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def install_cache_match_logging():
+def install_cache_match_logging() -> None:
     try:
         module = importlib.import_module(
             "sglang.srt.mem_cache.unified_cache.unified_cache_linker"
@@ -43,38 +43,30 @@ def install_cache_match_logging():
                     or parallel.pp_rank != 0
                 ):
                     return matched
-                repeated = getattr(req, "_ucm_cache_match_logged", False)
-                if repeated and not logger.isEnabledFor(logging.DEBUG):
+                if getattr(req, "_ucm_cache_match_logged", False):
                     return matched
                 # match returns its input unchanged when no external prefix is
                 # accepted. Existing host-cache hits must not count as UCM hits.
                 external_tokens = 0 if matched is result else matched.host_hit_length
                 message = (
+                    "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] [CacheMatch] "
                     "request_id=%s total_tokens=%d "
-                    "hit_hbm_tokens=%d hit_external_tokens=%d "
-                    "dp_rank=%d attn_dp_rank=%d tp_rank=%d"
+                    "hit_hbm_tokens=%d hit_external_tokens=%d"
                 )
                 values = (
+                    linker._dp_rank,
+                    linker._attn_dp_rank,
+                    linker._tp_rank,
                     req.rid,
                     len(req.origin_input_ids),
                     result.device_prefix_len,
                     external_tokens,
-                    linker._dp_rank,
-                    linker._attn_dp_rank,
-                    linker._tp_rank,
                 )
-                if repeated:
-                    logger.debug(
-                        "[CacheRematch] " + message + " sequence_tokens=%d",
-                        *values,
-                        len(req.origin_input_ids) + len(req.output_ids),
-                    )
-                else:
-                    # Keep state on the request, not in an unbounded rid cache.
-                    # A later match may see externally loaded KV in HBM; it
-                    # must not replace the initial input-cache attribution.
-                    req._ucm_cache_match_logged = True
-                    logger.info("[CacheMatch] " + message, *values)
+                # info_once deduplicates full arguments, so changed hit counts
+                # would log again after external KV has been loaded into HBM.
+                # Keep the first-match marker on the request instead.
+                req._ucm_cache_match_logged = True
+                logger.info(message, *values)
             except (AttributeError, TypeError):
                 # Logging must not invalidate a successful match on API drift.
                 logger.warning_once(

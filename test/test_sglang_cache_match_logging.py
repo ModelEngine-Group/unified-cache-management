@@ -62,9 +62,9 @@ def test_summary_uses_returned_match_not_local_lookup(
     original.assert_called_once_with(wrapper, key, req, before)
     assert len(caplog.records) == 1
     assert caplog.records[0].getMessage() == (
+        "[dp_rank=1 attn_dp_rank=2 tp_rank=0] "
         f"[CacheMatch] request_id=request-a total_tokens=4031 "
-        f"hit_hbm_tokens={hbm} hit_external_tokens={external} "
-        "dp_rank=1 attn_dp_rank=2 tp_rank=0"
+        f"hit_hbm_tokens={hbm} hit_external_tokens={external}"
     )
 
 
@@ -101,9 +101,15 @@ def test_other_ranks_backends_and_disabled_info_are_unaffected(
         wrapper.cache_linker = object()
     else:
         caplog.set_level(logging.WARNING, logger=module.logger.name)
+
     # No request fields may be read when logging is disabled for this call.
-    assert wrapper.match(None, object(), object()) is original.return_value
+    class NoFields:
+        def __getattr__(self, name):
+            raise AssertionError("request fields must not be read")
+
+    assert wrapper.match(None, NoFields(), object()) is original.return_value
     assert not caplog.records
+    module.logger.warning_once.assert_not_called()
 
 
 def test_install_is_idempotent_and_only_first_match_is_info(setup_patch, caplog):
@@ -140,11 +146,8 @@ def test_loaded_hbm_and_generated_tokens_do_not_replace_first_match(
     assert len(info) == 1
     assert "total_tokens=4031 hit_hbm_tokens=0 hit_external_tokens=3840" in info[0]
     debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-    assert len(debug) == (2 if level == logging.DEBUG else 0)
-    if debug:
-        assert all(message.startswith("[CacheRematch]") for message in debug)
-        assert "sequence_tokens=4032" in debug[0]
-        assert "sequence_tokens=4220" in debug[1]
+    assert not debug
+    assert len(caplog.records) == 1
     assert original.call_count == 3
 
 
