@@ -1,7 +1,7 @@
 """Log request-level matches after SGLang synchronizes external-hit boundaries.
 
-Installed by UcmDirectLinker for both native and backported linker support;
-this does not require enabling the version-specific compatibility patches.
+Installed by the opt-in patch entry point for both native and backported
+linker support. The linker itself does not install or depend on this patch.
 """
 
 import importlib
@@ -13,7 +13,7 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def install_cache_match_logging(linker_type):
+def install_cache_match_logging():
     try:
         module = importlib.import_module(
             "sglang.srt.mem_cache.unified_cache.unified_cache_linker"
@@ -25,17 +25,24 @@ def install_cache_match_logging(linker_type):
         return
     if getattr(original, "_ucm_cache_match_logging", False):
         return
+    linker_type = importlib.import_module(
+        "ucm.integration.sglang.ucm_direct_linker"
+    ).UcmDirectLinker
+    get_parallel = importlib.import_module("sglang.srt.runtime_context").get_parallel
 
     @wraps(original)
     def match(self, key, req, result):
         matched = original(self, key, req, result)
         linker = self.cache_linker
-        if (
-            isinstance(linker, linker_type)
-            and linker._cache_match_log_rank
-            and logger.isEnabledFor(logging.INFO)
-        ):
+        if isinstance(linker, linker_type) and logger.isEnabledFor(logging.INFO):
             try:
+                parallel = get_parallel()
+                if (
+                    linker._tp_rank != 0
+                    or parallel.attn_cp_rank != 0
+                    or parallel.pp_rank != 0
+                ):
+                    return matched
                 repeated = getattr(req, "_ucm_cache_match_logged", False)
                 if repeated and not logger.isEnabledFor(logging.DEBUG):
                     return matched

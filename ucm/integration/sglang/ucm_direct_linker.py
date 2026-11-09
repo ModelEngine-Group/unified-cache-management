@@ -31,7 +31,6 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import freeze_gc, get_device_module
 
-from ucm.integration.sglang.patch.cache_match_logging import install_cache_match_logging
 from ucm.integration.sglang.ucm_direct_store_adapter import (
     UcmDirectStoreAdapter,
     UcmLayerTransfer,
@@ -155,12 +154,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._tp_rank = torch.distributed.get_rank(group=tp_group)
             self._tp_size = torch.distributed.get_world_size(group=tp_group)
         self._lookup_owner = True
-        self._cache_match_log_rank = (
-            self._tp_rank == 0 and params.attn_cp_rank == 0 and params.pp_rank == 0
-        )
-        # init_logger handles all UCM log output. This hook only adds request
-        # context available in SGLang's match(), including synchronized hits.
-        install_cache_match_logging(UcmDirectLinker)
         self._dump_ranks = (0,) if self.pool_group.rank_replicated else (self._tp_rank,)
         self._log_pool_topology()
         try:

@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import os
 
+from ucm.integration.sglang.patch.cache_match_logging import install_cache_match_logging
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -70,9 +71,11 @@ def apply_all_patches() -> None:
         )
     if _has_native_external_linker():
         logger.info(
-            "SGLang %s has native out-of-tree linker support; skipping UCM patch.",
+            "SGLang %s has native out-of-tree linker support; "
+            "skipping compatibility patches.",
             version,
         )
+        install_cache_match_logging()
         return
     package_suffix = patch_package_for(version)
     if package_suffix is None:
@@ -86,6 +89,7 @@ def apply_all_patches() -> None:
     try:
         module = importlib.import_module(package)
         module.apply()
+        install_cache_match_logging()
     except Exception as error:
         raise RuntimeError(
             f"Failed to apply UCM SGLang patch for {expected}."

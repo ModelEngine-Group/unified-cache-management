@@ -74,6 +74,16 @@ def hla():
         "is_mamba_align_kv_cache_spec",
         "participates_in_prefix_caching",
         "extend_non_null",
+        "kv_cache_layout_name",
+        "is_cuda_blnhc_layout",
+        "is_npu_layer_major_blnhc",
+        "npu_flash_next_store_columns",
+        "npu_flash_next_column_owners",
+        "ple_stage_row_map",
+        "group_state_flags",
+        "state_group_ids",
+        "blnhc_layer_role",
+        "blnhc_group_role",
     }
     methods = {
         "KVCacheGroupManager": {
@@ -105,6 +115,7 @@ def hla():
             "_submit_layer_load",
             "_plan_row_saves",
             "wait_for_save",
+            "_is_full_cudagraph",
             "start_load_kv",
             "_submit_request_load_tasks_for_row",
             "_wait_row_load",
@@ -113,6 +124,7 @@ def hla():
         },
     }
     nodes = []
+    found_unhashed_roles = False
     for node in ast.parse(HLA_PATH.read_text(encoding="utf-8-sig")).body:
         if getattr(node, "name", None) in functions | {
             "GroupInfo",
@@ -128,6 +140,16 @@ def hla():
                 if getattr(item, "name", None) in methods[node.name]
             ]
             nodes.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_BLNHC_UNHASHED_ROLES"
+            for target in node.targets
+        ):
+            nodes.append(node)
+            found_unhashed_roles = True
+    if not found_unhashed_roles:
+        raise AssertionError(
+            "_BLNHC_UNHASHED_ROLES assignment missing from hla_connector.py"
+        )
     connector_path = ROOT / "ucm/integration/vllm/ucm_connector.py"
     base_nodes = [
         node
@@ -337,6 +359,7 @@ def test_layerwise_load_distributes_only_shared_mla_group(
             group(MambaSpec(mamba_cache_mode="align")),
         ]
     )
+    connector._state_group_ids = hla.state_group_ids(connector._kv_cache_config)
     metadata = hla.UCMConnectorMetadata(request_meta={})
     connector._get_connector_metadata = lambda: metadata
     connector.request_data = [("req", [b"key"], [b"scoped"], [10], [group_id])]
@@ -375,6 +398,35 @@ def test_tensor_layer_names_preserve_values_and_handle_none(hla, fields, expecte
     result = hla._kv_cache_tensor_layers(SimpleNamespace(**fields))
     assert result == expected
     assert isinstance(result, type(expected))
+
+
+@pytest.mark.parametrize(
+    "layer_name,expected",
+    [
+        ("model.layers.0.linear_attn.raw_key", "raw_key"),
+        # Engine QSA owner name: dotted segment is raw_key_cache, not raw_key.
+        ("model.layers.0.indexer.raw_key_cache", "raw_key"),
+        ("model.layers.0.linear_attn.k_compress", "compressed"),
+        ("model.layers.0.linear_attn.ple_state", "ple"),
+        ("model.layers.0.self_attn.attn", ""),
+        ("model.layers.0.linear_attn.raw_keypad", ""),
+    ],
+)
+def test_blnhc_layer_role(hla, layer_name, expected):
+    assert hla.blnhc_layer_role(layer_name) == expected
+
+
+def test_blnhc_group_role_requires_every_layer(hla):
+    assert hla.blnhc_group_role(["model.layers.0.linear_attn.ple_state"]) == "ple"
+    assert (
+        hla.blnhc_group_role(
+            [
+                "model.layers.0.self_attn.attn",
+                "model.layers.0.linear_attn.k_compress",
+            ]
+        )
+        == ""
+    )
 
 
 @pytest.mark.parametrize(
@@ -802,8 +854,18 @@ def state_connector(hla):
         num_groups=2,
         lcm_block_size=4,
         groups_by_id=[
-            SimpleNamespace(block_size=4, is_full_attention=True, is_mamba_align=False),
-            SimpleNamespace(block_size=4, is_full_attention=False, is_mamba_align=True),
+            SimpleNamespace(
+                block_size=4,
+                is_full_attention=True,
+                is_mamba_align=False,
+                is_state_hash=False,
+            ),
+            SimpleNamespace(
+                block_size=4,
+                is_full_attention=False,
+                is_mamba_align=True,
+                is_state_hash=True,
+            ),
         ],
         compute_mamba_align_state_hash=MagicMock(return_value=b"checkpoint"),
     )
@@ -977,6 +1039,29 @@ def test_new_request_restores_only_external_hit_increment(
         state_connector.group_manager.compute_mamba_align_state_hash.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "new_tokens,expected",
+    [
+        (8, [16]),
+        (14, []),
+    ],
+)
+def test_dump_writes_state_only_when_step_ends_on_lcm_boundary(
+    hla, state_connector, new_tokens, expected
+):
+    req_meta = _restore_request_meta(hla)
+    state_connector._generate_hla_dispatch_meta(
+        req_meta, new_tokens, ([], []), request_id="req", need_load=False
+    )
+    seq_lens = [
+        call.args[1]
+        for call in (
+            state_connector.group_manager.compute_mamba_align_state_hash.call_args_list
+        )
+    ]
+    assert seq_lens == expected
+
+
 @pytest.mark.parametrize("row_count", [2, 3])
 def test_glm_preload_waits_all_state_rows_before_returning(
     hla, state_connector, row_count
@@ -1051,3 +1136,130 @@ def test_glm_preload_waits_all_state_rows_before_returning(
     # for every row, while the unused speculative tail remains untouched.
     for values in memory.values():
         assert values == {22: b"checkpoint", 23: b"checkpoint", 99: b"scratch"}
+
+
+def test_npu_flash_next_whole_store_columns(hla):
+    columns, shard, block = hla.npu_flash_next_store_columns(
+        12, 524288, 32768, 184320, False
+    )
+    assert columns == [524288] * 12 + [32768] * 12 + [184320]
+    assert shard == block == 6868992
+
+
+def test_npu_flash_next_layerwise_columns(hla):
+    columns, shard, block = hla.npu_flash_next_store_columns(
+        12, 524288, 32768, 184320, True
+    )
+    assert columns == [524288, 32768]
+    assert shard == 557056
+    assert block == 6684672
+
+
+def test_npu_flash_next_column_owners(hla):
+    whole = hla.npu_flash_next_column_owners(12, 0, [1, 2, 3], 4, False)
+    assert whole[0] == {(index, 0) for index in range(24)}
+    assert whole[1] == {(index, 0) for index in range(12)}
+    assert whole[4] == {(24, 0)}
+    layerwise = hla.npu_flash_next_column_owners(12, 0, [1], 4, True)
+    assert layerwise[0] == {(type_id, slot) for type_id in (0, 1) for slot in range(12)}
+    assert layerwise[1] == {(0, slot) for slot in range(12)}
+    assert layerwise[4] == {(0, 0)}
+
+
+def test_ple_stage_row_map_skips_null_and_duplicates(hla):
+    assert hla.ple_stage_row_map([0, 7, 7, 3, 0]) == {7: 0, 3: 1}
+    assert hla.ple_stage_row_map([]) == {}
+
+
+def test_non_mamba_ple_is_a_state_group(hla):
+    config = SimpleNamespace(
+        kv_cache_layout="BLNHC",
+        kv_cache_groups=[
+            group(FullAttentionSpec(), "layers.0.self_attn"),
+            group(FullAttentionSpec(), "layers.1.ple"),
+        ],
+        kv_cache_tensors=[
+            SimpleNamespace(
+                layers=["layers.0.self_attn", "layers.1.linear"],
+                layer_stride=200,
+                block_stride=50,
+            )
+        ],
+    )
+    assert hla.state_group_ids(config) == {1}
+    assert hla.group_state_flags(config, config.kv_cache_groups[1]) == (False, True)
+
+
+def test_is_npu_layer_major_blnhc(hla):
+    def config(name, tensors):
+        return SimpleNamespace(kv_cache_layout=name, kv_cache_tensors=tensors)
+
+    multi = SimpleNamespace(
+        layers=["a", "b"], layer_stride=2104881696, block_stride=524288
+    )
+    assert hla.is_npu_layer_major_blnhc(config("BLNHC", [multi]))
+    block_first = SimpleNamespace(
+        layers=["a", "b"], layer_stride=100, block_stride=524288
+    )
+    assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [block_first]))
+    assert not hla.is_npu_layer_major_blnhc(config("LBNHC", [multi]))
+    ple_only = SimpleNamespace(
+        layers=["ple"], layer_stride=695070720, block_stride=184320
+    )
+    assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [ple_only]))
+
+
+class _FakeCUDAGraphMode:
+    """Mirrors vLLM CUDAGraphMode.has_full_cudagraphs() semantics."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def has_full_cudagraphs(self) -> bool:
+        return self.name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
+
+
+def _layerwise_start_load_fixture(hla, cudagraph_mode: str):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector.layer_order = ["l0", "l1", "l2", "l3"]
+    connector._vllm_config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=_FakeCUDAGraphMode(cudagraph_mode)
+        )
+    )
+    connector.device = SimpleNamespace(synchronize=MagicMock())
+    connector._reset_transfer_state = MagicMock()
+    connector._prepare_load_plan = MagicMock()
+    connector._get_connector_metadata = MagicMock(
+        return_value=hla.UCMConnectorMetadata(request_meta={})
+    )
+    submitted: list[int] = []
+    drained: list[bool] = []
+    connector._submit_layer_load = lambda pos: submitted.append(pos)
+    connector._drain_unwaited_loads = lambda: drained.append(True)
+    connector._record_load_bytes = MagicMock()
+    return connector, submitted, drained
+
+
+@pytest.mark.parametrize(
+    "cudagraph_mode",
+    ["FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"],
+)
+def test_layerwise_full_cudagraph_loads_all_positions_before_forward(
+    hla, cudagraph_mode
+):
+    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
+    connector.start_load_kv(SimpleNamespace())
+    assert submitted == [0, 1, 2, 3]
+    assert drained == [True]
+    connector._record_load_bytes.assert_called_once()
+
+
+@pytest.mark.parametrize("cudagraph_mode", ["NONE", "PIECEWISE"])
+def test_layerwise_non_full_keeps_depth2_prefetch(hla, cudagraph_mode):
+    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
+    connector.start_load_kv(SimpleNamespace())
+    assert submitted == [0, 1]
+    assert drained == []
+    connector._record_load_bytes.assert_not_called()

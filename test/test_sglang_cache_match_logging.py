@@ -12,7 +12,6 @@ from common.sglang_utils import load_source
 @pytest.fixture
 def setup_patch(caplog):
     class Linker:
-        _cache_match_log_rank = True
         _dp_rank = 1
         _attn_dp_rank = 2
         _tp_rank = 0
@@ -26,8 +25,13 @@ def setup_patch(caplog):
         def match(self, key, req, result):
             return original(self, key, req, result)
 
+    parallel = types.SimpleNamespace(attn_cp_rank=0, pp_rank=0)
     importer = Mock(
-        return_value=types.SimpleNamespace(UnifiedCacheLinkerWrapper=Wrapper)
+        return_value=types.SimpleNamespace(
+            UnifiedCacheLinkerWrapper=Wrapper,
+            UcmDirectLinker=Linker,
+            get_parallel=lambda: parallel,
+        )
     )
     module = load_source(
         "ucm/integration/sglang/patch/cache_match_logging.py",
@@ -36,7 +40,8 @@ def setup_patch(caplog):
     )
     module.logger.warning_once = Mock()
     caplog.set_level(logging.INFO, logger=module.logger.name)
-    module.install_cache_match_logging(Linker)
+    module.install_cache_match_logging()
+    module.parallel = parallel
     req = types.SimpleNamespace(
         rid="request-a", origin_input_ids=range(4031), output_ids=[]
     )
@@ -80,14 +85,18 @@ def test_total_is_input_length_even_with_generated_tokens(setup_patch, caplog):
     assert "total_tokens=4031 hit_hbm_tokens=4096" in caplog.text
 
 
-@pytest.mark.parametrize("skip", ["rank", "backend", "level"])
+@pytest.mark.parametrize(
+    "skip", ["rank", "attn_cp_rank", "pp_rank", "backend", "level"]
+)
 def test_other_ranks_backends_and_disabled_info_are_unaffected(
     setup_patch, caplog, skip
 ):
     module, _, Wrapper, original, _ = setup_patch
     wrapper = Wrapper()
     if skip == "rank":
-        wrapper.cache_linker._cache_match_log_rank = False
+        wrapper.cache_linker._tp_rank = 1
+    elif skip in ("attn_cp_rank", "pp_rank"):
+        setattr(module.parallel, skip, 1)
     elif skip == "backend":
         wrapper.cache_linker = object()
     else:
@@ -100,7 +109,7 @@ def test_other_ranks_backends_and_disabled_info_are_unaffected(
 def test_install_is_idempotent_and_only_first_match_is_info(setup_patch, caplog):
     module, Linker, Wrapper, original, req = setup_patch
     installed = Wrapper.match
-    module.install_cache_match_logging(Linker)
+    module.install_cache_match_logging()
     assert Wrapper.match is installed
     result = types.SimpleNamespace(device_prefix_len=0)
     original.return_value = result
@@ -170,5 +179,5 @@ def test_missing_fields_do_not_break_match(setup_patch):
 def test_missing_wrapper_skips_install(setup_patch, caplog):
     module, Linker, _, _, _ = setup_patch
     module.importlib.import_module.return_value = types.SimpleNamespace()
-    module.install_cache_match_logging(Linker)
+    module.install_cache_match_logging()
     assert "cache-match logging skipped" in caplog.text
