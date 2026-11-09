@@ -12,7 +12,7 @@ from common.sglang_utils import linker_module
 
 @pytest.fixture
 def linker(monkeypatch, caplog):
-    caplog.set_level(logging.DEBUG, logger=linker_module.logger.name)
+    caplog.set_level(logging.INFO, logger=linker_module.logger.name)
     monkeypatch.setattr(
         linker_module, "PoolName", types.SimpleNamespace(KV="kv"), raising=False
     )
@@ -42,25 +42,19 @@ def transfers():
 
 
 @pytest.mark.parametrize("boundaries, hit_pages", [([], 0), ([1, 4], 4)])
-def test_lookup_logs_local_boundary_and_repeated_calls(
+def test_lookup_preserves_boundaries_without_duplicate_logs(
     linker, monkeypatch, caplog, boundaries, hit_pages
 ):
     linker.adapter.lookup.return_value = boundaries
-    clock = Mock(side_effect=[10.0, 10.125, 20.0, 20.25])
+    caplog.set_level(logging.DEBUG, logger=linker_module.logger.name)
+    clock = Mock(side_effect=AssertionError("lookup logging must not read clock"))
     monkeypatch.setattr(
         linker_module, "time", types.SimpleNamespace(perf_counter=clock)
     )
     for _ in range(2):
         assert linker.lookup("request-a", transfers()) == boundaries
-    messages = [record.getMessage() for record in caplog.records]
-    assert len(messages) == 2
-    for message in messages:
-        assert "[LookUp] request_id=request-a remaining_query_pages=4" in message
-        assert f"hit_external_pages={hit_pages} page_size=64" in message
-        assert "dp_rank=1 attn_dp_rank=2 tp_rank=3" in message
-        assert "total_tokens" not in message
-    assert "lookup_ms=125.000" in messages[0]
-    assert "lookup_ms=250.000" in messages[1]
+    assert not caplog.records
+    clock.assert_not_called()
     assert linker.adapter.lookup.call_count == 2
     assert linker.adapter.lookup.call_args.kwargs["resume_from_pages"] == hit_pages
 
@@ -79,7 +73,10 @@ def test_lookup_failure_does_not_report_success(linker, caplog):
     linker.adapter.lookup.side_effect = RuntimeError("lookup failed")
     with pytest.raises(RuntimeError, match="lookup failed"):
         linker.lookup("request-a", transfers())
-    assert not caplog.records
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.ERROR
+    assert caplog.records[0].exc_info
+    assert "lookup_failed request_id=request-a" in caplog.records[0].getMessage()
     assert not linker._lookup_progress
 
 
@@ -96,39 +93,57 @@ def test_disabled_info_does_not_read_clock(linker, monkeypatch, caplog):
     assert not caplog.records
 
 
-def test_load_queue_log_is_debug_and_only_for_accepted_requests(linker, caplog):
+def test_load_queue_and_rejection_logs(linker, caplog):
     caplog.set_level(logging.DEBUG, logger=linker_module.logger.name)
     assert not linker.load("empty", [])
     assert linker.load("request-a", transfers())
+    assert not caplog.records
     with pytest.raises(RuntimeError, match="already queued"):
         linker.load("request-a", transfers())
     assert len(caplog.records) == 1
     record = caplog.records[0]
-    assert record.levelno == logging.DEBUG
-    assert "[Load] request_id=request-a pools=['kv']" in record.getMessage()
+    assert record.levelno == logging.ERROR
+    assert "request_id=request-a reason=already_queued" in record.getMessage()
     assert "dp_rank=1 attn_dp_rank=2 tp_rank=3" in record.getMessage()
 
 
-@pytest.mark.parametrize("fail_wait", [None, 1])
-def test_load_completion_reports_outcome_after_cleanup(monkeypatch, caplog, fail_wait):
-    caplog.set_level(logging.INFO, logger=linker_module.logger.name)
-    clock = Mock(side_effect=[10.0, 10.5])
+def test_load_resolution_failure_preserves_exception(linker, caplog):
+    linker._expand = Mock(side_effect=RuntimeError("bad transfers"))
+    with pytest.raises(RuntimeError, match="bad transfers"):
+        linker.load("request-a", transfers())
+    assert not linker._pending_loads
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.levelno == logging.ERROR and record.exc_info
+    assert "request_id=request-a stage=resolve_transfers" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "failure, stage",
+    [
+        ({}, None),
+        ({"fail_wait": 1}, "wait"),
+        ({"fail_submit": 2}, "submit"),
+        ({"fail_check": 0}, "check"),
+    ],
+)
+def test_load_only_logs_failures_after_cleanup(monkeypatch, caplog, failure, stage):
+    caplog.set_level(logging.DEBUG, logger=linker_module.logger.name)
+    clock = Mock(side_effect=AssertionError("load logging must not read clock"))
     monkeypatch.setattr(
         linker_module, "time", types.SimpleNamespace(perf_counter=clock)
     )
     # Existing fixture verifies that every submitted task is reaped, completion
     # ordering is preserved and the batch result reaches the consumer.
-    events = workers.LoadWorkerTest().run_worker(fail_wait=fail_wait)
-    success = fail_wait is None
+    events = workers.LoadWorkerTest().run_worker(**failure)
+    success = not failure
     assert events[-1] == ("result", success)
-    messages = [record.getMessage() for record in caplog.records]
-    completed = [
-        message for message in messages if "[CacheLoad] load_completed" in message
-    ]
-    assert len(completed) == 1
-    assert "request_ids=['req']" in completed[0]
-    assert f"success={success} load_ms=500.000" in completed[0]
+    clock.assert_not_called()
+    assert len(caplog.records) == (0 if success else 1)
     if not success:
         errors = [record for record in caplog.records if record.exc_info]
         assert len(errors) == 1
+        assert errors[0].levelno == logging.ERROR
         assert "request_ids=['req']" in errors[0].getMessage()
+        assert f"stage={stage}" in errors[0].getMessage()
+        assert "load_batch_id=0" in errors[0].getMessage()
