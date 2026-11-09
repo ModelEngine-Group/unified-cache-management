@@ -1,0 +1,709 @@
+diff --git a/csrc/torch_binding.cpp b/csrc/torch_binding.cpp
+index 0f9c80ac3..805c00065 100644
+--- a/csrc/torch_binding.cpp
++++ b/csrc/torch_binding.cpp
+@@ -610,6 +610,374 @@ at::Tensor convert_hamming_dist_top_k_output(const at::Tensor &hashq,
+     return res;
+ }
+ 
++void gsa_scatter_copy(
++    at::Tensor& dst, const at::Tensor& src, const at::Tensor& index)
++{
++    // 如果 index 为空（无数据拷贝），直接返回
++    if (index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    // TORCH_CHECK(index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(src.dim() == 2, "src must be 2D");
++    TORCH_CHECK(index.dim() == 2, "index must be 2D");
++
++    TORCH_CHECK(dst.size(1) == src.size(1), "the second dimension of dst and src must be equal");
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        dst,
++        dim,
++        index,
++        src,
++        reduce);
++}
++
++void gsa_inplace_copy(at::Tensor& dst, const at::Tensor& src)
++{
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    EXEC_NPU_CMD(
++        aclnnInplaceCopy,
++        dst,
++        src);
++}
++
++void gsa_fill(at::Tensor& dst, const at::Scalar padValue)
++{
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    EXEC_NPU_CMD(
++        aclnnInplaceFillScalar,
++        dst,
++        padValue);
++}
++
++void gsa_gather_copy(
++    at::Tensor& dst, const at::Tensor& src, const at::Tensor& index)
++{
++    // 如果 index 为空（无数据拷贝），直接返回
++    if (index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    // TORCH_CHECK(index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(src.dim() == 2, "src must be 2D");
++    TORCH_CHECK(index.dim() == 2, "index must be 2D");
++
++    TORCH_CHECK(dst.size(1) == src.size(1), "the second dimension of dst and src must be equal");
++
++    int64_t dim = 0;
++    EXEC_NPU_CMD(
++        aclnnGather,
++        src,
++        dim,
++        index,
++        dst);
++}
++
++void indexer_gather_qw(
++    const at::Tensor& q_src, const at::Tensor& w_src, at::Tensor& q_dst, at::Tensor& w_dst, const at::Tensor& q_index, const at::Tensor& w_index)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(q_src.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(w_src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(q_dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(w_dst.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(q_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++    TORCH_CHECK(w_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    // TORCH_CHECK(q_index.dtype() == torch::kInt64, "index must be torch.int64");
++    // TORCH_CHECK(w_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(q_src.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(w_src.dim() == 2, "src must be 2D");
++    TORCH_CHECK(q_dst.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(w_dst.dim() == 2, "src must be 2D");
++    TORCH_CHECK(q_index.dim() == 2, "index must be 2D");
++    TORCH_CHECK(w_index.dim() == 2, "index must be 2D");
++
++    TORCH_CHECK(q_src.size(1) == q_dst.size(1), "the second dimension of dst and src must be equal");
++    TORCH_CHECK(w_src.size(1) == w_dst.size(1), "the second dimension of dst and src must be equal");
++
++    int64_t dim = 0;
++    EXEC_NPU_CMD(
++        aclnnGather,
++        q_src,
++        dim,
++        q_index,
++        q_dst);
++    EXEC_NPU_CMD(
++        aclnnGather,
++        w_src,
++        dim,
++        w_index,
++        w_dst);
++}
++
++void gsa_gather_scatter_copy(
++    at::Tensor& dst, at::Tensor &tmp, const at::Tensor& dst_index, const at::Tensor& src_index)
++{
++    if (dst_index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(tmp.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(dst_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++    TORCH_CHECK(src_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    TORCH_CHECK(dst_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(src_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 3D");
++    TORCH_CHECK(tmp.dim() == 2, "src must be 3D");
++    TORCH_CHECK(dst_index.dim() == 2, "index must be 1D");
++    TORCH_CHECK(src_index.dim() == 2, "index must be 1D");
++
++    TORCH_CHECK(dst.size(1) == tmp.size(1), "the second dimension of dst and src must be equal");
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++
++    EXEC_NPU_CMD(
++        aclnnGather,
++        dst,
++        dim,
++        src_index,
++        tmp);
++
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        dst,
++        dim,
++        dst_index,
++        tmp,
++        reduce);
++}
++
++at::Tensor gsa_indices_scatter_and_expand(
++    at::Tensor& topk_indices, at::Tensor &prefetch_topk, at::Tensor& swap_topk,
++    at::Tensor& prefetch_index, at::Tensor& swap_index, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(prefetch_topk.device().type() == c10::DeviceType::PrivateUse1, "prefetch_topk must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(prefetch_index.device().type() == c10::DeviceType::PrivateUse1, "prefetch_index must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++
++    TORCH_CHECK(prefetch_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(prefetch_topk.dim() == 2, "prefetch_topk must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(prefetch_index.dim() == 2, "prefetch_index must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++
++    TORCH_CHECK(topk_indices.size(1) == prefetch_topk.size(1), "the second dimension of topk_indices and prefetch_topk must be equal");
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    at::SmallVector<int64_t, SIZE> output_size = {topk_indices.size(DIM_0) + 2, expand_len};
++    at::Tensor gsa_indices_output = at::empty(output_size, topk_indices.options());
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++
++    EXEC_NPU_CMD(
++        aclnnGather,
++        topk_indices,
++        dim,
++        prefetch_index,
++        prefetch_topk);
++
++    at::Tensor padTensor = gsa_indices_output.slice(0, 0, topk_indices.size(DIM_0));
++    EXEC_NPU_CMD(
++        aclnnConstantPadNd,
++        topk_indices,
++        pad,
++        padValue,
++        padTensor);
++
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        gsa_indices_output,
++        dim,
++        swap_index,
++        swap_topk,
++        reduce);
++    return gsa_indices_output.view({topk_indices.size(DIM_0) + 2, 1, expand_len}).slice(0, 0, topk_indices.size(DIM_0));
++}
++
++at::Tensor gsa_indices_scatter_and_expand_new(
++    at::Tensor& topk_indices, at::Tensor &prefetch_topk, at::Tensor& swap_topk,
++    at::Tensor& prefetch_index, at::Tensor& swap_index, at::Tensor& tmp_tensor,
++    const at::IntArrayRef &pad, const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(prefetch_topk.device().type() == c10::DeviceType::PrivateUse1, "prefetch_topk must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(prefetch_index.device().type() == c10::DeviceType::PrivateUse1, "prefetch_index must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(tmp_tensor.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++
++    TORCH_CHECK(prefetch_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(prefetch_topk.dim() == 2, "prefetch_topk must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(prefetch_index.dim() == 2, "prefetch_index must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++
++    TORCH_CHECK(topk_indices.size(1) == prefetch_topk.size(1), "the second dimension of topk_indices and prefetch_topk must be equal");
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++
++    EXEC_NPU_CMD(
++        aclnnGather,
++        topk_indices,
++        dim,
++        prefetch_index,
++        prefetch_topk);
++
++    EXEC_NPU_CMD(
++        aclnnInplaceFillScalar,
++        tmp_tensor,
++        padValue);
++
++    at::Tensor sliced_view = tmp_tensor.slice(0, 0, topk_indices.size(DIM_0))
++                                       .slice(1, 0, topk_indices.size(DIM_1));
++
++    EXEC_NPU_CMD(
++        aclnnInplaceCopy,
++        sliced_view,
++        topk_indices);
++
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        tmp_tensor,
++        dim,
++        swap_index,
++        swap_topk,
++        reduce);
++    return tmp_tensor.view({tmp_tensor.size(DIM_0), 1, expand_len}).slice(0, 0, topk_indices.size(DIM_0));
++}
++
++at::Tensor gsa_topk_expand(
++    at::Tensor& topk_indices, at::Tensor& swap_topk, at::Tensor& swap_index, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    at::SmallVector<int64_t, SIZE> output_size = {topk_indices.size(DIM_0) + 2, expand_len};
++    at::Tensor gsa_indices_output = at::empty(output_size, topk_indices.options());
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++
++    at::Tensor padTensor = gsa_indices_output.slice(0, 0, topk_indices.size(DIM_0));
++    EXEC_NPU_CMD(
++        aclnnConstantPadNd,
++        topk_indices,
++        pad,
++        padValue,
++        padTensor);
++
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        gsa_indices_output,
++        dim,
++        swap_index,
++        swap_topk,
++        reduce);
++    return gsa_indices_output.view({topk_indices.size(DIM_0) + 2, 1, expand_len}).slice(0, 0, topk_indices.size(DIM_0));
++}
++
++at::Tensor gsa_topk_expand_tmp(
++    at::Tensor& topk_indices, at::Tensor& swap_topk, at::Tensor& swap_index,
++    at::Tensor& tmp_tensor, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(tmp_tensor.device().type() == c10::DeviceType::PrivateUse1, "tmp_tensor must be on NPU");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++    TORCH_CHECK(tmp_tensor.dim() == 2, "tmp_tensor must be 2D");
++    TORCH_CHECK(tmp_tensor.is_contiguous(), "tmp_tensor must be contiguous");
++    TORCH_CHECK(tmp_tensor.dtype() == topk_indices.dtype(), "tmp_tensor dtype must match topk_indices");
++
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    TORCH_CHECK(tmp_tensor.size(0) >= topk_indices.size(0) + 2, "tmp_tensor rows must be no less than topk_indices rows + 2");
++    TORCH_CHECK(tmp_tensor.size(1) == expand_len, "tmp_tensor cols must equal expand_len");
++
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++
++    at::Tensor padTensor = tmp_tensor.slice(0, 0, topk_indices.size(DIM_0));
++    EXEC_NPU_CMD(
++        aclnnConstantPadNd,
++        topk_indices,
++        pad,
++        padValue,
++        padTensor);
++
++    // ③ scatter 覆盖 swap 行
++    EXEC_NPU_CMD(
++        aclnnInplaceScatter,
++        tmp_tensor,
++        dim,
++        swap_index,
++        swap_topk,
++        reduce);
++    return tmp_tensor.view({tmp_tensor.size(DIM_0), 1, expand_len}).slice(DIM_0, 0, topk_indices.size(DIM_0));
++}
++
+ at::Tensor npu_hamming_dist_top_k(const at::Tensor &hashq,
+                                        const at::Tensor &hashkCache,
+                                        const at::Tensor& hashkCacheRope,
+@@ -2915,6 +3283,68 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
+         "                            int sparse_count=2048, int sparse_mode=3) -> Tensor"
+     );
+     ops.impl("npu_lightning_indexer_quant", torch::kPrivateUse1, &vllm_ascend::npu_lightning_indexer_quant);
++
++    ops.def(
++        "gsa_scatter_copy(Tensor dst, Tensor src, Tensor index) -> ()"
++    );
++    ops.impl("gsa_scatter_copy", torch::kPrivateUse1, &vllm_ascend::gsa_scatter_copy);
++
++    ops.def(
++        "gsa_gather_copy(Tensor dst, Tensor src, Tensor index) -> ()"
++    );
++    ops.impl("gsa_gather_copy", torch::kPrivateUse1, &vllm_ascend::gsa_gather_copy);
++
++    ops.def(
++        "gsa_inplace_copy(Tensor dst, Tensor src) -> ()"
++    );
++    ops.impl("gsa_inplace_copy", torch::kPrivateUse1, &vllm_ascend::gsa_inplace_copy);
++
++    ops.def(
++        "gsa_fill(Tensor dst, Scalar padValue) -> ()"
++    );
++    ops.impl("gsa_fill", torch::kPrivateUse1, &vllm_ascend::gsa_fill);
++
++    ops.def(
++        "indexer_gather_qw(Tensor q_src, Tensor w_src, Tensor q_dst, Tensor w_dst, Tensor q_index, Tensor w_index) -> ()"
++    );
++    ops.impl("indexer_gather_qw", torch::kPrivateUse1, &vllm_ascend::indexer_gather_qw);
++
++    ops.def(
++        "gsa_gather_scatter_copy(Tensor dst, Tensor tmp, Tensor dst_index, Tensor src_index) -> ()"
++    );
++    ops.impl("gsa_gather_scatter_copy", torch::kPrivateUse1, &vllm_ascend::gsa_gather_scatter_copy);
++
++    ops.def(
++        "gsa_indices_scatter_and_expand(Tensor topk_indices, Tensor prefetch_topk,"
++        "                      Tensor swap_topk, Tensor prefetch_index,"
++        "                      Tensor swap_index, int[] pad,"
++        "                      Scalar padValue, int expand_len) -> Tensor"
++    );
++    ops.impl("gsa_indices_scatter_and_expand", torch::kPrivateUse1, &vllm_ascend::gsa_indices_scatter_and_expand);
++
++    ops.def(
++        "gsa_indices_scatter_and_expand_new(Tensor topk_indices, Tensor prefetch_topk,"
++        "                      Tensor swap_topk, Tensor prefetch_index,"
++        "                      Tensor swap_index, Tensor tmp_tensor, int[] pad,"
++        "                      Scalar padValue, int expand_len) -> Tensor"
++    );
++    ops.impl("gsa_indices_scatter_and_expand_new", torch::kPrivateUse1, &vllm_ascend::gsa_indices_scatter_and_expand_new);
++
++    ops.def(
++        "gsa_topk_expand(Tensor topk_indices,"
++        "                Tensor swap_topk,"
++        "                Tensor swap_index, int[] pad,"
++        "                Scalar padValue, int expand_len) -> Tensor"
++    );
++    ops.impl("gsa_topk_expand", torch::kPrivateUse1, &vllm_ascend::gsa_topk_expand);
++
++    ops.def(
++        "gsa_topk_expand_tmp(Tensor topk_indices,"
++        "                Tensor swap_topk,"
++        "                Tensor swap_index, Tensor tmp_tensor, int[] pad,"
++        "                Scalar padValue, int expand_len) -> Tensor"
++    );
++    ops.impl("gsa_topk_expand_tmp", torch::kPrivateUse1, &vllm_ascend::gsa_topk_expand_tmp);
+     // N-gram spec decode
+     ops.def(
+         "npu_ngram_spec_decode(Tensor(a!) token_ids, Tensor num_tokens_no_spec, "
+diff --git a/csrc/torch_binding_meta.cpp b/csrc/torch_binding_meta.cpp
+index bfd579307..3df99096f 100644
+--- a/csrc/torch_binding_meta.cpp
++++ b/csrc/torch_binding_meta.cpp
+@@ -1635,6 +1635,228 @@ void npu_scatter_nd_update_v2_meta(
+     return;
+ }
+ 
++void gsa_scatter_copy_meta(
++    at::Tensor& dst, const at::Tensor& src, const at::Tensor& index)
++{
++    if (index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    TORCH_CHECK(index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 3D");
++    TORCH_CHECK(src.dim() == 2, "src must be 3D");
++    TORCH_CHECK(index.dim() == 2, "index must be 1D");
++
++    TORCH_CHECK(dst.size(1) == src.size(1), "the second dimension of dst and src must be equal");
++
++    return;
++}
++
++void gsa_gather_copy_meta(
++    at::Tensor& dst, const at::Tensor& src, const at::Tensor& index)
++{
++    if (index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    TORCH_CHECK(index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 3D");
++    TORCH_CHECK(src.dim() == 2, "src must be 3D");
++    TORCH_CHECK(index.dim() == 2, "index must be 1D");
++
++    TORCH_CHECK(dst.size(1) == src.size(1), "the second dimension of dst and src must be equal");
++
++    return;
++}
++
++void gsa_inplace_copy_meta(at::Tensor& dst, const at::Tensor& src)
++{
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++}
++
++void gsa_fill_meta(at::Tensor& dst, const at::Scalar padValue)
++{
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++}
++
++void gsa_gather_scatter_copy_meta(
++    at::Tensor& dst, at::Tensor &tmp, const at::Tensor& dst_index, const at::Tensor& src_index)
++{
++    if (dst_index.numel() == 0) {
++        return;
++    }
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(tmp.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(dst_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++    TORCH_CHECK(src_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    TORCH_CHECK(dst_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(src_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(dst.dim() == 2, "dst must be 3D");
++    TORCH_CHECK(tmp.dim() == 2, "src must be 3D");
++    TORCH_CHECK(dst_index.dim() == 2, "index must be 1D");
++    TORCH_CHECK(src_index.dim() == 2, "index must be 1D");
++
++    TORCH_CHECK(dst.size(1) == tmp.size(1), "the second dimension of dst and src must be equal");
++    return;
++}
++
++void indexer_gather_qw_meta(
++    const at::Tensor& q_src, const at::Tensor& w_src, at::Tensor& q_dst, at::Tensor& w_dst, const at::Tensor& q_index, const at::Tensor& w_index)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(q_src.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(w_src.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(q_dst.device().type() == c10::DeviceType::PrivateUse1, "dst must be on NPU");
++    TORCH_CHECK(w_dst.device().type() == c10::DeviceType::PrivateUse1, "src must be on NPU");
++    TORCH_CHECK(q_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++    TORCH_CHECK(w_index.device().type() == c10::DeviceType::PrivateUse1, "index must be on NPU");
++
++    TORCH_CHECK(q_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(w_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(q_src.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(w_src.dim() == 2, "src must be 2D");
++    TORCH_CHECK(q_dst.dim() == 2, "dst must be 2D");
++    TORCH_CHECK(w_dst.dim() == 2, "src must be 2D");
++    TORCH_CHECK(q_index.dim() == 2, "index must be 2D");
++    TORCH_CHECK(w_index.dim() == 2, "index must be 2D");
++
++    TORCH_CHECK(q_src.size(1) == q_dst.size(1), "the second dimension of dst and src must be equal");
++    TORCH_CHECK(w_src.size(1) == w_dst.size(1), "the second dimension of dst and src must be equal");
++}
++
++at::Tensor gsa_indices_scatter_and_expand_meta(
++    at::Tensor& topk_indices, at::Tensor &prefetch_topk, at::Tensor& swap_topk,
++    at::Tensor& prefetch_index, at::Tensor& swap_index, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(prefetch_topk.device().type() == c10::DeviceType::PrivateUse1, "prefetch_topk must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(prefetch_index.device().type() == c10::DeviceType::PrivateUse1, "prefetch_index must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++
++    TORCH_CHECK(prefetch_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(prefetch_topk.dim() == 2, "prefetch_topk must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(prefetch_index.dim() == 2, "prefetch_index must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++
++    TORCH_CHECK(topk_indices.size(1) == prefetch_topk.size(1), "the second dimension of topk_indices and prefetch_topk must be equal");
++
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    at::SmallVector<int64_t, SIZE> output_size = {topk_indices.size(DIM_0), topk_indices.size(DIM_1), expand_len};
++    at::Tensor gsa_indices_output = at::empty(output_size, topk_indices.options().dtype(at::kInt));
++    return gsa_indices_output;
++}
++
++
++at::Tensor gsa_indices_scatter_and_expand_new_meta(
++    at::Tensor& topk_indices, at::Tensor &prefetch_topk, at::Tensor& swap_topk,
++    at::Tensor& prefetch_index, at::Tensor& swap_index, at::Tensor& tmp_tensor,
++    const at::IntArrayRef &pad, const at::Scalar padValue, int64_t expand_len)
++{
++    // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(prefetch_topk.device().type() == c10::DeviceType::PrivateUse1, "prefetch_topk must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(prefetch_index.device().type() == c10::DeviceType::PrivateUse1, "prefetch_index must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(tmp_tensor.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++
++    TORCH_CHECK(prefetch_index.dtype() == torch::kInt64, "index must be torch.int64");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(prefetch_topk.dim() == 2, "prefetch_topk must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(prefetch_index.dim() == 2, "prefetch_index must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++
++    TORCH_CHECK(topk_indices.size(1) == prefetch_topk.size(1), "the second dimension of topk_indices and prefetch_topk must be equal");
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    int64_t dim = 0;
++    int64_t reduce = 0;
++}
++
++at::Tensor gsa_topk_expand_meta(
++    at::Tensor& topk_indices, at::Tensor& swap_topk,
++    at::Tensor& swap_index, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++        // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++    constexpr int32_t DIM_1 = 1;
++
++    at::SmallVector<int64_t, SIZE> output_size = {topk_indices.size(DIM_0) + 2, expand_len};
++    at::Tensor gsa_indices_output = at::empty(output_size, topk_indices.options());
++    return gsa_indices_output;
++}
++
++at::Tensor gsa_topk_expand_tmp_meta(
++    at::Tensor& topk_indices, at::Tensor& swap_topk, at::Tensor& swap_index,
++    at::Tensor& tmp_tensor, const at::IntArrayRef &pad,
++    const at::Scalar padValue, int64_t expand_len)
++{
++        // ---------- 1. 输入合法性检查 ----------
++    TORCH_CHECK(topk_indices.device().type() == c10::DeviceType::PrivateUse1, "topk_indices must be on NPU");
++    TORCH_CHECK(swap_topk.device().type() == c10::DeviceType::PrivateUse1, "swap_topk must be on NPU");
++    TORCH_CHECK(swap_index.device().type() == c10::DeviceType::PrivateUse1, "swap_index must be on NPU");
++    TORCH_CHECK(tmp_tensor.device().type() == c10::DeviceType::PrivateUse1, "tmp_tensor must be on NPU");
++    TORCH_CHECK(swap_index.dtype() == torch::kInt64, "index must be torch.int64");
++
++    TORCH_CHECK(topk_indices.dim() == 2, "topk_indices must be 2D");
++    TORCH_CHECK(swap_topk.dim() == 2, "swap_topk must be 2D");
++    TORCH_CHECK(swap_index.dim() == 2, "swap_index must be 2D");
++    TORCH_CHECK(tmp_tensor.dim() == 2, "tmp_tensor must be 2D");
++    TORCH_CHECK(tmp_tensor.is_contiguous(), "tmp_tensor must be contiguous");
++    TORCH_CHECK(tmp_tensor.dtype() == topk_indices.dtype(), "tmp_tensor dtype must match topk_indices");
++
++    TORCH_CHECK(expand_len >= topk_indices.size(1), "the second dimension of topk_indices must small than expand_len");
++    TORCH_CHECK(tmp_tensor.size(0) >= topk_indices.size(0) + 2, "tmp_tensor rows must be no less than topk_indices rows + 2");
++    TORCH_CHECK(tmp_tensor.size(1) == expand_len, "tmp_tensor cols must equal expand_len");
++    constexpr int32_t SIZE = 8;
++    constexpr int32_t DIM_0 = 0;
++
++    at::SmallVector<int64_t, SIZE> output_size = {topk_indices.size(DIM_0), 1, expand_len};
++    return at::empty(output_size, topk_indices.options().dtype(at::kInt));
++}
++
+ // N-gram spec decode meta
+ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> npu_ngram_spec_decode_meta(
+     at::Tensor &token_ids,
+@@ -1811,6 +2033,27 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
+     ops.impl("dispatch_gmm_combine_decode", &vllm_ascend::meta::dispatch_gmm_combine_decode_meta);
+     // Lightning indexer
+     ops.impl("npu_lightning_indexer", &vllm_ascend::meta::npu_lightning_indexer_meta);
++
++    // gsa scatter copy
++    ops.impl("gsa_scatter_copy", &vllm_ascend::meta::gsa_scatter_copy_meta);
++    // gsa gather copy
++    ops.impl("gsa_gather_copy", &vllm_ascend::meta::gsa_gather_copy_meta);
++    // gsa gather copy
++    ops.impl("gsa_inplace_copy", &vllm_ascend::meta::gsa_inplace_copy_meta);
++    // gsa gather copy
++    ops.impl("gsa_fill", &vllm_ascend::meta::gsa_fill_meta);
++    // gsa gather copy
++    ops.impl("indexer_gather_qw", &vllm_ascend::meta::indexer_gather_qw_meta);
++    // gsa gather scatter copy
++    ops.impl("gsa_gather_scatter_copy", &vllm_ascend::meta::gsa_gather_scatter_copy_meta);
++        // gsa gather scatter copy
++    ops.impl("gsa_indices_scatter_and_expand", &vllm_ascend::meta::gsa_indices_scatter_and_expand_meta);
++        // gsa gather scatter copy
++    ops.impl("gsa_indices_scatter_and_expand_new", &vllm_ascend::meta::gsa_indices_scatter_and_expand_new_meta);
++    // gsa topk expend
++    ops.impl("gsa_topk_expand", &vllm_ascend::meta::gsa_topk_expand_meta);
++    // gsa topk expend with cached tmp_tensor
++    ops.impl("gsa_topk_expand_tmp", &vllm_ascend::meta::gsa_topk_expand_tmp_meta);
+     // Sparse flash attention
+     ops.impl("npu_sparse_flash_attention", &vllm_ascend::meta::npu_sparse_flash_attention_meta);
+     ops.impl("npu_kv_quant_sparse_flash_attention",

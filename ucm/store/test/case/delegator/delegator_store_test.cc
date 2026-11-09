@@ -88,6 +88,7 @@ TEST(UCDelegatorStoreTest, FactoryReturnsStoreV1)
     Detail::TaskDesc task;
     task.push_back(Detail::Shard{});
     EXPECT_FALSE(store->Load(task));
+    EXPECT_EQ(store->LoadOnToken(task, {}).Error(), Status::Unsupported());
     EXPECT_FALSE(store->Dump(task));
     EXPECT_FALSE(store->Check(1));
     EXPECT_EQ(store->Wait(1), Status::Unsupported());

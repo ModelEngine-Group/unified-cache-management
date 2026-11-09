@@ -111,6 +111,7 @@ void CompressorAction::Compress_Dump(CompressTask& ct)
 
         Detail::TaskDesc backendDesc;
         backendDesc.brief = ct.task->desc.brief;
+        backendDesc.memoryType = Detail::TaskDesc::MemoryType::DDR;
         std::vector<void*> blockToFree;
         std::unique_ptr<MemoryPool> dump_memoryPool_ =
             std::make_unique<MemoryPool>(compBufSize, ct.task->desc.size());

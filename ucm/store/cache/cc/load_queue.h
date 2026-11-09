@@ -45,6 +45,7 @@ class LoadQueue {
     struct ShardTask {
         TaskPtr task;
         Detail::Shard shard;
+        size_t filterIndex{0};
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
@@ -59,6 +60,7 @@ private:
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
+    size_t shardSize_{0};
     size_t nShardPerBlock_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
@@ -82,6 +84,8 @@ private:
     void DispatchOneTask(TaskPair&& pair);
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
+    void TransferDdrLoad(ShardTask&& task);
+    void TransferDdrLoadOnToken(ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
