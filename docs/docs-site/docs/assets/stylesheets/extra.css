@@ -682,17 +682,49 @@ html[data-rtd-navigation="header"] readthedocs-flyout {
   transform: translateX(-2px);
 }
 
-.ucm-blog-mobile-nav {
+.ucm-blog-native-nav {
+  display: none;
+}
+
+.ucm-blog-nav-trigger {
   display: none;
 }
 
 @media screen and (max-width: 76.24em) {
-  .ucm-blog-mobile-nav {
+  .ucm-blog-nav-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    margin: 0 0 0.5rem;
+    border: 1px solid var(--md-default-fg-color--lightest);
+    border-radius: 50%;
+    background: var(--md-default-bg-color);
+    color: var(--md-primary-fg-color);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .ucm-blog-native-nav {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
     display: block;
+    overflow-y: auto;
+    background: var(--md-default-bg-color);
+    transform: translateX(-100%);
+    transition: transform 250ms ease;
+  }
+
+  .ucm-blog-sidebar.is-nav-open .ucm-blog-native-nav {
+    transform: translateX(0);
   }
 
   .ucm-blog-sidebar .ucm-blog-timeline {
-    margin-top: 1rem;
+    position: relative;
+    z-index: 1;
   }
 }
 

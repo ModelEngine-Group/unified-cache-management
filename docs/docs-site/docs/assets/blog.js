@@ -162,20 +162,38 @@
         });
     }
 
-    function updateClock() {
+    let clockSeconds = 0;
+    let lastClockFrame = 0;
+
+    function updateClock(now) {
       if (!clock) {
         return;
       }
+
+      if (!lastClockFrame) {
+        lastClockFrame = now;
+      }
+      clockSeconds += Math.max(
+        0,
+        Math.min(0.5, (now - lastClockFrame) / 1000)
+      );
+      lastClockFrame = now;
+
       const max = document.documentElement.scrollHeight - window.innerHeight;
       const progress = max > 0 ? window.scrollY / max : 0;
       clock.style.setProperty(
         "--ucm-hour-angle",
-        (305 - progress * 195).toFixed(1) + "deg"
+        (305 - progress * 195 + clockSeconds * 0.36).toFixed(1) + "deg"
       );
       clock.style.setProperty(
         "--ucm-minute-angle",
-        (60 + progress * 2340).toFixed(1) + "deg"
+        (60 + progress * 2340 + clockSeconds * 4.32).toFixed(1) + "deg"
       );
+    }
+
+    function animateClock(now) {
+      updateClock(now);
+      window.requestAnimationFrame(animateClock);
     }
 
     function onScroll() {
@@ -185,7 +203,6 @@
       ticked = true;
       window.requestAnimationFrame(function () {
         updateTimeline();
-        updateClock();
         ticked = false;
       });
     }
@@ -193,7 +210,27 @@
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
     updateTimeline();
-    updateClock();
+    if (clock) {
+      window.requestAnimationFrame(animateClock);
+    }
+  }
+
+  const blogSidebar = document.querySelector(".ucm-blog-sidebar");
+  const navOpen = document.querySelector("[data-blog-nav-open]");
+
+  if (blogSidebar && navOpen) {
+    navOpen.addEventListener("click", function () {
+      blogSidebar.classList.add("is-nav-open");
+    });
+
+    const drawer = document.getElementById("__drawer");
+    if (drawer) {
+      drawer.addEventListener("change", function () {
+        if (!drawer.checked) {
+          blogSidebar.classList.remove("is-nav-open");
+        }
+      });
+    }
   }
 
   const back = document.querySelector("[data-blog-back]");

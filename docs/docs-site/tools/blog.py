@@ -294,8 +294,7 @@ def _timeline(page) -> dict:
 
     return {
         "home": base,
-        "label": "博客" if locale == "zh" else "Blog",
-        "title": "时间轴" if locale == "zh" else "Timeline",
+        "nav_label": "打开主导航" if locale == "zh" else "Open main navigation",
         "years": years,
     }
 

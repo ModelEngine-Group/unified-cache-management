@@ -108,10 +108,33 @@
     <div class="md-sidebar md-sidebar--primary ucm-blog-sidebar" data-md-component="sidebar" data-md-type="navigation">
       <div class="md-sidebar__scrollwrap">
         <div class="md-sidebar__inner">
-          <div class="ucm-blog-mobile-nav">
-            {% include "partials/nav.html" %}
-          </div>
           {% include "partials/blog-timeline.html" %}
+          <div class="ucm-blog-native-nav">
+            <nav class="md-nav md-nav--primary" aria-label="{{ config.site_name }}">
+              <label class="md-nav__title" for="__drawer">
+                <a href="{{ nav.homepage.url | url }}" title="{{ config.site_name }}" class="md-nav__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
+                  {% include "partials/logo.html" %}
+                </a>
+                {{ config.site_name }}
+              </label>
+              {% if config.repo_url %}
+                <div class="md-nav__source">
+                  {% include "partials/source.html" %}
+                </div>
+              {% endif %}
+              <ul class="md-nav__list" data-md-scrollfix>
+                {% for item in nav.items %}
+                  {% set target = item.url or (item.children[0].url if item.children else '') %}
+                  <li class="md-nav__item{% if item.active %} md-nav__item--active{% endif %}{% if item.children %} md-nav__item--nested{% endif %}">
+                    <a href="{{ target | url }}" class="md-nav__link{% if item.active %} md-nav__link--active{% endif %}">
+                      <span class="md-ellipsis">{{ item.title }}</span>
+                      {% if item.children %}<span class="md-nav__icon md-icon"></span>{% endif %}
+                    </a>
+                  </li>
+                {% endfor %}
+              </ul>
+            </nav>
+          </div>
         </div>
       </div>
     </div>

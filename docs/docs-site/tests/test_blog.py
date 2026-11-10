@@ -132,6 +132,8 @@ def test_real_site_build_renders_blog_index_and_article(tmp_path):
 
     index = (output / "blog/index.html").read_text(encoding="utf-8")
     assert "ucm-blog-timeline" in index
+    assert "ucm-blog-nav-trigger" in index
+    assert "md-nav--primary" in index
     assert "2026-11-09-ucm" in index
     assert "UCM 官网博客正式上线" in index
 
