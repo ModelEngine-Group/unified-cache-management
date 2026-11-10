@@ -26,6 +26,7 @@
 import os
 import threading
 import time
+from copy import deepcopy
 from typing import Any, Union
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -52,15 +53,17 @@ _metric_mappings: dict[str, Union[Counter, Gauge, Histogram]] = {}
 
 class PrometheusStatsLogger:
 
-    def __init__(self, model_name, worker_id, config_path):
+    def __init__(self, model_name, worker_id, config_path=None, *, config=None):
         """
-        Load metrics config from YAML file (config_path),
+        Use an in-memory config, or load a YAML file (config_path),
         register metrics using prometheus_client, and start a thread to get updated metrics.
         """
         if _metric_mappings:
             logger.warning("Metrics are already registered, skipping re-registration.")
             return
-        self.config = load_metrics_config(config_path)
+        self.config = (
+            deepcopy(config) if config is not None else load_metrics_config(config_path)
+        )
         self.metric_definitions = get_metric_definitions(self.config)
         if not self.metric_definitions:
             return
