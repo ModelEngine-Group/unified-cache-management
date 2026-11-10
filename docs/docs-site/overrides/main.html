@@ -34,6 +34,16 @@
   {% endif %}
   {% if page and '/blog/' in ('/' + page.file.src_uri) %}
     <style>
+      html {
+        scrollbar-gutter: stable;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+      }
+
       .md-content__inner {
         max-width: 1120px;
         margin-left: auto;
@@ -98,6 +108,9 @@
     <div class="md-sidebar md-sidebar--primary ucm-blog-sidebar" data-md-component="sidebar" data-md-type="navigation">
       <div class="md-sidebar__scrollwrap">
         <div class="md-sidebar__inner">
+          <div class="ucm-blog-mobile-nav">
+            {% include "partials/nav.html" %}
+          </div>
           {% include "partials/blog-timeline.html" %}
         </div>
       </div>
@@ -136,7 +149,7 @@
     <script src="{{ 'assets/quickstart.js' | url }}"></script>
   {% endif %}
   {% if page and '/blog/' in ('/' + page.file.src_uri) %}
-    <script src="{{ 'assets/blog.js' | url }}?v=15"></script>
+    <script src="{{ 'assets/blog.js' | url }}"></script>
   {% endif %}
   <script src="https://unpkg.com/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js"></script>

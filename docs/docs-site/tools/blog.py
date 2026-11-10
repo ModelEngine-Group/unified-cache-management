@@ -1,12 +1,14 @@
-"""Build the blog landing page from post front matter.
+"""Build the blog landing page and timeline from post front matter.
 
-A post is any Markdown file next to ``blog/index.md``. The newest post is shown
-as the wide card; the rest are grouped by year, one page per year.
+A post is any Markdown file next to ``blog/index.md``. All posts are rendered
+on one page grouped by year and month; the newest post gets the Latest badge.
+The sidebar timeline is derived from the same records.
 """
 
 from __future__ import annotations
 
 import html
+import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -17,21 +19,18 @@ from mkdocs.utils import get_relative_url
 LIST_MARKER = "<!-- blog-list -->"
 FRONT_MATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", re.DOTALL)
 HEADING = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+LOG = logging.getLogger("mkdocs")
 
 LABELS = {
     "en": {
         "latest": "Latest",
         "empty": "No posts yet.",
         "back": "All posts",
-        "pages": "Blog pages",
-        "page": "Page {number} ({year})",
     },
     "zh": {
         "latest": "最新",
         "empty": "暂无文章，敬请期待。",
         "back": "返回博客",
-        "pages": "博客分页",
-        "page": "第 {number} 页（{year} 年）",
     },
 }
 
@@ -63,6 +62,10 @@ def _date(value, path: Path) -> date:
             return date.fromisoformat(value.strip())
         except ValueError:
             pass
+    LOG.warning(
+        f"Blog post '{path.name}' has no valid 'date' front matter; "
+        "falling back to the file modification time."
+    )
     return date.fromtimestamp(path.stat().st_mtime)
 
 
@@ -232,6 +235,10 @@ def on_page_content(html_text, page, config, files):
         for pattern in (LIST_MARKER, f"<p>{LIST_MARKER}</p>"):
             if pattern in html_text:
                 return html_text.replace(pattern, _render(page), 1)
+        LOG.warning(
+            f"Blog index '{source}' is missing the '{LIST_MARKER}' marker; "
+            "the post list was not rendered."
+        )
         return html_text
 
     back = _back_link(page)

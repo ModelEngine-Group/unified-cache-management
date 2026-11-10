@@ -20,6 +20,9 @@
       const empty = document.createElement("p");
       empty.className = "ucm-blog-empty ucm-blog-search-empty";
       empty.hidden = true;
+      empty.setAttribute("role", "status");
+      empty.setAttribute("aria-live", "polite");
+      empty.setAttribute("aria-atomic", "true");
       empty.textContent =
         searchForm.dataset.empty || "No posts match your search.";
       list.appendChild(empty);
