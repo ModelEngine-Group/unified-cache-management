@@ -85,12 +85,8 @@ def test_total_is_input_length_even_with_generated_tokens(setup_patch, caplog):
     assert "total_tokens=4031 hit_hbm_tokens=4096" in caplog.text
 
 
-@pytest.mark.parametrize(
-    "skip", ["rank", "attn_cp_rank", "pp_rank", "backend", "level"]
-)
-def test_other_ranks_backends_and_disabled_info_are_unaffected(
-    setup_patch, caplog, skip
-):
+@pytest.mark.parametrize("skip", ["rank", "attn_cp_rank", "pp_rank", "backend"])
+def test_other_ranks_and_backends_are_unaffected(setup_patch, caplog, skip):
     module, _, Wrapper, original, _ = setup_patch
     wrapper = Wrapper()
     if skip == "rank":
@@ -99,10 +95,8 @@ def test_other_ranks_backends_and_disabled_info_are_unaffected(
         setattr(module.parallel, skip, 1)
     elif skip == "backend":
         wrapper.cache_linker = object()
-    else:
-        caplog.set_level(logging.WARNING, logger=module.logger.name)
 
-    # No request fields may be read when logging is disabled for this call.
+    # Other ranks and backends must not read request fields for UCM logging.
     class NoFields:
         def __getattr__(self, name):
             raise AssertionError("request fields must not be read")

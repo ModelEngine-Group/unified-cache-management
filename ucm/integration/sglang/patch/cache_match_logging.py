@@ -5,7 +5,6 @@ linker support. The linker itself does not install or depend on this patch.
 """
 
 import importlib
-import logging
 from functools import wraps
 
 from ucm.logger import init_logger
@@ -34,7 +33,7 @@ def install_cache_match_logging() -> None:
     def match(self, key, req, result):
         matched = original(self, key, req, result)
         linker = self.cache_linker
-        if isinstance(linker, linker_type) and logger.isEnabledFor(logging.INFO):
+        if isinstance(linker, linker_type):
             try:
                 parallel = get_parallel()
                 if (
