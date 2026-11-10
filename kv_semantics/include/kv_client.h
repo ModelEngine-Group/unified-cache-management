@@ -40,8 +40,8 @@ public:
     // Stops accepting requests, drains pending tasks, and releases client resources.
     virtual Status Shutdown() = 0;
 
-    // String keys are normalized before routing; binary keys with an empty string namespace
-    // retain their bytes. Uint64 namespaces use their decimal string representation.
+    // Keys are normalized independently of namespace before routing. Every namespace is hashed
+    // into a uint32 protocol ID; numeric inputs use their decimal string representation.
     // Submits an asynchronous existence query and returns a task ID for retrieving its result.
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
                               const Namespace& namespaceId = {}) = 0;

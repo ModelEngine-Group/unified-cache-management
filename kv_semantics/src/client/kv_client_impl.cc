@@ -274,26 +274,27 @@ Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task
     return status;
 }
 
-Status KvClientImpl::NormalizeKey(CacheKey& key, const Namespace& namespaceId,
-                                  std::uint64_t& baseOffset) const
+std::uint32_t KvClientImpl::ResolveNamespace(const Namespace& namespaceId)
+{
+    const auto* text = std::get_if<std::string>(&namespaceId);
+    // Hash numeric namespaces in decimal form, matching their string representation.
+    const auto numeric =
+        text ? std::string{} : std::to_string(std::get<std::uint32_t>(namespaceId));
+    return static_cast<std::uint32_t>(
+        std::hash<std::string_view>{}(text ? std::string_view(*text) : std::string_view(numeric)));
+}
+
+Status KvClientImpl::NormalizeKey(CacheKey& key, std::uint64_t& baseOffset) const
 {
     baseOffset = 0;
     const auto* text = std::get_if<std::string>(&key);
-    const auto* namespaceText = std::get_if<std::string>(&namespaceId);
-    // Binary keys with an empty string namespace are already encoded; preserve their bytes.
-    if (!text && namespaceText && namespaceText->empty()) { return Status::OK(); }
-    std::string_view identity = text ? std::string_view(*text) : CacheKeyView(key);
-    if (text && config_.keyResolution.engine == InferenceEngine::VLLM_ASCEND) {
+    if (!text) { return Status::OK(); }
+    std::string_view identity = *text;
+    if (config_.keyResolution.engine == InferenceEngine::VLLM_ASCEND) {
         auto status = ResolveVllmAscendKey(*text, identity, baseOffset);
         if (!status.ok()) { return status; }
     }
-    // Match Mooncake's scoped key format: namespace + '\0' + object key.
-    std::string scoped =
-        namespaceText ? *namespaceText : std::to_string(std::get<std::uint64_t>(namespaceId));
-    scoped.reserve(scoped.size() + identity.size() + 1);
-    scoped.push_back('\0');
-    scoped.append(identity.data(), identity.size());
-    auto hash = static_cast<std::uint64_t>(std::hash<std::string_view>{}(scoped));
+    auto hash = static_cast<std::uint64_t>(std::hash<std::string_view>{}(identity));
     BinaryKey encoded{};
     for (auto& byte : encoded) {
         byte = static_cast<std::byte>(hash & 0xff);
@@ -489,10 +490,11 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     ctx->opType = opType;
     ctx->prerequisite = std::move(prerequisite);
     ctx->viewSnapshot = snapshot;
+    ctx->namespaceId = ResolveNamespace(namespaceId);
     ctx->entries = entries;
     for (auto& entry : ctx->entries) {
         std::uint64_t baseOffset = 0;
-        auto status = NormalizeKey(entry.key, namespaceId, baseOffset);
+        auto status = NormalizeKey(entry.key, baseOffset);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
@@ -565,10 +567,11 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
+    ctx->namespaceId = ResolveNamespace(namespaceId);
     ctx->keys = keys;
     for (auto& key : ctx->keys) {
         std::uint64_t ignoredOffset = 0;
-        auto status = NormalizeKey(key, namespaceId, ignoredOffset);
+        auto status = NormalizeKey(key, ignoredOffset);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
