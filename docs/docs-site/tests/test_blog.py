@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 DOCS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DOCS_ROOT / "tools"))
 import blog  # noqa: E402
@@ -113,16 +115,25 @@ def test_missing_list_marker_warns_and_keeps_content(tmp_path, caplog):
     )
 
 
-def test_real_site_build_renders_blog_index_and_article(tmp_path):
+@pytest.mark.parametrize(
+    ("language", "title", "article_marker"),
+    [
+        ("en", "The UCM Blog Is Live", "Unified Cache Manager (UCM)"),
+        ("zh", "UCM 官网博客正式上线", "Unified Cache Manager（UCM）"),
+    ],
+)
+def test_real_site_build_renders_blog_index_and_article(
+    tmp_path, language, title, article_marker
+):
     output = tmp_path / "site"
     manifest = published_release()[1]
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
 
     site_build.build_site(
-        language="zh",
+        language=language,
         site_dir=output,
-        site_url="https://docs.example.invalid/zh/v0.9.3/",
+        site_url=f"https://docs.example.invalid/{language}/v0.9.3/",
         repository="example/ucm",
         ref="v0.9.3",
         manifest_path=manifest_path,
@@ -135,8 +146,8 @@ def test_real_site_build_renders_blog_index_and_article(tmp_path):
     assert "ucm-blog-nav-trigger" in index
     assert "md-nav--primary" in index
     assert "2026-11-09-ucm" in index
-    assert "UCM 官网博客正式上线" in index
+    assert title in index
 
     article = (output / "blog/2026-11-09-ucm/index.html").read_text(encoding="utf-8")
-    assert "UCM 官网博客正式上线" in article
-    assert "Unified Cache Manager（UCM）" in article
+    assert title in article
+    assert article_marker in article
