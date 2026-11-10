@@ -51,6 +51,7 @@ namespace {
 
 using AsuStatus = kv::Status;
 using AsuStatusCode = kv::StatusCode;
+using CacheKey = kv::BinaryKey;
 
 // Observe the Store call, including validation failures before KV submission.
 template <typename Call>
@@ -94,7 +95,7 @@ std::uint64_t HashAsuKey(const Detail::BlockId& block)
 kv::CacheKey MakeAsuKey(const Detail::BlockId& block)
 {
     const auto hash = HashAsuKey(block);
-    kv::CacheKey key{};
+    CacheKey key{};
     std::memcpy(key.data(), &hash, key.size());
     return key;
 }
@@ -545,8 +546,9 @@ private:
                                                "prerequisite event synchronization failed");
             };
         }
-        auto status = store ? client_->StoreAsync(entries.Value(), taskId, std::move(prerequisite))
-                            : client_->LoadAsync(entries.Value(), taskId);
+        auto status =
+            store ? client_->StoreAsync(entries.Value(), taskId, {}, std::move(prerequisite))
+                  : client_->LoadAsync(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
             return ConvertStatus(status);

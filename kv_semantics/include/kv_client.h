@@ -40,19 +40,25 @@ public:
     // Stops accepting requests, drains pending tasks, and releases client resources.
     virtual Status Shutdown() = 0;
 
+    // String keys are normalized before routing; binary keys with an empty string namespace
+    // retain their bytes. Uint64 namespaces use their decimal string representation.
     // Submits an asynchronous existence query and returns a task ID for retrieving its result.
-    virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                              const Namespace& namespaceId = {}) = 0;
     // Submits asynchronous reads into the supplied buffers and returns a task ID.
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                             const Namespace& namespaceId = {}) = 0;
     // Submits asynchronous writes from the supplied buffers after the optional prerequisite
     // callback. Runs prerequisite on the Client worker before dispatch. Empty means no
     // prerequisite. Return a failure to complete the task without sending; exceptions become
     // INTERNAL_ERROR. The callback runs once and may block subsequent tasks. It must set any
     // required device context and keep captured events/streams alive until it returns.
     virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                              const Namespace& namespaceId = {},
                               std::function<Status()> prerequisite = {}) = 0;
     // Submits asynchronous deletion of the supplied keys and returns a task ID.
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                               const Namespace& namespaceId = {}) = 0;
 
     // Checks completion without consuming the task, returning true also for an unknown task ID.
     virtual bool Check(TaskId taskId) = 0;

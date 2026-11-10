@@ -45,7 +45,7 @@ namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     if (text.size() <= key.size()) {
         if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
         return key;
@@ -59,8 +59,8 @@ struct CacheKeyHasher {
     std::size_t operator()(const CacheKey& key) const
     {
         std::uint64_t hash = 1469598103934665603ULL;
-        for (auto byte : key) {
-            hash ^= static_cast<std::uint64_t>(std::to_integer<unsigned char>(byte));
+        for (auto byte : CacheKeyView(key)) {
+            hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(byte));
             hash *= 1099511628211ULL;
         }
         return static_cast<std::size_t>(hash);
