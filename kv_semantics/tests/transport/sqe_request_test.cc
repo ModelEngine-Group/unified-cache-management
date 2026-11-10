@@ -28,6 +28,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -207,6 +208,63 @@ protected:
 
     std::unique_ptr<AsuTransportImpl> transport_;
 };
+
+TEST_F(SqeRequestTest, RequestNamespaceOverridesConfiguredValueForEveryDataOpcode)
+{
+    auto entries = MakeEntries(1);
+    SetMrKeys(entries, 1);
+    IoScheduler::ScheduledIoBatch ioBatch{
+        BatchView<KVBuffer>{entries.data(), entries.size()}
+    };
+    const std::vector<CacheKey> keys{entries[0].key};
+    IoScheduler::ScheduledKeyBatch keyBatch{
+        BatchView<CacheKey>{keys.data(), keys.size()}
+    };
+    for (const auto& namespaceId :
+         {std::optional<std::uint32_t>{}, std::optional<std::uint32_t>{0},
+          std::optional<std::uint32_t>{9}, std::optional<std::uint32_t>{UINT32_MAX}}) {
+        for (auto op :
+             {AsuOpType::STORE, AsuOpType::LOAD, AsuOpType::BATCH_STORE, AsuOpType::BATCH_LOAD}) {
+            TransportSubBatchContext context;
+            context.namespaceId = namespaceId;
+            ASSERT_TRUE(
+                transport_->taskExecutor_->BuildEntrySubBatchRequest(op, ioBatch, context).ok());
+            const auto* sqe = reinterpret_cast<const std::uint32_t*>(context.sendSge.local_addr);
+            EXPECT_EQ(sqe[1], namespaceId.value_or(3));
+            transport_->taskExecutor_->ReleaseSubBatchResources(context);
+        }
+        for (auto op : {AsuOpType::QUERY, AsuOpType::DELETE}) {
+            TransportSubBatchContext context;
+            context.namespaceId = namespaceId;
+            ASSERT_TRUE(
+                transport_->taskExecutor_->SubmitKeySubBatchRequest(op, keyBatch, context).ok());
+            const auto* sqe = reinterpret_cast<const std::uint32_t*>(context.sendSge.local_addr);
+            EXPECT_EQ(sqe[1], namespaceId.value_or(3));
+            transport_->taskExecutor_->ReleaseSubBatchResources(context);
+        }
+    }
+    EXPECT_EQ(transport_->config_.attrs.at("kv_ns_id"), "3");
+}
+
+TEST_F(SqeRequestTest, TaskNamespaceReachesEntryAndKeySubBatches)
+{
+    for (auto op :
+         {AsuOpType::BATCH_STORE, AsuOpType::BATCH_LOAD, AsuOpType::QUERY, AsuOpType::DELETE}) {
+        TransportTask task;
+        task.opType = op;
+        task.namespaceId = 0;
+        task.entries = MakeEntries(1);
+        SetMrKeys(task.entries, 1);
+        task.keys = {task.entries[0].key};
+        std::vector<TransportSubBatchContext> batches;
+        ASSERT_TRUE(transport_->taskExecutor_->PrepareTaskSubBatches(task, batches).ok());
+        ASSERT_EQ(batches.size(), 1U);
+        EXPECT_EQ(batches[0].namespaceId, std::optional<std::uint32_t>{0});
+        const auto* sqe = reinterpret_cast<const std::uint32_t*>(batches[0].sendSge.local_addr);
+        EXPECT_EQ(sqe[1], 0U);
+        transport_->taskExecutor_->ReleaseAllSubBatchResources(batches);
+    }
+}
 
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
 {

@@ -104,8 +104,8 @@ public:
 
 private:
     // Resolve one input key before it enters routing or transport tasks.
-    Status NormalizeKey(CacheKey& key, const Namespace& namespaceId,
-                        std::uint64_t& baseOffset) const;
+    Status NormalizeKey(CacheKey& key, std::uint64_t& baseOffset) const;
+    static std::uint32_t ResolveNamespace(const Namespace& namespaceId);
     Status ResolveVllmAscendKey(std::string_view key, std::string_view& identity,
                                 std::uint64_t& baseOffset) const;
 

@@ -41,7 +41,7 @@ constexpr std::size_t kCacheKeySizeBytes = 8;
 using BinaryKey = std::array<std::byte, kCacheKeySizeBytes>;
 // Binary keys are already encoded; strings are logical object keys.
 using CacheKey = std::variant<BinaryKey, std::string>;
-using Namespace = std::variant<std::string, std::uint64_t>;
+using Namespace = std::variant<std::string, std::uint32_t>;
 
 // KV protocol requires 512B alignment for device buffers and offsets.
 constexpr std::uint32_t kAlignmentBytes = 512;
