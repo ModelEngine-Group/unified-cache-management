@@ -25,10 +25,44 @@
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <string>
+#include <string_view>
 #include "task/trans_task_manager.h"
+#include "trans_types.h"
 
 namespace kv::test {
 namespace {
+
+TEST(TransTaskUtilsTest, CacheKeyViewPreservesBinaryBytes)
+{
+    const BinaryKey bytes{std::byte{0x00}, std::byte{0x01}, std::byte{0x7f}, std::byte{0x80},
+                          std::byte{0xab}, std::byte{0xcd}, std::byte{0xef}, std::byte{0xff}};
+    const CacheKey key = bytes;
+    const auto view = CacheKeyView(key);
+    EXPECT_EQ(view, std::string_view("\x00\x01\x7f\x80\xab\xcd\xef\xff", 8));
+    EXPECT_EQ(view.data(), reinterpret_cast<const char*>(std::get<BinaryKey>(key).data()));
+}
+
+TEST(TransTaskUtilsTest, CacheKeyViewPreservesStringBytes)
+{
+    const CacheKey key = std::string("a\0b", 3);
+    const auto view = CacheKeyView(key);
+    EXPECT_EQ(view, std::string_view("a\0b", 3));
+    EXPECT_EQ(view.data(), std::get<std::string>(key).data());
+    EXPECT_TRUE(CacheKeyView(CacheKey(std::string{})).empty());
+}
+
+TEST(TransTaskUtilsTest, CacheKeyToHexPreservesBinaryAndStringBytes)
+{
+    const BinaryKey bytes{std::byte{0x00}, std::byte{0x01}, std::byte{0x7f}, std::byte{0x80},
+                          std::byte{0xab}, std::byte{0xcd}, std::byte{0xef}, std::byte{0xff}};
+    EXPECT_EQ(CacheKeyToHex(CacheKey(bytes)), "00017f80abcdefff");
+    EXPECT_EQ(CacheKeyToHex(CacheKey(std::string("\x00\x01\x7f\x80\xab\xcd\xef\xff", 8))),
+              "00017f80abcdefff");
+    EXPECT_EQ(CacheKeyToHex(CacheKey(std::string("a\0b", 3))), "610062");
+    EXPECT_EQ(CacheKeyToHex(CacheKey(std::string{})), "");
+    EXPECT_EQ(CacheKeyToHex(CacheKey(BinaryKey{})), "0000000000000000");
+}
 
 TEST(TransTaskUtilsTest, MapsCqeRawStatusToSubBatchStatus)
 {

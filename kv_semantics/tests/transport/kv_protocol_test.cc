@@ -33,7 +33,7 @@ namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
     return key;
@@ -41,7 +41,7 @@ CacheKey MakeCacheKey(std::string_view text)
 
 CacheKey MakeCacheKey(std::uint64_t value)
 {
-    CacheKey key{};
+    BinaryKey key{};
     std::memcpy(key.data(), &value, key.size());
     return key;
 }
@@ -204,14 +204,16 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
     expected[11] = kLr ? (1U << 31) : 0;
 
     expected[16] = entry1.offset;
-    std::memcpy(&expected[17], entry1.key.data(), std::min(entry1.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[17], CacheKeyView(entry1.key).data(),
+                std::min(CacheKeyView(entry1.key).size(), kCacheKeySizeBytes));
     expected[21] = entry1.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry1.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry1.mr_key & 0xFF) << 24) | (entry1.length & 0xFFFFFF);
     expected[24] = (0x40 << 24) | ((entry1.mr_key >> 8) & 0xFFFFFF);
 
     expected[25] = entry2.offset;
-    std::memcpy(&expected[26], entry2.key.data(), std::min(entry2.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[26], CacheKeyView(entry2.key).data(),
+                std::min(CacheKeyView(entry2.key).size(), kCacheKeySizeBytes));
     expected[30] = entry2.buffer_addr & 0xFFFFFFFFULL;
     expected[31] = (entry2.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[32] = ((entry2.mr_key & 0xFF) << 24) | (entry2.length & 0xFFFFFF);
@@ -264,7 +266,8 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
     expected[9] = 0x01 << 24;
     expected[10] = 1;
     expected[16] = entry.offset;
-    std::memcpy(&expected[17], entry.key.data(), std::min(entry.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[17], CacheKeyView(entry.key).data(),
+                std::min(CacheKeyView(entry.key).size(), kCacheKeySizeBytes));
     expected[21] = entry.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry.mr_key & 0xFF) << 24) | (entry.length & 0xFFFFFF);
@@ -307,10 +310,10 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     expected[8] = 2 * 16;
     expected[9] = 0x01 << 24;
     expected[10] = 2;
-    std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), kCacheKeySizeBytes));
-    std::memcpy(&expected[20], req.keys[1].data(),
-                std::min(req.keys[1].size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[16], CacheKeyView(req.keys[0]).data(),
+                std::min(CacheKeyView(req.keys[0]).size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[20], CacheKeyView(req.keys[1]).data(),
+                std::min(CacheKeyView(req.keys[1]).size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -351,8 +354,8 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     expected[8] = 1 * 16;
     expected[9] = 0x01 << 24;
     expected[10] = 1 | (kSc ? (1U << 16) : 0);
-    std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[16], CacheKeyView(req.keys[0]).data(),
+                std::min(CacheKeyView(req.keys[0]).size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -487,7 +490,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsAllZeroKey)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = CacheKey{};
+    req.key = BinaryKey{};
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -600,7 +603,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsAllZeroKey)
     KvBatchStoreRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = CacheKey{};
+    req.entries[0].key = BinaryKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -793,7 +796,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsAllZeroKey)
     req.buffer_length = 1024;
     req.offset = 512;
     req.length = 512;
-    req.key = CacheKey{};
+    req.key = BinaryKey{};
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -857,7 +860,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsAllZeroKey)
     KvBatchRetrieveRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = CacheKey{};
+    req.entries[0].key = BinaryKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -885,7 +888,7 @@ TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsAllZeroKey)
 {
     KvDeleteRequest req;
     req.batch_number = 2;
-    req.keys = {MakeCacheKey("key1"), CacheKey{}};
+    req.keys = {MakeCacheKey("key1"), BinaryKey{}};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -923,7 +926,7 @@ TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsAllZeroKey)
 {
     KvExistRequest req;
     req.batch_number = 1;
-    req.keys = {CacheKey{}};
+    req.keys = {BinaryKey{}};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(32, 0);

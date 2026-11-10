@@ -23,8 +23,10 @@
  * */
 #include "kv_client_impl.h"
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <thread>
@@ -35,6 +37,7 @@
 #include "logger.h"
 #include "router/config.h"
 #include "router/router.h"
+#include "trans_types.h"
 #include "utils/config_utils.h"
 
 namespace kv {
@@ -116,6 +119,13 @@ Status KvClientImpl::Init(const KvClientConfig& config)
         return Status::Error(StatusCode::INVALID_ARGUMENT, "sharedProviderMode must be 0 or 1");
     }
 
+    if (config.keyResolution.engine != InferenceEngine::VLLM_ASCEND &&
+        (config.keyResolution.layerCount != 0 || config.keyResolution.layerSlotBytes != 0)) {
+        KV_WARN(
+            "{} keys do not require layer aggregation; aggregation.layer_count and "
+            "aggregation.layer_slot_bytes are ignored and can be omitted",
+            config.keyResolution.engine == InferenceEngine::SGLANG ? "SGLang" : "Generic");
+    }
     config_ = config;
     viewServer_ = viewServerFactory_(config);
     if (viewServer_ == nullptr) {
@@ -225,40 +235,106 @@ Status KvClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                const Namespace& namespaceId)
 {
-    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId, namespaceId);
     RecordSubmit(AsuOpType::QUERY, keys.size(), status);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
 
-Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                               const Namespace& namespaceId)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_LOAD : AsuOpType::LOAD;
-    auto status = SubmitAsync(opType, entries, taskId);
+    auto status = SubmitAsync(opType, entries, taskId, namespaceId);
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                std::function<Status()> prerequisite)
+                                const Namespace& namespaceId, std::function<Status()> prerequisite)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
-    auto status = SubmitAsync(opType, entries, taskId, std::move(prerequisite));
+    auto status = SubmitAsync(opType, entries, taskId, namespaceId, std::move(prerequisite));
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
-Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                 const Namespace& namespaceId)
 {
-    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId, namespaceId);
     RecordSubmit(AsuOpType::DELETE, keys.size(), status);
     return status;
+}
+
+Status KvClientImpl::NormalizeKey(CacheKey& key, const Namespace& namespaceId,
+                                  std::uint64_t& baseOffset) const
+{
+    baseOffset = 0;
+    const auto* text = std::get_if<std::string>(&key);
+    const auto* namespaceText = std::get_if<std::string>(&namespaceId);
+    // Binary keys with an empty string namespace are already encoded; preserve their bytes.
+    if (!text && namespaceText && namespaceText->empty()) { return Status::OK(); }
+    std::string_view identity = text ? std::string_view(*text) : CacheKeyView(key);
+    if (text && config_.keyResolution.engine == InferenceEngine::VLLM_ASCEND) {
+        auto status = ResolveVllmAscendKey(*text, identity, baseOffset);
+        if (!status.ok()) { return status; }
+    }
+    // Match Mooncake's scoped key format: namespace + '\0' + object key.
+    std::string scoped =
+        namespaceText ? *namespaceText : std::to_string(std::get<std::uint64_t>(namespaceId));
+    scoped.reserve(scoped.size() + identity.size() + 1);
+    scoped.push_back('\0');
+    scoped.append(identity.data(), identity.size());
+    auto hash = static_cast<std::uint64_t>(std::hash<std::string_view>{}(scoped));
+    BinaryKey encoded{};
+    for (auto& byte : encoded) {
+        byte = static_cast<std::byte>(hash & 0xff);
+        hash >>= 8;
+    }
+    key = encoded;
+    return Status::OK();
+}
+
+Status KvClientImpl::ResolveVllmAscendKey(std::string_view key, std::string_view& identity,
+                                          std::uint64_t& baseOffset) const
+{
+    identity = key;
+    baseOffset = 0;
+    // LayerPoolKey ends with @chunk_hash@layer. Preserve every other field.
+    const auto layerSeparator = key.rfind('@');
+    const auto hashSeparator = layerSeparator != std::string_view::npos && layerSeparator != 0
+                                   ? key.rfind('@', layerSeparator - 1)
+                                   : std::string_view::npos;
+    if (hashSeparator != std::string_view::npos && hashSeparator != 0) {
+        const auto hash = key.substr(hashSeparator + 1, layerSeparator - hashSeparator - 1);
+        const auto layerText = key.substr(layerSeparator + 1);
+        if (!hash.empty() && hash.find(':') == std::string_view::npos) {
+            std::uint64_t layer = 0;
+            const auto [end, error] =
+                std::from_chars(layerText.data(), layerText.data() + layerText.size(), layer);
+            if (error != std::errc{} || end != layerText.data() + layerText.size()) {
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "invalid layer in key: " + std::string(key));
+            }
+            auto status = ValidateKeyResolutionConfig(config_.keyResolution);
+            if (!status.ok()) { return status; }
+            if (layer >= config_.keyResolution.layerCount) {
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "invalid layer in key: " + std::string(key));
+            }
+            identity = key.substr(0, layerSeparator);
+            baseOffset = layer * config_.keyResolution.layerSlotBytes;
+        }
+    }
+    return Status::OK();
 }
 
 bool KvClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
@@ -391,7 +467,8 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId, std::function<Status()> prerequisite)
+                                 TaskId& taskId, const Namespace& namespaceId,
+                                 std::function<Status()> prerequisite)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -413,6 +490,19 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     ctx->prerequisite = std::move(prerequisite);
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
+    for (auto& entry : ctx->entries) {
+        std::uint64_t baseOffset = 0;
+        auto status = NormalizeKey(entry.key, namespaceId, baseOffset);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+        if (baseOffset > std::numeric_limits<std::uint32_t>::max() - entry.offset) {
+            taskId = kInvalidTaskId;
+            return Status::Error(StatusCode::INVALID_ARGUMENT, "object offset exceeds uint32");
+        }
+        entry.offset += static_cast<std::uint32_t>(baseOffset);
+    }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
         for (auto& entry : ctx->entries) {
@@ -456,7 +546,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
-                                 TaskId& taskId)
+                                 TaskId& taskId, const Namespace& namespaceId)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -476,6 +566,14 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
     ctx->keys = keys;
+    for (auto& key : ctx->keys) {
+        std::uint64_t ignoredOffset = 0;
+        auto status = NormalizeKey(key, namespaceId, ignoredOffset);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+    }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
 

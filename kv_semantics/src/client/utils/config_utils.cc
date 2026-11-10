@@ -24,7 +24,9 @@
 #include "config_utils.h"
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <fstream>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -128,6 +130,21 @@ NodeEndpoint ParseClientViewEndpoint(const std::string& value)
     return endpoint;
 }
 
+Status ValidateKeyResolutionConfig(const KeyResolutionConfig& config)
+{
+    if (config.layerCount == 0 || config.layerSlotBytes == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "vllm_ascend layerwise keys require positive "
+                             "aggregation.layer_count and aggregation.layer_slot_bytes");
+    }
+    // KVBuffer carries a uint32 object offset.
+    constexpr auto maxObjectBytes = std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1;
+    if (config.layerCount > maxObjectBytes / config.layerSlotBytes) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "layer layout exceeds uint32 offsets");
+    }
+    return Status::OK();
+}
+
 Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfig& config)
 {
     std::ifstream configFile{configPath};
@@ -162,6 +179,27 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
+        } else if (key == "inference.engine") {
+            if (value == "vllm_ascend") {
+                config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
+            } else if (value == "sglang") {
+                config.keyResolution.engine = InferenceEngine::SGLANG;
+            } else {
+                config.keyResolution.engine = InferenceEngine::GENERIC;
+            }
+        } else if (key == "aggregation.layer_count" || key == "aggregation.layer_slot_bytes") {
+            std::uint64_t size = 0;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), size);
+            if (error != std::errc{} || end != value.data() + value.size()) {
+                return ASU_LOG_ERROR_STATUS(StatusCode::INVALID_ARGUMENT,
+                                            "expected a non-negative integer for " + key);
+            }
+            if (key == "aggregation.layer_count") {
+                config.keyResolution.layerCount = size;
+            } else {
+                config.keyResolution.layerSlotBytes = size;
+            }
         } else if (key == "client.useBatchIoForSingleKey" ||
                    key == "client.use_batch_io_for_single_key") {
             config.useBatchIoForSingleKey = ParseClientBool(value);
