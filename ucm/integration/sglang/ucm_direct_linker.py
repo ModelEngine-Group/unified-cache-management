@@ -8,7 +8,6 @@ layer-ready and completion queues. Store setup and I/O stay in the adapter.
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 import time
 from collections import OrderedDict, deque
@@ -37,8 +36,9 @@ from ucm.integration.sglang.ucm_direct_store_adapter import (
     UcmLayerTransfer,
     UcmPoolMetadata,
 )
+from ucm.logger import init_logger
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 device_module = get_device_module()
 _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
@@ -635,11 +635,23 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         ):
             resume_from_pages = previous.hit_pages
-        result = self.adapter.lookup(
-            lookup_transfers,
-            page_keys,
-            resume_from_pages=resume_from_pages,
-        )
+        try:
+            result = self.adapter.lookup(
+                lookup_transfers,
+                page_keys,
+                resume_from_pages=resume_from_pages,
+            )
+        except Exception:
+            logger.exception(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLookup] lookup_failed request_id=%s external_query_tokens=%d",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+                len(page_keys) * self.page_size,
+            )
+            raise
         self._lookup_progress[rid] = _LookupProgress(
             tuple(page_keys), transfer_keys, result[-1] if result else 0
         )
@@ -650,10 +662,31 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
         self._lookup_progress.pop(rid, None)
-        expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
+        try:
+            expanded = self._expand(
+                transfers, allow_partial=True, allow_missing_kv=True
+            )
+        except Exception:
+            logger.exception(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_failed request_id=%s",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+            )
+            raise
         if not expanded:
             return False
         if rid in self._pending_loads:
+            logger.error(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_rejected request_id=%s reason=already_queued",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+            )
             raise RuntimeError(f"UCM load for rid={rid} is already queued.")
         self._pending_loads[rid] = expanded
         return True
@@ -757,6 +790,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 prerequisite_handle=prerequisite_handle,
                             )
                             while next_complete <= layer:
+                                active_layer = next_complete
                                 tasks = in_flight[next_complete]
                                 if not all(self.adapter.check(t) for t in tasks):
                                     break
@@ -776,23 +810,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
-                        for tasks in in_flight.values():
+                        for drain_layer, tasks in in_flight.items():
                             try:
                                 self.adapter.wait(tasks)
                             except Exception:
                                 logger.exception(
-                                    "UCM prefetched load failed while draining"
+                                    "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                                    "[CacheLoad] cleanup_failed request_ids=%s "
+                                    "load_batch_id=%d layer=%d",
+                                    self._dp_rank,
+                                    self._attn_dp_rank,
+                                    self._tp_rank,
+                                    list(pending),
+                                    counter_index,
+                                    drain_layer,
                                 )
                 except BaseException as error:
                     landed = False
                     self.layer_done_counter.fail(counter_index, error)
                     logger.exception(
-                        "UCM layer-wise load batch failed tp_rank=%d batch=%d "
-                        "layer=%d requests=%d",
+                        "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                        "[CacheLoad] load_failed load_batch_id=%d "
+                        "layer=%d requests=%d request_ids=%s",
+                        self._dp_rank,
+                        self._attn_dp_rank,
                         self._tp_rank,
                         counter_index,
                         active_layer,
                         len(pending),
+                        list(pending),
                     )
                 finally:
                     if self._requires_load_finish:
