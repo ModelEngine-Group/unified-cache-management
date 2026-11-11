@@ -1,0 +1,6 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+*.sh text eol=lf
+*.py text eol=lf
+setup.py text eol=lf
+Makefile text eol=lf

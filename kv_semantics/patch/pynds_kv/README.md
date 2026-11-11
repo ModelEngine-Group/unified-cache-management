@@ -2,69 +2,68 @@
 
 `pynds_kv` provides C, C++, and Python interfaces for NDS KV semantics. The Python extension is built with pybind11 and supports multiple namespaces, multiple registered memory regions, and batched asynchronous I/O.
 
-This source package targets NDS SDK v1.6. The Python package version is 1.7.1.
+This source package targets NDS SDK v1.6. The Python package version is 1.7.3.
 
 ## Package contents
 
+- `vllm-uc/`: NDS client SDK source, public headers, and agent adapters used to build `libndsclient.so`.
 - `src/main.cpp`: pybind11 Python API.
 - `vllm/NDS3.0/nds_wrapper.cpp`: NDS KV wrapper implementation.
 - `vllm/NDS3.0/nds_c_adapter.cpp`: C API adapter.
 - `vllm/NDS_include/nds_interface.h`: public C/C++ declarations.
-- `vllm/NDS3.0/xxhash.h`: vendored xxHash header with its original BSD 2-Clause license notice.
+- `vllm-uc/NDS_include/xxhash.h`: vendored xxHash header with its original BSD 2-Clause license notice.
 - `vllm/Makefile`: builds the C++ shared library.
-- `setup.py`, `pyproject.toml`, `build.sh`: build and install the Python extension.
+- `install.sh`: one-command SDK, wrapper, wheel, and Python extension installation.
+- `setup.py`, `pyproject.toml`, `build.sh`: Python packaging and the compatibility build entry point.
 - `nds_wrapper.conf`: default wrapper I/O configuration, alongside `nds_config.conf.example`.
 - `key.txt`: 10,000 unique 16-digit block IDs used by the validation tests.
 - `tests/test_read_write_correctness.py`: write/read data consistency validation.
 - `tests/test_multithread_get.py`: multithreaded read/write bandwidth measurement.
 
-Vendor libraries, authentication material, cluster-specific configuration, other internal tools, and build artifacts are intentionally not included.
+Vendor agent binaries, authentication material, site-specific configuration, other internal tools, and build artifacts are intentionally not included.
 
 ## Prerequisites
 
 - Linux on x86_64 or aarch64.
 - Python 3.9 or later.
-- `g++`, `make`, `setuptools`, and `pybind11>=2.10.0`.
-- NDS SDK v1.6 `libndsclient.so`, obtained separately from the NDS vendor.
-- System libraries required by the Makefile: `libibverbs`, `libcrypto`, and `librt`.
+- `g++`, `make`, `setuptools`, `wheel`, and `pybind11>=2.10.0`, preinstalled in the target Python environment for offline builds.
+- libibverbs, OpenSSL, and zlib development files.
+- Only for cluster mode: vendor-provided `libkv_agent.so` and `libceph-common.so.2` in the same directory.
 
-The minimum NDS ABI declarations needed for compilation are already contained in `nds_wrapper.cpp`; vendor C/C++ headers are not required.
+The NDS client library is built from the included `vllm-uc/` source. A separately supplied `libndsclient.so` is not required.
 
-## Build
+## One-command build and installation
 
-Place the vendor library in `vllm/NDS_lib/`, then build the wrapper:
+For non-cluster mode, no vendor agent library is required:
 
 ```bash
-mkdir -p vllm/NDS_lib
-cp /path/from/vendor/libndsclient.so vllm/NDS_lib/
-
-cd vllm
-make clean && make
-# Output: vllm/NDS_bin/libndskv.so
+bash install.sh
 ```
 
-Install the Python extension from the package root:
+For cluster mode, provide both vendor agent libraries:
 
 ```bash
-cd ..
-bash build.sh
+bash install.sh --agent-lib-dir /path/from/vendor --python python3.12
+```
+
+By default, the script checks `vllm-uc/agent/release/`. If both agent libraries are present it builds cluster support; if neither is present it builds non-cluster support. Incomplete or explicitly specified library directories are rejected. Use `--no-agent` to force a non-cluster build. `--mock` is only for build validation and must not be used in production.
+
+The script performs clean release builds, creates and installs a wheel with `--no-build-isolation`, and verifies `import pynds_kv`. Offline installation therefore does not download build dependencies. `build.sh` delegates to `install.sh` and accepts the same arguments.
+
+All required native libraries are packaged in `_pynds_kv_native/` and resolved through relative `$ORIGIN` runpaths. The installation does not depend on source-tree absolute paths or `LD_LIBRARY_PATH`.
+
+To inspect the installed link dependencies:
+
+```bash
 python -c "import pynds_kv; print(pynds_kv.__version__)"
-```
-
-`libndskv.so` has an `$ORIGIN/../NDS_lib` runpath, so it locates `libndsclient.so` relative to itself. The installed Python extension uses the absolute path of `vllm/NDS_bin`; reinstall the package after moving the source directory. Always run `make clean && make` after changing the NDS SDK library.
-
-To inspect the link dependencies:
-
-```bash
-readelf -d vllm/NDS_bin/libndskv.so | grep -Ei 'needed|rpath|runpath'
-ldd vllm/NDS_bin/libndskv.so | grep ndsclient
+ldd "$(python -c 'import pynds_kv; print(pynds_kv.__file__)')" | grep -E 'ndskv|ndsclient|kv_agent|ceph|not found'
 ```
 
 ## Runtime configuration
 
 1. Copy `nds_config.conf.example` to `nds_config.conf` and replace the placeholders with site-specific network settings.
 2. If the vendor SDK uses the agent configuration, copy `conf/agent.conf.example` to `conf/agent.conf` and provide the site-specific monitor addresses and credentials.
-3. Keep `nds_wrapper.conf` beside `nds_config.conf` and adjust its values for the target KV pool. If `nds_config.conf` is moved elsewhere, copy `nds_wrapper.conf` to that directory as well.
+3. Keep `nds_wrapper.conf` beside `nds_config.conf` and adjust its values for the target KV pool. If `nds_config.conf` is moved elsewhere, copy `nds_wrapper.conf` to that directory as well. The wrapper does not search other directories: if the file is absent or misplaced, built-in defaults are used, including a 32 MiB `value_size`.
 
 Real `nds_config.conf` and `conf/agent.conf` files are excluded by `.gitignore` and must not be published.
 

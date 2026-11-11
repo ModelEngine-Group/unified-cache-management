@@ -1,59 +1,61 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-#include <pybind11/numpy.h>
+#include <cstdint>
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <set>
 #include <stdexcept>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+#include <string>
+#include <utility>
+#include <vector>
 #include "nds_interface.h"
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
 
 namespace py = pybind11;
-using namespace NDS;
 
 static size_t get_buffer_size(const py::buffer_info &info)
 {
     return static_cast<size_t>(info.size * info.itemsize);
 }
 
-static void check_range(const py::buffer_info &info, size_t offset, size_t length)
+static uint8_t *get_buffer_ptr(const py::buffer &buffer, size_t offset, size_t length)
 {
-    size_t buf_size = get_buffer_size(info);
-
-    if (offset > buf_size || length > buf_size - offset) {
+    py::buffer_info info = buffer.request();
+    const size_t size = get_buffer_size(info);
+    if (offset > size || length > size - offset) {
         throw std::runtime_error("Buffer is too small for offset + length");
     }
+    return static_cast<uint8_t *>(info.ptr);
 }
 
-// 80-bit block_key 拆分：Python flat int（[0, 2^80)）→ key_low(64) + key_high(16)。
-// 所有接口接受 flat int；< 2^64 的旧 64-bit key 天然兼容（key_high 拆出 0）。
+static std::optional<std::string> parse_config_path(const py::object &path)
+{
+    if (path.is_none()) { return std::nullopt; }
+    return path.cast<std::string>();
+}
+
+// Python flat int（[0, 2^80)）→ key_low(64) + key_high(16)；旧 64-bit key 自然兼容。
 static bool split_key80(PyObject *obj, uint64_t &low, uint16_t &high)
 {
     if (!PyLong_Check(obj)) { return false; }
-    // 拒绝负数
     PyObject *zero = PyLong_FromLong(0);
     if (zero == nullptr) {
         PyErr_Clear();
         return false;
     }
-    int ge = PyObject_RichCompareBool(obj, zero, Py_GE);
+    const int ge = PyObject_RichCompareBool(obj, zero, Py_GE);
     Py_DECREF(zero);
     if (ge != 1) {
         PyErr_Clear();
         return false;
     }
-    // 低 64 位（Mask 版本直接截断，不抛溢出）
     low = PyLong_AsUnsignedLongLongMask(obj);
     if (PyErr_Occurred()) {
         PyErr_Clear();
         return false;
     }
-    // 高段 = key >> 64，必须在 [0, 0xFFFF]
     PyObject *shift = PyLong_FromLong(64);
     if (shift == nullptr) {
         PyErr_Clear();
@@ -65,13 +67,12 @@ static bool split_key80(PyObject *obj, uint64_t &low, uint16_t &high)
         PyErr_Clear();
         return false;
     }
-    unsigned long long h = PyLong_AsUnsignedLongLong(hi);
+    const unsigned long long h = PyLong_AsUnsignedLongLong(hi);
     Py_DECREF(hi);
-    if (PyErr_Occurred()) {
+    if (PyErr_Occurred() || h > 0xFFFF) {
         PyErr_Clear();
         return false;
     }
-    if (h > 0xFFFF) { return false; }
     high = static_cast<uint16_t>(h);
     return true;
 }
@@ -88,10 +89,10 @@ static void parse_key80(PyObject *obj, uint64_t &low, uint16_t &high)
 static void parse_key80_sequence(const py::sequence &seq, std::vector<uint64_t> &lows,
                                  std::vector<uint16_t> &highs)
 {
-    size_t n = seq.size();
-    lows.resize(n);
-    highs.resize(n);
-    for (size_t i = 0; i < n; ++i) {
+    const size_t count = seq.size();
+    lows.resize(count);
+    highs.resize(count);
+    for (size_t i = 0; i < count; ++i) {
         if (!split_key80(seq[i].ptr(), lows[i], highs[i])) {
             throw std::invalid_argument(
                 "block_ids must contain non-negative ints < 2^80 (80-bit block_key: "
@@ -100,32 +101,47 @@ static void parse_key80_sequence(const py::sequence &seq, std::vector<uint64_t> 
     }
 }
 
+template <typename Func>
+static int32_t invoke_batch(Func func, py::sequence block_ids,
+                            const std::vector<py::buffer> &buffers, std::vector<size_t> offsets,
+                            std::vector<size_t> lengths, std::vector<uint32_t> nsids)
+{
+    std::vector<uint64_t> lows;
+    std::vector<uint16_t> highs;
+    parse_key80_sequence(block_ids, lows, highs);
+    const size_t count = lows.size();
+    if (count != buffers.size() || count != offsets.size() || count != lengths.size() ||
+        count != nsids.size()) {
+        throw std::invalid_argument(
+            "block_ids, buffers, offsets, lengths, nsids must have same length");
+    }
+
+    std::vector<uint8_t *> ptrs;
+    ptrs.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        ptrs.push_back(get_buffer_ptr(buffers[i], offsets[i], lengths[i]));
+    }
+
+    py::gil_scoped_release release;
+    return func(std::move(lows), std::move(highs), std::move(ptrs), std::move(offsets),
+                std::move(lengths), std::move(nsids));
+}
+
 PYBIND11_MODULE(pynds_kv, m)
 {
-    m.doc() = R"pbdoc(
-        Pybind11 NDS (Network Data Service) Plugin
-    )pbdoc";
+    m.doc() = "Pybind11 NDS (Network Data Service) Plugin";
 
     m.def(
         "init",
-        [](py::buffer b, size_t length, py::object path_obj) {
-            py::buffer_info info = b.request();
-            size_t buf_size = get_buffer_size(info);
-            if (length > buf_size) {
+        [](py::buffer buffer, size_t length, py::object path_obj) {
+            py::buffer_info info = buffer.request();
+            if (length > get_buffer_size(info)) {
                 throw std::runtime_error("init length is larger than buffer size");
             }
-
-            std::string path_str;
-            const char *path = nullptr;
-            if (!path_obj.is_none()) {
-                path_str = path_obj.cast<std::string>();
-                path = path_str.c_str();
-            }
-
-            return init(info.ptr, length, path);
+            auto path = parse_config_path(path_obj);
+            return NDS::init(info.ptr, length, path ? path->c_str() : nullptr);
         },
-        py::arg("buffer"), py::arg("length"), py::arg("nds_config_path") = py::none(),
-        "Initialize NDS with a memory buffer and optional nds_config file path.");
+        py::arg("buffer"), py::arg("length"), py::arg("nds_config_path") = py::none());
 
     m.def(
         "init_multi",
@@ -135,32 +151,22 @@ PYBIND11_MODULE(pynds_kv, m)
             if (buffers.size() != lengths.size()) {
                 throw std::invalid_argument("buffers and lengths must have same length");
             }
-
-            std::vector<void *> buffers_ptr;
+            std::vector<void *> ptrs;
             std::vector<uint64_t> lengths_u64;
-            buffers_ptr.reserve(buffers.size());
+            ptrs.reserve(buffers.size());
             lengths_u64.reserve(lengths.size());
             for (size_t i = 0; i < buffers.size(); ++i) {
                 py::buffer_info info = buffers[i].request();
                 if (lengths[i] > get_buffer_size(info)) {
                     throw std::runtime_error("init_multi length is larger than buffer size");
                 }
-                buffers_ptr.push_back(info.ptr);
+                ptrs.push_back(info.ptr);
                 lengths_u64.push_back(static_cast<uint64_t>(lengths[i]));
             }
-
-            std::string path_str;
-            const char *path = nullptr;
-            if (!path_obj.is_none()) {
-                path_str = path_obj.cast<std::string>();
-                path = path_str.c_str();
-            }
-
-            return initMulti(buffers_ptr, lengths_u64, path);
+            auto path = parse_config_path(path_obj);
+            return NDS::initMulti(ptrs, lengths_u64, path ? path->c_str() : nullptr);
         },
-        py::arg("buffers"), py::arg("lengths"), py::arg("nds_config_path") = py::none(),
-        "Initialize NDS with multiple memory buffers (each registered as an MR, mr_id in order) "
-        "and optional nds_config file path.");
+        py::arg("buffers"), py::arg("lengths"), py::arg("nds_config_path") = py::none());
 
     m.def(
         "is_exists",
@@ -169,21 +175,32 @@ PYBIND11_MODULE(pynds_kv, m)
             std::vector<uint16_t> highs;
             parse_key80_sequence(block_ids, lows, highs);
             py::gil_scoped_release release;
-            return isExists(lows, highs, nsid);
+            return NDS::isExists(lows, highs, nsid);
         },
-        py::arg("blockIds"), py::arg("nsid") = 0,
-        "Check existence of blocks (prefix hit count). blockIds are flat ints < 2^80.");
+        py::arg("blockIds"), py::arg("nsid") = 0);
 
     m.def(
         "get",
-        [](py::int_ block_id, py::buffer b, size_t offset, size_t length, uint32_t nsid) {
+        [](py::int_ block_id, py::buffer buffer, size_t offset, size_t length, uint32_t nsid) {
             uint64_t low;
             uint16_t high;
             parse_key80(block_id.ptr(), low, high);
-            py::buffer_info info = b.request();
-            check_range(info, offset, length);
+            uint8_t *ptr = get_buffer_ptr(buffer, offset, length);
             py::gil_scoped_release release;
-            return get(low, high, static_cast<uint8_t *>(info.ptr), offset, length, nsid);
+            return NDS::get(low, high, ptr, offset, length, nsid);
+        },
+        py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
+        py::arg("nsid"));
+
+    m.def(
+        "put",
+        [](py::int_ block_id, py::buffer buffer, size_t offset, size_t length, uint32_t nsid) {
+            uint64_t low;
+            uint16_t high;
+            parse_key80(block_id.ptr(), low, high);
+            uint8_t *ptr = get_buffer_ptr(buffer, offset, length);
+            py::gil_scoped_release release;
+            return NDS::put(low, high, ptr, offset, length, nsid);
         },
         py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
         py::arg("nsid"));
@@ -191,72 +208,22 @@ PYBIND11_MODULE(pynds_kv, m)
     m.def(
         "batchGet",
         [](py::sequence block_ids, const std::vector<py::buffer> &buffers,
-           const std::vector<size_t> offsets, const std::vector<size_t> lengths,
-           const std::vector<uint32_t> &nsids) {
-            std::vector<uint64_t> lows;
-            std::vector<uint16_t> highs;
-            parse_key80_sequence(block_ids, lows, highs);
-            if (lows.size() != buffers.size() || lows.size() != offsets.size() ||
-                lows.size() != nsids.size() || lows.size() != lengths.size()) {
-                throw std::invalid_argument(
-                    "block_ids, buffers, offsets, nsids, lengths must have same length");
-            }
-
-            std::vector<uint8_t *> buffers_ptr;
-            buffers_ptr.reserve(lows.size());
-            for (size_t i = 0; i < lows.size(); ++i) {
-                py::buffer_info info = buffers[i].request();
-                check_range(info, offsets[i], lengths[i]);
-                buffers_ptr.push_back(static_cast<uint8_t *>(info.ptr));
-            }
-
-            py::gil_scoped_release release;
-            return batchGet(lows, highs, buffers_ptr, offsets, lengths, nsids);
+           std::vector<size_t> offsets, std::vector<size_t> lengths, std::vector<uint32_t> nsids) {
+            return invoke_batch(NDS::batchGet, block_ids, buffers, std::move(offsets),
+                                std::move(lengths), std::move(nsids));
         },
         py::arg("block_ids"), py::arg("buffers"), py::arg("offsets"), py::arg("lengths"),
-        py::arg("nsids"), "Batch get blocks. block_ids are flat ints < 2^80.");
-
-    m.def(
-        "put",
-        [](py::int_ block_id, py::buffer b, size_t offset, size_t length, uint32_t nsid) {
-            uint64_t low;
-            uint16_t high;
-            parse_key80(block_id.ptr(), low, high);
-            py::buffer_info info = b.request();
-            check_range(info, offset, length);
-            py::gil_scoped_release release;
-            return put(low, high, static_cast<uint8_t *>(info.ptr), offset, length, nsid);
-        },
-        py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
-        py::arg("nsid"));
+        py::arg("nsids"));
 
     m.def(
         "batchPut",
         [](py::sequence block_ids, const std::vector<py::buffer> &buffers,
-           const std::vector<size_t> offsets, const std::vector<size_t> lengths,
-           const std::vector<uint32_t> &nsids) {
-            std::vector<uint64_t> lows;
-            std::vector<uint16_t> highs;
-            parse_key80_sequence(block_ids, lows, highs);
-            if (lows.size() != buffers.size() || lows.size() != offsets.size() ||
-                lows.size() != nsids.size() || lows.size() != lengths.size()) {
-                throw std::invalid_argument(
-                    "block_ids, buffers, offsets, nsids, lengths must have same length");
-            }
-
-            std::vector<uint8_t *> buffers_ptr;
-            buffers_ptr.reserve(lows.size());
-            for (size_t i = 0; i < lows.size(); ++i) {
-                py::buffer_info info = buffers[i].request();
-                check_range(info, offsets[i], lengths[i]);
-                buffers_ptr.push_back(static_cast<uint8_t *>(info.ptr));
-            }
-
-            py::gil_scoped_release release;
-            return batchPut(lows, highs, buffers_ptr, offsets, lengths, nsids);
+           std::vector<size_t> offsets, std::vector<size_t> lengths, std::vector<uint32_t> nsids) {
+            return invoke_batch(NDS::batchPut, block_ids, buffers, std::move(offsets),
+                                std::move(lengths), std::move(nsids));
         },
         py::arg("block_ids"), py::arg("buffers"), py::arg("offsets"), py::arg("lengths"),
-        py::arg("nsids"), "Batch put blocks. block_ids are flat ints < 2^80.");
+        py::arg("nsids"));
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
