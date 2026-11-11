@@ -2191,6 +2191,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
+        event_handle: int = 0,
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -2202,6 +2203,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             shard_indices,
             ptrs,
             distribute_backend_load=self.is_mla,
+            event_handle=event_handle,
         )
         return FAWALoadTask(
             request_id=request_id,
@@ -2374,12 +2376,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.is_v41_layout and any(
-            request.load_keys for request in metadata.request_meta.values()
-        ):
-            # Finish pending KV page writes before the store starts its H2D copies.
-            self.device.synchronize()
-            logger.info_once("V4.1 compute stream synchronized before external KV load")
+        # load DMA waits for pending zeroing before writing device pages.
+        load_event_handle = 0
+        if any(request.load_keys for request in metadata.request_meta.values()):
+            load_event_handle = self._get_load_event_handle()
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
@@ -2412,6 +2412,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
+                    event_handle=load_event_handle,
                 )
                 tasks.append(fa_task)
                 pending.tasks.append(fa_task)
@@ -2432,6 +2433,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
+                    event_handle=load_event_handle,
                 )
                 tasks.append(wa_task)
                 pending.tasks.append(wa_task)
@@ -2481,6 +2483,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if task.request_id == request_id
         ]
         self._wait_all_load_task(sync_tasks)
+
+        if load_event_handle:
+            self.device.destroy_event_handle(load_event_handle)
 
     def _poll_pending_fawa_loads(self) -> set[str]:
         finished = set(self._finished_async_load_req_ids)

@@ -2580,6 +2580,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.device.synchronize()
         return event_handle
 
+    def _get_load_event_handle(self) -> int:
+        if not self.enable_event_sync:
+            self.device.synchronize()
+            return 0
+
+        event_handle = self.device.get_event_handle()
+        if event_handle == 0:
+            self.device.synchronize()
+        return event_handle
+
     def save_kv_layer(
         self,
         layer_name: str,
