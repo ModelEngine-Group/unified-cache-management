@@ -308,3 +308,25 @@ python -m unittest discover -s tests -p 'test_sglang_model_check_pools.py' -v
 
 Passing the dependency-free tests does not establish native pool or Posix
 compatibility; the opt-in test must pass on the deployment environment.
+# External linker probe
+
+Select `--integration linker` to check the direct Device Pool integration instead
+of HiCache (the default). It uses SGLang's native request-pool, KV-pool and
+allocator dispatch, then its native linker pool-group resolver. DSA, DeepSeek V4,
+Mamba combinations and MiniMax use the same dispatcher; a combination rejected
+by the installed SGLang resolver does not pass the check.
+
+```bash
+ucm-toolkit run sglang-model-check --model /models/GLM-5.2 --integration linker --mode inspect
+ucm-toolkit run sglang-model-check --model /models/GLM-5.2 --integration linker --mode roundtrip --storage-backends /mnt/linker-check
+```
+
+Inspect constructs small accelerator pools and checks native linker layout
+resolution. Roundtrip additionally checks cold miss, asynchronous offload,
+lookup, layer-wise load and byte-wise device data restoration using Cache|Posix.
+It requires matching UCM native binaries and SGLang external-linker support.
+`--tp-size` and `--pp-size` reuse the distributed checker. Each stage builds its
+native local pools; lookup intersects candidate masks across TP/PP, and each rank
+compares its restored device bytes. This is not forward-pass or inference validation.
+No weights, forward pass or inference are tested. `--max-host-mib` limits the
+snapshot size, not accelerator allocations or process RSS.

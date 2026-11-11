@@ -195,6 +195,11 @@ def _probe(config, result):
             )
         config = replace(config, page_size=page_size)
     cache_fields = dict(kv_cache_dtype=config.kv_cache_dtype)
+    if config.integration == "linker":
+        cache_fields["max_mamba_cache_size"] = config.pages + 2
+        # Keep DSA index pools layer-aligned like the production linker; the
+        # HiCache-only compaction emits 0-row index buffers the linker rejects.
+        cache_fields["enable_unified_cache_external_linker"] = True
     if dsv4:
         cache_fields.update(
             dsv4_attn_backend=config.dsv4_attn_backend,
@@ -302,6 +307,20 @@ def _probe(config, result):
             )
             result.validation["meta_model"] = "passed"
             requirements = requirements_from_facts(facts, config.layout)
+            if config.integration == "linker":
+                from .linker_probe import probe_linker
+
+                result.roundtrip = probe_linker(
+                    config, model_config, requirements,
+                    layer_range=owned, groups=groups, phase=phase,
+                )
+                result.validation.update(
+                    scope="tp_pp_linker_device_storage_contract",
+                    runtime_pools="sglang_native_device_pools",
+                    storage_io="passed", device_transfer="passed",
+                )
+                result.succeed("roundtrip", "UCM linker device storage checks passed")
+                return
             family = native_family(requirements)
             result.cache_requirements = requirements.to_dict()
 
