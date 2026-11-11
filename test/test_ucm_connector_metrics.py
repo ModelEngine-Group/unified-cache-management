@@ -3023,7 +3023,9 @@ def _async_fawa_worker(has_window=True):
     connector._finished_async_load_req_ids = set()
     connector._invalid_block_ids = set()
     connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
-    connector._drain_best_effort_dump_tasks = Mock()
+    connector._reap_dump_batches = Mock()
+    connector._dump_batches = []
+    connector._finished_dumping_req_ids = set()
     connector._extract_fa_ptr = Mock(return_value=[])
     connector._extract_wa_ptr = Mock(return_value=[])
     # IDs deliberately overlap between groups: they cannot identify failures.
@@ -3258,11 +3260,11 @@ def test_fawa_records_submitted_save_bytes():
     connector.fa_store = object()
     connector.wa_store = object()
     connector.window_group_ids = [1]
-    connector._poll_completed_dump_tasks = lambda: None
+    connector._reap_dump_batches = lambda: None
     connector.tp_size = 1
     connector.tp_rank = 0
     connector.wa_dump_block_wise = False
-    connector.tp_dump_tasks = {}
+    connector._dump_batches = []
     connector.file_size = {"FA": 100, "WA": 40}
     connector._extract_fa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
     connector._extract_wa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
@@ -3278,6 +3280,264 @@ def test_fawa_records_submitted_save_bytes():
     connector.wait_for_save()
 
     assert fake_ucmmetrics.updated == [{"save_bytes_total": 140}]
+
+
+def _fawa_dump_worker():
+    from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+    connector = object.__new__(UCMFAWAConnector)
+    connector._dump_batches = []
+    connector._rank_consistency = SimpleNamespace(wait_dump=Mock())
+    connector.device = SimpleNamespace(destroy_event_handle=Mock())
+    connector._connector_worker_meta = SimpleNamespace(completed_dump_batches={})
+    return connector
+
+
+def _fawa_dump_task(event_handle):
+    from ucm.integration.vllm.hma_connector import FAWADumpTask
+
+    store = SimpleNamespace(check=Mock(return_value=False))
+    return FAWADumpTask("FA", store, object(), 1, event_handle)
+
+
+def test_fawa_worker_reports_dump_batch_once_all_tasks_finish():
+    from ucm.integration.vllm.hma_connector import FAWADumpBatch
+
+    connector = _fawa_dump_worker()
+    fa_task = _fawa_dump_task(event_handle=7)
+    wa_task = _fawa_dump_task(event_handle=8)
+    connector._dump_batches = [FAWADumpBatch(("req",), [fa_task, wa_task], 5)]
+
+    # A pinned batch without a preempted request is never host-waited.
+    connector.handle_preemptions(SimpleNamespace(preempted_req_ids={"other"}))
+    connector._rank_consistency.wait_dump.assert_not_called()
+
+    fa_task.store.check.return_value = True
+    connector._reap_dump_batches()
+    connector._rank_consistency.wait_dump.assert_called_once_with(fa_task.task)
+    connector.device.destroy_event_handle.assert_called_once_with(7)
+    assert connector._connector_worker_meta.completed_dump_batches == {}
+
+    wa_task.store.check.return_value = True
+    connector._reap_dump_batches()
+    assert connector._connector_worker_meta.completed_dump_batches == {5: 1}
+    assert connector._dump_batches == []
+
+
+def test_fawa_failed_dump_check_still_reports_dump_batch():
+    from ucm.integration.vllm.hma_connector import FAWADumpBatch
+
+    connector = _fawa_dump_worker()
+    dump_task = _fawa_dump_task(event_handle=7)
+    dump_task.store.check.side_effect = RuntimeError("check failed")
+    connector._dump_batches = [FAWADumpBatch(("req",), [dump_task], 5)]
+
+    connector._reap_dump_batches()
+
+    connector.device.destroy_event_handle.assert_called_once_with(7)
+    assert connector._connector_worker_meta.completed_dump_batches == {5: 1}
+    assert connector._dump_batches == []
+
+
+def test_fawa_unpinned_dumps_are_host_waited_before_block_reuse():
+    from ucm.integration.vllm.hma_connector import FAWADumpBatch
+
+    connector = _fawa_dump_worker()
+    dump_task = _fawa_dump_task(event_handle=7)
+    connector._dump_batches = [FAWADumpBatch(("req",), [dump_task], None)]
+
+    connector._reap_dump_batches()
+    connector._rank_consistency.wait_dump.assert_not_called()
+
+    # No request is preempted, but unpinned window blocks may be recycled.
+    connector.handle_preemptions(SimpleNamespace(preempted_req_ids=set()))
+
+    connector._rank_consistency.wait_dump.assert_called_once_with(dump_task.task)
+    connector.device.destroy_event_handle.assert_called_once_with(7)
+    assert connector._connector_worker_meta.completed_dump_batches == {}
+    assert connector._dump_batches == []
+
+
+def test_fawa_finished_request_is_reported_after_its_dumps_end():
+    from ucm.integration.vllm.hma_connector import FAWADumpBatch
+
+    connector = _fawa_dump_worker()
+    connector._pending_fawa_loads = {}
+    connector._poll_pending_fawa_loads = lambda: set()
+    connector._failed_fawa_loads = set()
+    connector._finished_dumping_req_ids = set()
+    connector._rank_consistency.finish_dump = Mock()
+    dump_task = _fawa_dump_task(event_handle=7)
+    connector._dump_batches = [FAWADumpBatch(("req",), [dump_task], 5)]
+
+    # vLLM frees a request's blocks once it is reported, so "req" is held.
+    assert connector.get_finished({"req", "idle"}) == ({"idle"}, None)
+    connector._rank_consistency.finish_dump.assert_called_once_with({"idle"})
+
+    dump_task.store.check.return_value = True
+
+    assert connector.get_finished(set()) == ({"req"}, None)
+    connector._rank_consistency.finish_dump.assert_called_with({"req"})
+
+
+def _fawa_pinned_save_worker(num_dump_keys):
+    """A worker whose next wait_for_save() dumps one request under batch id 3."""
+    import numpy as np
+
+    from ucm.integration.vllm.hma_connector import (
+        FAWADumpTask,
+        UCMFAWAConnectorMetadata,
+    )
+
+    connector = _fawa_dump_worker()
+    request = SimpleNamespace(
+        dump_keys=[b"key"] * num_dump_keys,
+        dump_hash_start=0,
+        dump_hash_end=num_dump_keys,
+        dump_vllm_block_ids=([1],),
+    )
+    metadata = UCMFAWAConnectorMetadata(
+        request_meta={"req-1": request}, dump_batch_id=3
+    )
+    connector._get_connector_metadata = lambda: metadata
+    connector.fa_store = object()
+    connector.wa_store = object()
+    connector.window_group_ids = [1]
+    connector.tp_size = 1
+    connector.tp_rank = 0
+    connector.wa_dump_block_wise = False
+    connector.file_size = {"FA": 100, "WA": 40}
+    connector._extract_fa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
+    connector._extract_wa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
+    connector._get_dump_event_handle = Mock(return_value=7)
+    connector._submit_dump_task = Mock(
+        side_effect=lambda label, store, keys, ptrs, event_handle, blocks: (
+            FAWADumpTask(
+                label,
+                SimpleNamespace(check=Mock(return_value=False)),
+                object(),
+                len(keys),
+                event_handle,
+            )
+        )
+    )
+    return connector
+
+
+# Zero dump keys models a TP rank whose slice of the step is empty.
+@pytest.mark.parametrize("num_dump_keys, reported_dump_batches", [(1, {}), (0, {3: 1})])
+def test_fawa_wait_for_save_tracks_pinned_batch(num_dump_keys, reported_dump_batches):
+    _reset_fakes()
+    connector = _fawa_pinned_save_worker(num_dump_keys)
+
+    connector.wait_for_save()
+
+    (batch,) = connector._dump_batches
+    assert batch.dump_batch_id == 3
+    assert len(batch.tasks) == 2 * num_dump_keys
+
+    connector._reap_dump_batches()
+
+    assert (
+        connector._connector_worker_meta.completed_dump_batches == reported_dump_batches
+    )
+
+
+def test_fawa_preempted_request_dumps_are_host_waited():
+    _reset_fakes()
+    connector = _fawa_pinned_save_worker(num_dump_keys=1)
+    connector.wait_for_save()
+
+    connector.handle_preemptions(SimpleNamespace(preempted_req_ids={"other"}))
+    connector._rank_consistency.wait_dump.assert_not_called()
+
+    # The preempted request's blocks are already freed, so its dumps are
+    # finished before the next forward can overwrite them.
+    connector.handle_preemptions(SimpleNamespace(preempted_req_ids={"req-1"}))
+
+    assert connector._rank_consistency.wait_dump.call_count == 2
+    assert connector._connector_worker_meta.completed_dump_batches == {3: 1}
+    assert connector._dump_batches == []
+
+
+def test_fawa_scheduler_pins_window_blocks_until_every_worker_reports():
+    from ucm.integration.vllm.hma_connector import (
+        FAWARequestDispatchMeta,
+        UCMFAWAConnector,
+    )
+    from ucm.integration.vllm.ucm_connector import UCMWorkerMetadata
+
+    class FakeBlockPool:
+        def __init__(self):
+            self.blocks = [
+                SimpleNamespace(is_null=block_id == 0, ref_cnt=1)
+                for block_id in range(4)
+            ]
+
+        def touch(self, blocks):
+            for block in blocks:
+                block.ref_cnt += 1
+
+        def free_blocks(self, blocks):
+            for block in blocks:
+                block.ref_cnt -= 1
+
+    pool = FakeBlockPool()
+    connector = object.__new__(UCMFAWAConnector)
+    connector.requests_meta = {}
+    connector._async_load_req_ids = set()
+    connector.window_group_ids = [1]
+    connector._pending_async_load_dispatches = {
+        "req": FAWARequestDispatchMeta(
+            dump_keys=[b"key"], dump_vllm_block_ids=([1, 3], [2, 0])
+        )
+    }
+    connector._rank_consistency = SimpleNamespace(apply_worker_meta=Mock())
+    connector._next_dump_batch_id = 0
+    connector._pinned_dump_batches = {}
+    connector._num_workers = 2
+    connector.bind_gpu_block_pool(pool)
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=SimpleNamespace(req_ids=[]),
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    metadata = connector.build_connector_meta(scheduler_output)
+
+    # Only window block 2 is pinned: blocks 1 and 3 are full-attention blocks
+    # and block 0 is the null block.
+    assert metadata.dump_batch_id == 0
+    assert [block.ref_cnt for block in pool.blocks] == [1, 1, 2, 1]
+    assert connector.has_pending_push_work()
+
+    for num_reported_workers in (1, 2):
+        worker_meta = UCMWorkerMetadata(completed_dump_batches={0: 1})
+        connector.update_connector_output(
+            SimpleNamespace(kv_connector_worker_meta=worker_meta)
+        )
+        if num_reported_workers < 2:
+            assert [block.ref_cnt for block in pool.blocks] == [1, 1, 2, 1]
+        else:
+            assert [block.ref_cnt for block in pool.blocks] == [1, 1, 1, 1]
+    assert not connector.has_pending_push_work()
+
+    # A step that dumps no window block still gets a batch id.
+    connector._pending_async_load_dispatches = {
+        "req": FAWARequestDispatchMeta(
+            dump_keys=[b"key"], dump_vllm_block_ids=([1, 3], [])
+        )
+    }
+    metadata = connector.build_connector_meta(scheduler_output)
+    assert metadata.dump_batch_id == 1
+    assert [block.ref_cnt for block in pool.blocks] == [1, 1, 1, 1]
+
+    # Reports from several workers in one step arrive already summed.
+    merged = UCMWorkerMetadata(completed_dump_batches={0: 1}).aggregate(
+        UCMWorkerMetadata(completed_dump_batches={0: 1, 1: 1})
+    )
+    assert merged.completed_dump_batches == {0: 2, 1: 1}
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
