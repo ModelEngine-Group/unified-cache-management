@@ -2376,9 +2376,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        # load DMA waits for pending zeroing before writing device pages.
+        # Sync load DMA waits for pending zeroing before writing device pages;
+        # async loads get no fence: the engine already skips zeroing their
+        # blocks, and their lazy WaitEvent would outlive this call's destroy.
         load_event_handle = 0
-        if any(request.load_keys for request in metadata.request_meta.values()):
+        if any(
+            request.load_keys and not request.load_async
+            for request in metadata.request_meta.values()
+        ):
             load_event_handle = self._get_load_event_handle()
 
         tasks: list[FAWALoadTask] = []
@@ -2412,7 +2417,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
-                    event_handle=load_event_handle,
+                    event_handle=0 if request.load_async else load_event_handle,
                 )
                 tasks.append(fa_task)
                 pending.tasks.append(fa_task)
@@ -2433,7 +2438,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
-                    event_handle=load_event_handle,
+                    event_handle=0 if request.load_async else load_event_handle,
                 )
                 tasks.append(wa_task)
                 pending.tasks.append(wa_task)
