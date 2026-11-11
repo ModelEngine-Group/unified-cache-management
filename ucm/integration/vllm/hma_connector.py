@@ -862,6 +862,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.resume_token_alignment = 1
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
         self.file_size = {}
+        self._gc_capacity_split: dict[str, int] = {}
         self._pending_fawa_loads: dict[str, FAWAPendingLoad] = {}
         self._failed_fawa_loads: set[str] = set()
         self._load_wait_executor: Optional[ThreadPoolExecutor] = None
@@ -1508,9 +1509,52 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
-        if config.get("posix_capacity_gb", None) is not None:
-            config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
+
+    def _gc_block_size(self, label: str, store_suffix: str) -> int:
+        size = _scheduler_read_block_size(store_suffix)
+        if size is None:
+            size = int(self.file_size.get(label, 0))
+        if size <= 0:
+            raise ValueError(
+                f"FAWA {label} block size is unavailable: no worker-published "
+                f"size in /dev/shm and no model-derived estimate."
+            )
+        return size
+
+    def _apply_gc_capacity_split(self, config: dict[str, object], label: str) -> None:
+        total = config.get("posix_capacity_gb")
+        if total is None or not self._gc_owner or not self.window_group_ids:
+            return
+        if not self._gc_capacity_split:
+            total = int(total)
+            if total < 2:
+                raise ValueError(
+                    f"posix_capacity_gb={total} is too small to split across "
+                    "the FA/WA stores; set at least 2GB."
+                )
+            fa_size = self._gc_block_size("FA", "fa")
+            wa_size = self._gc_block_size("WA", "wa")
+            fa_gb = total * fa_size // (fa_size + wa_size)
+            wa_gb = total - fa_gb
+            if fa_gb < 1 or wa_gb < 1:
+                raise ValueError(
+                    f"posix_capacity_gb={total} cannot give both FA and WA a "
+                    f"positive capacity (fa={fa_gb}GB, wa={wa_gb}GB)."
+                )
+            self._gc_capacity_split = {"FA": fa_gb, "WA": wa_gb}
+            logger.info(
+                "Split FAWA posix_capacity_gb=%dGB by block size "
+                "(fa=%dB, wa=%dB): fa=%dGB/%d files, wa=%dGB/%d files.",
+                total,
+                fa_size,
+                wa_size,
+                fa_gb,
+                fa_gb * (1 << 30) // fa_size,
+                wa_gb,
+                wa_gb * (1 << 30) // wa_size,
+            )
+        config["posix_capacity_gb"] = self._gc_capacity_split[label]
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
         if uses_partitioned_cache() or cache_core_version() == 1:
@@ -1572,6 +1616,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
+        self._apply_gc_capacity_split(config, label)
         if uses_partitioned_cache():
             config["local_rank_size"] = self._get_world_size()
             self._configure_numa_placement(config)
