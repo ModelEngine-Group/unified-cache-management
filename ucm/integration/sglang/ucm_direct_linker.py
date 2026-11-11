@@ -177,10 +177,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
             if callable(register):
                 register(self.layer_done_counter)
-            elif not callable(getattr(
-                self._kv_cache, "register_layer_transfer_counter", None
-            )):
-                raise RuntimeError("SGLang provides no layer transfer counter registration")
+            elif not callable(
+                getattr(self._kv_cache, "register_layer_transfer_counter", None)
+            ):
+                raise RuntimeError(
+                    "SGLang provides no layer transfer counter registration"
+                )
             # New SGLang registers the KV pool in its cache registry after
             # constructing the linker, including Mamba layer-router setup.
 

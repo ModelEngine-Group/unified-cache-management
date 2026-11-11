@@ -311,13 +311,18 @@ def _probe(config, result):
                 from .linker_probe import probe_linker
 
                 result.roundtrip = probe_linker(
-                    config, model_config, requirements,
-                    layer_range=owned, groups=groups, phase=phase,
+                    config,
+                    model_config,
+                    requirements,
+                    layer_range=owned,
+                    groups=groups,
+                    phase=phase,
                 )
                 result.validation.update(
                     scope="tp_pp_linker_device_storage_contract",
                     runtime_pools="sglang_native_device_pools",
-                    storage_io="passed", device_transfer="passed",
+                    storage_io="passed",
+                    device_transfer="passed",
                 )
                 result.succeed("roundtrip", "UCM linker device storage checks passed")
                 return

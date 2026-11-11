@@ -34,14 +34,14 @@ def build_linker_pools(config, model, requirements, environment, layer_range=Non
         hybrid_kda_config,
         mambaish_config,
     )
-    from sglang.srt.mem_cache.kv_cache_configurator import (
-        _PoolSizes,
-        _get_dsv4_compress_state_dtypes,
-    )
-    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
     from sglang.srt.mem_cache.deepseek_v4_memory_pool import (
         resolve_compress_state_ring_size,
     )
+    from sglang.srt.mem_cache.kv_cache_configurator import (
+        _get_dsv4_compress_state_dtypes,
+        _PoolSizes,
+    )
+    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
     family = native_family(requirements)
     model = copy(model)
@@ -123,6 +123,7 @@ def build_linker_pools(config, model, requirements, environment, layer_range=Non
         is_dsa_model=family == "dsa",
         req_to_token_pool=request_pool,
     )
+
     def model_kind_kwargs(build):
         if "is_compressed_kv_model" in inspect.signature(build).parameters:
             from sglang.srt.configs.model_config import uses_compressed_kv_attention

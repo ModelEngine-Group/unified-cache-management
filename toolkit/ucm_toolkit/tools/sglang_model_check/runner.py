@@ -943,14 +943,19 @@ def run(config: CheckConfig) -> CheckResult:
                 "platform_check",
                 f"requested {config.platform!r}, detected {detected_platform!r}",
             )
-        if config.integration == "hicache" and config.layout not in {"page_first", "page_first_direct"}:
+        if config.integration == "hicache" and config.layout not in {
+            "page_first",
+            "page_first_direct",
+        }:
             raise CheckFailure(
                 "UCM_LAYOUT_UNSUPPORTED",
                 "capability_check",
                 "UCM requires page_first or page_first_direct",
             )
-        if config.integration == "hicache" and facts["attention_arch"] == "MHA" and facts.get("head_dim") != facts.get(
-            "v_head_dim"
+        if (
+            config.integration == "hicache"
+            and facts["attention_arch"] == "MHA"
+            and facts.get("head_dim") != facts.get("v_head_dim")
         ):
             raise CheckFailure(
                 "UCM_POOL_GEOMETRY_UNSUPPORTED",
@@ -1015,20 +1020,23 @@ def run(config: CheckConfig) -> CheckResult:
 
             result.model_info = facts
             result.cache_requirements = {"integration": "linker"}
-            with server_args_guard(
-                model_path=model_config.model_path,
-                revision=model_config.revision,
-                page_size=config.page_size,
-                kv_cache_dtype=config.kv_cache_dtype,
-                max_mamba_cache_size=config.pages + 2,
-                dsv4_attn_backend=config.dsv4_attn_backend,
-                enable_deepseek_v4_fp4_indexer=config.fp4_indexer,
-                c128_page_size=config.c128_page_size,
-                # Match production linker mode. Without this SGLang compacts
-                # shared-topk DSA layers into 0-row index buffers, while the
-                # direct linker assembler expects a full per-layer index pool.
-                enable_unified_cache_external_linker=True,
-            ), _single_rank_model_parallel():
+            with (
+                server_args_guard(
+                    model_path=model_config.model_path,
+                    revision=model_config.revision,
+                    page_size=config.page_size,
+                    kv_cache_dtype=config.kv_cache_dtype,
+                    max_mamba_cache_size=config.pages + 2,
+                    dsv4_attn_backend=config.dsv4_attn_backend,
+                    enable_deepseek_v4_fp4_indexer=config.fp4_indexer,
+                    c128_page_size=config.c128_page_size,
+                    # Match production linker mode. Without this SGLang compacts
+                    # shared-topk DSA layers into 0-row index buffers, while the
+                    # direct linker assembler expects a full per-layer index pool.
+                    enable_unified_cache_external_linker=True,
+                ),
+                _single_rank_model_parallel(),
+            ):
                 result.roundtrip = probe_linker(config, model_config, requirements)
             result.validation["scope"] = "single_rank_linker_device_storage_contract"
             result.validation["runtime_pools"] = "sglang_native_device_pools"
