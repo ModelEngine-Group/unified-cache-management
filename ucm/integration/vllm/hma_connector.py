@@ -784,6 +784,7 @@ class FAWAPendingLoad:
     tasks: list[FAWALoadTask] = field(default_factory=list)
     failed: bool = False
     successful_bytes: int = 0
+    event_handle: int = 0
 
 
 @dataclass
@@ -2376,12 +2377,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        # Sync load DMA waits for pending zeroing before writing device pages;
-        # async loads get no fence: the engine already skips zeroing their
-        # blocks, and their lazy WaitEvent would outlive this call's destroy.
+        # Fence load DMA behind pending zeroing: sync loads share one event
+        # destroyed below; each async request owns one, released at drain.
         load_event_handle = 0
         if any(
-            request.load_keys and not request.load_async
+            request.load_keys and (not request.load_async or not self.enable_event_sync)
             for request in metadata.request_meta.values()
         ):
             load_event_handle = self._get_load_event_handle()
@@ -2404,6 +2404,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if self.window_group_ids and self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
 
+                # Async requests fence with one event of their own, shared by
+                # the FA/WA tasks and released when the pending drains.
+                submit_handle = load_event_handle
+                if request.load_async and self.enable_event_sync:
+                    pending.event_handle = self._get_load_event_handle()
+                    submit_handle = pending.event_handle
+
                 # FA groups are loaded for every external-hit canonical block.
                 fa_ptrs = self._extract_fa_ptr(
                     request.load_keys,
@@ -2417,7 +2424,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
-                    event_handle=0 if request.load_async else load_event_handle,
+                    event_handle=submit_handle,
                 )
                 tasks.append(fa_task)
                 pending.tasks.append(fa_task)
@@ -2438,7 +2445,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
-                    event_handle=0 if request.load_async else load_event_handle,
+                    event_handle=submit_handle,
                 )
                 tasks.append(wa_task)
                 pending.tasks.append(wa_task)
@@ -2460,6 +2467,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._finished_async_load_req_ids.add(request_id)
                         self._failed_fawa_loads.add(request_id)
                         self._connector_worker_meta.mark_failed(request_id)
+                        # No submitted task ever referenced the event.
+                        self.device.destroy_event_handle(pending.event_handle)
+                        pending.event_handle = 0
                 else:
                     # Keep the historical sync behavior: invalidate both the
                     # load and dump blocks through the request metadata.
@@ -2522,6 +2532,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             pending.tasks = remaining
             if not remaining:
                 self._pending_fawa_loads.pop(request_id, None)
+                # Drained: the lazy WaitEvents have run; release the event.
+                self.device.destroy_event_handle(pending.event_handle)
+                pending.event_handle = 0
                 finished.add(request_id)
                 if pending.failed:
                     self._failed_fawa_loads.add(request_id)
