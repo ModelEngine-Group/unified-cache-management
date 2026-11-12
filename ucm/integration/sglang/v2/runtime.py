@@ -15,7 +15,7 @@ def proxy():
 
 
 class Runtime:
-    def __init__(self, extra_config: dict):
+    def __init__(self, extra_config: dict, *, dump_partitions: int = 1):
         config_file = extra_config.get("UCM_CONFIG_FILE")
         if not config_file:
             raise ValueError(
@@ -38,6 +38,13 @@ class Runtime:
         )
         if not isinstance(config, dict):
             raise ValueError("UCM connector entry is missing ucm_connector_config.")
+        branches = config.get("branches")
+        if dump_partitions > 1 and isinstance(branches, list) and len(branches) > 1:
+            raise ValueError(
+                "Rank-partitioned Dump requires a single shared Store branch: "
+                "independent Put requests cannot guarantee that all pages "
+                "of a node are routed to the same branch."
+            )
         self.assembler = proxy().StoreAssembler(config)
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()

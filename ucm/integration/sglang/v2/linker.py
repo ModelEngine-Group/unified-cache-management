@@ -55,7 +55,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         extra_config = extra_config or {}
         # The assembler has no capability query for prerequisite events.
         self._forward_event_to_store = extra_config.get("forward_event_to_store", False)
-        self.runtime = Runtime(extra_config)
+        self.runtime = Runtime(extra_config, dump_partitions=self._dump_size)
         self._registered_requests = set()
         self._scheduler_lock = Lock()
         self.layer_done_counter = LayerWiseLoadCounter(self.layout.num_layers)
@@ -64,6 +64,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._offload_results = deque()
         self._jobs = {}
         self._poll_queued = False
+        self._store_offloads = set()
+        self._store_offload_error = None
+        self._store_offload_lock = Lock()
+        self._store_offload_queued = False
+        self._closing = False
+        self._closed = False
         self._load_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-v2-load"
         )
@@ -74,9 +80,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._io_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-v2-io"
         )
+        self._control_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="ucm-v2-control"
+        )
 
     def lookup(self, rid, transfers):
         """Return restorable boundaries for joint KV/indexer objects."""
+        self._check_open()
         expanded = self.layout.expand(transfers)
         if not expanded:
             return []
@@ -100,6 +110,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 self._registered_requests.remove(rid)
 
     def load(self, rid, transfers):
+        self._check_open()
         expanded = self.layout.expand(transfers)
         if not expanded or rid not in self._registered_requests:
             return False
@@ -224,6 +235,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         raise NotImplementedError
 
     def offload(self, transfers, session_id=None):
+        self._check_open()
         expanded = self.layout.expand(transfers)
         if not expanded:
             return False
@@ -290,7 +302,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         raise RuntimeError("Store Put token does not match the node pages")
                     completion = Future()
                     completion.add_done_callback(
-                        lambda done: self._finish_offload(rid, result, done.result())
+                        lambda done: self._control_executor.submit(
+                            self._finish_offload, rid, result, done.result()
+                        )
                     )
                     # Keep the pages and events in the in-flight record.
                     self._io_executor.submit(
@@ -322,41 +336,87 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     self.runtime.complete_put(rid, success)
                 finally:
                     self.runtime.on_request_finished(rid)
-                plans = self.runtime.prepare_offload() if success else ()
         except Exception:
             logger.exception("UCM V2 offload cleanup failed for %s", rid)
             result.set_result(False)
             return
+        result.set_result(success)
+        # Commit may wake the topology's drain loop, but its plans do not
+        # belong to this node and cannot change the node's Put result.
+        self._request_store_offload()
+
+    def _request_store_offload(self):
+        with self._store_offload_lock:
+            if self._closing or self._store_offload_queued:
+                return
+            self._store_offload_queued = True
+            self._control_executor.submit(self._run_store_offloads)
+
+    def _run_store_offloads(self):
+        with self._store_offload_lock:
+            self._store_offload_queued = False
+        try:
+            self._drive_store_offloads()
+        except Exception:
+            # A scheduler tick can retry Prepare; never replay an issued plan.
+            logger.exception("UCM V2 Store offload drain failed")
+
+    def _drive_store_offloads(self):
+        """Run on the control executor; allow only one minted batch at a time."""
+        if self._store_offloads:
+            return tuple(self._store_offloads)
+        if self._store_offload_error is not None:
+            raise RuntimeError(
+                "UCM V2 Store offload receipt failed"
+            ) from self._store_offload_error
+        with self._scheduler_lock:
+            plans = self.runtime.prepare_offload()
         if not plans:
-            result.set_result(success)
-            return
-
-        remaining = len(plans)
-        all_succeeded = True
-
-        def finish_plan(plan, succeeded):
-            nonlocal remaining, all_succeeded
-            try:
-                with self._scheduler_lock:
-                    self.runtime.complete_offload(plan)
-            except Exception:
-                logger.exception("UCM V2 Store offload receipt failed")
-                succeeded = False
-            all_succeeded = all_succeeded and succeeded
-            remaining -= 1
-            if remaining == 0:
-                result.set_result(all_succeeded)
-
+            return None
         for plan in plans:
             completion = Future()
+            receipt = Future()
+            self._store_offloads.add(receipt)
             completion.add_done_callback(
-                lambda done, plan=plan: finish_plan(plan, done.result())
+                lambda done, plan=plan, receipt=receipt: self._control_executor.submit(
+                    self._finish_store_offload, plan, done.result(), receipt
+                )
             )
-            try:
-                self._submit_job(self.runtime.submit_offload, completion, plan)
-            except Exception:
-                logger.exception("UCM V2 Store offload submission failed")
-                completion.set_result(False)
+            self._io_executor.submit(self._submit_store_offload, plan, completion)
+        return tuple(self._store_offloads)
+
+    def _submit_store_offload(self, plan, completion):
+        try:
+            self._submit_job(self.runtime.submit_offload, completion, plan)
+        except Exception:
+            logger.exception("UCM V2 Store offload submission failed")
+            completion.set_result(False)
+
+    def _finish_store_offload(self, plan, success, receipt):
+        if not success:
+            logger.error("UCM V2 Store offload failed; plan will not be replayed")
+        try:
+            with self._scheduler_lock:
+                self.runtime.complete_offload(plan)
+        except Exception as error:
+            # Do not destroy the Store as if its outstanding pins were released.
+            self._store_offload_error = error
+            logger.exception("UCM V2 Store offload receipt failed")
+        finally:
+            self._store_offloads.remove(receipt)
+            receipt.set_result(None)
+        if not self._store_offloads and self._store_offload_error is None:
+            self._request_store_offload()
+
+    def _flush_store_offloads(self):
+        # Producers must be quiescent. Keep the executor alive for polling and
+        # receipts until both accepted jobs and committed pending plans drain.
+        while True:
+            pending = self._control_executor.submit(self._drive_store_offloads).result()
+            if pending is None:
+                return
+            for completion in pending:
+                completion.result()
 
     def _submit_job(self, submit, completion, *args, resources=None):
         job_id = next(self._job_ids)
@@ -394,6 +454,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._schedule_poll()
 
     def num_completed_offloads(self):
+        self._request_store_offload()
         completed = 0
         for result in self._offload_results:
             if not result.done():
@@ -413,9 +474,20 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self.layer_done_counter.reset()
         for rid in tuple(self._registered_requests):
             self.finish_request(rid)
+        self._flush_store_offloads()
+
+    def _check_open(self):
+        if self._closing:
+            raise RuntimeError("UCM V2 linker is closing")
 
     def close(self):
+        if self._closed:
+            return
+        with self._store_offload_lock:
+            self._closing = True
         self.reset()
         self._load_executor.shutdown()
         self._dump_executor.shutdown()
         self._io_executor.shutdown()
+        self._control_executor.shutdown()
+        self._closed = True

@@ -8,9 +8,11 @@ The first target is GLM-5.2 DSA. This directory is not a runnable linker backend
   and publishes readiness in layer
   order. It closes the Get windows before
   releasing the registrations. Dump queues one full-object Put job per node
-  and publishes results in submission order. After a successful Put commit,
-  the linker drains Store-generated offload plans and returns each receipt
-  after completion. With no plans, the node result follows Put. Multiple Dump
+  and publishes results in submission order after Put completes and its window
+  closes. Store offload runs independently: scheduler completion checks and Put
+  completion wake an instance-level drain on the I/O executor. It admits one
+  batch of plans at a time and returns each receipt after execution. Slow or
+  failed lower-tier writes do not delay or change node results. Multiple Dump
   jobs can be in flight. Load and Dump wait on device events and prepare
   payloads on separate threads. A shared executor submits and polls Store
   jobs, delivering results by job ID. Device prefetch remains pseudocode.
@@ -45,13 +47,31 @@ submitting Get jobs.
 
 Rank-replicated layouts partition each node by complete logical pages across
 the attention TP cache group (or the TP cache group when no attention group
-is present). This assumes the single-host group shares a Store view and can
-read its peers' writes. Ranks with no pages still acknowledge the node in order.
+is present). Partitioned Dump requires one Store branch shared by the group.
+The linker rejects a multi-branch topology when partitioning is active because
+each rank registers an independent Put request. Ranks with no pages still
+acknowledge the node in order.
+
+Store offload plans own cache-tier pins, not node device pages. Rejected plans
+are receipted without waiting for a nonexistent job; accepted plans are receipted
+only after completion, including failure. Failures are logged without replaying
+tokens. The protocol does not currently define automatic failed-offload retry.
+One batch bounds concurrent plan issuance, but the Store controls each batch's
+size; a byte-level pin budget is not exposed by this interface.
+
+`reset` and `close` drain accepted offloads and remaining committed pending plans
+while the shared I/O executor is still alive. Callers must quiesce producers
+before reset/close; close rejects new lookup/load/offload calls. Receipt or
+preparation errors propagate from the drain rather than reporting a successful
+shutdown with unreleased pins or pending work. Direct Posix Put still waits for
+its own write; cache-tier Put success is not a durability/fsync guarantee.
 
 The local built-in Cache and Posix still return Unsupported for Setup, Load
 and Dump.
 Real device I/O requires a working V2 Store plugin.
 
-`test/test_sglang_v2_protocol.py` now checks only assembler ownership and thin
-interface forwarding. The previous executable linker lifecycle/round-trip tests
-were removed with that implementation; these tests do not validate device IO.
+`test/test_sglang_v2_protocol.py` checks assembler ownership and thin interface
+forwarding. `test/test_sglang_v2_offload.py` exercises the real linker executors
+with a controllable Store: independent node/disk completion, FIFO node results,
+shared Get completion routing, rejected/failed plans and reset/close draining.
+These tests do not validate native plugins or device I/O.

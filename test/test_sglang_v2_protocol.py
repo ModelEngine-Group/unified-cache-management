@@ -28,12 +28,23 @@ class RuntimeTest(unittest.TestCase):
         self.config = {"type": "store", "store": "test"}
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        config_file = Path(directory.name) / "ucm.yaml"
-        config_file.write_text(
+        self.config_file = Path(directory.name) / "ucm.yaml"
+        self.config_file.write_text(
             yaml.safe_dump({"ucm_connectors": [{"ucm_connector_config": self.config}]}),
             encoding="utf-8",
         )
-        self.runtime = runtime.Runtime({"UCM_CONFIG_FILE": str(config_file)})
+        self.runtime = runtime.Runtime({"UCM_CONFIG_FILE": str(self.config_file)})
+
+    def test_partitioned_dump_rejects_multiple_store_branches(self):
+        config = {"branches": [{"pipe": []}, {"pipe": []}]}
+        self.config_file.write_text(
+            yaml.safe_dump({"ucm_connectors": [{"ucm_connector_config": config}]}),
+            encoding="utf-8",
+        )
+        self.native.StoreAssembler.reset_mock()
+        with self.assertRaisesRegex(ValueError, "single shared Store branch"):
+            runtime.Runtime({"UCM_CONFIG_FILE": str(self.config_file)}, dump_partitions=2)
+        self.native.StoreAssembler.assert_not_called()
 
     def test_one_assembler_provides_both_roles(self):
         self.native.StoreAssembler.assert_called_once_with(self.config)
