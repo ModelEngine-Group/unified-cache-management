@@ -24,6 +24,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include "kv_types.h"
 
 #define HASH_SEED_VALUE (5381)
@@ -33,6 +34,8 @@ namespace kv {
 struct ResolvedKey {
     BinaryKey key{};
     std::uint64_t baseOffset{0};
+    // Present only for layerwise keys, including layer zero.
+    std::optional<std::uint64_t> layerSlotBytes;
 };
 
 // Resolves object identity and an offset increment before routing. Implementations must be
