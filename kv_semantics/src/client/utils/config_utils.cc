@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "logger.h"
 #include "parser_common.h"
 #include "status_utils.h"
 
@@ -190,6 +191,12 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
                 config.keyResolution.engine = InferenceEngine::SGLANG;
             } else {
                 config.keyResolution.engine = InferenceEngine::GENERIC;
+                if (value != "generic") {
+                    KV_WARN(
+                        "Unrecognized inference.engine='{}'; using generic key handling "
+                        "without layer aggregation",
+                        value);
+                }
             }
         } else if (key == "aggregation.layer_count" || key == "aggregation.layer_slot_bytes") {
             std::uint64_t size = 0;
