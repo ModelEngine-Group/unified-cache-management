@@ -20,9 +20,8 @@ static size_t get_buffer_size(const py::buffer_info &info)
     return static_cast<size_t>(info.size * info.itemsize);
 }
 
-static uint8_t *get_buffer_ptr(const py::buffer &buffer, size_t offset, size_t length)
+static uint8_t *get_buffer_ptr(const py::buffer_info &info, size_t offset, size_t length)
 {
-    py::buffer_info info = buffer.request();
     const size_t size = get_buffer_size(info);
     if (offset > size || length > size - offset) {
         throw std::runtime_error("Buffer is too small for offset + length");
@@ -116,15 +115,23 @@ static int32_t invoke_batch(Func func, py::sequence block_ids,
             "block_ids, buffers, offsets, lengths, nsids must have same length");
     }
 
+    std::vector<py::buffer_info> infos;
     std::vector<uint8_t *> ptrs;
+    infos.reserve(count);
     ptrs.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        ptrs.push_back(get_buffer_ptr(buffers[i], offsets[i], lengths[i]));
+        infos.emplace_back(buffers[i].request());
+        ptrs.push_back(get_buffer_ptr(infos.back(), offsets[i], lengths[i]));
     }
 
-    py::gil_scoped_release release;
-    return func(std::move(lows), std::move(highs), std::move(ptrs), std::move(offsets),
-                std::move(lengths), std::move(nsids));
+    int32_t result;
+    {
+        py::gil_scoped_release release;
+        result = func(std::move(lows), std::move(highs), std::move(ptrs), std::move(offsets),
+                      std::move(lengths), std::move(nsids));
+    }
+    // Reacquire the GIL before releasing the buffer exports.
+    return result;
 }
 
 PYBIND11_MODULE(pynds_kv, m)
@@ -189,9 +196,14 @@ PYBIND11_MODULE(pynds_kv, m)
             uint64_t low;
             uint16_t high;
             parse_key80(block_id.ptr(), low, high);
-            uint8_t *ptr = get_buffer_ptr(buffer, offset, length);
-            py::gil_scoped_release release;
-            return NDS::get(low, high, ptr, offset, length, nsid);
+            py::buffer_info info = buffer.request();
+            uint8_t *ptr = get_buffer_ptr(info, offset, length);
+            int32_t result;
+            {
+                py::gil_scoped_release release;
+                result = NDS::get(low, high, ptr, offset, length, nsid);
+            }
+            return result;
         },
         py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
         py::arg("nsid"), "Read one block. block_id is a flat int < 2^80.");
@@ -202,9 +214,14 @@ PYBIND11_MODULE(pynds_kv, m)
             uint64_t low;
             uint16_t high;
             parse_key80(block_id.ptr(), low, high);
-            uint8_t *ptr = get_buffer_ptr(buffer, offset, length);
-            py::gil_scoped_release release;
-            return NDS::put(low, high, ptr, offset, length, nsid);
+            py::buffer_info info = buffer.request();
+            uint8_t *ptr = get_buffer_ptr(info, offset, length);
+            int32_t result;
+            {
+                py::gil_scoped_release release;
+                result = NDS::put(low, high, ptr, offset, length, nsid);
+            }
+            return result;
         },
         py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
         py::arg("nsid"), "Write one block. block_id is a flat int < 2^80.");

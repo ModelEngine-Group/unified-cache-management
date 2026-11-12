@@ -80,6 +80,12 @@ for command_name in "$PYTHON" "$CXX_BIN" make; do
     }
 done
 
+# 保持 venv 解释器路径不变，只转换为绝对路径，避免切换验证目录后失效。
+PYTHON="$(command -v "$PYTHON")"
+if [[ "$PYTHON" != /* ]]; then
+    PYTHON="$ROOT_DIR/$PYTHON"
+fi
+
 "$PYTHON" -c 'import sys; assert sys.version_info >= (3, 9), "Python >= 3.9 is required"'
 
 if [[ "$AGENT_LIB_DIR" != /* ]]; then
@@ -157,7 +163,12 @@ wheels=(dist/pynds_kv-*.whl)
 "$PYTHON" -m pip install --force-reinstall --no-deps "${wheels[0]}"
 
 echo "[5/5] 验证导入和原生库解析"
-"$PYTHON" - <<'PY'
+# 从空目录且清空 PYTHONPATH 验证，确保导入的是刚安装的 wheel，而非源码包。
+verify_dir="$(mktemp -d)"
+trap 'rm -rf -- "$verify_dir"' EXIT
+(
+    cd "$verify_dir"
+    PYTHONPATH= "$PYTHON" - <<'PY'
 from pathlib import Path
 import _pynds_kv_native
 import pynds_kv
@@ -171,3 +182,6 @@ print(f"pynds_kv {pynds_kv.__version__} 安装成功")
 print(f"扩展：{Path(pynds_kv.__file__).resolve()}")
 print(f"原生库：{native_dir}")
 PY
+)
+rm -rf -- "$verify_dir"
+trap - EXIT
