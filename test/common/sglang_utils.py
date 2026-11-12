@@ -10,6 +10,7 @@ import logging
 import re
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,6 +52,7 @@ def load_source(relative_path, definitions=None, **dependencies):
         logging=logging,
         re=re,
         threading=threading,
+        time=time,
         Path=Path,
         UnifiedCacheLinker=object,
         get_device_module=lambda: None,

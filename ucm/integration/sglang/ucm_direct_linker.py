@@ -98,6 +98,7 @@ class _PrefetchLoad:
     transfers: list[PoolTransfer]
     ready_events: list[object]
     future: Future[bool]
+    queued_at: float = 0.0
 
 
 class UcmDirectLinker(UnifiedCacheLinker):
@@ -657,17 +658,38 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._pending_loads[rid] = expanded
         return True
 
+    def _log_prefetch(self, event: str, future=None, **fields) -> None:
+        """Opt-in diagnostics; future identity also links wrapper-side logs."""
+        import os
+
+        if os.environ.get("UCM_SGLANG_PREFETCH_LOG", "0") != "1":
+            return
+        logger.info(
+            "[UCM_PREFETCH] event=%s tp_rank=%s task=%s %s",
+            event,
+            getattr(self, "_tp_rank", -1),
+            hex(id(future)) if future is not None else "none",
+            " ".join(f"{key}={value}" for key, value in fields.items()),
+        )
+
     def prefetch(self, transfers: list[PoolTransfer]) -> Future[bool] | None:
         """Queue all-layer restoration; completion means device writes stopped."""
         if self._closed or not self._load_thread.is_alive():
+            self._log_prefetch("rejected", reason="closed_or_worker_unavailable")
             return None
         expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
         if not expanded:
+            self._log_prefetch("rejected", reason="no_expanded_transfers")
             return None
         self._freeze_gc_once()
         ready_events = self._record_transfer_events()
         future: Future[bool] = Future()
-        self._load_queue.put(_PrefetchLoad(expanded, ready_events, future))
+        queued_at = time.perf_counter()
+        self._log_prefetch(
+            "queued", future, layers=self.num_layers,
+            transfers=len(expanded), queue_depth=self._load_queue.qsize(),
+        )
+        self._load_queue.put(_PrefetchLoad(expanded, ready_events, future, queued_at))
         return future
 
     def cancel_queued_load(self, rid: str) -> bool:
@@ -745,7 +767,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 prefetch = isinstance(task, _PrefetchLoad)
                 if prefetch:
                     if not task.future.set_running_or_notify_cancel():
+                        self._log_prefetch("cancelled_before_start", task.future)
                         continue
+                    started_at = time.perf_counter()
+                    self._log_prefetch(
+                        "worker_start", task.future,
+                        queue_ms=round((started_at - task.queued_at) * 1000, 3),
+                    )
                     counter_index = -1
                     pending = {"prefetch": task.transfers}
                     ready_events = task.ready_events
@@ -819,6 +847,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     )
                 finally:
                     if prefetch:
+                        self._log_prefetch(
+                            "worker_done", task.future, success=landed,
+                            last_layer=active_layer,
+                            io_ms=round((time.perf_counter() - started_at) * 1000, 3),
+                            total_ms=round((time.perf_counter() - task.queued_at) * 1000, 3),
+                        )
                         task.future.set_result(landed)
                     elif self._requires_load_finish:
                         self._load_results[counter_index].set_result(landed)
