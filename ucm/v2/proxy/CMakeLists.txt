@@ -22,8 +22,7 @@ string(APPEND UCM_BUILTIN_TABLE_CONTENT "}  // namespace UC::Proxy\n")
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/builtin_stores.cc CONTENT "${UCM_BUILTIN_TABLE_CONTENT}")
 
 add_library(ucm_proxy_core OBJECT ${UCM_PROXY_CORE_SOURCE_FILES} ${CMAKE_CURRENT_BINARY_DIR}/builtin_stores.cc)
-target_include_directories(ucm_proxy_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ucm_proxy_core PUBLIC ucm_build_options ucm_common ucm_store ${CMAKE_DL_LIBS})
+target_link_libraries(ucm_proxy_core PUBLIC ucm_build_options ucm_include ucm_common ${CMAKE_DL_LIBS})
 
 pybind11_add_module(ucm_proxy proxy.py.cc)
-target_link_libraries(ucm_proxy PRIVATE ucm_build_options ucm_common ucm_store ucm_proxy_core)
+target_link_libraries(ucm_proxy PRIVATE ucm_build_options ucm_include ucm_common ucm_proxy_core)

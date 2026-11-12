@@ -27,10 +27,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+#include "offloadable.h"
 #include "status/status.h"
 #include "store.h"
 #include "store_entry.h"
@@ -55,13 +55,13 @@ inline AddressedToken MakeAddressedToken(std::size_t tag)
     return token;
 }
 
-class FakeStore : public Store::Store, public Store::Prefetchable {
+class FakeStore : public Store::Store, public Store::Prefetchable, public Store::Offloadable {
 public:
     /* tokened_: true mints payload-bearing tokens (real addressing); false
      * mints keys-only tokens, emulating the base Store's default addressing
      * while still recording every call. */
-    explicit FakeStore(bool prefetchable, bool tokened)
-        : prefetchable_(prefetchable), tokened_(tokened)
+    explicit FakeStore(bool prefetchable, bool tokened, bool offloadable = true)
+        : prefetchable_(prefetchable), tokened_(tokened), offloadable_(offloadable)
     {
     }
 
@@ -102,23 +102,20 @@ public:
         return finished;
     }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(const std::vector<std::size_t>& jobIds) override
+    Status Wait(std::size_t jobId) override
     {
-        waits.push_back(jobIds);
-        std::vector<std::pair<std::size_t, bool>> results;
-        for (const auto& jobId : jobIds) {
-            for (auto it = finishedQueue.begin(); it != finishedQueue.end(); ++it) {
-                if (it->first == jobId) {
-                    results.push_back(*it);
-                    finishedQueue.erase(it);
-                    break;
-                }
-            }
+        waits.push_back(jobId);
+        for (auto it = finishedQueue.begin(); it != finishedQueue.end(); ++it) {
+            if (it->first != jobId) { continue; }
+            const bool success = it->second;
+            finishedQueue.erase(it);
+            return success ? Status::Ok() : Status::General("job '{}' failed", jobId);
         }
-        return results;
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
 
     Prefetchable* AsPrefetchable() override { return prefetchable_ ? this : nullptr; }
+    Offloadable* AsOffloadable() override { return offloadable_ ? this : nullptr; }
 
     /*== Addressing & admission ==*/
 
@@ -150,13 +147,15 @@ public:
 
     /*== Prefetchable ==*/
 
-    Expected<std::optional<std::vector<std::uint8_t>>> Lookup(
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
         const RequestId& requestId, const std::vector<BlockId>& blockIds) override
     {
         prefetchLookups.push_back({requestId, blockIds});
         if (prefetchLookupFails) { return Status::NotFound("prefetch lookup failed"); }
-        if (signalPrefetchable) { return std::nullopt; }
-        return std::vector<std::uint8_t>(blockIds.size(), 1);
+        /* Non-empty prefetchHits emulates a partial presence snapshot, with
+         * the prefetchable signal alongside (hits + signal coexist). */
+        if (!prefetchHits.empty()) { return std::make_pair(prefetchHits, signalPrefetchable); }
+        return std::make_pair(std::vector<std::uint8_t>(blockIds.size(), 1), signalPrefetchable);
     }
 
     Expected<AddressedToken> PreparePrefetch(const RequestId& requestId,
@@ -170,10 +169,9 @@ public:
         return token;
     }
 
-    Status CompletePrefetch(const AddressedToken& plan, bool success) override
+    void CompletePrefetch(const AddressedToken& plan, bool success) override
     {
         completedPrefetches.push_back({plan, success});
-        return Status::Ok();
     }
 
     Status Prefetch(std::size_t jobId, AddressedToken plan) override
@@ -182,27 +180,54 @@ public:
         return prefetchStatus;
     }
 
+    /*== Offloadable ==*/
+
+    AddressedToken PrepareOffload() override
+    {
+        ++prepareOffloadCalls;
+        if (!offloadPending) { return AddressedToken{}; }
+        AddressedToken plan;
+        plan.keys = offloadKeys;
+        plan.payload = offloadPayload;
+        return plan;
+    }
+
+    void CompleteOffload(const AddressedToken& plan) override { completedOffloads.push_back(plan); }
+
+    Status Offload(std::size_t jobId, AddressedToken plan) override
+    {
+        offloads.push_back({jobId, std::move(plan)});
+        return offloadStatus;
+    }
+
     /*== Test knobs ==*/
 
     bool prefetchable_ = true;
     bool tokened_ = true;
+    bool offloadable_ = true;
     bool plainLookupFails = false;
     bool prefetchLookupFails = false;
     bool signalPrefetchable = false;
     bool pinFails = false;
     bool allocFails = false;
+    bool offloadPending = false;
     Status loadStatus = Status::Ok();
     Status dumpStatus = Status::Ok();
     Status prefetchStatus = Status::Ok();
+    Status offloadStatus = Status::Ok();
     std::size_t getFinishedCalls = 0;
+    std::size_t prepareOffloadCalls = 0;
     std::vector<std::uint8_t> plainHits;
+    std::vector<std::uint8_t> prefetchHits;
     std::vector<std::pair<std::size_t, bool>> finishedQueue;
+    std::vector<BlockId> offloadKeys;
+    std::vector<std::byte> offloadPayload = {std::byte{0xA}, std::byte{0xB}};
 
     std::vector<std::vector<BlockId>> plainLookups;
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> touches;
     std::vector<RecordedJob> loads;
     std::vector<RecordedJob> dumps;
-    std::vector<std::vector<std::size_t>> waits;
+    std::vector<std::size_t> waits;
     std::vector<std::vector<BlockId>> pins;
     std::vector<std::vector<BlockId>> unpins;
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> allocs;
@@ -211,6 +236,8 @@ public:
     std::vector<std::pair<RequestId, RequestContext>> preparedPrefetches;
     std::vector<std::pair<AddressedToken, bool>> completedPrefetches;
     std::vector<std::pair<std::size_t, AddressedToken>> prefetches;
+    std::vector<AddressedToken> completedOffloads;
+    std::vector<std::pair<std::size_t, AddressedToken>> offloads;
 };
 
 struct EntryHandle {
@@ -218,9 +245,9 @@ struct EntryHandle {
     std::unique_ptr<StoreEntry> entry;
 };
 
-inline EntryHandle MakeEntry(bool prefetchable, bool tokened)
+inline EntryHandle MakeEntry(bool prefetchable, bool tokened, bool offloadable = true)
 {
-    auto* fake = new FakeStore(prefetchable, tokened);
+    auto* fake = new FakeStore(prefetchable, tokened, offloadable);
     EntryHandle handle;
     handle.fake = fake;
     handle.entry =
@@ -256,15 +283,8 @@ inline BlockPayload MakePayload(std::size_t size)
     BlockPayload payload;
     payload.pointers = {nullptr};
     payload.sizes = {size};
+    payload.offsets = {0};
     return payload;
-}
-
-inline bool Contains(const std::vector<IoResult>& results, std::size_t jobId, bool success)
-{
-    for (const auto& result : results) {
-        if (result.jobId == jobId && result.success == success) { return true; }
-    }
-    return false;
 }
 
 }  // namespace UC::Proxy

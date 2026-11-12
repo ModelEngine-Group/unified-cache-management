@@ -23,7 +23,7 @@
  * */
 #pragma once
 
-#include <optional>
+#include <utility>
 #include <vector>
 #include "status/status.h"
 #include "type/block.h"
@@ -34,7 +34,8 @@ namespace UC::Proxy {
 
 /**
  * @brief Control-plane facet of one assembled store topology: the
- *        request-scoped queries and transfer windows.
+ *        request-scoped queries, the transfer windows, and the offload
+ *        drain loop.
  *
  * @note Window protocol, per request and per kind (Get/Put/prefetch,
  *       independently): PrepareX() opens at most one window of its kind;
@@ -51,6 +52,13 @@ namespace UC::Proxy {
  *       in-flight job drained (the Store destruction contract applies);
  *       windows left open are concluded best-effort as a safety net
  *       (Unpin / Commit(false) / CompletePrefetch(false)).
+ * @note Offload drain loop, independent of requests: PrepareOffload()
+ *       drains the plans the topology's own concluded admissions have
+ *       queued; SubmitOffload() (StoreWorker) executes a drained plan as
+ *       a job; CompleteOffload() concludes it once the job's completion
+ *       has been consumed. The loop belongs to the topology, not to any
+ *       request: it opens no window and OnRequestFinished() never
+ *       concludes it.
  */
 class StoreScheduler {
 public:
@@ -64,11 +72,11 @@ public:
      */
     virtual void OnRequestFinished(const RequestId& requestId) = 0;
 
-    virtual Expected<std::optional<std::vector<std::uint8_t>>> Lookup(
+    virtual Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
         const RequestId& requestId, const std::vector<BlockId>& keys) = 0;
-    virtual Expected<std::optional<std::int64_t>> LookupOnPrefix(
+    virtual Expected<std::pair<std::int64_t, bool>> LookupOnPrefix(
         const RequestId& requestId, const std::vector<BlockId>& keys) = 0;
-    virtual Expected<std::optional<std::int64_t>> LookupOnReverse(
+    virtual Expected<std::pair<std::int64_t, bool>> LookupOnReverse(
         const RequestId& requestId, const std::vector<BlockId>& keys) = 0;
 
     virtual void Touch(const RequestId& requestId, const std::vector<BlockId>& keys) = 0;
@@ -83,6 +91,9 @@ public:
     virtual Expected<AddressedToken> PreparePut(const RequestId& requestId,
                                                 const std::vector<BlockId>& keys) = 0;
     virtual void CompletePut(const RequestId& requestId, bool success) = 0;
+
+    virtual std::vector<AddressedToken> PrepareOffload() = 0;
+    virtual void CompleteOffload(const AddressedToken& plan) = 0;
 };
 
 }  // namespace UC::Proxy

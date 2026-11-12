@@ -34,7 +34,6 @@ namespace {
 Dictionary MakeStoreNode()
 {
     Dictionary node;
-    node.Set("type", std::string("store"));
     node.Set("store", std::string(UCM_TEST_STUB_STORE_PATH));
     return node;
 }
@@ -48,6 +47,15 @@ Dictionary MakeStoreNode(std::int64_t present)
     return node;
 }
 
+Dictionary MakeStoreNode(const std::string& requiredUniqueId)
+{
+    Dictionary node = MakeStoreNode();
+    Dictionary setup;
+    setup.Set("required_unique_id", requiredUniqueId);
+    node.Set("config", setup);
+    return node;
+}
+
 Dictionary MakeFailingStoreNode()
 {
     Dictionary node = MakeStoreNode();
@@ -57,20 +65,49 @@ Dictionary MakeFailingStoreNode()
     return node;
 }
 
+Dictionary MakeBranch(const std::vector<Dictionary>& tiers)
+{
+    Dictionary branch;
+    branch.Set("pipe", tiers);
+    return branch;
+}
+
+Dictionary MakePeer(const std::vector<Dictionary>& branches)
+{
+    Dictionary config;
+    config.Set("branches", branches);
+    return config;
+}
+
+Dictionary MakeSingleBranchPeer(const std::vector<Dictionary>& tiers)
+{
+    return MakePeer({MakeBranch(tiers)});
+}
+
+Dictionary MakeLengthRouting(const std::vector<std::int64_t>& thresholds)
+{
+    Dictionary routing;
+    routing.Set("strategy", std::string("length"));
+    Dictionary params;
+    params.SetNumbers("thresholds", thresholds);
+    routing.Set("config", params);
+    return routing;
+}
+
 std::vector<std::uint8_t> LookupHits(StoreScheduler& scheduler, const RequestId& requestId,
                                      const std::vector<BlockId>& keys)
 {
     auto hits = scheduler.Lookup(requestId, keys);
     EXPECT_TRUE(hits);
     if (!hits) { return {}; }
-    EXPECT_TRUE(hits.Value().has_value());
-    if (!hits.Value().has_value()) { return {}; }
-    return hits.Value().value();
+    EXPECT_FALSE(hits.Value().second);
+    return hits.Value().first;
 }
 
-TEST(StoreAssemblerTest, CreateStoreNodeDrivesConfiguredLookup)
+TEST(StoreAssemblerTest, CreateSingleBranchPeerDrivesConfiguredLookup)
 {
-    auto assembler = StoreAssembler::Create(MakeStoreNode(2));
+    /* Single branch, no routing: the internal fixed strategy routes to it. */
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode(2)}));
     ASSERT_TRUE(assembler);
     auto* scheduler = assembler.Value()->GetScheduler();
     ASSERT_NE(scheduler, nullptr);
@@ -81,65 +118,62 @@ TEST(StoreAssemblerTest, CreateStoreNodeDrivesConfiguredLookup)
     scheduler->OnRequestFinished("r");
 }
 
-TEST(StoreAssemblerTest, CreateRejectsMissingType)
+TEST(StoreAssemblerTest, CreateRejectsMissingBranches)
 {
-    auto assembler = StoreAssembler::Create(Dictionary{});
-    ASSERT_FALSE(assembler);
-    EXPECT_EQ(assembler.Error(), Status::InvalidParam());
+    auto missing = StoreAssembler::Create(Dictionary{});
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.Error(), Status::InvalidParam());
+
+    Dictionary empty;
+    empty.Set("branches", std::vector<Dictionary>{});
+    auto emptyAssembler = StoreAssembler::Create(empty);
+    ASSERT_FALSE(emptyAssembler);
+    EXPECT_EQ(emptyAssembler.Error(), Status::InvalidParam());
 }
 
-TEST(StoreAssemblerTest, CreateRejectsUnknownType)
+TEST(StoreAssemblerTest, CreateRejectsBranchWithoutPipe)
 {
-    Dictionary config;
-    config.Set("type", std::string("no-such-type"));
-    auto assembler = StoreAssembler::Create(config);
-    ASSERT_FALSE(assembler);
-    EXPECT_EQ(assembler.Error(), Status::InvalidParam());
-    EXPECT_NE(assembler.Error().ToString().find("no-such-type"), std::string::npos);
+    auto missing = StoreAssembler::Create(MakePeer({Dictionary{}}));
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.Error(), Status::InvalidParam());
+
+    Dictionary emptyPipe;
+    emptyPipe.Set("pipe", std::vector<Dictionary>{});
+    auto empty = StoreAssembler::Create(MakePeer({emptyPipe}));
+    ASSERT_FALSE(empty);
+    EXPECT_EQ(empty.Error(), Status::InvalidParam());
 }
 
-TEST(StoreAssemblerTest, CreateRejectsStoreNodeWithoutStore)
+TEST(StoreAssemblerTest, CreateRejectsPipeEntryWithoutStore)
 {
-    Dictionary config;
-    config.Set("type", std::string("store"));
-    auto assembler = StoreAssembler::Create(config);
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({Dictionary{}}));
     ASSERT_FALSE(assembler);
     EXPECT_EQ(assembler.Error(), Status::InvalidParam());
 }
 
 TEST(StoreAssemblerTest, CreatePropagatesSetupFailure)
 {
-    auto assembler = StoreAssembler::Create(MakeFailingStoreNode());
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({MakeFailingStoreNode()}));
     ASSERT_FALSE(assembler);
     EXPECT_EQ(assembler.Error(), Status::General());
 }
 
-TEST(StoreAssemblerTest, CreateRejectsPipeWithoutStores)
+TEST(StoreAssemblerTest, CreateRejectsReservedUserKeys)
 {
-    Dictionary missing;
-    missing.Set("type", std::string("pipe"));
-    auto missingAssembler = StoreAssembler::Create(missing);
-    ASSERT_FALSE(missingAssembler);
-    EXPECT_EQ(missingAssembler.Error(), Status::InvalidParam());
-
-    Dictionary empty;
-    empty.Set("type", std::string("pipe"));
-    empty.Set("stores", std::vector<Dictionary>{});
-    auto emptyAssembler = StoreAssembler::Create(empty);
-    ASSERT_FALSE(emptyAssembler);
-    EXPECT_EQ(emptyAssembler.Error(), Status::InvalidParam());
+    Dictionary setup;
+    setup.SetInt64("__evil", 1);
+    Dictionary node = MakeStoreNode();
+    node.Set("config", setup);
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({node}));
+    ASSERT_FALSE(assembler);
+    EXPECT_EQ(assembler.Error(), Status::InvalidParam());
+    EXPECT_NE(assembler.Error().ToString().find("__evil"), std::string::npos);
 }
 
 TEST(StoreAssemblerTest, CreatePipeWiresLowerStoreToHead)
 {
-    std::vector<Dictionary> stores;
-    stores.push_back(MakeStoreNode());
-    stores.push_back(MakeStoreNode(1));
-    Dictionary config;
-    config.Set("type", std::string("pipe"));
-    config.Set("stores", stores);
-
-    auto assembler = StoreAssembler::Create(config);
+    auto assembler =
+        StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode(), MakeStoreNode(1)}));
     ASSERT_TRUE(assembler);
     auto* scheduler = assembler.Value()->GetScheduler();
     const std::vector<BlockId> keys = MakeKeys(1, 3);
@@ -151,18 +185,8 @@ TEST(StoreAssemblerTest, CreatePipeWiresLowerStoreToHead)
 
 TEST(StoreAssemblerTest, CreatePeerRoutesByLengthStrategy)
 {
-    std::vector<Dictionary> branches;
-    branches.push_back(MakeStoreNode(1));
-    branches.push_back(MakeStoreNode(3));
-    Dictionary config;
-    config.Set("type", std::string("peer"));
-    config.Set("branches", branches);
-    Dictionary routing;
-    routing.Set("strategy", std::string("length"));
-    Dictionary params;
-    params.SetNumbers("thresholds", std::vector<std::int64_t>{4});
-    routing.Set("config", params);
-    config.Set("routing", routing);
+    Dictionary config = MakePeer({MakeBranch({MakeStoreNode(1)}), MakeBranch({MakeStoreNode(3)})});
+    config.Set("routing", MakeLengthRouting({4}));
 
     auto assembler = StoreAssembler::Create(config);
     ASSERT_TRUE(assembler);
@@ -182,45 +206,17 @@ TEST(StoreAssemblerTest, CreatePeerRoutesByLengthStrategy)
     EXPECT_EQ(LookupHits(*scheduler, "short", keys), (std::vector<std::uint8_t>{1, 1, 1}));
 }
 
-TEST(StoreAssemblerTest, CreatePeerRejectsMissingBranches)
+TEST(StoreAssemblerTest, CreatePeerRequiresRoutingForMultipleBranches)
 {
-    Dictionary missing;
-    missing.Set("type", std::string("peer"));
-    auto missingAssembler = StoreAssembler::Create(missing);
-    ASSERT_FALSE(missingAssembler);
-    EXPECT_EQ(missingAssembler.Error(), Status::InvalidParam());
-
-    Dictionary empty;
-    empty.Set("type", std::string("peer"));
-    empty.Set("branches", std::vector<Dictionary>{});
-    auto emptyAssembler = StoreAssembler::Create(empty);
-    ASSERT_FALSE(emptyAssembler);
-    EXPECT_EQ(emptyAssembler.Error(), Status::InvalidParam());
-}
-
-TEST(StoreAssemblerTest, CreatePeerRejectsNestedPeer)
-{
-    std::vector<Dictionary> branches;
-    Dictionary nested;
-    nested.Set("type", std::string("peer"));
-    branches.push_back(nested);
-    Dictionary config;
-    config.Set("type", std::string("peer"));
-    config.Set("branches", branches);
-    auto assembler = StoreAssembler::Create(config);
+    auto assembler = StoreAssembler::Create(
+        MakePeer({MakeBranch({MakeStoreNode()}), MakeBranch({MakeStoreNode()})}));
     ASSERT_FALSE(assembler);
     EXPECT_EQ(assembler.Error(), Status::InvalidParam());
-    EXPECT_NE(assembler.Error().ToString().find("nest"), std::string::npos);
 }
 
 TEST(StoreAssemblerTest, CreatePeerRejectsUnknownStrategy)
 {
-    std::vector<Dictionary> branches;
-    branches.push_back(MakeStoreNode());
-    branches.push_back(MakeStoreNode());
-    Dictionary config;
-    config.Set("type", std::string("peer"));
-    config.Set("branches", branches);
+    Dictionary config = MakePeer({MakeBranch({MakeStoreNode()}), MakeBranch({MakeStoreNode()})});
     Dictionary routing;
     routing.Set("strategy", std::string("no-such-strategy"));
     config.Set("routing", routing);
@@ -231,19 +227,80 @@ TEST(StoreAssemblerTest, CreatePeerRejectsUnknownStrategy)
 
 TEST(StoreAssemblerTest, CreatePeerRejectsThresholdBranchMismatch)
 {
-    std::vector<Dictionary> branches;
-    branches.push_back(MakeStoreNode());
-    branches.push_back(MakeStoreNode());
-    Dictionary config;
-    config.Set("type", std::string("peer"));
-    config.Set("branches", branches);
-    Dictionary routing;
-    routing.Set("strategy", std::string("length"));
-    Dictionary params;
-    params.SetNumbers("thresholds", std::vector<std::int64_t>{4, 8});
-    routing.Set("config", params);
-    config.Set("routing", routing);
+    Dictionary config = MakePeer({MakeBranch({MakeStoreNode()}), MakeBranch({MakeStoreNode()})});
+    config.Set("routing", MakeLengthRouting({4, 8}));
     auto assembler = StoreAssembler::Create(config);
+    ASSERT_FALSE(assembler);
+    EXPECT_EQ(assembler.Error(), Status::InvalidParam());
+}
+
+TEST(StoreAssemblerTest, RuntimeMergesIntoStoreSetup)
+{
+    Dictionary runtime;
+    runtime.SetInt64("present", 1);
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode()}), runtime);
+    ASSERT_TRUE(assembler);
+    auto* scheduler = assembler.Value()->GetScheduler();
+    const std::vector<BlockId> keys = MakeKeys(1, 3);
+    EXPECT_TRUE(scheduler->OnNewRequest(MakeContext("r")).Success());
+    /* "present" reaches Setup only through the runtime merge: the node
+     * config does not carry it. */
+    EXPECT_EQ(LookupHits(*scheduler, "r", keys), (std::vector<std::uint8_t>{1, 0, 0}));
+    scheduler->OnRequestFinished("r");
+
+    /* Node-owned keys stay in effect alongside merged runtime keys. */
+    Dictionary other;
+    other.SetInt64("device_id", 7);
+    auto untouched = StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode(2)}), other);
+    ASSERT_TRUE(untouched);
+    EXPECT_TRUE(untouched.Value()->GetScheduler()->OnNewRequest(MakeContext("r2")).Success());
+    EXPECT_EQ(LookupHits(*untouched.Value()->GetScheduler(), "r2", keys),
+              (std::vector<std::uint8_t>{1, 1, 0}));
+}
+
+TEST(StoreAssemblerTest, RuntimeConflictWithNodeConfigRejected)
+{
+    Dictionary runtime;
+    runtime.SetInt64("present", 1);
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode(2)}), runtime);
+    ASSERT_FALSE(assembler);
+    EXPECT_EQ(assembler.Error(), Status::InvalidParam());
+    EXPECT_NE(assembler.Error().ToString().find("present"), std::string::npos);
+}
+
+TEST(StoreAssemblerTest, RuntimeUniqueIdSuffixedPerStore)
+{
+    Dictionary config = MakePeer({MakeBranch({MakeStoreNode("base@branches[0].pipe[0]"),
+                                              MakeStoreNode("base@branches[0].pipe[1]")}),
+                                  MakeBranch({MakeStoreNode("base@branches[1].pipe[0]")})});
+    config.Set("routing", MakeLengthRouting({4}));
+    Dictionary runtime;
+    runtime.Set("unique_id", std::string("base"));
+    auto assembler = StoreAssembler::Create(config, runtime);
+    ASSERT_TRUE(assembler);
+
+    /* A wrong expectation fails the tier's Setup, proving the suffixing. */
+    Dictionary wrong = MakeSingleBranchPeer({MakeStoreNode("base@branches[0].pipe[9]")});
+    auto rejected = StoreAssembler::Create(wrong, runtime);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.Error(), Status::General());
+}
+
+TEST(StoreAssemblerTest, RuntimeWithoutUniqueIdInjectsNothing)
+{
+    Dictionary runtime;
+    runtime.SetInt64("device_id", 7);
+    auto assembler =
+        StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode("anything")}), runtime);
+    ASSERT_FALSE(assembler);
+    EXPECT_EQ(assembler.Error(), Status::General());
+}
+
+TEST(StoreAssemblerTest, RuntimeUniqueIdMustBeString)
+{
+    Dictionary runtime;
+    runtime.SetInt64("unique_id", 5);
+    auto assembler = StoreAssembler::Create(MakeSingleBranchPeer({MakeStoreNode()}), runtime);
     ASSERT_FALSE(assembler);
     EXPECT_EQ(assembler.Error(), Status::InvalidParam());
 }
