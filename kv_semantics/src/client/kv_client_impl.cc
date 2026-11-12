@@ -287,7 +287,6 @@ std::uint32_t KvClientImpl::ResolveNamespace(const std::string& namespaceId)
     return XXH32(namespaceId.data(), namespaceId.size(), HASH_SEED_VALUE);
 }
 
-
 bool KvClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
 
 Status KvClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)

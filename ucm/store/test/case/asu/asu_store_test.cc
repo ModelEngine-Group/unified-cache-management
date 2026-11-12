@@ -46,12 +46,11 @@ namespace {
 struct CacheKeyHasher {
     std::size_t operator()(const kv::CacheKey& key) const
     {
-        return std::visit(
-            [](const auto& bytes) {
-                return std::hash<std::string_view>{}(
-                    std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-            },
-            key);
+        if (const auto* bytes = key.TryGetBinaryKey()) {
+            return std::hash<std::string_view>{}(
+                std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+        }
+        return std::hash<std::string_view>{}(*key.TryGetEngineKey());
     }
 };
 
