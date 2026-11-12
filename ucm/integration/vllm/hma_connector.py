@@ -2056,6 +2056,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
+        event_handle: int = 0,
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -2066,6 +2067,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             keys,
             shard_indices,
             ptrs,
+            event_handle=event_handle,
         )
         return FAWALoadTask(
             request_id=request_id,
@@ -2227,12 +2229,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.is_v41_layout and any(
-            request.load_keys for request in metadata.request_meta.values()
-        ):
-            # Finish pending KV page writes before the store starts its H2D copies.
-            self.device.synchronize()
-            logger.info_once("V4.1 compute stream synchronized before external KV load")
+        # Fence load DMA behind pending zeroing: all synchronous loads in this
+        # step share one event, destroyed after their waits have drained.
+        load_event_handle = 0
+        if any(request.load_keys for request in metadata.request_meta.values()):
+            load_event_handle = self._get_event_handle()
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
@@ -2258,6 +2259,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
+                    event_handle=load_event_handle,
                 )
                 tasks.append(fa_task)
 
@@ -2275,6 +2277,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
+                    event_handle=load_event_handle,
                 )
                 tasks.append(wa_task)
             except Exception as e:
@@ -2285,6 +2288,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self._handle_load_err(request_id)
 
         self._wait_all_load_task(tasks)
+
+        if load_event_handle:
+            self.device.destroy_event_handle(load_event_handle)
 
     def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
         load_bytes = 0
@@ -2425,7 +2431,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
 
         if fa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             fa_ptrs = np.vstack(fa_ptr_rows)
             try:
                 fa_dump_task = self._submit_dump_task(
@@ -2443,7 +2449,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
         if wa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
             try:
                 wa_dump_task = self._submit_dump_task(

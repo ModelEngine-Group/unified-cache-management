@@ -2966,6 +2966,79 @@ def test_sparse_utils_annotations_resolve_with_torch_stub():
         assert get_type_hints(function)["return"] is int
 
 
+class RecordingEventDevice:
+    """NPU device stub tracking event create/destroy and synchronize calls."""
+
+    def __init__(self):
+        self.created = []
+        self.destroyed = []
+        self.syncs = 0
+        self._next_handle = 100
+
+    def synchronize(self):
+        self.syncs += 1
+
+    def get_event_handle(self):
+        self._next_handle += 1
+        self.created.append(self._next_handle)
+        return self._next_handle
+
+    def destroy_event_handle(self, event_handle):
+        self.destroyed.append(event_handle)
+
+
+def test_fawa_sync_load_event_released_after_wait():
+    """Sync loads share one step event, passed to stores and destroyed after wait."""
+    _reset_fakes()
+    from ucm.integration.vllm.hma_connector import (
+        FAWARequestDispatchMeta,
+        UCMFAWAConnector,
+        UCMFAWAConnectorMetadata,
+    )
+    from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+
+    connector = object.__new__(UCMFAWAConnector)
+    connector.enable_event_sync = True
+    connector.device = RecordingEventDevice()
+    connector.fa_store = SimpleNamespace(
+        wait=Mock(), load_data=Mock(return_value=object())
+    )
+    connector.wa_store = SimpleNamespace(
+        wait=Mock(), load_data=Mock(return_value=object())
+    )
+    connector.window_group_ids = [1]
+    connector.file_size = {"FA": 100, "WA": 40}
+    connector._invalid_block_ids = set()
+    connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
+    connector._extract_fa_ptr = Mock(return_value=[])
+    connector._extract_wa_ptr = Mock(return_value=[])
+    connector._connector_metadata = UCMFAWAConnectorMetadata(
+        {
+            "req": FAWARequestDispatchMeta(
+                load_keys=[b"a", b"b"],
+                load_hash_end=2,
+                load_vllm_block_ids=([10, 11], [10]),
+            )
+        }
+    )
+    connector._rank_consistency = RankConsistencyManager(
+        is_scheduler=False, use_consistency_manager=True
+    )
+
+    connector.start_load_kv(None)
+
+    assert connector.device.syncs == 0
+    assert len(connector.device.created) == 1
+    handle = connector.device.created[0]
+    fa_kwargs = connector.fa_store.load_data.call_args.kwargs
+    wa_kwargs = connector.wa_store.load_data.call_args.kwargs
+    assert fa_kwargs["prerequisite_handle"] == handle
+    assert wa_kwargs["prerequisite_handle"] == handle
+    connector.fa_store.wait.assert_called_once()
+    connector.wa_store.wait.assert_called_once()
+    assert connector.device.destroyed == [handle]
+
+
 def test_fawa_records_only_successful_load_task_bytes():
     _reset_fakes()
     from ucm.integration.vllm.hma_connector import FAWALoadTask, UCMFAWAConnector
@@ -3023,7 +3096,7 @@ def test_fawa_records_submitted_save_bytes():
     connector.file_size = {"FA": 100, "WA": 40}
     connector._extract_fa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
     connector._extract_wa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
-    connector._get_dump_event_handle = lambda: 7
+    connector._get_event_handle = lambda: 7
     connector._submit_dump_task = (
         lambda label, store, keys, ptrs, event_handle, block_ids_by_request: (
             FAWADumpTask(label, store, object(), len(keys), event_handle)

@@ -1814,7 +1814,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             event_handle = 0
             try:
                 ptrs = layout.extract_block_addrs(scoped_vllm_ids, scoped_group_ids)
-                event_handle = self._get_dump_event_handle()
+                event_handle = self._get_event_handle()
                 save_start_time = time.perf_counter() * 1000
                 task = self._rank_consistency.submit_dump(
                     self.store,
@@ -2085,7 +2085,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         slot = self.layer_to_slot[layer_name]
         try:
             ptrs = layout.extract_layer_addrs(layer_name, sel_vllm)
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             task = self._rank_consistency.submit_dump(
                 self.store,
                 block_ids_by_request,
@@ -2146,7 +2146,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             addrs[selected] = layout.extract_layer_addrs(commit_layer, sel_vllm)
             save_bytes += len(selected) * layout.layer_column_bytes[commit_layer]
         try:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             task = self._rank_consistency.submit_dump(
                 self.store,
                 block_ids_by_request,
