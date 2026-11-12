@@ -25,6 +25,7 @@ enable_metrics: true
 | `enable_event_sync` | 选填 | bool | 默认 `true` | 性能优化开关，推荐开启。 |
 | `persist_token_threshold` | 选填 | int | `0` | 当请求长度小于 `persist_token_threshold` 时，UCM 软件不对该请求进行处理。 |
 | `wa_dump_block_wise` | 选填 | bool | `true` | 仅在 FAWA connector 中使用。`true`: 每个 block 的 WA cache 都会被 dump（高频 dump）；`false`: 只 dump 每个 chunk prefill 最后 block 的 WA cache（低频 dump）。 |
+| `enable_pin_blocks` | 选填 | bool | `true` | 仅在 FAWA connector 中使用，需要 vLLM 调用 `bind_gpu_block_pool`。`true`: dump 进行中时 pin 住窗口 block，每步不再等上一步的 dump 完成；`false`: 每步开始前在 host 侧等待上一步的 dump 完成。 |
 | `load_tokens_threshold` | 选填 | int | `0` | 设置触发 KV cache 加载的最小 token 阈值，仅在 DeepSeek V4 系列模型生效。当外部命中 tokens 数 > `load_tokens_threshold` 时触发 KV Cache 加载。 |
 | `enable_record_traces` | 选填 | bool | `false` | 用来记录请求信息（时间戳，输入长度，输出长度等信息）。 |
 | `enable_metrics` | 选填 | bool | 默认 `true` | 是否开启 metrics 收集。 |

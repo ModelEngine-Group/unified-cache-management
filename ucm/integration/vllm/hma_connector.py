@@ -894,6 +894,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
+        self.enable_pin_blocks = self.launch_config.get("enable_pin_blocks", True)
         # Scheduler side: dump batch id -> (pinned window blocks, workers yet to
         # report).
         self._gpu_block_pool: Optional["BlockPool"] = None
@@ -2246,8 +2247,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def bind_gpu_block_pool(self, gpu_block_pool: "BlockPool") -> None:
         # Scheduler side method
-        self._gpu_block_pool = gpu_block_pool
-        logger.info("FAWA window blocks are pinned until their dumps finish.")
+        if self.enable_pin_blocks:
+            self._gpu_block_pool = gpu_block_pool
+            logger.info("FAWA window blocks are pinned until their dumps finish.")
+        else:
+            logger.info(
+                "FAWA block pinning is disabled; dumps are host-waited before "
+                "blocks are reused."
+            )
 
     def update_connector_output(self, connector_output: "KVConnectorOutput"):
         # Scheduler side method

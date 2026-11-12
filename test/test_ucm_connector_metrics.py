@@ -3496,6 +3496,7 @@ def test_fawa_scheduler_pins_window_blocks_until_every_worker_reports():
     connector._next_dump_batch_id = 0
     connector._pinned_dump_batches = {}
     connector._num_workers = 2
+    connector.enable_pin_blocks = True
     connector.bind_gpu_block_pool(pool)
     scheduler_output = SimpleNamespace(
         scheduled_new_reqs=[],
@@ -3538,6 +3539,43 @@ def test_fawa_scheduler_pins_window_blocks_until_every_worker_reports():
         UCMWorkerMetadata(completed_dump_batches={0: 1, 1: 1})
     )
     assert merged.completed_dump_batches == {0: 2, 1: 1}
+
+
+def test_fawa_scheduler_skips_pinning_when_disabled():
+    from ucm.integration.vllm.hma_connector import (
+        FAWARequestDispatchMeta,
+        UCMFAWAConnector,
+    )
+
+    pool = SimpleNamespace(blocks=[], touch=Mock(), free_blocks=Mock())
+    connector = object.__new__(UCMFAWAConnector)
+    connector.requests_meta = {}
+    connector._async_load_req_ids = set()
+    connector.window_group_ids = [1]
+    connector._pending_async_load_dispatches = {
+        "req": FAWARequestDispatchMeta(
+            dump_keys=[b"key"], dump_vllm_block_ids=([1, 3], [2, 0])
+        )
+    }
+    connector._gpu_block_pool = None
+    connector._next_dump_batch_id = 0
+    connector._pinned_dump_batches = {}
+    connector._num_workers = 2
+    connector.enable_pin_blocks = False
+    connector.bind_gpu_block_pool(pool)
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=SimpleNamespace(req_ids=[]),
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+
+    metadata = connector.build_connector_meta(scheduler_output)
+
+    # Without a batch id the workers host-wait every dump, as before pinning.
+    assert metadata.dump_batch_id is None
+    pool.touch.assert_not_called()
+    assert not connector.has_pending_push_work()
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
