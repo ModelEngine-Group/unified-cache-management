@@ -327,8 +327,8 @@ PYBIND11_MODULE(ucm_proxy, m)
              })
         .def(
             "complete_get",
-            [](StoreScheduler& scheduler, const RequestId& requestId) {
-                scheduler.CompleteGet(requestId);
+            [](StoreScheduler& scheduler, const RequestId& requestId, const AddressedToken& token) {
+                scheduler.CompleteGet(requestId, token);
             },
             py::call_guard<py::gil_scoped_release>())
         .def("prepare_put",
@@ -342,9 +342,8 @@ PYBIND11_MODULE(ucm_proxy, m)
              })
         .def(
             "complete_put",
-            [](StoreScheduler& scheduler, const RequestId& requestId, bool success) {
-                scheduler.CompletePut(requestId, success);
-            },
+            [](StoreScheduler& scheduler, const RequestId& requestId, const AddressedToken& token,
+               bool success) { scheduler.CompletePut(requestId, token, success); },
             py::call_guard<py::gil_scoped_release>())
         .def(
             "prepare_offload", [](StoreScheduler& scheduler) { return scheduler.PrepareOffload(); },

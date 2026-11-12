@@ -55,10 +55,11 @@ public:
     void CompletePrefetch(const RequestId& requestId, bool success) override;
     Expected<AddressedToken> PrepareGet(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;
-    void CompleteGet(const RequestId& requestId) override;
+    void CompleteGet(const RequestId& requestId, const AddressedToken& token) override;
     Expected<AddressedToken> PreparePut(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;
-    void CompletePut(const RequestId& requestId, bool success) override;
+    void CompletePut(const RequestId& requestId, const AddressedToken& token,
+                     bool success) override;
     std::vector<AddressedToken> PrepareOffload() override;
     void CompleteOffload(const AddressedToken& plan) override;
 

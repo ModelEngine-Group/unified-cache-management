@@ -103,7 +103,7 @@ TEST(StorePipeTest, ServesAsStoreEntry)
         auto token = pipe.PrepareGet("r", keys);
         ASSERT_TRUE(token);
         EXPECT_EQ(token.Value().keys, keys);
-        pipe.CompleteGet("r");
+        pipe.CompleteGet("r", token.Value());
         ASSERT_EQ(fake->pins.size(), 1);
         EXPECT_EQ(fake->pins[0], keys);
         ASSERT_EQ(fake->unpins.size(), 1);
