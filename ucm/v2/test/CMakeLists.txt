@@ -3,7 +3,7 @@ list(FILTER UCM_TEST_CC_SOURCES EXCLUDE REGEX "fixtures/stub_store\\.cc$")
 add_executable(ucm_test ${UCM_TEST_CC_SOURCES})
 target_link_libraries(ucm_test
     PRIVATE ucm_build_options ucm_include ucm_common ucm_store_cache_core ucm_store_posix_core
-        ucm_proxy_core ucm_transfer_file GTest::gtest_main)
+        ucm_proxy_core ucm_transfer_file ucm_transfer_memory GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(ucm_test)
 
