@@ -141,7 +141,8 @@ PYBIND11_MODULE(pynds_kv, m)
             auto path = parse_config_path(path_obj);
             return NDS::init(info.ptr, length, path ? path->c_str() : nullptr);
         },
-        py::arg("buffer"), py::arg("length"), py::arg("nds_config_path") = py::none());
+        py::arg("buffer"), py::arg("length"), py::arg("nds_config_path") = py::none(),
+        "Initialize NDS with a memory buffer and optional nds_config file path.");
 
     m.def(
         "init_multi",
@@ -166,7 +167,9 @@ PYBIND11_MODULE(pynds_kv, m)
             auto path = parse_config_path(path_obj);
             return NDS::initMulti(ptrs, lengths_u64, path ? path->c_str() : nullptr);
         },
-        py::arg("buffers"), py::arg("lengths"), py::arg("nds_config_path") = py::none());
+        py::arg("buffers"), py::arg("lengths"), py::arg("nds_config_path") = py::none(),
+        "Initialize NDS with multiple memory buffers (each registered as an MR, mr_id in order) "
+        "and optional nds_config file path.");
 
     m.def(
         "is_exists",
@@ -177,7 +180,8 @@ PYBIND11_MODULE(pynds_kv, m)
             py::gil_scoped_release release;
             return NDS::isExists(lows, highs, nsid);
         },
-        py::arg("blockIds"), py::arg("nsid") = 0);
+        py::arg("blockIds"), py::arg("nsid") = 0,
+        "Check existence of blocks (prefix hit count). blockIds are flat ints < 2^80.");
 
     m.def(
         "get",
@@ -190,7 +194,7 @@ PYBIND11_MODULE(pynds_kv, m)
             return NDS::get(low, high, ptr, offset, length, nsid);
         },
         py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
-        py::arg("nsid"));
+        py::arg("nsid"), "Read one block. block_id is a flat int < 2^80.");
 
     m.def(
         "put",
@@ -203,7 +207,7 @@ PYBIND11_MODULE(pynds_kv, m)
             return NDS::put(low, high, ptr, offset, length, nsid);
         },
         py::arg("block_id"), py::arg("buffer"), py::arg("offset"), py::arg("length"),
-        py::arg("nsid"));
+        py::arg("nsid"), "Write one block. block_id is a flat int < 2^80.");
 
     m.def(
         "batchGet",
@@ -213,7 +217,7 @@ PYBIND11_MODULE(pynds_kv, m)
                                 std::move(lengths), std::move(nsids));
         },
         py::arg("block_ids"), py::arg("buffers"), py::arg("offsets"), py::arg("lengths"),
-        py::arg("nsids"));
+        py::arg("nsids"), "Batch get blocks. block_ids are flat ints < 2^80.");
 
     m.def(
         "batchPut",
@@ -223,7 +227,7 @@ PYBIND11_MODULE(pynds_kv, m)
                                 std::move(lengths), std::move(nsids));
         },
         py::arg("block_ids"), py::arg("buffers"), py::arg("offsets"), py::arg("lengths"),
-        py::arg("nsids"));
+        py::arg("nsids"), "Batch put blocks. block_ids are flat ints < 2^80.");
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);

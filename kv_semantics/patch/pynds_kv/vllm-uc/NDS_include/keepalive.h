@@ -1,5 +1,8 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+#ifndef NDS_INCLUDE_KEEPALIVE_H_
+#define NDS_INCLUDE_KEEPALIVE_H_
+
 #include "NDS_client.h"
 
 #pragma pack(push, 1)
@@ -18,3 +21,5 @@ extern void *keepalive_thread(void *arg);
 extern NDS_ERROR_T send_heart_beat(struct rdma_connection *conn);
 extern NDS_ERROR_T transfer_data_heartbeat(struct rdma_connection *conn,
                                            data_heart_beat *keepalive_msg, int qpID);
+
+#endif  // NDS_INCLUDE_KEEPALIVE_H_

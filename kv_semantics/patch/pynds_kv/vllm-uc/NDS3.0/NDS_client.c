@@ -477,6 +477,8 @@ NDS_ERROR_T setup_tcp_connection(struct rdma_connection *conn, const char *local
     struct sockaddr_in local_addr, serv_addr;
     struct timeval timeout;
 
+    conn->control_recv_len = 0;
+
     // 创建 Socket，添加 SOCK_CLOEXEC 属性
     conn->clnt_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (conn->clnt_fd < 0) {
@@ -2842,7 +2844,7 @@ param_t *process_config(const char *path)
         if (strncmp(line, "ip_config", strlen("ip_config")) == 0 && g_cfg.sceneMode == 0) {
             if (p->ip_count < IP_NUM_T) {
                 int ret = sscanf(line,
-                                 "ip_config = %[^,], %[^,], %" SCNu64 ", %" SCNu64 ", %" SCNu64
+                                 "ip_config = %31[^,], %31[^,], %" SCNu64 ", %" SCNu64 ", %" SCNu64
                                  ", %" SCNu64 "",
                                  local, server, &server_port, &roce_idx, &roce_port, &dpu_idx);
 
@@ -3194,7 +3196,19 @@ NDS_ERROR_T nds_init(void **kv_cache, int mr_num)
     if (g_cfg.sceneMode == 1) {
         // 在构建哈希环前获取一次视图版本号
         // 从而在构建期间如果视图发生变化，在注册update函数后能够感知到这次视图变化
-        while (old_dpu_ip_list.size() == 0) { old_dpu_ip_list = GetAllInDpuipList(); }
+        constexpr int AGENT_VIEW_MAX_RETRIES = 30;
+        constexpr useconds_t AGENT_VIEW_RETRY_DELAY_US = 1000000;
+        for (int retry = 0; retry < AGENT_VIEW_MAX_RETRIES; ++retry) {
+            old_dpu_ip_list = GetAllInDpuipList();
+            if (!old_dpu_ip_list.empty()) { break; }
+            LOG_W("Agent returned an empty DPU view (attempt %d/%d)", retry + 1,
+                  AGENT_VIEW_MAX_RETRIES);
+            usleep(AGENT_VIEW_RETRY_DELAY_US);
+        }
+        if (old_dpu_ip_list.empty()) {
+            LOG_E("Agent returned no available DPUs after %d seconds", AGENT_VIEW_MAX_RETRIES);
+            return NDS_ERR_TIMEOUT;
+        }
         uint64_t view_version = GetViewVersion();
         LOG_I("view_version: %ld", view_version);
         old_nsid_list = GetAllNsidList();

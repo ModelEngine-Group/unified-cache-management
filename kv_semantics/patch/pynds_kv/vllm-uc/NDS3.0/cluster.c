@@ -147,8 +147,9 @@ local_ip_param ParseLocalipList(const char* path_nds_config)
             }
             char local_ip[32] = {0};
             uint64_t server_port = 0, roce_idx = 0, roce_port = 0;
-            int ret = sscanf(line, "local_ip_config = %[^,], %" SCNu64 ", %" SCNu64 ", %" SCNu64 "",
-                             local_ip, &server_port, &roce_idx, &roce_port);
+            int ret =
+                sscanf(line, "local_ip_config = %31[^,], %" SCNu64 ", %" SCNu64 ", %" SCNu64 "",
+                       local_ip, &server_port, &roce_idx, &roce_port);
             if (ret == 4) {
                 int idx = local_list.local_ip_count;
                 strncpy(local_list.ip[idx].local_ip, local_ip,

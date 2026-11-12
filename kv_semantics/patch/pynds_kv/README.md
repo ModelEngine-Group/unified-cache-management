@@ -32,6 +32,16 @@ Vendor agent binaries, authentication material, site-specific configuration, oth
 
 The NDS client library is built from the included `vllm-uc/` source. A separately supplied `libndsclient.so` is not required.
 
+On systems with an externally managed Python environment (PEP 668), create and activate a virtual environment instead of bypassing the system package-manager protection with `--break-system-packages`:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel pybind11
+```
+
+Pass the activated environment's interpreter explicitly if needed, for example `bash install.sh --python .venv/bin/python`.
+
 ## One-command build and installation
 
 For non-cluster mode, no vendor agent library is required:

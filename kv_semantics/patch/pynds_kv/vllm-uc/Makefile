@@ -72,9 +72,11 @@ endif
 all: $(TARGET)
 
 debug:
+	$(MAKE) clean
 	$(MAKE) BUILD=debug AGENT_MODE=$(AGENT_MODE) AGENT_LIB_DIR=$(AGENT_LIB_DIR) all
 
 release:
+	$(MAKE) clean
 	$(MAKE) BUILD=release AGENT_MODE=$(AGENT_MODE) AGENT_LIB_DIR=$(AGENT_LIB_DIR) all
 
 $(TARGET): $(SOURCES) NDS_include/xxhash.h

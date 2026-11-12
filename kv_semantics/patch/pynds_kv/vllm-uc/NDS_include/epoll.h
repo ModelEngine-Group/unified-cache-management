@@ -1,5 +1,8 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+#ifndef NDS_INCLUDE_EPOLL_H_
+#define NDS_INCLUDE_EPOLL_H_
+
 #include <sys/epoll.h>
 #include "NDS_client.h"
 
@@ -22,10 +25,6 @@ extern conn_event_handler_t g_event_handler;
 
 extern NDS_ERROR_T nds_epoll_add_conn(struct rdma_connection *conn);
 
-NDS_ERROR_T parse_message_header(char *buf, uint8_t *cmd);
-
-NDS_ERROR_T handle_disconnect_request(struct rdma_connection *conn, char *buf);
-
 NDS_ERROR_T handle_socket_event(struct rdma_connection *conn, uint32_t events);
 
 extern void *epoll_listener_thread(void *arg);
@@ -43,3 +42,5 @@ bool reconnect(struct rdma_connection *conn);
 extern bool try_destroy_connection(struct rdma_connection *conn);
 
 extern bool try_reconnect(struct rdma_connection *conn);
+
+#endif  // NDS_INCLUDE_EPOLL_H_

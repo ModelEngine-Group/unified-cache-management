@@ -1,5 +1,8 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+#ifndef NDS_INCLUDE_UTILS_H_
+#define NDS_INCLUDE_UTILS_H_
+
 #include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -13,3 +16,5 @@ extern void save_cluster_ip_information(struct rdma_connection *conn, local_ip_p
                                         const std::string &dpu_ip);
 extern bool is_io_retry_error(int code);
 extern int FindAvailableConn();
+
+#endif  // NDS_INCLUDE_UTILS_H_

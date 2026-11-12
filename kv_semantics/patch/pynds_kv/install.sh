@@ -30,6 +30,7 @@ usage() {
 非集群版本请在 nds_config.conf 中设置 sceneMode = 0。
 
 系统依赖：Linux、g++、make、Python >= 3.9、libibverbs、OpenSSL、zlib 开发文件。
+若系统启用 PEP 668，请先创建并激活 venv，再用 --python 指定解释器；不建议使用 --break-system-packages。
 EOF
 }
 
