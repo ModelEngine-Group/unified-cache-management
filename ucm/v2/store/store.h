@@ -33,6 +33,7 @@
 
 namespace UC::Store {
 
+class Offloadable;
 class Prefetchable;
 
 struct JobDescriptor {
@@ -229,7 +230,13 @@ public:
      *       may share one reservation: each holds one reference and is
      *       concluded by its own Commit of the same blocks, and the
      *       reservation concludes -- becoming visible or released --
-     *       when the last reference arrives.
+     *       when the last reference arrives. The conclusion is
+     *       fail-closed: any reference concluded with false releases
+     *       the reservation, and the data becomes visible only when
+     *       every reference concluded with true. A reservation counts
+     *       references, not writers -- callers sharding one block
+     *       across several admissions must ensure every part of it
+     *       is covered by one of them.
      * @note Stores without capacity management need not override this: the
      *       base implementation mints a keys-only token (default
      *       addressing) and never reserves.
@@ -313,20 +320,21 @@ public:
      */
     virtual std::vector<std::pair<std::size_t, bool>> GetFinished() = 0;
     /**
-     * @brief Blocks until every listed job has finished, then returns their
-     *        (consumed) completion events.
+     * @brief Blocks until the given job has finished, then consumes and
+     *        reports its completion.
      *
-     * @param jobIds Jobs to wait for; ids that are unknown or whose completion
-     *               has already been consumed are ignored.
+     * @param jobId Job to wait for; must identify an in-flight (submitted,
+     *              not yet consumed) job of this Store.
      *
-     * @return (jobId, success) pairs for the waited jobs, where success tells
-     *         whether the job's transfer completed successfully.
+     * @return Status::Ok() when the job's transfer completed successfully;
+     *         an error status carrying the failure detail otherwise.
      *
-     * @note Completions delivered here are not reported again by GetFinished()
-     *       and vice versa (exactly-once).
+     * @note The completion delivered here is not reported again by
+     *       GetFinished() and vice versa (exactly-once).
+     * @note Id that are unknown to this Store or whose completion has
+     *       already been consumed yield InvalidParam.
      */
-    virtual std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& jobIds) = 0;
+    virtual Status Wait(std::size_t jobId) = 0;
     /**
      * @brief Queries the Prefetchable capability of this Store.
      *
@@ -335,6 +343,14 @@ public:
      *         has the lifetime of this Store object.
      */
     virtual Prefetchable* AsPrefetchable() { return nullptr; }
+    /**
+     * @brief Queries the Offloadable capability of this Store.
+     *
+     * @return Pointer to the Offloadable facet of this object, or nullptr
+     *         when this Store does not implement it. The returned pointer
+     *         has the lifetime of this Store object.
+     */
+    virtual Offloadable* AsOffloadable() { return nullptr; }
 };
 
 /**

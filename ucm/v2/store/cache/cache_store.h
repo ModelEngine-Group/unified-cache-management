@@ -23,12 +23,11 @@
  * */
 #pragma once
 
-#include "prefetchable.h"
 #include "store.h"
 
 namespace UC::Store {
 
-class CacheStore : public Store, public Prefetchable {
+class CacheStore : public Store {
 public:
     Status Setup(const Dictionary& /*config*/) override
     {
@@ -39,10 +38,6 @@ public:
     {
         return Status::Unsupported("CacheStore::Lookup is not implemented");
     }
-
-    using Store::LookupOnPrefix;
-
-    using Store::LookupOnReverse;
 
     void Touch(const std::vector<BlockId>& /*blockIds*/, const RequestContext& /*context*/) override
     {
@@ -60,13 +55,9 @@ public:
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& /*jobIds*/) override
-    {
-        return {};
-    }
+    Status Wait(std::size_t /*jobId*/) override { return Status::Ok(); }
 
-    Prefetchable* AsPrefetchable() override { return this; }
+    Prefetchable* AsPrefetchable() override { return nullptr; }
 
     /*== Addressing & admission ==*/
 
@@ -84,34 +75,6 @@ public:
     }
 
     void Commit(const std::vector<BlockId>& /*blockIds*/, bool /*success*/) override {}
-
-    /*== Prefetchable extension ==*/
-
-    Expected<std::optional<std::vector<std::uint8_t>>> Lookup(
-        const RequestId& /*requestId*/, const std::vector<BlockId>& /*blockIds*/) override
-    {
-        return Status::Unsupported("CacheStore::Lookup is not implemented");
-    }
-
-    using Prefetchable::LookupOnPrefix;
-
-    using Prefetchable::LookupOnReverse;
-
-    Expected<AddressedToken> PreparePrefetch(const RequestId& /*requestId*/,
-                                             const RequestContext& /*context*/) override
-    {
-        return Status::Unsupported("CacheStore::PreparePrefetch is not implemented");
-    }
-
-    Status CompletePrefetch(const AddressedToken& /*plan*/, bool /*success*/) override
-    {
-        return Status::Unsupported("CacheStore::CompletePrefetch is not implemented");
-    }
-
-    Status Prefetch(std::size_t /*jobId*/, AddressedToken /*plan*/) override
-    {
-        return Status::Unsupported("CacheStore::Prefetch is not implemented");
-    }
 };
 
 }  // namespace UC::Store

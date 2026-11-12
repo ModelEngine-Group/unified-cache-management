@@ -25,6 +25,8 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <functional>
 #include <string_view>
 #include <vector>
@@ -44,25 +46,12 @@ struct BlockId {
  * @brief Resolved content of a KV cache block, ready for transfer.
  */
 struct BlockPayload {
-    /**
-     * Resolved xPU byte pointers of the block. Empty means this worker has no ranges
-     * for the addressed object; transfers must leave its bytes and size unchanged.
-     */
+    /** Resolved xPU byte pointers of the block. */
     std::vector<void*> pointers;
     /** Byte length of each pointer. */
     std::vector<std::size_t> sizes;
-    /** Object-relative byte offset of each pointer, parallel to sizes. */
+    /** Offset of each pointer within the object, one-to-one with pointers/sizes. */
     std::vector<std::size_t> offsets;
-    /**
-     * Optional: when MemoryRegions were registered at initialization, the index of the
-     * MemoryRegion each pointer belongs to.
-     */
-    std::vector<std::size_t> memoryRegionIndices;
-    /**
-     * Optional: when groups were registered at initialization, the number of pointers
-     * in each group.
-     */
-    std::vector<std::size_t> groupSizes;
 };
 
 }  // namespace UC
@@ -72,11 +61,23 @@ namespace std {
 /** @brief Enables BlockId as a key in std::unordered_map / std::unordered_set. */
 template <>
 struct hash<UC::BlockId> {
+    static std::uint64_t Mix64(std::uint64_t v) noexcept
+    {
+        v ^= v >> 33;
+        v *= 0xff51afd7ed558ccdULL;
+        v ^= v >> 33;
+        v *= 0xc4ceb9fe1a85ec53ULL;
+        v ^= v >> 33;
+        return v;
+    }
+
     std::size_t operator()(const UC::BlockId& blockId) const noexcept
     {
-        std::string_view sv(reinterpret_cast<const char*>(blockId.bytes.data()),
-                            blockId.bytes.size());
-        return std::hash<std::string_view>{}(sv);
+        std::uint64_t lo = 0;
+        std::uint64_t hi = 0;
+        std::memcpy(&lo, blockId.bytes.data(), sizeof(lo));
+        std::memcpy(&hi, blockId.bytes.data() + sizeof(lo), sizeof(hi));
+        return static_cast<std::size_t>(Mix64(lo ^ (Mix64(hi) + 0x9e3779b97f4a7c15ULL)));
     }
 };
 

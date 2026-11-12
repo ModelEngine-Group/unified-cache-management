@@ -241,9 +241,7 @@ PYBIND11_MODULE(ucm_proxy, m)
                 }
             })
         .def_readwrite("sizes", &BlockPayload::sizes)
-        .def_readwrite("offsets", &BlockPayload::offsets)
-        .def_readwrite("memory_region_indices", &BlockPayload::memoryRegionIndices)
-        .def_readwrite("group_sizes", &BlockPayload::groupSizes);
+        .def_readwrite("offsets", &BlockPayload::offsets);
 
     py::class_<IoContext>(m, "IoContext")
         .def(py::init<>())
@@ -268,17 +266,17 @@ PYBIND11_MODULE(ucm_proxy, m)
             },
             py::call_guard<py::gil_scoped_release>())
         .def("lookup",
-             [](StoreScheduler& scheduler, const RequestId& requestId,
-                const py::bytes& keys) -> py::object {
+             [](StoreScheduler& scheduler, const RequestId& requestId, const py::bytes& keys) {
                  const std::vector<BlockId> blockIds = ToBlockIdVector(keys);
                  auto result = [&] {
                      py::gil_scoped_release release;
                      return scheduler.Lookup(requestId, blockIds);
                  }();
-                 if (!result) { throw UcmError(result.Error().ToString()); }
-                 auto hits = std::move(result).Value();
-                 if (!hits.has_value()) { return py::none(); }
-                 return py::bytes(reinterpret_cast<const char*>(hits->data()), hits->size());
+                 /* (hits, prefetchable): the snapshot always travels with the signal. */
+                 auto [hits, prefetchable] = Unwrap(std::move(result));
+                 return py::make_tuple(
+                     py::bytes(reinterpret_cast<const char*>(hits.data()), hits.size()),
+                     prefetchable);
              })
         .def("lookup_on_prefix",
              [](StoreScheduler& scheduler, const RequestId& requestId, const py::bytes& keys) {
@@ -287,7 +285,8 @@ PYBIND11_MODULE(ucm_proxy, m)
                      py::gil_scoped_release release;
                      return scheduler.LookupOnPrefix(requestId, blockIds);
                  }();
-                 return Unwrap(std::move(result));
+                 auto [index, prefetchable] = Unwrap(std::move(result));
+                 return py::make_tuple(index, prefetchable);
              })
         .def("lookup_on_reverse",
              [](StoreScheduler& scheduler, const RequestId& requestId, const py::bytes& keys) {
@@ -296,7 +295,8 @@ PYBIND11_MODULE(ucm_proxy, m)
                      py::gil_scoped_release release;
                      return scheduler.LookupOnReverse(requestId, blockIds);
                  }();
-                 return Unwrap(std::move(result));
+                 auto [index, prefetchable] = Unwrap(std::move(result));
+                 return py::make_tuple(index, prefetchable);
              })
         .def("touch",
              [](StoreScheduler& scheduler, const RequestId& requestId, const py::bytes& keys) {
@@ -345,6 +345,15 @@ PYBIND11_MODULE(ucm_proxy, m)
             [](StoreScheduler& scheduler, const RequestId& requestId, bool success) {
                 scheduler.CompletePut(requestId, success);
             },
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "prepare_offload", [](StoreScheduler& scheduler) { return scheduler.PrepareOffload(); },
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "complete_offload",
+            [](StoreScheduler& scheduler, const AddressedToken& plan) {
+                scheduler.CompleteOffload(plan);
+            },
             py::call_guard<py::gil_scoped_release>());
 
     py::class_<StoreWorker>(m, "StoreWorker")
@@ -371,24 +380,28 @@ PYBIND11_MODULE(ucm_proxy, m)
             },
             py::call_guard<py::gil_scoped_release>())
         .def(
+            "submit_offload",
+            [](StoreWorker& worker, std::size_t jobId, AddressedToken token) {
+                CheckStatus(worker.SubmitOffload(jobId, std::move(token)));
+            },
+            py::call_guard<py::gil_scoped_release>())
+        .def(
             "get_finished", [](StoreWorker& worker) { return worker.GetFinished(); },
             py::call_guard<py::gil_scoped_release>())
         .def(
-            "wait",
-            [](StoreWorker& worker, const std::vector<std::size_t>& jobIds) {
-                return worker.Wait(jobIds);
-            },
+            "wait", [](StoreWorker& worker, std::size_t jobId) { CheckStatus(worker.Wait(jobId)); },
             py::call_guard<py::gil_scoped_release>());
 
     py::class_<StoreAssembler>(m, "StoreAssembler")
-        .def(py::init([](const py::dict& config) {
-                 const Dictionary dictionary = ToDictionary(config);
+        .def(py::init([](const py::dict& config, const py::dict& runtime) {
+                 const Dictionary cfg = ToDictionary(config);
+                 const Dictionary rt = ToDictionary(runtime);
                  py::gil_scoped_release release;
-                 auto result = StoreAssembler::Create(dictionary);
+                 auto result = StoreAssembler::Create(cfg, rt);
                  if (!result) { throw UcmError(result.Error().ToString()); }
                  return std::move(result.Value());
              }),
-             py::arg("config"))
+             py::arg("config"), py::arg("runtime") = py::dict())
         .def("get_scheduler", &StoreAssembler::GetScheduler,
              py::return_value_policy::reference_internal)
         .def("get_worker", &StoreAssembler::GetWorker, py::return_value_policy::reference_internal);

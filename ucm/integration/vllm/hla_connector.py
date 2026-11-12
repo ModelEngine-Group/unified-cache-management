@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional
 
 import numpy as np
 import torch
@@ -132,6 +132,177 @@ def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
     )
 
 
+def kv_cache_layout_name(kv_cache_config: "KVCacheConfig") -> str:
+    """Return the resolved layout name, without an enum class prefix."""
+    raw = getattr(kv_cache_config, "kv_cache_layout", None)
+    return str(raw or "").split(".")[-1]
+
+
+def is_cuda_blnhc_layout(kv_cache_config: "KVCacheConfig") -> bool:
+    """CUDA qwen3-flash-next block-first layout. NPU keeps its current path."""
+    return (
+        current_platform.is_cuda_alike()
+        and kv_cache_layout_name(kv_cache_config) == "BLNHC"
+    )
+
+
+def is_npu_layer_major_blnhc(kv_cache_config: "KVCacheConfig") -> bool:
+    """NPU flash-next whose BLNHC name still stores each layer's blocks contiguously."""
+    if getattr(current_platform, "device_type", None) != "npu":
+        return False
+    if kv_cache_layout_name(kv_cache_config) != "BLNHC":
+        return False
+    saw_multi_layer = False
+    for raw in getattr(kv_cache_config, "kv_cache_tensors", []) or []:
+        names = _kv_cache_tensor_layers(raw)
+        if len(names) <= 1:
+            continue
+        layer_stride = int(getattr(raw, "layer_stride", 0) or 0)
+        block_stride = int(getattr(raw, "block_stride", 0) or 0)
+        if layer_stride <= 0 or block_stride <= 0 or layer_stride <= block_stride:
+            return False
+        saw_multi_layer = True
+    return saw_multi_layer
+
+
+def ple_stage_row_map(block_ids: list[int]) -> dict[int, int]:
+    """Map each live block id to a dense row in the layerwise PLE stage.
+
+    Block id 0 is the vLLM null slot and is omitted. Rows follow first-seen
+    order so the stage is one full page per block in this dump or load.
+    """
+    rows: dict[int, int] = {}
+    for block_id in block_ids:
+        block_id = int(block_id)
+        if block_id == 0 or block_id in rows:
+            continue
+        rows[block_id] = len(rows)
+    return rows
+
+
+def npu_flash_next_store_columns(
+    n_slots: int,
+    full_page: int,
+    compressed_page: int,
+    ple_page: int,
+    layerwise: bool,
+) -> tuple[list[int], int, int]:
+    """Column sizes, one shard, and the single UCM block size.
+
+    Whole-store lists every column of the block. Layerwise lists one shard;
+    the block is ``n_slots`` of those shards.
+    """
+    if layerwise:
+        columns = [full_page, compressed_page]
+        shard = full_page + compressed_page
+        return columns, shard, shard * n_slots
+    columns = [full_page] * n_slots + [compressed_page] * n_slots + [ple_page]
+    total = sum(columns)
+    return columns, total, total
+
+
+def npu_flash_next_column_owners(
+    n_slots: int,
+    full_gid: int,
+    linear_gids: list[int],
+    ple_gid: Optional[int],
+    layerwise: bool,
+) -> dict[int, set[tuple[int, int]]]:
+    """Group id to the ``(type_id, slot)`` columns that group fills."""
+    owned: dict[int, set[tuple[int, int]]] = {}
+    if layerwise:
+        owned[full_gid] = {
+            (type_id, slot) for type_id in (0, 1) for slot in range(n_slots)
+        }
+        for gid in linear_gids:
+            owned[gid] = {(0, slot) for slot in range(n_slots)}
+        if ple_gid is not None:
+            owned[ple_gid] = {(0, 0)}
+        return owned
+    owned[full_gid] = {(type_id, 0) for type_id in range(n_slots * 2)}
+    for gid in linear_gids:
+        owned[gid] = {(type_id, 0) for type_id in range(n_slots)}
+    if ple_gid is not None:
+        owned[ple_gid] = {(n_slots * 2, 0)}
+    return owned
+
+
+def _layer_ordinal(layer_name: str) -> Optional[int]:
+    parts = layer_name.split(".")
+    if "layers" not in parts:
+        return None
+    index = parts.index("layers") + 1
+    if index < len(parts) and parts[index].isdigit():
+        return int(parts[index])
+    return None
+
+
+def blnhc_layer_role(layer_name: str) -> str:
+    """Classify one flash-next layer as raw_key, compressed, ple, or plain.
+
+    ``raw_key`` matches a dotted segment that is exactly ``raw_key`` or starts
+    with ``raw_key_`` (engine QSA owner uses ``...indexer.raw_key_cache``).
+    Underscore-splitting alone would turn ``raw_key_cache`` into
+    ``raw``/``key``/``cache`` and miss the role.
+    """
+    parts = [part for part in layer_name.lower().replace("-", "_").split(".") if part]
+    tokens: list[str] = []
+    for part in parts:
+        tokens.append(part)
+        tokens.extend(piece for piece in part.split("_") if piece)
+    if any(part == "raw_key" or part.startswith("raw_key_") for part in parts):
+        return "raw_key"
+    if "raw_key" in tokens:
+        return "raw_key"
+    if any("compress" in token for token in tokens):
+        return "compressed"
+    if "ple" in tokens:
+        return "ple"
+    return ""
+
+
+# Groups and tensors with these roles are recomputed. They do not take a hash
+# or a store column.
+_BLNHC_UNHASHED_ROLES = ("compressed", "raw_key")
+
+
+def blnhc_group_role(layer_names: list[str]) -> str:
+    """Return a role only when every layer in the group has that same role."""
+    roles = [blnhc_layer_role(name) for name in layer_names]
+    if not roles or any(role == "" for role in roles):
+        return ""
+    if len(set(roles)) == 1:
+        return roles[0]
+    return ""
+
+
+def group_state_flags(kv_cache_config: "KVCacheConfig", group) -> tuple[bool, bool]:
+    """Return ``(is_mamba_align, is_ple)`` for one cache group.
+
+    PLE keeps the state-hash role even when its spec is not mamba-align.
+    A mamba-align spec with a PLE, compressed, or raw_key role does not.
+    """
+    role = ""
+    if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+        kv_cache_config
+    ):
+        role = blnhc_group_role(group.layer_names)
+    is_mamba_align = is_mamba_align_kv_cache_spec(group.kv_cache_spec) and role not in (
+        "ple",
+        *_BLNHC_UNHASHED_ROLES,
+    )
+    return is_mamba_align, role == "ple"
+
+
+def state_group_ids(kv_cache_config: "KVCacheConfig") -> set[int]:
+    """Group ids whose load must stay on the submitting rank."""
+    return {
+        group_id
+        for group_id, group in enumerate(kv_cache_config.kv_cache_groups)
+        if any(group_state_flags(kv_cache_config, group))
+    }
+
+
 def extend_non_null(
     dst_ucm_block_ids: list[bytes],
     dst_vllm_block_ids: list[int],
@@ -167,12 +338,26 @@ class GroupInfo:
     # Independent hash chain seed per group (see ``KVCacheGroupManager``).
     seed: bytes
     is_mamba_align: bool = False
+    is_ple: bool = False
+    is_compressed: bool = False
+    is_raw_key: bool = False
     block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
     participates_in_prefix_caching: bool = True
 
     @property
+    def is_state_hash(self) -> bool:
+        """Mamba-align and flash-next PLE share the state-hash lookup."""
+        return self.is_mamba_align or self.is_ple
+
+    @property
     def is_full_attention(self) -> bool:
-        return self.participates_in_prefix_caching and not self.is_mamba_align
+        return (
+            self.participates_in_prefix_caching
+            and not self.is_mamba_align
+            and not self.is_ple
+            and not self.is_compressed
+            and not self.is_raw_key
+        )
 
 
 class KVCacheGroupManager:
@@ -193,7 +378,12 @@ class KVCacheGroupManager:
         for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
-            is_mamba_align = is_mamba_align_kv_cache_spec(spec)
+            role = ""
+            if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+                kv_cache_config
+            ):
+                role = blnhc_group_role(group.layer_names)
+            is_mamba_align, is_ple = group_state_flags(kv_cache_config, group)
             seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
@@ -201,16 +391,20 @@ class KVCacheGroupManager:
                 layer_names=tuple(group.layer_names),
                 seed=seed,
                 is_mamba_align=is_mamba_align,
-                participates_in_prefix_caching=participates_in_prefix_caching(spec),
+                is_ple=is_ple,
+                is_compressed=role == "compressed",
+                is_raw_key=role == "raw_key",
+                participates_in_prefix_caching=participates_in_prefix_caching(spec)
+                and role not in _BLNHC_UNHASHED_ROLES,
             )
-            if not is_mamba_align:
+            if not info.is_state_hash and info.participates_in_prefix_caching:
                 info.block_hasher = request_hasher.make_request_block_hasher(
                     block_size, seed
                 )
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
-            elif info.is_mamba_align:
+            elif info.is_state_hash:
                 self.state_groups.append(info)
             else:
                 self.non_prefix_groups.append(info)
@@ -232,9 +426,9 @@ class KVCacheGroupManager:
                 f"divide LCM={self.lcm_block_size}"
             )
         for sg in self.state_groups:
-            assert sg.is_mamba_align, (
-                f"state group {sg.group_id} is not mamba-align; "
-                f"UCMHybridLinearAttentionConnector only supports mamba-align "
+            assert sg.is_state_hash, (
+                f"state group {sg.group_id} is not mamba-align or PLE; "
+                f"UCMHybridLinearAttentionConnector only supports those "
                 f"state groups."
             )
 
@@ -257,8 +451,8 @@ class KVCacheGroupManager:
         """Hash a request at one group's block boundaries and chain seed."""
         if not group.participates_in_prefix_caching:
             return []
-        if group.is_mamba_align:
-            # mamba-align pads block table with null blocks; no per-block hash.
+        if group.is_state_hash:
+            # mamba-align and PLE pad the block table with null blocks; no per-block hash.
             return [b""] * (len(request.all_token_ids) // group.block_size)
 
         assert group.block_hasher is not None
@@ -310,8 +504,8 @@ class KVCacheGroupManager:
 
         Stage 1: min of full-attn groups' ``lookup_on_prefix`` hits, rounded
         down to ``lcm_block_size``. Stage 2: ``lookup_on_reverse`` over the
-        mamba state hashes at candidate LCM boundaries; any state group with
-        no hit downgrades the external hit to zero. Returns
+        mamba and PLE state hashes at candidate LCM boundaries; any state
+        group with no hit downgrades the external hit to zero. Returns
         (external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes
         for GC heat update).
         """
@@ -444,10 +638,589 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
 
     def _build_layout(self, kvcaches) -> None:
+        if is_cuda_blnhc_layout(self.kv_cache_config):
+            self._build_cuda_blnhc_layout(kvcaches)
+            return
+        if is_npu_layer_major_blnhc(self.kv_cache_config):
+            self._build_npu_flash_next_layout(kvcaches)
+            return
         specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
         self._map_layers_to_slots()
         self._build_layer_anchors(kvcaches, specs)
         self._finalize_layer_arrays()
+
+    def _tensor_block0(self, tensor: torch.Tensor, offset: int) -> int:
+        """Block start. Storage-base views still need the descriptor offset."""
+        ptr = int(tensor.data_ptr())
+        storage_ptr = int(tensor.untyped_storage().data_ptr())
+        if ptr == storage_ptr:
+            return ptr + int(offset)
+        return ptr
+
+    def _iter_kv_tensors(self, kv_layer: Any) -> Iterator[torch.Tensor]:
+        """Yield live tensors, expanding tuples or lists and skipping empty ones."""
+        if isinstance(kv_layer, torch.Tensor):
+            if kv_layer.numel() > 0:
+                yield kv_layer
+            return
+        if isinstance(kv_layer, (tuple, list)):
+            for item in kv_layer:
+                yield from self._iter_kv_tensors(item)
+
+    def _descriptor_block0(self, names: list[str], offset: int, kvcaches) -> int:
+        origins: list[int] = []
+        for name in names:
+            kv_layer = kvcaches.get(name)
+            if kv_layer is None:
+                continue
+            for tensor in self._iter_kv_tensors(kv_layer):
+                origins.append(self._tensor_block0(tensor, offset))
+        if not origins:
+            raise ValueError(
+                "BLNHC KV tensor has no live layer view: "
+                f"layers={_short_list(names)}"
+            )
+        return min(origins)
+
+    def _build_cuda_blnhc_layout(self, kvcaches) -> None:
+        """One column per physical block_stride segment on CUDA BLNHC.
+
+        Linear tensors each own a column. full and compressed share a column
+        when their block starts fall inside one block_stride; the full-attn
+        group owns that column. PLE owns its own column. raw_key is omitted.
+        """
+        self.layer_name_to_slot = {}
+        self.layer_name_to_group = {}
+        self.layer_anchors = {}
+        for gid, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            for name in group.layer_names:
+                self.layer_name_to_group[name] = gid
+
+        records = []
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            if not names:
+                continue
+            role = blnhc_group_role(names)
+            # raw_key is recomputed on resume. It has no store column and no hash.
+            if role == "raw_key":
+                continue
+            block_stride = int(getattr(raw, "block_stride", 0) or 0)
+            if block_stride <= 0:
+                raise ValueError(
+                    "BLNHC KV tensor is missing block_stride: "
+                    f"layers={_short_list(names)}"
+                )
+            offset = int(getattr(raw, "offset", 0) or 0)
+            gid = self.layer_name_to_group.get(names[0])
+            if gid is None:
+                raise ValueError(
+                    "BLNHC KV tensor layers are not in a cache group: "
+                    f"layers={_short_list(names)}"
+                )
+            if any(self.layer_name_to_group.get(name) != gid for name in names):
+                raise ValueError(
+                    "BLNHC KV tensor spans multiple cache groups: "
+                    f"layers={_short_list(names)}"
+                )
+            records.append(
+                {
+                    "names": names,
+                    "role": role,
+                    "gid": gid,
+                    "block_stride": block_stride,
+                    "block0": self._descriptor_block0(names, offset, kvcaches),
+                }
+            )
+        if not records:
+            raise ValueError("CUDA BLNHC layout found no copyable KV tensors.")
+
+        # Plain-role rows whose owning group is full attention:
+        # not mamba-align and not PLE.
+        full_rows = [row for row in records if row["role"] == ""]
+        full_rows = [
+            row
+            for row in full_rows
+            if not is_mamba_align_kv_cache_spec(
+                self.kv_cache_config.kv_cache_groups[row["gid"]].kv_cache_spec
+            )
+            and blnhc_group_role(
+                self.kv_cache_config.kv_cache_groups[row["gid"]].layer_names
+            )
+            != "ple"
+        ]
+        compressed_rows = [row for row in records if row["role"] == "compressed"]
+        owned_rows = [row for row in records if row["role"] != "compressed"]
+
+        columns: list[dict] = []
+        for row in owned_rows:
+            columns.append(
+                {
+                    "block0": row["block0"],
+                    "block_stride": row["block_stride"],
+                    "gid": row["gid"],
+                    "names": list(row["names"]),
+                }
+            )
+        for row in compressed_rows:
+            match = None
+            for column in columns:
+                if column["gid"] not in {item["gid"] for item in full_rows}:
+                    continue
+                if abs(column["block0"] - row["block0"]) < row["block_stride"]:
+                    match = column
+                    break
+            if match is None:
+                raise ValueError(
+                    "BLNHC compressed KV is not inside a full-attention "
+                    "block_stride: "
+                    f"compressed_block0={row['block0']}, "
+                    f"compressed_block_stride={row['block_stride']}, "
+                    f"layers={_short_list(row['names'])}"
+                )
+            match["block0"] = min(match["block0"], row["block0"])
+            match["names"].extend(row["names"])
+
+        self.page_types = [int(column["block_stride"]) for column in columns]
+        self.num_slots = 1
+        self.width = len(self.page_types)
+        self.pair_bases = {
+            (type_id, 0): int(column["block0"])
+            for type_id, column in enumerate(columns)
+        }
+        self.group_owns_type = {
+            (int(column["gid"]), type_id): True
+            for type_id, column in enumerate(columns)
+        }
+        self.group_pairs = defaultdict(set)
+        for gid, _type_id in self.group_owns_type:
+            self.group_pairs[gid].add(0)
+        self.direct_group_bytes = {
+            gid: sum(
+                self.page_types[type_id]
+                for pair in pairs
+                for type_id in range(len(self.page_types))
+                if self.group_owns_type.get((gid, type_id))
+                and (type_id, pair) in self.pair_bases
+            )
+            for gid, pairs in self.group_pairs.items()
+        }
+        tensor_size_list = list(self.page_types)
+        self.tensor_size_lists = np.asarray([tensor_size_list], dtype=np.uint64)
+        self.slot_shard_size = int(sum(tensor_size_list))
+        pairs = sorted(self.pair_bases)
+        self.base_ptrs = np.asarray(
+            [self.pair_bases[key] for key in pairs], dtype=np.uint64
+        )
+        self.buffer_sizes = np.asarray(
+            [self.page_types[key[0]] * self.num_blocks for key in pairs],
+            dtype=np.uint64,
+        )
+        self.block_stride_lists = np.asarray(
+            [self.page_types[key[0]] for key in pairs], dtype=np.uint64
+        )
+        self.layer_column_bytes = {}
+        for column in columns:
+            segment = KVCacheSegment(
+                ptr=int(column["block0"]),
+                copy_size=int(column["block_stride"]),
+                block_stride=int(column["block_stride"]),
+                buffer_size=self.num_blocks * int(column["block_stride"]),
+            )
+            for name in column["names"]:
+                if name not in self.layer_name_to_id:
+                    continue
+                self.layer_anchors[name] = [segment]
+                self.layer_name_to_slot[name] = 0
+                self.layer_column_bytes[name] = int(column["block_stride"])
+        if not self.layer_anchors:
+            raise ValueError("CUDA BLNHC layout found no cacheable layers.")
+        self.group_pair_bases = None
+        logger.info(
+            "CUDA BLNHC block-first layout: columns=%s",
+            [
+                {
+                    "group": column["gid"],
+                    "block0": column["block0"],
+                    "block_stride": column["block_stride"],
+                    "layers": _short_list(column["names"]),
+                }
+                for column in columns
+            ],
+        )
+
+    def _npu_layer_block0(
+        self,
+        name: str,
+        offset: int,
+        layer_index: int,
+        layer_stride: int,
+        kvcaches,
+    ) -> int:
+        """Block 0 of one layer.
+
+        A sliced view already points at that layer. A storage-base view
+        still needs the layer offset.
+        """
+        kv_layer = kvcaches.get(name)
+        if kv_layer is None:
+            raise ValueError(f"NPU flash-next layer has no KV cache: {name}")
+        tensors = list(self._iter_kv_tensors(kv_layer))
+        if not tensors:
+            raise ValueError(f"NPU flash-next layer has no live tensor: {name}")
+        origins: list[int] = []
+        for tensor in tensors:
+            ptr = int(tensor.data_ptr())
+            storage_ptr = int(tensor.untyped_storage().data_ptr())
+            if ptr != storage_ptr:
+                origins.append(ptr)
+            else:
+                origins.append(ptr + int(offset) + int(layer_index) * int(layer_stride))
+        return min(origins)
+
+    def _build_npu_flash_next_layout(self, kvcaches) -> None:
+        """Layer-major flash-next columns. One UCM block size for every group.
+
+        Whole-store columns are 12 full pages, 12 compressed pages, and one
+        PLE page. Layerwise keeps the same 12 slots, but each slot is one
+        shard of ``[full_page, compressed_page]``. PLE is its own block: only
+        slot 0 is filled. The store still copies a full page, so each dump or
+        load packs the blocks it touches into a stage of one row per block.
+        """
+        self.layer_name_to_slot = {}
+        self.layer_name_to_group = {}
+        self.layer_anchors = {}
+        self.layer_column_bytes = {}
+        self.group_pair_bases = {}
+        self.ple_layer_name = None
+        self.ple_group_id = None
+        self._ple_stage = None
+        self._ple_rows: dict[int, int] = {}
+        self._ple_tensor = None
+        self._ple_block0 = 0
+        self._ple_block_stride = 0
+
+        groups = self.kv_cache_config.kv_cache_groups
+        for gid, group in enumerate(groups):
+            for name in group.layer_names:
+                self.layer_name_to_group[name] = gid
+
+        records = []
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            if not names or blnhc_group_role(names) == "raw_key":
+                continue
+            block_stride = int(getattr(raw, "block_stride", 0) or 0)
+            layer_stride = int(getattr(raw, "layer_stride", 0) or 0)
+            offset = int(getattr(raw, "offset", 0) or 0)
+            if block_stride <= 0:
+                raise ValueError(
+                    "NPU flash-next KV tensor is missing block_stride: "
+                    f"layers={_short_list(names)}"
+                )
+            for index, name in enumerate(names):
+                gid = self.layer_name_to_group.get(name)
+                if gid is None:
+                    raise ValueError(
+                        "NPU flash-next layer is not in a cache group: " f"{name}"
+                    )
+                records.append(
+                    {
+                        "name": name,
+                        "role": blnhc_layer_role(name),
+                        "gid": gid,
+                        "block_stride": block_stride,
+                        "block0": self._npu_layer_block0(
+                            name, offset, index, layer_stride, kvcaches
+                        ),
+                        "tensor": next(self._iter_kv_tensors(kvcaches[name]), None),
+                    }
+                )
+
+        def ordered(gid: int, role: str) -> list[dict]:
+            positions = {
+                name: index for index, name in enumerate(groups[gid].layer_names)
+            }
+            rows = [row for row in records if row["gid"] == gid and row["role"] == role]
+            return sorted(rows, key=lambda row: positions[row["name"]])
+
+        full_gids = []
+        linear_gids = []
+        ple_gids = []
+        for gid, group in enumerate(groups):
+            role = blnhc_group_role(group.layer_names)
+            if role == "raw_key":
+                continue
+            if role == "ple":
+                ple_gids.append(gid)
+            elif role == "compressed":
+                continue
+            elif is_mamba_align_kv_cache_spec(group.kv_cache_spec):
+                linear_gids.append(gid)
+            elif role == "" and participates_in_prefix_caching(group.kv_cache_spec):
+                full_gids.append(gid)
+        if len(full_gids) != 1:
+            raise ValueError(
+                "NPU flash-next expects one full-attention group, "
+                f"found {len(full_gids)}."
+            )
+        full_gid = full_gids[0]
+        full_rows = ordered(full_gid, "")
+        compressed_rows = [row for row in records if row["role"] == "compressed"]
+        compressed_rows.sort(key=lambda row: _layer_ordinal(row["name"]) or 0)
+        if not full_rows or len(compressed_rows) != len(full_rows):
+            raise ValueError(
+                "NPU flash-next full and compressed layer counts differ: "
+                f"full={len(full_rows)}, compressed={len(compressed_rows)}."
+            )
+        for full_row, compressed_row in zip(full_rows, compressed_rows):
+            full_ordinal = _layer_ordinal(full_row["name"])
+            compressed_ordinal = _layer_ordinal(compressed_row["name"])
+            if full_ordinal is None or full_ordinal != compressed_ordinal:
+                raise ValueError(
+                    "NPU flash-next full and compressed layers are not paired: "
+                    f"{full_row['name']} vs {compressed_row['name']}."
+                )
+        n_slots = len(full_rows)
+        linear_rows: dict[int, list[dict]] = {}
+        for gid in linear_gids:
+            rows = ordered(gid, "")
+            if len(rows) != n_slots:
+                raise ValueError(
+                    "NPU flash-next linear group does not have "
+                    f"{n_slots} layers: group={gid}, layers={len(rows)}."
+                )
+            linear_rows[gid] = rows
+        if len(ple_gids) != 1:
+            raise ValueError(
+                f"NPU flash-next expects one PLE group, found {len(ple_gids)}."
+            )
+        ple_gid = ple_gids[0]
+        ple_rows = ordered(ple_gid, "ple")
+        if len(ple_rows) != 1:
+            raise ValueError(
+                f"NPU flash-next expects one PLE layer, found {len(ple_rows)}."
+            )
+        ple_row = ple_rows[0]
+        full_page = self._uniform_page(full_rows, "full attention")
+        compressed_page = self._uniform_page(compressed_rows, "compressed")
+        ple_page = ple_row["block_stride"]
+        for gid, rows in linear_rows.items():
+            self._uniform_page(rows, f"linear group {gid}")
+            if rows[0]["block_stride"] != full_page:
+                raise ValueError(
+                    "NPU flash-next linear page differs from full attention: "
+                    f"group={gid}, page={rows[0]['block_stride']}, full={full_page}."
+                )
+
+        columns, shard_size, block_size = npu_flash_next_store_columns(
+            n_slots, full_page, compressed_page, ple_page, self.use_layerwise
+        )
+        owners = npu_flash_next_column_owners(
+            n_slots, full_gid, linear_gids, ple_gid, self.use_layerwise
+        )
+        self.page_types = list(columns)
+        self.width = len(columns)
+        self.num_slots = n_slots if self.use_layerwise else 1
+        self.slot_shard_size = shard_size if self.use_layerwise else block_size
+        self.tensor_size_lists = np.asarray([columns], dtype=np.uint64)
+        self.ple_layer_name = ple_row["name"]
+        self.ple_group_id = ple_gid
+        self._ple_block0 = int(ple_row["block0"])
+        self._ple_block_stride = int(ple_page)
+        self._ple_tensor = ple_row["tensor"]
+        ple_base = int(ple_row["block0"])
+        if self.use_layerwise and self._ple_tensor is None:
+            raise ValueError("NPU flash-next PLE layer has no live tensor.")
+
+        bases: dict[tuple[int, int, int], int] = {}
+        for slot, row in enumerate(full_rows):
+            self._npu_anchor(row["name"], row["gid"], slot, row["block0"], full_page)
+            if self.use_layerwise:
+                bases[(full_gid, 0, slot)] = int(row["block0"])
+                bases[(full_gid, 1, slot)] = int(compressed_rows[slot]["block0"])
+            else:
+                bases[(full_gid, slot, 0)] = int(row["block0"])
+                bases[(full_gid, n_slots + slot, 0)] = int(
+                    compressed_rows[slot]["block0"]
+                )
+            self.layer_column_bytes[row["name"]] = (
+                full_page + compressed_page if self.use_layerwise else full_page
+            )
+        for gid, rows in linear_rows.items():
+            for slot, row in enumerate(rows):
+                self._npu_anchor(row["name"], gid, slot, row["block0"], full_page)
+                if self.use_layerwise:
+                    bases[(gid, 0, slot)] = int(row["block0"])
+                else:
+                    bases[(gid, slot, 0)] = int(row["block0"])
+                self.layer_column_bytes[row["name"]] = full_page
+        self._npu_anchor(
+            ple_row["name"],
+            ple_gid,
+            0,
+            ple_base,
+            full_page if self.use_layerwise else ple_page,
+        )
+        if self.use_layerwise:
+            # The stage does not exist yet. Its base is published when the
+            # blocks for a dump or load are known.
+            self.layer_column_bytes[ple_row["name"]] = full_page
+        else:
+            bases[(ple_gid, n_slots * 2, 0)] = ple_base
+            self.layer_column_bytes[ple_row["name"]] = ple_page
+        self.group_pair_bases = bases
+        self.group_owns_type = {
+            (gid, type_id): True
+            for gid, cells in owners.items()
+            for type_id, _slot in cells
+        }
+        self.group_pairs = defaultdict(set)
+        for gid, cells in owners.items():
+            for _type_id, slot in cells:
+                self.group_pairs[gid].add(slot if self.use_layerwise else 0)
+        self.direct_group_bytes = {}
+        for gid, cells in owners.items():
+            self.direct_group_bytes[gid] = sum(
+                self.page_types[type_id] for type_id, _slot in cells
+            )
+        self.pair_bases = {}
+        buffers: dict[int, int] = {}
+        for (gid, type_id, _slot), base in bases.items():
+            page = self.page_types[type_id]
+            buffers[base] = max(buffers.get(base, 0), self.num_blocks * page)
+        self.base_ptrs = np.asarray(list(buffers), dtype=np.uint64)
+        self.buffer_sizes = np.asarray(
+            [buffers[base] for base in buffers], dtype=np.uint64
+        )
+        self.block_stride_lists = np.asarray(self.page_types, dtype=np.uint64)
+        logger.info(
+            "NPU flash-next %s layout: slots=%s block_size=%s",
+            "layerwise" if self.use_layerwise else "whole-store",
+            n_slots,
+            block_size,
+        )
+
+    @staticmethod
+    def _uniform_page(rows: list[dict], label: str) -> int:
+        pages = {int(row["block_stride"]) for row in rows}
+        if len(pages) != 1:
+            raise ValueError(f"NPU flash-next {label} pages differ: {sorted(pages)}.")
+        return pages.pop()
+
+    def _npu_anchor(
+        self, name: str, gid: int, slot: int, block0: int, page: int
+    ) -> None:
+        self.layer_name_to_group[name] = gid
+        self.layer_name_to_slot[name] = slot
+        self.layer_anchors[name] = [
+            KVCacheSegment(
+                ptr=int(block0),
+                copy_size=int(page),
+                block_stride=int(page),
+                buffer_size=self.num_blocks * int(page),
+            )
+        ]
+
+    def _bind_ple_stage(self, block_ids: list[int]) -> None:
+        """Allocate one full-page row per live block in this dump or load."""
+        if not self.use_layerwise:
+            return
+        rows = ple_stage_row_map(block_ids)
+        stage = getattr(self, "_ple_stage", None)
+        if rows == getattr(self, "_ple_rows", None) and (stage is not None or not rows):
+            return
+        self._ple_rows = rows
+        if not rows:
+            self._ple_stage = None
+            return
+        if self._ple_tensor is None:
+            raise ValueError("NPU flash-next PLE layer has no live tensor.")
+        page = int(self.page_types[0])
+        stage_bytes = len(rows) * page
+        logger.info(
+            "NPU flash-next PLE stage: blocks=%s bytes=%s",
+            len(rows),
+            stage_bytes,
+        )
+        self._ple_stage = torch.empty(
+            stage_bytes,
+            dtype=torch.uint8,
+            device=self._ple_tensor.device,
+        )
+        bases = getattr(self, "group_pair_bases", None)
+        if isinstance(bases, dict) and self.ple_group_id is not None:
+            bases[(self.ple_group_id, 0, 0)] = int(self._ple_stage.data_ptr())
+
+    def _ple_stage_addr(self, block_id: int) -> int:
+        row = self._ple_rows.get(int(block_id))
+        stage = self._ple_stage
+        if row is None or stage is None:
+            return 0
+        return int(stage.data_ptr()) + row * int(self.page_types[0])
+
+    def pack_ple_blocks(self, block_ids: list[int]) -> None:
+        """Copy PLE pages into dense full-page rows, then zero-pad."""
+        self._bind_ple_stage(block_ids)
+        stage = self._ple_stage
+        if stage is None:
+            return
+        page = int(self.page_types[0])
+        stride = int(self._ple_block_stride)
+        for block_id in block_ids:
+            if int(block_id) == 0:
+                continue
+            block_id = int(block_id)
+            row = self._ple_rows[block_id]
+            dst = stage[row * page : (row + 1) * page]
+            dst.zero_()
+            dst[:stride].copy_(self._ple_block_view(block_id))
+
+    def unpack_ple_blocks(self, block_ids: list[int]) -> None:
+        """Copy the loaded PLE prefix out of the dense full-page rows."""
+        stage = self._ple_stage
+        if stage is None:
+            return
+        page = int(self.page_types[0])
+        stride = int(self._ple_block_stride)
+        for block_id in block_ids:
+            if int(block_id) == 0:
+                continue
+            block_id = int(block_id)
+            row = self._ple_rows.get(block_id)
+            if row is None:
+                continue
+            src = stage[row * page : row * page + stride]
+            self._ple_block_view(block_id).copy_(src)
+
+    def _ple_block_view(self, block_id: int) -> torch.Tensor:
+        tensor = self._ple_tensor
+        stride = int(self._ple_block_stride)
+        block = None
+        if tensor.dim() >= 1 and int(tensor.shape[0]) > block_id:
+            block = tensor[block_id]
+        if (
+            block is not None
+            and int(tensor.stride(0)) * int(tensor.element_size()) == stride
+            and block.is_contiguous()
+        ):
+            flat = block.view(torch.uint8).reshape(-1)
+            if int(flat.numel()) != stride:
+                raise ValueError(
+                    "NPU flash-next PLE block is not a dense page: "
+                    f"bytes={int(flat.numel())}, page={stride}."
+                )
+            return flat
+        storage = tensor.untyped_storage()
+        start = self._ple_block0 + block_id * stride - int(storage.data_ptr())
+        if start < 0:
+            raise ValueError(
+                "NPU flash-next PLE block falls outside its storage: "
+                f"block_id={block_id}."
+            )
+        view = torch.empty(0, dtype=torch.uint8, device=tensor.device)
+        view.set_(storage, int(start), (stride,), (1,))
+        return view
 
     def _map_layers_to_slots(self) -> None:
         """Assign every cached layer its pair index and page type.
@@ -743,6 +1516,16 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             [self.page_types[key[0]] for key in pairs], dtype=np.uint64
         )
 
+    def _column_base(self, gid: int, type_id: int, pair: int) -> Optional[int]:
+        """Pointer for one column.
+
+        Per-group bases stay on that group. A missing key is a null column.
+        """
+        group_bases = getattr(self, "group_pair_bases", None)
+        if group_bases:
+            return group_bases.get((int(gid), int(type_id), int(pair)))
+        return self.pair_bases.get((type_id, pair))
+
     def extract_layer_addrs(
         self,
         layer_name: str,
@@ -762,10 +1545,16 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         gid = self.layer_name_to_group[layer_name]
         block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
         addrs = np.zeros((block_ids.shape[0], self.width), dtype=np.uint64)
+        if getattr(self, "_ple_rows", None) and layer_name == getattr(
+            self, "ple_layer_name", None
+        ):
+            for index, block_id in enumerate(vllm_block_ids):
+                addrs[index, 0] = self._ple_stage_addr(int(block_id))
+            return np.ascontiguousarray(addrs)
         for type_id, page in enumerate(self.page_types):
             if not self.group_owns_type.get((gid, type_id)):
                 continue
-            base = self.pair_bases.get((type_id, pair))
+            base = self._column_base(gid, type_id, pair)
             if base is None:
                 continue
             addrs[:, type_id] = base + block_ids * page
@@ -813,7 +1602,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 for type_id, page in enumerate(self.page_types):
                     if not self.group_owns_type.get((int(gid), type_id)):
                         continue
-                    base = self.pair_bases.get((type_id, pair))
+                    base = self._column_base(int(gid), type_id, pair)
                     if base is None:
                         continue
                     addrs[selected, pair * self.width + type_id] = (
@@ -827,8 +1616,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
     The scheduler side (group-aware hashing, two-stage lookup, per-group
     dispatch meta) is shared between direct and layerwise modes.  The worker
-    side here is DIRECT: one whole-block task per request at
-    ``start_load_kv`` (waited inline), ONE whole-batch dump task in
+    side here is DIRECT: separate shared MLA and private state tasks per request
+    at ``start_load_kv`` (waited inline), ONE whole-batch dump task in
     ``wait_for_save`` — a single shard per block, no deferred-commit logic.
     The layerwise subclass overrides ``register_kv_caches`` and the whole
     transfer pipeline.
@@ -1212,9 +2001,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             load_full_attn_count = len(load_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba state blocks
+            # Pass 2: mamba and PLE state blocks
             for gid, group in enumerate(groups_by_id):
-                if not group.is_mamba_align:
+                if not group.is_state_hash:
                     continue
                 self._append_mamba_align_state_block(
                     load_ucm_block_ids,
@@ -1255,22 +2044,24 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba state blocks
-            for gid, group in enumerate(groups_by_id):
-                if not group.is_mamba_align:
-                    continue
-                if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
-                    continue
-                self._append_mamba_align_state_block(
-                    dump_ucm_block_ids,
-                    dump_vllm_block_ids,
-                    dump_group_ids,
-                    req_meta,
-                    request_id,
-                    gid,
-                    last_lcm_b,
-                    "dump",
-                )
+            # Pass 2: mamba and PLE state only when this step ends exactly on
+            # an LCM boundary. The state at last_lcm_b is then the running
+            # state. A step that merely crosses a boundary leaves that slot
+            # overwritten by the partial block, so it is not dumped.
+            if dump_tok_end == last_lcm_b and last_lcm_b >= first_lcm_b:
+                for gid, group in enumerate(groups_by_id):
+                    if not group.is_state_hash:
+                        continue
+                    self._append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        dump_group_ids,
+                        req_meta,
+                        request_id,
+                        gid,
+                        last_lcm_b,
+                        "dump",
+                    )
         else:
             dump_full_attn_count = 0
 
@@ -1498,11 +2289,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         Returns ``(layout, worker_cores, store_cores)``; the store itself is
         mode-specific and created by each subclass's ``register_kv_caches``.
         """
-        # Block-first: whole-page copy overruns the last block. Not supported yet.
-        layout_name = str(
-            getattr(self._kv_cache_config, "kv_cache_layout", "") or ""
-        ).split(".")[-1]
-        if layout_name.startswith("B"):
+        # Block-first whole-page copy overruns the last block. CUDA BLNHC
+        # copies one block_stride segment per column. NPU layer-major BLNHC
+        # stores each layer's blocks contiguously and uses the same copy.
+        layout_name = kv_cache_layout_name(self._kv_cache_config)
+        if (
+            layout_name.startswith("B")
+            and not is_cuda_blnhc_layout(self._kv_cache_config)
+            and not is_npu_layer_major_blnhc(self._kv_cache_config)
+        ):
             raise ValueError(
                 f"Block-first KV cache layout '{layout_name}' is not supported"
             )
@@ -1513,8 +2308,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         else:
             self.kv_caches = kv_caches
 
+        launch_config = self.launch_config
+        if not self.use_layerwise and is_npu_layer_major_blnhc(self._kv_cache_config):
+            # KVCacheLayout defaults use_layerwise to True. Pin whole-store
+            # so that default does not rebuild this layout as layerwise.
+            launch_config = copy.deepcopy(self.launch_config)
+            launch_config["use_layerwise"] = False
         self.kv_cache_layout = HybridLinearAttentionLayout(
-            self.kv_caches, self.launch_config, self._vllm_config, self._kv_cache_config
+            self.kv_caches, launch_config, self._vllm_config, self._kv_cache_config
         )
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
@@ -1596,6 +2397,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def _reset_transfer_state(self) -> None:
         """Per-step reset of the worker-side load/dump transfer state."""
         self.load_tasks.clear()
+        ple_load_ids = getattr(self, "_ple_load_ids", None)
+        if ple_load_ids is not None:
+            ple_load_ids.clear()
         self._load_bytes_by_pair.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
@@ -1696,7 +2500,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         return self._dump_plan
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        """Direct load: one whole-block task per request, then wait for all."""
+        """Direct load: separate shared MLA and private state tasks, then wait."""
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self._reset_transfer_state()
@@ -1713,7 +2517,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
         num_loaded_block = 0
-        num_loaded_request = 0
         request_tasks: list[tuple[str, Task, int]] = []
         for (
             request_id,
@@ -1724,29 +2527,44 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
-            num_loaded_block += len(scoped_ucm)
-            num_loaded_request += 1
-            try:
-                ptrs = layout.extract_block_addrs(scoped_vllm, scoped_groups)
-                task = self._rank_consistency.submit_load(
-                    self.store,
-                    {request_id: unscoped_ucm},
-                    scoped_ucm,
-                    [0] * len(scoped_ucm),
-                    ptrs,
-                )
-                request_tasks.append((request_id, task, len(scoped_ucm)))
-                self._load_bytes_total += sum(
-                    layout.direct_group_bytes.get(gid, 0) for gid in scoped_groups
-                )
-            except Exception as e:
-                logger.error(
-                    f"request {request_id} submit direct load task error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                self._mark_load_failed(metadata, request_id)
-                num_loaded_block -= len(scoped_ucm)
-                num_loaded_request -= 1
+            mla_count = (
+                getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
+                if self.is_mla
+                else 0
+            )
+            # Load metadata puts shared MLA keys before rank-scoped state keys.
+            # A task with private keys cannot assign fills to other ranks.
+            for start, end, distribute_load in (
+                (0, mla_count, True),
+                (mla_count, len(scoped_ucm), False),
+            ):
+                if start == end:
+                    continue
+                try:
+                    ptrs = layout.extract_block_addrs(
+                        scoped_vllm[start:end], scoped_groups[start:end]
+                    )
+                    task = self._rank_consistency.submit_load(
+                        self.store,
+                        {request_id: unscoped_ucm[start:end]},
+                        scoped_ucm[start:end],
+                        [0] * (end - start),
+                        ptrs,
+                        distribute_backend_load=distribute_load,
+                    )
+                    request_tasks.append((request_id, task, end - start))
+                    num_loaded_block += end - start
+                    self._load_bytes_total += sum(
+                        layout.direct_group_bytes.get(gid, 0)
+                        for gid in scoped_groups[start:end]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"request {request_id} submit direct load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._mark_load_failed(metadata, request_id)
+                    break
 
         for request_id, task, n_blocks in request_tasks:
             try:
@@ -1764,7 +2582,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         load_speed = self._load_bytes_total / max(load_duration_ms, 1) / 1024 / 1024
         ucmmetrics.update_stats(
             {
-                "load_requests_num": num_loaded_request,
+                "load_requests_num": len(
+                    {request_id for request_id, _, _ in request_tasks}
+                    - self._failure_req_ids
+                ),
                 "load_blocks_num": num_loaded_block,
                 "load_duration": load_duration_ms,
                 "load_speed": load_speed,
@@ -1922,6 +2743,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         kv_cache_config: "KVCacheConfig",
     ):
         super().__init__(vllm_config, role, kv_cache_config)
+        if is_cuda_blnhc_layout(kv_cache_config):
+            raise ValueError(
+                "CUDA BLNHC does not support layerwise. "
+                "Use UCMHybridLinearAttentionConnector."
+            )
         self.launch_config = copy.deepcopy(self.launch_config)
         self.launch_config["use_layerwise"] = True
         self.use_layerwise = True
@@ -1929,6 +2755,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
         self._group_commit_layer: dict[int, str] = {}
+        self._ple_load_ids: dict[tuple[int, int], dict[str, list[int]]] = defaultdict(
+            dict
+        )
+        self._state_group_ids = state_group_ids(kv_cache_config)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Layerwise registration: per-pair store + deferred commit plan.
@@ -1980,6 +2810,23 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         assert isinstance(layout, HybridLinearAttentionLayout)
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
+        if layer_name == getattr(layout, "ple_layer_name", None):
+            ple_block_ids: list[int] = []
+            for (
+                request_id,
+                _unscoped_ucm,
+                _scoped_ucm,
+                scoped_vllm,
+                scoped_groups,
+            ) in self.request_data:
+                if request_id in self._failure_req_ids:
+                    continue
+                ple_block_ids.extend(
+                    block_id
+                    for block_id, group_id in zip(scoped_vllm, scoped_groups)
+                    if group_id == gid
+                )
+            layout._bind_ple_stage(ple_block_ids)
         for (
             request_id,
             unscoped_ucm,
@@ -2005,8 +2852,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     sel_scoped,
                     [slot] * len(sel_scoped),
                     ptrs,
+                    distribute_backend_load=(
+                        self.is_mla and gid not in self._state_group_ids
+                    ),
                 )
                 self.load_tasks[pair_key][request_id] = task
+                if layer_name == getattr(layout, "ple_layer_name", None):
+                    self._ple_load_ids[pair_key][request_id] = list(sel_vllm)
                 self._load_bytes_by_pair[pair_key] += (
                     len(sel_scoped) * layout.layer_column_bytes[layer_name]
                 )
@@ -2039,6 +2891,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"{type(e).__name__}: {e}"
                 )
                 self._mark_load_failed(metadata, request_id)
+            else:
+                ple_ids = self._ple_load_ids.get(pair_key, {}).pop(request_id, None)
+                if ple_ids:
+                    layout = self.kv_cache_layout
+                    assert isinstance(layout, HybridLinearAttentionLayout)
+                    layout.unpack_ple_blocks(ple_ids)
         self._load_bytes_total += self._load_bytes_by_pair.pop(pair_key, 0)
 
     def _record_load_bytes(self) -> None:
@@ -2084,6 +2942,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         sel_ucm = [scoped_ucm_ids[i] for i in selected]
         slot = self.layer_to_slot[layer_name]
         try:
+            if layer_name == getattr(layout, "ple_layer_name", None):
+                layout.pack_ple_blocks(sel_vllm)
             ptrs = layout.extract_layer_addrs(layer_name, sel_vllm)
             event_handle = self._get_dump_event_handle()
             task = self._rank_consistency.submit_dump(
@@ -2112,13 +2972,78 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 f"{type(e).__name__}: {e}"
             )
 
+    def _submit_unowned_slot_dumps(self) -> None:
+        """Null-fill shard indexes a group never writes.
+
+        Posix archives a block only after every shard is marked done.
+        PLE owns slot 0 only, so slots ``1 .. num_slots-2`` reuse that
+        same block id with a zero address matrix. Slot ``num_slots-1``
+        stays on the commit task.
+        """
+        plan = self._dump_plan
+        if plan is None or self._max_slot <= 0:
+            return
+        (
+            scoped_ucm_ids,
+            _scoped_vllm_ids,
+            scoped_group_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        ) = plan
+        if not scoped_ucm_ids:
+            return
+        layout = self.kv_cache_layout
+        assert isinstance(layout, HybridLinearAttentionLayout)
+        owned = getattr(layout, "group_pairs", None) or {}
+        hole_ids: list[bytes] = []
+        hole_slots: list[int] = []
+        group_ids_np = np.asarray(scoped_group_ids, dtype=np.int64)
+        for gid_raw in np.unique(group_ids_np):
+            gid = int(gid_raw)
+            if gid not in owned:
+                continue
+            missing = [slot for slot in range(self._max_slot) if slot not in owned[gid]]
+            if not missing:
+                continue
+            selected = [
+                scoped_ucm_ids[i] for i in np.flatnonzero(group_ids_np == gid).tolist()
+            ]
+            for slot in missing:
+                hole_ids.extend(selected)
+                hole_slots.extend([slot] * len(selected))
+        if not hole_ids:
+            return
+        addrs = np.zeros((len(hole_ids), layout.width), dtype=np.uint64)
+        try:
+            event_handle = self._get_dump_event_handle()
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                hole_ids,
+                hole_slots,
+                addrs,
+                event_handle,
+            )
+            self._dump_tasks.append(
+                PendingDumpTask(
+                    task=task,
+                    request_ids=set(dump_request_ids),
+                    event_handle=event_handle,
+                )
+            )
+            self.is_save = True
+        except Exception as e:
+            logger.error(
+                f"submit unowned slot dump task failed. {type(e).__name__}: {e}"
+            )
+
     def _submit_commit_dump(self) -> None:
         """One ordered write of the max-pair shard for every dumped block.
 
         Blocks whose group owns a max-pair layer get that layer's real
         component addresses; blocks of groups without a max-pair layer get
-        null rows — nothing was ever written to that shard for them, and the
-        null write only triggers the block-file commit.
+        null rows. PLE's middle shards are padded first, so this shard is
+        the last MarkDone the block needs.
         """
         plan = self._dump_plan
         if plan is None:
@@ -2178,6 +3103,24 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                 )
 
+    def _is_full_cudagraph(self) -> bool:
+        """True when the engine may replay a full model graph this process.
+
+        ``FULL``, ``FULL_DECODE_ONLY``, and ``FULL_AND_PIECEWISE`` all report
+        ``has_full_cudagraphs()`` / decode-side FULL. Those replays skip
+        per-layer Python wait hooks, so the depth-2 load pipeline cannot
+        submit later positions or wait before the model reads KV.
+        """
+        cc = getattr(self._vllm_config, "compilation_config", None)
+        cg_mode = getattr(cc, "cudagraph_mode", None)
+        if cg_mode is None:
+            return False
+        has_full = getattr(cg_mode, "has_full_cudagraphs", None)
+        if callable(has_full):
+            return bool(has_full())
+        name = str(getattr(cg_mode, "name", cg_mode) or "NONE")
+        return name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -2191,11 +3134,71 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         # has completed before load DMA (store stream) can overwrite the
         # state it copies.
         self.device.synchronize()
+        if self._is_full_cudagraph():
+            # Finish every layer load before forward enters the captured
+            # graph; wait_for_save drain cannot recover unsubmitted layers.
+            for pos in range(len(self.layer_order)):
+                self._submit_layer_load(pos)
+            self._drain_unwaited_loads()
+            self._record_load_bytes()
+            return
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.
         self._submit_layer_load(0)
         self._submit_layer_load(1)
+
+    def _wait_ple_on_same_layer(self, layer_name: str) -> None:
+        """Wait PLE when this model layer's hook fired but PLE's did not.
+
+        PLE lives on one layer that also has linear attention. The linear
+        hook is what vLLM calls; unpack still has to run before that layer
+        reads the PLE tensor.
+        """
+        layout = self.kv_cache_layout
+        ple_name = getattr(layout, "ple_layer_name", None)
+        if (
+            not ple_name
+            or ple_name == layer_name
+            or ple_name not in self.layer_pos
+            or ple_name in self._waited_layers
+        ):
+            return
+        if self.layer_name_to_id.get(ple_name) != self.layer_name_to_id.get(layer_name):
+            return
+        self._waited_layers.add(ple_name)
+        self._submit_layer_load(self.layer_pos[ple_name])
+        pair_key = (self.layer_to_group[ple_name], self.layer_to_slot[ple_name])
+        if pair_key in self._waited_group_slots:
+            return
+        self._waited_group_slots.add(pair_key)
+        self._wait_layer_load_pair(pair_key)
+
+    def _drain_unwaited_loads(self) -> None:
+        """Finish load tasks whose layer hook never ran."""
+        pending = [
+            pair_key
+            for pair_key in list(self.load_tasks)
+            if pair_key not in self._waited_group_slots
+        ]
+        if pending:
+            logger.warning(
+                "HLA layerwise load drain: unwaited pairs=%s",
+                pending,
+            )
+        for pair_key in pending:
+            self._waited_group_slots.add(pair_key)
+            self._wait_layer_load_pair(pair_key)
+        ple_load_ids = getattr(self, "_ple_load_ids", None)
+        if not ple_load_ids:
+            return
+        leftover = [pair_key for pair_key, ids in ple_load_ids.items() if ids]
+        if leftover:
+            logger.warning(
+                "HLA layerwise PLE load was not unpacked: pairs=%s",
+                leftover,
+            )
+        ple_load_ids.clear()
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata or not self.need_load:
@@ -2219,6 +3222,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
                 self._record_load_bytes()
+        self._wait_ple_on_same_layer(layer_name)
         # Keep at most two layers in flight: the next position was normally
         # submitted two waits ago; resubmitting is a no-op and covers a gap
         # where an earlier layer's wait hook never fired.
@@ -2249,6 +3253,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
     def wait_for_save(self) -> None:
         """Layerwise dump: catch up undumped layers, then the max-pair commit."""
+        if self.need_load:
+            self._drain_unwaited_loads()
         if self._connector_metadata:
             self._ensure_dump_plan()
             # Dump every layer not yet dumped (hooks that never fired,
@@ -2262,6 +3268,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._submit_layer_dump(layer_name)
 
         if self._dump_plan is not None:
+            self._submit_unowned_slot_dumps()
             self._submit_commit_dump()
         self._wait_dump_tasks()
 

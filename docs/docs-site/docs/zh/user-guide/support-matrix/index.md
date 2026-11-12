@@ -18,7 +18,8 @@
 <tr><th scope="row">DeepSeek R1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
 <tr><th scope="row">DeepSeek V3.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
 <tr><th scope="row">DeepSeek V4 Pro</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
-<tr><th scope="row">DeepSeek V4 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">DeepSeek V4 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
+<tr><th scope="row">DeepSeek V4.1 Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">Qwen</th></tr>
@@ -29,25 +30,27 @@
 <tr><th scope="row">Qwen3.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">Qwen3.6</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">Qwen3.8</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
-<tr><th scope="row">Qwen3.8-Flash-Next</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">Qwen3.8-Flash-Next</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">GLM</th></tr>
 <tr><th scope="row">GLM-4.x</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
 <tr><th scope="row">GLM-5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">GLM-5.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
-<tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
-<tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
+<tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">MiniMax</th></tr>
 <tr><th scope="row">MiniMax-M2.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
 <tr><th scope="row">MiniMax-M2.7</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
-<tr><th scope="row">MiniMax-M3</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">MiniMax-M3</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">MiniMax-M3.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="4" scope="rowgroup">Kimi</th></tr>
 <tr><th scope="row">Kimi-K2.5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
+<tr><th scope="row">Kimi-K2.7</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">Kimi-K3</th><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 </table>
@@ -70,6 +73,6 @@
 
 表中列出代表性模型和设备。实际行为受引擎版本、模型变体、运行参数及后端影响；“待验证”表示尚无对应验证结论。
 
-**说明**：Ascend 950PR 和 950DT 仅在DeepSeek-V4-Flash上经过验证。
+**说明**：Ascend 950PR 和 950DT 仅在DeepSeek-V4-Flash和GLM-5.2上经过验证。Qwen3.8-Flash-Next 在 vLLM-Ascend 上使用单独镜像 `qwen3.8-next-a3-openeuler` 运行；MiniMax-M3.1 在 vLLM 上使用单独镜像 `minimax-m31-flash` 运行。
 
 </div>

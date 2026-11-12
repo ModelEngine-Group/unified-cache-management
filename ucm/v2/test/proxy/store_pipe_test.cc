@@ -60,11 +60,7 @@ public:
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& /*jobIds*/) override
-    {
-        return {};
-    }
+    Status Wait(std::size_t /*jobId*/) override { return Status::Ok(); }
 
 private:
     std::vector<std::string>* log_;
@@ -102,7 +98,8 @@ TEST(StorePipeTest, ServesAsStoreEntry)
         EXPECT_TRUE(pipe.OnNewRequest(MakeContext("r")).Success());
         auto hits = pipe.Lookup("r", keys);
         ASSERT_TRUE(hits);
-        ASSERT_TRUE(hits.Value().has_value());
+        EXPECT_FALSE(hits.Value().second);
+        EXPECT_EQ(hits.Value().first, std::vector<std::uint8_t>(2, 1));
         auto token = pipe.PrepareGet("r", keys);
         ASSERT_TRUE(token);
         EXPECT_EQ(token.Value().keys, keys);

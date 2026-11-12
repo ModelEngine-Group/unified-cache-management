@@ -52,14 +52,20 @@ void AppendFrame(std::array<std::byte, PEER_FRAME_SIZE>& frame, std::size_t bran
     std::memcpy(frame.data() + PEER_TOKEN_MAGIC.size(), &encoded, sizeof(encoded));
 }
 
+/* Prepends the branch frame to a token's payload, in place. */
+void PrependFrame(std::size_t branch, AddressedToken& token)
+{
+    std::array<std::byte, PEER_FRAME_SIZE> frame;
+    AppendFrame(frame, branch);
+    std::vector<std::byte>& payload = token.payload;
+    payload.reserve(PEER_FRAME_SIZE + payload.size());
+    payload.insert(payload.begin(), frame.begin(), frame.end());
+}
+
 Expected<AddressedToken> WrapToken(std::size_t branch, Expected<AddressedToken> token)
 {
     if (!token) { return token; }
-    std::vector<std::byte>& payload = token.Value().payload;
-    std::array<std::byte, PEER_FRAME_SIZE> frame;
-    AppendFrame(frame, branch);
-    payload.reserve(PEER_FRAME_SIZE + payload.size());
-    payload.insert(payload.begin(), frame.begin(), frame.end());
+    PrependFrame(branch, token.Value());
     return token;
 }
 
@@ -114,7 +120,7 @@ void StorePeer::OnRequestFinished(const RequestId& requestId)
     requests_.erase(requestId);
 }
 
-Expected<std::optional<std::vector<std::uint8_t>>> StorePeer::Lookup(
+Expected<std::pair<std::vector<std::uint8_t>, bool>> StorePeer::Lookup(
     const RequestId& requestId, const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
@@ -122,16 +128,16 @@ Expected<std::optional<std::vector<std::uint8_t>>> StorePeer::Lookup(
     return branches_[guard.Value()->branch]->Lookup(requestId, keys);
 }
 
-Expected<std::optional<std::int64_t>> StorePeer::LookupOnPrefix(const RequestId& requestId,
-                                                                const std::vector<BlockId>& keys)
+Expected<std::pair<std::int64_t, bool>> StorePeer::LookupOnPrefix(const RequestId& requestId,
+                                                                  const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
     return branches_[guard.Value()->branch]->LookupOnPrefix(requestId, keys);
 }
 
-Expected<std::optional<std::int64_t>> StorePeer::LookupOnReverse(const RequestId& requestId,
-                                                                 const std::vector<BlockId>& keys)
+Expected<std::pair<std::int64_t, bool>> StorePeer::LookupOnReverse(const RequestId& requestId,
+                                                                   const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
@@ -192,6 +198,29 @@ void StorePeer::CompletePut(const RequestId& requestId, bool success)
     branches_[guard.Value()->branch]->CompletePut(requestId, success);
 }
 
+std::vector<AddressedToken> StorePeer::PrepareOffload()
+{
+    /* Offload work is branch-local: no request routes it, so every
+     * branch is drained and each plan it contributes is stamped with
+     * the frame that routes its execution and receipt back. */
+    std::vector<AddressedToken> plans;
+    for (std::size_t branch = 0; branch < branches_.size(); branch++) {
+        for (auto& plan : branches_[branch]->PrepareOffload()) {
+            PrependFrame(branch, plan);
+            plans.push_back(std::move(plan));
+        }
+    }
+    return plans;
+}
+
+void StorePeer::CompleteOffload(const AddressedToken& plan)
+{
+    AddressedToken token = plan;
+    auto branch = StripTokenFrame(token, branches_.size());
+    if (!branch) { return; }  // unroutable receipts are dropped silently
+    branches_[branch.Value()]->CompleteOffload(token);
+}
+
 Status StorePeer::SubmitPrefetch(std::size_t jobId, AddressedToken token)
 {
     if (inFlightJobs_.count(jobId) != 0) {
@@ -241,6 +270,21 @@ Status StorePeer::SubmitPut(std::size_t jobId, std::vector<BlockPayload> payload
     return status;
 }
 
+Status StorePeer::SubmitOffload(std::size_t jobId, AddressedToken plan)
+{
+    if (inFlightJobs_.count(jobId) != 0) {
+        return Status::InvalidParam("job '{}' is already in flight", jobId);
+    }
+    auto branch = StripTokenFrame(plan, branches_.size());
+    if (!branch) { return branch.Error(); }
+    auto status = branches_[branch.Value()]->SubmitOffload(jobId, std::move(plan));
+    if (status.Success()) {
+        inFlightJobs_.emplace(jobId, branch.Value());
+        ++inFlightPerBranch_[branch.Value()];
+    }
+    return status;
+}
+
 std::vector<IoResult> StorePeer::GetFinished()
 {
     std::vector<IoResult> results;
@@ -258,24 +302,16 @@ std::vector<IoResult> StorePeer::GetFinished()
     return results;
 }
 
-std::vector<IoResult> StorePeer::Wait(const std::vector<std::size_t>& jobIds)
+Status StorePeer::Wait(std::size_t jobId)
 {
-    std::vector<IoResult> results;
-    std::unordered_map<std::size_t, std::vector<std::size_t>> groups;
-    for (const auto& jobId : jobIds) {
-        auto it = inFlightJobs_.find(jobId);
-        if (it != inFlightJobs_.end()) { groups[it->second].push_back(jobId); }
+    auto it = inFlightJobs_.find(jobId);
+    if (it == inFlightJobs_.end()) {
+        return Status::InvalidParam("job '{}' is not in flight", jobId);
     }
-    for (std::size_t branch = 0; branch < branches_.size(); branch++) {
-        auto it = groups.find(branch);
-        if (it == groups.end()) { continue; }
-        for (auto& result : branches_[branch]->Wait(it->second)) {
-            inFlightJobs_.erase(result.jobId);
-            --inFlightPerBranch_[branch];
-            results.push_back(std::move(result));
-        }
-    }
-    return results;
+    const std::size_t branch = it->second;
+    inFlightJobs_.erase(it);
+    --inFlightPerBranch_[branch];
+    return branches_[branch]->Wait(jobId);
 }
 
 Expected<StorePeer::RequestState*> StorePeer::RequireRequest(const RequestId& requestId)

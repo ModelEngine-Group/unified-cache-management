@@ -24,7 +24,6 @@
 #pragma once
 
 #include <memory>
-#include <variant>
 #include "status/status.h"
 #include "store_entry.h"
 #include "store_loader.h"
@@ -35,17 +34,42 @@
 
 namespace UC::Proxy {
 
+/**
+ * @brief Configuration-driven assembly of the store topology root.
+ *
+ * The user configuration follows a fixed three-level grammar — the root is
+ * always a peer, every branch is a pipe, every pipe tier is a store node:
+ *
+ *   peer      := { routing?: { strategy: <name>, config?: {...} },
+ *                  branches: [ pipeNode, ... ] }        # >= 1
+ *   pipeNode  := { pipe: [ storeNode, ... ] }           # >= 1
+ *   storeNode := { store: <name|path>, config?: {...} }
+ *
+ * A single-branch peer may omit "routing" (an internal fixed strategy routes
+ * every request to branch 0).
+ *
+ * "runtime" is the flat service dictionary (conceptually "__ucm_runtime__")
+ * built programmatically by the embedding layer and never part of user
+ * files: every key is merged into every store node's setup config, colliding
+ * keys are rejected, and the reserved per-instance key "unique_id" is
+ * suffixed with the node's topology path ("@branches[i].pipe[j]") so
+ * same-plugin instances receive distinct service identities.
+ *
+ * User-supplied keys must not start with "__": that namespace is reserved
+ * for assembler-injected values (runtime merge, "__ucm_lower_store__" pipe
+ * wiring).
+ */
 class StoreAssembler {
 public:
-    static Expected<std::unique_ptr<StoreAssembler>> Create(const Dictionary& config);
+    static Expected<std::unique_ptr<StoreAssembler>> Create(const Dictionary& config,
+                                                            const Dictionary& runtime = {});
 
     StoreScheduler* GetScheduler();
     StoreWorker* GetWorker();
 
 private:
-    explicit StoreAssembler(
-        std::variant<std::unique_ptr<StoreEntry>, std::unique_ptr<StorePeer>> root);
-    std::variant<std::unique_ptr<StoreEntry>, std::unique_ptr<StorePeer>> root_;
+    explicit StoreAssembler(std::unique_ptr<StorePeer> root);
+    std::unique_ptr<StorePeer> root_;
 };
 
 }  // namespace UC::Proxy

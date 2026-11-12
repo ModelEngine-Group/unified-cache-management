@@ -1,6 +1,6 @@
 """Exercise Python preparation without SGLang, torch or native UCM libraries."""
 
-import hashlib
+import array
 import os
 import sys
 import types
@@ -54,18 +54,56 @@ class LayoutPreparationTest(unittest.TestCase):
                 {"config_file": "legacy.yaml"}, {}
             )
 
-    def test_registered_backend_paths_preserve_pool_and_layout_names(self):
+    def test_group_name_uses_shortest_pool_and_shard_geometry(self):
+        self.assertEqual(
+            linker_module._pool_group_name(
+                ("deepseek_v4_c4_indexer", "deepseek_v4_c4"), 4096, 32
+            ),
+            "deepseek_v4_c4_4096x32",
+        )
+        self.assertEqual(linker_module._pool_group_name(("bb", "aa"), 8, 2), "aa_8x2")
+        self.assertEqual(
+            linker_module._pool_group_name(("indexer", "kv"), 16, 4), "kv_16x4"
+        )
+
+    def test_equal_geometry_group_names_include_layout_hash(self):
+        linker = object.__new__(linker_module.UcmDirectLinker)
+        linker.num_layers = 2
+        linker.pools = {
+            "kv": types.SimpleNamespace(
+                name="kv",
+                indices_from_pool="kv",
+                layer_mapping={0: 0, 1: 1},
+                buffer_meta=[[(100, 4, 4), (200, 8, 8)], [(300, 12, 12), (400, 8, 8)]],
+                _component_offsets=[[0, 0], [0, 0]],
+            )
+        }
+        bundles = linker._build_pool_bundles()
+        names = [bundle.name for bundle in bundles]
+        self.assertEqual(len(names), 2)
+        self.assertEqual(len(set(names)), 2)
+        self.assertTrue(all(name.startswith("kv_16x1__h") for name in names))
+        self.assertEqual(
+            names, [bundle.name for bundle in linker._build_pool_bundles()]
+        )
+
+    def test_registered_backend_paths_use_group_names(self):
         adapter = self.adapter()
         del adapter._ensure_store_schema
         roots = ["cache-a", "cache-b"]
         adapter._store_config["storage_backends"] = roots
         pools = []
         for group, names, layers, size in (
-            ("kv-a", ("kv",), (0, 1), 8),
-            ("kv-b", ("kv",), (0, 1), 16),
-            ("kv-tail", ("kv",), (4, 6), 8),
-            ("swa", ("swa",), (0, 1), 8),
-            ("dsa", ("INDEXER", "KV"), (0, 1), 8),
+            ("kv_8x2", ("kv",), (0, 1), 8),
+            ("kv_16x2", ("kv",), (0, 1), 16),
+            ("kv_8x3", ("kv",), (4, 6, 8), 8),
+            ("swa_8x2", ("swa",), (0, 1), 8),
+            (
+                "deepseek_v4_c4_16x2",
+                ("deepseek_v4_c4", "deepseek_v4_c4_indexer"),
+                (0, 1),
+                8,
+            ),
         ):
             for name in names:
                 pools.append(
@@ -91,16 +129,9 @@ class LayoutPreparationTest(unittest.TestCase):
             patch.object(Path, "mkdir") as mkdir,
         ):
             adapter.register_device_pools(pools)
-        expected_names = {
-            group: f"kv_layers_0-1_layout_{hashlib.sha256(group.encode()).hexdigest()[:10]}"
-            for group in ("kv-a", "kv-b")
-        }
-        expected_names.update(
-            {"kv-tail": "kv_layers_4_6", "swa": "swa", "dsa": "kv_indexer"}
-        )
         expected = {
-            group: [str(Path(root) / name) for root in roots]
-            for group, name in expected_names.items()
+            group: [str(Path(root) / "sglang_linker" / group) for root in roots]
+            for group in adapter._stores
         }
         self.assertEqual(adapter._backend_paths_by_group, expected)
         self.assertEqual(
@@ -124,6 +155,22 @@ class LayoutPreparationTest(unittest.TestCase):
         member.layer_schemas = ()
         with self.assertRaisesRegex(ValueError, "no positive estimated pool capacity"):
             adapter._estimate_gc_capacities({"a": [member]})
+
+    def test_only_stock_cache_pipeline_accepts_transfer_events(self):
+        for name, module, pipeline, expected in (
+            ("UcmPipelineStore", None, "Cache|Posix", True),
+            ("UcmPipelineStore", "custom.backend", "Cache|Posix", False),
+            ("UcmPipelineStore", None, "Posix", False),
+            ("CustomStore", None, "Cache|Posix", False),
+        ):
+            with self.subTest(name=name, module=module, pipeline=pipeline):
+                adapter = adapter_module.UcmDirectStoreAdapter(
+                    connector_name=name,
+                    module_path=module,
+                    store_config={"store_pipeline": pipeline},
+                    identity={},
+                )
+                self.assertEqual(adapter.supports_transfer_prerequisite, expected)
 
     def transfer(self, **changes):
         transfer = adapter_module.UcmLayerTransfer(
@@ -193,9 +240,12 @@ class LayoutPreparationTest(unittest.TestCase):
         linker._layer_pointer_layouts = linker._build_layer_pointer_layouts()
         # Request preparation must use the cached schema, not rebuild it.
         linker._entry_layer_schema = lambda *args: self.fail("schema rebuilt")
+        indices = types.SimpleNamespace(
+            detach=lambda: types.SimpleNamespace(cpu=lambda: [0, 2])
+        )
         transfers = [
             types.SimpleNamespace(
-                name=name, keys=("a", "b"), hit_policy="all_pages", host_indices=[0, 2]
+                name=name, keys=("a", "b"), hit_policy="all_pages", host_indices=indices
             )
             for name in linker.pools
         ]
@@ -212,9 +262,94 @@ class LayoutPreparationTest(unittest.TestCase):
         lookup = linker._page_transfers(transfers, for_io=False)[0]
         self.assertIs(lookup.fragments, result.fragments)
         self.assertIsNone(lookup.addresses)
+
+        calls = []
+        original = linker._entry_layer_rows
+
+        def rows(entry, layer, locations):
+            calls.append((entry.name, layer))
+            return original(entry, layer, locations)
+
+        linker._entry_layer_rows = rows
+        lazy = linker._page_transfers(transfers, for_io=True, lazy_addresses=True)[0]
+        self.assertIsNone(lazy.addresses)
+        self.assertEqual(calls, [])
+        adapter = self.adapter()
+        prepared = adapter.prepare_load([lazy])
+        self.assertEqual(calls, [])
+        submitted = []
+        self.load_data = lambda ids, indexes, addresses: submitted.append(addresses)
+        for i, layer in enumerate(lazy.layers):
+            tasks = adapter.submit_prepared_load_layer(prepared, layer)
+            np.testing.assert_array_equal(submitted[-1], result.addresses[i])
+            self.assertIs(tasks[0].addresses, submitted[-1])
+        self.assertEqual(len(calls), len(linker.pools) * len(lazy.layers))
+
         linker.pools["kv"].prepare_locations = lambda indices: indices[:1]
         with self.assertRaisesRegex(ValueError, "missing kv layer"):
             linker._page_transfers(transfers, for_io=True)
+
+    def test_cpu_index_snapshot_is_shared_but_pool_rows_are_independent(self):
+        copies = []
+        values = [0, 1, 4, 5]
+
+        def indices():
+            source = types.SimpleNamespace()
+
+            def cpu():
+                copies.append(source)
+                return np.array(values)
+
+            source.detach = lambda: source
+            source.cpu = cpu
+            return source
+
+        linker = object.__new__(linker_module.UcmDirectLinker)
+
+        def entry(name, base, stride, divisor):
+            return types.SimpleNamespace(
+                name=name,
+                indices_from_pool="kv",
+                layer_mapping={0: 0},
+                packed=True,
+                buffer_meta=[[(base, stride, stride)]],
+                _component_offsets=[[0]],
+                prepare_locations=lambda cpu: cpu[::2] // divisor,
+            )
+
+        linker.pools = {
+            "kv": entry("kv", 100, 8, 1),
+            "indexer": entry("indexer", 200, 4, 2),
+        }
+        linker.num_layers = 1
+        linker._bundles = linker._build_pool_bundles()
+        linker._layer_pointer_layouts = linker._build_layer_pointer_layouts()
+        shared = indices()
+        transfers = [
+            types.SimpleNamespace(
+                name=name,
+                keys=("a", "b"),
+                hit_policy="all_pages",
+                host_indices=shared,
+            )
+            for name in linker.pools
+        ]
+        eager = linker._page_transfers(transfers, for_io=True)[0]
+        self.assertEqual(len(copies), 1)
+        np.testing.assert_array_equal(eager.addresses, [[[200, 100], [208, 132]]])
+        lazy = linker._page_transfers(transfers, for_io=True, lazy_addresses=True)[0]
+        self.assertEqual(len(copies), 2)
+        np.testing.assert_array_equal(lazy.address_builder(0), eager.addresses[0])
+        linker._page_transfers(transfers, for_io=False)
+        self.assertEqual(len(copies), 2)
+        # An equal-valued but distinct tensor must have its own snapshot.
+        transfers[1].host_indices = indices()
+        linker._page_transfers(transfers, for_io=True)
+        self.assertEqual(len(copies), 4)
+        # Never reuse a previous call's snapshot after indices change.
+        values[:] = [2, 3, 6, 7]
+        fresh = linker._page_transfers(transfers, for_io=True)[0]
+        np.testing.assert_array_equal(fresh.addresses, [[[204, 116], [212, 148]]])
 
     def test_lookup_reuses_layout_and_preserves_resume_fallback(self):
         hits = {"a", "b", "c"}
@@ -266,8 +401,8 @@ class LayoutPreparationTest(unittest.TestCase):
         calls = []
 
         class Native:
-            def Load(self, ids, indexes, addresses):
-                calls.append((ids, indexes, addresses, None))
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((ids, indexes, addresses, event, distribute_backend_load))
                 return len(calls)
 
             def Dump(self, ids, indexes, addresses, event):
@@ -284,8 +419,9 @@ class LayoutPreparationTest(unittest.TestCase):
             prepared = adapter.prepare_load([transfer])
         self.assertIs(prepared[0][0], prepared[2][0])
         self.assertEqual(adapter.submit_prepared_load_layer(prepared, 1), [])
-        adapter.submit_prepared_load_layer(prepared, 0)
-        adapter.submit_prepared_load_layer(prepared, 2)
+        adapter.submit_prepared_load_layer(prepared, 0, prerequisite_handle=43)
+        adapter.submit_prepared_load_layer(prepared, 2, prerequisite_handle=43)
+        self.assertEqual([call[3] for call in calls], [43, 43])
         self.assertIs(calls[0][0], calls[1][0])
         self.assertFalse(calls[0][0].flags.writeable)
         self.assertEqual(calls[0][0].tobytes(), b"".join(adapter._block_ids(transfer)))
@@ -295,17 +431,139 @@ class LayoutPreparationTest(unittest.TestCase):
         np.testing.assert_array_equal(calls[1][2], transfer.addresses[1])
         self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
         self.assertTrue(np.shares_memory(calls[1][2], transfer.addresses))
+        self.assertEqual([call[3:] for call in calls], [(43, False), (43, False)])
+        adapter._identity["rank_replicated"] = True
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            shared_prepared = adapter.prepare_load([transfer])
+        adapter.submit_prepared_load_layer(shared_prepared, 0, prerequisite_handle=44)
+        self.assertEqual(calls[-1][3:], (44, True))
         with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
             adapter.submit_offload([transfer], prerequisite_handle=42)
-        self.assertEqual([call[3] for call in calls[2:]], [42, 42])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[3][3], 42)
+        self.assertEqual(
+            calls[3][0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
+        )
+        np.testing.assert_array_equal(calls[3][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(calls[3][2], transfer.addresses.reshape(4, 1))
+        self.assertTrue(np.shares_memory(calls[3][2], transfer.addresses))
+
+    def test_inherited_pipeline_public_load_receives_replication_option(self):
+        calls = []
+
+        class Native:
+            def Load(self, ids, indexes, addresses, event, distribute_backend_load):
+                calls.append((event, distribute_backend_load))
+                return len(calls)
+
+        class InheritedPipeline(pipeline_module.UcmPipelineStore):
+            pass
+
+        store = object.__new__(InheritedPipeline)
+        store.store_ = Native()
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        transfer = self.transfer()
+        for replicated in (False, True):
+            for event in (0, 43):
+                with self.subTest(replicated=replicated, event=event):
+                    adapter._identity["rank_replicated"] = replicated
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"ucm.store.pipeline.connector": pipeline_module},
+                        ),
+                        patch.object(pipeline_module, "array", array, create=True),
+                    ):
+                        prepared = adapter.prepare_load([transfer])
+                        self.assertIsNone(prepared[0][0].prepared_io)
+                        adapter.submit_prepared_load_layer(
+                            prepared, 0, prerequisite_handle=event
+                        )
+                    self.assertEqual(calls[-1], (event, replicated))
+
+    def dump_adapter(self, fail_call=None):
+        calls, waited = [], []
+
+        class Native:
+            def Dump(self, ids, indexes, addresses, event):
+                calls.append((ids, indexes, addresses, event))
+                if len(calls) == fail_call:
+                    raise RuntimeError("dump submit failed")
+                return len(calls)
+
+            def Wait(self, task_id):
+                waited.append(task_id)
+
+        store = object.__new__(pipeline_module.UcmPipelineStore)
+        store.store_ = Native()
+        adapter = self.adapter()
+        adapter._connector_name = "UcmPipelineStore"
+        adapter._store_config["store_pipeline"] = "Cache|Posix"
+        adapter._ensure_store_schema = lambda *args, **kwargs: store
+        return adapter, calls, waited
+
+    def test_dump_keeps_node_and_group_task_boundaries(self):
+        adapter, calls, waited = self.dump_adapter()
+        first, second = self.transfer(), self.transfer(store_group="other")
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            tasks = adapter.submit_offload([first, second], prerequisite_handle=42)
+            following = adapter.submit_offload([first], prerequisite_handle=43)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(len(following), 1)
+        self.assertEqual([call[3] for call in calls], [42, 42, 43])
+        for call, transfer in zip(calls, (first, second, first)):
+            self.assertEqual(
+                call[0].tobytes(), b"".join(adapter._block_ids(transfer)) * 2
+            )
+            np.testing.assert_array_equal(call[1], [0, 0, 1, 1])
+            np.testing.assert_array_equal(call[2], transfer.addresses.reshape(4, 1))
+            self.assertTrue(np.shares_memory(call[2], transfer.addresses))
+        self.assertIs(tasks[0].addresses, calls[0][2])
+        adapter.wait(tasks + following)
+        self.assertEqual(waited, [1, 2, 3])
+
+    def test_dump_submit_failure_drains_previous_groups(self):
+        adapter, calls, waited = self.dump_adapter(fail_call=2)
+        transfers = [self.transfer(), self.transfer(store_group="other")]
+        with (
+            patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}),
+            self.assertLogs(adapter_module.logger, level="ERROR"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "dump submit failed"):
+                adapter.submit_offload(transfers, prerequisite_handle=42)
+        self.assertEqual(waited, [1])
+        self.assertEqual(len(calls), 2)
+
+    def test_generic_dump_submits_all_shards_through_public_method(self):
+        calls = []
+
+        class Store:
+            def dump_data(self, ids, indexes, addresses):
+                calls.append((ids, indexes, addresses))
+                return 1
+
+        adapter = self.adapter()
+        adapter._ensure_store_schema = lambda *args, **kwargs: Store()
+        transfer = self.transfer()
+        tasks = adapter.submit_offload([transfer])
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(calls[0][0], adapter._block_ids(transfer) * 2)
+        self.assertEqual(calls[0][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(calls[0][2], transfer.addresses.reshape(4, 1))
 
     def test_custom_pipeline_stores_keep_their_public_methods(self):
-        calls = []
+        calls, dumped = [], []
 
         class CustomPipeline(pipeline_module.UcmPipelineStore):
             def load_data(self, block_ids, indexes, addresses):
                 calls.append((block_ids, indexes, addresses))
                 return pipeline_module.UcmPipelineStoreTransTask(1)
+
+            def dump_data(self, block_ids, indexes, addresses):
+                dumped.append((block_ids, indexes, addresses))
+                return pipeline_module.UcmPipelineStoreTransTask(2)
 
         store = object.__new__(CustomPipeline)
         adapter = self.adapter()
@@ -320,6 +578,13 @@ class LayoutPreparationTest(unittest.TestCase):
         self.assertEqual(calls[0][1], [0, 0])
         np.testing.assert_array_equal(calls[0][2], transfer.addresses[0])
         self.assertTrue(np.shares_memory(calls[0][2], transfer.addresses))
+        with patch.dict(sys.modules, {"ucm.store.pipeline.connector": pipeline_module}):
+            dumped_tasks = adapter.submit_offload([transfer])
+        self.assertEqual(len(dumped_tasks), 1)
+        self.assertEqual(len(dumped), 1)
+        self.assertEqual(dumped[0][0], adapter._block_ids(transfer) * 2)
+        self.assertEqual(dumped[0][1], [0, 0, 1, 1])
+        np.testing.assert_array_equal(dumped[0][2], transfer.addresses.reshape(4, 1))
         adapter._module_path = "custom.backend"
         self.assertIsNone(adapter._prepare_pipeline_io(store, [b"a" * 16]))
 

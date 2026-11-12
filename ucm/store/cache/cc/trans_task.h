@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include "status/status.h"
 #include "type/types.h"
 
@@ -34,20 +35,26 @@ namespace UC::CacheStore {
 
 class TransTask {
 public:
-    enum class Type : uint8_t { LOAD, DUMP };
+    enum class Type : uint8_t { LOAD, DUMP, LOAD_ON_TOKEN };
 
 public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    std::vector<Detail::TokenFilter> filter;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
+    TransTask(Type type, Detail::TaskDesc desc, std::vector<Detail::TokenFilter> filter)
+        : id{NextId()}, type{type}, desc{std::move(desc)}, filter{std::move(filter)}
+    {
+    }
     TransTask(TransTask&& other) noexcept
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
+          filter{std::move(other.filter)},
           failureStatus{other.failureStatus.load()}
     {
     }

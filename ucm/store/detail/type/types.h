@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_STORE_DETAIL_TYPE_TYPES_H
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,22 @@ struct Shard {
 };
 
 /**
+ * @brief Byte range inside one tensor buffer for LoadOnToken.
+ */
+struct TokenRange {
+    std::size_t offset;    /* Range start inside the tensor's buffer */
+    std::size_t length;    /* Range length in bytes */
+    std::size_t dstOffset; /* Offset inside the source buffer (for concatenation) */
+};
+
+/**
+ * @brief Per-shard token selection: ranges[t] selects sub-ranges of tensor t.
+ */
+struct TokenFilter {
+    std::vector<std::vector<TokenRange>> ranges; /* ranges[t]: selected ranges of tensor t */
+};
+
+/**
  * @brief Batch descriptor for load or dump operations.
  *
  * Inherits from std::vector<Shard> to store the shard list and reserves
@@ -61,9 +78,15 @@ struct Shard {
  */
 struct TaskDesc : std::vector<Shard> {
     using vector::vector; /* Inherit all ctors */
-    std::string brief;    /* Description of Task */
-    /** Optional compute-stream event; Cache waits before load H2D or dump D2H. */
+    /** Memory type of the shard addresses (Shard::addrs). */
+    enum class MemoryType : std::uint8_t { HBM = 0, DDR = 1 };
+    std::string brief; /* Description of Task */
+    /** Optional: prerequisite handle for dump. Cache stream waits before D2H. */
     uintptr_t prerequisiteHandle{0};
+    /** Optional: memory type of the shard addresses, defaults to HBM. */
+    MemoryType memoryType{MemoryType::HBM};
+    /** Shared keys requested by every rank may distribute backend fills. */
+    bool distributeBackendLoad{false};
 };
 
 }  // namespace UC::Detail

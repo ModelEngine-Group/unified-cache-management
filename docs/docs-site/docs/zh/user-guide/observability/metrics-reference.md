@@ -1,3 +1,4 @@
+<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. -->
 # 指标清单
 
 UCM 指标记录 KV 缓存的查找、加载、保存和存储状态，用来判断**缓存有没有被复用、数据搬运有多快、时间花在哪里、存储是否可用**。先根据要回答的问题选择指标，再查看下面的完整清单。
@@ -252,7 +253,9 @@ Mooncake 指标用于判断**数据是否由 Mooncake 提供、是否下探后�
 
 ### 1.6 ASU / KV 指标
 
-ASU 将以下 37 个 KV 指标（23 个 Counter、14 个 Histogram）接入 UCM 采集器。以下 KV 指标使用 `kv:` 前缀。提交计数反映 KV API 调用及条目数量，不代表去重后的推理请求数，也不代表异步任务成功完成数。
+ASU 将以下 31 个 KV 指标（17 个 Counter、14 个 Histogram）接入 UCM 采集器。以下 KV 指标使用 `kv:` 前缀。提交计数反映 KV API 调用及条目数量，不代表去重后的推理请求数，也不代表异步任务成功完成数。
+
+Load/Store 指标合并统计单 IO 和 batch IO：requests 按 API 调用次数计数，entries 按输入条目数计数（含提交失败的尝试），errors 仅统计提交失败，不含异步执行失败。旧的 `kv_client_batch_*` 指标已移除，看板与采集配置需同步升级；历史数据未迁移。
 
 生成器的 `--check` 会校验英文、中文和旧版参考文档中 KV 表格的名称、类型分组、重复、遗漏和数量。说明文字与单位仍由人工维护；`--sync-ucm` 不会重写这些表格。
 
@@ -285,12 +288,6 @@ adapter 使用现有 UCM `UpdateStats()` 接口。采集器尚未初始化或指
 | `kv:kv_client_store_requests_total` | 次 | KV client store 提交次数 |
 | `kv:kv_client_store_entries_total` | 键 / 条目 | 提交给 store 的条目数量 |
 | `kv:kv_client_store_errors_total` | 次 | KV client store 提交失败次数 |
-| `kv:kv_client_batch_load_requests_total` | 次 | KV client batch-load 提交次数 |
-| `kv:kv_client_batch_load_entries_total` | 键 / 条目 | 提交给 batch-load 的条目数量 |
-| `kv:kv_client_batch_load_errors_total` | 次 | KV client batch-load 提交失败次数 |
-| `kv:kv_client_batch_store_requests_total` | 次 | KV client batch-store 提交次数 |
-| `kv:kv_client_batch_store_entries_total` | 键 / 条目 | 提交给 batch-store 的条目数量 |
-| `kv:kv_client_batch_store_errors_total` | 次 | KV client batch-store 提交失败次数 |
 | `kv:kv_client_delete_requests_total` | 次 | KV client delete 提交次数 |
 | `kv:kv_client_delete_entries_total` | 键 / 条目 | 提交给 delete 的键数量 |
 | `kv:kv_client_delete_errors_total` | 次 | KV client delete 提交失败次数 |
@@ -323,7 +320,7 @@ KV 定义同步与自定义目录校验见[指标开发](../../developer-guide/a
 
 ### 1.7 AsuStore 原生指标
 
-这 20 项指标（16 个 Counter、4 个 Histogram）在 AsuStore 接口层通过 UCM 原生 `UpdateStats()` 采集，独立于上面的 37 项 KV 指标。现有 Store 级 `enable_metrics` 开关控制本实例的 `asu_*` 埋点；它对共享 KV backend 的安装语义保持不变。指标注册和导出仍由上层 UCM 配置控制，自定义配置需要显式包含所需指标。
+这 20 项指标（16 个 Counter、4 个 Histogram）在 AsuStore 接口层通过 UCM 原生 `UpdateStats()` 采集，独立于上面的 31 项 KV 指标。现有 Store 级 `enable_metrics` 开关控制本实例的 `asu_*` 埋点；它对共享 KV backend 的安装语义保持不变。指标注册和导出仍由上层 UCM 配置控制，自定义配置需要显式包含所需指标。
 
 三种查询共用调用次数、错误和耗时。普通查询按返回向量统计命中，前缀查询统计连续命中的块数，即接口返回下标加 1；两种命中率分别计算。查询返回错误时不累计查询 block 或命中 block，超时回退则累计查询 block、命中为零。反向查询只统计调用结果和耗时，不将返回的位置换算成命中数量。
 

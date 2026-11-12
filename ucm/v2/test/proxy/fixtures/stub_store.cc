@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <string>
 #include <vector>
 #include "store.h"
 
@@ -33,19 +34,29 @@ namespace {
 
 /* Behavior-configurable store plugin for assembler tests, driven entirely
  * through the public Store interface and loaded by path. Setup keys:
- *  - "piped_lower_store" (Store*, injected by the assembler): when set,
+ *  - "__ucm_lower_store__" (Store*, injected by the assembler): when set,
  *    Lookup delegates to the wired lower tier, making the pipe wiring
  *    observable end to end;
  *  - "present" (int64): the leading block count Lookup reports as hits,
  *    all blocks when absent;
+ *  - "required_unique_id" (string): when set, Setup fails unless the setup
+ *    dictionary carries exactly this "unique_id" value, making the runtime
+ *    merge and per-instance suffixing observable;
  *  - "fail_setup" (int64): non-zero makes Setup fail, for error paths. */
 class StubStore : public Store {
 public:
     Status Setup(const Dictionary& config) override
     {
-        (void)config.Get<Store*>("piped_lower_store", lower_);
+        (void)config.Get<Store*>("__ucm_lower_store__", lower_);
         std::int64_t present = 0;
         if (config.GetInt64("present", present)) { present_ = static_cast<std::size_t>(present); }
+        std::string requiredUniqueId;
+        if (config.Get<std::string>("required_unique_id", requiredUniqueId)) {
+            std::string uniqueId;
+            if (!config.Get<std::string>("unique_id", uniqueId) || uniqueId != requiredUniqueId) {
+                return Status::General("stub unique_id mismatch");
+            }
+        }
         std::int64_t failSetup = 0;
         if (config.GetInt64("fail_setup", failSetup) && failSetup != 0) {
             return Status::General("stub setup failure");
@@ -77,11 +88,7 @@ public:
 
     std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
 
-    std::vector<std::pair<std::size_t, bool>> Wait(
-        const std::vector<std::size_t>& /*jobIds*/) override
-    {
-        return {};
-    }
+    Status Wait(std::size_t /*jobId*/) override { return Status::Ok(); }
 
 private:
     Store* lower_ = nullptr;

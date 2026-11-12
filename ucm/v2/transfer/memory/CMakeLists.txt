@@ -1,0 +1,4 @@
+add_library(ucm_transfer_memory OBJECT)
+target_link_libraries(ucm_transfer_memory PUBLIC ucm_build_options ucm_include ucm_common)
+
+add_subdirectory(dma)

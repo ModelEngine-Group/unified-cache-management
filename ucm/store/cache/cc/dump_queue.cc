@@ -116,6 +116,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     auto dumpStartTp = NowTime::Now();
     Detail::TaskDesc backendTaskDesc;
     backendTaskDesc.brief = "Cache2Backend";
+    backendTaskDesc.memoryType = Detail::TaskDesc::MemoryType::DDR;
     const auto nShard = task->desc.size();
     UC_DEBUG("Try to dump ({}) shards.", nShard);
     DumpCtx dumpCtx;

@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -85,7 +85,7 @@ TEST_F(KvProtocolPackTest, StoreProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(16, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | 0x01;
+    expected[0] = (kCid << 16) | (0x1U << 14) | 0x01;
     expected[1] = kKvNsId;
     expected[2] = ((kDtype & 0x7) << 13) | ((kDspec & 0x1F) << 8);
     expected[6] = kBufferAddr & 0xFFFFFFFFULL;
@@ -133,7 +133,7 @@ TEST_F(KvProtocolPackTest, RetrieveProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(16, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | 0x02;
+    expected[0] = (kCid << 16) | (0x1U << 14) | 0x02;
     expected[1] = kKvNsId;
     expected[6] = kBufferAddr & 0xFFFFFFFFULL;
     expected[7] = (kBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -192,7 +192,7 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(34, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (kRflag ? (1U << 13) : 0) | 0x45;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (kRflag ? (1U << 13) : 0) | 0x45;
     expected[1] = kKvNsId;
     expected[2] = ((kDtype & 0x7) << 13) | ((kDspec & 0x1F) << 8);
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
@@ -255,7 +255,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(25, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (1U << 13) | 0x46;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (1U << 13) | 0x46;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -299,7 +299,7 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(24, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (kRflag ? (1U << 13) : 0) | 0x08;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (kRflag ? (1U << 13) : 0) | 0x08;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -343,7 +343,7 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(20, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (1U << 13) | 0x0C;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (1U << 13) | 0x0C;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -1463,10 +1463,14 @@ TEST_F(KvProtocolVerifyTest, StoreRejectsWrongLength)
 TEST_F(KvProtocolVerifyTest, StoreRejectsBadFixedBits)
 {
     auto buf = PackStore();
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 // ── Store: reserved bits in data[0] ──
@@ -1983,10 +1987,14 @@ TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseAddr)
 TEST_F(KvProtocolVerifyTest, RetrieveRejectsBadFixedBits)
 {
     auto buf = PackRetrieve();
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword0)
@@ -2079,10 +2087,14 @@ TEST_F(KvProtocolVerifyTest, RetrieveRejectsAllZeroKey)
 TEST_F(KvProtocolVerifyTest, BatchStoreRejectsBadFixedBits)
 {
     auto buf = PackBatchStore(2);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword0)
@@ -2165,10 +2177,14 @@ TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryUnalignedLength)
 TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsBadFixedBits)
 {
     auto buf = PackBatchRetrieve(2);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword0)
@@ -2329,10 +2345,14 @@ TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryBadDptrType)
 TEST_F(KvProtocolVerifyTest, DeleteRejectsBadFixedBits)
 {
     auto buf = PackDelete(3);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword0)
@@ -2430,10 +2450,14 @@ TEST_F(KvProtocolVerifyTest, DeleteRejectsWrongLength)
 TEST_F(KvProtocolVerifyTest, ExistRejectsBadFixedBits)
 {
     auto buf = PackExist(3);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword0)
