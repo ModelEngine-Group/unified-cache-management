@@ -8,7 +8,9 @@ The first target is GLM-5.2 DSA. This directory is not a runnable linker backend
   and publishes readiness in layer
   order. It closes the Get windows before
   releasing the registrations. Dump queues one full-object Put job per node
-  and publishes results in submission order after CompletePut. Multiple Dump
+  and publishes results in submission order. After a successful Put commit,
+  the linker drains Store-generated offload plans and returns each receipt
+  after completion. With no plans, the node result follows Put. Multiple Dump
   jobs can be in flight. Load and Dump wait on device events and prepare
   payloads on separate threads. A shared executor submits and polls Store
   jobs, delivering results by job ID. Device prefetch remains pseudocode.

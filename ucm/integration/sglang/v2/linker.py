@@ -201,7 +201,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def _submit_load_layer(self, submissions, context, jobs):
         for payloads, token in submissions:
             result = Future()
-            self._submit_job(self.runtime.submit_get, payloads, token, context, result)
+            self._submit_job(self.runtime.submit_get, result, payloads, token, context)
             jobs.append(result)
 
     def _publish_load_layer(self, index, layer, layer_jobs):
@@ -296,11 +296,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     self._io_executor.submit(
                         self._submit_job,
                         self.runtime.submit_put,
+                        completion,
                         payloads,
                         token,
                         context,
-                        completion,
-                        (pages, ready),
+                        resources=(pages, ready),
                     ).result()
                 except Exception:
                     with self._scheduler_lock:
@@ -322,14 +322,45 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     self.runtime.complete_put(rid, success)
                 finally:
                     self.runtime.on_request_finished(rid)
+                plans = self.runtime.prepare_offload() if success else ()
         except Exception:
             logger.exception("UCM V2 offload cleanup failed for %s", rid)
-            success = False
-        result.set_result(success)
+            result.set_result(False)
+            return
+        if not plans:
+            result.set_result(success)
+            return
 
-    def _submit_job(self, submit, payloads, token, context, completion, resources=None):
+        remaining = len(plans)
+        all_succeeded = True
+
+        def finish_plan(plan, succeeded):
+            nonlocal remaining, all_succeeded
+            try:
+                with self._scheduler_lock:
+                    self.runtime.complete_offload(plan)
+            except Exception:
+                logger.exception("UCM V2 Store offload receipt failed")
+                succeeded = False
+            all_succeeded = all_succeeded and succeeded
+            remaining -= 1
+            if remaining == 0:
+                result.set_result(all_succeeded)
+
+        for plan in plans:
+            completion = Future()
+            completion.add_done_callback(
+                lambda done, plan=plan: finish_plan(plan, done.result())
+            )
+            try:
+                self._submit_job(self.runtime.submit_offload, completion, plan)
+            except Exception:
+                logger.exception("UCM V2 Store offload submission failed")
+                completion.set_result(False)
+
+    def _submit_job(self, submit, completion, *args, resources=None):
         job_id = next(self._job_ids)
-        submit(job_id, payloads, token, context)
+        submit(job_id, *args)
         self._jobs[job_id] = (completion, resources)
         self._schedule_poll()
 

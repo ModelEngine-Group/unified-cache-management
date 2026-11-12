@@ -53,6 +53,8 @@ class RuntimeTest(unittest.TestCase):
             "complete_get": ("r",),
             "prepare_put": ("r", keys),
             "complete_put": ("r", False),
+            "prepare_offload": (),
+            "complete_offload": (context,),
             "prepare_prefetch": ("r",),
             "complete_prefetch": ("r", True),
         }
@@ -67,6 +69,7 @@ class RuntimeTest(unittest.TestCase):
         calls = {
             "submit_get": (1, payloads, token, context),
             "submit_put": (2, payloads, token, context),
+            "submit_offload": (4, token),
             "submit_prefetch": (3, token),
             "wait": (1,),
             "get_finished": (),

@@ -72,6 +72,12 @@ class Runtime:
     def complete_put(self, request_id, success):
         return self.scheduler.complete_put(request_id, success)
 
+    def prepare_offload(self):
+        return self.scheduler.prepare_offload()
+
+    def complete_offload(self, plan):
+        return self.scheduler.complete_offload(plan)
+
     def prepare_prefetch(self, request_id):
         return self.scheduler.prepare_prefetch(request_id)
 
@@ -83,6 +89,9 @@ class Runtime:
 
     def submit_put(self, job_id, payloads, token, context):
         return self.worker.submit_put(job_id, payloads, token, context)
+
+    def submit_offload(self, job_id, plan):
+        return self.worker.submit_offload(job_id, plan)
 
     def submit_prefetch(self, job_id, token):
         return self.worker.submit_prefetch(job_id, token)
