@@ -26,9 +26,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace kv {
@@ -37,7 +40,27 @@ using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
 using NodeId = std::uint64_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
-using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
+using BinaryKey = std::array<std::byte, kCacheKeySizeBytes>;
+// Owns either an encoded key or an engine key awaiting resolution.
+class CacheKey {
+public:
+    CacheKey() = default;
+
+    static CacheKey FromBytes(BinaryKey key) { return CacheKey(key); }
+    static CacheKey FromEngineKey(std::string key) { return CacheKey(std::move(key)); }
+
+    const BinaryKey* TryGetBinaryKey() const { return std::get_if<BinaryKey>(&value_); }
+    const std::string* TryGetEngineKey() const { return std::get_if<std::string>(&value_); }
+
+    bool operator==(const CacheKey& other) const { return value_ == other.value_; }
+    bool operator!=(const CacheKey& other) const { return !(*this == other); }
+
+private:
+    explicit CacheKey(BinaryKey key) : value_(key) {}
+    explicit CacheKey(std::string key) : value_(std::move(key)) {}
+
+    std::variant<BinaryKey, std::string> value_{BinaryKey{}};
+};
 
 // KV protocol requires 512B alignment for device buffers and offsets.
 constexpr std::uint32_t kAlignmentBytes = 512;
@@ -93,6 +116,14 @@ struct Status {
 
     static Status OK() { return {}; }
     static Status Error(StatusCode c, std::string msg) { return Status{c, std::move(msg)}; }
+};
+
+// Per-request namespace and work that must finish before IO dispatch.
+struct IoOptions {
+    // XXH32 (seed 5381) produces the global namespace ID, not a protocol-local ID.
+    std::string kvns;
+    // Runs once on the client worker; captured resources must remain valid until completion.
+    std::function<Status()> prerequisite;
 };
 
 struct QueryResult {
@@ -205,10 +236,20 @@ struct TransportConfig {
 
 enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
 
+enum class InferenceEngine : std::uint8_t { GENERIC = 0, VLLM_ASCEND = 1, SGLANG = 2 };
+
+struct KeyResolutionConfig {
+    InferenceEngine engine{InferenceEngine::GENERIC};
+    // Required for VLLM_ASCEND layerwise string keys; ignored by other engines.
+    std::uint64_t layerCount{0};
+    std::uint64_t layerSlotBytes{0};
+};
+
 struct KvClientConfig {
     // Loads client configuration from a key-value file without initializing a client.
     static Status LoadFromFile(const std::string& configPath, KvClientConfig& config);
 
+    KeyResolutionConfig keyResolution;
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
 

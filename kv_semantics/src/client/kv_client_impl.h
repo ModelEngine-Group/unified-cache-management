@@ -28,9 +28,11 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_client.h"
 #include "kv_types.h"
 #include "spsc_ring_queue.h"
@@ -77,14 +79,17 @@ public:
     Status Shutdown() override;
 
     // Submits query operations to routed transports.
-    Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
+    Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                      const IoOptions& options = {}) override;
     // Submits load operations to routed transports.
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                     const IoOptions& options = {}) override;
     // Submits store operations to routed transports.
     Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      std::function<Status()> prerequisite = {}) override;
+                      const IoOptions& options = {}) override;
     // Submits delete operations to routed transports.
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                       const IoOptions& options = {}) override;
 
     // Checks an aggregate task.
     bool Check(TaskId taskId) override;
@@ -98,6 +103,8 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
+    static std::uint32_t ResolveNamespace(const std::string& kvns);
+
     struct ProviderMemoryState {
         std::shared_ptr<TransProvider> provider;
         std::unordered_map<MRHandle, MRHandle> regionHandles;
@@ -105,9 +112,10 @@ private:
 
     // Creates and queues one entry-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId,
-                       std::function<Status()> prerequisite = {});
+                       const IoOptions& options);
     // Creates and queues one key-based client task.
-    Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
+    Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId,
+                       const IoOptions& options);
 
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();
@@ -162,6 +170,7 @@ private:
     TransProviderFactory transProviderFactory_;
     // Creates the external view server during Init.
     ViewServerFactory viewServerFactory_;
+    std::unique_ptr<KeyResolver> keyResolver_;
     // mutex_ protects background refresh state and resource/view caches.
     mutable std::mutex mutex_;
     // memoryMu_ serializes provider creation with business-memory register/bind/unregister.

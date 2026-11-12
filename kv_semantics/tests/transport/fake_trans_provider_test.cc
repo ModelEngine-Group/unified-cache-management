@@ -22,8 +22,8 @@ constexpr std::uint16_t kCqeCheckResultBuffer = 0x732;
 std::string FakeBackendKeyFileName(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
-    for (auto byte : key) {
-        hash ^= std::to_integer<unsigned char>(byte);
+    for (auto byte : CacheKeyView(key)) {
+        hash ^= static_cast<unsigned char>(byte);
         hash *= 1099511628211ULL;
     }
 
@@ -41,7 +41,7 @@ std::vector<std::uint32_t> BuildExistRequest(const std::vector<CacheKey>& keys, 
     if (sc) { request[10] |= 1U << 16; }
     for (std::size_t index = 0; index < keys.size(); ++index) {
         std::memcpy(request.data() + kSqeDwordCount + index * kKeyEntryDwordCount,
-                    keys[index].data(), kCacheKeySizeBytes);
+                    CacheKeyView(keys[index]).data(), kCacheKeySizeBytes);
     }
     return request;
 }
@@ -181,12 +181,13 @@ TEST(FakeTransProviderTest, ImmediateCompletionReportsAllQueriedKeysMissing)
     config.completeImmediately = true;
     FakeTransProvider provider(config);
 
-    CacheKey first{};
+    BinaryKey first{};
     first[0] = std::byte{1};
-    CacheKey second{};
+    BinaryKey second{};
     second[0] = std::byte{2};
     for (const bool useSeekControl : {false, true}) {
-        const auto request = BuildExistRequest({first, second}, useSeekControl);
+        const auto request = BuildExistRequest(
+            {CacheKey::FromBytes(first), CacheKey::FromBytes(second)}, useSeekControl);
         std::vector<std::uint32_t> completion;
 
         const auto status = provider.CompleteFakeBackendRequest(
@@ -200,6 +201,82 @@ TEST(FakeTransProviderTest, ImmediateCompletionReportsAllQueriedKeysMissing)
     }
 }
 
+TEST(FakeTransProviderTest, NamespaceIsolatesStoreLoadQueryAndDeleteForTheSameKey)
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("asu-fake-namespace-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    FakeTransProviderConfig config;
+    config.storePath = path.string();
+    config.latencyUs = 0;
+    FakeTransProvider provider(config);
+    BinaryKey bytes{};
+    bytes[0] = std::byte{1};
+    const CacheKey key = CacheKey::FromBytes(bytes);
+    alignas(512) std::array<char, 512> first;
+    alignas(512) std::array<char, 512> second;
+    alignas(512) std::array<char, 512> target{};
+    first.fill('a');
+    second.fill('b');
+    alignas(64) std::array<std::uint32_t, 8> flag{};
+    auto execute = [&](auto&& protocol, const auto& request) {
+        std::vector<std::uint32_t> buffer(64, 0);
+        const auto packed = protocol.PackSqe(request, buffer.data());
+        ASSERT_TRUE(packed.ok()) << packed.message;
+        std::vector<std::uint32_t> completion;
+        ASSERT_TRUE(provider
+                        .CompleteFakeBackendRequest(
+                            buffer.data(), buffer.size() * sizeof(std::uint32_t), completion)
+                        .ok());
+        ASSERT_GE(completion.size(), kCqeDwordCount);
+        EXPECT_EQ((completion[3] >> 17) & 0x7ff, kCqeSuccess);
+    };
+    KvStoreRequest store;
+    store.key = key;
+    store.buffer_length = store.length = 512;
+    store.mr_key = 1;
+    store.kv_ns_id = 7;
+    store.buffer_addr = reinterpret_cast<std::uint64_t>(first.data());
+    execute(KvStoreProtocol{}, store);
+    store.kv_ns_id = 9;
+    store.buffer_addr = reinterpret_cast<std::uint64_t>(second.data());
+    execute(KvStoreProtocol{}, store);
+    KvRetrieveRequest load;
+    load.key = key;
+    load.buffer_addr = reinterpret_cast<std::uint64_t>(target.data());
+    load.buffer_length = load.length = 512;
+    load.mr_key = 1;
+    load.kv_ns_id = 7;
+    execute(KvRetrieveProtocol{}, load);
+    EXPECT_EQ(target, first);
+    load.kv_ns_id = 9;
+    execute(KvRetrieveProtocol{}, load);
+    EXPECT_EQ(target, second);
+    KvDeleteRequest remove;
+    remove.kv_ns_id = 7;
+    remove.keys = {key};
+    remove.batch_number = 1;
+    remove.response_buffer_addr = reinterpret_cast<std::uint64_t>(flag.data());
+    remove.response_mr_key = 1;
+    remove.rflag = true;
+    execute(KvDeleteProtocol{}, remove);
+    for (auto id : {7U, 9U}) {
+        auto query = BuildExistRequest({key}, true);
+        query[1] = id;
+        std::vector<std::uint32_t> completion;
+        ASSERT_TRUE(provider
+                        .CompleteFakeBackendRequest(
+                            query.data(), query.size() * sizeof(std::uint32_t), completion)
+                        .ok());
+        EXPECT_EQ(completion[0] & 0xffff, id == 7 ? 0U : 1U);
+    }
+    target.fill(0);
+    execute(KvRetrieveProtocol{}, load);
+    EXPECT_EQ(target, second);
+    std::error_code errorCode;
+    std::filesystem::remove_all(path, errorCode);
+}
+
 TEST(FakeTransProviderTest, ExistHonorsSeekControl)
 {
     const auto storePath =
@@ -209,19 +286,20 @@ TEST(FakeTransProviderTest, ExistHonorsSeekControl)
     const auto asuPath = storePath / "asu-1";
     std::filesystem::create_directories(asuPath);
 
-    CacheKey first{};
+    BinaryKey first{};
     first[0] = std::byte{1};
-    CacheKey missing{};
+    BinaryKey missing{};
     missing[0] = std::byte{2};
-    CacheKey third{};
+    BinaryKey third{};
     third[0] = std::byte{3};
-    std::ofstream{asuPath / FakeBackendKeyFileName(first)}.put('\0');
-    std::ofstream{asuPath / FakeBackendKeyFileName(third)}.put('\0');
+    std::ofstream{asuPath / FakeBackendKeyFileName(CacheKey::FromBytes(first))}.put('\0');
+    std::ofstream{asuPath / FakeBackendKeyFileName(CacheKey::FromBytes(third))}.put('\0');
 
     FakeTransProviderConfig config;
     config.storePath = storePath.string();
     config.latencyUs = 0;
-    const std::vector<CacheKey> keys{first, missing, third};
+    const std::vector<CacheKey> keys{CacheKey::FromBytes(first), CacheKey::FromBytes(missing),
+                                     CacheKey::FromBytes(third)};
     FakeTransProvider provider{config};
 
     auto request = BuildExistRequest(keys, false);

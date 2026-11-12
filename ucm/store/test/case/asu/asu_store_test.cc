@@ -46,8 +46,11 @@ namespace {
 struct CacheKeyHasher {
     std::size_t operator()(const kv::CacheKey& key) const
     {
-        return std::hash<std::string_view>{}(
-            std::string_view(reinterpret_cast<const char*>(key.data()), key.size()));
+        if (const auto* bytes = key.TryGetBinaryKey()) {
+            return std::hash<std::string_view>{}(
+                std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+        }
+        return std::hash<std::string_view>{}(*key.TryGetEngineKey());
     }
 };
 
@@ -94,7 +97,8 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId,
+                          const kv::IoOptions& = {}) override
     {
         if (!initialized_) { return NotInitialized(); }
         if (!state_->queryStatus.ok()) { return state_->queryStatus; }
@@ -118,22 +122,24 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
+    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
+                         const kv::IoOptions& = {}) override
     {
         state_->lastLoadEntries = entries;
         return Submit(entries, taskId);
     }
 
     kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
-                          std::function<kv::Status()> prerequisite) override
+                          const kv::IoOptions& options = {}) override
     {
-        state_->lastStoreWait = std::move(prerequisite);
+        state_->lastStoreWait = options.prerequisite;
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
     }
 
-    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId,
+                           const kv::IoOptions& = {}) override
     {
         for (const auto& key : keys) { storedKeys_.erase(key); }
         return Submit(keys.size(), taskId);

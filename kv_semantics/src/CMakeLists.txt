@@ -129,6 +129,7 @@ target_include_directories(kv_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
         ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
         ${CMAKE_CURRENT_SOURCE_DIR}/client
+        ${CMAKE_CURRENT_SOURCE_DIR}/../patch/pynds_kv/vllm/NDS3.0
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
 target_link_libraries(kv_client PRIVATE kv_metrics)
