@@ -28,6 +28,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <linux/memfd.h>
+#include <linux/mempolicy.h>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -35,31 +37,17 @@
 #include <unistd.h>
 #include <utility>
 
-/* Kernel UAPI constants that user-space libc headers do not carry. */
-#ifndef MFD_CLOEXEC
-#define MFD_CLOEXEC 0x0001U
-#endif
-#ifndef MFD_HUGETLB
-#define MFD_HUGETLB 0x0004U
-#endif
-#ifndef MFD_HUGE_2MB
-#define MFD_HUGE_2MB (21U << 26)
-#endif
-
 namespace UC::Store {
 namespace {
 
 /** Backing page size of the shared pool: 2MB transparent huge pages. */
 constexpr std::size_t kShmHugePageSize = std::size_t{2} << 20;
 
-/** MPOL_INTERLEAVE policy of the kernel memory-policy UAPI. */
-constexpr int kMpolInterleave = 2;
-
 /** Fallback page size of a non-huge mapping. */
 constexpr std::size_t kNormalPageSize = 4096;
 
-/** Where the online NUMA node list is published. */
-constexpr const char* kNodeOnlinePath = "/sys/devices/system/node/online";
+/** Where the NUMA nodes this process may allocate from are published. */
+constexpr const char* kStatusPath = "/proc/self/status";
 
 void PutU32(std::byte* dst, std::uint32_t value)
 {
@@ -77,8 +65,6 @@ std::uint32_t GetU32(const std::byte* src)
     return value;
 }
 
-bool IsPadding(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
-
 /** Parses a decimal node id of at most four digits; anything else fails. */
 bool ParseNodeNumber(const std::string& text, std::uint32_t& value)
 {
@@ -92,7 +78,7 @@ bool ParseNodeNumber(const std::string& text, std::uint32_t& value)
     return true;
 }
 
-/** Parses one comma-separated element of the online list: "N" or "A-B". */
+/** Parses one comma-separated element of the allowed list: "N" or "A-B". */
 bool ParseNodeRange(const std::string& part, std::uint32_t& first, std::uint32_t& last)
 {
     const std::size_t dash = part.find('-');
@@ -106,38 +92,62 @@ bool ParseNodeRange(const std::string& part, std::uint32_t& first, std::uint32_t
 }
 
 /**
- * @brief Reads the online node list, e.g. "0" or "0-3" or "0,2-3". Returns
- *        an empty vector on any read or parse failure; the caller then skips
- *        the interleave step rather than binding against a guessed mask.
+ * @brief Reads the NUMA nodes this process may allocate from, published as
+ *        the Mems_allowed_list line of /proc/self/status. The kernel
+ *        reports the same set through getmempolicy(MPOL_F_MEMS_ALLOWED),
+ *        but that syscall is filtered behind CAP_SYS_NICE by the default
+ *        container seccomp profiles, while the file always reads.
+ *
+ * @return Expected the node ids on success; OsApiError when the file is
+ *         unreadable or the line is missing or malformed -- an
+ *         indeterminable set is never guessed.
  */
-std::vector<std::uint32_t> ParseOnlineNodes()
+Expected<std::vector<std::uint32_t>> ReadAllowedNodes()
 {
-    std::vector<std::uint32_t> nodes;
-    const int fd = ::open(kNodeOnlinePath, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { return nodes; }
+    const int fd = ::open(kStatusPath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return Status::OsApiError("open of {} failed: {}", kStatusPath, std::strerror(errno));
+    }
 
     std::string text;
-    char chunk[128];
+    char chunk[512];
     for (;;) {
         const ssize_t n = ::read(fd, chunk, sizeof(chunk));
         if (n < 0) {
             if (errno == EINTR) { continue; }
+            const int err = errno;
             ::close(fd);
-            return {};
+            return Status::OsApiError("read of {} failed: {}", kStatusPath, std::strerror(err));
         }
         if (n == 0) { break; }
         text.append(chunk, static_cast<std::size_t>(n));
     }
     ::close(fd);
 
-    while (!text.empty() && IsPadding(text.back())) { text.pop_back(); }
-    std::size_t pos = 0;
-    while (pos <= text.size()) {
-        const std::size_t comma = text.find(',', pos);
+    const std::string key = "Mems_allowed_list:";
+    const std::size_t keyAt = text.find(key);
+    if (keyAt == std::string::npos) {
+        return Status::OsApiError("{} carries no Mems_allowed_list line", kStatusPath);
+    }
+    std::size_t pos = keyAt + key.size();
+    std::size_t end = text.find('\n', pos);
+    if (end == std::string::npos) { end = text.size(); }
+    while (pos < end && (text[pos] == ' ' || text[pos] == '\t')) { ++pos; }
+    while (end > pos && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) {
+        --end;
+    }
+    const std::string list = text.substr(pos, end - pos);
+
+    std::vector<std::uint32_t> nodes;
+    pos = 0;
+    while (pos <= list.size()) {
+        const std::size_t comma = list.find(',', pos);
         const std::size_t len = comma == std::string::npos ? std::string::npos : comma - pos;
         std::uint32_t first = 0;
         std::uint32_t last = 0;
-        if (!ParseNodeRange(text.substr(pos, len), first, last)) { return {}; }
+        if (!ParseNodeRange(list.substr(pos, len), first, last)) {
+            return Status::OsApiError("malformed Mems_allowed_list value '{}'", list);
+        }
         for (std::uint32_t node = first;; ++node) {
             nodes.push_back(node);
             if (node == last) { break; }
@@ -149,27 +159,36 @@ std::vector<std::uint32_t> ParseOnlineNodes()
 }
 
 /**
- * @brief Spreads the mapping over every online NUMA node. A single node (or
- *        an unreadable list) makes interleaving a no-op. The mask is padded
- *        to the word count the kernel reads for the given bit width: mbind
- *        rounds maxnode up to whole unsigned longs and copies that many
- *        words from user space.
+ * @brief Interleaves the mapping over every NUMA node this process may
+ *        allocate from (see ReadAllowedNodes) -- in a cpuset-restricted
+ *        container that is the container's own node set, never the
+ *        host-wide online list. Strict: a single allocatable node makes
+ *        interleaving vacuous, but an unreadable allowed set or a rejected
+ *        mbind fails the caller rather than silently mis-placing the pool.
+ *        The mask is padded to the word count the kernel reads for the
+ *        given bit width: mbind rounds maxnode up to whole unsigned longs
+ *        and copies that many words from user space.
+ *
+ * @return Ok on success; OsApiError when the allowed-node set cannot be
+ *         read or the interleave policy is rejected.
  */
-Status InterleaveOverOnlineNodes(void* base, std::size_t size)
+Status InterleaveOverAllowedNodes(void* base, std::size_t size)
 {
-    const std::vector<std::uint32_t> nodes = ParseOnlineNodes();
-    if (nodes.size() <= 1) { return Status::Ok(); }
+    auto nodes = ReadAllowedNodes();
+    if (!nodes.HasValue()) { return nodes.Error(); }
+    const std::vector<std::uint32_t>& allowed = nodes.Value();
+    if (allowed.size() <= 1) { return Status::Ok(); }
 
     std::uint32_t highest = 0;
-    for (std::uint32_t node : nodes) { highest = std::max(highest, node); }
+    for (std::uint32_t node : allowed) { highest = std::max(highest, node); }
     const std::size_t maxnode = static_cast<std::size_t>(highest) + 2;
     const std::size_t words = (maxnode + 63) / 64;
     std::vector<unsigned long> mask(words, 0UL);
-    for (std::uint32_t node : nodes) { mask[node / 64] |= 1UL << (node % 64); }
+    for (std::uint32_t node : allowed) { mask[node / 64] |= 1UL << (node % 64); }
 
-    if (::syscall(SYS_mbind, base, size, kMpolInterleave, mask.data(), maxnode, 0) != 0) {
-        return Status::OsApiError("mbind interleave over {} online nodes failed: {}", nodes.size(),
-                                  std::strerror(errno));
+    if (::syscall(SYS_mbind, base, size, MPOL_INTERLEAVE, mask.data(), maxnode, 0) != 0) {
+        return Status::OsApiError("mbind interleave over {} allowed NUMA nodes failed: {}",
+                                  allowed.size(), std::strerror(errno));
     }
     return Status::Ok();
 }
@@ -365,7 +384,7 @@ Expected<MemfdRegion> MemfdRegion::Create(std::uint32_t capacity, std::uint64_t 
         return mapping.Error();
     }
 
-    if (Status st = InterleaveOverOnlineNodes(mapping.Value().Base(), total.Value());
+    if (Status st = InterleaveOverAllowedNodes(mapping.Value().Base(), total.Value());
         st.Failure()) {
         ::close(memfd);
         return st;

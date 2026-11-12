@@ -141,10 +141,12 @@ public:
      * Steps: try to create and size a 2MB hugetlb memfd -- with hugetlb the
      * allocation gate is ftruncate, so the attempt spans both calls and
      * either failure falls back to normal pages unless forceHugePage
-     * demands the error -- then interleave-bind the mapping over every
-     * online NUMA node when more than one is present, and finally walk the
-     * region touching one byte per page so the whole pool is resident
-     * before anybody maps it.
+     * demands the error -- then interleave the mapping over every NUMA
+     * node this process may allocate from (a single such node makes
+     * interleaving vacuous; an indeterminable or rejected NUMA policy
+     * fails the region rather than silently mis-placing it), and finally
+     * walk the region touching one byte per page so the whole pool is
+     * resident before anybody maps it.
      *
      * @param capacity      Slot count of the pool.
      * @param blockSize     Byte length of one slot.
@@ -156,7 +158,7 @@ public:
      * @return Expected the region on success; InvalidParam for overflowing
      *         or degenerate geometry; OsApiError when a required syscall
      *         fails, including the forced-huge-page case with no pool
-     *         available.
+     *         available and a NUMA interleave that cannot be established.
      */
     [[nodiscard]] static Expected<MemfdRegion> Create(std::uint32_t capacity,
                                                       std::uint64_t blockSize, bool forceHugePage,
