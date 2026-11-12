@@ -137,6 +137,10 @@ Status ValidateKeyResolutionConfig(const KeyResolutionConfig& config)
                              "vllm_ascend layerwise keys require positive "
                              "aggregation.layer_count and aggregation.layer_slot_bytes");
     }
+    if (config.layerSlotBytes % kAlignmentBytes != 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "aggregation.layer_slot_bytes must be a multiple of 512");
+    }
     // KVBuffer carries a uint32 object offset.
     constexpr auto maxObjectBytes = std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1;
     if (config.layerCount > maxObjectBytes / config.layerSlotBytes) {

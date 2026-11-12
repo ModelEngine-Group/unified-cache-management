@@ -97,7 +97,7 @@ kv::CacheKey MakeAsuKey(const Detail::BlockId& block)
     const auto hash = HashAsuKey(block);
     CacheKey key{};
     std::memcpy(key.data(), &hash, key.size());
-    return key;
+    return kv::CacheKey::FromBytes(key);
 }
 
 Status ConvertStatus(const AsuStatus& status)
@@ -546,9 +546,9 @@ private:
                                                "prerequisite event synchronization failed");
             };
         }
-        auto status =
-            store ? client_->StoreAsync(entries.Value(), taskId, {}, std::move(prerequisite))
-                  : client_->LoadAsync(entries.Value(), taskId);
+        auto status = store ? client_->StoreAsync(entries.Value(), taskId,
+                                                  kv::IoOptions{{}, std::move(prerequisite)})
+                            : client_->LoadAsync(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
             return ConvertStatus(status);

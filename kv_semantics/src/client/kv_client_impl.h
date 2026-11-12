@@ -32,6 +32,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_client.h"
 #include "kv_types.h"
 #include "spsc_ring_queue.h"
@@ -79,17 +80,16 @@ public:
 
     // Submits query operations to routed transports.
     Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
-                      const Namespace& namespaceId = {}) override;
+                      const IoOptions& options = {}) override;
     // Submits load operations to routed transports.
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                     const Namespace& namespaceId = {}) override;
+                     const IoOptions& options = {}) override;
     // Submits store operations to routed transports.
     Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      const Namespace& namespaceId = {},
-                      std::function<Status()> prerequisite = {}) override;
+                      const IoOptions& options = {}) override;
     // Submits delete operations to routed transports.
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
-                       const Namespace& namespaceId = {}) override;
+                       const IoOptions& options = {}) override;
 
     // Checks an aggregate task.
     bool Check(TaskId taskId) override;
@@ -103,11 +103,7 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    // Resolve one input key before it enters routing or transport tasks.
-    Status NormalizeKey(CacheKey& key, std::uint64_t& baseOffset) const;
-    static std::uint32_t ResolveNamespace(const Namespace& namespaceId);
-    Status ResolveVllmAscendKey(std::string_view key, std::string_view& identity,
-                                std::uint64_t& baseOffset) const;
+    static std::uint32_t ResolveNamespace(const std::string& namespaceId);
 
     struct ProviderMemoryState {
         std::shared_ptr<TransProvider> provider;
@@ -116,10 +112,10 @@ private:
 
     // Creates and queues one entry-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId,
-                       const Namespace& namespaceId, std::function<Status()> prerequisite = {});
+                       const IoOptions& options);
     // Creates and queues one key-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId,
-                       const Namespace& namespaceId);
+                       const IoOptions& options);
 
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();
@@ -174,6 +170,7 @@ private:
     TransProviderFactory transProviderFactory_;
     // Creates the external view server during Init.
     ViewServerFactory viewServerFactory_;
+    std::unique_ptr<KeyResolver> keyResolver_;
     // mutex_ protects background refresh state and resource/view caches.
     mutable std::mutex mutex_;
     // memoryMu_ serializes provider creation with business-memory register/bind/unregister.

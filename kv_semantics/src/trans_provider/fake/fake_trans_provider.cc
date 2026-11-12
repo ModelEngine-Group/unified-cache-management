@@ -78,7 +78,7 @@ CacheKey ReadKey(const std::uint32_t* data)
 {
     BinaryKey key{};
     std::memcpy(key.data(), data, kCacheKeySizeBytes);
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 std::uint64_t KeyHash(const CacheKey& key)

@@ -25,7 +25,7 @@ Status StringToCacheKey(const std::string& value, const std::string& source, kv:
                                  ", key=" + value);
     }
     if (!value.empty()) { std::memcpy(bytes.data(), value.data(), value.size()); }
-    key = bytes;
+    key = kv::CacheKey::FromBytes(bytes);
     return Status::Success();
 }
 

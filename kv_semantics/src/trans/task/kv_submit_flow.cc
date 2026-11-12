@@ -66,7 +66,6 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            subBatchContext.namespaceId = ctx.namespaceId;
             const auto subBatchStatus =
                 BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
@@ -89,7 +88,6 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            subBatchContext.namespaceId = ctx.namespaceId;
             const auto subBatchStatus =
                 SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {

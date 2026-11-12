@@ -48,11 +48,11 @@ CacheKey MakeCacheKey(std::string_view text)
     BinaryKey key{};
     if (text.size() <= key.size()) {
         if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
-        return key;
+        return CacheKey::FromBytes(key);
     }
     const auto hash = std::hash<std::string_view>{}(text);
     std::memcpy(key.data(), &hash, key.size());
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 struct CacheKeyHasher {
