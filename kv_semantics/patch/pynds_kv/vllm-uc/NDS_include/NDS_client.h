@@ -24,7 +24,6 @@
 #include <vector>
 // #include <stdatomic.h>
 #include <algorithm>
-#include <arpa/inet.h>  // 用于 htonl
 #include <atomic>
 #include <pthread.h>
 #include <semaphore.h>
@@ -32,7 +31,6 @@
 #include <signal.h>
 #include <zlib.h>  // 需要安装 zlib-devel
 #include "NDS_message_interface.h"
-#include "in_flight_mq.h"
 #include "log.h"
 #include "xrt_rdma_neg_msg.h"
 
@@ -198,6 +196,8 @@ struct rdma_connection {
     uint64_t old_io_count;
     uint64_t connSendCounter;
     uint64_t connRecvCounter;
+    uint8_t control_recv_buf[sizeof(xrt_rdma_neg_msg_t)];
+    size_t control_recv_len;
     bool is_used;       // 在建链的时候标记为true，更新视图时若对应的dpuip被移除标记为false
     bool is_destroyed;  // s_destroyed初始化为true，建链成功或失败都为false，视图变更销毁成功为true
 };

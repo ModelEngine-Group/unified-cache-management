@@ -21,39 +21,80 @@ int nds_epoll_add_conn(struct rdma_connection *conn)
     return NDS_SUCCESS;
 }
 
-int parse_message_header(char *buf, uint8_t *cmd)
+static NDS_ERROR_T handle_disconnect_request(struct rdma_connection *conn,
+                                             const xrt_rdma_neg_conn_fin_t &fin)
 {
-    *cmd = buf[5];
-    return NDS_SUCCESS;
-}
-
-int handle_disconnect_request(struct rdma_connection *conn, char *buf)
-{
-    uint32_t local_qpn = *(uint32_t *)(buf + 16);
-    uint32_t remote_qpn = *(uint32_t *)(buf + 20);
+    const uint32_t local_qpn = ntohl(fin.local_qpn);
+    const uint32_t remote_qpn = ntohl(fin.remote_qpn);
     LOG_I("Disconnect request: local_qpn=%u, remote_qpn=%u", local_qpn, remote_qpn);
     if (try_destroy_connection(conn)) { start_reconnect_timer(conn); }
     return NDS_SUCCESS;
 }
 
-int handle_socket_event(struct rdma_connection *conn, uint32_t events)
+static NDS_ERROR_T process_control_message(struct rdma_connection *conn,
+                                           const xrt_rdma_neg_head_t &head, const uint8_t *body)
 {
-    char buf[1024];
-    if (events & EPOLLIN) {
-        int n = recv(conn->clnt_fd, buf, sizeof(buf), 0);
-        if (n <= 0) {
-            if (n < 0) LOG_E("recv error: %s", strerror(errno));
+    if (head.cmd != XRT_RDMA_NEG_CONN_FIN) {
+        LOG_D("Ignore control cmd=%u from conn %u", head.cmd, conn->conn_idx);
+        return NDS_SUCCESS;
+    }
+    if (head.len != sizeof(xrt_rdma_neg_conn_fin_t)) {
+        LOG_W("Invalid disconnect body length %u from conn %u", head.len, conn->conn_idx);
+        return NDS_FAILED;
+    }
+
+    xrt_rdma_neg_conn_fin_t fin;
+    memcpy(&fin, body, sizeof(fin));
+    return handle_disconnect_request(conn, fin);
+}
+
+static NDS_ERROR_T process_control_recv_buffer(struct rdma_connection *conn)
+{
+    while (conn->control_recv_len >= sizeof(xrt_rdma_neg_head_t)) {
+        xrt_rdma_neg_head_t head;
+        memcpy(&head, conn->control_recv_buf, sizeof(head));
+        head.len = ntohl(head.len);
+        if (head.len > XRT_MAX_NEG_BODY_SIZE) {
+            LOG_E("Invalid control body length %u from conn %u", head.len, conn->conn_idx);
+            conn->control_recv_len = 0;
             return NDS_FAILED;
         }
-        uint8_t cmd;
-        parse_message_header(buf, &cmd);
-        LOG_E("Received cmd=%u from conn %u", cmd, conn->conn_idx);
-        if (cmd == 4) {
-            handle_disconnect_request(conn, buf);
-            return NDS_SUCCESS;
-        }
+
+        const size_t message_len = sizeof(head) + head.len;
+        if (conn->control_recv_len < message_len) { return NDS_SUCCESS; }
+
+        const uint8_t *body = conn->control_recv_buf + sizeof(head);
+        const NDS_ERROR_T ret = process_control_message(conn, head, body);
+        conn->control_recv_len -= message_len;
+        memmove(conn->control_recv_buf, body + head.len, conn->control_recv_len);
+        if (ret != NDS_SUCCESS || conn->clnt_fd < 0) { return ret; }
     }
     return NDS_SUCCESS;
+}
+
+int handle_socket_event(struct rdma_connection *conn, uint32_t events)
+{
+    if (!(events & EPOLLIN)) { return NDS_SUCCESS; }
+
+    while (true) {
+        const size_t remaining = sizeof(conn->control_recv_buf) - conn->control_recv_len;
+        const ssize_t n = recv(conn->clnt_fd, conn->control_recv_buf + conn->control_recv_len,
+                               remaining, MSG_DONTWAIT);
+        if (n > 0) {
+            conn->control_recv_len += static_cast<size_t>(n);
+            if (process_control_recv_buffer(conn) != NDS_SUCCESS) { return NDS_FAILED; }
+            if (conn->clnt_fd < 0) { return NDS_SUCCESS; }
+            continue;
+        }
+        if (n == 0) {
+            LOG_W("Peer closed control connection %u", conn->conn_idx);
+            return NDS_FAILED;
+        }
+        if (errno == EINTR) { continue; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { return NDS_SUCCESS; }
+        LOG_E("recv error on conn %u: %s", conn->conn_idx, strerror(errno));
+        return NDS_FAILED;
+    }
 }
 
 void *epoll_listener_thread(void *arg)

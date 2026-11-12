@@ -22,6 +22,19 @@ make AGENT_MODE=mock
 
 `BUILD=debug` / `BUILD=release` 控制编译优化，`make clean` 清理生成物。
 
+## 内存占用说明
+
+`MAX_CID_COUNT = 50000` 定义 CID 并发上限；`g_cid_metadata` 等固定数组会增加 `libndsclient.so` 的 BSS 段和进程虚拟地址空间。BSS 通常不会一次性占满等量物理内存，实际驻留内存还会随初始化遍历及 I/O 访问逐步物化，不能用文件大小直接推断运行时 RSS。
+
+容量评估请在目标 Linux 环境实测，不要仅按单个字段估算：
+
+```bash
+# 可用临时测试程序输出 sizeof(cid_metadata_t)
+size NDS_bin/libndsclient.so
+```
+
+如目标环境的并发需求或内存预算不满足该上限，应单独评估并验证容量调整；不要未经运行时验证直接修改协议或内存管理逻辑。
+
 ## 测试样例
 
 `Test/test.c` 为简易一写一读样例：

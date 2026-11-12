@@ -25,9 +25,9 @@ namespace agent
     std::vector<KVClientNodeView> KVClientAgent::get_view() const
     {
         return {
-            {0, true,  true, {"192.168.133.197"}},
-            {0, true,  true, {"192.168.133.198"}},
-            {0, false, true, {"192.168.133.199"}},
+            {0, true,  true, {"192.0.2.10"}},
+            {0, true,  true, {"192.0.2.11"}},
+            {0, false, true, {"192.0.2.12"}},
         };
     }
 
@@ -35,18 +35,18 @@ namespace agent
     {
         (void)ns;
         return {
-            {0, true,  true, {"192.168.133.197"}},
-            {0, true,  true, {"192.168.133.198"}},
-            {0, false, true, {"192.168.133.199"}},
+            {0, true,  true, {"192.0.2.10"}},
+            {0, true,  true, {"192.0.2.11"}},
+            {0, false, true, {"192.0.2.12"}},
         };
     }
 
     std::vector<KVClientNodeView> KVClientAgent::get_in() const
     {
         return {
-            {0, true,  true, {"192.168.133.197"}},
-            {0, true,  true, {"192.168.133.198"}},
-            {0, false, true, {"192.168.133.199"}},
+            {0, true,  true, {"192.0.2.10"}},
+            {0, true,  true, {"192.0.2.11"}},
+            {0, false, true, {"192.0.2.12"}},
         };
     }
 
@@ -54,21 +54,21 @@ namespace agent
     {
         if (ns == "ns_01") {
             return {
-                {0, true,  true, {"192.168.133.197"}},
-                {0, true,  true, {"192.168.133.198"}},
-                {0, false, true, {"192.168.133.199"}},
+                {0, true,  true, {"192.0.2.10"}},
+                {0, true,  true, {"192.0.2.11"}},
+                {0, false, true, {"192.0.2.12"}},
             };
         } else if (ns == "ns_02") {
             return {
-                {0, true,  true, {"192.168.133.198"}},
-                {1, true,  true, {"192.168.133.198"}},
-                {2, false, true, {"192.168.133.198"}},
+                {0, true,  true, {"192.0.2.11"}},
+                {1, true,  true, {"192.0.2.11"}},
+                {2, false, true, {"192.0.2.11"}},
             };
         } else {
             return {
-                {0, true,  true, {"192.168.133.199"}},
-                {1, true,  true, {"192.168.133.199"}},
-                {2, false, true, {"192.168.133.199"}},
+                {0, true,  true, {"192.0.2.12"}},
+                {1, true,  true, {"192.0.2.12"}},
+                {2, false, true, {"192.0.2.12"}},
             };
         }
     }
