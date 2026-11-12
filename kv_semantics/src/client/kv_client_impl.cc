@@ -282,9 +282,9 @@ Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task
     return status;
 }
 
-std::uint32_t KvClientImpl::ResolveNamespace(const std::string& namespaceId)
+std::uint32_t KvClientImpl::ResolveNamespace(const std::string& kvns)
 {
-    return XXH32(namespaceId.data(), namespaceId.size(), HASH_SEED_VALUE);
+    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
 }
 
 bool KvClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
@@ -438,7 +438,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     ctx->opType = opType;
     ctx->prerequisite = options.prerequisite;
     ctx->viewSnapshot = snapshot;
-    ctx->gnsid = ResolveNamespace(options.namespaceId);
+    ctx->gnsid = ResolveNamespace(options.kvns);
     ctx->entries = entries;
     for (auto& entry : ctx->entries) {
         ResolvedKey resolved;
@@ -526,7 +526,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
-    ctx->gnsid = ResolveNamespace(options.namespaceId);
+    ctx->gnsid = ResolveNamespace(options.kvns);
     ctx->prerequisite = options.prerequisite;
     ctx->keys = keys;
     for (auto& key : ctx->keys) {
