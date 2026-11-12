@@ -25,7 +25,6 @@ These fields belong at the YAML root. Descriptions identify model- or engine-spe
 | `enable_event_sync` | Optional | bool | Default: `true` | Performance optimization switch. Recommended to enable. |
 | `persist_token_threshold` | Optional | int | `0` | When request length < `persist_token_threshold`, UCM does not process the request. |
 | `wa_dump_block_wise` | Optional | bool | `true` | Only used in FAWA connector. `true`: every block's WA cache is dumped (high frequency); `false`: only dump last block's WA cache of each chunk prefill (low frequency). |
-| `enable_pin_blocks` | Optional | bool | `true` | Only used in FAWA connector; requires vLLM to call `bind_gpu_block_pool`. `true`: pin window blocks while their dumps are in flight, so a step does not wait for the previous step's dumps; `false`: host-wait the previous step's dumps at the start of every step. |
 | `load_tokens_threshold` | Optional | int | `0` | Minimum token threshold for triggering KV cache loading. Only effective for DeepSeek V4 series. When external hit tokens > `load_tokens_threshold`, triggers KV Cache loading. |
 | `enable_record_traces` | Optional | bool | `false` | Record request information (timestamps, input length, output length, etc.). |
 | `enable_metrics` | Optional | bool | Default: `true` | Whether to enable metrics collection. |
