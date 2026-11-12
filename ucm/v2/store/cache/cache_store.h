@@ -23,58 +23,67 @@
  * */
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 #include "store.h"
 
 namespace UC::Store {
 
-class CacheStore : public Store {
+/**
+ * @brief Factory-facing facade of the multiprocess cache store: parses the
+ *        configuration, runs the leadership contest, and installs this
+ *        process's role implementation -- the scheduler's local decision
+ *        maker, the worker's leader-or-leaf data plane, or, for "both", the
+ *        primary for the contest winner and a replica for every loser.
+ *        Every Store method forwards to the installed implementation.
+ *
+ * The facade stays default-constructible (the plugin contract) and stateless
+ * apart from that implementation. The Prefetchable facet is not implemented:
+ * AsPrefetchable answers nullptr, so the proxy-side capability dispatch
+ * serves the basic interface and synthesizes prefetch completions.
+ *
+ * @note Lifecycle: the upper layer guarantees exactly one Setup before
+ *       any call and no calls during destruction; the facade deliberately
+ *       performs no state checking of that contract (violating it is
+ *       undefined behavior, by design).
+ */
+class CacheStore final : public Store {
 public:
-    Status Setup(const Dictionary& /*config*/) override
-    {
-        return Status::Unsupported("CacheStore::Setup is not implemented");
-    }
+    CacheStore() = default;
+    ~CacheStore() override = default;
+    CacheStore(const CacheStore&) = delete;
+    CacheStore& operator=(const CacheStore&) = delete;
 
-    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>& /*blockIds*/) override
-    {
-        return Status::Unsupported("CacheStore::Lookup is not implemented");
-    }
+    Status Setup(const Dictionary& config) override;
 
-    void Touch(const std::vector<BlockId>& /*blockIds*/, const RequestContext& /*context*/) override
-    {
-    }
+    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>& blockIds) override;
 
-    Status Load(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
-    {
-        return Status::Unsupported("CacheStore::Load is not implemented");
-    }
+    void Touch(const std::vector<BlockId>& blockIds, const RequestContext& context) override;
 
-    Status Dump(std::size_t /*jobId*/, JobDescriptor /*job*/, AddressedToken /*token*/) override
-    {
-        return Status::Unsupported("CacheStore::Dump is not implemented");
-    }
+    Status Load(std::size_t jobId, JobDescriptor job, AddressedToken token) override;
 
-    std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
+    Status Dump(std::size_t jobId, JobDescriptor job, AddressedToken token) override;
 
-    Status Wait(std::size_t /*jobId*/) override { return Status::Ok(); }
+    std::vector<std::pair<std::size_t, bool>> GetFinished() override;
 
-    Prefetchable* AsPrefetchable() override { return nullptr; }
+    Status Wait(std::size_t jobId) override;
 
     /*== Addressing & admission ==*/
 
-    Expected<AddressedToken> Pin(const std::vector<BlockId>& /*blockIds*/) override
-    {
-        return Status::Unsupported("CacheStore::Pin is not implemented");
-    }
+    Expected<AddressedToken> Pin(const std::vector<BlockId>& blockIds) override;
 
-    void Unpin(const std::vector<BlockId>& /*blockIds*/) override {}
+    void Unpin(const std::vector<BlockId>& blockIds) override;
 
-    Expected<AddressedToken> Alloc(const std::vector<BlockId>& /*blockIds*/,
-                                   const RequestContext& /*context*/) override
-    {
-        return Status::Unsupported("CacheStore::Alloc is not implemented");
-    }
+    Expected<AddressedToken> Alloc(const std::vector<BlockId>& blockIds,
+                                   const RequestContext& context) override;
 
-    void Commit(const std::vector<BlockId>& /*blockIds*/, bool /*success*/) override {}
+    void Commit(const std::vector<BlockId>& blockIds, bool success) override;
+
+private:
+    /** The process's role implementation, installed by Setup. */
+    std::unique_ptr<Store> impl_;
 };
 
 }  // namespace UC::Store
