@@ -2384,7 +2384,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             request.load_keys and (not request.load_async or not self.enable_event_sync)
             for request in metadata.request_meta.values()
         ):
-            load_event_handle = self._get_load_event_handle()
+            load_event_handle = self._get_event_handle()
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
@@ -2408,7 +2408,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 # the FA/WA tasks and released when the pending drains.
                 submit_handle = load_event_handle
                 if request.load_async and self.enable_event_sync:
-                    pending.event_handle = self._get_load_event_handle()
+                    pending.event_handle = self._get_event_handle()
                     submit_handle = pending.event_handle
 
                 # FA groups are loaded for every external-hit canonical block.
@@ -2468,8 +2468,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._failed_fawa_loads.add(request_id)
                         self._connector_worker_meta.mark_failed(request_id)
                         # No submitted task ever referenced the event.
-                        self.device.destroy_event_handle(pending.event_handle)
-                        pending.event_handle = 0
+                        if pending.event_handle:
+                            self.device.destroy_event_handle(pending.event_handle)
+                            pending.event_handle = 0
                 else:
                     # Keep the historical sync behavior: invalidate both the
                     # load and dump blocks through the request metadata.
@@ -2533,8 +2534,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if not remaining:
                 self._pending_fawa_loads.pop(request_id, None)
                 # Drained: the lazy WaitEvents have run; release the event.
-                self.device.destroy_event_handle(pending.event_handle)
-                pending.event_handle = 0
+                if pending.event_handle:
+                    self.device.destroy_event_handle(pending.event_handle)
+                    pending.event_handle = 0
                 finished.add(request_id)
                 if pending.failed:
                     self._failed_fawa_loads.add(request_id)
@@ -2684,7 +2686,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
 
         if fa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             fa_ptrs = np.vstack(fa_ptr_rows)
             try:
                 fa_dump_task = self._submit_dump_task(
@@ -2702,7 +2704,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
         if wa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
             try:
                 wa_dump_task = self._submit_dump_task(

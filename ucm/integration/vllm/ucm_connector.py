@@ -2570,17 +2570,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
 
-    def _get_dump_event_handle(self) -> int:
-        if not self.enable_event_sync:
-            self.device.synchronize()
-            return 0
-
-        event_handle = self.device.get_event_handle()
-        if event_handle == 0:
-            self.device.synchronize()
-        return event_handle
-
-    def _get_load_event_handle(self) -> int:
+    def _get_event_handle(self) -> int:
         if not self.enable_event_sync:
             self.device.synchronize()
             return 0
@@ -2725,7 +2715,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(total_ucm_block_ids)
-                event_handle = self._get_dump_event_handle()
+                event_handle = self._get_event_handle()
                 task = self._rank_consistency.submit_dump(
                     self.store,
                     block_ids_by_request,
@@ -3131,7 +3121,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
             shard_id = local_layer_id if self._is_pp else layer_id
             shard_indexs = [shard_id] * len(total_ucm_block_ids)
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle
             task = self._rank_consistency.submit_dump(
                 self.store,
                 block_ids_by_request,
