@@ -51,7 +51,9 @@ namespace UC::Store {
  * the presence and use probes. Reservations are invisible to Lookup
  * until their Commit; concurrent admissions of the same block share
  * one reservation, one reference each, and it concludes when the last
- * matching Commit arrives. Re-admissions keep the block visible at
+ * matching Commit arrives -- committed when every reference concluded
+ * with success, released when any one concluded with failure.
+ * Re-admissions keep the block visible at
  * its slot and pin it until concluded; a block that has expired by
  * the time of the successful conclusion is revived with the fresh
  * deadline (a failed one leaves it to expire), while a live block's
@@ -186,8 +188,8 @@ public:
      * Every Commit occurrence drops one reference of the matching
      * reservation; concurrent admissions of the same block share it,
      * and the reservation concludes when the last reference arrives --
-     * committed if any sharer concluded with success, released when
-     * none did. On conclusion: new reservations become visible at
+     * released if any sharer concluded with failure, committed when
+     * every one did. On conclusion: new reservations become visible at
      * their slot with the deadline derived from the admission's TTL
      * fact; re-admissions revive a block that has expired in the
      * meantime with the fresh deadline and refresh the slot's
@@ -201,13 +203,13 @@ public:
         for (const auto& blockId : blockIds) {
             auto it = pending_.find(blockId);
             if (it == pending_.end()) { continue; }
-            if (success) { it->second.anySuccess = true; }
+            if (!success) { it->second.anyFailed = true; }
             if (--it->second.refs > 0) { continue; }  // another admission is in flight
             const PendingEntry entry = it->second;
             pending_.erase(it);
             if (entry.readmitted) {
                 auto committed = committed_.find(blockId);
-                if (entry.anySuccess && committed != committed_.end()) {
+                if (!entry.anyFailed && committed != committed_.end()) {
                     if (Expired(committed->second, now)) {
                         const std::optional<TimePoint> deadline = DeadlineFrom(entry.ttl, now);
                         committed->second.deadline = deadline;
@@ -219,7 +221,7 @@ public:
                 continue;
             }
             reservedSlots_--;
-            if (!entry.anySuccess) {
+            if (entry.anyFailed) {
                 policy_->AbortSlot(entry.slot);
                 continue;
             }
@@ -327,8 +329,8 @@ private:
         bool readmitted;
         /** Admissions sharing this reservation; it concludes at zero. */
         std::size_t refs{1};
-        /** Whether any sharer has concluded successfully so far. */
-        bool anySuccess{false};
+        /** Whether any sharer has concluded with failure so far. */
+        bool anyFailed{false};
     };
     struct Reservation {
         BlockId block;
