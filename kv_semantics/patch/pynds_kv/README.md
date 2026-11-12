@@ -58,7 +58,7 @@ bash install.sh --agent-lib-dir /path/from/vendor --python python3.12
 
 By default, the script checks `vllm-uc/agent/release/`. If both agent libraries are present it builds cluster support; if neither is present it builds non-cluster support. Incomplete or explicitly specified library directories are rejected. Use `--no-agent` to force a non-cluster build. `--mock` is only for build validation and must not be used in production.
 
-The script performs clean release builds, creates and installs a wheel with `--no-build-isolation`, and verifies `import pynds_kv`. Offline installation therefore does not download build dependencies. `build.sh` delegates to `install.sh` and accepts the same arguments.
+The script performs clean release builds, creates and installs a wheel with `--no-build-isolation`, and verifies `import pynds_kv` from an empty temporary directory with `PYTHONPATH` cleared, ensuring that validation loads the installed wheel rather than the source tree. Offline installation therefore does not download build dependencies. `build.sh` delegates to `install.sh` and accepts the same arguments.
 
 All required native libraries are packaged in `_pynds_kv_native/` and resolved through relative `$ORIGIN` runpaths. The installation does not depend on source-tree absolute paths or `LD_LIBRARY_PATH`.
 
@@ -110,6 +110,8 @@ All functions return `int32_t`: zero means success and non-zero means failure.
 Python block IDs are non-negative integers below `2^80`. Values below `2^64` remain compatible. The C adapter accepts 64-bit keys; the C++ and Python APIs accept the full 80-bit key.
 
 For writes, `length > value_size` is rejected. For `length < value_size`, the wrapper writes the full slot and requires `offset == 0` plus sufficient registered buffer capacity. Reads return the requested bytes; the implementation may extend the final pair to satisfy SDK batch alignment. Callers must pass the correct namespace ID to every operation.
+
+`init` and `init_multi` do not take ownership of the registered storage. Callers must keep every registered buffer alive at a fixed address and must not resize it while NDS may still use the registration. In particular, do not register temporary or resizable storage whose lifetime is not explicitly managed by the application.
 
 ## Validation tests
 
