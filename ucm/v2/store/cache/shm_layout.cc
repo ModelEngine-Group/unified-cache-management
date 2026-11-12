@@ -208,9 +208,9 @@ void TouchEveryPage(void* base, std::size_t size, bool hugePage)
 
 /**
  * @brief One attempt at creating and sizing a memfd. A descriptor of -1
- *        with errNo set means the attempt failed; for hugetlb attempts the
- *        failure surfaces at ftruncate time (the actual allocation moment),
- *        not at memfd_create.
+ *        with errNo set means the attempt failed; a hugetlb memfd without
+ *        a pool behind it still opens and sizes, so the failure may only
+ *        surface at the mmap of the later attach.
  */
 struct FdAttempt {
     int fd{-1};
@@ -363,35 +363,47 @@ Expected<MemfdRegion> MemfdRegion::Create(std::uint32_t capacity, std::uint64_t 
     auto total = ShmTotalSize(capacity, blockSize);
     if (!total.HasValue()) { return total.Error(); }
 
+    /* Shared tail once a descriptor and its mapping exist: interleave the
+     * allowed NUMA nodes, fault every page in, assemble the region. */
+    auto finalize = [size = total.Value()](int memfd, ShmMapping&& mapping,
+                                           bool hugePage) -> Expected<MemfdRegion> {
+        if (Status st = InterleaveOverAllowedNodes(mapping.Base(), size); st.Failure()) {
+            ::close(memfd);
+            return st;
+        }
+        TouchEveryPage(mapping.Base(), size, hugePage);
+        return MemfdRegion{memfd, std::move(mapping), hugePage};
+    };
+
+    /* The hugetlb attempt spans creation, sizing and mapping: hugetlb pages
+     * are reserved at mmap, so a pool that cannot back the mapping may only
+     * fail once the attach maps it. */
     FdAttempt attempt = OpenMemfd(name, total.Value(), true);
-    bool hugePage = attempt.fd >= 0;
-    if (attempt.fd < 0) {
+    if (attempt.fd >= 0) {
+        auto mapping = ShmMapping::Attach(attempt.fd, total.Value());
+        if (mapping.HasValue()) { return finalize(attempt.fd, std::move(mapping.Value()), true); }
+        const std::string cause = mapping.Error().ToString();
+        ::close(attempt.fd);
         if (forceHugePage) {
             return Status::OsApiError("hugetlb memfd '{}' of {} bytes failed: {}", name,
-                                      total.Value(), std::strerror(attempt.errNo));
+                                      total.Value(), cause);
         }
-        attempt = OpenMemfd(name, total.Value(), false);
-        if (attempt.fd < 0) {
-            return Status::OsApiError("memfd '{}' of {} bytes failed: {}", name, total.Value(),
-                                      std::strerror(attempt.errNo));
-        }
+    } else if (forceHugePage) {
+        return Status::OsApiError("hugetlb memfd '{}' of {} bytes failed: {}", name, total.Value(),
+                                  std::strerror(attempt.errNo));
     }
-    const int memfd = attempt.fd;
 
-    auto mapping = ShmMapping::Attach(memfd, total.Value());
+    attempt = OpenMemfd(name, total.Value(), false);
+    if (attempt.fd < 0) {
+        return Status::OsApiError("memfd '{}' of {} bytes failed: {}", name, total.Value(),
+                                  std::strerror(attempt.errNo));
+    }
+    auto mapping = ShmMapping::Attach(attempt.fd, total.Value());
     if (!mapping.HasValue()) {
-        ::close(memfd);
+        ::close(attempt.fd);
         return mapping.Error();
     }
-
-    if (Status st = InterleaveOverAllowedNodes(mapping.Value().Base(), total.Value());
-        st.Failure()) {
-        ::close(memfd);
-        return st;
-    }
-
-    TouchEveryPage(mapping.Value().Base(), total.Value(), hugePage);
-    return MemfdRegion{memfd, std::move(mapping.Value()), hugePage};
+    return finalize(attempt.fd, std::move(mapping.Value()), false);
 }
 
 }  // namespace UC::Store

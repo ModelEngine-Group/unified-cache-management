@@ -138,15 +138,13 @@ public:
     /**
      * @brief Creates the shared pool of one cache domain.
      *
-     * Steps: try to create and size a 2MB hugetlb memfd -- with hugetlb the
-     * allocation gate is ftruncate, so the attempt spans both calls and
-     * either failure falls back to normal pages unless forceHugePage
-     * demands the error -- then interleave the mapping over every NUMA
-     * node this process may allocate from (a single such node makes
-     * interleaving vacuous; an indeterminable or rejected NUMA policy
-     * fails the region rather than silently mis-placing it), and finally
-     * walk the region touching one byte per page so the whole pool is
-     * resident before anybody maps it.
+     * Steps: try to create, size and map a 2MB hugetlb memfd -- hugetlb
+     * pages are reserved at mmap, so a pool that cannot back the mapping
+     * may fail as late as the attach, and any of the three failures falls
+     * back to normal pages unless forceHugePage demands the error -- then
+     * interleave the mapping over every NUMA node this process may allocate
+     * from, and finally walk the region touching one byte per page so the
+     * whole pool is resident before anybody maps it.
      *
      * @param capacity      Slot count of the pool.
      * @param blockSize     Byte length of one slot.
