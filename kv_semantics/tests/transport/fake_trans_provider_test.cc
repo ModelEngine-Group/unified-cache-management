@@ -186,7 +186,8 @@ TEST(FakeTransProviderTest, ImmediateCompletionReportsAllQueriedKeysMissing)
     BinaryKey second{};
     second[0] = std::byte{2};
     for (const bool useSeekControl : {false, true}) {
-        const auto request = BuildExistRequest({first, second}, useSeekControl);
+        const auto request = BuildExistRequest(
+            {CacheKey::FromBytes(first), CacheKey::FromBytes(second)}, useSeekControl);
         std::vector<std::uint32_t> completion;
 
         const auto status = provider.CompleteFakeBackendRequest(
@@ -211,7 +212,7 @@ TEST(FakeTransProviderTest, NamespaceIsolatesStoreLoadQueryAndDeleteForTheSameKe
     FakeTransProvider provider(config);
     BinaryKey bytes{};
     bytes[0] = std::byte{1};
-    const CacheKey key = bytes;
+    const CacheKey key = CacheKey::FromBytes(bytes);
     alignas(512) std::array<char, 512> first;
     alignas(512) std::array<char, 512> second;
     alignas(512) std::array<char, 512> target{};
@@ -291,13 +292,14 @@ TEST(FakeTransProviderTest, ExistHonorsSeekControl)
     missing[0] = std::byte{2};
     BinaryKey third{};
     third[0] = std::byte{3};
-    std::ofstream{asuPath / FakeBackendKeyFileName(first)}.put('\0');
-    std::ofstream{asuPath / FakeBackendKeyFileName(third)}.put('\0');
+    std::ofstream{asuPath / FakeBackendKeyFileName(CacheKey::FromBytes(first))}.put('\0');
+    std::ofstream{asuPath / FakeBackendKeyFileName(CacheKey::FromBytes(third))}.put('\0');
 
     FakeTransProviderConfig config;
     config.storePath = storePath.string();
     config.latencyUs = 0;
-    const std::vector<CacheKey> keys{first, missing, third};
+    const std::vector<CacheKey> keys{CacheKey::FromBytes(first), CacheKey::FromBytes(missing),
+                                     CacheKey::FromBytes(third)};
     FakeTransProvider provider{config};
 
     auto request = BuildExistRequest(keys, false);

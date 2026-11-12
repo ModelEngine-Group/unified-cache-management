@@ -36,7 +36,7 @@ CacheKey MakeCacheKey(const std::string& text)
     BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)

@@ -26,7 +26,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <vector>
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
@@ -38,7 +37,6 @@ namespace kv {
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
-    std::optional<std::uint32_t> namespaceId;
     AsuOpType opType{AsuOpType::QUERY};
     TransportSubBatchState state{TransportSubBatchState::PENDING};
     Status status{Status::OK()};

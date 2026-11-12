@@ -285,7 +285,7 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
     for (const auto& [nodeId, indices] : routes) {
         auto transportTask = std::make_shared<TransportTask>();
         transportTask->nodeId = nodeId;
-        transportTask->namespaceId = task->namespaceId;
+        transportTask->gnsid = task->gnsid;
         transportTask->transport = snapshot->transports.at(nodeId);
         transportTask->originalIndices.reserve(indices.size());
         if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {

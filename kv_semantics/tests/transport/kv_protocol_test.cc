@@ -36,14 +36,14 @@ CacheKey MakeCacheKey(std::string_view text)
     BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 CacheKey MakeCacheKey(std::uint64_t value)
 {
     BinaryKey key{};
     std::memcpy(key.data(), &value, key.size());
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 class KvProtocolPackTest : public ::testing::Test {
@@ -490,7 +490,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsAllZeroKey)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = BinaryKey{};
+    req.key = CacheKey::FromBytes(BinaryKey{});
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -603,7 +603,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsAllZeroKey)
     KvBatchStoreRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = BinaryKey{};
+    req.entries[0].key = CacheKey::FromBytes(BinaryKey{});
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -796,7 +796,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsAllZeroKey)
     req.buffer_length = 1024;
     req.offset = 512;
     req.length = 512;
-    req.key = BinaryKey{};
+    req.key = CacheKey::FromBytes(BinaryKey{});
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -860,7 +860,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsAllZeroKey)
     KvBatchRetrieveRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = BinaryKey{};
+    req.entries[0].key = CacheKey::FromBytes(BinaryKey{});
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -888,7 +888,7 @@ TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsAllZeroKey)
 {
     KvDeleteRequest req;
     req.batch_number = 2;
-    req.keys = {MakeCacheKey("key1"), BinaryKey{}};
+    req.keys = {MakeCacheKey("key1"), CacheKey::FromBytes(BinaryKey{})};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -926,7 +926,7 @@ TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsAllZeroKey)
 {
     KvExistRequest req;
     req.batch_number = 1;
-    req.keys = {BinaryKey{}};
+    req.keys = {CacheKey::FromBytes(BinaryKey{})};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(32, 0);

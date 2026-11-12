@@ -35,10 +35,10 @@ namespace kv {
 
 inline std::string_view CacheKeyView(const CacheKey& key)
 {
-    if (const auto* binary = std::get_if<BinaryKey>(&key)) {
+    if (const auto* binary = key.TryGetBinaryKey()) {
         return {reinterpret_cast<const char*>(binary->data()), binary->size()};
     }
-    return std::get<std::string>(key);
+    return *key.TryGetEngineKey();
 }
 
 inline std::string CacheKeyToHex(const CacheKey& key)

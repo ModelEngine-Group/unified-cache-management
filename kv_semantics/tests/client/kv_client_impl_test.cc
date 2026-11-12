@@ -31,11 +31,11 @@ static CacheKey MakeCacheKey(std::string_view text)
     BinaryKey key{};
     if (text.size() <= key.size()) {
         if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
-        return key;
+        return CacheKey::FromBytes(key);
     }
     const auto hash = std::hash<std::string_view>{}(text);
     std::memcpy(key.data(), &hash, key.size());
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(value); }
@@ -75,7 +75,7 @@ struct TestState {
     std::vector<NodeId> providerBindCalls;
     std::vector<KVBuffer> submittedEntries;
     std::vector<CacheKey> submittedKeys;
-    std::optional<std::uint32_t> submittedNamespace;
+    std::optional<std::uint32_t> submittedGnsid;
     std::vector<NodeId> unregisterCalls;
     bool failRegister{false};
     bool failProviderBind{false};
@@ -254,7 +254,7 @@ public:
         }
         state_->submittedEntries = task->entries;
         state_->submittedKeys = task->keys;
-        state_->submittedNamespace = task->namespaceId;
+        state_->submittedGnsid = task->gnsid;
         state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
             case AsuOpType::QUERY: {
@@ -543,9 +543,11 @@ CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
         std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
         BinaryKey cacheKey{};
         std::memcpy(cacheKey.data(), &combined, sizeof(combined));
-        auto routeKey = std::string(CacheKeyView(cacheKey));
+        auto routeKey = std::string(CacheKeyView(CacheKey::FromBytes(cacheKey)));
         auto routes = router->RouteKeys({routeKey});
-        if (routes.size() == 1 && routes.begin()->first == targetAsuId) { return cacheKey; }
+        if (routes.size() == 1 && routes.begin()->first == targetAsuId) {
+            return CacheKey::FromBytes(cacheKey);
+        }
     }
     return {};
 }
@@ -874,27 +876,31 @@ TEST(KvClientImplTest, Dispatch_WaitFailurePreventsSendAndWorkerContinues)
     };
     bool waited = false;
     ASSERT_TRUE(client
-                    ->StoreAsync(entries, taskId, {},
-                                 [&]() {
-                                     waited = true;
-                                     EXPECT_TRUE(state->submittedOpTypes.empty());
-                                     return Status::Error(StatusCode::IO_ERROR, "wait failed");
-                                 })
+                    ->StoreAsync(entries, taskId,
+                                 IoOptions{{},
+                                           [&]() {
+                                               waited = true;
+                                               EXPECT_TRUE(state->submittedOpTypes.empty());
+                                               return Status::Error(StatusCode::IO_ERROR,
+                                                                    "wait failed");
+                                           }})
                     .ok());
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::IO_ERROR);
     EXPECT_TRUE(waited);
     EXPECT_TRUE(state->submittedOpTypes.empty());
 
-    ASSERT_TRUE(client->StoreAsync(entries, taskId, {}, []() -> Status { throw 1; }).ok());
+    ASSERT_TRUE(
+        client->StoreAsync(entries, taskId, IoOptions{{}, []() -> Status { throw 1; }}).ok());
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::INTERNAL_ERROR);
     EXPECT_TRUE(state->submittedOpTypes.empty());
 
     ASSERT_TRUE(client
-                    ->StoreAsync(entries, taskId, {},
-                                 [&]() {
-                                     EXPECT_TRUE(state->submittedOpTypes.empty());
-                                     return Status::OK();
-                                 })
+                    ->StoreAsync(entries, taskId,
+                                 IoOptions{{},
+                                           [&]() {
+                                               EXPECT_TRUE(state->submittedOpTypes.empty());
+                                               return Status::OK();
+                                           }})
                     .ok());
     EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
     EXPECT_EQ(state->submittedOpTypes.size(), 1U);
@@ -914,7 +920,7 @@ TEST(KvClientImplTest, Dispatch_WaitCallbackUsesStoreProtocols)
                         {
                             KVBuffer{MakeCacheKey("store-single"), {}}
     },
-                        taskId, {})
+                        taskId, IoOptions{{}})
                     .ok());
     TaskResult result;
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
@@ -925,7 +931,7 @@ TEST(KvClientImplTest, Dispatch_WaitCallbackUsesStoreProtocols)
                             KVBuffer{MakeCacheKey("store-batch-0"), {}},
                             KVBuffer{MakeCacheKey("store-batch-1"), {}}
     },
-                        taskId, {})
+                        taskId, IoOptions{{}})
                     .ok());
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
@@ -2327,143 +2333,105 @@ TEST(KvClientImplTest,
     EXPECT_EQ(state->storeCalls, std::vector<NodeId>({20, 10}));
 }
 
-TEST(KvClientImplTest, KeyNormalizationIsIndependentOfNamespace)
+TEST(KvClientImplTest, CacheKeyFactoriesOwnInputAndPreserveRepresentation)
 {
-    auto state = std::make_shared<TestState>();
-    auto client = CreateKvClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
-    const BinaryKey binary = std::get<BinaryKey>(MakeCacheKey("abcdefgh"));
-    const std::vector<KVBuffer> input{
-        {binary,                  {}, 7},
-        {std::string("abcdefgh"), {}, 7}
-    };
-    TaskId task = kInvalidTaskId;
-    TaskResult result;
-    ASSERT_TRUE(client->StoreAsync(input, task).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    ASSERT_EQ(state->submittedEntries.size(), 2U);
-    EXPECT_EQ(state->submittedEntries[0].key, CacheKey(binary));
-    const auto stringKey = state->submittedEntries[1].key;
-    EXPECT_EQ(state->submittedNamespace,
-              static_cast<std::uint32_t>(std::hash<std::string_view>{}("")));
-    ASSERT_TRUE(client->StoreAsync(input, task, std::uint32_t{123}).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    EXPECT_EQ(state->submittedEntries[0].key, CacheKey(binary));
-    EXPECT_EQ(state->submittedEntries[1].key, stringKey);
-    EXPECT_EQ(state->submittedNamespace, std::optional<std::uint32_t>{static_cast<std::uint32_t>(
-                                             std::hash<std::string_view>{}("123"))});
-    ASSERT_TRUE(client->StoreAsync(input, task, std::string("123")).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    EXPECT_EQ(state->submittedEntries[0].key, CacheKey(binary));
-    EXPECT_EQ(state->submittedEntries[1].key, stringKey);
-    EXPECT_EQ(state->submittedNamespace, std::optional<std::uint32_t>{static_cast<std::uint32_t>(
-                                             std::hash<std::string_view>{}("123"))});
-    EXPECT_EQ(input[1].key, CacheKey(std::string("abcdefgh")));
-    EXPECT_EQ(input[1].offset, 7U);
+    std::string text = "model@hash@1";
+    const auto engine = CacheKey::FromEngineKey(text);
+    text.clear();
+    ASSERT_NE(engine.TryGetEngineKey(), nullptr);
+    EXPECT_EQ(*engine.TryGetEngineKey(), "model@hash@1");
+    EXPECT_EQ(engine.TryGetBinaryKey(), nullptr);
+    BinaryKey bytes{};
+    bytes[0] = std::byte{7};
+    const auto encoded = CacheKey::FromBytes(bytes);
+    bytes[0] = std::byte{9};
+    ASSERT_NE(encoded.TryGetBinaryKey(), nullptr);
+    EXPECT_EQ((*encoded.TryGetBinaryKey())[0], std::byte{7});
+    EXPECT_EQ(encoded.TryGetEngineKey(), nullptr);
+    EXPECT_NE(CacheKey::FromBytes(BinaryKey{}), CacheKey::FromEngineKey(std::string(8, '\0')));
 }
 
-TEST(KvClientImplTest, ZeroNamespaceIsExplicitAcrossKeyOperations)
+TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
 {
-    auto state = std::make_shared<TestState>();
-    auto client = CreateKvClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
-    for (const auto& key : {MakeCacheKey("abcdefgh"), CacheKey(std::string("abcdefgh"))}) {
-        const std::vector<KVBuffer> entries{
-            {key, {}, 7}
-        };
-        TaskId task = kInvalidTaskId;
-        TaskResult result;
-        ASSERT_TRUE(client->StoreAsync(entries, task).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        const auto defaultKey = state->submittedEntries[0].key;
-        EXPECT_EQ(state->submittedNamespace,
-                  static_cast<std::uint32_t>(std::hash<std::string_view>{}("")));
-        ASSERT_TRUE(client->StoreAsync(entries, task, std::uint32_t{0}).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedEntries[0].key, defaultKey);
-        EXPECT_EQ(state->submittedNamespace,
-                  std::optional<std::uint32_t>{
-                      static_cast<std::uint32_t>(std::hash<std::string_view>{}("0"))});
-        ASSERT_TRUE(client->QueryAsync({key}, task, std::string("0")).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedKeys[0], defaultKey);
-        EXPECT_EQ(state->submittedNamespace,
-                  std::optional<std::uint32_t>{
-                      static_cast<std::uint32_t>(std::hash<std::string_view>{}("0"))});
-        ASSERT_TRUE(client->LoadAsync(entries, task, std::uint32_t{0}).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedEntries[0].key, defaultKey);
-        EXPECT_EQ(state->submittedNamespace,
-                  std::optional<std::uint32_t>{
-                      static_cast<std::uint32_t>(std::hash<std::string_view>{}("0"))});
-        ASSERT_TRUE(client->DeleteAsync({key}, task, std::uint32_t{0}).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedKeys[0], defaultKey);
-        EXPECT_EQ(state->submittedNamespace,
-                  std::optional<std::uint32_t>{
-                      static_cast<std::uint32_t>(std::hash<std::string_view>{}("0"))});
-        ASSERT_TRUE(client->QueryAsync({key}, task, std::string{}).ok());
-        ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedKeys[0], defaultKey);
-        EXPECT_EQ(state->submittedNamespace,
-                  static_cast<std::uint32_t>(std::hash<std::string_view>{}("")));
-        EXPECT_EQ(entries[0].key, key);
-        EXPECT_EQ(entries[0].offset, 7U);
+    auto resolver = CreateDefaultKeyResolver({});
+    ResolvedKey result;
+    for (const auto& [text, hex] : std::vector<std::pair<std::string, std::string>>{
+             {"",           "cfcac3d5462138af"},
+             {"abc",        "1f4573c6b5c1d119"},
+             {"model@hash", "bcce7875d1eb6ebb"}
+    }) {
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(text), result).ok());
+        EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.key)), hex);
+        EXPECT_EQ(result.baseOffset, 0U);
     }
+    const auto bytes = result.key;
+    ASSERT_TRUE(resolver->Resolve(CacheKey::FromBytes(bytes), result).ok());
+    EXPECT_EQ(result.key, bytes);
+    resolver = CreateDefaultKeyResolver({InferenceEngine::VLLM_ASCEND, 28, 512});
+    ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey("model@hash@3"), result).ok());
+    EXPECT_EQ(result.key, bytes);
+    EXPECT_EQ(result.baseOffset, 1536U);
 }
 
-TEST(KvClientImplTest, NamedNamespacesResolveWithoutChangingKeys)
+TEST(KvClientImplTest, LayerSlotAlignmentIsRequiredOnlyForLayerwiseKeys)
 {
-    auto state = std::make_shared<TestState>();
-    auto client = CreateKvClient(MakeFactory(state));
-    auto config = MakeConfig({10});
-    ASSERT_TRUE(client->Init(config).ok());
-    const CacheKey key = std::string("model@hash");
-    TaskId task = kInvalidTaskId;
-    TaskResult result;
-    ASSERT_TRUE(client->QueryAsync({key}, task, std::string("tenantA")).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    const auto normalized = state->submittedKeys[0];
-    EXPECT_EQ(state->submittedNamespace, std::optional<std::uint32_t>{static_cast<std::uint32_t>(
-                                             std::hash<std::string_view>{}("tenantA"))});
-    ASSERT_TRUE(client->QueryAsync({key}, task, std::string("tenantB")).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    EXPECT_EQ(state->submittedKeys[0], normalized);
-    EXPECT_EQ(state->submittedNamespace, std::optional<std::uint32_t>{static_cast<std::uint32_t>(
-                                             std::hash<std::string_view>{}("tenantB"))});
-    ASSERT_TRUE(client->QueryAsync({key}, task, std::string("4294967295")).ok());
-    ASSERT_TRUE(client->Wait(task, 100, result).ok());
-    EXPECT_EQ(state->submittedNamespace, std::optional<std::uint32_t>{static_cast<std::uint32_t>(
-                                             std::hash<std::string_view>{}("4294967295"))});
+    auto resolver = CreateDefaultKeyResolver({InferenceEngine::VLLM_ASCEND, 2, 256});
+    ResolvedKey result;
+    EXPECT_TRUE(resolver->Resolve(CacheKey::FromEngineKey("model@pp_rank:0@hash"), result).ok());
+    EXPECT_TRUE(resolver->Resolve(CacheKey::FromBytes(BinaryKey{}), result).ok());
+    const auto status = resolver->Resolve(CacheKey::FromEngineKey("model@hash@1"), result);
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message.find("multiple of 512"), std::string::npos);
+    resolver = CreateDefaultKeyResolver({InferenceEngine::VLLM_ASCEND, 2, 512});
+    ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey("model@hash@1"), result).ok());
+    EXPECT_EQ(result.baseOffset, 512U);
+    resolver = CreateDefaultKeyResolver({InferenceEngine::SGLANG, 2, 256});
+    EXPECT_TRUE(resolver->Resolve(CacheKey::FromEngineKey("model@hash@1"), result).ok());
+    EXPECT_EQ(result.baseOffset, 0U);
 }
 
-TEST(KvClientImplTest, ArbitraryNamespacesAreHashedAcrossKeyOperations)
+TEST(KvClientImplTest, GlobalNamespaceIdsUseXxh32WithoutChangingKeys)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
-    const CacheKey key = MakeCacheKey("key");
     const std::vector<KVBuffer> entries{
-        {key, {}, 0}
+        {MakeCacheKey("binary"),                             {}, 7},
+        {CacheKey::FromEngineKey(std::string("model@hash")), {}, 7}
     };
-    for (const auto* text : {"default", "tenantA", "4294967296", "-1", "+1", ""}) {
-        const Namespace ns = std::string(text);
-        const auto expected = static_cast<std::uint32_t>(std::hash<std::string_view>{}(text));
-        TaskId task = kInvalidTaskId;
-        TaskResult result;
-        ASSERT_TRUE(client->StoreAsync(entries, task, ns).ok());
+    TaskId task = kInvalidTaskId;
+    TaskResult result;
+    std::vector<CacheKey> normalized;
+    // Match ASU's XXH32(name, strlen(name), 5381), including an empty namespace.
+    for (const auto& [name, expected] : std::vector<std::pair<std::string, std::uint32_t>>{
+             {"",    0xa3316a09U},
+             {"a",   0xc55804d1U},
+             {"abc", 0x6e40a53aU}
+    }) {
+        ASSERT_TRUE(client->StoreAsync(entries, task, IoOptions{name}).ok());
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedNamespace, expected);
-        ASSERT_TRUE(client->LoadAsync(entries, task, ns).ok());
+        EXPECT_EQ(state->submittedGnsid, expected);
+        if (normalized.empty()) {
+            for (const auto& entry : state->submittedEntries) normalized.push_back(entry.key);
+        }
+        EXPECT_EQ(state->submittedEntries[0].key, normalized[0]);
+        EXPECT_EQ(state->submittedEntries[1].key, normalized[1]);
+        EXPECT_EQ(state->submittedEntries[0].offset, 7U);
+        ASSERT_TRUE(client->LoadAsync(entries, task, IoOptions{name}).ok());
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedNamespace, expected);
-        ASSERT_TRUE(client->QueryAsync({key}, task, ns).ok());
+        EXPECT_EQ(state->submittedGnsid, expected);
+        EXPECT_EQ(state->submittedEntries[1].key, normalized[1]);
+        ASSERT_TRUE(client->QueryAsync({entries[1].key}, task, IoOptions{name}).ok());
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedNamespace, expected);
-        ASSERT_TRUE(client->DeleteAsync({key}, task, ns).ok());
+        EXPECT_EQ(state->submittedGnsid, expected);
+        EXPECT_EQ(state->submittedKeys[0], normalized[1]);
+        ASSERT_TRUE(client->DeleteAsync({entries[1].key}, task, IoOptions{name}).ok());
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        EXPECT_EQ(state->submittedNamespace, expected);
+        EXPECT_EQ(state->submittedGnsid, expected);
+        EXPECT_EQ(state->submittedKeys[0], normalized[1]);
     }
+    EXPECT_EQ(entries[1].key, CacheKey::FromEngineKey(std::string("model@hash")));
+    EXPECT_EQ(entries[1].offset, 7U);
 }
 
 TEST(KvClientImplTest, LayerNormalizationIsSharedByEveryKeyOperation)
@@ -2473,54 +2441,55 @@ TEST(KvClientImplTest, LayerNormalizationIsSharedByEveryKeyOperation)
     auto config = MakeConfig({10});
     config.keyResolution = {InferenceEngine::VLLM_ASCEND, 28, 1024};
     ASSERT_TRUE(client->Init(config).ok());
-    const Namespace ns = std::string("tenant");
+    const std::string ns = std::string("tenant");
     const std::vector<KVBuffer> input{
-        {std::string("model@tp:0@hash@3"), {}, 17}
+        {CacheKey::FromEngineKey(std::string("model@tp:0@hash@3")), {}, 17}
     };
     TaskId task = kInvalidTaskId;
     TaskResult result;
     int prerequisiteCalls = 0;
     ASSERT_TRUE(client
-                    ->StoreAsync(input, task, ns,
-                                 [&] {
-                                     ++prerequisiteCalls;
-                                     return Status::OK();
-                                 })
+                    ->StoreAsync(input, task,
+                                 IoOptions{ns,
+                                           [&] {
+                                               ++prerequisiteCalls;
+                                               return Status::OK();
+                                           }})
                     .ok());
     ASSERT_TRUE(client->Wait(task, 100, result).ok());
     EXPECT_EQ(prerequisiteCalls, 1);
     const auto expected = state->submittedEntries[0].key;
-    EXPECT_TRUE(std::holds_alternative<BinaryKey>(expected));
+    EXPECT_TRUE(expected.TryGetBinaryKey() != nullptr);
     EXPECT_EQ(state->submittedEntries[0].offset, 3U * 1024 + 17);
-    ASSERT_TRUE(client->LoadAsync(input, task, ns).ok());
+    ASSERT_TRUE(client->LoadAsync(input, task, IoOptions{ns}).ok());
     ASSERT_TRUE(client->Wait(task, 100, result).ok());
     EXPECT_EQ(state->submittedEntries[0].key, expected);
     EXPECT_EQ(state->submittedEntries[0].offset, 3U * 1024 + 17);
     ASSERT_TRUE(client
                     ->StoreAsync(
                         {
-                            {std::string("model@tp:0@hash@4"), {}, 9}
+                            {CacheKey::FromEngineKey(std::string("model@tp:0@hash@4")), {}, 9}
     },
-                        task, ns)
+                        task, IoOptions{ns})
                     .ok());
     ASSERT_TRUE(client->Wait(task, 100, result).ok());
     EXPECT_EQ(state->submittedEntries[0].key, expected);
     EXPECT_EQ(state->submittedEntries[0].offset, 4U * 1024 + 9);
-    ASSERT_TRUE(client->QueryAsync({input[0].key}, task, ns).ok());
+    ASSERT_TRUE(client->QueryAsync({input[0].key}, task, IoOptions{ns}).ok());
     ASSERT_TRUE(client->Wait(task, 100, result).ok());
     ASSERT_EQ(state->submittedKeys.size(), 1U);
     EXPECT_EQ(state->submittedKeys[0], expected);
-    ASSERT_TRUE(client->DeleteAsync({input[0].key}, task, ns).ok());
+    ASSERT_TRUE(client->DeleteAsync({input[0].key}, task, IoOptions{ns}).ok());
     ASSERT_TRUE(client->Wait(task, 100, result).ok());
     EXPECT_EQ(state->submittedKeys[0], expected);
     EXPECT_EQ(input[0].offset, 17U);
-    EXPECT_TRUE(std::holds_alternative<std::string>(input[0].key));
+    EXPECT_TRUE(input[0].key.TryGetEngineKey() != nullptr);
     EXPECT_EQ(client
                   ->StoreAsync(
                       {
-                          {std::string("model@hash@28"), {}, 0}
+                          {CacheKey::FromEngineKey(std::string("model@hash@28")), {}, 0}
     },
-                      task, ns)
+                      task, IoOptions{ns})
                   .code,
               StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(task, kInvalidTaskId);
@@ -2529,7 +2498,7 @@ TEST(KvClientImplTest, LayerNormalizationIsSharedByEveryKeyOperation)
                       {
                           {input[0].key, {}, UINT32_MAX}
     },
-                      task, ns)
+                      task, IoOptions{ns})
                   .code,
               StatusCode::INVALID_ARGUMENT);
 }
@@ -2542,7 +2511,7 @@ TEST(KvClientImplTest, LayerNormalizationRejectsMalformedLayerSuffixes)
     config.keyResolution = {InferenceEngine::VLLM_ASCEND, 28, 1024};
     ASSERT_TRUE(client->Init(config).ok());
     for (const auto* suffix : {"", "+3", "-1", "abc", "3abc", "18446744073709551616"}) {
-        const CacheKey key = std::string("model@hash@") + suffix;
+        const CacheKey key = CacheKey::FromEngineKey(std::string("model@hash@") + suffix);
         const std::vector<KVBuffer> entries{
             {key, {}, 0}
         };
@@ -2554,7 +2523,9 @@ TEST(KvClientImplTest, LayerNormalizationRejectsMalformedLayerSuffixes)
         EXPECT_EQ(task, kInvalidTaskId);
     }
     TaskId task = kInvalidTaskId;
-    ASSERT_TRUE(client->QueryAsync({std::string("model@pp_rank:0@hash")}, task).ok());
+    ASSERT_TRUE(
+        client->QueryAsync({CacheKey::FromEngineKey(std::string("model@pp_rank:0@hash"))}, task)
+            .ok());
     TaskResult result;
     EXPECT_TRUE(client->Wait(task, 100, result).ok());
 }
@@ -2578,8 +2549,8 @@ TEST(KvClientImplTest, LayerAggregationIsOptionalAndEngineSpecific)
             ASSERT_TRUE(client
                             ->StoreAsync(
                                 {
-                                    {std::string("model@hash@1"), {}, 5},
-                                    {std::string("model@hash@2"), {}, 6}
+                                    {CacheKey::FromEngineKey(std::string("model@hash@1")), {}, 5},
+                                    {CacheKey::FromEngineKey(std::string("model@hash@2")), {}, 6}
             },
                                 task)
                             .ok());
@@ -2609,14 +2580,14 @@ TEST(KvClientImplTest, LayerwiseKeysRequireAggregationParameters)
         ASSERT_TRUE(client
                         ->StoreAsync(
                             {
-                                {std::string("model@hash"), {}, 5}
+                                {CacheKey::FromEngineKey(std::string("model@hash")), {}, 5}
         },
                             task)
                         .ok());
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
         EXPECT_EQ(state->submittedEntries[0].offset, 5U);
 
-        const CacheKey layerKey = std::string("model@hash@1");
+        const CacheKey layerKey = CacheKey::FromEngineKey("model@hash@1");
         const std::vector<KVBuffer> entries{
             {layerKey, {}, 5}
         };
@@ -2657,7 +2628,7 @@ TEST(KvClientImplTest, LayerNormalizationChecksOffsetAfterAddingLayerBase)
     const std::uint64_t layerBytes = std::uint64_t{1} << 31;
     config.keyResolution = {InferenceEngine::VLLM_ASCEND, 2, layerBytes};
     ASSERT_TRUE(client->Init(config).ok());
-    const CacheKey key = std::string("model@hash@1");
+    const CacheKey key = CacheKey::FromEngineKey(std::string("model@hash@1"));
     const auto offset = static_cast<std::uint32_t>(UINT32_MAX - layerBytes);
     TaskId task = kInvalidTaskId;
     TaskResult result;
