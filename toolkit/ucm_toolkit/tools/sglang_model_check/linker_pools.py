@@ -5,7 +5,7 @@ from copy import copy
 from types import SimpleNamespace
 
 from .native_probe import _dsv4_main_layer_ratios, cache_builder, native_family
-from .runner import _native_cache_dtype
+from .runner import CheckFailure, _native_cache_dtype
 
 
 def _assign_supported(builder, **values):
@@ -131,7 +131,14 @@ def build_linker_pools(config, model, requirements, environment, layer_range=Non
             return {
                 "is_compressed_kv_model": uses_compressed_kv_attention(model.hf_config)
             }
-        return {"is_dsv4_model": family == "deepseek_v4"}
+        if "is_dsv4_model" in inspect.signature(build).parameters:
+            return {"is_dsv4_model": family == "deepseek_v4"}
+        raise CheckFailure(
+            "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+            "linker_pool_construction",
+            "Unrecognized SGLang pool factory signature: "
+            + str(inspect.signature(build)),
+        )
 
     pool_kwargs.update(model_kind_kwargs(builder._build_token_to_kv_pool))
     # Unified-recurrent SGLang versions pass an external state pool here; older

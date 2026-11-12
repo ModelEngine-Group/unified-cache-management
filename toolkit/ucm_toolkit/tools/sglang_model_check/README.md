@@ -310,6 +310,10 @@ Passing the dependency-free tests does not establish native pool or Posix
 compatibility; the opt-in test must pass on the deployment environment.
 # External linker probe
 
+`--layout` applies only to HiCache and is ignored by the linker probe.
+The linker snapshot budget is checked before creating UCM stores; it does not
+limit device-pool allocations or the Cache|Posix cache capacity.
+
 Select `--integration linker` to check the direct Device Pool integration instead
 of HiCache (the default). It uses SGLang's native request-pool, KV-pool and
 allocator dispatch, then its native linker pool-group resolver. DSA, DeepSeek V4,

@@ -25,7 +25,10 @@ class SglangModelCheckTool(ToolAdapter):
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--model", required=True, help="model path or HF model id")
         parser.add_argument(
-            "--integration", choices=("hicache", "linker"), default="hicache"
+            "--integration",
+            choices=("hicache", "linker"),
+            default="hicache",
+            help="integration path: hicache (default) or direct device-pool linker",
         )
         parser.add_argument(
             "--mode",

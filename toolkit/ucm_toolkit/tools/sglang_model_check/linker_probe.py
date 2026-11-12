@@ -130,15 +130,99 @@ def probe_linker(
             raise
 
     group = phase("linker_layout", resolve_layout)
-    layout = object.__new__(UcmDirectLinker)
-    layout.pools, layout.num_layers = group.entry_map, group.num_layers
-    layout._kv_allocator, layout._kv_cache = allocator, pool
-    layout._bundles = layout._build_pool_bundles()
-    layout._build_layer_pointer_layouts()
-    metadata = layout._pool_metadata()
+
+    def build_metadata():
+        # Compute layout only, without starting adapter stores or worker threads.
+        try:
+            layout = object.__new__(UcmDirectLinker)
+            layout.pools, layout.num_layers = group.entry_map, group.num_layers
+            layout._kv_allocator, layout._kv_cache = allocator, pool
+            layout._bundles = layout._build_pool_bundles()
+            layout._build_layer_pointer_layouts()
+            return layout._pool_metadata()
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise CheckFailure(
+                "CHECKER_RUNTIME_POOL_PROBE_REQUIRED", "linker_layout_bundles", str(exc)
+            ) from exc
+
+    metadata = phase("linker_layout_bundles", build_metadata)
     report = {"pool_names": [str(name) for name in group.entry_map]}
     if config.mode == "inspect":
         return report
+    prefix = uuid.uuid4().hex
+    if groups:
+        shared = [prefix]
+        tp_group = groups[0].cpu_group
+        owner = torch.distributed.get_global_rank(tp_group, 0)
+        torch.distributed.broadcast_object_list(shared, src=owner, group=tp_group)
+        prefix = shared[0]
+    keys = [f"linker-check-{prefix}-{i}" for i in range(config.pages)]
+    transfers = []
+    for source in sorted(set(group.sources.values()), key=str):
+        entry = next(
+            entry
+            for entry in group.entry_map.values()
+            if entry.indices_from_pool == source
+        )
+        if source == PoolName.KV:
+            count, trailing = config.pages, False
+        elif source == PoolName.MAMBA:
+            count, trailing = 1, True
+        elif source == PoolName.SWA:
+            window = getattr(params, "swa_retain_window", None)
+            if window is None:
+                window = params.sliding_window_size
+            if window is None or window <= 0:
+                raise CheckFailure(
+                    "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                    "linker_transfers",
+                    "Native SWA retention window is unavailable",
+                )
+            count = min(
+                config.pages, (window + config.page_size - 1) // config.page_size
+            )
+            trailing = True
+        else:
+            raise CheckFailure(
+                "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                "linker_transfers",
+                f"No probe transfer policy for native source {source}",
+            )
+        indices = torch.arange(
+            entry.page_size, (count + 1) * entry.page_size, device=device
+        )
+        transfers.append(
+            PoolTransfer(
+                name=source,
+                keys=keys[-count:],
+                device_indices=indices,
+                hit_policy=(
+                    PoolHitPolicy.TRAILING_PAGES
+                    if trailing
+                    else PoolHitPolicy.ALL_PAGES
+                ),
+            )
+        )
+    expected = (
+        [config.pages]
+        if any(t.name != PoolName.KV for t in transfers)
+        else list(range(1, config.pages + 1))
+    )
+    views = phase("linker_addresses", lambda: transfer_views(group, transfers))
+    if not views:
+        raise CheckFailure(
+            "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+            "linker_addresses",
+            "no device payload resolved",
+        )
+    total = sum(view.nbytes for view in views)
+    if total * 2 > config.max_host_mib * 1024 * 1024:
+        raise CheckFailure(
+            "CHECKER_MEMORY_LIMIT",
+            "linker_snapshot",
+            f"snapshot/compare requires {total * 2} bytes",
+        )
+
     identity = dict(
         model=model.model_path,
         rank_replicated=group.rank_replicated,
@@ -184,84 +268,18 @@ def probe_linker(
             if not callable(
                 getattr(request_pool, "register_layer_transfer_counter", None)
             ):
-                pool.register_layer_transfer_counter(linker.layer_done_counter)
+                register = getattr(pool, "register_layer_transfer_counter", None)
+                if not callable(register):
+                    raise CheckFailure(
+                        "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+                        "linker_counter_registration",
+                        "SGLang KV pool has no layer transfer counter registration",
+                    )
+                register(linker.layer_done_counter)
                 if PoolName.MAMBA in linker.pools:
                     pool.layer_router.load_parts_layer_wise()
 
         phase("linker_counter_registration", register_counter)
-        prefix = uuid.uuid4().hex
-        if groups:
-            shared = [prefix]
-            tp_group = groups[0].cpu_group
-            owner = torch.distributed.get_global_rank(tp_group, 0)
-            torch.distributed.broadcast_object_list(shared, src=owner, group=tp_group)
-            prefix = shared[0]
-        keys = [f"linker-check-{prefix}-{i}" for i in range(config.pages)]
-        transfers = []
-        for source in sorted(set(group.sources.values()), key=str):
-            entry = next(
-                entry
-                for entry in group.entry_map.values()
-                if entry.indices_from_pool == source
-            )
-            if source == PoolName.KV:
-                count, trailing = config.pages, False
-            elif source == PoolName.MAMBA:
-                count, trailing = 1, True
-            elif source == PoolName.SWA:
-                window = getattr(params, "swa_retain_window", None)
-                if window is None:
-                    window = params.sliding_window_size
-                if window is None or window <= 0:
-                    raise CheckFailure(
-                        "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
-                        "linker_transfers",
-                        "Native SWA retention window is unavailable",
-                    )
-                count = min(
-                    config.pages, (window + config.page_size - 1) // config.page_size
-                )
-                trailing = True
-            else:
-                raise CheckFailure(
-                    "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
-                    "linker_transfers",
-                    f"No probe transfer policy for native source {source}",
-                )
-            indices = torch.arange(
-                entry.page_size, (count + 1) * entry.page_size, device=device
-            )
-            transfers.append(
-                PoolTransfer(
-                    name=source,
-                    keys=keys[-count:],
-                    device_indices=indices,
-                    hit_policy=(
-                        PoolHitPolicy.TRAILING_PAGES
-                        if trailing
-                        else PoolHitPolicy.ALL_PAGES
-                    ),
-                )
-            )
-        expected = (
-            [config.pages]
-            if any(t.name != PoolName.KV for t in transfers)
-            else list(range(1, config.pages + 1))
-        )
-        views = phase("linker_addresses", lambda: transfer_views(group, transfers))
-        if not views:
-            raise CheckFailure(
-                "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
-                "linker_addresses",
-                "no device payload resolved",
-            )
-        total = sum(view.nbytes for view in views)
-        if total * 2 > config.max_host_mib * 1024 * 1024:
-            raise CheckFailure(
-                "CHECKER_MEMORY_LIMIT",
-                "linker_snapshot",
-                f"snapshot/compare requires {total * 2} bytes",
-            )
 
         def query(rid, wanted):
             actual = phase("linker_local_lookup", lambda: linker.lookup(rid, transfers))
