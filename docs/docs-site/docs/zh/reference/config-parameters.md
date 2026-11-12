@@ -46,7 +46,7 @@ enable_metrics: true
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
-| `storage_backends` | **必填** | string | 自行配置，多个挂载点用冒号隔开 | 填写本地目录或者挂载点，如果有多个挂载点需要用冒号隔开。 |
+| `storage_backends` | **必填** | string | 自行配置，多个挂载点用冒号隔开 | 填写本地目录或者挂载点，如果有多个挂载点需要用冒号隔开。**启用流水线并行（PP>1）时必填**：各 stage 需共用同一个 Posix 后端，connector 会按 `<路径>/pp_<pp_rank>_l<起始层>-<层数>` 为每个 stage 建立独立目录，避免重新分层后读到其他 stage 的层。 |
 | `io_direct` | 选填 | bool | 默认 `true` | 是否启用直接 IO 模式（绕过操作系统页缓存）。`false`: 使用 PageCache；`true`: 跳过 PageCache，直接 IO。 |
 | `posix_io_engine` | 选填 | string | 默认 `psync` | 文件 IO 模式。`psync`：同步 io；`aio`：异步 io，要求 `io_direct` 配置为 `true`。 |
 | `posix_data_trans_concurrency` | 选填 | int | 默认 `128` | `psync` 模式下单卡对存储的读写线程数。NFS over RDMA 下推荐单卡 128 线程。`aio` 下不读取该值。 |
@@ -60,7 +60,7 @@ enable_metrics: true
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
-| `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 原生 Cache Store 启用共享 buffer 时默认为 256 GiB，`share_buffer_enable` 为 false 时默认为每个 worker 32 GiB。启用共享 buffer 且省略容量时，vLLM connector 会提供 128 GiB。MLA 默认启用共享 buffer。显式设置正数容量会覆盖原生默认值；非共享模式需汇总主机上所有 worker 的预算。 |
+| `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 原生 Cache Store 启用共享 buffer 时默认为 256 GiB，`share_buffer_enable` 为 false 时默认为每个 worker 32 GiB。启用共享 buffer 且省略容量时，vLLM connector 会提供 128 GiB。MLA 默认启用共享 buffer。显式设置正数容量会覆盖原生默认值；非共享模式需汇总主机上所有 worker 的预算。启用流水线并行时，配置的容量还会按节点内共享该 buffer 的 PP stage 数均分；若整除结果为 0，启动时直接报错。 |
 | `use_dpc` | 选填 | bool | 默认 `false` | 非共享 buffer 模式下主机缓冲的分配方式。默认大页内存（传统 DirectIO 路径）；`true`：驱动内存接口（DPC 路径），可显式开启。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
 | `cache_load_backend_only` | 选填 | bool | 默认 `false` | 即使在 cache 层命中还是会强制从 SSD 上加载，仅供测试使用。 |
@@ -73,7 +73,7 @@ enable_metrics: true
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
-| `posix_capacity_gb` | 选填 | int | 默认 `0`，表示不启用 GC；不可超过挂载文件系统可用容量 | 设置磁盘存储的最大容量（GB），当已用容量 >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio` 时触发 GC。多实例部署共享同一文件系统时，只能有一个实例开启 GC，其他实例不要开启。 |
+| `posix_capacity_gb` | 选填 | int | 默认 `0`，表示不启用 GC；不可超过挂载文件系统可用容量 | 设置磁盘存储的最大容量（GB），当已用容量 >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio` 时触发 GC。多实例部署共享同一文件系统时，只能有一个实例开启 GC，其他实例不要开启。启用流水线并行时，该值会按 `pipeline_parallel_size` 均分，因为每个 stage 独占一个目录；若整除结果为 0，启动时直接报错。 |
 | `posix_gc_trigger_threshold_ratio` | 条件选填 | float | 默认 `0.7`，范围：0~1。`posix_capacity_gb` 未配置时不填写 | GC 阈值比例，配合 `posix_capacity_gb` 使用。 |
 | `posix_gc_recycle_percent` | 选填 | float | 默认 `0.1`，范围：0~1。`posix_capacity_gb` 未配置时不填写 | 每轮 GC 删除当前容量的比值。 |
 | `posix_gc_max_recycle_count_per_shard` | 选填 | int | 默认 `50000`，>0。不建议修改。`posix_capacity_gb` 未配置时不填写 | 每轮 GC 单目录允许删除的文件数上限。 |
