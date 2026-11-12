@@ -448,6 +448,16 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
             taskId = kInvalidTaskId;
             return status;
         }
+        if (resolved.layerSlotBytes &&
+            (entry.offset > *resolved.layerSlotBytes ||
+             entry.buffer.region.size > *resolved.layerSlotBytes - entry.offset)) {
+            taskId = kInvalidTaskId;
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                "layerwise IO exceeds layer slot bounds: offset=" + std::to_string(entry.offset) +
+                    ", length=" + std::to_string(entry.buffer.region.size) +
+                    ", slot_bytes=" + std::to_string(*resolved.layerSlotBytes));
+        }
         if (resolved.baseOffset > std::numeric_limits<std::uint32_t>::max() - entry.offset) {
             taskId = kInvalidTaskId;
             return Status::Error(StatusCode::INVALID_ARGUMENT, "object offset exceeds uint32");

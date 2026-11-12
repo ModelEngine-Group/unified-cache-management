@@ -45,7 +45,7 @@ public:
         const auto& text = *input.TryGetEngineKey();
         std::string_view identity = text;
         if (config_.engine == InferenceEngine::VLLM_ASCEND) {
-            auto status = ResolveVllmLayerKey(text, identity, result.baseOffset);
+            auto status = ResolveVllmLayerKey(text, identity, result);
             if (!status.ok()) { return status; }
         }
         auto hash = XXH64(identity.data(), identity.size(), HASH_SEED_VALUE);
@@ -58,15 +58,15 @@ public:
 
 private:
     Status ResolveVllmLayerKey(std::string_view key, std::string_view& identity,
-                               std::uint64_t& baseOffset) const;
+                               ResolvedKey& result) const;
     KeyResolutionConfig config_;
 };
 
 Status DefaultKeyResolver::ResolveVllmLayerKey(std::string_view key, std::string_view& identity,
-                                               std::uint64_t& baseOffset) const
+                                               ResolvedKey& result) const
 {
     identity = key;
-    baseOffset = 0;
+    result.baseOffset = 0;
     // LayerPoolKey ends with @chunk_hash@layer. Preserve every other field.
     const auto layerSeparator = key.rfind('@');
     const auto hashSeparator = layerSeparator != std::string_view::npos && layerSeparator != 0
@@ -90,7 +90,8 @@ Status DefaultKeyResolver::ResolveVllmLayerKey(std::string_view key, std::string
                                      "invalid layer in key: " + std::string(key));
             }
             identity = key.substr(0, layerSeparator);
-            baseOffset = layer * config_.layerSlotBytes;
+            result.baseOffset = layer * config_.layerSlotBytes;
+            result.layerSlotBytes = config_.layerSlotBytes;
         }
     }
     return Status::OK();

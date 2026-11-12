@@ -2373,6 +2373,59 @@ TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
     EXPECT_EQ(result.baseOffset, 1536U);
 }
 
+TEST(KvClientImplTest, LayerwiseReadsAndWritesStayWithinTheirLayerSlot)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.keyResolution = {InferenceEngine::VLLM_ASCEND, 28, 4096};
+    ASSERT_TRUE(client->Init(config).ok());
+    for (const auto* name : {"model@hash@0", "model@hash@1", "model@hash@27"}) {
+        KVBuffer entry{};
+        entry.key = CacheKey::FromEngineKey(name);
+        for (const auto& [offset, length] : std::vector<std::pair<std::uint32_t, std::uint64_t>>{
+                 {3584, 1024      },
+                 {4096, 512       },
+                 {4608, 512       },
+                 {512,  UINT64_MAX}
+        }) {
+            entry.offset = offset;
+            entry.buffer.region.size = length;
+            const auto submissions = state->submittedOpTypes.size();
+            TaskId task = 123;
+            EXPECT_EQ(client->StoreAsync({entry}, task).code, StatusCode::INVALID_ARGUMENT);
+            EXPECT_EQ(task, kInvalidTaskId);
+            task = 123;
+            EXPECT_EQ(client->LoadAsync({entry}, task).code, StatusCode::INVALID_ARGUMENT);
+            EXPECT_EQ(task, kInvalidTaskId);
+            EXPECT_EQ(state->submittedOpTypes.size(), submissions);
+        }
+        entry.offset = 3584;
+        entry.buffer.region.size = 512;
+        TaskId task = kInvalidTaskId;
+        TaskResult result;
+        ASSERT_TRUE(client->StoreAsync({entry}, task).ok());
+        ASSERT_TRUE(client->Wait(task, 100, result).ok());
+        ASSERT_TRUE(client->LoadAsync({entry}, task).ok());
+        ASSERT_TRUE(client->Wait(task, 100, result).ok());
+        EXPECT_EQ(state->submittedEntries[0].buffer.region.size, 512U);
+    }
+    // Whole-object and pre-encoded keys are not bounded by a single layer slot.
+    for (const auto& key :
+         {CacheKey::FromEngineKey("model@pp_rank:0@hash"), CacheKey::FromBytes(BinaryKey{})}) {
+        KVBuffer entry{};
+        entry.key = key;
+        entry.offset = 3584;
+        entry.buffer.region.size = 1024;
+        TaskId task = kInvalidTaskId;
+        TaskResult result;
+        ASSERT_TRUE(client->StoreAsync({entry}, task).ok());
+        ASSERT_TRUE(client->Wait(task, 100, result).ok());
+        ASSERT_TRUE(client->LoadAsync({entry}, task).ok());
+        ASSERT_TRUE(client->Wait(task, 100, result).ok());
+    }
+}
+
 TEST(KvClientImplTest, LayerSlotAlignmentIsRequiredOnlyForLayerwiseKeys)
 {
     auto resolver = CreateDefaultKeyResolver({InferenceEngine::VLLM_ASCEND, 2, 256});
