@@ -96,6 +96,27 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _apply_cuda_indexer_io_config(launch_config: dict, kv_cache_config) -> None:
+    """Resolve IO mode before connector selection and cache layout creation."""
+    if not current_platform.is_cuda() or kv_cache_config is None:
+        return
+    for group in kv_cache_config.kv_cache_groups:
+        layer_names = getattr(group, "layer_names", None)
+        if layer_names is None:
+            layer_names = group.kv_cache_specs.keys()
+        for name in layer_names:
+            if not {"indexer", "index_cache"}.intersection(name.split(".")):
+                continue
+            launch_config["use_layerwise"] = False
+            launch_config["use_request_async_load"] = True
+            logger.warning(
+                "CUDA indexer KV cache requires whole-block loading; "
+                "disabling use_layerwise and enabling use_request_async_load "
+                "where supported by the connector."
+            )
+            return
+
+
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
     """Resolve cache quantization independently of weight quantization.
 
@@ -1694,6 +1715,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not uses_partitioned_cache():
             self.engine_id = self.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(self.launch_config, kv_cache_config)
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         share_buffer_enable = (
@@ -3775,6 +3797,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(self.launch_config, kv_cache_config)
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
