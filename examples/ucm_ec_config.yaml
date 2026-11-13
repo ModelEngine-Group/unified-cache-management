@@ -18,5 +18,12 @@ ucm_ec_connector:
     # Number of rows per chunk along the first dimension of [N, D].
     chunk_size: 128
 
+    # Enable on E (ec_producer) and PD (ec_consumer) for metadata-only EPD.
+    enable_epd_disaggregate: false
+    epd_timeout_ms: 30000
+    # Scheduler visibility wait timeout, starting at the first Store miss.
+    # Repeated scheduling attempts do not renew it; Store I/O has its own timeout.
+    # E and PD keep independent Cache domains; do not share store_unique_id.
+
     # Optional: encoder_cache_hidden_dim, cache_namespace, store_unique_id.
     # Width and namespaces are inferred when these fields are omitted.

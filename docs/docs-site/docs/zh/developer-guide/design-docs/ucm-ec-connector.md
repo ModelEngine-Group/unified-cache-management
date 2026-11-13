@@ -1,6 +1,6 @@
 # UCM EC Connector 设计
 
-**EC Connector 功能定位**：把 vLLM 多模态 Encoder Cache（EC）中变长的 `[N, D]` encoder 输出张量，按固定行数切成若干固定尺寸 chunk 存入 UCM Store；同一模型实例内，相同媒体内容的 EC item 可跨请求复用，命中时跳过 encoder 重算。
+**EC Connector 功能定位**：把 vLLM 多模态 Encoder Cache（EC）中变长的 `[N, D]` encoder 输出张量，按固定行数切成若干固定尺寸 chunk 存入 UCM Store；同一模型实例内，相同媒体内容的 EC item 可跨请求复用，命中时跳过 encoder 重算。基础 EPD 模式支持 E 编码后经共享存储向 PD 交接，详见 5.4 节。
 
 **版本关键特性**：
 
@@ -11,6 +11,7 @@
 5. **最终调度过滤**：metadata 下发前按 `num_scheduled_tokens > 0` 的最终请求集合过滤 loads，被撤销请求不触发无效加载。
 6. **全命中判定**：`lookup_on_prefix()` 返回值到达最后一个 chunk 下标（`len-1`）才判 EC 命中，部分前缀命中一律按 miss 处理。
 7. **load 失败 fail-closed**：load 失败会阻断本次执行（引擎级错误），不向 `encoder_cache` 插入未完成数据；无自动 encoder 重算。
+8. **基础 EPD**：E 经原生 `start_save_caches()` 保存 HBM 命中项，新输出沿用 `save_caches()`；PD 优先复用本地 EC 记录，只对其余项等待 Store 可见。EPD 流程见 5.4 节，部署步骤见 features 使用文档，无自建 HBM 池、加载成功反馈准入或 EPD 专用引擎 patch。
 
 **后续演进计划**（详见第 10 节）：
 
@@ -30,17 +31,17 @@
 | --- | --- |
 | `ucm/integration/vllm/ucm_ec_connector.py` | EC connector本体：layout 解析、chunk key、Scheduler/Worker 全部接口、Store 组装 |
 | `examples/ucm_ec_config.yaml` | EC 配置示例 |
-| `test/test_ucm_ec_config.py` | 单元测试（CPU 张量 + Mock Store I/O） |
+| `test/test_ucm_ec_config.py` | 普通 EC 与基础 EPD 单元测试；环境变量启用真实模型 DT |
 
 ### 1.2 组件概览
 
 connector在 Scheduler 与 Worker 两个进程各有一个 `UCMECConnector` 实例：
 
-- **Scheduler 侧**维护四类状态容器（`req_to_state`、`identifier_to_blocks`、`step_verified_hits`、`pending_loads`），经 `ensure_cache_available → has_cache_item → update_state_after_alloc → build_connector_meta` 完成一个调度 step 内的登记、命中查询、load 计划生成与下发；请求收尾由 `request_finished` 回收。
-- **Worker 侧**经 `bind_connector_metadata → start_load_caches → save_caches → get_finished` 完成外部加载、异步保存与 step 末排空，产出写入 vLLM 的 `encoder_cache`。
-- 两侧通过 `UCMECConnectorMetadata(loads)` 随 `SchedulerOutput` 传递；Store I/O 只使用 `lookup_on_prefix`、`load_data`、`dump_data(+prerequisite event)`、`wait` 四个接口。
+- **Scheduler 侧**维护请求登记、共享 identifier、step 命中及加载计划；EPD consumer 另以 `_local_encoder_ids` 记录最终提交的本地 EC，并按物理淘汰通知清理。经 `ensure_cache_available → has_cache_item → update_state_after_alloc → build_connector_meta` 生成计划；请求收尾由 `request_finished` 回收引用。
+- **Worker 侧**经 `bind_connector_metadata → start_save_caches / start_load_caches → save_caches → get_finished` 完成已有输出保存、外部加载、新输出保存与 step 末排空；EPD 保存按 identifier 做 step 内去重。
+- 两侧通过 `UCMECConnectorMetadata(loads, save_identifiers)` 随 `SchedulerOutput` 传递；Store I/O 只使用 `lookup_on_prefix`、`load_data`、`dump_data(+prerequisite event)`、`wait` 四个接口。
 
-完整的调用时序与状态更新过程见 5.1 节的时序图。
+5.1 节描述普通 EC 时序，基础 EPD 的差异见 5.4 节。
 
 ### 1.3 角色与门控
 
@@ -61,9 +62,9 @@ connector在 Scheduler 与 Worker 两个进程各有一个 `UCMECConnector` 实�
 | --- | --- | --- | --- | --- |
 | `EncoderCacheLayout` | `frozen dataclass: width:int, dtype:torch.dtype, rows_per_chunk:int, chunk_bytes:int` | 两侧 | 进程生命周期，不可变 | EC item 的物理解释方式；`chunk_bytes = rows_per_chunk × width × element_size` |
 | `IdentifierState` | `dataclass: num_embeds:int, chunk_ids:tuple[bytes,...], request_ref_count:int=0` | Scheduler | 被至少一个活跃请求引用期间 | 一个 EC item 的全部 chunk key；`num_chunks = len(chunk_ids)`，不冗余存储可推导字段 |
-| `RequestState` | `dataclass: processed_feature_count:int=0, identifier_states:dict[str,IdentifierState], hit_identifiers:set[str]` | Scheduler | request 生命周期（finish/abort/cancel 时删除） | 记录已校验到第几个流式 feature；`hit_identifiers` 汇总本请求被确认命中的 item |
+| `RequestState` | `dataclass: processed_feature_count:int=0, identifier_states:dict[str,IdentifierState], hit_identifiers:set[str], store_visible_identifiers:set[str], store_wait_started_at:float\|None=None, next_lookup_at:float=0` | Scheduler | request 生命周期（finish/abort/cancel 时删除） | 登记与引用状态；EPD 另记录请求内完整命中的 identifier、首次 miss 时间和下次查询时间 |
 | `ECLoadSpec` | `frozen dataclass: num_embeds:int, chunk_ids:tuple[bytes,...]` | Scheduler→Worker | 单个调度 step | 一次外部 load 的完整描述 |
-| `UCMECConnectorMetadata` | `dataclass(ECConnectorMetadata): loads:dict[str,ECLoadSpec]` | Scheduler→Worker | 单个 model execution step | 随 `SchedulerOutput.ec_connector_metadata` 下发 |
+| `UCMECConnectorMetadata` | `dataclass(ECConnectorMetadata): loads:dict[str,ECLoadSpec], save_identifiers:tuple[str,...]=()` | Scheduler→Worker | 单个 model execution step | loads 为最终外部加载，save_identifiers 为 EPD producer 本 step 保存候选；不表示发布成功 |
 | `PendingECSave` | `dataclass: identifier:str, task:Task, tensor:Tensor, tail:Tensor\|None, event_handle:int` | Worker | 提交后到 `_wait_pending_saves` 排空前 | 持有源张量与 tail 引用防止释放；`event_handle` 待销毁 |
 
 ### 2.2 connector实例状态
@@ -72,8 +73,10 @@ connector在 Scheduler 与 Worker 两个进程各有一个 `UCMECConnector` 实�
 | --- | --- | --- | --- |
 | `req_to_state: dict[str, RequestState]` | Scheduler | request → 引用状态 | `request_finished()` pop；`shutdown()` 清空 |
 | `identifier_to_blocks: dict[str, IdentifierState]` | Scheduler | item → 共享状态（跨请求复用同一对象） | ref count 归 0 删除；`shutdown()` 清空 |
-| `step_verified_hits: set[str]` | Scheduler | 本 step 经 Store lookup 确认的命中 | `build_connector_meta()` 清空 |
+| `step_verified_hits: set[str]` | Scheduler | 普通模式为本 step 的 Store 命中；EPD 为本 step 的外部加载选择 | `build_connector_meta()` 清空 |
 | `pending_loads: dict[str, ECLoadSpec]` | Scheduler | 本 step 待下发的 load 计划 | `build_connector_meta()` 过滤后移交给 metadata 并换新 dict |
+| `_local_encoder_ids: set[str]` | Scheduler | EPD consumer 最终已提交的本地 EC 记录；用于跳过 Store 查询，不表示 worker READY | 按 `free_encoder_mm_hashes` 删除；`shutdown()` 清空；请求引用释放不清除 |
+| `_step_saved_ids: set[str]` | Worker | EPD 已提交保存的 identifier，已有输出和新输出共用 | 保存 hook 开始时清空，step 排空后及 `shutdown()` 清空；提交失败不加入 |
 | `_pending_saves: list[PendingECSave]` | Worker | 未排空的异步保存 | `get_finished()` / `shutdown()` 排空 |
 | `_connector_metadata` | Worker | 基类字段，`bind_connector_metadata` 绑定 | `clear_connector_metadata()`（不清 `_pending_saves`，二者无关） |
 
@@ -95,13 +98,14 @@ connector在 Scheduler 与 Worker 两个进程各有一个 `UCMECConnector` 实�
 | 接口 | 角色 | 调用时机（vLLM 侧） | 本实现行为 |
 | --- | --- | --- | --- |
 | `__init__(vllm_config, role)` | 两侧 | 引擎构造 connector | fail-fast 校验 → 解析 layout → 建 hasher → 建 Store |
-| `ensure_cache_available(request, num_computed_tokens)` | Scheduler | waiting 请求被调度前（chunked prefill/抢占后重复进入） | 流式增量登记 item 状态，`num_computed_tokens` 忽略 |
-| `has_cache_item(identifier)` | Scheduler | 扫描 encoder 输入时 | `lookup_on_prefix` 全命中谓词；命中写入 `step_verified_hits` |
+| `ensure_cache_available(request, num_computed_tokens)` | Scheduler | waiting/running 请求进入调度时 | 增量登记；EPD 依次跳过 KV 完整覆盖、本地 EC 记录、请求内 Store 完整命中项；其余未可见返回 False，允许调度其他请求 |
+| `has_cache_item(identifier)` | Scheduler | 扫描 encoder 输入时 | 普通模式做全命中查询；EPD 对已登记 item 选择外部加载；写入现有 step 集合 |
 | `update_state_after_alloc(request, index)` | Scheduler | 本地 encoder cache `allocate()` 成功后 | 命中项写入 `pending_loads` 与请求命中记账 |
-| `build_connector_meta(scheduler_output)` | Scheduler | 构造 `SchedulerOutput` 时 | 按最终调度请求过滤 loads → metadata；清 step 状态 |
-| `request_finished(request)` | Scheduler | finish/abort/cancel 释放请求时 | 删 request 态、递减 ref count、输出命中汇总日志 |
+| `build_connector_meta(scheduler_output)` | Scheduler | 构造 `SchedulerOutput` 时 | 过滤最终 loads，更新 EPD consumer 本地记录；EPD producer 生成保存候选；清 step 状态 |
+| `request_finished(request)` | Scheduler | finish/abort/cancel 释放请求时 | 清理引用、输出普通命中/EPD 外部加载汇总；EPD producer 返回原生媒体元数据 |
 | `start_load_caches(encoder_cache, **kwargs)` | Worker | model forward 前 | 批量提交 load → 逐个等待 → 发布截断视图 |
-| `save_caches(encoder_cache, mm_hash, **kwargs)` | Worker | encoder 输出新 entry 产生后 | 门控 → 校验 → tail 补零 → 事件前置 → 异步提交 dump |
+| `start_save_caches(encoder_cache, **kwargs)` | Worker | producer model 执行前，由原生 runner 调用 | EPD 对候选中已有 tensor 调用普通保存；非 EPD 保持 no-op，不扫描保存整个 HBM |
+| `save_caches(encoder_cache, mm_hash, **kwargs)` | Worker | 新输出回调，或 EPD 已有输出保存 hook | 门控 → EPD step 去重 → 校验 → tail 补零 → 事件前置 → 异步提交 dump |
 | `get_finished(finished_req_ids)` | Worker | 每 step 末尾 | 排空 `_pending_saves`；恒返 `(None, None)` |
 | `shutdown()` | 两侧 | 进程退出 | 先排空保存，再清状态、关 Store |
 | `register_caches(ec_caches)` | Worker | 初始化注册期 | 不覆写，继承基类 no-op（上游暂无调用方） |
@@ -115,15 +119,17 @@ connector在 Scheduler 与 Worker 两个进程各有一个 `UCMECConnector` 实�
 lookup_on_prefix(block_ids: list[bytes]) -> int
     # 前缀扫描，返回最后一个连续存在 chunk 的下标；-1 表示全缺。
 load_data(block_ids: list[bytes], shard_index: list[int],
-          dst_addr: np.ndarray) -> Task                  # 提交设备→Store 的批量读
+          dst_addr: np.ndarray) -> Task                  # 提交 Store→设备 的批量读
 dump_data(block_ids: list[bytes], shard_index: list[int],
           src_addr: np.ndarray,
-          prerequisite_handle: int = 0) -> Task           # 提交 Store→设备 的批量写；
+          prerequisite_handle: int = 0) -> Task           # 提交设备→Store 的批量写；
                                                           # Store 拷贝流先等待该事件再 D2H
-wait(task: Task) -> None                                  # 阻塞至任务完成
+wait(task: Task) -> None                                  # 等待所选 Store 定义的任务完成
 ```
 
 约束：每个 chunk 只有一个 shard，`shard_index` 恒为 `[0] * n`；地址采用 `load_data/dump_data` 的裸设备指针形态（`np.ndarray(uint64)` 列向量），EC 不预注册 GPU buffer（`use_gdr` 强制 `False`）。Store 的 `lookup`、`lookup_on_reverse`、`prefetch`、`check`、tensor 形态的 `load/dump` 在本版 EC 中未使用。
+
+Cache2 dump 的调用方完成点为缓存就绪且后端写入已提交，后端完成由内部等待阶段跟踪；不能仅凭该任务返回或 DRAM READY 判定 SSD 已写入成功。实际语义以所选 Store 为准，EPD 的后端缺失限制见 5.4.3 节。
 
 ### 3.3 配置接口
 
@@ -162,9 +168,11 @@ ucm_ec_connector:
     posix_capacity_gb: 10240
     posix_io_engine: "psync"
     posix_data_trans_concurrency: 128
-    cache_buffer_capacity_gb: 32                 # 缺省 128; 创建前检查 /dev/shm 容量
+    cache_buffer_capacity_gb: 32                 # 缺省随 Cache 实现；建议显式配置容量
   encoder_cache_config:                          # 必填
     chunk_size: 128                              # 必填, 每个 chunk 的行数 R
+    enable_epd_disaggregate: false               # EPD 时 E 与 PD 均开启
+    epd_timeout_ms: 30000                        # 从首次 Store miss 起算的可见性等待期限
     # 可选: encoder_cache_hidden_dim / cache_namespace / store_unique_id
     # 未配置时宽度自动推导, namespace 自动构造, unique_id 经跨进程握手生成
 ```
@@ -177,7 +185,9 @@ ucm_ec_connector:
 | `encoder_cache_config.chunk_size` | 是 | — | 必须为正整数（拒绝 bool），否则 `EncoderCacheLayoutError` |
 | `encoder_cache_config.encoder_cache_hidden_dim` | 否 | 按模型结构推导 | 显式值必须为正 |
 | `encoder_cache_config.cache_namespace` | 否 | 由模型身份元组构造 | 显式 namespace 仍叠加 deepstack 层索引盐 |
-| `encoder_cache_config.store_unique_id` | 否 | `{握手 uuid}.ec.dp{dp_rank}`（KV 同款跨进程握手） | Store 共享/隔离域：同 id 共享共享内存与命名空间 |
+| `encoder_cache_config.store_unique_id` | 否 | `{握手 uuid}.ec.dp{dp_rank}`（KV 同款跨进程握手） | 本机 Cache 域标识；EPD 保留独立域，不以相同 UUID 共享 E/PD shm |
+| `encoder_cache_config.enable_epd_disaggregate` | 否 | false | 基础 EPD；E=ec_producer，PD=ec_consumer |
+| `encoder_cache_config.epd_timeout_ms` | 否 | 30000 | scheduler 首次 miss 后的等待期限；不覆盖 Store 实际 I/O timeout |
 
 ### 3.4 Chunk key 编码格式
 
@@ -212,8 +222,10 @@ K = ceil(num_embeds / rows_per_chunk)
 按以下优先级解析 EC 输出宽度 D，不按模型名称/路径选择分支：
 
 1. 显式配置 `encoder_cache_hidden_dim`；
-2. 复用 vLLM 规范实现 `_get_encoder_cache_hidden_dim`（`vllm/distributed/ec_transfer/ec_connector/cpu/common.py`，vllm-ascend 的 EC 连接器同样复用）：仅当 `out_hidden_size` 与**非空** `deepstack_visual_indexes` 同时存在时，`D = out_hidden_size × (1 + len(deepstack_visual_indexes))`——该乘法规则专用于把 deepstack 特征拼接入缓存张量的模型（如 Qwen3-VL 家族）；
+2. 在 connector 内保留原 CPU helper 的模型规则，不再导入已变更的 vLLM 私有符号：仅当 `out_hidden_size` 与**非空** `deepstack_visual_indexes` 同时存在时，`D = out_hidden_size × (1 + len(deepstack_visual_indexes))`——该乘法规则专用于把 deepstack 特征拼接入缓存张量的模型（如 Qwen3-VL 家族）；
 3. 其余情况（`out_hidden_size` 缺失，或存在但无 deepstack）一律兜底 `model_config.get_inputs_embeds_size()`。孤立的 `out_hidden_size` 不作为宽 EC 条目的证据：EC 存的是 merger 之后的 embedding，宽度通常等于 LLM hidden size。
+
+若原生 `ec_transfer_config.mm_encoder_output_widths` 已提供实测值，要求各 modality 具有同一正整数宽度，且与显式/推导宽度一致；不一致在打开 Store 前报错。实测值不会在 Worker 建 Store 后静默切换布局，E/PD 应预先对齐配置。
 
 随后：`dtype = model_config.dtype`；`rows_per_chunk = chunk_size`（严格 int 校验）；`chunk_bytes = R × D × element_size`。`D <= 0` 抛 `EncoderCacheLayoutError`。
 
@@ -293,9 +305,9 @@ store_config 注入: unique_id / device_id / local_rank_size=TP / use_gdr=False
       UcmConnectorFactoryV1.create_connector(name, store_config)
 ```
 
-- `unique_id` 缺省经 KV 连接器同款跨进程握手生成（Worker rank0 生成 uuid 并经 world group 广播、写入 `/dev/shm/ucm_ec_uniqueid_{ppid}`，Scheduler 读回；`ucm_connector.py: _worker_generate_unique_id / _scheduler_read_unique_id` 的 `prefix="ucm_ec"` 调用），再加 `.ec.dp{dp_rank}` 后缀：Scheduler 与本 DP 域 Worker 对齐到同一共享内存域，DP 域间隔离。EC 与 KV 使用各自前缀的文件槽（KV 保持 `ucm_`），同引擎双连接器互不覆盖；`instance_id` 为每次 VllmConfig 构造时的时间戳值，不保证跨进程一致，故不再作为对齐依据；需要跨 DP 共享 Posix 冷层时用显式 `store_unique_id` 覆盖。
+- `unique_id` 缺省经 KV 连接器同款跨进程握手生成（Worker rank0 生成 uuid 并经 world group 广播、写入 `/dev/shm/ucm_ec_uniqueid_{ppid}`，Scheduler 读回；`ucm_connector.py: _worker_generate_unique_id / _scheduler_read_unique_id` 的 `prefix="ucm_ec"` 调用），再加 `.ec.dp{dp_rank}` 后缀：Scheduler 与本 DP 域 Worker 对齐到同一共享内存域，DP 域间隔离。EC 与 KV 使用各自前缀的文件槽（KV 保持 `ucm_`），同引擎双连接器互不覆盖；`instance_id` 为每次 VllmConfig 构造时的时间戳值，不保证跨进程一致，故不再作为对齐依据；Posix 冷层通过相同后端路径和兼容 chunk key 共享，不要求同一 Cache UUID；EPD 各引擎保留独立 Cache 域。
 - `local_rank_size = TP size`：共享 buffer 场景下各 rank 按错开顺序遍历 chunk，提高热层命中分布；每个 rank 仍加载完整 EC（单 writer 不变）。
-- `cache_buffer_capacity_gb` 缺省 128，创建前用 `_check_shm_capacity` 校验 `/dev/shm` 容量，不足时启动失败。
+- `cache_buffer_capacity_gb` 的默认值随 Cache 实现变化（当前旧版为 128GB、分区实现为 160GB）；显式容量经既有分摊规则处理，创建前沿用对应实现的共享内存检查。EPD 验收配置显式为 4GB/引擎域。
 - Store 配置为浅拷贝后注入，不修改用户 YAML。
 
 ---
@@ -304,7 +316,7 @@ store_config 注入: unique_id / device_id / local_rank_size=TP / use_gdr=False
 
 ### 5.1 一个执行 step 的端到端流程
 
-![请求处理时序：状态容器独立成生命线；生命线边框颜色=所属进程（蓝=Scheduler，含 req_to_state/identifier_to_blocks/step_verified_hits/pending_loads；绿=Worker；紫=跨进程）；箭头颜色：绿=写入/更新，红=清理/删除，灰虚线=读取/返回/Store I/O](../../assets/images/ec-connector-sequence.png)
+![请求处理时序：状态容器独立成生命线；生命线边框颜色=所属进程（蓝=Scheduler，含 req_to_state/identifier_to_blocks/step_verified_hits/pending_loads；绿=Worker；紫=跨进程）；箭头颜色：绿=写入/更新，红=清理/删除，灰虚线=读取/返回/Store I/O](../../../assets/images/ec-connector-sequence.png)
 
 ```mermaid
 sequenceDiagram
@@ -372,17 +384,17 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 
 **流式登记 `ensure_cache_available`**
 
-- 输入：`request: Request`、`num_computed_tokens`（忽略）
-- 输出：`True`（正常登记完成）；失败抛异常
+- 输入：`request: Request`、`num_computed_tokens`（EPD 的 KV 覆盖边界，直接使用调用方入参）
+- 输出：普通模式登记后返回 True；EPD consumer 未完整可见返回 False；异常或等待超时抛错
 - 依赖：`request.mm_features`、`request.get_num_encoder_embeds(index)`、`make_chunk_ids`、`self.req_to_state`、`self.identifier_to_blocks`
-- 行为：两阶段增量处理。第一阶段只遍历 `[processed_feature_count, len(mm_features))` 的新增 feature：先查请求历史/本批次，再查全局共享表；都没有则构造新 `IdentifierState`（生成 chunk ids），行数不一致抛 `EncoderCacheLayoutError`（区分"请求内"与"跨活跃请求"冲突）；第二阶段在整批校验通过后才提交——全局表 `setdefault` + `request_ref_count += 1` + 写入请求历史。`mm_features` 缩短抛异常；无新增时 O(1) 返回；preemption 重入不重复计数。
+- 行为：两阶段增量处理。第一阶段只遍历 `[processed_feature_count, len(mm_features))` 的新增 feature：先查请求历史/本批次，再查全局共享表；都没有则构造新 `IdentifierState`（生成 chunk ids），行数不一致抛 `EncoderCacheLayoutError`（区分"请求内"与"跨活跃请求"冲突）；第二阶段在整批校验通过后才提交——全局表 `setdefault` + `request_ref_count += 1` + 写入请求历史。`mm_features` 缩短抛异常；登记部分无新增时 O(1) 返回；preemption 重入不重复计数。EPD 可见性检查在登记后独立执行：按 occurrence 的结束位置过滤 KV 已完整覆盖的媒体，按 identifier 去重，跳过本地 EC 记录及本请求中实际完整命中的项；KV 跳过和本地记录命中均不记为 Store 命中。没有待查项时，优先清除旧等待再返回 True，不被超时或节流拦住。
 
 **命中查询 `has_cache_item`**
 
 - 输入：`identifier: str`
-- 输出：`bool`（是否全 chunk 命中）
+- 输出：bool（普通模式为全 chunk 命中；EPD 为选择外部加载）
 - 依赖：`self.identifier_to_blocks`、`self.store.lookup_on_prefix`、`self.step_verified_hits`
-- 行为：非 consumer 或无状态直接 miss；有状态则批量 lookup，返回值 `== len(chunk_ids)-1` 判命中并记录到本 step。Store 已关闭抛 `RuntimeError`。
+- 行为：非 consumer 或无状态直接 miss；有状态则批量 lookup，返回值 `== len(chunk_ids)-1` 判命中并记录到本 step。Store 已关闭抛 `RuntimeError`。EPD consumer 对合法已登记 item 直接选择外部加载，避免 metadata-only 请求落入本地编码；完整可见性由 ensure hook 检查。
 
 **load 计划 `update_state_after_alloc`**
 
@@ -396,14 +408,14 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 - 输入：`scheduler_output: SchedulerOutput`
 - 输出：`UCMECConnectorMetadata`（loads 可能为空但对象非 None，保证 producer Worker 仍进入 EC wrapper 保存输出）
 - 依赖：`scheduler_output.num_scheduled_tokens`、`scheduler_output.free_encoder_mm_hashes`、`req_to_state`、`pending_loads`
-- 行为：取 `num_scheduled_tokens > 0` 的最终请求的 identifier 并集，过滤 `pending_loads`，再排除 `free_encoder_mm_hashes` 中最终已淘汰的条目，避免 Worker 删除后重新加载未分配的条目。保留本步合法共享；vLLM 的最终淘汰列表排除了同一步重新分配的条目，因此这些条目仍可加载。随后清空 `pending_loads` 与 `step_verified_hits`。
+- 行为：取 `num_scheduled_tokens > 0` 的最终请求的 identifier 并集，过滤 `pending_loads`，再排除 `free_encoder_mm_hashes` 中最终已淘汰的条目，避免 Worker 删除后重新加载未分配的条目。保留本步合法共享；vLLM 的最终淘汰列表排除了同一步重新分配的条目，因此这些条目仍可加载。EPD consumer 据最终 loads 和淘汰列表更新 `_local_encoder_ids`，producer 输出去重排序的 `save_identifiers`。随后清空 `pending_loads` 与 `step_verified_hits`。
 
 **请求收尾 `request_finished`**
 
 - 输入：`request: Request`
-- 输出：`(False, None)`
+- 输出：普通模式为 `(False, None)`；EPD producer 为 `(False, media_metadata)`
 - 依赖：`req_to_state`、`identifier_to_blocks`
-- 行为：pop 请求态；consumer 侧输出每请求命中汇总日志（`mm_items` 与 `hits_total`，全 miss 也输出 0）；对引用的每个 identifier 递减 ref count，归 0 立即删除全局态。只清内存状态，不删 Store 数据。
+- 行为：pop 请求态；consumer 侧输出每请求命中汇总日志（`mm_items` 与 `hits_total`，全 miss 也输出 0）；对引用的每个 identifier 递减 ref count，归 0 立即删除全局态。只清内存状态，不删 Store 数据。EPD 日志记录 `selected_total`；producer 即使没有 consumer 请求状态，也返回原生 `collect_ec_item_metadata` 结果，并兼容补齐 modality 与 item_indices。
 
 **批量加载 `start_load_caches`**
 
@@ -412,12 +424,17 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 - 依赖：`_get_connector_metadata`、`layout`、`device`、`store.load_data/wait`、`_chunk_addresses`
 - 行为：① 跳过本地已存在的 identifier；② 校验元数据（`num_embeds > 0`、chunk 数与 N 匹配）；③ 分配 `[K,R,D]` storage 并计算地址；④ **先提交全部** `load_data`（提交失败包装为 `UCMEncoderCacheError` 抛出）；⑤ `finally` 中**逐个 `wait` 排空已提交任务**——成功发布视图并累计统计，失败 pop 条目、记录首个错误但不跳过后续等待；⑥ 循环结束后若存在等待错误，统一抛 `UCMEncoderCacheError`（fail-closed）。任何阶段失败都不向 `encoder_cache` 插入未完成数据。
 
+**已有输出保存 `start_save_caches`**
+
+- 输入：原生 runner 提供的 `encoder_cache` 和已绑定的 metadata。
+- 行为：非 EPD producer 保持 no-op；清本 step 保存记录，只有 writer rank 对 `save_identifiers` 中实际已有 tensor 调用 `save_caches()`。未生成输出留给原生新输出保存回调，不扫描保存整个 HBM。
+
 **保存 `save_caches`**
 
 - 输入：`encoder_cache: dict[str, torch.Tensor]`、`mm_hash: str`（即 identifier）
 - 输出：无（异步提交，任务入 `_pending_saves`）
 - 依赖：`is_producer`、`is_save_rank`、`_validate_encoder_tensor`、`make_chunk_ids`、`_chunk_addresses`、`_save_device.get_event_handle`、`store.dump_data`
-- 行为：门控不满足直接返回；取张量、布局校验（2 维/正行数/宽度/dtype/连续）、生成 chunk ids 在 `try` 之外（异常沿 runner 调用链传播）；切块与 padding、地址计算、事件记录、`dump_data` 提交、入列在 `try` 内（异常销毁事件、记录日志、不影响当前请求——保存是旁路优化）。
+- 行为：门控不满足直接返回；EPD 本 step 已提交的 identifier 去重跳过，成功入列后才加入 `_step_saved_ids`，提交失败不阻断同 step 后续重试。取张量、布局校验（2 维/正行数/宽度/dtype/连续）、生成 chunk ids 在 `try` 之外（异常沿 runner 调用链传播）；切块与 padding、地址计算、事件记录、`dump_data` 提交、入列在 `try` 内（异常销毁事件、记录日志）。step 末排空后清去重记录，不跨请求永久记住“已保存”。
 
 **排空保存 `_wait_pending_saves`**
 
@@ -430,9 +447,74 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 
 - 输入/输出：无
 - 依赖：`_wait_pending_saves`、各状态容器、`store.close()`
-- 行为：先排空在途保存，再清空 load/hit/request/identifier 状态、`clear_connector_metadata()`，最后关闭 Store（存在 `close` 方法才调用）。置 `self.store = None` 使后续 I/O 触发明确的 `RuntimeError`。
+- 行为：先排空在途保存，再清空 load/hit/request/identifier、本地 EC 及保存去重状态、`clear_connector_metadata()`，最后关闭 Store（存在 `close` 方法才调用）。置 `self.store = None` 使后续 I/O 触发明确的 `RuntimeError`。
 
 **无操作接口**：`register_caches`（上游暂无调用方）、`update_connector_output`（无 Worker 完成元数据）、`has_pending_push_work`（pull 模型恒 False）、`build_connector_worker_meta`（本版无 Worker→Scheduler 元数据）四个钩子不显式覆写，直接继承基类默认值（语义见 §3.1 表）；`get_finished` 覆写后仍返回 `(None, None)`，但保留排空 `_pending_saves` 的真实逻辑。后两个钩子为失败上报协议（§10.1）预留扩展点，实现时以真实版本覆写。
+
+---
+
+### 5.4 基础 EPD：共享后端交接
+
+EPD 将媒体编码交给 E，prefill 和 decode 交给 PD。两端分别使用 `ec_producer` 和 `ec_consumer`，并开启 `enable_epd_disaggregate`，通过相同共享后端和兼容 chunk key 交接 EC。各引擎使用独立 Cache UUID。配置、E/PD 的 `vllm serve` 命令和原生 Proxy 启动方式见 [Encoder Cache 复用](../features/ec-connector.md)中的 EPD 分离式部署一节。
+
+#### 5.4.1 E 保存与 Proxy 元数据
+
+E 的 `build_connector_meta()` 从最终正 token 调度请求收集 `save_identifiers`，包含已有 HBM 输出对应的媒体，排除最终淘汰项。原生 runner 调用 `start_save_caches(encoder_cache=...)`，writer 对候选中已有 tensor 调用普通 `save_caches()`；其余输出在编码完成后由原生回调保存。
+
+两条保存路径共用 `_step_saved_ids`。成功提交后加入集合，提交失败后仍可重试；step 末排空后清空，后续请求可以再次保存。保存沿用现有布局检查、tail padding、前置设备 event、源 tensor 引用与 `_pending_saves` 生命周期。
+
+E 的 encoder HBM cache 按媒体 identifier 复用输出。原生 encoder-only 模式关闭的是语言模型的 KV prefix caching；encoder 输出继续由原生 cache manager 管理。
+
+`request_finished()` 通过 `PlaceholderMetadataResolver` 和 `collect_ec_item_metadata()` 返回模型 placeholder metadata。原生 Proxy 保留 occurrence、UUID 和处理参数，将图片改写为 metadata-only 输入。`ec_transfer_params` 直接按实际 identifier 索引：
+
+```json
+{
+  "ec_transfer_params": {
+    "<actual_identifier>": {
+      "modality": "image",
+      "item_indices": [0],
+      "metadata": {"image_grid_thw": [[1, 64, 64]]}
+    }
+  }
+}
+```
+
+早期 v0.30 helper 缺少 modality/item_indices 时由 connector 补齐。PD 从重建后的 feature 取得 embedding 行数。
+
+#### 5.4.2 PD 本地复用与可见性等待
+
+PD 的 `update_state_after_alloc()` 生成 `pending_loads`，在 `build_connector_meta()` 按最终调度过滤后，将实际下发的 loads 加入 `_local_encoder_ids`，并根据 `free_encoder_mm_hashes` 删除物理淘汰项。请求结束和 `update_state_after_free()` 释放请求引用；本地记录继续保留到实际淘汰。
+
+`ensure_cache_available()` 先增量登记媒体，再按以下顺序过滤：
+
+1. 按 `offset + length <= num_computed_tokens` 跳过 KV 已完整覆盖的 occurrence；部分覆盖仍需要整个 item。相同 identifier 的后续 occurrence 未覆盖时仍参与检查。
+2. 跳过 `_local_encoder_ids` 中的项，再跳过本请求的 `store_visible_identifiers`。
+3. 按 identifier 去重，仅查询剩余项的全部 chunks。`lookup_on_prefix() == len(chunk_ids)-1` 时加入 Store 正向记录；KV 覆盖和本地 EC 记录保持各自含义。
+4. 遇到首个 miss 返回 False，让 scheduler 调度其他请求；10ms 请求级退避，单次 lookup 同步执行。
+5. 首次 miss 启动 `epd_timeout_ms`，后续重试沿用该期限。待查项为空时，先清除旧等待再返回 True。
+
+KV 位置回退后，之前仅因覆盖而跳过的媒体会重新检查。检查范围为请求中尚未被 KV 完整覆盖的媒体，包含未来 step 消费项。Store 正向集合随请求释放，本地 EC 集合跨请求保留，并在最终 metadata 构建时更新。
+
+通过前置检查后，原生窗口、预算和 encoder cache manager 继续决定调度。worker 跳过实际已有 tensor，对缺失项分配 padded storage，批量提交 `load_data()`，逐项 `wait()` 后发布视图。
+
+#### 5.4.3 Store 写入与失败处理
+
+Cache2 保存流程为 D2H → DRAM READY → 提交后端写入 → 后台等待后端完成。READY 命中复用 DRAM 并跳过后端写入。共享文件删除后，E 再次提交普通 dump 仍可能保持文件缺失；热 PD 可使用本地 EC，冷 PD 可能在可见性等待处超时。
+
+Store 查询和请求内正向记录使用可见性快照。实际读取时数据丢失或 I/O 失败，沿用现有加载异常路径。`epd_timeout_ms` 覆盖 scheduler 可见性等待，实际 I/O 使用 Store 的任务超时。
+
+#### 5.4.4 验收记录
+
+| 日期 | 验证 | 结果 |
+| --- | --- | --- |
+| 2026-11-12 | KV 覆盖过滤、请求内完整命中记录、真实 TP2 模型 | 78 项通过，包含 E=TP2、PD=TP2 DT |
+| 2026-11-12 | 保留 E，删除共享文件后重启 PD | 冷 PD 约 30 秒可见性超时、HTTP 500，错误发生于 scheduler |
+| 2026-11-13 | E 热保存、PD 本地复用及默认回归 | 84 项通过，3 项模型/诊断默认跳过；另行执行 2 项 TP2 DT、4 次请求均成功 |
+| 2026-11-13 | 图模式与 KV PC 部署配置 | 实际 Ascend 镜像中的编译配置类型和命令语法检查通过 |
+
+真实模型为 Qwen3.8-27B-w8a8，EC 为 BF16 `[64,5120]`，128 行 chunk。热删除诊断中，E dump 累计从 2 增至 4，PD load 保持 2（两个 TP rank），文件保持缺失。功能 DT 使用 eager 和关闭 KV prefix caching 的配置；图模式与 PC 组合的模型验收单独执行。
+
+DEBUG 日志 `EC cached saves` 记录 E 保存候选及提交数，`EC local cache reuse` 记录 PD 本地复用；`selected_total` 表示请求的外部加载选择数。验收归档为 `epd-hooks-verification-20261113.tar.gz`，测试入口位于现有 `test/test_ucm_ec_config.py`。
 
 ---
 
@@ -465,6 +547,7 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 | Scheduler | `mm_features` 缩短 | `EncoderCacheLayoutError` | 抛出（append-only 契约被破坏） | 引擎级 |
 | Scheduler | identifier 行数冲突（请求内/跨请求） | `EncoderCacheLayoutError` | 抛出；整批校验先行，不产生部分提交 | 引擎级 |
 | Scheduler | 命中项缺全局状态 | `UCMEncoderCacheError`（含 identifier） | 抛出，不允许静默跳过 | 引擎级 |
+| Scheduler | EPD Store 持续不可见 | `TimeoutError` | 达到首次 miss 起算的可见性等待期限后抛出，无请求级隔离 | 引擎级 |
 | Worker load | metadata 非法（N≤0 / chunk 数不匹配） | `EncoderCacheLayoutError` | 抛出，不提交 | 引擎级 |
 | Worker load | `load_data` 提交失败 | `UCMEncoderCacheError` | `finally` 先排空已提交任务再抛出 | 引擎级 |
 | Worker load | `wait` 失败 | `UCMEncoderCacheError`（首个错误） | pop 条目、日志记堆栈、继续排空其余任务，结束后统一抛出 | 引擎级 |
@@ -475,7 +558,7 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 
 **load 失败的整体语义**：Scheduler 已为命中项选择 external-load 路径且未安排 encoder compute，Worker 侧无法安全重算，因此本版选择 fail-closed——异常从 `start_load_caches()` 穿过 `execute_model()`，被 EngineCore 视为 fatal error，当前及后续请求失败，通常需要重启服务。**本版没有 load failure 的请求级处理与自动重算**，相关协议列入第 10 节后续计划。
 
-**save 失败的整体语义**：dump 是旁路缓存优化，除"取张量/校验/key 构造"三段前置错误会传播外，其余保存失败仅记录日志；已提交任务的失败不保证无部分 chunk 落盘，但后续可见性仍由 `has_cache_item()` 的真实 lookup 把关，不会产生假命中。
+**save 失败的整体语义**：除"取张量/校验/key 构造"三段前置错误会传播外，其余保存失败仅记录日志；已提交任务失败可能留下部分 chunk。普通 EC 由 `has_cache_item()` 做全命中查询；EPD 由 `ensure_cache_available()` 检查可见性，Store 不可见可导致 PD 超时，因此 EPD 的保存影响交接可用性。两种查询均不是持久化保证，也不消除 lookup-load 间的数据丢失。
 
 
 ---
@@ -486,9 +569,9 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 
 分层策略：
 
-1. **单元测试（已建设）**：`test/test_ucm_ec_config.py`，57 个用例。环境约束为 CPU 张量 + Mock Store I/O——不依赖真实 GPU/NPU 与真实 Store 进程。
-2. **集成测试（待建设）**：真实 `UcmPipelineStore(Cache|Posix)`、真实设备、TP/PCP/DP 多 rank 的启动自检与端到端 dump-load-compare。
-3. **端到端测试（待建设）**：目标多模态模型上验证实际 EC shape、命中率与性能。
+1. **单元测试（已建设）**：`test/test_ucm_ec_config.py`，当前含 84 项普通回归及 3 项环境变量启用的模型/诊断用例。普通回归使用 CPU 张量与 Mock Store I/O，不运行真实设备算子；仍需兼容的 vLLM/UCM 导入环境。最新验收见 5.4.4 节。
+2. **集成测试**：真实 `UcmPipelineStore(Cache|Posix)`、Ascend 设备和 TP2 交接已随 DT 验证；启动自检、更多 PCP/DP 组合及专门的 dump-load-compare 矩阵待扩展。
+3. **端到端测试**：现有 EC 测试文件通过环境变量启用 Qwen3.8 图片交接与重复请求验证，覆盖实际 EC shape、E 热保存和 PD 热复用；命中率与性能基准另行设计，不能由功能用例耗时推导。
 
 可测试性设计（代码内置的接缝）：
 
@@ -526,7 +609,8 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 | pending save 生命周期 | Worker save | wait 失败不跳过后续、事件释放、clear metadata 不清 pending、shutdown 先排空再关 Store | 场景法 | 分支覆盖 |
 | 请求完成命中汇总 | 生命周期 | 有命中 / 全 miss（计 0）/ 未登记请求 | 等价类 | 语句覆盖 |
 | shutdown 清空流式与 step 状态 | 生命周期 | 全容器清空 | — | 语句覆盖 |
-| 真实 Store / 多 rank / 真实模型（**待建设**） | 集成 + 端到端 | TP/PCP/DP 组合、Cache 热/Posix 冷命中、GC 竞态注入、目标模型 EC shape | 阶段覆盖 | 服务级验收 |
+| E 热保存和 PD 本地复用 | EPD hook + 生命周期 | 已有/新输出、step 去重与跨 step 再保存、失败重试、最终 loads 过滤、本地记录淘汰及引用释放 | 场景法 | 核心 UT 与 TP2 DT 已通过 |
+| 真实 Store / 多 rank / 真实模型 | 集成 + 端到端 | E=TP2、PD=TP2 的 Cache2/Posix 图片交接已验；其他并行组合及 GC 竞态待验证 | 阶段覆盖 | 结果见 5.4.4 节 |
 
 ---
 
@@ -535,6 +619,7 @@ has_cache_item 为 miss → item 进入 encoder compute 路径
 - 启动日志：role、producer/consumer、width、dtype、rows_per_chunk、chunk_bytes、hash seed（hex）、save_rank——用于核对 producer/consumer 双侧 layout 与 namespace 一致性；
 - 请求级命中汇总（consumer）：`EC request cache hits: req=…, mm_items=N, hits_total=H`，全 miss 输出 0；
 - DEBUG 日志：`EC load item`（shape/chunks/bytes/wait_ms）、`EC loads`（submitted/loaded/failed/skipped/chunks/bytes/submit_ms/wait_ms）、`EC dump item`（shape/chunks/tail_rows/bytes/submit_ms）；
+- EPD DEBUG 日志：`EC cached saves`（保存候选数与本 step 已提交数）、`EC local cache reuse`（请求与跳过 Store 查询的 occurrence 数）；consumer 请求汇总使用 `selected_total` 表示外部加载选择，不等于实际 HBM miss 或 SSD I/O 次数；
 - 结构化指标（Prometheus 计数/直方图族）尚未接入 EC 路径，列入后续计划。
 
 ---
