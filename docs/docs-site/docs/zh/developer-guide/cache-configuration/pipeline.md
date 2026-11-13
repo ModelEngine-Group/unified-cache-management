@@ -51,6 +51,67 @@ vLLM Connector 根据模型是否使用 MLA 决定 `share_buffer_enable` 的默�
 
 管线健康检查默认开启，检查间隔为 10 秒、超时为 3 秒、窗口为 8 个样本、失败阈值为 2。Posix 探针实际执行写入、读取、比较和删除。探针成功说明文件系统健康，只有请求级命中和完成的加载才能说明 KV 被复用。详见[健康指标](../../user-guide/observability/health-metrics.md)。
 
+## 流水线并行
+
+当 `pipeline_parallel_size > 1` 时，分层 connector 会为每个 PP stage 分配独立的
+store，而不是共用一个命名空间：
+
+| | 示例（PP=2，后端 `/data/ucm`，engine id `3f9c1a`，共 8 层） |
+| --- | --- |
+| 存储路径 | `/data/ucm/pp_0_l0-4`、`/data/ucm/pp_1_l4-4` |
+| Cache id | `3f9c1a_pp_0_l0-4`、`3f9c1a_pp_1_l4-4` |
+
+stage 目录在 Posix store 打开之前创建，block key 的格式保持不变，因此各 stage
+之间的 key 仍可直接比较。
+
+**层分配是命名空间的一部分。** stage 目录同时编码 rank 与该 stage 负责的层
+（`pp_<rank>_l<起始层>-<层数>`），层分配来自 `VLLM_PP_LAYER_PARTITION`。这不是
+命名风格问题：只按 rank 命名时，重新分层后重启会读到错误的层。以 12 层为例，
+`4,4,4` 下 stage 1 持有第 4~7 层，`2,4,6` 下 stage 1 持有第 2~5 层。两次运行中
+stage 1 都是 4 层，`block_size` 与 `shard_size` 完全一致，旧文件可以正常打开，
+于是 shard 0 从"第 4 层"变成"第 2 层"——第 2 层会静默读到第 4 层的 KV。把层分配
+写进目录（以及 Cache id）后，旧数据直接不可达，从而避免这种错配。每个 worker 都
+会通过握手发布自己的层分配，调度侧据此生成完全一致的目录名。
+
+**预算拆分。** 一个节点上存在多个 stage 时，`cache_buffer_capacity_gb` 按节点内的
+stage 数均分，`posix_capacity_gb` 按完整的 `pipeline_parallel_size` 均分。若均分结果
+向下取整为 0，启动会直接报错，而不是静默回退到原生默认值。
+
+**几何信息来自握手。** 每个 worker 通过握手发布本 stage 真实的 block 与 shard
+大小，调度侧据此建立对应的 store。原先"单层大小 × 模型总层数"的估算方式已移除，
+因为它会用该 stage 并不持有的层来放大 block 大小。
+
+**shard 索引按 stage 局部编号。** 每个 stage 只保存自己的层，因此 shard 索引从 0
+重新开始。例如 32 层、PP=2 时，第 16 层是 stage 1 的第 0 个 shard，而不是
+第 16 个。
+
+**只有所有 stage 都有该 block 才算命中。** 查找会对每个 stage 的 store 各做一次，
+取最短公共前缀：PP0 命中 10 块而 PP1 只有 4 块时，命中就是 4 块，其余 6 块由 vLLM
+重算。只有所有 stage 都能提供时才会被放进加载计划，因此某个 stage 的 dump 失败、
+仍在进行中、stage 重启、或该 stage 自己的 GC 回收，都只会让命中变短，而不会产生
+加载错误。代价是每个 stage 一次查找往返——后续 stage 保留纯 Posix store，跨节点时
+这次查询会在调度关键路径上产生一次网络往返，但按"批"发生而不是按"块"。
+
+**各 stage 的查询并行执行。** PP0 先查，因为完全未命中时它能单独定论，无需触碰远端
+stage；其余 stage 再由一个 connector 自有的线程池并发查询，线程数等于 stage 数。该线程
+池与进程同生命周期，因此指标注册表看到的线程数是固定的，不随查询次数增长。
+
+**仍建议设置 `kv_load_failure_policy="recompute"`。** 交集消除了 PP0 与后续 stage
+的不一致，但仍存在一个竞态：某个 stage 的 store 可能在命中判定之后、加载执行之前
+把该 block 回收。vLLM 默认 `"fail"` 会让这种竞态直接结束请求，`"recompute"` 则退化
+为部分复用。stage 级加载错误仍会通过 `get_block_ids_with_load_errors()` 上报，作为
+兜底。
+
+**适用范围。** 该能力仅覆盖分层 connector + 各 stage 均可访问的共享 Posix 后端。
+非 Posix 后端与直连（非分层）connector 不在支持范围内，上下文并行与 PP 组合会在
+启动时被拒绝。
+
+**从平铺布局升级。** 旧版本写入的数据直接位于配置的根目录下，而不是 stage 子目录；
+最早一版 PP 则写在 `pp_<rank>`（不带层后缀）下。升级后这两种布局都不会被命中，
+新的 stage 命名空间也不会回收它们。确认没有其他进程仍在使用后，请手动清理。
+另外，修改 `VLLM_PP_LAYER_PARTITION` 会生成一套新的目录，旧的 stage 目录同样会残留，
+磁盘预算紧张时需要一并清理。
+
 ## 其他已注册管线
 
 | 需求 | 选择 |

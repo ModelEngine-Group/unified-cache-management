@@ -803,6 +803,8 @@ _CONNECTOR_INTERFACE_METHODS = [
     "build_connector_worker_meta",
     "update_connector_output",
     "clear_connector_metadata",
+    "get_handshake_metadata",
+    "set_xfer_handshake_metadata_pp_aware",
     "get_block_ids_with_load_errors",
 ]
 _CONNECTOR_INTERFACE_DURATION_BUCKETS = [
