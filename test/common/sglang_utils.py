@@ -54,6 +54,7 @@ def load_source(relative_path, definitions=None, **dependencies):
         time=time,
         re=re,
         threading=threading,
+        time=time,
         Path=Path,
         UnifiedCacheLinker=object,
         get_device_module=lambda: None,
