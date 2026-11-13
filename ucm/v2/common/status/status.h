@@ -79,7 +79,7 @@ public:
         if (message_.empty()) {
             return fmt::format("{} ({})", ErrorName(code_), static_cast<int32_t>(code_));
         }
-        return fmt::format("{} ({}):: {}", ErrorName(code_), static_cast<int32_t>(code_), message_);
+        return fmt::format("{} ({}): {}", ErrorName(code_), static_cast<int32_t>(code_), message_);
     }
     constexpr bool Success() const noexcept { return code_ == Error::Ok; }
     constexpr bool Failure() const noexcept { return !Success(); }

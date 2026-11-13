@@ -463,7 +463,7 @@ TEST_F(CacheBufferTest, DuplicateBlocksInBatchShareOneSlot)
     EXPECT_EQ(buffer_.Lookup({b}), (std::vector<std::uint8_t>{1}));
 }
 
-TEST_F(CacheBufferTest, SharedReservationSurvivesOneCallersFailure)
+TEST_F(CacheBufferTest, SharedReservationOutlivesAFailedConclusion)
 {
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
     const BlockId x = MakeBlock(1);
@@ -474,26 +474,45 @@ TEST_F(CacheBufferTest, SharedReservationSurvivesOneCallersFailure)
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // the slot was not released under the in-flight Dump
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, true);  // the last conclusion succeeds
-    EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
-    auto evicting = buffer_.Reserve({y}, RequestContext{});  // now evictable
-    ASSERT_TRUE(evicting);
-    EXPECT_EQ((*evicting)[0], 0U);
+    buffer_.Commit({x}, true);  // the last conclusion: one failure vetoes
+    EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{0}));
+    auto admitted = buffer_.Reserve({y}, RequestContext{});  // the released slot hosts it
+    ASSERT_TRUE(admitted);
+    EXPECT_EQ((*admitted)[0], 0U);
     buffer_.Commit({y}, true);
+    EXPECT_EQ(buffer_.Lookup({y}), (std::vector<std::uint8_t>{1}));
 }
 
-TEST_F(CacheBufferTest, SharedReservationConcludesOnAnySuccess)
+TEST_F(CacheBufferTest, SharedReservationReleasesDespiteOneSuccess)
 {
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
-    ASSERT_TRUE(buffer_.Reserve({x}, Ctx(30ms)));
-    ASSERT_TRUE(buffer_.Reserve({x}, Ctx(300ms)));  // last writer wins
+    ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
+    ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));  // joins: refs = 2
+    buffer_.Commit({x}, true);                            // one success does not conclude
+    auto blocked = buffer_.Reserve({y}, RequestContext{});
+    ASSERT_FALSE(blocked);  // one reference is still outstanding
+    EXPECT_EQ(blocked.Error(), Status::NoSpace());
+    buffer_.Commit({x}, false);  // the last conclusion: any failure releases
+    EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{0}));
+}
+
+TEST_F(CacheBufferTest, SharedReservationConcludesOnAllSuccess)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId x = MakeBlock(1);
+    const BlockId y = MakeBlock(2);
+    const auto first = buffer_.Reserve({x}, RequestContext{});
+    const auto joined = buffer_.Reserve({x}, RequestContext{});  // joins: refs = 2
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(joined);
+    EXPECT_EQ((*joined)[0], (*first)[0]);  // one reservation, one slot
     buffer_.Commit({x}, true);
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // one reference is still outstanding
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, false);  // the last conclusion fails; any success wins
+    buffer_.Commit({x}, true);  // every sharer concluded successfully
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
 }
 

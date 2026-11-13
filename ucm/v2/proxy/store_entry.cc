@@ -74,8 +74,12 @@ void StoreEntry::OnRequestFinished(const RequestId& requestId)
     if (prefetchable_ && (!prefetchToken.keys.empty() || !prefetchToken.payload.empty())) {
         prefetchable_->CompletePrefetch(prefetchToken, false);
     }
-    if (!state.pinnedBlocks.empty()) { loaded_->Store()->Unpin(state.pinnedBlocks); }
-    if (!state.reservedBlocks.empty()) { loaded_->Store()->Commit(state.reservedBlocks, false); }
+    /* Every open Get/Put window is concluded individually; the store's
+     * pin and reservation references are per window. */
+    for (const auto& pinned : state.getPins) { loaded_->Store()->Unpin(pinned); }
+    for (const auto& reserved : state.putReservations) {
+        loaded_->Store()->Commit(reserved, false);
+    }
     requests_.erase(it);
 }
 
@@ -147,21 +151,25 @@ Expected<AddressedToken> StoreEntry::PrepareGet(const RequestId& requestId,
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
-    if (!guard.Value()->pinnedBlocks.empty()) {
-        return Status::InvalidParam("request '{}' has an unconcluded Get window", requestId);
-    }
     auto res = loaded_->Store()->Pin(keys);
     if (!res) { return res.Error(); }
-    guard.Value()->pinnedBlocks = keys;
+    guard.Value()->getPins.push_back(keys);
     return res;
 }
 
-void StoreEntry::CompleteGet(const RequestId& requestId)
+void StoreEntry::CompleteGet(const RequestId& requestId, const AddressedToken& token)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    loaded_->Store()->Unpin(guard.Value()->pinnedBlocks);
-    guard.Value()->pinnedBlocks.clear();
+    /* Conclude exactly the window the token addresses: the one recorded
+     * window whose keys match, leaving any others open. A token matching
+     * no open window -- already concluded, foreign, or minted by another
+     * request -- never reaches the store. */
+    auto& windows = guard.Value()->getPins;
+    auto it = std::find(windows.begin(), windows.end(), token.keys);
+    if (it == windows.end()) { return; }
+    loaded_->Store()->Unpin(*it);
+    windows.erase(it);
 }
 
 Expected<AddressedToken> StoreEntry::PreparePut(const RequestId& requestId,
@@ -169,21 +177,22 @@ Expected<AddressedToken> StoreEntry::PreparePut(const RequestId& requestId,
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
-    if (!guard.Value()->reservedBlocks.empty()) {
-        return Status::InvalidParam("request '{}' has an unconcluded Put window", requestId);
-    }
     auto res = loaded_->Store()->Alloc(keys, guard.Value()->request);
     if (!res) { return res.Error(); }
-    guard.Value()->reservedBlocks = keys;
+    guard.Value()->putReservations.push_back(keys);
     return res;
 }
 
-void StoreEntry::CompletePut(const RequestId& requestId, bool success)
+void StoreEntry::CompletePut(const RequestId& requestId, const AddressedToken& token, bool success)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    loaded_->Store()->Commit(guard.Value()->reservedBlocks, success);
-    guard.Value()->reservedBlocks.clear();
+    /* See CompleteGet: one matching window concluded, others left open. */
+    auto& windows = guard.Value()->putReservations;
+    auto it = std::find(windows.begin(), windows.end(), token.keys);
+    if (it == windows.end()) { return; }
+    loaded_->Store()->Commit(*it, success);
+    windows.erase(it);
 }
 
 std::vector<AddressedToken> StoreEntry::PrepareOffload()

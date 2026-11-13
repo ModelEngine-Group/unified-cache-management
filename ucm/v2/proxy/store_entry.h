@@ -59,10 +59,11 @@ public:
     void CompletePrefetch(const RequestId& requestId, bool success) override;
     Expected<AddressedToken> PrepareGet(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;
-    void CompleteGet(const RequestId& requestId) override;
+    void CompleteGet(const RequestId& requestId, const AddressedToken& token) override;
     Expected<AddressedToken> PreparePut(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;
-    void CompletePut(const RequestId& requestId, bool success) override;
+    void CompletePut(const RequestId& requestId, const AddressedToken& token,
+                     bool success) override;
     std::vector<AddressedToken> PrepareOffload() override;
     void CompleteOffload(const AddressedToken& plan) override;
 
@@ -80,8 +81,11 @@ private:
     struct RequestState {
         RequestContext request;
         AddressedToken prefetchToken;
-        std::vector<BlockId> pinnedBlocks;
-        std::vector<BlockId> reservedBlocks;
+        /* One entry per open Get/Put window: its keys, the identifying
+         * half of the window credential (see the CompleteGet/CompletePut
+         * token matching). Prefetch stays single-window. */
+        std::vector<std::vector<BlockId>> getPins;
+        std::vector<std::vector<BlockId>> putReservations;
     };
 
     Expected<RequestState*> RequireRequest(const RequestId& requestId);
