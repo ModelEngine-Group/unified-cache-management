@@ -433,31 +433,38 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 )
                 metadata = types.SimpleNamespace(request_meta={"req": request})
 
-                def submit(_request_id, kind, *_args):
-                    events.append(kind)
-                    return kind
+                def submit(_request_id, kind, *_args, **_kwargs):
+                    events.append((kind, _kwargs.get("event_handle")))
+                    return types.SimpleNamespace(request_id=_request_id, label=kind)
 
                 connector = types.SimpleNamespace(
                     is_v41_layout=is_v41,
                     device=types.SimpleNamespace(
-                        synchronize=lambda: events.append("sync")
+                        synchronize=lambda: events.append("sync"),
+                        destroy_event_handle=lambda h: events.append(("destroy", h)),
                     ),
                     _get_connector_metadata=lambda: metadata,
+                    _get_event_handle=lambda: 7,
                     fa_store=object(),
                     window_group_ids=[1] if has_window else [],
                     wa_store=object() if has_window else None,
                     _extract_fa_ptr=lambda *_args: [],
                     _extract_wa_ptr=lambda *_args: [],
                     _submit_load_task=submit,
-                    _wait_all_load_task=lambda tasks: events.append(tuple(tasks)),
+                    _wait_all_load_task=lambda tasks: events.append(
+                        tuple(task.label for task in tasks)
+                    ),
                 )
                 methods["start_load_kv"](connector, None)
-                expected = ["sync"] if is_v41 and has_hit else []
                 if has_hit:
                     labels = ["FA", "WA"] if has_window else ["FA"]
-                    expected.extend([*labels, tuple(labels)])
+                    handle = 7 if is_v41 else 0
+                    expected = [(label, handle) for label in labels]
+                    expected.append(tuple(labels))
+                    if is_v41:
+                        expected.append(("destroy", 7))
                 else:
-                    expected.append(())
+                    expected = [()]
                 self.assertEqual(events, expected)
 
     def test_spec_formats_select_packed_value_scale_descriptors(self):
@@ -1475,7 +1482,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     _extract_fa_ptr=lambda keys, *_args, **_kwargs: __import__(
                         "numpy"
                     ).zeros((len(keys), 2), dtype="uint64"),
-                    _get_dump_event_handle=lambda: 1,
+                    _get_event_handle=lambda: 1,
                     _submit_dump_task=submit,
                     tp_size=tp_size,
                     tp_rank=rank,
