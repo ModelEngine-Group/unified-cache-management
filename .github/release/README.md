@@ -648,8 +648,11 @@ when all-attempt job results prove every release publisher was skipped.
 Missing, expired or conflicting evidence otherwise reports a cleanup failure
 while the version remains in the count. Non-Nightly `--dry-run` resolves the
 same read-only target as actual cleanup, including pending historical evidence.
-Actual execution explicitly saves and reads back that evidence before deletion;
-the preview does not upload recovery assets or delete resources.
+If an old Draft still has a Git Tag but its Release is gone, execution verifies
+the legacy run against the live Tag commit and restores an unpublished Draft to
+hold the recovered snapshots. It reads them back before deleting resources. A
+retry reuses that Draft, whose new ID does not change retention order. Preview
+only reports the deletion targets and never creates a recovery Draft.
 
 Builders, base runtimes and PyPI packages are never cleanup targets. Existing
 Nightly `release-cleanup.json` records and `ucm-nightly-cleanup-*` artifacts remain
