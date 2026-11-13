@@ -34,7 +34,7 @@
 namespace UC::Cache2 {
 
 struct Task {
-    enum class Type : uint8_t { LOAD, DUMP, PREFETCH };
+    enum class Type : uint8_t { LOAD, DUMP };
 
     Task(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
     Task(const Task&) = delete;

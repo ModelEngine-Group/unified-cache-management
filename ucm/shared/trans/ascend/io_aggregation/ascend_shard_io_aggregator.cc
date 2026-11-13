@@ -183,6 +183,9 @@ Status AscendShardIOAggregator::SubmitLoadObject(void* host, void** devices,
     auto object = std::make_unique<InFlightObject>();
     auto s = BuildScatterSpecs(*object, staging, devices, sizes);
     if (s.Failure()) { return s; }
+    /* All destination fragments are null: the caller only wants the data read
+     * into the DDR cache (prefetch), so skip staging and H2D entirely. */
+    if (object->specs.empty()) { return Status::OK(); }
 
     const auto objectBytes = std::accumulate(sizes.begin(), sizes.end(), static_cast<size_t>(0));
     s = AclStatus(aclrtStreamWaitEvent(lane.copyStream, lane.slotFree[slot]),

@@ -3708,7 +3708,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.connector.get_block_size()
 
     def prefetch_data(self, block_ids: List[bytes]) -> None:
-        """Warm blocks into the host DDR buffer (Backend2Cache), no H2D.
+        """Prefetch blocks into the host DDR buffer (Backend2Cache), no H2D.
 
         Forwards to the inner connector's store.prefetch_data (worker side only).
         """

@@ -101,19 +101,6 @@ public:
     {
         bufferMgr_.Prefetch(blocks, num);
     }
-    Expected<Detail::TaskHandle> Warm(const Detail::BlockId* blocks, size_t num) override
-    {
-        if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        Detail::TaskDesc desc;
-        for (size_t i = 0; i < num; i++) {
-            for (size_t shard = 0; shard < nShardPerBlock_; shard++) {
-                // Empty addrs: PREFETCH performs no H2D
-                desc.emplace_back(Detail::Shard{blocks[i], shard, {}});
-            }
-        }
-        desc.brief = "Prefetch";
-        return transMgr_.Submit({TransTask::Type::PREFETCH, std::move(desc)});
-    }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }

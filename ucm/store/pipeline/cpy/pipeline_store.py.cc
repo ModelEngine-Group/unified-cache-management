@@ -238,13 +238,6 @@ public:
         BufferArrayView<Detail::BlockId> idArr{ids};
         StoreBack()->Prefetch(idArr.data, idArr.num);
     }
-    Detail::TaskHandle Warm(const pybind11::buffer& ids)
-    {
-        BufferArrayView<Detail::BlockId> idArr{ids};
-        auto res = StoreBack()->Warm(idArr.data, idArr.num);
-        if (res) { return res.Value(); }
-        ThrowError(res.Error());
-    }
     Detail::TaskHandle Load(const pybind11::buffer& ids, const pybind11::buffer& indexes,
                             const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)
     {
@@ -307,7 +300,6 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
     s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());
     s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
-    s.def("Warm", &PipelineStore::Warm, py::arg("ids").noconvert());
     s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Dump", &PipelineStore::Dump, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),

@@ -60,10 +60,10 @@ TEST_F(UCCacheLoadQueueTest, EmptyDescTaskCompletesImmediately)
     ASSERT_EQ(s, UC::Status::OK());
     s = loadQ.Setup(config, &failureSet, &buffer);
     ASSERT_EQ(s, UC::Status::OK());
-    // An empty task (possible when Warm receives 0 blocks) must complete
-    // immediately instead of blocking Wait forever.
+    // An empty task must complete immediately instead of blocking Wait
+    // forever.
     UC::Detail::TaskDesc desc{};
-    auto task = std::make_shared<TransTask>(TransTask::Type::PREFETCH, desc);
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter = std::make_shared<UC::Latch>();
     loadQ.Submit(task, waiter);
     ASSERT_TRUE(waiter->WaitForDuration(1000));

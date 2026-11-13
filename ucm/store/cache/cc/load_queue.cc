@@ -230,8 +230,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             }
         }
 
-        const bool isPrefetch = parentTask->type == TransTask::Type::PREFETCH;
-        if (!isPrefetch) {
+        {
             auto* host = cacheSdmaDirect_ ? task.bufferHandle.DeviceData()
                                           : task.bufferHandle.Data();
             s = HostToDeviceAsync(stream, host, task.shard.addrs.data());
@@ -249,7 +248,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             holder_.push_back(std::move(task));
             return;
         }
-        if (!isPrefetch) {
+        {
             auto tpH2dSyncStart = NowTime::Now();
             s = stream.Synchronize();
             auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;

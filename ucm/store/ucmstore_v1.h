@@ -176,33 +176,6 @@ public:
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
 
-    /**
-     * @brief Start an asynchronous warm (storage → host DDR) transfer.
-     *
-     * Unlike Prefetch, this is a real transfer: blocks are read from the slow
-     * backend (e.g. SSD) into the cache store's DDR buffer (Backend2Cache) and
-     * marked ready. No H2D transfer is performed.
-     *
-     * The call itself does not block; mirroring Load()/Dump(), it returns a
-     * task handle that the caller may pass to Wait() or Check(). Completion is
-     * required before the warmed blocks are guaranteed to be resident.
-     *
-     * @param blocks Array of block identifiers to be warmed.
-     * @param num Number of block identifiers to be warmed.
-     * @return Expected<TaskHandle>
-     *   - On success: a task handle that can be passed to Wait() or Check().
-     *   - On failure: relevant Status code.
-     *
-     * @note Thread-safe; may be called concurrently with other operations.
-     * @note MUST be appended at the END of the vtable: existing store shared
-     *       libraries are compiled against the old layout and rely on the
-     *       virtual slots of ~StoreV1..Wait staying unchanged.
-     */
-    virtual Expected<Detail::TaskHandle> Warm(const Detail::BlockId* blocks, size_t num)
-    {
-        return Status::Error("warm is not supported");
-    }
-
 protected:
     /**
      * @brief Protected default constructor.

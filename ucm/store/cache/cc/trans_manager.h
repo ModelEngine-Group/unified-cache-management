@@ -57,8 +57,7 @@ protected:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
-        const auto isLoad =
-            t->type == TransTask::Type::LOAD || t->type == TransTask::Type::PREFETCH;
+        const auto isLoad = t->type == TransTask::Type::LOAD;
         UC_DEBUG("Cache task({},{},{},{}) dispatching.", id, brief, num, size);
         w->SetEpilog([id, brief = std::move(brief), num, size, tp, isLoad] {
             auto cost = NowTime::Now() - tp;
@@ -80,7 +79,7 @@ protected:
                                          static_cast<double>(size));
             }
         });
-        if (t->type == TransTask::Type::LOAD || t->type == TransTask::Type::PREFETCH) {
+        if (t->type == TransTask::Type::LOAD) {
             loadQ_.Submit(t, w);
         } else {
             dumpQ_.Submit(t, w);

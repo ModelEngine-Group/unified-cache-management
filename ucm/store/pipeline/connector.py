@@ -93,6 +93,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         super().__init__(config)
         self.store_ = ucmpipelinestore.PipelineStore()
         self._pending_prefetch_tasks: List[int] = []
+        self._tensor_count = len(config.get("tensor_size_list") or [])
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
@@ -119,12 +120,22 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         self.store_.Prefetch(flat)
 
     def prefetch_data(self, block_ids: List[bytes]) -> None:
+        if not block_ids:
+            return
+        if self._tensor_count <= 0:
+            raise RuntimeError("prefetch_data requires tensor_size_list")
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
-        # Warm is asynchronous and returns a task handle, like load/dump. No one
-        # waits on it here, so reap finished handles lazily on later calls to
-        # keep TransManager::tasks_ bounded.
+        # Reuse the regular Load path with an all-null destination pointer
+        # matrix. Every copy backend skips null fragments, so the blocks are
+        # read from the slow backend into the DDR cache buffer without H2D.
+        rows = len(block_ids)
+        indexes = array.array("Q", [0] * rows)
+        addrs = np.zeros((rows, self._tensor_count), dtype=np.uint64)
+        # The task is asynchronous, like load/dump. No one waits on it here, so
+        # reap finished handles lazily on later calls to keep
+        # TransManager::tasks_ bounded.
         self._reap_prefetch_tasks()
-        self._pending_prefetch_tasks.append(self.store_.Warm(flat))
+        self._pending_prefetch_tasks.append(self.store_.Load(flat, indexes, addrs))
 
     def _reap_prefetch_tasks(self) -> None:
         if not self._pending_prefetch_tasks:

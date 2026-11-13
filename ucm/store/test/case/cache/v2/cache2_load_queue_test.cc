@@ -393,37 +393,17 @@ TEST_F(UCCache2LoadQueueTest, SetupPassesStreamParams)
     EXPECT_EQ(FakeStream::lastStreamNumber.load(), 2);
 }
 
-TEST_F(UCCache2LoadQueueTest, EmptyDescPrefetchCompletesImmediately)
+TEST_F(UCCache2LoadQueueTest, EmptyDescLoadCompletesImmediately)
 {
     EXPECT_CALL(backend_, Load).Times(0);
-    auto task = std::make_shared<Task>(Task::Type::PREFETCH, UC::Detail::TaskDesc{});
+    auto task = std::make_shared<Task>(Task::Type::LOAD, UC::Detail::TaskDesc{});
     auto waiter = std::make_shared<UC::Latch>();
     loadQ_.Submit(task, waiter);
-    // An empty task (e.g. Warm with 0 blocks) must complete immediately
-    // instead of blocking Wait forever.
+    // An empty task must complete immediately instead of blocking Wait
+    // forever.
     ASSERT_TRUE(waiter->WaitForDuration(kWaitMs));
     EXPECT_FALSE(failureSet_.Contains(task->id));
     EXPECT_TRUE(buffer_.GetCalls().empty());
-}
-
-TEST_F(UCCache2LoadQueueTest, PrefetchWarmsBufferWithoutH2d)
-{
-    const auto block = TypesHelper::MakeBlockIdRandomly();
-    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc) {
-        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
-    }));
-    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([](UC::Detail::TaskHandle) {
-        return UC::Status::OK();
-    }));
-    auto task = std::make_shared<Task>(Task::Type::PREFETCH, MakeDesc(block));
-    auto waiter = std::make_shared<UC::Latch>();
-    loadQ_.Submit(task, waiter);
-    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_FALSE(failureSet_.Contains(task->id));
-    ASSERT_EQ(buffer_.GetCalls().size(), 1);
-    EXPECT_TRUE(FakeStream::scatters.empty());
-    EXPECT_EQ(FakeStream::syncs.load(), 0);
-    EXPECT_EQ(buffer_.MarkedReady(), 1);
 }
 
 TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitPrecedesAllH2dShards)
