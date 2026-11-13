@@ -7,26 +7,23 @@
 #include <string>
 
 #include "log/logger_manager.h"
-#include "worker/client.h"
-#include "worker/executor.h"
+#include "worker/scheduler.h"
 
 bool RunKvClientDemo()
 {
     std::string err;
-    Client client;
-    if (!client.Init("conf/kv_client.conf", err)) {
+    Scheduler scheduler;
+    if (!scheduler.Init("conf/kv_client.conf", err)) {
         LOG_ERROR("kv client demo 初始化失败: {}", err);
         return false;
     }
-    LOG_INFO("kv client demo：初始化与建链成功");
+    LOG_INFO("kv client demo：初始化、建链与内存注册成功");
 
-    Executor executor;
-    executor.SetClient(&client);
-    const bool passed = executor.Run(err);
+    const bool passed = scheduler.Run(err);
     if (!passed) {
         LOG_ERROR("kv client demo 功能验证失败: {}", err);
     }
 
-    client.Shutdown();
+    scheduler.Shutdown();
     return passed;
 }

@@ -16,6 +16,7 @@ class Client;
  * kv client 请求数据包：集中保存一次读写请求的全部数据与生命周期
  * （key、值 buffer、注册句柄、组装好的请求项）。
  * 用法：Add 逐条填入 key 与值 -> Register 注册并组装 entries -> IO 读写 -> Unregister 注销。
+ * 当前由 Scheduler 负责装配与注册/注销，将来 requestManager 从 input.txt 产出请求数据后交其统一管理。
  */
 struct Request {
     /** key 列表（与 valueBuffers 逐项对应，Add 时成对追加） */
