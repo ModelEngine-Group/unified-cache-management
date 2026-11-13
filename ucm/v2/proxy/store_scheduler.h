@@ -38,20 +38,28 @@ namespace UC::Proxy {
  *        drain loop.
  *
  * @note Window protocol, per request and per kind (Get/Put/prefetch,
- *       independently): PrepareX() opens at most one window of its kind;
- *       a second PrepareX() while one is open is rejected (InvalidParam),
- *       while a failed PrepareX() opens nothing and may be retried.
+ *       independently): Get and Put windows are multi-open -- PrepareGet()
+ *       and PreparePut() may open any number of concurrent windows per
+ *       request -- while a failed PrepareX() opens nothing and may be
+ *       retried. Each open window is identified by the AddressedToken its
+ *       PrepareX() minted: CompleteGet()/CompletePut() conclude exactly
+ *       the window their token addresses and leave the others open, and a
+ *       token matching no open window (already concluded, foreign, or
+ *       belonging to a finished request) is a silent no-op that never
+ *       reaches the store. Prefetch windows stay single-open: a second
+ *       PreparePrefetch() while one is open is rejected (InvalidParam).
  *       SubmitX() (StoreWorker) may be called any number of times against
- *       the open window's token. CompleteX() concludes the window and
- *       must be issued only after the completions of the jobs submitted
- *       against it have been consumed via GetFinished()/Wait():
- *       concluding earlier is undefined, since releasing a pin or
- *       reservation while its transfer job still flies can corrupt the
- *       slot's next occupant (see Store::Commit and Pin).
+ *       each open window's token. CompleteX() must be issued only after
+ *       the completions of the jobs submitted against its window have
+ *       been consumed via GetFinished()/Wait(): concluding earlier is
+ *       undefined, since releasing a pin or reservation while its
+ *       transfer job still flies can corrupt the slot's next occupant
+ *       (see Store::Commit and Pin).
  * @note OnRequestFinished() requires every window concluded and every
  *       in-flight job drained (the Store destruction contract applies);
  *       windows left open are concluded best-effort as a safety net
- *       (Unpin / Commit(false) / CompletePrefetch(false)).
+ *       (Unpin / Commit(false) / CompletePrefetch(false)), each open
+ *       Get/Put window individually.
  * @note Offload drain loop, independent of requests: PrepareOffload()
  *       drains the plans the topology's own concluded admissions have
  *       queued; SubmitOffload() (StoreWorker) executes a drained plan as
@@ -86,11 +94,12 @@ public:
 
     virtual Expected<AddressedToken> PrepareGet(const RequestId& requestId,
                                                 const std::vector<BlockId>& keys) = 0;
-    virtual void CompleteGet(const RequestId& requestId) = 0;
+    virtual void CompleteGet(const RequestId& requestId, const AddressedToken& token) = 0;
 
     virtual Expected<AddressedToken> PreparePut(const RequestId& requestId,
                                                 const std::vector<BlockId>& keys) = 0;
-    virtual void CompletePut(const RequestId& requestId, bool success) = 0;
+    virtual void CompletePut(const RequestId& requestId, const AddressedToken& token,
+                             bool success) = 0;
 
     virtual std::vector<AddressedToken> PrepareOffload() = 0;
     virtual void CompleteOffload(const AddressedToken& plan) = 0;

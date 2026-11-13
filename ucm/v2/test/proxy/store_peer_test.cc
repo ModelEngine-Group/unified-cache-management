@@ -131,10 +131,10 @@ TEST(StorePeerTest, SchedulerOperationsStickToRequestBranch)
     handle.peer->CompletePrefetch("r", true);
     auto token = handle.peer->PrepareGet("r", keys);
     ASSERT_TRUE(token);
-    handle.peer->CompleteGet("r");
+    handle.peer->CompleteGet("r", token.Value());
     auto putToken = handle.peer->PreparePut("r", keys);
     ASSERT_TRUE(putToken);
-    handle.peer->CompletePut("r", true);
+    handle.peer->CompletePut("r", putToken.Value(), true);
 
     auto* fake = handle.fakes[1];
     EXPECT_EQ(fake->prefetchLookups.size(), 3);
@@ -187,8 +187,8 @@ TEST(StorePeerTest, OperationsOnUnknownRequestFail)
     EXPECT_FALSE(handle.peer->PreparePut("missing", keys));
     handle.peer->Touch("missing", keys);
     handle.peer->CompletePrefetch("missing", true);
-    handle.peer->CompleteGet("missing");
-    handle.peer->CompletePut("missing", true);
+    handle.peer->CompleteGet("missing", AddressedToken{});
+    handle.peer->CompletePut("missing", AddressedToken{}, true);
     handle.peer->OnRequestFinished("missing");
     EXPECT_TRUE(handle.fakes[0]->prefetchLookups.empty());
     EXPECT_TRUE(handle.fakes[0]->pins.empty());
@@ -256,6 +256,58 @@ TEST(StorePeerTest, PrepareGetWrapsTokenForRouting)
     EXPECT_EQ(handle.fakes[0]->loads[0].job.prerequisiteHandle, 0xABCD);
     EXPECT_TRUE(handle.fakes[0]->loads[0].token.keys.empty());
     EXPECT_EQ(handle.fakes[0]->loads[0].token.payload, MakeAddressedToken(2).payload);
+}
+
+TEST(StorePeerTest, ConcurrentWindowsRouteToRequestBranch)
+{
+    auto handle = MakePeer({
+        {true, true},
+        {true, true}
+    });
+    handle.routing->branches["r1"] = 0;
+    handle.routing->branches["r2"] = 1;
+    handle.peer->OnNewRequest(MakeContext("r1"));
+    handle.peer->OnNewRequest(MakeContext("r2"));
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    const std::vector<BlockId> otherKeys = MakeKeys(5, 2);
+    auto r1First = handle.peer->PrepareGet("r1", keys);
+    auto r1Second = handle.peer->PrepareGet("r1", otherKeys);
+    auto r2Token = handle.peer->PrepareGet("r2", keys);
+    ASSERT_TRUE(r1First);
+    ASSERT_TRUE(r1Second);
+    ASSERT_TRUE(r2Token);
+    /* Each framed token concludes its own window on its request's
+     * branch, independently of the other open windows. */
+    handle.peer->CompleteGet("r1", r1Second.Value());
+    ASSERT_EQ(handle.fakes[0]->unpins.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->unpins[0], otherKeys);
+    handle.peer->CompleteGet("r2", r2Token.Value());
+    ASSERT_EQ(handle.fakes[1]->unpins.size(), 1);
+    EXPECT_EQ(handle.fakes[1]->unpins[0], keys);
+    handle.peer->CompleteGet("r1", r1First.Value());
+    ASSERT_EQ(handle.fakes[0]->unpins.size(), 2);
+    EXPECT_EQ(handle.fakes[0]->unpins[1], keys);
+    EXPECT_TRUE(handle.fakes[1]->unpins.size() == 1);  // branch 1 saw nothing more
+}
+
+TEST(StorePeerTest, CompleteGetWithUnframedTokenIsDropped)
+{
+    auto handle = MakePeer({
+        {true, true}
+    });
+    handle.peer->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    auto token = handle.peer->PrepareGet("r", keys);
+    ASSERT_TRUE(token);
+    /* A token this peer never framed is dropped silently: the window
+     * stays open and is concluded by the request's own teardown. */
+    AddressedToken bare;
+    bare.keys = keys;
+    handle.peer->CompleteGet("r", bare);
+    EXPECT_TRUE(handle.fakes[0]->unpins.empty());
+    handle.peer->CompleteGet("r", token.Value());
+    ASSERT_EQ(handle.fakes[0]->unpins.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->unpins[0], keys);
 }
 
 TEST(StorePeerTest, DefaultAddressingBranchRoutesThroughEmptyPayload)

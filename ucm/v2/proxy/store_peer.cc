@@ -175,11 +175,18 @@ Expected<AddressedToken> StorePeer::PrepareGet(const RequestId& requestId,
     return WrapToken(branch, branches_[branch]->PrepareGet(requestId, keys));
 }
 
-void StorePeer::CompleteGet(const RequestId& requestId)
+void StorePeer::CompleteGet(const RequestId& requestId, const AddressedToken& token)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    branches_[guard.Value()->branch]->CompleteGet(requestId);
+    /* The conclusion follows the request's fixed branch; the frame is
+     * validated and stripped so the branch sees exactly the token it
+     * minted (see the framing note near StripTokenFrame). A token this
+     * peer never framed is dropped: its window, if any, is concluded by
+     * the request's own teardown. */
+    AddressedToken bare = token;
+    if (!StripTokenFrame(bare, branches_.size())) { return; }
+    branches_[guard.Value()->branch]->CompleteGet(requestId, bare);
 }
 
 Expected<AddressedToken> StorePeer::PreparePut(const RequestId& requestId,
@@ -191,11 +198,13 @@ Expected<AddressedToken> StorePeer::PreparePut(const RequestId& requestId,
     return WrapToken(branch, branches_[branch]->PreparePut(requestId, keys));
 }
 
-void StorePeer::CompletePut(const RequestId& requestId, bool success)
+void StorePeer::CompletePut(const RequestId& requestId, const AddressedToken& token, bool success)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return; }
-    branches_[guard.Value()->branch]->CompletePut(requestId, success);
+    AddressedToken bare = token;
+    if (!StripTokenFrame(bare, branches_.size())) { return; }
+    branches_[guard.Value()->branch]->CompletePut(requestId, bare, success);
 }
 
 std::vector<AddressedToken> StorePeer::PrepareOffload()

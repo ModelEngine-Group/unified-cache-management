@@ -50,8 +50,8 @@ TEST(StoreEntryTest, OperationsOnUnknownRequestFail)
     EXPECT_FALSE(handle.entry->PreparePut("missing", keys));
     handle.entry->Touch("missing", keys);
     handle.entry->CompletePrefetch("missing", true);
-    handle.entry->CompleteGet("missing");
-    handle.entry->CompletePut("missing", true);
+    handle.entry->CompleteGet("missing", AddressedToken{});
+    handle.entry->CompletePut("missing", AddressedToken{}, true);
     EXPECT_TRUE(handle.fake->plainLookups.empty());
     EXPECT_TRUE(handle.fake->prefetchLookups.empty());
     EXPECT_TRUE(handle.fake->pins.empty());
@@ -149,12 +149,13 @@ TEST(StoreEntryTest, PrepareGetPinsAndUnpinsTokenedBlocks)
     EXPECT_EQ(token.Value().payload, MakeAddressedToken(2).payload);
     ASSERT_EQ(handle.fake->pins.size(), 1);
     EXPECT_EQ(handle.fake->pins[0], keys);
-    handle.entry->CompleteGet("r");
+    handle.entry->CompleteGet("r", token.Value());
     ASSERT_EQ(handle.fake->unpins.size(), 1);
     EXPECT_EQ(handle.fake->unpins[0], keys);
-    handle.entry->CompleteGet("r");
-    ASSERT_EQ(handle.fake->unpins.size(), 2);
-    EXPECT_TRUE(handle.fake->unpins[1].empty());
+    /* Concluding the same window again matches nothing: no second
+     * conclusion reaches the store. */
+    handle.entry->CompleteGet("r", token.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 1);
 }
 
 TEST(StoreEntryTest, PrepareGetOnDefaultAddressingStoreMintsKeysOnlyToken)
@@ -168,7 +169,7 @@ TEST(StoreEntryTest, PrepareGetOnDefaultAddressingStoreMintsKeysOnlyToken)
     EXPECT_TRUE(token.Value().payload.empty());
     ASSERT_EQ(handle.fake->pins.size(), 1);
     EXPECT_EQ(handle.fake->pins[0], keys);
-    handle.entry->CompleteGet("r");
+    handle.entry->CompleteGet("r", token.Value());
     ASSERT_EQ(handle.fake->unpins.size(), 1);
     EXPECT_EQ(handle.fake->unpins[0], keys);
 }
@@ -181,9 +182,10 @@ TEST(StoreEntryTest, PrepareGetPropagatesPinFailure)
     auto token = handle.entry->PrepareGet("r", MakeKeys(1, 2));
     ASSERT_FALSE(token);
     EXPECT_EQ(token.Error(), Status::NotFound());
-    handle.entry->CompleteGet("r");
-    ASSERT_EQ(handle.fake->unpins.size(), 1);
-    EXPECT_TRUE(handle.fake->unpins[0].empty());
+    /* The failed Prepare opened no window: the conclusion matches
+     * nothing and never reaches the store. */
+    handle.entry->CompleteGet("r", AddressedToken{});
+    EXPECT_TRUE(handle.fake->unpins.empty());
 }
 
 TEST(StoreEntryTest, PreparePutAllocsWithRequestContext)
@@ -199,13 +201,13 @@ TEST(StoreEntryTest, PreparePutAllocsWithRequestContext)
     EXPECT_EQ(handle.fake->allocs[0].first, keys);
     EXPECT_EQ(handle.fake->allocs[0].second.ttl, std::chrono::milliseconds(500));
     EXPECT_EQ(handle.fake->allocs[0].second.totalBlockCount, 3);
-    handle.entry->CompletePut("r", true);
+    handle.entry->CompletePut("r", token.Value(), true);
     ASSERT_EQ(handle.fake->commits.size(), 1);
     EXPECT_EQ(handle.fake->commits[0].first, keys);
     EXPECT_TRUE(handle.fake->commits[0].second);
-    handle.entry->CompletePut("r", true);
-    ASSERT_EQ(handle.fake->commits.size(), 2);
-    EXPECT_TRUE(handle.fake->commits[1].first.empty());
+    /* Concluding the same window again matches nothing. */
+    handle.entry->CompletePut("r", token.Value(), true);
+    ASSERT_EQ(handle.fake->commits.size(), 1);
 }
 
 TEST(StoreEntryTest, CompletePutForwardsSuccessFlag)
@@ -213,8 +215,9 @@ TEST(StoreEntryTest, CompletePutForwardsSuccessFlag)
     auto handle = MakeEntry(true, true);
     const std::vector<BlockId> keys = MakeKeys(1, 1);
     handle.entry->OnNewRequest(MakeContext("r"));
-    ASSERT_TRUE(handle.entry->PreparePut("r", keys));
-    handle.entry->CompletePut("r", false);
+    auto token = handle.entry->PreparePut("r", keys);
+    ASSERT_TRUE(token);
+    handle.entry->CompletePut("r", token.Value(), false);
     ASSERT_EQ(handle.fake->commits.size(), 1);
     EXPECT_EQ(handle.fake->commits[0].first, keys);
     EXPECT_FALSE(handle.fake->commits[0].second);
@@ -231,7 +234,7 @@ TEST(StoreEntryTest, PreparePutOnDefaultAddressingStoreMintsKeysOnlyToken)
     EXPECT_TRUE(token.Value().payload.empty());
     ASSERT_EQ(handle.fake->allocs.size(), 1);
     EXPECT_EQ(handle.fake->allocs[0].first, keys);
-    handle.entry->CompletePut("r", true);
+    handle.entry->CompletePut("r", token.Value(), true);
     ASSERT_EQ(handle.fake->commits.size(), 1);
     EXPECT_EQ(handle.fake->commits[0].first, keys);
     EXPECT_TRUE(handle.fake->commits[0].second);
@@ -245,9 +248,10 @@ TEST(StoreEntryTest, PreparePutPropagatesAllocFailure)
     auto token = handle.entry->PreparePut("r", MakeKeys(1, 2));
     ASSERT_FALSE(token);
     EXPECT_EQ(token.Error(), Status::NoSpace());
-    handle.entry->CompletePut("r", true);
-    ASSERT_EQ(handle.fake->commits.size(), 1);
-    EXPECT_TRUE(handle.fake->commits[0].first.empty());
+    /* The failed Prepare opened no window: the conclusion matches
+     * nothing and never reaches the store. */
+    handle.entry->CompletePut("r", AddressedToken{}, true);
+    EXPECT_TRUE(handle.fake->commits.empty());
 }
 
 TEST(StoreEntryTest, SubmitPrefetchForwardsPlanToPrefetchableStore)
@@ -514,30 +518,147 @@ TEST(StoreEntryTest, WaitConvertsStoreCompletionsAndRejectsUnknownIds)
         handle.entry->SubmitGet(5, {MakePayload(16)}, token.Value(), IoContext{0}).Success());
 }
 
-TEST(StoreEntryTest, PrepareGetRejectsOverlappingWindow)
+TEST(StoreEntryTest, PrepareGetOpensConcurrentWindows)
 {
     auto handle = MakeEntry(true, true);
     handle.entry->OnNewRequest(MakeContext("r"));
     const std::vector<BlockId> keys = MakeKeys(1, 2);
     ASSERT_TRUE(handle.entry->PrepareGet("r", keys));
-    auto overlapping = handle.entry->PrepareGet("r", MakeKeys(5, 2));
-    ASSERT_FALSE(overlapping);
-    EXPECT_EQ(overlapping.Error(), Status::InvalidParam());
-    ASSERT_EQ(handle.fake->pins.size(), 1);  // the rejected Prepare never reached the store
+    /* A second window may open while the first one is still open: the
+     * store's pins are reference-counted per window. */
+    auto second = handle.entry->PrepareGet("r", MakeKeys(5, 2));
+    ASSERT_TRUE(second);
+    ASSERT_EQ(handle.fake->pins.size(), 2);
     EXPECT_EQ(handle.fake->pins[0], keys);
+    EXPECT_EQ(handle.fake->pins[1], MakeKeys(5, 2));
 }
 
-TEST(StoreEntryTest, PreparePutRejectsOverlappingWindow)
+TEST(StoreEntryTest, PreparePutOpensConcurrentWindows)
 {
     auto handle = MakeEntry(true, true);
     handle.entry->OnNewRequest(MakeContext("r"));
     const std::vector<BlockId> keys = MakeKeys(1, 2);
     ASSERT_TRUE(handle.entry->PreparePut("r", keys));
-    auto overlapping = handle.entry->PreparePut("r", MakeKeys(5, 2));
-    ASSERT_FALSE(overlapping);
-    EXPECT_EQ(overlapping.Error(), Status::InvalidParam());
-    ASSERT_EQ(handle.fake->allocs.size(), 1);
+    auto second = handle.entry->PreparePut("r", MakeKeys(5, 2));
+    ASSERT_TRUE(second);
+    ASSERT_EQ(handle.fake->allocs.size(), 2);
     EXPECT_EQ(handle.fake->allocs[0].first, keys);
+    EXPECT_EQ(handle.fake->allocs[1].first, MakeKeys(5, 2));
+}
+
+TEST(StoreEntryTest, ConcurrentGetWindowsConcludeIndependently)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> firstKeys = MakeKeys(1, 2);
+    const std::vector<BlockId> secondKeys = MakeKeys(5, 3);
+    auto first = handle.entry->PrepareGet("r", firstKeys);
+    auto second = handle.entry->PrepareGet("r", secondKeys);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    /* Concluding the second window leaves the first one's pin held. */
+    handle.entry->CompleteGet("r", second.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 1);
+    EXPECT_EQ(handle.fake->unpins[0], secondKeys);
+    handle.entry->CompleteGet("r", first.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 2);
+    EXPECT_EQ(handle.fake->unpins[1], firstKeys);
+}
+
+TEST(StoreEntryTest, ConcurrentPutWindowsConcludeWithIndependentVerdicts)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> firstKeys = MakeKeys(1, 2);
+    const std::vector<BlockId> secondKeys = MakeKeys(5, 3);
+    auto first = handle.entry->PreparePut("r", firstKeys);
+    auto second = handle.entry->PreparePut("r", secondKeys);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    handle.entry->CompletePut("r", second.Value(), false);
+    ASSERT_EQ(handle.fake->commits.size(), 1);
+    EXPECT_EQ(handle.fake->commits[0].first, secondKeys);
+    EXPECT_FALSE(handle.fake->commits[0].second);
+    handle.entry->CompletePut("r", first.Value(), true);
+    ASSERT_EQ(handle.fake->commits.size(), 2);
+    EXPECT_EQ(handle.fake->commits[1].first, firstKeys);
+    EXPECT_TRUE(handle.fake->commits[1].second);
+}
+
+TEST(StoreEntryTest, IdenticalKeyGetWindowsAreConcludedOneByOne)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    auto first = handle.entry->PrepareGet("r", keys);
+    auto second = handle.entry->PrepareGet("r", keys);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    /* The store reference-counts: one Pin per window, one Unpin per
+     * conclusion, in either order the tokens address. */
+    ASSERT_EQ(handle.fake->pins.size(), 2);
+    handle.entry->CompleteGet("r", second.Value());
+    handle.entry->CompleteGet("r", first.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 2);
+    EXPECT_EQ(handle.fake->unpins[0], keys);
+    EXPECT_EQ(handle.fake->unpins[1], keys);
+}
+
+TEST(StoreEntryTest, OverlappingKeyGetWindowsConcludeIndependently)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    /* {1,2,3} and {3,4,5} share block 3: the shared pin is held until
+     * both windows conclude. */
+    auto first = handle.entry->PrepareGet("r", MakeKeys(1, 3));
+    auto second = handle.entry->PrepareGet("r", MakeKeys(3, 3));
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    handle.entry->CompleteGet("r", first.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 1);
+    EXPECT_EQ(handle.fake->unpins[0], MakeKeys(1, 3));
+    handle.entry->CompleteGet("r", second.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 2);
+    EXPECT_EQ(handle.fake->unpins[1], MakeKeys(3, 3));
+}
+
+TEST(StoreEntryTest, CompleteGetWithUnknownTokenTouchesNoStore)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    auto token = handle.entry->PrepareGet("r", keys);
+    ASSERT_TRUE(token);
+    AddressedToken foreign;
+    foreign.keys = MakeKeys(9, 2);
+    handle.entry->CompleteGet("r", foreign);
+    handle.entry->CompleteGet("missing", token.Value());
+    EXPECT_TRUE(handle.fake->unpins.empty());
+    /* The real window is untouched and still concludes normally. */
+    handle.entry->CompleteGet("r", token.Value());
+    ASSERT_EQ(handle.fake->unpins.size(), 1);
+    EXPECT_EQ(handle.fake->unpins[0], keys);
+}
+
+TEST(StoreEntryTest, OnRequestFinishedDrainsEveryOpenWindow)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    const std::vector<BlockId> firstKeys = MakeKeys(1, 2);
+    const std::vector<BlockId> secondKeys = MakeKeys(5, 2);
+    ASSERT_TRUE(handle.entry->PrepareGet("r", firstKeys));
+    ASSERT_TRUE(handle.entry->PrepareGet("r", secondKeys));
+    ASSERT_TRUE(handle.entry->PreparePut("r", firstKeys));
+    ASSERT_TRUE(handle.entry->PreparePut("r", secondKeys));
+    handle.entry->OnRequestFinished("r");
+    ASSERT_EQ(handle.fake->unpins.size(), 2);
+    EXPECT_EQ(handle.fake->unpins[0], firstKeys);
+    EXPECT_EQ(handle.fake->unpins[1], secondKeys);
+    ASSERT_EQ(handle.fake->commits.size(), 2);
+    EXPECT_EQ(handle.fake->commits[0].first, firstKeys);
+    EXPECT_EQ(handle.fake->commits[1].first, secondKeys);
+    EXPECT_FALSE(handle.fake->commits[0].second);
+    EXPECT_FALSE(handle.fake->commits[1].second);
 }
 
 TEST(StoreEntryTest, PreparePrefetchRejectsOverlappingWindow)
@@ -559,16 +680,20 @@ TEST(StoreEntryTest, WindowReopensAfterComplete)
     auto handle = MakeEntry(true, true);
     handle.entry->OnNewRequest(MakeContext("r"));
     const std::vector<BlockId> keys = MakeKeys(1, 2);
-    ASSERT_TRUE(handle.entry->PrepareGet("r", keys));
-    handle.entry->CompleteGet("r");
-    ASSERT_TRUE(handle.entry->PrepareGet("r", keys));
+    auto firstGet = handle.entry->PrepareGet("r", keys);
+    ASSERT_TRUE(firstGet);
+    handle.entry->CompleteGet("r", firstGet.Value());
+    auto secondGet = handle.entry->PrepareGet("r", keys);
+    ASSERT_TRUE(secondGet);
     EXPECT_EQ(handle.fake->pins.size(), 2);
-    handle.entry->CompleteGet("r");
-    ASSERT_TRUE(handle.entry->PreparePut("r", keys));
-    handle.entry->CompletePut("r", true);
-    ASSERT_TRUE(handle.entry->PreparePut("r", keys));
+    handle.entry->CompleteGet("r", secondGet.Value());
+    auto firstPut = handle.entry->PreparePut("r", keys);
+    ASSERT_TRUE(firstPut);
+    handle.entry->CompletePut("r", firstPut.Value(), true);
+    auto secondPut = handle.entry->PreparePut("r", keys);
+    ASSERT_TRUE(secondPut);
     EXPECT_EQ(handle.fake->allocs.size(), 2);
-    handle.entry->CompletePut("r", true);
+    handle.entry->CompletePut("r", secondPut.Value(), true);
 }
 
 TEST(StoreEntryTest, FailedPrepareDoesNotOpenWindow)
@@ -639,9 +764,10 @@ TEST(StoreEntryTest, CompleteAfterRequestFinishedIsNoOp)
     auto handle = MakeEntry(true, true);
     handle.entry->OnNewRequest(MakeContext("r"));
     const std::vector<BlockId> keys = MakeKeys(1, 2);
-    ASSERT_TRUE(handle.entry->PrepareGet("r", keys));
-    handle.entry->OnRequestFinished("r");  // the teardown already unpinned
-    handle.entry->CompleteGet("r");        // state is gone: silent no-op
+    auto token = handle.entry->PrepareGet("r", keys);
+    ASSERT_TRUE(token);
+    handle.entry->OnRequestFinished("r");           // the teardown already unpinned
+    handle.entry->CompleteGet("r", token.Value());  // state is gone: silent no-op
     ASSERT_EQ(handle.fake->unpins.size(), 1);
 }
 
