@@ -6,13 +6,21 @@ dist/
 .vscode/
 .superpowers/
 mock/
+!vllm-uc/agent/mock/
+!vllm-uc/agent/mock/KVClientAgent.c
+!vllm-uc/agent/mock/KVClientAgent.h
 
 # Vendor binaries and generated libraries
 *.so
+*.so.*
 vllm/NDS_lib/
 vllm/NDS_bin/
+vllm-uc/NDS_bin/
+vllm-uc/agent/release/*.so*
+_pynds_kv_native/*.so*
 
 # Site-specific configuration and credentials
 nds_config.conf
 conf/agent.conf
+vllm-uc/conf/nds_config.conf
 log/
