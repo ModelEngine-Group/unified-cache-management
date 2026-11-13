@@ -23,9 +23,6 @@ from vllm.distributed.ec_transfer.ec_connector.base import (
     ECConnectorMetadata,
     ECConnectorRole,
 )
-from vllm.distributed.ec_transfer.ec_connector.cpu.common import (
-    _get_encoder_cache_hidden_dim,
-)
 from vllm.distributed.parallel_state import (
     get_pcp_group,
     get_pp_group,
@@ -62,6 +59,8 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+_EPD_LOOKUP_INTERVAL_S = 0.01
+
 
 class EncoderCacheLayoutError(ValueError):
     """Raised when scheduler and worker cannot share one fixed EC layout."""
@@ -90,8 +89,12 @@ class EncoderCacheLayout:
 class RequestState:
     processed_feature_count: int = 0
     identifier_states: dict[str, IdentifierState] = field(default_factory=dict)
-    # Items whose external hits were verified for this request.
+    # Store hits in ordinary mode; external load selections in EPD mode.
     hit_identifiers: set[str] = field(default_factory=set)
+    # Request-local positive lookup snapshots, not retained or loaded EC items.
+    store_visible_identifiers: set[str] = field(default_factory=set)
+    store_wait_started_at: float | None = None
+    next_lookup_at: float = 0.0
 
 
 @dataclass(slots=True)
@@ -119,6 +122,66 @@ class PendingECSave:
 @dataclass
 class UCMECConnectorMetadata(ECConnectorMetadata):
     loads: dict[str, ECLoadSpec] = field(default_factory=dict)
+    save_identifiers: tuple[str, ...] = ()
+
+
+def _positive_int(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return value
+
+
+def _configured_encoder_width(model: Any) -> int:
+    # Preserve the old CPU connector helper's rule without importing its
+    # removed private symbol. Do not substitute the LM hidden_size directly.
+    vision = getattr(getattr(model, "hf_config", None), "vision_config", None)
+    layers = getattr(vision, "deepstack_visual_indexes", None)
+    output_width = getattr(vision, "out_hidden_size", None)
+    if layers and output_width is not None:
+        return _positive_int("vision out_hidden_size", output_width) * (1 + len(layers))
+    return _positive_int(
+        "encoder input embedding width", model.get_inputs_embeds_size()
+    )
+
+
+def resolve_encoder_cache_width(vllm_config: Any, encoder_config: dict) -> int:
+    """Validate the fixed layout against measured widths when available.
+
+    Measurements can be absent on consumers and on workers initialized before
+    the producer's profiling RPC. Fixed-layout deployments must use compatible
+    model configs (or an explicit width) on both sides. A measurement must not
+    silently change the scheduler's layout after workers opened their Store.
+    Validate actual tensors at the existing save boundary as well.
+    """
+    explicit = encoder_config.get("encoder_cache_hidden_dim")
+    if explicit is not None:
+        configured = _positive_int("encoder_cache_hidden_dim", explicit)
+    else:
+        configured = _configured_encoder_width(vllm_config.model_config)
+
+    transfer = getattr(vllm_config, "ec_transfer_config", None)
+    measured = getattr(transfer, "mm_encoder_output_widths", None)
+    if measured is not None and not isinstance(measured, dict):
+        raise ValueError("mm_encoder_output_widths must be a mapping.")
+    if measured:
+        widths = {
+            _positive_int(f"encoder output width for {modality}", width)
+            for modality, width in measured.items()
+        }
+        if len(widths) != 1:
+            raise ValueError(
+                "UCM EC requires one fixed encoder output width across modalities; "
+                f"got {measured!r}."
+            )
+        width = widths.pop()
+        if configured != width:
+            raise ValueError(
+                f"Configured/inferred EC width={configured} disagrees with measured "
+                f"encoder output width={width}. Set encoder_cache_hidden_dim={width} "
+                "consistently on E and PD before starting their workers."
+            )
+        return width
+    return configured
 
 
 def resolve_encoder_cache_layout(
@@ -126,17 +189,10 @@ def resolve_encoder_cache_layout(
     encoder_config: dict[str, Any],
 ) -> EncoderCacheLayout:
     model_config = vllm_config.model_config
-    width = encoder_config.get("encoder_cache_hidden_dim")
-    if width is None:
-        # vLLM's canonical rule: out_hidden_size only counts when deepstack
-        # features are concatenated into the cached tensor; a bare
-        # out_hidden_size does not widen the post-merger EC entry.
-        width = _get_encoder_cache_hidden_dim(vllm_config)
-    width = int(width)
-    if width <= 0:
-        raise EncoderCacheLayoutError(
-            f"Encoder-cache width must be positive, got {width}."
-        )
+    try:
+        width = resolve_encoder_cache_width(vllm_config, encoder_config)
+    except ValueError as exc:
+        raise EncoderCacheLayoutError(str(exc)) from exc
 
     dtype = model_config.dtype
     element_size = int(dtype.itemsize)
@@ -349,6 +405,21 @@ class UCMECConnector(ECConnectorBase):
             raise EncoderCacheLayoutError("UCM EC does not support multimodal pruning.")
 
         ec_config = Config.load_ec_config(vllm_config.ec_transfer_config)
+        encoder_config = ec_config["encoder_cache_config"]
+        self.layout = resolve_encoder_cache_layout(vllm_config, encoder_config)
+        self.enable_epd_disaggregate = encoder_config.get(
+            "enable_epd_disaggregate", False
+        )
+        self.epd_timeout_ms = encoder_config.get("epd_timeout_ms", 30000)
+        self._metadata_resolver = None
+        if self.enable_epd_disaggregate and self.is_producer:
+            from vllm.distributed.ec_transfer.ec_connector.utils import (
+                PlaceholderMetadataResolver,
+            )
+
+            self._metadata_resolver = PlaceholderMetadataResolver(
+                vllm_config.model_config
+            )
         # These device-facing stages enqueue prerequisite waits on their copy
         # stream or transfer worker. Dram and Delegator wait inside Dump;
         # other stages may ignore the event entirely. Reject before opening
@@ -363,12 +434,10 @@ class UCMECConnector(ECConnectorBase):
                 "Cache, Mooncake, or YuanRong first stage that queues "
                 "prerequisite event waits."
             )
-        encoder_config = ec_config["encoder_cache_config"]
         self.enable_event_sync = encoder_config.get("enable_event_sync", True)
         self._block_hasher = RequestHasher(
             meta=build_ec_hash_meta(vllm_config, encoder_config)
         )
-        self.layout = resolve_encoder_cache_layout(vllm_config, encoder_config)
 
         self.device_id = (
             -1 if role == ECConnectorRole.SCHEDULER else get_current_device_id()
@@ -390,7 +459,10 @@ class UCMECConnector(ECConnectorBase):
         self.identifier_to_blocks: dict[str, IdentifierState] = {}
         self.step_verified_hits: set[str] = set()
         self.pending_loads: dict[str, ECLoadSpec] = {}
+        # Finalized load submissions, not worker completion or a pinned HBM cache.
+        self._local_encoder_ids: set[str] = set()
         self._pending_saves: list[PendingECSave] = []
+        self._step_saved_ids: set[str] = set()
         self._save_device = create_device() if role == ECConnectorRole.WORKER else None
 
         self.is_save_rank = False
@@ -421,7 +493,69 @@ class UCMECConnector(ECConnectorBase):
         request: Request,
         num_computed_tokens: int,
     ) -> bool:
-        del num_computed_tokens
+        self._register_encoder_inputs(request)
+        if not (self.enable_epd_disaggregate and self.is_consumer):
+            return True
+        if not request.mm_features:
+            return True
+
+        state = self.req_to_state[request.request_id]
+        pending_ids: dict[str, None] = {}
+        local_occurrences = 0
+        for feature in request.mm_features:
+            if (
+                feature.mm_position.offset + feature.mm_position.length
+                <= num_computed_tokens
+            ):
+                continue
+            identifier = feature.identifier
+            if identifier in self._local_encoder_ids:
+                local_occurrences += 1
+            elif identifier not in state.store_visible_identifiers:
+                pending_ids[identifier] = None
+        if local_occurrences:
+            logger.debug(
+                "EC local cache reuse: request=%s, occurrences=%d",
+                request.request_id,
+                local_occurrences,
+            )
+        # KV coverage may remove a previous miss, even after its wait expired.
+        # Only actual full lookup hits enter the positive snapshot set, so a
+        # rolled-back prefix checks previously skipped items again.
+        if not pending_ids:
+            state.store_wait_started_at = None
+            state.next_lookup_at = 0.0
+            return True
+        now = time.monotonic()
+        if (
+            state.store_wait_started_at is not None
+            and now - state.store_wait_started_at >= self.epd_timeout_ms / 1000
+        ):
+            raise TimeoutError(
+                f"Timed out waiting for encoder cache visibility for "
+                f"request {request.request_id!r}."
+            )
+        if now < state.next_lookup_at:
+            return False
+        if self.store is None:
+            raise RuntimeError("UCM EC store is closed.")
+
+        # A query snapshot only: actual reads still happen after native allocation.
+        # Returning False lets the native scheduler try other requests.
+        for identifier in pending_ids:
+            item = state.identifier_states[identifier]
+            last = self.store.lookup_on_prefix(list(item.chunk_ids))
+            if last != len(item.chunk_ids) - 1:
+                if state.store_wait_started_at is None:
+                    state.store_wait_started_at = now
+                state.next_lookup_at = now + _EPD_LOOKUP_INTERVAL_S
+                return False
+            state.store_visible_identifiers.add(identifier)
+        state.store_wait_started_at = None
+        state.next_lookup_at = 0.0
+        return True
+
+    def _register_encoder_inputs(self, request: Request) -> bool:
         req_id = request.request_id
         request_state = self.req_to_state.get(req_id)
         if request_state is None:
@@ -492,10 +626,13 @@ class UCMECConnector(ECConnectorBase):
         if self.store is None:
             raise RuntimeError("UCM EC store is closed.")
 
-        # Full-item hit: the contiguous present prefix must reach the last
-        # chunk; -1 (nothing present) never matches since len >= 1.
-        last = self.store.lookup_on_prefix(list(state.chunk_ids))
-        hit = last == len(state.chunk_ids) - 1
+        # Ordinary mode requires a full Store hit; EPD is external-only.
+        if self.enable_epd_disaggregate:
+            # EPD is external-only. Never fall back to encoding metadata-only input.
+            hit = True
+        else:
+            last = self.store.lookup_on_prefix(list(state.chunk_ids))
+            hit = last == len(state.chunk_ids) - 1
         if hit:
             self.step_verified_hits.add(identifier)
         return hit
@@ -545,6 +682,16 @@ class UCMECConnector(ECConnectorBase):
                 and identifier not in freed_identifiers
             }
         )
+        if self.enable_epd_disaggregate:
+            if self.is_consumer:
+                # Request-reference release is not physical eviction. Only commit
+                # final loads; cancelled/filtered allocations never enter this set.
+                self._local_encoder_ids.difference_update(freed_identifiers)
+                self._local_encoder_ids.update(metadata.loads)
+            if self.is_producer:
+                metadata.save_identifiers = tuple(
+                    sorted(needed_identifiers - freed_identifiers)
+                )
         self.pending_loads = {}
         self.step_verified_hits.clear()
         return metadata
@@ -553,16 +700,39 @@ class UCMECConnector(ECConnectorBase):
         self,
         request: Request,
     ) -> tuple[bool, dict[str, Any] | None]:
+        transfer_params = None
+        if self.enable_epd_disaggregate and self.is_producer:
+            from vllm.distributed.ec_transfer.ec_connector.utils import (
+                collect_ec_item_metadata,
+            )
+
+            transfer_params = collect_ec_item_metadata(
+                request.mm_features, self._metadata_resolver
+            )
+            # Older 0.30 helpers return only metadata; preserve native values
+            # while supplying occurrence information for the current proxy.
+            for identifier, item in transfer_params.items():
+                indices = [
+                    index
+                    for index, feature in enumerate(request.mm_features)
+                    if feature.identifier == identifier
+                ]
+                item.setdefault("modality", request.mm_features[indices[0]].modality)
+                item.setdefault("item_indices", indices)
+            transfer_params = transfer_params or None
+
         request_state = self.req_to_state.pop(request.request_id, None)
         if request_state is None:
-            return False, None
-
-        # The connector's single per-request hit summary; hits were
-        # accumulated in update_state_after_alloc, so all-miss requests
-        # report a zero here too.
+            return False, transfer_params
         if self.is_consumer:
+            message = (
+                "EC request external load selections: req=%s, mm_items=%d, "
+                "selected_total=%d"
+                if self.enable_epd_disaggregate
+                else "EC request cache hits: req=%s, mm_items=%d, hits_total=%d"
+            )
             logger.info(
-                "EC request cache hits: req=%s, mm_items=%d, hits_total=%d",
+                message,
                 request.request_id,
                 len(request_state.identifier_states),
                 len(request_state.hit_identifiers),
@@ -575,7 +745,7 @@ class UCMECConnector(ECConnectorBase):
             state.request_ref_count -= 1
             if state.request_ref_count <= 0:
                 del self.identifier_to_blocks[identifier]
-        return False, None
+        return False, transfer_params
 
     def _get_load_event_handle(self) -> int:
         if self._save_device is None:
@@ -743,6 +913,33 @@ class UCMECConnector(ECConnectorBase):
                 f"Encoder cache {identifier!r} must be contiguous."
             )
 
+    def start_save_caches(
+        self,
+        encoder_cache: dict[str, torch.Tensor] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        del kwargs
+        if not (self.enable_epd_disaggregate and self.is_producer):
+            return
+        self._step_saved_ids.clear()
+        if not self.is_save_rank or encoder_cache is None:
+            return
+        metadata = self._get_connector_metadata()
+        if not isinstance(metadata, UCMECConnectorMetadata):
+            raise TypeError(
+                "UCMECConnector expected UCMECConnectorMetadata, got "
+                f"{type(metadata).__name__}."
+            )
+        for identifier in metadata.save_identifiers:
+            if identifier in encoder_cache:
+                # Cached outputs do not trigger the runner's new-output save hook.
+                self.save_caches(encoder_cache, identifier)
+        logger.debug(
+            "EC cached saves: candidates=%d, submitted=%d",
+            len(metadata.save_identifiers),
+            len(self._step_saved_ids),
+        )
+
     def save_caches(
         self,
         encoder_cache: dict[str, torch.Tensor],
@@ -751,6 +948,8 @@ class UCMECConnector(ECConnectorBase):
     ) -> None:
         del kwargs
         if not self.is_producer or not self.is_save_rank:
+            return
+        if self.enable_epd_disaggregate and mm_hash in self._step_saved_ids:
             return
         if self.store is None:
             raise RuntimeError("UCM EC store is closed.")
@@ -796,6 +995,8 @@ class UCMECConnector(ECConnectorBase):
             self._pending_saves.append(
                 PendingECSave(mm_hash, task, tensor, tail, event_handle)
             )
+            if self.enable_epd_disaggregate:
+                self._step_saved_ids.add(mm_hash)
             logger.debug(
                 "EC dump item %s: shape=[%d, %d], chunks=%d, tail_rows=%d, "
                 "bytes=%d, submit_ms=%.2f",
@@ -833,13 +1034,18 @@ class UCMECConnector(ECConnectorBase):
         finished_req_ids: set[str],
     ) -> tuple[set[str] | None, set[str] | None]:
         del finished_req_ids
-        self._wait_pending_saves()
+        try:
+            self._wait_pending_saves()
+        finally:
+            self._step_saved_ids.clear()
         return None, None
 
     def shutdown(self) -> None:
         self._wait_pending_saves()
         self.pending_loads.clear()
         self.step_verified_hits.clear()
+        self._local_encoder_ids.clear()
+        self._step_saved_ids.clear()
         self.req_to_state.clear()
         self.identifier_to_blocks.clear()
         self.clear_connector_metadata()

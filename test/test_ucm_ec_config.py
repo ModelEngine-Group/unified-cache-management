@@ -1,11 +1,18 @@
 """EC configuration, state and batched loads; CPU tensors and mocked Store I/O."""
 
+import base64
 import copy
 import ctypes
 import hashlib
+import io
 import json
+import os
+import re
 import tempfile
+import time
 import unittest
+import urllib.error
+import urllib.request
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +21,11 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import torch
 import yaml
+from vllm.multimodal.inputs import PlaceholderRange
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 
 from ucm.integration.vllm import ucm_ec_connector as ec
+from ucm.store.cache.capabilities import cache_core_version
 from ucm.utils import Config
 
 
@@ -185,6 +194,28 @@ class ECConfigTest(unittest.TestCase):
                 self.assertRaises(ec.EncoderCacheLayoutError),
             ):
                 self.layout({"chunk_size": 128, "encoder_cache_hidden_dim": width})
+
+    def test_measured_output_width_controls_layout_and_chunk_keys(self):
+        original = self.hash_connector()
+        self.vllm_config.ec_transfer_config.mm_encoder_output_widths = {"image": 8192}
+        with self.assertRaisesRegex(ec.EncoderCacheLayoutError, "disagrees"):
+            self.hash_connector()
+        measured = self.hash_connector(
+            encoder_config={"encoder_cache_hidden_dim": 8192}
+        )
+        self.assertEqual(measured.layout.width, 8192)
+        self.assertEqual(measured.layout.chunk_bytes, 3 * 8192 * 2)
+        self.assertNotEqual(self.chunk_keys(original), self.chunk_keys(measured))
+        with self.assertRaisesRegex(ec.EncoderCacheLayoutError, "disagrees"):
+            self.layout({"chunk_size": 3, "encoder_cache_hidden_dim": 5120})
+
+    def test_disabled_epd_keeps_ordinary_configuration(self):
+        implicit = self.hash_connector()
+        explicit = self.hash_connector(
+            encoder_config={"enable_epd_disaggregate": False}
+        )
+        self.assertFalse(explicit.enable_epd_disaggregate)
+        self.assertEqual(self.chunk_keys(implicit), self.chunk_keys(explicit))
 
     def test_pruning_is_rejected_without_an_enable_switch(self):
         self.vllm_config.model_config.multimodal_config = SimpleNamespace(
@@ -437,8 +468,9 @@ class ECConfigTest(unittest.TestCase):
 
     def test_shared_buffer_capacity_defaults_and_is_checked(self):
         config = self.create_store()
-        self.assertEqual(config["cache_buffer_capacity_gb"], 128)
-        self.check_shm.assert_called_once_with(128)
+        expected_default = 160 if cache_core_version() else 128
+        self.assertEqual(config["cache_buffer_capacity_gb"], expected_default)
+        self.check_shm.assert_called_once_with(expected_default)
 
         self.config["ucm_connector_config"]["cache_buffer_capacity_gb"] = 32
         config = self.create_store()
@@ -537,10 +569,16 @@ class FakeRequest:
         self.append(*features)
 
     def append(self, *features):
-        self.mm_features.extend(
-            SimpleNamespace(identifier=identifier, rows=rows)
-            for identifier, rows in features
-        )
+        offset = sum(feature.mm_position.length for feature in self.mm_features)
+        for identifier, rows in features:
+            self.mm_features.append(
+                SimpleNamespace(
+                    identifier=identifier,
+                    rows=rows,
+                    mm_position=PlaceholderRange(offset=offset, length=rows),
+                )
+            )
+            offset += rows
 
     def get_num_encoder_embeds(self, index):
         return self.mm_features[index].rows
@@ -549,6 +587,8 @@ class FakeRequest:
 class ECConnectorLoadTest(unittest.TestCase):
     def setUp(self):
         self.connector = ec.UCMECConnector.__new__(ec.UCMECConnector)
+        self.connector.enable_epd_disaggregate = False
+        self.connector._is_producer = False
         self.connector.device = torch.device("cpu")
         self.connector.enable_event_sync = True
         self.connector._save_device = Mock()
@@ -616,6 +656,7 @@ class ECConnectorLoadTest(unittest.TestCase):
             cpu_chunk(address, self.connector.layout).fill_(ord(identifier) + index)
 
     def test_submits_batch_before_waiting_and_publishes_unpadded_tensors(self):
+        self.connector.enable_epd_disaggregate = True
         resident = torch.ones(1, 2)
         self.cache["B"] = resident
         self.connector.start_load_caches(self.cache)
@@ -822,6 +863,7 @@ class ECConnectorLoadTest(unittest.TestCase):
 class ECConnectorSaveTest(unittest.TestCase):
     def setUp(self):
         self.connector = ec.UCMECConnector.__new__(ec.UCMECConnector)
+        self.connector.enable_epd_disaggregate = False
         self.connector.layout = ec.EncoderCacheLayout(
             width=2, dtype=torch.float32, rows_per_chunk=3, chunk_bytes=24
         )
@@ -829,6 +871,8 @@ class ECConnectorSaveTest(unittest.TestCase):
         self.connector.is_save_rank = True
         self.connector._pending_saves = []
         self.connector._save_device = Mock()
+        self.connector._step_saved_ids = set()
+        self.connector._local_encoder_ids = set()
         self.connector._save_device.get_event_handle.side_effect = [11, 12, 13]
         self.connector._block_hasher = ec.RequestHasher(meta="test")
         self.connector.pending_loads = {}
@@ -872,6 +916,72 @@ class ECConnectorSaveTest(unittest.TestCase):
                 ]
             )
         )
+
+    def test_epd_cached_and_new_outputs_share_step_dedup(self):
+        self.connector.enable_epd_disaggregate = True
+        metadata = ec.UCMECConnectorMetadata(save_identifiers=("A", "B", "A"))
+        self.connector.bind_connector_metadata(metadata)
+        cache = {"A": torch.ones(4, 2), "unrelated": torch.ones(3, 2)}
+        self.connector.start_save_caches(cache)
+        self.assertEqual(self.calls, [("dump", 0)])
+        self.assertIs(self.connector._pending_saves[0].tensor, cache["A"])
+
+        cache["B"] = torch.full((3, 2), 2.0)
+        self.connector.save_caches(cache, "B")
+        self.connector.save_caches(cache, "A")
+        self.assertEqual(self.calls, [("dump", 0), ("dump", 1)])
+        self.assertEqual(self.connector._step_saved_ids, {"A", "B"})
+        self.connector.get_finished(set())
+        self.assertFalse(self.connector._step_saved_ids)
+        torch.testing.assert_close(self.completed[0][:4], cache["A"])
+        torch.testing.assert_close(self.completed[1], cache["B"])
+
+        # A later request must submit the same cached tensor again.
+        self.connector.bind_connector_metadata(
+            ec.UCMECConnectorMetadata(save_identifiers=("A",))
+        )
+        self.connector.start_save_caches(cache)
+        self.assertEqual(self.calls[-1], ("dump", 2))
+        self.connector.get_finished(set())
+
+    def test_epd_cached_save_submission_failure_can_retry(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.bind_connector_metadata(
+            ec.UCMECConnectorMetadata(save_identifiers=("A",))
+        )
+        cache = {"A": torch.ones(4, 2)}
+        self.connector.store.dump_data.side_effect = RuntimeError("submit failed")
+        with patch.object(ec.logger, "exception") as logged:
+            self.connector.start_save_caches(cache)
+        logged.assert_called_once()
+        self.assertNotIn("A", self.connector._step_saved_ids)
+        self.connector._save_device.destroy_event_handle.assert_called_once_with(11)
+        self.connector.store.dump_data.side_effect = self.dump
+        self.connector.save_caches(cache, "A")
+        self.assertEqual(self.connector._step_saved_ids, {"A"})
+        self.connector.get_finished(set())
+
+    def test_cached_save_hook_respects_mode_role_rank_and_metadata(self):
+        for epd, producer, writer in (
+            (False, True, True),
+            (True, False, True),
+            (True, True, False),
+        ):
+            with self.subTest(epd=epd, producer=producer, writer=writer):
+                self.setUp()
+                self.connector.enable_epd_disaggregate = epd
+                self.connector._is_producer = producer
+                self.connector.is_save_rank = writer
+                self.connector.bind_connector_metadata(
+                    ec.UCMECConnectorMetadata(save_identifiers=("A",))
+                )
+                self.connector.start_save_caches({"A": torch.ones(3, 2)})
+                self.assertFalse(self.calls)
+        self.setUp()
+        self.connector.enable_epd_disaggregate = True
+        self.connector.bind_connector_metadata(object())
+        with self.assertRaisesRegex(TypeError, "UCMECConnectorMetadata"):
+            self.connector.start_save_caches({})
 
     def test_submits_all_items_before_waiting_and_preserves_padding(self):
         inputs = [
@@ -1106,11 +1216,15 @@ class ECConnectorSaveTest(unittest.TestCase):
 class ECConnectorStateTest(unittest.TestCase):
     def setUp(self):
         self.connector = ec.UCMECConnector.__new__(ec.UCMECConnector)
+        self.connector.enable_epd_disaggregate = False
+        self.connector._is_producer = False
         self.connector.req_to_state = {}
         self.connector.identifier_to_blocks = {}
         self.connector.step_verified_hits = set()
         self.connector.pending_loads = {}
         self.connector._pending_saves = []
+        self.connector._local_encoder_ids = set()
+        self.connector._step_saved_ids = set()
         self.connector._is_consumer = True
         self.connector._connector_metadata = None
         self.connector.layout = ec.EncoderCacheLayout(
@@ -1415,12 +1529,570 @@ class ECConnectorStateTest(unittest.TestCase):
         self.ensure(request)
         self.select_load(request, 1)
         store = self.connector.store
+        self.connector._local_encoder_ids.add("old")
+        self.connector._step_saved_ids.add("old")
         self.connector.shutdown()
         self.assertFalse(self.connector.req_to_state)
         self.assertFalse(self.connector.identifier_to_blocks)
         self.assertFalse(self.connector.pending_loads)
         self.assertFalse(self.connector.step_verified_hits)
+        self.assertFalse(self.connector._local_encoder_ids)
+        self.assertFalse(self.connector._step_saved_ids)
         store.close.assert_called_once()
+
+    def test_epd_local_reuse_survives_request_finish_until_actual_eviction(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 1000
+        first = FakeRequest("first", ("X", 4))
+        self.ensure(first)
+        self.select_load(first)
+        self.assertNotIn("X", self.connector._local_encoder_ids)
+        self.assertEqual(set(self.metadata(first=4).loads), {"X"})
+        self.assertEqual(self.connector._local_encoder_ids, {"X"})
+        self.connector.update_state_after_free(first, 0)
+        self.connector.request_finished(first)
+        self.assertEqual(self.connector._local_encoder_ids, {"X"})
+
+        lookup = self.connector.store.lookup_on_prefix
+        lookup.reset_mock()
+        lookup.side_effect = lambda ids: -1
+        second = FakeRequest("second", ("X", 4))
+        with self.assertLogs(ec.logger, level="DEBUG") as logs:
+            self.ensure(second)
+        self.assertTrue(any("EC local cache reuse" in line for line in logs.output))
+        lookup.assert_not_called()
+        state = self.connector.req_to_state[second.request_id]
+        self.assertFalse(state.store_visible_identifiers)
+
+        self.metadata(freed_mm_hashes=("X",))
+        self.assertFalse(self.connector._local_encoder_ids)
+        self.assertFalse(self.connector.ensure_cache_available(second, 0))
+        lookup.assert_called_once()
+
+    def test_epd_only_final_loads_enter_local_records(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 1000
+        cancelled = FakeRequest("cancelled", ("X", 4))
+        survivor = FakeRequest("survivor", ("Y", 4))
+        evicted = FakeRequest("evicted", ("Z", 4))
+        for request in (cancelled, survivor, evicted):
+            self.ensure(request)
+            self.select_load(request)
+        metadata = self.metadata(
+            freed_mm_hashes=("Z",), cancelled=0, survivor=4, evicted=4
+        )
+        self.assertEqual(set(metadata.loads), {"Y"})
+        self.assertEqual(self.connector._local_encoder_ids, {"Y"})
+        self.assertFalse(metadata.save_identifiers)
+
+    def test_epd_local_and_store_hits_remain_separate_while_waiting(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 1000
+        self.connector._local_encoder_ids.add("local")
+        request = FakeRequest("mixed", ("local", 4), ("stored", 4), ("missing", 4))
+        self.ensure(request)
+        state = self.connector.req_to_state[request.request_id]
+        # Start a fresh visibility observation after computing chunk IDs.
+        state.store_visible_identifiers.clear()
+        ids = {
+            key: list(item.chunk_ids) for key, item in state.identifier_states.items()
+        }
+        lookup = self.connector.store.lookup_on_prefix
+        lookup.reset_mock()
+        lookup.side_effect = lambda blocks: (
+            len(blocks) - 1 if blocks == ids["stored"] else -1
+        )
+        with patch.object(ec.time, "monotonic", return_value=100.0):
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+        self.assertEqual(
+            lookup.call_args_list, [call(ids["stored"]), call(ids["missing"])]
+        )
+        self.assertEqual(state.store_visible_identifiers, {"stored"})
+        self.assertEqual(state.store_wait_started_at, 100.0)
+        with patch.object(ec.time, "monotonic", return_value=100.02):
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+        self.assertEqual(lookup.call_args_list[-1], call(ids["missing"]))
+        self.assertEqual(state.store_wait_started_at, 100.0)
+
+    def test_epd_producer_save_candidates_include_cached_and_shared_media(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector._is_producer = True
+        self.connector._is_consumer = False
+        active = FakeRequest("active", ("cached", 4), ("new", 4), ("cached", 4))
+        shared = FakeRequest("shared", ("cached", 4))
+        cancelled = FakeRequest("cancelled", ("other", 4))
+        for request in (active, shared, cancelled):
+            self.ensure(request)
+        # No allocation callback: all candidates can already be in E HBM.
+        metadata = self.metadata(active=4, shared=4, cancelled=0)
+        self.assertEqual(metadata.save_identifiers, ("cached", "new"))
+        self.assertFalse(metadata.loads)
+        self.assertFalse(self.connector._local_encoder_ids)
+        self.assertEqual(
+            self.metadata(freed_mm_hashes=("cached",), active=4).save_identifiers,
+            ("new",),
+        )
+        self.assertFalse(self.metadata().save_identifiers)
+        self.connector.enable_epd_disaggregate = False
+        self.assertFalse(self.metadata(active=4).save_identifiers)
+
+    def test_epd_visibility_defers_only_missing_requests_and_never_preloads(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 1000
+        waiting = FakeRequest("waiting", ("X", 4))
+        ready = FakeRequest("ready", ("Y", 3))
+        self.connector._register_encoder_inputs(waiting)
+        missing_ids = list(self.connector.identifier_to_blocks["X"].chunk_ids)
+        self.connector.store.lookup_on_prefix.side_effect = lambda ids: (
+            -1 if ids == missing_ids else len(ids) - 1
+        )
+        with patch.object(ec.time, "monotonic", return_value=100.0) as now:
+            self.assertFalse(self.connector.ensure_cache_available(waiting, 0))
+            queries = self.connector.store.lookup_on_prefix.call_count
+            self.assertFalse(self.connector.ensure_cache_available(waiting, 0))
+            self.assertEqual(self.connector.store.lookup_on_prefix.call_count, queries)
+            self.assertTrue(self.connector.ensure_cache_available(ready, 0))
+            self.assertFalse(self.connector.pending_loads)
+
+            # Even if Store changes after the gate, EPD must select external load.
+            self.connector.store.lookup_on_prefix.reset_mock()
+            self.select_load(ready)
+            self.connector.store.lookup_on_prefix.assert_not_called()
+            self.assertEqual(set(self.metadata(ready=3).loads), {"Y"})
+
+            now.return_value = 100.02
+            self.connector.store.lookup_on_prefix.side_effect = lambda ids: len(ids) - 1
+            self.assertTrue(self.connector.ensure_cache_available(waiting, 0))
+            self.connector.store.lookup_on_prefix.reset_mock()
+            self.assertTrue(self.connector.ensure_cache_available(waiting, 2))
+            self.connector.store.lookup_on_prefix.assert_not_called()
+
+    def test_epd_visibility_timeout_does_not_renew_and_append_rechecks(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        request = FakeRequest("request", ("X", 4))
+        self.connector.store.lookup_on_prefix.return_value = -1
+        self.connector.store.lookup_on_prefix.side_effect = None
+        with patch.object(ec.time, "monotonic", return_value=10.0) as now:
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+            now.return_value = 10.02
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+            now.return_value = 10.101
+            with self.assertRaisesRegex(TimeoutError, "request"):
+                self.connector.ensure_cache_available(request, 0)
+        self.connector.request_finished(request)
+        self.assertFalse(self.connector.req_to_state)
+        self.assertFalse(self.connector.identifier_to_blocks)
+
+        request = FakeRequest("append", ("X", 4))
+        self.connector.store.lookup_on_prefix.side_effect = lambda ids: len(ids) - 1
+        with patch.object(ec.time, "monotonic", return_value=20.0) as now:
+            self.assertTrue(self.connector.ensure_cache_available(request, 0))
+            request.append(("Y", 7))
+            self.connector.store.lookup_on_prefix.side_effect = None
+            self.connector.store.lookup_on_prefix.return_value = -1
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+            state = self.connector.req_to_state["append"]
+            self.assertEqual(state.store_visible_identifiers, {"X"})
+            self.assertEqual(state.store_wait_started_at, 20.0)
+            now.return_value = 20.02
+            self.connector.store.lookup_on_prefix.side_effect = lambda ids: len(ids) - 1
+            self.assertTrue(self.connector.ensure_cache_available(request, 0))
+            self.assertEqual(state.store_visible_identifiers, {"X", "Y"})
+            self.assertIsNone(state.store_wait_started_at)
+
+            self.connector.store.lookup_on_prefix.reset_mock()
+            request.append(("Y", 7))
+            self.assertTrue(self.connector.ensure_cache_available(request, 0))
+            self.connector.store.lookup_on_prefix.assert_not_called()
+
+    def test_epd_visibility_kv_coverage_and_rollback(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        lookup = self.connector.store.lookup_on_prefix
+        for elapsed in (0.001, 0.101):
+            with self.subTest(elapsed=elapsed):
+                request = FakeRequest(f"coverage-{elapsed}", ("X", 4), ("Y", 3))
+                self.connector._register_encoder_inputs(request)
+                x_ids = list(self.connector.identifier_to_blocks["X"].chunk_ids)
+                y_ids = list(self.connector.identifier_to_blocks["Y"].chunk_ids)
+                lookup.reset_mock()
+                lookup.side_effect = lambda ids: len(ids) - 1
+                with patch.object(ec.time, "monotonic", return_value=10.0) as now:
+                    # The [0, 4) item is fully covered; the future item is not.
+                    self.assertTrue(self.connector.ensure_cache_available(request, 4))
+                    lookup.assert_called_once_with(y_ids)
+                    state = self.connector.req_to_state[request.request_id]
+                    self.assertEqual(state.store_visible_identifiers, {"Y"})
+
+                    # A rollback into X needs its entire item, even if Y vanished.
+                    lookup.reset_mock()
+                    lookup.side_effect = None
+                    lookup.return_value = -1
+                    self.assertFalse(self.connector.ensure_cache_available(request, 3))
+                    lookup.assert_called_once_with(x_ids)
+                    self.assertEqual(state.store_wait_started_at, 10.0)
+
+                    # Coverage wins over both the throttle and an expired wait.
+                    now.return_value = 10.0 + elapsed
+                    self.assertTrue(self.connector.ensure_cache_available(request, 7))
+                    lookup.assert_called_once_with(x_ids)
+                    self.assertIsNone(state.store_wait_started_at)
+                    self.assertEqual(state.next_lookup_at, 0.0)
+                    self.assertEqual(state.store_visible_identifiers, {"Y"})
+
+                    # Skipping X for KV coverage never marks it as a lookup hit.
+                    self.assertFalse(self.connector.ensure_cache_available(request, 3))
+                    self.assertEqual(lookup.call_args_list, [call(x_ids), call(x_ids)])
+                    self.assertEqual(state.store_wait_started_at, now.return_value)
+                self.connector.request_finished(request)
+
+    def test_epd_visibility_keeps_full_hits_while_other_items_wait(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 1000
+        request = FakeRequest("waiting", ("A", 4), ("A", 4), ("B", 7), ("C", 2))
+        self.connector._register_encoder_inputs(request)
+        ids = {
+            key: list(value.chunk_ids)
+            for key, value in self.connector.identifier_to_blocks.items()
+        }
+        lookup = self.connector.store.lookup_on_prefix
+        lookup.side_effect = lambda blocks: (
+            len(blocks) - 2 if blocks == ids["B"] else len(blocks) - 1
+        )
+        with patch.object(ec.time, "monotonic", return_value=100.0) as now:
+            # First A is covered, but its second occurrence still requires EC.
+            self.assertFalse(self.connector.ensure_cache_available(request, 4))
+            state = self.connector.req_to_state[request.request_id]
+            self.assertEqual(state.store_visible_identifiers, {"A"})
+            self.assertEqual(lookup.call_args_list, [call(ids["A"]), call(ids["B"])])
+            self.assertFalse(self.connector.ensure_cache_available(request, 4))
+            self.assertEqual(lookup.call_count, 2)
+
+            # A may disappear; the request-local positive snapshot is retained.
+            lookup.side_effect = lambda blocks: (
+                -1 if blocks == ids["A"] else len(blocks) - 2
+            )
+            now.return_value = 100.02
+            self.assertFalse(self.connector.ensure_cache_available(request, 4))
+            self.assertEqual(state.store_visible_identifiers, {"A"})
+            self.assertEqual(state.store_wait_started_at, 100.0)
+            self.assertEqual(lookup.call_args_list[-1], call(ids["B"]))
+
+            now.return_value = 100.04
+            lookup.side_effect = lambda blocks: (
+                len(blocks) - 2 if blocks == ids["C"] else len(blocks) - 1
+            )
+            self.assertFalse(self.connector.ensure_cache_available(request, 4))
+            self.assertEqual(state.store_visible_identifiers, {"A", "B"})
+            self.assertEqual(state.store_wait_started_at, 100.0)
+
+            now.return_value = 100.06
+            lookup.side_effect = lambda blocks: len(blocks) - 1
+            self.assertTrue(self.connector.ensure_cache_available(request, 4))
+            self.assertEqual(state.store_visible_identifiers, {"A", "B", "C"})
+            self.assertIsNone(state.store_wait_started_at)
+            self.assertEqual(
+                lookup.call_args_list,
+                [
+                    call(ids["A"]),
+                    call(ids["B"]),
+                    call(ids["B"]),
+                    call(ids["B"]),
+                    call(ids["C"]),
+                    call(ids["C"]),
+                ],
+            )
+
+            # An identical item in another request must perform its own lookup.
+            lookup.reset_mock()
+            lookup.side_effect = None
+            lookup.return_value = -1
+            other = FakeRequest("other", ("A", 4))
+            self.assertFalse(self.connector.ensure_cache_available(other, 0))
+            lookup.assert_called_once_with(ids["A"])
+        self.connector.request_finished(request)
+        self.assertNotIn(request.request_id, self.connector.req_to_state)
+
+    def test_epd_producer_returns_native_metadata_without_consumer_state(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector._is_producer = True
+        self.connector._is_consumer = False
+        resolver = Mock()
+        resolver.fields_for.return_value = {"image_grid_thw"}
+        self.connector._metadata_resolver = resolver
+        request = FakeRequest("encoder", ("image", 4), ("image", 4))
+        for feature in request.mm_features:
+            feature.modality = "image"
+            feature.data = SimpleNamespace(
+                get_data=lambda: {"image_grid_thw": torch.tensor([[1, 2, 2]])}
+            )
+        self.assertFalse(self.connector.req_to_state)
+        delayed, params = self.connector.request_finished(request)
+        self.assertFalse(delayed)
+        self.assertEqual(
+            params,
+            {
+                "image": {
+                    "modality": "image",
+                    "item_indices": [0, 1],
+                    "metadata": {"image_grid_thw": [[1, 2, 2]]},
+                }
+            },
+        )
+
+
+class EncoderWidthTest(unittest.TestCase):
+    def setUp(self):
+        self.model = SimpleNamespace(
+            hf_config=None, get_inputs_embeds_size=Mock(return_value=5120)
+        )
+        self.engine = SimpleNamespace(
+            model_config=self.model, ec_transfer_config=SimpleNamespace()
+        )
+
+    def width(self, options=None):
+        return ec.resolve_encoder_cache_width(self.engine, options or {})
+
+    def test_measured_width_checks_explicit_layout(self):
+        self.engine.ec_transfer_config.mm_encoder_output_widths = {
+            "image": 8192,
+            "video": 8192,
+        }
+        self.assertEqual(self.width({"encoder_cache_hidden_dim": 8192}), 8192)
+        self.model.get_inputs_embeds_size.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            self.width({"encoder_cache_hidden_dim": 5120})
+
+    def test_late_measurement_cannot_silently_change_worker_layout(self):
+        self.assertEqual(self.width(), 5120)
+        self.engine.ec_transfer_config.mm_encoder_output_widths = {"image": 8192}
+        with self.assertRaisesRegex(ValueError, "Set encoder_cache_hidden_dim=8192"):
+            self.width()
+        self.engine.ec_transfer_config.mm_encoder_output_widths = {"image": 5120}
+        self.assertEqual(self.width(), 5120)
+
+    def test_variable_or_invalid_measured_width_is_rejected(self):
+        for measured in (
+            {"image": 8192, "audio": 5120},
+            {"image": 0},
+            {"image": True},
+            {"image": 1.5},
+            [8192],
+            [],
+        ):
+            self.engine.ec_transfer_config.mm_encoder_output_widths = measured
+            with self.subTest(measured=measured), self.assertRaises(ValueError):
+                self.width()
+
+    def test_explicit_width_needs_no_model_guess(self):
+        self.assertEqual(self.width({"encoder_cache_hidden_dim": 4096}), 4096)
+        self.model.get_inputs_embeds_size.assert_not_called()
+        for value in (True, 0, -1, "4096", 1.5):
+            with self.subTest(width=value), self.assertRaises(ValueError):
+                self.width({"encoder_cache_hidden_dim": value})
+
+    def test_legacy_deepstack_layout_without_private_vllm_import(self):
+        vision = SimpleNamespace(
+            out_hidden_size=1024, deepstack_visual_indexes=[1, 3, 5]
+        )
+        self.model.hf_config = SimpleNamespace(vision_config=vision)
+        self.assertEqual(self.width(), 4096)
+        self.model.get_inputs_embeds_size.assert_not_called()
+        for layers in ([], None):
+            vision.deepstack_visual_indexes = layers
+            self.assertEqual(self.width(), 5120)
+        del vision.out_hidden_size
+        vision.deepstack_visual_indexes = [1, 3]
+        self.assertEqual(self.width(), 5120)
+
+
+@unittest.skipUnless(
+    os.getenv("UCM_EPD_PROXY_URL"),
+    "Set UCM_EPD_PROXY_URL for container EPD validation.",
+)
+class EPDEndToEndTest(unittest.TestCase):
+    def test_image_request_and_reuse(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (224, 224), color=(220, 30, 20)).save(image, format="PNG")
+        image_url = (
+            "data:image/png;base64," + base64.b64encode(image.getvalue()).decode()
+        )
+        payload = {
+            "model": os.environ["UCM_EPD_MODEL"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": "Describe the image in one sentence."},
+                    ],
+                }
+            ],
+            "max_tokens": 32,
+            "temperature": 0,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                request = urllib.request.Request(
+                    os.environ["UCM_EPD_PROXY_URL"].rstrip("/")
+                    + "/v1/chat/completions",
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    result = json.load(response)
+                self.assertTrue(result["choices"][0]["message"]["content"])
+                self.assertGreater(result["usage"]["prompt_tokens"], 0)
+
+        if log_dir := os.getenv("UCM_EPD_LOG_DIR"):
+            logs = Path(log_dir)
+            encoder = (logs / "encoder.log").read_text()
+            decoder = (logs / "prefill-decode.log").read_text()
+            proxy = (logs / "proxy.log").read_text()
+            self.assertIn("as metadata references", proxy)
+            saved = set(re.findall(r"EC dump item ([^: ]+):", encoder))
+            loaded = set(re.findall(r"EC load item ([^: ]+):", decoder))
+            self.assertTrue(
+                saved & loaded, "E and PD must transfer the same identifier."
+            )
+            self.assertRegex(
+                encoder, r"EC cached saves: candidates=\d+, submitted=[1-9]"
+            )
+            self.assertIn("EC local cache reuse:", decoder)
+
+
+@unittest.skipUnless(
+    os.getenv("UCM_EPD_DELETE_REPRO_ROOT"),
+    "Set UCM_EPD_DELETE_REPRO_ROOT for the destructive, isolated EPD repro.",
+)
+class EPDSharedStorageDeletionReproTest(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(os.environ["UCM_EPD_DELETE_REPRO_ROOT"]).resolve()
+        marker = self.root / ".epd-delete-repro"
+        self.assertEqual(marker.read_text(), os.environ["UCM_EPD_DELETE_REPRO_TOKEN"])
+        self.backend = (self.root / "shared").resolve()
+        self.assertEqual(self.backend.parent, self.root)
+        config = yaml.safe_load((self.root / "epd.yaml").read_text())
+        configured = config["ucm_ec_connector"]["ucm_connector_config"]
+        self.assertEqual(Path(configured["storage_backends"]).resolve(), self.backend)
+        self.logs = self.root / "logs"
+
+    def payload(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (224, 224), color=(30, 160, 210)).save(image, format="PNG")
+        return {
+            "model": os.environ["UCM_EPD_MODEL"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,"
+                                + base64.b64encode(image.getvalue()).decode()
+                            },
+                        },
+                        {"type": "text", "text": "Name the main color briefly."},
+                    ],
+                }
+            ],
+            "max_tokens": 8,
+            "temperature": 0,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+    def post(self, label):
+        request = urllib.request.Request(
+            os.environ["UCM_EPD_PROXY_URL"].rstrip("/") + "/v1/chat/completions",
+            data=json.dumps(self.payload()).encode(),
+            headers={"Content-Type": "application/json", "x-request-id": label},
+        )
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                status, body = response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            status, body = error.code, error.read().decode()
+        result = {
+            "status": status,
+            "elapsed_s": time.monotonic() - started,
+            "body": body,
+        }
+        (self.root / f"{label}.json").write_text(json.dumps(result, indent=2))
+        print(label, "status=", status, "elapsed_s=", result["elapsed_s"], flush=True)
+        return result
+
+    def cache_files(self):
+        files = []
+        for path in self.backend.rglob("*"):
+            if not path.is_file() or not re.fullmatch(r"[0-9a-f]{32}", path.name):
+                continue
+            self.assertFalse(path.is_symlink())
+            self.assertTrue(path.resolve().is_relative_to(self.backend))
+            files.append(path)
+        return files
+
+    def counters(self):
+        return {
+            "e_dump": (self.logs / "encoder.log").read_text().count("EC dump item "),
+            "pd_load": (self.logs / "prefill-decode.log")
+            .read_text()
+            .count("EC load item "),
+        }
+
+    def test_delete_then_repeat_with_warm_pd(self):
+        self.assertFalse(self.cache_files(), "Use a fresh, dedicated backend.")
+        first = self.post("first")
+        self.assertEqual(first["status"], 200, first)
+        self.assertTrue(first["body"]["choices"][0]["message"]["content"])
+        before = self.counters()
+        self.assertGreater(before["e_dump"], 0)
+        self.assertGreater(before["pd_load"], 0)
+        files = self.cache_files()
+        self.assertTrue(files, "No published EC file to delete.")
+        deleted = [{"path": str(path), "bytes": path.stat().st_size} for path in files]
+        for path in files:
+            path.unlink()
+        self.assertFalse(self.cache_files())
+        second = self.post("second-warm-pd")
+        after = self.counters()
+        (self.root / "warm-observation.json").write_text(
+            json.dumps({"deleted": deleted, "before": before, "after": after}, indent=2)
+        )
+        self.assertEqual(second["status"], 200, second)
+        self.assertTrue(second["body"]["choices"][0]["message"]["content"])
+        self.assertGreater(
+            after["e_dump"], before["e_dump"], "Warm E must submit save."
+        )
+        self.assertEqual(after["pd_load"], before["pd_load"], "PD must reuse local EC.")
+        self.assertFalse(
+            self.cache_files(), "Cache2 READY unexpectedly rewrote backend."
+        )
+
+    def test_replay_after_pd_restart(self):
+        self.assertTrue((self.root / "warm-observation.json").is_file())
+        self.assertTrue((self.root / "pd-restarted.json").is_file())
+        self.assertFalse(self.cache_files())
+        before = self.counters()["e_dump"]
+        result = self.post("third-cold-pd")
+        self.assertEqual(result["status"], 500, result)
+        self.assertIn(
+            "Timed out waiting for encoder cache visibility",
+            (self.logs / "prefill-decode.log").read_text(),
+        )
+        self.assertGreater(
+            self.counters()["e_dump"], before, "Warm E must submit save."
+        )
+        self.assertFalse(self.cache_files())
 
 
 if __name__ == "__main__":
