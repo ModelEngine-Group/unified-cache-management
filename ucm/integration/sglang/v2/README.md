@@ -6,16 +6,21 @@ The first target is GLM-5.2 DSA. This directory is not a runnable linker backend
   The first lookup registers the request and selects a branch. Layerwise Get
   reuses that registration. The load thread submits ahead across layers
   and publishes readiness in layer
-  order. It closes the Get windows before
-  releasing the registrations. Dump queues one full-object Put job per node
-  and publishes results in submission order after Put completes and its window
-  closes. Store offload runs independently: scheduler completion checks and Put
+  order. It closes the Get windows after the load. The request route remains
+  registered until retirement and completion of its queued Puts.
+  Dump groups known pages by their associated request IDs and puts each group
+  through the original request route. Unassociated pages use the default
+  offload request. A node completes after all its Put windows close.
+  Store offload runs independently: scheduler completion checks and Put
   completion wake an instance-level drain on the I/O executor. It admits one
   batch of plans at a time and returns each receipt after execution. Slow or
   failed lower-tier writes do not delay or change node results. Multiple Dump
   jobs can be in flight. Load and Dump wait on device events and prepare
   payloads on separate threads. A shared executor submits and polls Store
   jobs, delivering results by job ID. Device prefetch remains pseudocode.
+- `request_hooks.py`: associates the page-aligned radix insert with its request
+  before SGLang dispatches write-through. Request retirement and abandonment
+  release those associations.
 - `runtime.py`: initializes one StoreAssembler and obtains both Scheduler and
   Worker interfaces. Methods directly forward native arguments and results.
   There are no locks, request/window mirrors, job allocation, completion caches,
@@ -25,7 +30,8 @@ The first target is GLM-5.2 DSA. This directory is not a runnable linker backend
 
 Runtime reads the YAML path from `extra_config["UCM_CONFIG_FILE"]`, as in V1.
 The YAML must contain exactly one `ucm_connectors` entry; its
-`ucm_connector_config` dictionary is passed directly to StoreAssembler.
+`ucm_connector_config` dictionary is passed to StoreAssembler, with
+`llm_role: both` defaulted for each tier that does not specify a role.
 The V1 connector factory/name is not used to create a V2 assembler.
 
 ```yaml

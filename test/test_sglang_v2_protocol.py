@@ -25,7 +25,16 @@ class RuntimeTest(unittest.TestCase):
         self.patch = patch.dict(sys.modules, {"ucm_proxy": self.native})
         self.patch.start()
         self.addCleanup(self.patch.stop)
-        self.config = {"type": "store", "store": "test"}
+        self.config = {
+            "branches": [
+                {
+                    "pipe": [
+                        {"store": "test"},
+                        {"store": "test", "config": {"llm_role": "worker"}},
+                    ]
+                }
+            ]
+        }
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.config_file = Path(directory.name) / "ucm.yaml"
@@ -47,12 +56,23 @@ class RuntimeTest(unittest.TestCase):
         self.native.StoreAssembler.assert_not_called()
 
     def test_one_assembler_provides_both_roles(self):
-        self.native.StoreAssembler.assert_called_once_with(self.config)
+        self.native.StoreAssembler.assert_called_once_with(
+            {
+                "branches": [
+                    {
+                        "pipe": [
+                            {"store": "test", "config": {"llm_role": "both"}},
+                            {"store": "test", "config": {"llm_role": "worker"}},
+                        ]
+                    }
+                ]
+            }
+        )
         self.assertIs(self.runtime.scheduler, self.assembler.get_scheduler.return_value)
         self.assertIs(self.runtime.worker, self.assembler.get_worker.return_value)
 
     def test_scheduler_calls_preserve_arguments_and_results(self):
-        context, keys = object(), b"x" * 16
+        context, keys, token = object(), b"x" * 16, object()
         calls = {
             "on_new_request": (context,),
             "on_request_finished": ("r",),
@@ -61,9 +81,9 @@ class RuntimeTest(unittest.TestCase):
             "lookup_on_reverse": ("r", keys),
             "touch": ("r", keys),
             "prepare_get": ("r", keys),
-            "complete_get": ("r",),
+            "complete_get": ("r", token),
             "prepare_put": ("r", keys),
-            "complete_put": ("r", False),
+            "complete_put": ("r", token, False),
             "prepare_offload": (),
             "complete_offload": (context,),
             "prepare_prefetch": ("r",),

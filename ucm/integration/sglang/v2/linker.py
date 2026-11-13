@@ -1,6 +1,6 @@
 """SGLang direct linker for Store V2.
 
-Lookup and layerwise Get share one Store request registration.
+Lookup, layerwise Get and Put for known pages share a Store request route.
 The first target is GLM-5.2 DSA (KV + indexer in one FA object per logical page).
 """
 
@@ -25,6 +25,7 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 from sglang.srt.runtime_context import get_model
 
 from .device_layout import DsaLayout
+from .request_hooks import install_request_hooks
 from .runtime import Runtime, proxy
 
 
@@ -56,7 +57,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # The assembler has no capability query for prerequisite events.
         self._forward_event_to_store = extra_config.get("forward_event_to_store", False)
         self.runtime = Runtime(extra_config, dump_partitions=self._dump_size)
+        install_request_hooks(type(self))
         self._registered_requests = set()
+        self._request_pages = {}
+        self._page_requests = {}
+        self._pending_puts = {}
+        self._finished_requests = set()
         self._scheduler_lock = Lock()
         self.layer_done_counter = LayerWiseLoadCounter(self.layout.num_layers)
         self._pending_loads = {}
@@ -90,24 +96,58 @@ class UcmDirectLinker(UnifiedCacheLinker):
         expanded = self.layout.expand(transfers)
         if not expanded:
             return []
-        keys = b"".join(self.layout.block_ids(expanded[0].keys))
+        page_keys = expanded[0].keys
+        keys = b"".join(self.layout.block_ids(page_keys))
         with self._scheduler_lock:
-            if rid not in self._registered_requests:
-                context = proxy().RequestContext()
-                context.request_id = rid
-                self.runtime.on_new_request(context)
-                self._registered_requests.add(rid)
+            self._associate_pages(rid, page_keys)
             hits, _prefetchable = self.runtime.lookup(rid, keys)
 
         prefix_pages = next((i for i, hit in enumerate(hits) if not hit), len(hits))
         return list(range(1, prefix_pages + 1))
 
+    def associate_pages(self, rid, keys):
+        with self._scheduler_lock:
+            self._associate_pages(rid, keys)
+
+    def _associate_pages(self, rid, keys):
+        if rid not in self._registered_requests:
+            context = proxy().RequestContext()
+            context.request_id = rid
+            self.runtime.on_new_request(context)
+            self._registered_requests.add(rid)
+        request_pages = self._request_pages.setdefault(rid, set())
+        for key in keys:
+            if key not in request_pages:
+                request_pages.add(key)
+                self._page_requests.setdefault(key, set()).add(rid)
+
     def finish_request(self, rid):
         """Release the route after the caller is done with this Store request."""
         with self._scheduler_lock:
-            if rid in self._registered_requests:
-                self.runtime.on_request_finished(rid)
-                self._registered_requests.remove(rid)
+            for key in self._request_pages.pop(rid, ()):
+                owners = self._page_requests[key]
+                owners.remove(rid)
+                if not owners:
+                    del self._page_requests[key]
+            if self._pending_puts.get(rid):
+                self._finished_requests.add(rid)
+            else:
+                self._close_request(rid)
+
+    def _close_request(self, rid):
+        if rid in self._registered_requests:
+            self.runtime.on_request_finished(rid)
+            self._registered_requests.remove(rid)
+        self._finished_requests.discard(rid)
+
+    def _release_put_request(self, rid):
+        remaining = self._pending_puts[rid] - 1
+        if remaining:
+            self._pending_puts[rid] = remaining
+        else:
+            del self._pending_puts[rid]
+            if rid in self._finished_requests:
+                self._close_request(rid)
 
     def load(self, rid, transfers):
         self._check_open()
@@ -136,15 +176,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         return index
 
-    def _complete_get(self, rid):
+    def _complete_get(self, rid, token):
         with self._scheduler_lock:
-            self.runtime.complete_get(rid)
+            self.runtime.complete_get(rid, token)
 
     def _load_worker(self, index, pending, ready):
         try:
             with ExitStack() as requests:
-                for rid in pending:
-                    requests.callback(self.finish_request, rid)
                 indices_ready, *forward_events = ready.events
                 indices_ready.synchronize()
                 context = proxy().IoContext()
@@ -154,7 +192,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     block_ids = self.layout.block_ids(pages.keys)
                     with self._scheduler_lock:
                         token = self.runtime.prepare_get(rid, b"".join(block_ids))
-                    requests.callback(self._complete_get, rid)
+                    requests.callback(self._complete_get, rid, token)
                     if tuple(key.to_bytes() for key in token.keys) != block_ids:
                         raise RuntimeError(
                             f"Store Get token does not match the requested pages for {rid}"
@@ -248,7 +286,22 @@ class UcmDirectLinker(UnifiedCacheLinker):
             return True
         ready = self.record_transfer_ready()
         result = Future()
-        self._dump_executor.submit(self._submit_offload, expanded, ready, result)
+        pages_by_request = {}
+        with self._scheduler_lock:
+            for index, key in enumerate(expanded[0].keys):
+                for rid in sorted(self._page_requests.get(key, ())):
+                    pages_by_request.setdefault(rid, []).append(index)
+            for rid in pages_by_request:
+                self._pending_puts[rid] = self._pending_puts.get(rid, 0) + 1
+        try:
+            self._dump_executor.submit(
+                self._submit_offloads, expanded, ready, result, pages_by_request
+            )
+        except Exception:
+            with self._scheduler_lock:
+                for rid in pages_by_request:
+                    self._release_put_request(rid)
+            raise
         self._offload_results.append(result)
         return True
 
@@ -279,8 +332,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return tuple(selected)
 
-    def _submit_offload(self, transfers, ready, result):
-        rid = f"ucm-offload:{uuid4().hex}"
+    def _submit_offloads(self, transfers, ready, result, pages_by_request):
         try:
             indices_ready, *forward_events = ready.events
             indices_ready.synchronize()
@@ -289,11 +341,53 @@ class UcmDirectLinker(UnifiedCacheLinker):
             payloads = pages.payloads()
             context = proxy().IoContext()
             self._apply_forward_dependency(context, forward_events)
-
-            request = proxy().RequestContext()
-            request.request_id = rid
+        except Exception:
+            logger.exception("UCM V2 offload preparation failed")
             with self._scheduler_lock:
-                self.runtime.on_new_request(request)
+                for rid in pages_by_request:
+                    self._release_put_request(rid)
+            result.set_result(False)
+            return
+
+        covered = {index for indices in pages_by_request.values() for index in indices}
+        writes = list(pages_by_request.items())
+        unmatched = [index for index in range(len(block_ids)) if index not in covered]
+        if unmatched:
+            writes.append((None, unmatched))
+        remaining = len(writes)
+        success = True
+        completion_lock = Lock()
+
+        def finish_node(write):
+            nonlocal remaining, success
+            with completion_lock:
+                success &= write.result()
+                remaining -= 1
+                if remaining == 0:
+                    result.set_result(success)
+
+        for rid, indices in writes:
+            write = Future()
+            write.add_done_callback(finish_node)
+            self._submit_offload(
+                rid,
+                tuple(block_ids[i] for i in indices),
+                [payloads[i] for i in indices],
+                context,
+                (pages, ready),
+                write,
+            )
+
+    def _submit_offload(self, rid, block_ids, payloads, context, resources, result):
+        temporary = rid is None
+        if temporary:
+            rid = f"ucm-offload:{uuid4().hex}"
+        try:
+            if temporary:
+                request = proxy().RequestContext()
+                request.request_id = rid
+                with self._scheduler_lock:
+                    self.runtime.on_new_request(request)
             try:
                 with self._scheduler_lock:
                     token = self.runtime.prepare_put(rid, b"".join(block_ids))
@@ -303,7 +397,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     completion = Future()
                     completion.add_done_callback(
                         lambda done: self._control_executor.submit(
-                            self._finish_offload, rid, result, done.result()
+                            self._finish_offload,
+                            rid,
+                            token,
+                            result,
+                            done.result(),
+                            temporary,
                         )
                     )
                     # Keep the pages and events in the in-flight record.
@@ -314,28 +413,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         payloads,
                         token,
                         context,
-                        resources=(pages, ready),
+                        resources=resources,
                     ).result()
                 except Exception:
                     with self._scheduler_lock:
-                        self.runtime.complete_put(rid, False)
+                        self.runtime.complete_put(rid, token, False)
                     raise
             except Exception:
                 with self._scheduler_lock:
-                    self.runtime.on_request_finished(rid)
+                    if temporary:
+                        self.runtime.on_request_finished(rid)
                 raise
         except Exception:
             logger.exception("UCM V2 offload submission failed for %s", rid)
+            if not temporary:
+                with self._scheduler_lock:
+                    self._release_put_request(rid)
             result.set_result(False)
             return
 
-    def _finish_offload(self, rid, result, success):
+    def _finish_offload(self, rid, token, result, success, temporary):
         try:
             with self._scheduler_lock:
                 try:
-                    self.runtime.complete_put(rid, success)
+                    self.runtime.complete_put(rid, token, success)
                 finally:
-                    self.runtime.on_request_finished(rid)
+                    if temporary:
+                        self.runtime.on_request_finished(rid)
+                    else:
+                        self._release_put_request(rid)
         except Exception:
             logger.exception("UCM V2 offload cleanup failed for %s", rid)
             result.set_result(False)

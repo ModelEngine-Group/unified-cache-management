@@ -42,6 +42,9 @@ def load_linker():
         keys=("page",), payloads=lambda: [object()]
     )
     modules["v2_offload_test.device_layout"].DsaLayout = lambda *args: layout
+    modules["v2_offload_test.request_hooks"] = types.SimpleNamespace(
+        install_request_hooks=lambda linker_type: None
+    )
     modules["v2_offload_test.runtime"].Runtime = lambda config, **kwargs: config["runtime"]
     modules["v2_offload_test.runtime"].proxy = lambda: types.SimpleNamespace(
         RequestContext=types.SimpleNamespace,
@@ -63,6 +66,7 @@ class Store:
         self.lock = Lock()
         self.batches = deque()
         self.commits = []
+        self.put_tokens = {}
         self.finished_requests = []
         self.active = set()
         self.rejected = set()
@@ -73,12 +77,19 @@ class Store:
     def on_new_request(self, context):
         pass
 
+    def lookup(self, rid, keys):
+        return [True], False
+
     def prepare_put(self, rid, keys):
-        return types.SimpleNamespace(
+        token = types.SimpleNamespace(
             keys=[types.SimpleNamespace(to_bytes=lambda: keys)]
         )
+        self.put_tokens[rid] = token
+        return token
 
-    def complete_put(self, rid, success):
+    def complete_put(self, rid, token, success):
+        if self.put_tokens.pop(rid) is not token:
+            raise AssertionError("CompletePut must use the PreparePut token")
         self.commits.append((rid, success))
 
     def on_request_finished(self, rid):
@@ -168,10 +179,27 @@ class OffloadTest(unittest.TestCase):
         return job_id, plan
 
     def put(self):
-        self.assertTrue(self.linker.offload((object(),)))
+        self.assertTrue(
+            self.linker.offload((types.SimpleNamespace(keys=("page",)),))
+        )
         job_id, _ = self.next_job("put")
         node = self.linker._offload_results[-1]
         return job_id, node
+
+    def test_dump_uses_each_lookup_request_and_holds_its_route_until_commit(self):
+        transfers = (types.SimpleNamespace(keys=("page",)),)
+        for rid in ("a", "b"):
+            self.assertEqual(self.linker.lookup(rid, transfers), [1])
+        first, node = self.put()
+        second, _ = self.next_job("put")
+        self.linker.finish_request("a")
+        self.linker.finish_request("b")
+        self.assertEqual(self.store.finished_requests, [])
+        self.store.finish(first)
+        self.store.finish(second)
+        self.assertTrue(node.result(timeout=2))
+        self.assertCountEqual(self.store.commits, [("a", True), ("b", True)])
+        self.assertCountEqual(self.store.finished_requests, ["a", "b"])
 
     def test_slow_foreign_plan_does_not_delay_or_fail_nodes(self):
         self.store.add_plans("other-node/other-branch")
@@ -235,11 +263,11 @@ class OffloadTest(unittest.TestCase):
         release = Event()
         complete_put = self.store.complete_put
 
-        def slow_commit(rid, success):
+        def slow_commit(rid, token, success):
             entered.set()
             if not release.wait(timeout=5):
                 raise TimeoutError("test did not release Put commit")
-            complete_put(rid, success)
+            complete_put(rid, token, success)
 
         self.store.complete_put = slow_commit
         put_id, node = self.put()

@@ -45,6 +45,17 @@ class Runtime:
                 "independent Put requests cannot guarantee that all pages "
                 "of a node are routed to the same branch."
             )
+        if isinstance(branches, list):
+            for branch in branches:
+                pipe = branch.get("pipe") if isinstance(branch, dict) else None
+                if isinstance(pipe, list):
+                    for tier in pipe:
+                        if isinstance(tier, dict):
+                            # Set the default per tier: the assembler rejects
+                            # collisions between runtime and tier config keys.
+                            options = tier.setdefault("config", {})
+                            if isinstance(options, dict):
+                                options.setdefault("llm_role", "both")
         self.assembler = proxy().StoreAssembler(config)
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()
@@ -70,14 +81,14 @@ class Runtime:
     def prepare_get(self, request_id, keys):
         return self.scheduler.prepare_get(request_id, keys)
 
-    def complete_get(self, request_id):
-        return self.scheduler.complete_get(request_id)
+    def complete_get(self, request_id, token):
+        return self.scheduler.complete_get(request_id, token)
 
     def prepare_put(self, request_id, keys):
         return self.scheduler.prepare_put(request_id, keys)
 
-    def complete_put(self, request_id, success):
-        return self.scheduler.complete_put(request_id, success)
+    def complete_put(self, request_id, token, success):
+        return self.scheduler.complete_put(request_id, token, success)
 
     def prepare_offload(self):
         return self.scheduler.prepare_offload()
