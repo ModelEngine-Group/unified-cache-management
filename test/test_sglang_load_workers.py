@@ -129,6 +129,7 @@ class LoadWorkerTest(unittest.TestCase):
 
     def test_prefetch_entry_records_dependencies_and_rejects_unavailable_worker(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj.num_layers = 4
         obj._closed = False
         obj._load_thread = types.SimpleNamespace(is_alive=lambda: True)
         obj._load_queue = queue.Queue()
