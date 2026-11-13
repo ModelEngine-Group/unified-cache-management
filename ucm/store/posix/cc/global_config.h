@@ -40,7 +40,7 @@ struct Config {
     std::string ioEngine{"psync"};  // "aio", "psync"
     bool ioDirect{true};
     size_t aioQueueDepth{1024};
-    size_t loadHandleCacheSize{8192};
+    size_t loadHandleCacheSize{0};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t dataTransConcurrency{128};
     size_t lookupConcurrency{16};
