@@ -2227,12 +2227,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.is_v41_layout and any(
-            request.load_keys for request in metadata.request_meta.values()
-        ):
+        if any(request.load_keys for request in metadata.request_meta.values()):
             # Finish pending KV page writes before the store starts its H2D copies.
             self.device.synchronize()
-            logger.info_once("V4.1 compute stream synchronized before external KV load")
+            logger.info_once("Device synchronized before FAWA external KV load")
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():

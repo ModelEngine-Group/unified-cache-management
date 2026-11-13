@@ -452,7 +452,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     _wait_all_load_task=lambda tasks: events.append(tuple(tasks)),
                 )
                 methods["start_load_kv"](connector, None)
-                expected = ["sync"] if is_v41 and has_hit else []
+                expected = ["sync"] if has_hit else []
                 if has_hit:
                     labels = ["FA", "WA"] if has_window else ["FA"]
                     expected.extend([*labels, tuple(labels)])
