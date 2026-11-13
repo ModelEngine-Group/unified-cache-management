@@ -2994,7 +2994,28 @@ class DeferredLoadWaits:
         return future
 
 
-def _async_fawa_worker(has_window=True):
+class RecordingEventDevice:
+    """NPU device stub tracking event create/destroy and synchronize calls."""
+
+    def __init__(self):
+        self.created = []
+        self.destroyed = []
+        self.syncs = 0
+        self._next_handle = 100
+
+    def synchronize(self):
+        self.syncs += 1
+
+    def get_event_handle(self):
+        self._next_handle += 1
+        self.created.append(self._next_handle)
+        return self._next_handle
+
+    def destroy_event_handle(self, event_handle):
+        self.destroyed.append(event_handle)
+
+
+def _async_fawa_worker(has_window=True, load_async=True):
     from ucm.integration.vllm.hma_connector import (
         FAWARequestDispatchMeta,
         UCMFAWAConnector,
@@ -3005,7 +3026,8 @@ def _async_fawa_worker(has_window=True):
     connector = object.__new__(UCMFAWAConnector)
     connector.is_v41_layout = True
     connector.is_mla = False
-    connector.device = SimpleNamespace(synchronize=Mock())
+    connector.enable_event_sync = True
+    connector.device = RecordingEventDevice()
     connector.fa_store = SimpleNamespace(
         wait=Mock(), load_data=Mock(return_value=object())
     )
@@ -3033,7 +3055,7 @@ def _async_fawa_worker(has_window=True):
                 load_keys=[b"a", b"b"],
                 load_hash_end=2,
                 load_vllm_block_ids=([10, 11], [10]) if has_window else ([10, 11],),
-                load_async=True,
+                load_async=load_async,
             )
         }
     )
@@ -3096,6 +3118,70 @@ def test_fawa_async_load_drains_before_releasing_cancelled_request(has_window, f
         assert fake_ucmmetrics.updated == [
             {"load_bytes_total": 240 if has_window else 200}
         ]
+
+
+def test_fawa_async_load_events_outlive_start_load_kv():
+    """Async task events must survive until each store wait drains."""
+    connector = _async_fawa_worker(has_window=True)
+    connector.start_load_kv(None)
+
+    # Waits still pending: nothing released, one shared event per request.
+    assert connector.device.destroyed == []
+    assert len(connector.device.created) == 1
+    pending = connector._pending_fawa_loads["req"]
+    assert pending.event_handle == connector.device.created[0]
+
+    # One wait drains: the request's event stays for the other task.
+    futures = list(connector._load_wait_executor.futures.values())
+    futures[0].set_result(None)
+    assert connector.get_finished(set()) == (None, None)
+    assert connector.device.destroyed == []
+
+    # The last wait drains: the request's event is released exactly once.
+    futures[1].set_result(None)
+    assert connector.get_finished(set()) == (None, {"req"})
+    assert connector.device.destroyed == connector.device.created
+    assert not connector._pending_fawa_loads
+
+
+def test_fawa_async_load_event_released_when_wait_fails():
+    connector = _async_fawa_worker(has_window=False)
+    connector.start_load_kv(None)
+    assert connector.device.destroyed == []
+    future = next(iter(connector._load_wait_executor.futures.values()))
+    future.set_exception(RuntimeError("DMA failed"))
+    result = connector.get_transfer_results(set())
+    assert result.failed_recving == {"req"}
+    assert connector.device.destroyed == connector.device.created
+
+
+def test_fawa_async_load_event_released_when_submit_fails():
+    connector = _async_fawa_worker(has_window=True)
+    connector.fa_store.load_data.side_effect = RuntimeError("submit failed")
+    connector.start_load_kv(None)
+    # Never submitted: the owned event is released immediately.
+    assert connector.device.destroyed == connector.device.created
+    assert len(connector.device.created) == 1
+    assert connector._failed_fawa_loads == {"req"}
+
+
+def test_fawa_sync_load_event_released_after_wait():
+    """Sync loads share one step event: passed to the stores, destroyed after the wait."""
+    _reset_fakes()
+    connector = _async_fawa_worker(has_window=True, load_async=False)
+    connector.start_load_kv(None)
+
+    # One shared event reached both stores as the prerequisite handle.
+    assert len(connector.device.created) == 1
+    handle = connector.device.created[0]
+    fa_kwargs = connector.fa_store.load_data.call_args.kwargs
+    wa_kwargs = connector.wa_store.load_data.call_args.kwargs
+    assert fa_kwargs["prerequisite_handle"] == handle
+    assert wa_kwargs["prerequisite_handle"] == handle
+
+    # Drained inside the call: the shared event is destroyed exactly once.
+    assert connector.device.destroyed == [handle]
+    assert not connector._pending_fawa_loads
 
 
 def test_fawa_background_wait_times_out_but_keeps_hbm_until_both_tasks_drain():
@@ -3266,7 +3352,7 @@ def test_fawa_records_submitted_save_bytes():
     connector.file_size = {"FA": 100, "WA": 40}
     connector._extract_fa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
     connector._extract_wa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
-    connector._get_dump_event_handle = lambda: 7
+    connector._get_event_handle = lambda: 7
     connector._submit_dump_task = (
         lambda label, store, keys, ptrs, event_handle, block_ids_by_request: (
             FAWADumpTask(label, store, object(), len(keys), event_handle)

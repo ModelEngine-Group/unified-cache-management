@@ -62,9 +62,10 @@ Status LoadHandleCache::Setup(size_t capacity, bool ioDirect)
 }
 
 LoadHandleCache::BorrowedFd LoadHandleCache::GetOrOpen(const Detail::BlockId& id,
-                                                       const std::string& path)
+                                                       size_t backendIndex, const std::string& path)
 {
-    auto hit = OptimisticGet(id);
+    const Key key{id, backendIndex};
+    auto hit = OptimisticGet(key);
     if (hit.Valid()) {
         RecordHit();
         return hit;
@@ -80,7 +81,7 @@ LoadHandleCache::BorrowedFd LoadHandleCache::GetOrOpen(const Detail::BlockId& id
 #endif
     if (fd < 0) { return MakeBorrowed(-1, errno, false, kInvalidSlot); }
     if (slots_.empty()) { return MakeBorrowed(fd, 0, false, kInvalidSlot); }
-    auto inserted = TryInsert(id, fd);
+    auto inserted = TryInsert(key, fd);
     if (!inserted.Cached()) { RecordBypass(); }
     return inserted;
 }
@@ -113,13 +114,13 @@ void LoadHandleCache::CloseAll()
         if (slot.fd >= 0) {
             CloseFd(slot.fd);
             slot.fd = -1;
-            slot.id = {};
+            slot.key = {};
         }
         ReleaseWriter(i);
     }
 }
 
-bool LoadHandleCache::TryPinReader(uint32_t slotIdx, const Detail::BlockId& id)
+bool LoadHandleCache::TryPinReader(uint32_t slotIdx, const Key& key)
 {
     auto& slot = slots_[slotIdx];
     for (;;) {
@@ -131,7 +132,7 @@ bool LoadHandleCache::TryPinReader(uint32_t slotIdx, const Detail::BlockId& id)
         }
         break;
     }
-    if (slot.fd < 0 || slot.id != id) {
+    if (slot.fd < 0 || !(slot.key == key)) {
         UnpinReader(slotIdx);
         return false;
     }
@@ -155,28 +156,28 @@ void LoadHandleCache::ReleaseWriter(uint32_t slotIdx)
     slots_[slotIdx].pin.store(0, std::memory_order_release);
 }
 
-LoadHandleCache::BorrowedFd LoadHandleCache::OptimisticGet(const Detail::BlockId& id)
+LoadHandleCache::BorrowedFd LoadHandleCache::OptimisticGet(const Key& key)
 {
     uint32_t slot = kInvalidSlot;
     {
         std::shared_lock<std::shared_mutex> lock(indexMutex_);
-        auto it = index_.find(id);
+        auto it = index_.find(key);
         if (it == index_.end()) { return {}; }
         slot = it->second;
     }
     if (slot >= slots_.size()) { return {}; }
-    if (!TryPinReader(slot, id)) { return {}; }
+    if (!TryPinReader(slot, key)) { return {}; }
     return MakeBorrowed(slots_[slot].fd, 0, true, slot);
 }
 
-LoadHandleCache::BorrowedFd LoadHandleCache::TryInsert(const Detail::BlockId& id, int32_t fd)
+LoadHandleCache::BorrowedFd LoadHandleCache::TryInsert(const Key& key, int32_t fd)
 {
     {
         std::shared_lock<std::shared_mutex> lock(indexMutex_);
-        auto it = index_.find(id);
+        auto it = index_.find(key);
         if (it != index_.end()) {
             lock.unlock();
-            auto hit = OptimisticGet(id);
+            auto hit = OptimisticGet(key);
             if (hit.Valid()) {
                 CloseFd(fd);
                 return hit;
@@ -195,24 +196,24 @@ LoadHandleCache::BorrowedFd LoadHandleCache::TryInsert(const Detail::BlockId& id
         int32_t closedFd = -1;
         if (!TryOccupyVictim(cur, &closedFd)) { continue; }
         CloseFd(closedFd);
-        slot.id = id;
+        slot.key = key;
         slot.fd = fd;
         {
             std::unique_lock<std::shared_mutex> lock(indexMutex_);
-            auto it = index_.find(id);
+            auto it = index_.find(key);
             if (it != index_.end()) {
                 slot.fd = -1;
-                slot.id = {};
+                slot.key = {};
                 ReleaseWriter(cur);
                 lock.unlock();
-                auto hit = OptimisticGet(id);
+                auto hit = OptimisticGet(key);
                 if (hit.Valid()) {
                     CloseFd(fd);
                     return hit;
                 }
                 return MakeBorrowed(fd, 0, false, kInvalidSlot);
             }
-            index_[id] = cur;
+            index_[key] = cur;
         }
         slot.pin.store(1, std::memory_order_release);
         return MakeBorrowed(fd, 0, true, cur);
@@ -227,12 +228,12 @@ bool LoadHandleCache::TryOccupyVictim(uint32_t slotIdx, int32_t* closedFd)
     if (slot.fd >= 0) {
         {
             std::unique_lock<std::shared_mutex> lock(indexMutex_);
-            auto it = index_.find(slot.id);
+            auto it = index_.find(slot.key);
             if (it != index_.end() && it->second == slotIdx) { index_.erase(it); }
         }
         *closedFd = slot.fd;
         slot.fd = -1;
-        slot.id = {};
+        slot.key = {};
         RecordEvict();
     } else {
         *closedFd = -1;

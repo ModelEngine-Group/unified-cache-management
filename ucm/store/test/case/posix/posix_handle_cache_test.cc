@@ -67,15 +67,34 @@ TEST_F(UCPosixHandleCacheTest, RepeatGetHitsSameFd)
     auto path = MakeFile(Path(), "a.bin");
     int32_t firstFd = -1;
     {
-        auto a = cache.GetOrOpen(id, path);
+        auto a = cache.GetOrOpen(id, 0, path);
         ASSERT_TRUE(a.Valid());
         EXPECT_TRUE(a.Cached());
         firstFd = a.Fd();
     }
-    auto b = cache.GetOrOpen(id, path);
+    auto b = cache.GetOrOpen(id, 0, path);
     ASSERT_TRUE(b.Valid());
     EXPECT_TRUE(b.Cached());
     EXPECT_EQ(b.Fd(), firstFd);
+}
+
+TEST_F(UCPosixHandleCacheTest, SameBlockOnAnotherBackendOpensItsOwnFd)
+{
+    using namespace UC::PosixStore;
+    LoadHandleCache cache;
+    ASSERT_EQ(cache.Setup(8, false), UC::Status::OK());
+    auto id = MakeId(3);
+    auto p0 = MakeFile(Path(), "be0.bin", '0');
+    auto p1 = MakeFile(Path(), "be1.bin", '1');
+    auto a = cache.GetOrOpen(id, 0, p0);
+    auto b = cache.GetOrOpen(id, 1, p1);
+    ASSERT_TRUE(a.Valid());
+    ASSERT_TRUE(b.Valid());
+    EXPECT_TRUE(b.Cached());
+    EXPECT_NE(a.Fd(), b.Fd());
+    char ch = 0;
+    EXPECT_EQ(::pread(b.Fd(), &ch, 1, 0), 1);
+    EXPECT_EQ(ch, '1');
 }
 
 TEST_F(UCPosixHandleCacheTest, CapacityZeroAlwaysUncached)
@@ -85,13 +104,13 @@ TEST_F(UCPosixHandleCacheTest, CapacityZeroAlwaysUncached)
     ASSERT_EQ(cache.Setup(0, false), UC::Status::OK());
     auto id = MakeId(2);
     auto path = MakeFile(Path(), "b.bin");
-    auto a = cache.GetOrOpen(id, path);
+    auto a = cache.GetOrOpen(id, 0, path);
     ASSERT_TRUE(a.Valid());
     EXPECT_FALSE(a.Cached());
     auto first = a.Fd();
     a = {};
     EXPECT_FALSE(FdAlive(first));
-    auto b = cache.GetOrOpen(id, path);
+    auto b = cache.GetOrOpen(id, 0, path);
     ASSERT_TRUE(b.Valid());
     EXPECT_FALSE(b.Cached());
 }
@@ -110,8 +129,8 @@ TEST_F(UCPosixHandleCacheTest, ClockEvictsWhenFull)
     int32_t fd0 = -1;
     int32_t fd1 = -1;
     {
-        auto a = cache.GetOrOpen(id0, p0);
-        auto b = cache.GetOrOpen(id1, p1);
+        auto a = cache.GetOrOpen(id0, 0, p0);
+        auto b = cache.GetOrOpen(id1, 0, p1);
         ASSERT_TRUE(a.Valid());
         ASSERT_TRUE(b.Valid());
         fd0 = a.Fd();
@@ -120,12 +139,12 @@ TEST_F(UCPosixHandleCacheTest, ClockEvictsWhenFull)
     EXPECT_TRUE(FdAlive(fd0));
     EXPECT_TRUE(FdAlive(fd1));
     {
-        auto c = cache.GetOrOpen(id2, p2);
+        auto c = cache.GetOrOpen(id2, 0, p2);
         ASSERT_TRUE(c.Valid());
         EXPECT_TRUE(c.Cached());
     }
     EXPECT_FALSE(FdAlive(fd0) && FdAlive(fd1));
-    auto again = cache.GetOrOpen(id2, p2);
+    auto again = cache.GetOrOpen(id2, 0, p2);
     ASSERT_TRUE(again.Valid());
     EXPECT_TRUE(again.Cached());
 }
@@ -139,11 +158,11 @@ TEST_F(UCPosixHandleCacheTest, PinProtectsFdFromEvict)
     auto id1 = MakeId(21);
     auto p0 = MakeFile(Path(), "p0.bin", 'X');
     auto p1 = MakeFile(Path(), "p1.bin", 'Y');
-    auto held = cache.GetOrOpen(id0, p0);
+    auto held = cache.GetOrOpen(id0, 0, p0);
     ASSERT_TRUE(held.Valid());
     auto heldFd = held.Fd();
     ASSERT_TRUE(FdAlive(heldFd));
-    auto other = cache.GetOrOpen(id1, p1);
+    auto other = cache.GetOrOpen(id1, 0, p1);
     ASSERT_TRUE(other.Valid());
     EXPECT_TRUE(FdAlive(heldFd));
     char ch = 0;
@@ -162,7 +181,7 @@ TEST_F(UCPosixHandleCacheTest, ConcurrentGetKeepsFdReadable)
     std::atomic<int> ok{0};
     for (int i = 0; i < 8; ++i) {
         workers.emplace_back([&] {
-            auto borrowed = cache.GetOrOpen(id, path);
+            auto borrowed = cache.GetOrOpen(id, 0, path);
             ASSERT_TRUE(borrowed.Valid());
             char ch = 0;
             EXPECT_EQ(::pread(borrowed.Fd(), &ch, 1, 0), 1);
@@ -180,7 +199,7 @@ TEST_F(UCPosixHandleCacheTest, MissingFileReturnsError)
     LoadHandleCache cache;
     ASSERT_EQ(cache.Setup(4, false), UC::Status::OK());
     auto id = MakeId(60);
-    auto borrowed = cache.GetOrOpen(id, Path() + "no-such.bin");
+    auto borrowed = cache.GetOrOpen(id, 0, Path() + "no-such.bin");
     EXPECT_FALSE(borrowed.Valid());
     EXPECT_EQ(borrowed.Error(), ENOENT);
 }
@@ -190,13 +209,13 @@ TEST_F(UCPosixHandleCacheTest, PinnedSlotSurvivesFullSweep)
     using namespace UC::PosixStore;
     LoadHandleCache cache;
     ASSERT_EQ(cache.Setup(2, false), UC::Status::OK());
-    auto held = cache.GetOrOpen(MakeId(80), MakeFile(Path(), "cas0.bin", 'A'));
+    auto held = cache.GetOrOpen(MakeId(80), 0, MakeFile(Path(), "cas0.bin", 'A'));
     ASSERT_TRUE(held.Valid());
     auto heldFd = held.Fd();
     ASSERT_TRUE(FdAlive(heldFd));
     for (uint8_t i = 0; i < 6; ++i) {
         auto name = std::string("cas") + static_cast<char>('1' + i) + ".bin";
-        auto other = cache.GetOrOpen(MakeId(90 + i), MakeFile(Path(), name.c_str(), 'B'));
+        auto other = cache.GetOrOpen(MakeId(90 + i), 0, MakeFile(Path(), name.c_str(), 'B'));
         ASSERT_TRUE(other.Valid());
     }
     EXPECT_TRUE(FdAlive(heldFd));
@@ -214,7 +233,7 @@ TEST_F(UCPosixHandleCacheTest, CloseAllReleasesLiveFd)
     auto path = MakeFile(Path(), "close.bin", 'K');
     int32_t fd = -1;
     {
-        auto a = cache.GetOrOpen(id, path);
+        auto a = cache.GetOrOpen(id, 0, path);
         ASSERT_TRUE(a.Valid());
         fd = a.Fd();
     }
@@ -234,19 +253,19 @@ TEST_F(UCPosixHandleCacheTest, EvictedSlotIsReopenedOnNextGet)
     auto p1 = MakeFile(Path(), "t1.bin", '1');
     int32_t firstFd = -1;
     {
-        auto a = cache.GetOrOpen(id0, p0);
+        auto a = cache.GetOrOpen(id0, 0, p0);
         ASSERT_TRUE(a.Valid());
         ASSERT_TRUE(a.Cached());
         firstFd = a.Fd();
     }
     EXPECT_TRUE(FdAlive(firstFd));
     {
-        auto b = cache.GetOrOpen(id1, p1);
+        auto b = cache.GetOrOpen(id1, 0, p1);
         ASSERT_TRUE(b.Valid());
         ASSERT_TRUE(b.Cached());
     }
     EXPECT_FALSE(FdAlive(firstFd));
-    auto again = cache.GetOrOpen(id0, p0);
+    auto again = cache.GetOrOpen(id0, 0, p0);
     ASSERT_TRUE(again.Valid());
     EXPECT_TRUE(again.Cached());
     char ch = 0;

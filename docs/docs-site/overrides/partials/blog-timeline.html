@@ -1,0 +1,51 @@
+{% set timeline = ucm_blog_timeline %}
+<div class="ucm-blog-timeline">
+  <button class="ucm-blog-nav-trigger" type="button" data-blog-nav-open aria-label="{{ timeline.nav_label }}">←</button>
+  <div class="ucm-blog-clock-slot">
+    <span class="ucm-blog-clock" aria-hidden="true">
+      <svg viewBox="0 0 200 200" focusable="false">
+        <circle cx="100" cy="100" r="92" fill="none" stroke="currentColor" stroke-width="3" />
+        <g stroke="currentColor" stroke-linecap="round">
+          <line x1="100" y1="10" x2="100" y2="26" stroke-width="5" />
+          <line x1="145" y1="22" x2="141.5" y2="28.5" stroke-width="3" opacity="0.7" />
+          <line x1="177.9" y1="55" x2="171.9" y2="58.5" stroke-width="3" opacity="0.7" />
+          <line x1="190" y1="100" x2="174" y2="100" stroke-width="5" />
+          <line x1="177.9" y1="145" x2="171.9" y2="141.5" stroke-width="3" opacity="0.7" />
+          <line x1="145" y1="177.9" x2="141.5" y2="171.5" stroke-width="3" opacity="0.7" />
+          <line x1="100" y1="190" x2="100" y2="174" stroke-width="5" />
+          <line x1="55" y1="177.9" x2="58.5" y2="171.5" stroke-width="3" opacity="0.7" />
+          <line x1="22.1" y1="145" x2="28.5" y2="141.5" stroke-width="3" opacity="0.7" />
+          <line x1="10" y1="100" x2="26" y2="100" stroke-width="5" />
+          <line x1="22.1" y1="55" x2="28.5" y2="58.5" stroke-width="3" opacity="0.7" />
+          <line x1="55" y1="22" x2="58.5" y2="28.5" stroke-width="3" opacity="0.7" />
+        </g>
+        <line class="ucm-blog-clock__hand ucm-blog-clock__hand--hour" x1="100" y1="100" x2="100" y2="54" stroke="currentColor" stroke-width="6" stroke-linecap="round" />
+        <line class="ucm-blog-clock__hand ucm-blog-clock__hand--minute" x1="100" y1="100" x2="100" y2="30" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" opacity="0.85" />
+        <circle cx="100" cy="100" r="7" fill="currentColor" />
+      </svg>
+    </span>
+  </div>
+  <ol class="ucm-blog-timeline__years">
+    {% for year in timeline.years %}
+      <li class="ucm-blog-timeline__year{% if year.active %} is-active{% endif %}">
+        <span class="ucm-blog-timeline__node" aria-hidden="true"></span>
+        <div class="ucm-blog-timeline__body">
+          <a class="ucm-blog-timeline__year-link" href="{{ timeline.home | url }}#year-{{ year.year }}">
+            <span class="ucm-blog-timeline__year-label">{{ year.year }}</span>
+            <span class="ucm-blog-timeline__count">{{ year.count }}</span>
+          </a>
+          <ul class="ucm-blog-timeline__months">
+            {% for month in year.months %}
+              <li>
+                <a class="{% if month.active %}is-active{% endif %}" href="{{ timeline.home | url }}#month-{{ year.year }}-{{ '%02d' | format(month.month) }}">
+                  <span>{{ month.label }}</span>
+                  <span class="ucm-blog-timeline__month-count">{{ month.count }}</span>
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </li>
+    {% endfor %}
+  </ol>
+</div>
