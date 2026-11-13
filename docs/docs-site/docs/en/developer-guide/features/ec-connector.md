@@ -75,10 +75,10 @@ ucm_ec_connector:
 | `ucm_connector_name` | Yes | Producer mode currently requires `UcmPipelineStore` |
 | `store_pipeline` | No | Commonly `Cache\|Posix`: shared-memory hot tier + disk cold tier |
 | `storage_backends` | No | Cold-tier directories; configure several by colon-separating them |
-| `cache_buffer_capacity_gb` | No | Hot-tier capacity, default 128; startup fails if `/dev/shm` is insufficient |
+| `cache_buffer_capacity_gb` | No | Hot-tier capacity; the default varies with the Cache implementation. Set it explicitly; shared-memory capacity is checked at startup |
 | `chunk_size` | Yes | Rows per chunk. Too small inflates block counts and lookups; too large wastes tail padding; the example uses 128 |
 
-Width (`encoder_cache_hidden_dim`), namespace (`cache_namespace`), and the cross-instance sharing flag (`store_unique_id`) are optional and inferred by default; the full field reference is in the [design document](../design-docs/ucm-ec-connector.md).
+Width (`encoder_cache_hidden_dim`), namespace (`cache_namespace`), and the local Cache domain identifier (`store_unique_id`) are optional and inferred by default; the full field reference is in the [design document](../design-docs/ucm-ec-connector.md).
 
 ## Verify the effect
 
@@ -153,6 +153,144 @@ Hit evidence:
 - Round 2 should log `EC load item ...`, proving actual UCM loading. Without repeated identifiers or local sharing within this round, expect `hits_total=N`, where N counts distinct media identifiers in the request;
 - A stable cold-tier file count is supporting evidence and cannot establish UCM hits by itself.
 
+## EPD disaggregated deployment
+
+EPD runs media encoding on E and prefill/decode on PD. E saves encoder outputs through UCM, and the native EPD Proxy rewrites image requests into metadata-only inputs for PD.
+
+This example uses vLLM Ascend v0.30.0, `Qwen3.8-27B-w8a8`, E=TP2, and PD=TP2. Start each service in its own terminal or container. The URLs below assume one machine; replace the Proxy's E/PD addresses for a deployment across machines.
+
+### 1. Prepare the environment and shared storage
+
+- Install matching vLLM, vllm-ascend, and UCM versions on E and PD, using the same model and preprocessing configuration.
+- Both engines access `/mnt/ucm-ec-shared` and use the same YAML. Each engine uses an automatically generated, independent Cache UUID.
+- The example UCM source path is `/workspace/unified-cache-management`, and the vLLM source path is `/vllm-workspace/vllm`. Replace these paths for your installation.
+
+After mounting the shared storage, create its root directory in the E and PD environments:
+
+```bash
+mkdir -p /mnt/ucm-ec-shared
+```
+
+### 2. Configure UCM
+
+Save `/workspace/ucm_ec_epd.yaml` on both E and PD:
+
+```yaml
+ucm_ec_connector:
+  ucm_connector_name: UcmPipelineStore
+  ucm_connector_config:
+    store_pipeline: Cache|Posix
+    storage_backends: /mnt/ucm-ec-shared
+    cache_buffer_capacity_gb: 32
+    posix_io_engine: psync
+  encoder_cache_config:
+    chunk_size: 128
+    enable_epd_disaggregate: true
+    epd_timeout_ms: 30000
+```
+
+| Setting | Purpose |
+| --- | --- |
+| `enable_epd_disaggregate: true` | Enable EPD on both engines |
+| `epd_timeout_ms` | PD visibility deadline, starting at the first Store miss |
+| `storage_backends` | Shared directory for EC handoff |
+| `chunk_size` | Embedding rows per chunk, identical on both engines |
+
+The example uses `max_model_len=1024`, one image per request, and `max_pixels=262144` for basic validation. Adjust these budgets for the input sizes and concurrency of your workload.
+
+### 3. Start E
+
+E uses `ec_producer` and enables ViT graphs through `cudagraph_mm_encoder`. Existing HBM outputs and newly encoded outputs both enter the UCM save path. E runs encoder-only, so native vLLM automatically disables KV prefix caching.
+
+```bash
+export ENABLE_UCM_PATCH=1
+
+ASCEND_RT_VISIBLE_DEVICES=0,1 vllm serve /data/model/Qwen3.8-27B-w8a8 \
+  --host 0.0.0.0 --port 19634 \
+  --served-model-name qwen3.8 \
+  --tensor-parallel-size 2 \
+  --quantization ascend \
+  --compilation-config '{"cudagraph_mm_encoder":true}' \
+  --max-model-len 1024 --max-num-seqs 2 \
+  --gpu-memory-utilization 0.3 \
+  --mm-processor-kwargs '{"max_pixels":262144}' \
+  --limit-mm-per-prompt '{"image":1,"video":0}' \
+  --additional-config '{"enable_cpu_binding":false}' \
+  --ec-transfer-config '{
+    "ec_connector":"UCMECConnector",
+    "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
+    "ec_role":"ec_producer",
+    "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
+  }'
+```
+
+### 4. Start PD
+
+PD uses `ec_consumer`, decode graphs, and KV prefix caching in HBM. It reuses local EC hits and waits for Store visibility before loading the remaining media.
+
+```bash
+export ENABLE_UCM_PATCH=1
+
+ASCEND_RT_VISIBLE_DEVICES=6,7 vllm serve /data/model/Qwen3.8-27B-w8a8 \
+  --host 0.0.0.0 --port 19635 \
+  --served-model-name qwen3.8 \
+  --tensor-parallel-size 2 \
+  --quantization ascend \
+  --enable-prefix-caching \
+  --no-disable-hybrid-kv-cache-manager \
+  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
+  --max-model-len 1024 --max-num-seqs 2 \
+  --gpu-memory-utilization 0.7 \
+  --mm-processor-kwargs '{"max_pixels":262144}' \
+  --limit-mm-per-prompt '{"image":1,"video":0}' \
+  --additional-config '{"enable_cpu_binding":false}' \
+  --ec-transfer-config '{
+    "ec_connector":"UCMECConnector",
+    "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
+    "ec_role":"ec_consumer",
+    "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
+  }'
+```
+
+### 5. Start the Proxy
+
+Start the native Proxy after both E and PD return HTTP 200 from `/health`. `--prefill-servers-urls disable` assigns prefill and decode to the same PD service.
+
+```bash
+python /vllm-workspace/vllm/examples/disaggregated/disaggregated_encoder/disagg_epd_proxy.py \
+  --host 0.0.0.0 --port 11001 \
+  --encode-servers-urls http://127.0.0.1:19634 \
+  --prefill-servers-urls disable \
+  --decode-servers-urls http://127.0.0.1:19635 \
+  --decode-retries 0
+```
+
+Send image requests to `http://127.0.0.1:11001/v1/chat/completions` with model name `qwen3.8`. Use Ctrl+C in a service's terminal to stop that process.
+
+### 6. Verify handoff and warm caches
+
+Enable the model test in the existing EC test file from the deployment container. It sends the same image request twice:
+
+```bash
+cd /workspace/unified-cache-management
+export UCM_EPD_PROXY_URL=http://127.0.0.1:11001
+export UCM_EPD_MODEL=qwen3.8
+python -m unittest discover -s test -p test_ucm_ec_config.py -v
+```
+
+| Log | Observation |
+| --- | --- |
+| Proxy: `as metadata references` | Image rewritten as metadata-only input |
+| E: `EC dump item` | Output submitted for UCM saving |
+| E: `EC cached saves: candidates=1, submitted=1` | An HBM-resident output submitted for saving again |
+| PD: `EC load item` | First request loaded the identifier from UCM |
+| PD: `EC local cache reuse` | Repeated request reused local EC |
+
+Observe E saving and PD loading on the first request. Repeated requests can hit PD's KV prefix cache or local EC. Use scheduling counters and per-item logs to identify the reuse source; see the [design document](../design-docs/ucm-ec-connector.md) for the implementation.
+
+Cache2 skips backend writes for DRAM READY hits. After a shared file is deleted, a cold PD can time out waiting for visibility, while a warm PD can continue using local EC.
+
+
 ## Advanced: running alongside the KV Connector
 
 UCM supports enabling a KV connector (e.g., HLA) and the EC connector on the same instance. They use **two independent YAML files**, specified separately via `--kv-transfer-config` and `--ec-transfer-config`. Note the format difference: KV's top level is a `ucm_connectors:` list, while EC's top level is the `ucm_ec_connector:` section.
@@ -180,5 +318,5 @@ Notes:
 ## Notes
 
 - `/dev/shm` capacity must be ≥ `cache_buffer_capacity_gb`; it is validated automatically at startup, and startup fails when insufficient;
-- Stop the service with `pkill -TERM` (or simply remove the container). On NPU environments SIGKILL can leak driver-level device memory that only a reboot releases;
+- Stop foreground services with Ctrl+C; use the normal stop procedure for container services to release device resources;
 - In this version a load failure is fail-closed (an engine-level error) with no automatic recomputation; in production, watch the availability of the Store backend. The design trade-offs are in [Section 7 of the design document](../design-docs/ucm-ec-connector.md).
