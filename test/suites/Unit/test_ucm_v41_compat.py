@@ -187,6 +187,14 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         # Match the 0.30.0rc1 layer-outermost planner: MLA + indexer share
         # each page, while ring and SWA groups alias it with different IDs.
         ns = types.SimpleNamespace
+
+        class UniformTypeKVCacheSpecs(ns):
+            @property
+            def prefix_cacheable(self):
+                return all(
+                    spec.prefix_cacheable for spec in self.kv_cache_specs.values()
+                )
+
         mla_type = type("AscendMLAAttentionSpec", (ns,), {})
         swa_type = type("AscendSlidingWindowMLASpec", (ns,), {})
         ring_type = type("CircularBufferSpec", (ns,), {})
@@ -225,18 +233,16 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         groups = [
             ns(
                 layer_names=list(full),
-                kv_cache_spec=ns(
+                kv_cache_spec=UniformTypeKVCacheSpecs(
                     block_size=128,
-                    prefix_cacheable=True,
                     kv_cache_specs=full,
                 ),
             ),
             ns(layer_names=[ring_name], kv_cache_spec=ring),
             ns(
                 layer_names=list(windows),
-                kv_cache_spec=ns(
+                kv_cache_spec=UniformTypeKVCacheSpecs(
                     block_size=128,
-                    prefix_cacheable=True,
                     kv_cache_specs=windows,
                 ),
             ),
@@ -297,7 +303,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         self.assertEqual(connector.group_metas[2].tail_tokens, 256)
         self.assertEqual(connector.group_metas[2].tail_blocks, 2)
 
-    def test_ascend_v41_rejects_unsupported_replay_or_page_ownership(self):
+    def test_ascend_v41_rejects_cacheable_replay_or_invalid_page_ownership(self):
         for change in (
             "replay",
             "disabled_transfer",
@@ -330,6 +336,71 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     connector._vllm_config.parallel_config = types.SimpleNamespace(
                         decode_context_parallel_size=2
                     )
+                with self.assertRaises(ValueError):
+                    methods["_init_group_metas"](connector)
+
+    @staticmethod
+    def _enable_ascend_bounded_replay(connector, window=256):
+        """Mirror vLLM-Ascend 0.32 AscendSlidingWindowMLASpec(bounded_replay=True)."""
+        group = connector._kv_cache_config.kv_cache_groups[2]
+        for spec in group.kv_cache_spec.kv_cache_specs.values():
+            spec.prefix_cacheable = False
+            spec.prefix_replay_tokens = window
+        return group
+
+    def test_ascend_v41_bounded_replay_persists_fa_pages_only(self):
+        for flatten in (False, True):
+            with self.subTest(scheduler_flattened=flatten):
+                methods, connector = self._ascend_v41_connector()
+                self._enable_ascend_bounded_replay(connector)
+                if flatten:
+                    for group in connector._kv_cache_config.kv_cache_groups:
+                        nested = getattr(group.kv_cache_spec, "kv_cache_specs", None)
+                        if nested:
+                            group.kv_cache_spec = next(iter(nested.values()))
+                methods["_init_group_metas"](connector)
+                self.assertEqual(connector.prefix_replay_tokens, 256)
+                self.assertEqual(connector.fa_group_ids, [0])
+                self.assertEqual(connector.window_group_ids, [])
+                self.assertEqual(connector.transient_group_ids, {1, 2})
+                # Group indices stay aligned with vLLM's block tables.
+                self.assertEqual(set(connector.group_metas), {0, 1, 2})
+                self.assertEqual(connector.group_metas[2].tail_tokens, 0)
+                self.assertEqual(connector.file_size, {"FA": 524288, "WA": 0})
+                self.assertEqual(
+                    sorted(connector.whole_page_sizes),
+                    [
+                        "model.layers.0.self_attn.long_kv_cache",
+                        "model.layers.1.self_attn.long_kv_cache",
+                    ],
+                )
+
+    def test_ascend_v41_accepts_ascend_circular_buffer_subclass(self):
+        methods, connector = self._ascend_v41_connector()
+        ring_group = connector._kv_cache_config.kv_cache_groups[1]
+        base = type(ring_group.kv_cache_spec)
+        sub = type("AscendCircularBufferSpec", (base,), {})
+        ring_group.kv_cache_spec = sub(block_size=32, prefix_cacheable=False)
+        methods["_init_group_metas"](connector)
+        self.assertEqual(connector.transient_group_ids, {1})
+
+    def test_ascend_v41_bounded_replay_still_rejects_unsafe_layouts(self):
+        for change in ("fa_transient", "misaligned", "swa_block"):
+            with self.subTest(change=change):
+                methods, connector = self._ascend_v41_connector()
+                cfg = connector._kv_cache_config
+                if change == "fa_transient":
+                    # Only ring and replayed SWA may be dropped; FA never.
+                    self._enable_ascend_bounded_replay(connector)
+                    group = cfg.kv_cache_groups[0]
+                    for spec in group.kv_cache_spec.kv_cache_specs.values():
+                        spec.prefix_cacheable = False
+                elif change == "misaligned":
+                    # replay_start = hit - 255 would split a ratio-2 group.
+                    self._enable_ascend_bounded_replay(connector, window=255)
+                else:
+                    group = self._enable_ascend_bounded_replay(connector)
+                    group.kv_cache_spec.block_size = 256
                 with self.assertRaises(ValueError):
                     methods["_init_group_metas"](connector)
 
