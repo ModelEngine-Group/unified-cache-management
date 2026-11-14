@@ -1,4 +1,11 @@
-﻿from ucm.integration.vllm.patch.utils import patch_or_inject, when_imported
+"""KV load-failure recovery with group 0 block IDs."""
+
+from __future__ import annotations
+
+import inspect
+from textwrap import dedent
+
+from ucm.integration.vllm.patch.utils import patch_or_inject, when_imported
 
 
 @when_imported("vllm.v1.core.sched.scheduler")
@@ -11,13 +18,14 @@ def patch_core_sched_scheduler(mod):
     For multi-group (HMA) models: the stock vLLM method crashes because it
     tuple-unpacks ``(req_block_ids,) = get_block_ids(req_id)`` which expects
     exactly one group.  We fix this transparently by temporarily shrinking
-    ``get_block_ids`` to return only group 0 (full-attention) as a 1-tuple
+    ``get_block_ids`` to return only group 0 as a 1-tuple
     while the original method runs, then restore it.  After the call we also
-    merge ``invalid_block_ids`` into ``blocks_to_evict`` so that invalid
-    blocks from *all* groups are evicted, not just group 0.
+    merge ``invalid_block_ids`` into ``blocks_to_evict`` so that all
+    reported invalid blocks are included in eviction.
 
-    Both paths then apply UCM-specific post-processing (clearing
-    ``num_output_placeholders`` for affected requests).
+    Allow the outer multi-group check to pass only for policy=fail. Keep
+    native request identification and finishing; multi-group recompute is
+    still unsupported.
     """
 
     original = getattr(mod.Scheduler, "_update_requests_with_invalid_blocks", None)
@@ -58,3 +66,33 @@ def patch_core_sched_scheduler(mod):
             "_update_requests_with_invalid_blocks",
             wrapped_update,
         )
+
+    original_handle = getattr(mod.Scheduler, "_handle_invalid_blocks", None)
+    if original_handle is None:
+        return
+    source_lines, first_line = inspect.getsourcelines(original_handle)
+    source = dedent("".join(source_lines))
+    multi_group_check = "if len(self.kv_cache_config.kv_cache_groups) > 1:"
+    if multi_group_check not in source:
+        # Older vLLM versions do not have the outer rejection.
+        return
+    # Change only the guard and retain the installed vLLM method's body.
+    source = source.replace(
+        multi_group_check,
+        "if len(self.kv_cache_config.kv_cache_groups) > 1 "
+        "and self.recompute_kv_load_failures:",
+        1,
+    )
+    namespace = {}
+    exec(
+        compile(
+            "\n" * (first_line - 1) + source,
+            original_handle.__code__.co_filename,
+            "exec",
+        ),
+        original_handle.__globals__,
+        namespace,
+    )
+    patch_or_inject(
+        mod.Scheduler, "_handle_invalid_blocks", namespace["_handle_invalid_blocks"]
+    )

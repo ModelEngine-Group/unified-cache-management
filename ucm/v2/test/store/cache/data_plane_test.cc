@@ -151,8 +151,9 @@ TEST_F(DataPlaneTest, ShapeViolationsAnswerInvalidParam)
     EXPECT_EQ(plane_->Dump(3, MakeJob(ids, buffer), MakeToken({0}, ids)).Underlying(),
               Status::InvalidParam().Underlying());
 
-    /* A block carrying no segments. */
+    /* A job carrying no segments. */
     JobDescriptor emptySegment = MakeJob(ids, buffer);
+    emptySegment.payloads[0] = BlockPayload{};
     emptySegment.payloads[1] = BlockPayload{};
     EXPECT_EQ(plane_->Dump(4, emptySegment, MakeToken({0, 1}, ids)).Underlying(),
               Status::InvalidParam().Underlying());
@@ -212,6 +213,32 @@ TEST_F(DataPlaneTest, RoundTripThroughTheDefaultEngine)
     EXPECT_TRUE(plane_->GetFinished().empty());
     EXPECT_EQ(plane_->Wait(1).Underlying(), Status::InvalidParam().Underlying());
     EXPECT_EQ(plane_->Wait(2).Underlying(), Status::InvalidParam().Underlying());
+}
+
+TEST_F(DataPlaneTest, EmptyPayloadLeavesItsSlotAndBufferUntouched)
+{
+    const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
+    const auto token = MakeToken({3, 1, 2}, ids);
+    std::vector<std::byte> source(3 * kBlockSize, std::byte{0x5a});
+    std::memset(source.data() + 2 * kBlockSize, 0x3c, kBlockSize);
+    const std::vector<std::byte> untouched(kBlockSize, std::byte{0xa5});
+    auto* pool = region_.Mapping().Base();
+    std::memcpy(SlotAddress(pool, 1, kBlockSize), untouched.data(), kBlockSize);
+    auto dump = MakeJob(ids, source);
+    dump.payloads[1] = BlockPayload{};
+    ASSERT_TRUE(plane_->Dump(1, dump, token).Success());
+    ASSERT_TRUE(plane_->Wait(1).Success());
+    EXPECT_EQ(std::memcmp(SlotAddress(pool, 1, kBlockSize), untouched.data(), kBlockSize), 0);
+
+    std::vector<std::byte> back(3 * kBlockSize, std::byte{0xa5});
+    auto load = MakeJob(ids, back);
+    load.payloads[1] = BlockPayload{};
+    ASSERT_TRUE(plane_->Load(2, load, token).Success());
+    ASSERT_TRUE(plane_->Wait(2).Success());
+    EXPECT_EQ(std::memcmp(back.data(), source.data(), kBlockSize), 0);
+    EXPECT_EQ(std::memcmp(back.data() + kBlockSize, untouched.data(), kBlockSize), 0);
+    EXPECT_EQ(std::memcmp(back.data() + 2 * kBlockSize, source.data() + 2 * kBlockSize,
+                          kBlockSize), 0);
 }
 
 TEST_F(DataPlaneTest, MultiSegmentJobRoundTripsWithOffsets)

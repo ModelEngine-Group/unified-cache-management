@@ -110,6 +110,38 @@ def test_vllm_0271_is_an_explicitly_supported_patch_version():
     assert "0.27.1" in module.get_supported_versions()
 
 
+def test_multi_connector_handshake_is_enabled_without_version_detection():
+    module, _ = _load_apply_patch_module()
+    hooks = {}
+    utils = ModuleType("ucm.integration.vllm.patch.utils")
+
+    def when_imported(name):
+        def register(callback):
+            hooks[name] = callback
+            return callback
+
+        return register
+
+    utils.when_imported = when_imported
+    logger_patch = ModuleType("ucm.integration.vllm.patch.logger_patch")
+    logger_patch.patch_logger = MagicMock()
+
+    with (
+        patch.object(module, "ENABLE_UCM_PATCH", False),
+        patch.object(module, "get_vllm_version") as get_version,
+        patch.dict(
+            sys.modules, {utils.__name__: utils, logger_patch.__name__: logger_patch}
+        ),
+    ):
+        module.apply_all_patches()
+
+    assert hooks.keys() == {
+        "vllm.distributed.kv_transfer.kv_connector.v1.multi_connector",
+        "vllm.v1.executor.abstract",
+    }
+    get_version.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "version,ascend_version,enabled,expected",
     [
