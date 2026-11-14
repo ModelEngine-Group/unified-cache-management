@@ -72,8 +72,6 @@ class TransferBatch:
 class TransferTask:
     job_id: int
     sub_job_id: int | None
-    transfer_batches: tuple[TransferBatch, ...]
-    native_arguments: tuple[Any, ...]
     # The Worker owns this event until the native IO is terminal.
     prerequisite_handle: int = 0
     success: bool | None = None
@@ -86,11 +84,13 @@ class TransferTask:
 class _StoreBinding:
     """Own the native assembler and translate recoverable call failures."""
 
-    def __init__(self, launch_config: dict[str, Any]) -> None:
+    def __init__(self, launch_config: dict[str, Any], runtime: dict[str, Any]) -> None:
         self._proxy = importlib.import_module(
             launch_config.get("store_module", "ucm_proxy")
         )
-        self._assembler = self._proxy.StoreAssembler(launch_config["store_config"])
+        self._assembler = self._proxy.StoreAssembler(
+            launch_config["store_config"], runtime
+        )
 
     @contextmanager
     def _translate_errors(self) -> Iterator[None]:
@@ -119,8 +119,8 @@ class _StoreBinding:
 class StoreSchedulerClient(_StoreBinding):
     """Request metadata and Prepare/Complete calls using the native interface."""
 
-    def __init__(self, launch_config: dict[str, Any]) -> None:
-        super().__init__(launch_config)
+    def __init__(self, launch_config: dict[str, Any], runtime: dict[str, Any]) -> None:
+        super().__init__(launch_config, runtime)
         self._scheduler = self._assembler.get_scheduler()
 
     def on_new_request(self, request_id: str) -> None:
@@ -135,15 +135,13 @@ class StoreSchedulerClient(_StoreBinding):
 
     def lookup_on_prefix(
         self, request_id: str, ucm_keys: tuple[bytes, ...]
-    ) -> int | None:
-        """Return the last prefix-hit index, -1 for a miss, or None for prefetch."""
+    ) -> tuple[int, bool]:
         with self._translate_errors():
             return self._scheduler.lookup_on_prefix(request_id, b"".join(ucm_keys))
 
     def lookup_on_reverse(
         self, request_id: str, ucm_keys: tuple[bytes, ...]
-    ) -> int | None:
-        """Return the rightmost hit index, -1 for a miss, or None for prefetch."""
+    ) -> tuple[int, bool]:
         with self._translate_errors():
             return self._scheduler.lookup_on_reverse(request_id, b"".join(ucm_keys))
 
@@ -155,9 +153,9 @@ class StoreSchedulerClient(_StoreBinding):
                 self._scheduler.prepare_get(request_id, b"".join(ucm_keys))
             )
 
-    def complete_get(self, request_id: str) -> None:
+    def complete_get(self, request_id: str, token: AddressedToken) -> None:
         with self._translate_errors():
-            self._scheduler.complete_get(request_id)
+            self._scheduler.complete_get(request_id, token.to_native(self._proxy))
 
     def prepare_put(
         self, request_id: str, ucm_keys: tuple[bytes, ...]
@@ -167,26 +165,44 @@ class StoreSchedulerClient(_StoreBinding):
                 self._scheduler.prepare_put(request_id, b"".join(ucm_keys))
             )
 
-    def complete_put(self, request_id: str, success: bool) -> None:
+    def complete_put(
+        self, request_id: str, token: AddressedToken, success: bool
+    ) -> None:
         with self._translate_errors():
-            self._scheduler.complete_put(request_id, success)
+            self._scheduler.complete_put(
+                request_id, token.to_native(self._proxy), success
+            )
 
-    def prepare_prefetch(self, request_id: str) -> AddressedToken:
+    def prepare_prefetch(
+        self, request_id: str, ucm_keys: tuple[bytes, ...]
+    ) -> AddressedToken:
+        # The Store binding must accept explicit keys for staged Lookup.
         with self._translate_errors():
             return AddressedToken.from_native(
-                self._scheduler.prepare_prefetch(request_id)
+                self._scheduler.prepare_prefetch(request_id, b"".join(ucm_keys))
             )
 
     def complete_prefetch(self, request_id: str, success: bool) -> None:
         with self._translate_errors():
             self._scheduler.complete_prefetch(request_id, success)
 
+    def prepare_offload(self) -> tuple[AddressedToken, ...]:
+        with self._translate_errors():
+            return tuple(
+                AddressedToken.from_native(plan)
+                for plan in self._scheduler.prepare_offload()
+            )
+
+    def complete_offload(self, token: AddressedToken) -> None:
+        with self._translate_errors():
+            self._scheduler.complete_offload(token.to_native(self._proxy))
+
 
 class StoreWorkerClient(_StoreBinding):
     """Submit and drain IO; no scheduler interface or request metadata state."""
 
-    def __init__(self, launch_config: dict[str, Any]) -> None:
-        super().__init__(launch_config)
+    def __init__(self, launch_config: dict[str, Any], runtime: dict[str, Any]) -> None:
+        super().__init__(launch_config, runtime)
         self._worker = self._assembler.get_worker()
         self._tasks: dict[int, TransferTask] = {}
         self._sub_job_ids = count(2, JOB_ID_STRIDE)
@@ -232,12 +248,12 @@ class StoreWorkerClient(_StoreBinding):
         task = TransferTask(
             job_id=job.job_id,
             sub_job_id=sub_job_id,
-            transfer_batches=transfer_batches,
-            native_arguments=(payloads, native_token, io_context),
             prerequisite_handle=prerequisite_handle,
         )
+        # The binding takes payloads and tokens by value. Only the event and
+        # the underlying KV allocation need to remain valid through completion.
         with self._translate_errors():
-            native_submit(task.io_job_id, *task.native_arguments)
+            native_submit(task.io_job_id, payloads, native_token, io_context)
         self._tasks[task.io_job_id] = task
         return task
 
@@ -273,36 +289,45 @@ class StoreWorkerClient(_StoreBinding):
             prerequisite_handle=prerequisite_handle,
         )
 
-    def submit_prefetch(self, job: PreparedJob) -> TransferTask:
+    def _submit_store_transfer(
+        self, native_submit: Callable[..., None], job: PreparedJob
+    ) -> TransferTask:
         native_token = job.token.to_native(self._proxy)
         with self._translate_errors():
-            self._worker.submit_prefetch(job.job_id, native_token)
-        task = TransferTask(
-            job_id=job.job_id,
-            sub_job_id=None,
-            transfer_batches=(),
-            native_arguments=(native_token,),
-        )
+            native_submit(job.job_id, native_token)
+        task = TransferTask(job_id=job.job_id, sub_job_id=None)
         self._tasks[task.io_job_id] = task
         return task
 
+    def submit_prefetch(self, job: PreparedJob) -> TransferTask:
+        return self._submit_store_transfer(self._worker.submit_prefetch, job)
+
+    def submit_offload(self, job: PreparedJob) -> TransferTask:
+        return self._submit_store_transfer(self._worker.submit_offload, job)
+
+    def _complete_task(self, io_job_id: int, success: bool) -> None:
+        task = self._tasks.pop(io_job_id)
+        task.success = success
+
     def _consume_results(self, results: Any) -> None:
         for result in results:
-            task = self._tasks.pop(result.job_id)
-            task.success = bool(result.success)
-            task.transfer_batches = ()
-            task.native_arguments = ()
+            self._complete_task(result.job_id, bool(result.success))
 
     def poll_finished(self) -> None:
         self._consume_results(self._worker.get_finished())
 
     def wait(self, task: TransferTask) -> None:
         if task.success is None:
-            # A thrown exception or missing completion leaves the task owned:
-            # neither proves that the native transfer has stopped using KV.
-            self._consume_results(self._worker.wait([task.io_job_id]))
-        if task.success is None:
-            raise RuntimeError(f"Store wait did not terminate job {task.io_job_id}")
+            try:
+                self._worker.wait(task.io_job_id)
+            except self._proxy.UcmError as exc:
+                # Native Wait consumes a known job even on transfer failure.
+                # InvalidParam can instead mean that no completion was consumed.
+                if str(exc).split(" ", 1)[0] == "InvalidParam":
+                    raise
+                self._complete_task(task.io_job_id, False)
+                raise StoreIOError(str(exc)) from exc
+            self._complete_task(task.io_job_id, True)
         if not task.success:
             raise StoreIOError(f"Store job {task.io_job_id} failed")
 

@@ -34,9 +34,7 @@ logger = init_logger(__name__)
 
 
 # Development format revision; compatibility with old records is not maintained.
-UCM_CHUNK_ID_VERSION = 6
-UCM_PP_RANK_BITS = 3
-UCM_RESTORE_POLICY_BITS = 3
+UCM_CHUNK_ID_VERSION = 7
 
 
 class ParallelRank(NamedTuple):
@@ -59,8 +57,6 @@ class ParallelTopology:
     @classmethod
     def from_config(cls, config: VllmConfig) -> ParallelTopology:
         parallel_config = config.parallel_config
-        if parallel_config.pipeline_parallel_size > (1 << UCM_PP_RANK_BITS):
-            raise ValueError("UCM v2 supports at most 8 PP stages (3-bit PP rank)")
         if parallel_config.nnodes_within_dp != 1:
             raise ValueError(
                 "UCM v2 requires each DP replica's workers on one node; "
@@ -85,8 +81,8 @@ class ParallelTopology:
 @dataclass(frozen=True)
 class UCMStorageHandshake(KVConnectorHandshakeMetadata):
     rank: ParallelRank
-    # Complete stage-local object size of each restore policy this stage stores.
-    store_sizes_by_policy: dict[RestorePolicy, int]
+    cache_block_size: int
+    spec: UCMKVCacheSpec | None = None
 
 
 def make_common_ucm_chunk_ids(chunk_hashes: Iterable[bytes]) -> tuple[bytes, ...]:
@@ -97,11 +93,9 @@ def make_common_ucm_chunk_ids(chunk_hashes: Iterable[bytes]) -> tuple[bytes, ...
 def make_ucm_chunk_ids(
     common_ucm_chunk_ids: Sequence[bytes],
     restore_policy: RestorePolicy = RestorePolicy.FA,
-    pp_rank: int = 0,
 ) -> tuple[bytes, ...]:
-    """Append reserved(2)/PP rank(3)/policy(3) bits to the common MD5 prefix."""
-    suffix = bytes([(pp_rank << UCM_RESTORE_POLICY_BITS) | restore_policy.tag[0]])
-    return tuple(value + suffix for value in common_ucm_chunk_ids)
+    """Append the restore policy to the common MD5 prefix."""
+    return tuple(value + restore_policy.tag for value in common_ucm_chunk_ids)
 
 
 def _load_launch_config(vllm_config: "VllmConfig") -> dict[str, Any]:
@@ -185,6 +179,17 @@ class UCMRuntimeContext:
     spec: UCMKVCacheSpec
     fingerprint: str
 
+    def store_runtime(self, block_size: int, *, device_id: int = 0) -> dict[str, Any]:
+        return {
+            "unique_id": self.engine_id,
+            "llm_role": (
+                "scheduler" if self.role == KVConnectorRole.SCHEDULER else "worker"
+            ),
+            "worker_number": self.parallel_topology.world_size,
+            "device_id": device_id,
+            "block_size": block_size,
+        }
+
     @classmethod
     def from_vllm_config(
         cls,
@@ -221,6 +226,7 @@ class UCMRuntimeContext:
             chunk_size=chunk_size,
             dcp_size=parallel_topology.dcp_size,
             device_type=device_type,
+            defer_chunk_size=parallel_topology.pp_size > 1,
             # Longcat has two attention modules per decoder layer.
             num_attn_module=(
                 2
@@ -235,7 +241,9 @@ class UCMRuntimeContext:
         fingerprint_schema = {
             "device_type": device_type,
             "model_dtype": model_dtype,
-            "chunk_size": spec.chunk_size,
+            "chunk_size": (
+                chunk_size if parallel_topology.pp_size > 1 else spec.chunk_size
+            ),
             "parallel_topology": asdict(parallel_topology),
             "format_version": UCM_CHUNK_ID_VERSION,
             "use_layerwise": use_layerwise,
@@ -296,7 +304,7 @@ class UCMRuntimeContext:
         return cls(
             role=role,
             device_type=device_type,
-            engine_id=vllm_config.instance_id,
+            engine_id=vllm_config.kv_transfer_config.engine_id,
             global_rank=worker_rank,
             rank=rank,
             parallel_topology=parallel_topology,

@@ -76,17 +76,16 @@ Status DataPlane::Submit(std::size_t jobId, const JobDescriptor& job, const Addr
         return Status::InvalidParam("job {} transfers {} blocks over a token of {} slots", jobId,
                                     job.blockIds.size(), slots.size());
     }
+    std::size_t segments = 0;
     for (std::size_t i = 0; i < job.payloads.size(); ++i) {
         const BlockPayload& payload = job.payloads[i];
-        if (payload.pointers.empty()) {
-            return Status::InvalidParam("job {} block {} carries no segments", jobId, i);
-        }
         if (payload.pointers.size() != payload.sizes.size() ||
             payload.pointers.size() != payload.offsets.size()) {
             return Status::InvalidParam(
                 "job {} block {} carries {} pointers, {} sizes and {} offsets", jobId, i,
                 payload.pointers.size(), payload.sizes.size(), payload.offsets.size());
         }
+        segments += payload.pointers.size();
         /* A segment that starts past or runs past its slot bounds would
          * copy into the neighboring slot -- or past the pool, on the last
          * one; both shapes are rejected here, nothing started. The two
@@ -101,16 +100,16 @@ Status DataPlane::Submit(std::size_t jobId, const JobDescriptor& job, const Addr
             }
         }
     }
+    if (segments == 0) { return Status::InvalidParam("job {} carries no segments", jobId); }
 
     /* One job flattens into one columnar batch: segment (j) of block (i)
-     * pairs the caller's pointer with slot + offset in the pool, and
-     * block (i) lands as group (i) of nSegmentPerGroup for the
-     * stream-parallel engines. Segment validity -- non-null addresses,
+     * pairs the caller's pointer with slot + offset in the pool. Each
+     * non-empty block contributes one group for the stream-parallel
+     * engines. Empty blocks are skipped, preserving token slot order.
+     * Segment validity -- non-null addresses,
      * non-zero, maxLength-bounded sizes -- is the engine's contract to
      * enforce. */
     Transfer::DmaEngine::DmaJob batch;
-    std::size_t segments = 0;
-    for (const BlockPayload& payload : job.payloads) { segments += payload.pointers.size(); }
     batch.sources.reserve(segments);
     batch.destinations.reserve(segments);
     batch.sizes.reserve(segments);
@@ -119,6 +118,7 @@ Status DataPlane::Submit(std::size_t jobId, const JobDescriptor& job, const Addr
 
     for (std::size_t i = 0; i < slots.size(); ++i) {
         const BlockPayload& payload = job.payloads[i];
+        if (payload.pointers.empty()) { continue; }
         batch.nSegmentPerGroup.push_back(payload.pointers.size());
         std::byte* const slot = static_cast<std::byte*>(SlotAddress(base_, slots[i], blockSize_));
         for (std::size_t j = 0; j < payload.pointers.size(); ++j) {

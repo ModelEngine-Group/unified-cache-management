@@ -113,7 +113,6 @@ def inspect_workers(worker, cfg, args):
     local = tuple(group.rank_in_group for group in groups)
     reports = gather((local, worker.get_handshake_metadata()))
     handshakes = {}
-    sizes = worker.connector_worker.layout.store_sizes_by_policy
     for world_rank, ((tp, pcp, dcp), handshake) in enumerate(reports):
         if (pcp, tp) != divmod(world_rank, args.tp):
             raise AssertionError(
@@ -126,12 +125,13 @@ def inspect_workers(worker, cfg, args):
         if handshake is not None:
             if (
                 handshake.rank != (tp, 0, pcp)
-                or handshake.store_sizes_by_policy != sizes
+                or handshake.cache_block_size
+                != worker.connector_worker._cache_block_size
             ):
                 raise AssertionError(f"Inconsistent handshake from rank {world_rank}")
             key = (
                 (0, pcp, tp)
-                if args.platform == "ascend-sim" and args.pcp > 1
+                if args.platform in ("ascend-sim", "ascend") and args.pcp > 1
                 else (0, tp)
             )
             handshakes[key] = handshake

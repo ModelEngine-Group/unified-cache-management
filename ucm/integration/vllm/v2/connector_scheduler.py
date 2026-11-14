@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from itertools import count
 from typing import TYPE_CHECKING
@@ -47,20 +47,19 @@ logger = init_logger(__name__)
 class UCMDispatchPlan:
     """Consecutive UCM chunks of one request for one restore policy.
 
-    Scheduler resolves final UCM keys for every participating PP stage.
-    Workers select their stage and resolve local byte ranges without hashing.
+    Scheduler resolves the UCM keys shared by all PP stages.
+    Workers resolve their local byte ranges without hashing.
     Each plan owns its Prepare result and Connector job identity.
     """
 
     restore_policy: RestorePolicy
-    ucm_keys_by_pp_rank: dict[int, tuple[bytes, ...]]
-    # First token of each UCM chunk (uint64), one per UCM key in each PP stage.
+    ucm_keys: tuple[bytes, ...]
+    # First token of each UCM chunk (uint64), one per UCM key.
     token_starts: np.ndarray
     # Block-major IDs for the explicitly named native groups below.
     vllm_block_ids_by_group: tuple[np.ndarray, ...]
     group_ids: tuple[int, ...]
-    # None only when this plan's Prepare failed.
-    prepared_job: PreparedJob | None
+    prepared_job: PreparedJob | None = None
     # State loads share the running target's keys, Prepare and job with this
     # checkpoint target. Empty for other loads and all dumps.
     state_checkpoint_block_ids_by_group: tuple[np.ndarray, ...] = ()
@@ -78,6 +77,7 @@ class RequestMetadata:
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     requests: dict[str, RequestMetadata] = field(default_factory=dict)
+    offload_jobs: tuple[PreparedJob, ...] = ()
 
 
 class JobOperation(Enum):
@@ -105,7 +105,10 @@ class RequestState:
     """Mutable cross-step state, owned exclusively by ConnectorScheduler."""
 
     request: Request
-    num_preemptions: int
+    # The preemption count of the Store lookup snapshot, once initialized.
+    num_preemptions: int | None = None
+    finished: bool = False
+    prefetch_job_id: int | None = None
     hbm_hit_tokens: int = 0
     external_hit_tokens: int = 0
     num_tokens: int = 0
@@ -116,13 +119,16 @@ class RequestState:
 
 
 class UCMConnectorScheduler:
-    def __init__(self, context: UCMRuntimeContext) -> None:
+    def __init__(
+        self, context: UCMRuntimeContext, *, recompute_tokens: int = 1
+    ) -> None:
         self.context = context
         self.spec = context.spec
         self.parallel_topology = context.parallel_topology
-        self._store_scheduler = StoreSchedulerClient(context.launch_config)
+        # CacheStore joins the worker-led domain after receiving its slot size.
+        self._store_scheduler: StoreSchedulerClient | None = None
         self.groups_by_policy = groups_by_restore_policy(self.spec)
-        self._recompute_tokens = 1
+        self._recompute_tokens = recompute_tokens
         self._chunk_hasher = RequestHasher(
             context.fingerprint
         ).make_request_block_hasher(self.spec.chunk_size)
@@ -139,120 +145,100 @@ class UCMConnectorScheduler:
         # Odd main IDs leave even native IDs available for Worker-local subjobs.
         self._job_ids = count(1, JOB_ID_STRIDE)
         self._pending_jobs: dict[int, PendingJob] = {}
-        self._prefetch_job_ids_by_request: dict[str, int] = {}
-        self._prefetch_failed_request_ids: set[str] = set()
-        self._registered_request_ids: set[str] = set()
-        # Keys select the policies each PP stage stores; values are the complete
-        # stage-local object sizes that Store admission will need.
-        self._store_sizes_by_stage: dict[int, dict[RestorePolicy, int]] = {}
-        self._finished_request_ids: set[str] = set()
-        self._retired_request_ids: set[str] = set()
+        self._offload_jobs: dict[int, PreparedJob] = {}
+        self._needs_offload_drain = False
 
     def set_xfer_handshake_metadata(
-        self, metadata: Mapping[int, UCMStorageHandshake]
+        self, metadata: Mapping[int | tuple[int, ...], UCMStorageHandshake]
     ) -> None:
-        # Handshake representatives declare policies; IO completion still needs
-        # every configured rank, including PCP replicas that do not handshake.
-        self._store_sizes_by_stage = {
-            worker.rank.pp_rank: worker.store_sizes_by_policy
-            for worker in metadata.values()
-        }
+        if self._store_scheduler is None:
+            block_size = max(worker.cache_block_size for worker in metadata.values())
+            shared_spec = next(iter(metadata.values())).spec
+            if shared_spec is not None:
+                self.spec = shared_spec
+                self.groups_by_policy = groups_by_restore_policy(self.spec)
+                self._chunk_hasher = RequestHasher(
+                    self.context.fingerprint
+                ).make_request_block_hasher(self.spec.chunk_size)
+            self._store_scheduler = StoreSchedulerClient(
+                self.context.launch_config,
+                self.context.store_runtime(block_size),
+            )
 
     def on_new_request(self, request: Request) -> None:
+        if self._store_scheduler is None:
+            raise RuntimeError(
+                "UCM v2 CacheStore has not received the worker handshake"
+            )
         request_id = str(request.request_id)
         self._store_scheduler.on_new_request(request_id)
-        self._registered_request_ids.add(request_id)
+        self._request_states[request_id] = RequestState(request)
 
     def get_num_new_matched_tokens(
         self, request: Request, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
         """Return external hit tokens or None for prefetch. KV loads are synchronous."""
         request_id = str(request.request_id)
-        request_state = self._request_states.get(request_id)
-        # reset_prefix_cache can preempt before schedule(), so waiting-request
-        # lookup may run before build_connector_meta sees the preempted IDs.
-        if (
-            request_state is not None
-            and request_state.num_preemptions != request.num_preemptions
-        ):
-            self._reset_preempted_request(request_id)
-            request_state = None
-        if request_state is None:
-            request_state = RequestState(
-                request=request,
-                num_preemptions=request.num_preemptions,
-                num_tokens=len(request.all_token_ids),
-                common_chunk_hashes=make_common_ucm_chunk_ids(
-                    self._chunk_hasher(request)
-                ),
-            )
-            self._request_states[request_id] = request_state
-        if request_id in self._prefetch_job_ids_by_request:
+        request_state = self._request_states[request_id]
+        if request_state.prefetch_job_id is not None:
             return None, False
-        hit_tokens = (
-            0
-            if request_id in self._prefetch_failed_request_ids
-            else self._lookup_hit_tokens(
-                request_id,
-                request_state.common_chunk_hashes,
-                len(request.all_token_ids),
-                num_computed_tokens,
+        # Rebuild the local snapshot on resume. Store registration and open
+        # windows outlive preemption and complete through the worker receipts.
+        if request_state.num_preemptions != request.num_preemptions:
+            request_state.external_hit_tokens = 0
+            request_state.needs_load = False
+            request_state.num_tokens = len(request.all_token_ids)
+            request_state.common_chunk_hashes = make_common_ucm_chunk_ids(
+                self._chunk_hasher(request)
             )
+            request_state.num_preemptions = request.num_preemptions
+        request_state.hbm_hit_tokens = num_computed_tokens
+        if request.skip_reading_prefix_cache:
+            return 0, False
+        hit_tokens, prefetch_keys = self._lookup_hit_tokens(
+            request_id,
+            request_state.common_chunk_hashes,
+            request_state.num_tokens,
+            num_computed_tokens,
         )
-        if hit_tokens is None:
+        if prefetch_keys:
             job_id = self._allocate_job_id()
             try:
-                prefetch_token = self._store_scheduler.prepare_prefetch(request_id)
+                prefetch_token = self._store_scheduler.prepare_prefetch(
+                    request_id, prefetch_keys
+                )
             except StoreIOError:
-                # No Get hit was promised. Recompute instead of repeatedly
-                # retrying the failed prefetch window.
                 logger.warning(
-                    "UCM PreparePrefetch failed; recomputing this request",
+                    "UCM PreparePrefetch failed; using the current hit snapshot",
                     exc_info=True,
                 )
-                self._prefetch_failed_request_ids.add(request_id)
-                hit_tokens = 0
             else:
-                prefetch_job = self._track_prepared_job(
+                self._track_prepared_job(
                     job_id, JobOperation.PREFETCH, request_id, prefetch_token
                 )
-                self._prefetch_job_ids_by_request[request_id] = prefetch_job.job_id
+                request_state.prefetch_job_id = job_id
                 return None, False
         external_hit_tokens = (
             hit_tokens if hit_tokens > self.load_threshold_tokens else 0
         )
-        request_state.hbm_hit_tokens = num_computed_tokens
-        request_state.external_hit_tokens = external_hit_tokens
-        request_state.needs_load = external_hit_tokens > 0
         return external_hit_tokens, False
 
-    def _lookup_across_pp_stages(
-        self,
-        request_id: str,
-        common_chunk_hashes: Sequence[bytes],
-        restore_policy: RestorePolicy,
-        *,
-        reverse: bool = False,
-    ) -> int | None:
-        """Return the shared hit index, or None when a stage needs prefetch.
+    def update_state_after_alloc(
+        self, request: Request, num_external_tokens: int
+    ) -> None:
+        request_state = self._request_states[str(request.request_id)]
+        if request_state.num_preemptions is not None:
+            request_state.external_hit_tokens = num_external_tokens
+            request_state.needs_load = num_external_tokens > 0
 
-        Store uses -1 for a miss. None defers the lookup until prefetch completes.
-        """
-        hit_indices = []
-        for pp_rank, store_sizes_by_policy in self._store_sizes_by_stage.items():
-            if restore_policy not in store_sizes_by_policy:
-                continue
-            ucm_keys = make_ucm_chunk_ids(common_chunk_hashes, restore_policy, pp_rank)
-            if reverse:
-                hit_index = self._store_scheduler.lookup_on_reverse(
-                    request_id, ucm_keys
-                )
-            else:
-                hit_index = self._store_scheduler.lookup_on_prefix(request_id, ucm_keys)
-            if hit_index is None:
-                return None
-            hit_indices.append(hit_index)
-        return min(hit_indices, default=len(common_chunk_hashes) - 1)
+    def _lookup_key_groups(
+        self,
+        common_chunk_hashes: Sequence[bytes],
+    ) -> dict[RestorePolicy, tuple[bytes, ...]]:
+        return {
+            policy: make_ucm_chunk_ids(common_chunk_hashes, policy)
+            for policy in self.groups_by_policy
+        }
 
     def _lookup_hit_tokens(
         self,
@@ -260,57 +246,52 @@ class UCMConnectorScheduler:
         common_chunk_hashes: Sequence[bytes],
         num_tokens: int,
         hbm_hit_tokens: int,
-    ) -> int | None:
-        """Return external hit tokens, or None if Store needs prefetch."""
+    ) -> tuple[int, tuple[bytes, ...]]:
+        """Find the current shared restore boundary and candidates for prefetch."""
         chunk_size = self.spec.chunk_size
         first_chunk_index = hbm_hit_tokens // chunk_size
-        end_chunk_index = max(num_tokens - self._recompute_tokens, 0) // chunk_size
-        if not self.groups_by_policy or end_chunk_index <= first_chunk_index:
-            return 0
+        max_end = max(num_tokens - self._recompute_tokens, 0) // chunk_size
+        if not self.groups_by_policy or max_end <= first_chunk_index:
+            return 0, ()
+        key_groups = self._lookup_key_groups(
+            common_chunk_hashes[first_chunk_index:max_end]
+        )
+        fa_keys = key_groups.get(RestorePolicy.FA, ())
+        boundary_keys = tuple(
+            keys
+            for policy, keys in key_groups.items()
+            if policy is not RestorePolicy.FA
+        )
+        end = max_end - first_chunk_index
+        prefetch_keys = []
         try:
-            if RestorePolicy.FA in self.groups_by_policy:
-                hit_index = self._lookup_across_pp_stages(
-                    request_id,
-                    common_chunk_hashes[first_chunk_index:end_chunk_index],
-                    RestorePolicy.FA,
+            if fa_keys:
+                index, prefetchable = self._store_scheduler.lookup_on_prefix(
+                    request_id, fa_keys
                 )
-                if hit_index is None:
-                    return None
-                end_chunk_index = first_chunk_index + hit_index + 1
-            boundary_policies = tuple(
-                restore_policy
-                for restore_policy in self.groups_by_policy
-                if restore_policy is not RestorePolicy.FA
-            )
-            while end_chunk_index > first_chunk_index:
-                previous_end_chunk_index = end_chunk_index
-                for restore_policy in boundary_policies:
-                    hit_index = self._lookup_across_pp_stages(
-                        request_id,
-                        common_chunk_hashes[first_chunk_index:end_chunk_index],
-                        restore_policy,
-                        reverse=True,
+                end = index + 1
+                if prefetchable:
+                    prefetch_keys.extend(fa_keys[end:])
+            while end and boundary_keys:
+                previous_end = end
+                for keys in boundary_keys:
+                    index, prefetchable = self._store_scheduler.lookup_on_reverse(
+                        request_id, keys[:end]
                     )
-                    if hit_index is None:
-                        return None
-                    end_chunk_index = first_chunk_index + hit_index + 1
-                    if end_chunk_index == first_chunk_index:
-                        return 0
-                if end_chunk_index == previous_end_chunk_index:
+                    if prefetchable:
+                        prefetch_keys.extend(keys[index + 1 : end])
+                    end = index + 1
+                    if end == 0:
+                        break
+                # If a later policy moved the boundary, earlier policies
+                # must also hit at the new position.
+                if end == previous_end or len(boundary_keys) == 1:
                     break
-            return max(end_chunk_index * chunk_size - hbm_hit_tokens, 0)
         except StoreIOError:
             logger.warning("UCM lookup failed; recomputing this request", exc_info=True)
-            return 0
-
-    def make_ucm_keys_by_pp_rank(
-        self, common_chunk_hashes: Sequence[bytes], restore_policy: RestorePolicy
-    ) -> dict[int, tuple[bytes, ...]]:
-        return {
-            pp_rank: make_ucm_chunk_ids(common_chunk_hashes, restore_policy, pp_rank)
-            for pp_rank, store_sizes_by_policy in self._store_sizes_by_stage.items()
-            if restore_policy in store_sizes_by_policy
-        }
+            return 0, ()
+        hit_tokens = (first_chunk_index + end) * chunk_size - hbm_hit_tokens
+        return max(hit_tokens, 0), tuple(prefetch_keys)
 
     def _allocate_job_id(self) -> int:
         job_id = next(self._job_ids)
@@ -335,17 +316,13 @@ class UCMConnectorScheduler:
     def _prepare_plan_job(
         self,
         request_id: str,
-        ucm_keys_by_pp_rank: dict[int, tuple[bytes, ...]],
-        *,
-        is_load: bool,
+        plan: UCMDispatchPlan,
+        operation: JobOperation,
     ) -> PreparedJob | None:
-        ucm_keys = tuple(
-            ucm_key
-            for stage_ucm_keys in ucm_keys_by_pp_rank.values()
-            for ucm_key in stage_ucm_keys
-        )
+        ucm_keys = plan.ucm_keys
+        if not ucm_keys:
+            return None
         job_id = self._allocate_job_id()
-        operation = JobOperation.GET if is_load else JobOperation.PUT
         try:
             if operation is JobOperation.GET:
                 token = self._store_scheduler.prepare_get(request_id, ucm_keys)
@@ -368,18 +345,22 @@ class UCMConnectorScheduler:
         block_state = scheduler_output.kv_connector_block_state
         assert block_state is not None
         metadata = UCMConnectorMetadata()
-        for request_id in scheduler_output.preempted_req_ids or ():
-            request_state = self._request_states.get(request_id)
-            # Preserve a state already rebuilt by lookup after a cache reset.
-            if (
-                request_state is not None
-                and request_state.num_preemptions
-                != request_state.request.num_preemptions
-            ):
-                self._reset_preempted_request(request_id)
+        if self._needs_offload_drain:
+            jobs = []
+            for token in self._store_scheduler.prepare_offload():
+                job = PreparedJob(self._allocate_job_id(), token.keys, token)
+                self._offload_jobs[job.job_id] = job
+                jobs.append(job)
+            metadata.offload_jobs = tuple(jobs)
+            self._needs_offload_drain = False
         for request_id in block_state.req_ids:
             request_state = self._request_states.get(request_id)
-            if request_state is None:
+            if (
+                request_state is None
+                or request_state.num_preemptions
+                != request_state.request.num_preemptions
+                or request_state.finished
+            ):
                 continue
             block_tables = block_state.get_block_ids(request_id)
             scheduled_tokens = scheduler_output.num_scheduled_tokens.get(request_id, 0)
@@ -392,96 +373,66 @@ class UCMConnectorScheduler:
             )
             if scheduled_tokens > 0:
                 request_state.needs_load = False
-        for request_id, job_id in self._prefetch_job_ids_by_request.items():
-            pending_job = self._pending_jobs[job_id]
+        for pending_job in self._pending_jobs.values():
+            request_id = pending_job.request_id
             if (
-                request_id not in self._finished_request_ids
+                pending_job.operation is JobOperation.PREFETCH
                 and not pending_job.dispatched
             ):
-                metadata.requests[request_id] = RequestMetadata(
-                    request_id, prefetch_job=pending_job.prepared_job
+                metadata.requests[request_id] = replace(
+                    metadata.requests.get(request_id, RequestMetadata(request_id)),
+                    prefetch_job=pending_job.prepared_job,
                 )
                 pending_job.dispatched = True
-        # The finish callback may precede a final no-forward dump plan. Only
-        # retire the store request once that plan has been prepared above.
-        self._retired_request_ids.update(scheduler_output.finished_req_ids)
-        self._close_finished_requests()
-        for request_id in scheduler_output.finished_req_ids:
-            self._request_states.pop(request_id, None)
         return metadata
-
-    def _reset_preempted_request(self, request_id: str) -> None:
-        self._request_states.pop(request_id, None)
-        self._prefetch_failed_request_ids.discard(request_id)
-        for pending_job in self._pending_jobs.values():
-            if (
-                pending_job.request_id == request_id
-                and pending_job.operation is JobOperation.PUT
-            ):
-                pending_job.failed = True
 
     def request_finished(self, request_id: str) -> None:
         request_id = str(request_id)
-        self._finished_request_ids.add(request_id)
-        job_id = self._prefetch_job_ids_by_request.get(request_id)
+        request_state = self._request_states.get(request_id)
+        if request_state is None:
+            return
+        job_id = request_state.prefetch_job_id
         if job_id is not None and not self._pending_jobs[job_id].dispatched:
             self._store_scheduler.complete_prefetch(request_id, False)
             del self._pending_jobs[job_id]
-            del self._prefetch_job_ids_by_request[request_id]
-        self._close_finished_requests()
+            request_state.prefetch_job_id = None
+        request_state.finished = True
+        self._close_finished_request(request_id, request_state)
 
     def _complete_ready_jobs(self) -> None:
-        """Close a request/kind window once all its jobs and ranks are terminal."""
-        # Complete is request-scoped. Drain every job appended to the same
-        # request/kind before releasing its pins or committing its writes.
-        jobs_by_window: dict[tuple[str, JobOperation], list[tuple[int, PendingJob]]] = (
-            defaultdict(list)
-        )
-        for job_id, pending_job in self._pending_jobs.items():
-            jobs_by_window[(pending_job.request_id, pending_job.operation)].append(
-                (job_id, pending_job)
-            )
-        for (request_id, operation), window_jobs in jobs_by_window.items():
-            if any(
-                pending_job.completed_ranks != self._expected_worker_ranks
-                for _, pending_job in window_jobs
-            ):
+        """Close each prepared window after its own ranks reach terminal IO."""
+        for job_id, pending_job in tuple(self._pending_jobs.items()):
+            if pending_job.completed_ranks != self._expected_worker_ranks:
                 continue
-            success = not any(pending_job.failed for _, pending_job in window_jobs)
+            request_id = pending_job.request_id
+            operation = pending_job.operation
+            prepared_job = pending_job.prepared_job
+            success = not pending_job.failed
             if operation is JobOperation.GET:
-                self._store_scheduler.complete_get(request_id)
+                self._store_scheduler.complete_get(request_id, prepared_job.token)
             elif operation is JobOperation.PUT:
-                self._store_scheduler.complete_put(request_id, success)
+                self._store_scheduler.complete_put(
+                    request_id, prepared_job.token, success
+                )
+                self._needs_offload_drain = True
             else:
                 self._store_scheduler.complete_prefetch(request_id, success)
-                if not success:
-                    self._prefetch_failed_request_ids.add(request_id)
-                del self._prefetch_job_ids_by_request[request_id]
-            for job_id, _ in window_jobs:
-                del self._pending_jobs[job_id]
+                self._needs_offload_drain = True
+                self._request_states[request_id].prefetch_job_id = None
+            del self._pending_jobs[job_id]
+            self._close_finished_request(request_id, self._request_states[request_id])
 
-    def _close_finished_requests(self) -> None:
-        """Unregister ended requests after final metadata and window completion."""
-        active_request_ids = {
-            pending_job.request_id for pending_job in self._pending_jobs.values()
-        }
-        for request_id in tuple(self._retired_request_ids):
-            if request_id in active_request_ids:
-                continue
-            if request_id in self._registered_request_ids:
-                self._store_scheduler.on_request_finished(request_id)
-                self._registered_request_ids.remove(request_id)
-            self._finished_request_ids.discard(request_id)
-            self._prefetch_failed_request_ids.discard(request_id)
-            self._retired_request_ids.remove(request_id)
+    def _close_finished_request(self, request_id: str, state: RequestState) -> None:
+        if state.finished and not any(
+            job.request_id == request_id for job in self._pending_jobs.values()
+        ):
+            self._store_scheduler.on_request_finished(request_id)
+            del self._request_states[request_id]
 
     def update_connector_output(self, connector_output: KVConnectorOutput) -> None:
         metadata = connector_output.kv_connector_worker_meta
         if metadata is None:
             return
-        # A load failure invalidates this request's saves even if another rank
-        # has already reported a locally successful Put.
-        # Later layers derive new K/V from attention outputs using the loaded KV.
         for request_id in metadata.failed_load_request_ids:
             request_state = self._request_states.get(request_id)
             if request_state is not None:
@@ -490,30 +441,45 @@ class UCMConnectorScheduler:
                 request_state.hbm_hit_tokens = request_state.request.num_computed_tokens
                 request_state.external_hit_tokens = 0
                 request_state.needs_load = False
-            for pending_job in self._pending_jobs.values():
-                if (
-                    pending_job.operation is JobOperation.PUT
-                    and pending_job.request_id == request_id
-                ):
-                    pending_job.failed = True
         for job_result in metadata.job_results:
+            offload_job = self._offload_jobs.get(job_result.job_id)
+            if offload_job is not None:
+                # Only the worker owning Store-only IO reports this job. The
+                # receipt releases source pins on both success and failure.
+                self._store_scheduler.complete_offload(offload_job.token)
+                if not job_result.success:
+                    logger.warning("UCM offload job %d failed", job_result.job_id)
+                del self._offload_jobs[job_result.job_id]
+                continue
             pending_job = self._pending_jobs.get(job_result.job_id)
             if pending_job is None:
                 continue
             pending_job.completed_ranks.add(job_result.rank)
             pending_job.failed |= not job_result.success
+            # KV derived from a failed load must not be published. Scope this
+            # to the saves reported in this step, including other ranks' saves.
+            if (
+                pending_job.operation is JobOperation.PUT
+                and pending_job.request_id in metadata.failed_load_request_ids
+            ):
+                pending_job.failed = True
         self._complete_ready_jobs()
-        self._close_finished_requests()
 
     def has_pending_push_work(self) -> bool:
-        return bool(self._prefetch_job_ids_by_request)
+        return bool(
+            self._needs_offload_drain
+            or self._offload_jobs
+            or any(
+                job.operation is JobOperation.PREFETCH
+                for job in self._pending_jobs.values()
+            )
+        )
 
     def shutdown(self) -> None:
         # An unacknowledged parent can still have Worker subjobs in flight.
         # Leave such reservations to backend recovery, never release them early.
-        for pending_job in self._pending_jobs.values():
-            pending_job.failed = True
-        self._close_finished_requests()
+        for request_id, state in tuple(self._request_states.items()):
+            self._close_finished_request(request_id, state)
 
     def _state_dump_plans(
         self, request_state: RequestState, offloads: Sequence[tuple[int, int, int]]
@@ -547,13 +513,13 @@ class UCMConnectorScheduler:
             if any(group_id not in blocks_by_group for group_id in group_ids):
                 continue
             chunk_index = boundary_token // chunk_size - 1
-            ucm_keys_by_pp_rank = self.make_ucm_keys_by_pp_rank(
+            ucm_keys = make_ucm_chunk_ids(
                 (request_state.common_chunk_hashes[chunk_index],), RestorePolicy.STATE
             )
             plans.append(
                 UCMDispatchPlan(
                     restore_policy=RestorePolicy.STATE,
-                    ucm_keys_by_pp_rank=ucm_keys_by_pp_rank,
+                    ucm_keys=ucm_keys,
                     token_starts=np.asarray(
                         [chunk_index * chunk_size], dtype=np.uint64
                     ),
@@ -562,11 +528,6 @@ class UCMConnectorScheduler:
                         for group_id in group_ids
                     ),
                     group_ids=group_ids,
-                    prepared_job=self._prepare_plan_job(
-                        str(request_state.request.request_id),
-                        ucm_keys_by_pp_rank,
-                        is_load=False,
-                    ),
                 )
             )
         return tuple(plans)
@@ -609,21 +570,29 @@ class UCMConnectorScheduler:
             is_load=True,
             scheduled_tokens=scheduled_tokens,
         )
-        prepare_get_failed = any(plan.prepared_job is None for plan in load_plans)
-        if prepare_get_failed:
-            # Worker reports the promised-but-unavailable KV to vLLM and
-            # acknowledges any other Get jobs already prepared for this request.
+        load_plans = tuple(
+            replace(
+                plan,
+                prepared_job=self._prepare_plan_job(request_id, plan, JobOperation.GET),
+            )
+            for plan in load_plans
+        )
+        if any(plan.prepared_job is None for plan in load_plans):
+            # Report the missing KV and acknowledge any Gets already prepared.
             return RequestMetadata(
                 request_id, load_plans=load_plans, prepare_get_failed=True
             )
         dump_plans = self.build_dispatch_plans(
             request_state, block_tables, dump_start_token, dump_end_token, is_load=False
+        ) + self._state_dump_plans(request_state, state_offloads)
+        dump_plans = tuple(
+            replace(
+                plan,
+                prepared_job=self._prepare_plan_job(request_id, plan, JobOperation.PUT),
+            )
+            for plan in dump_plans
         )
-        return RequestMetadata(
-            request_id,
-            load_plans,
-            dump_plans + self._state_dump_plans(request_state, state_offloads),
-        )
+        return RequestMetadata(request_id, load_plans, dump_plans)
 
     def build_dispatch_plans(
         self,
@@ -664,9 +633,7 @@ class UCMConnectorScheduler:
                 # ends exactly at the selected restore boundary.
                 start_chunk_index = end_chunk_index - 1
             else:
-                # FA chunks are stored once and never re-stored, so a plan
-                # covers every complete UCM chunk the range touches -- not
-                # just the newest boundary.
+                # FA plans cover every complete UCM chunk the range touches.
                 start_chunk_index = first_chunk_index
             plans.append(
                 self.make_dispatch_plan(
@@ -696,9 +663,9 @@ class UCMConnectorScheduler:
         *,
         is_load: bool,
     ) -> UCMDispatchPlan:
-        """Build and Prepare one policy plan with its own job and token."""
+        """Build the device ranges for one restore policy."""
         chunk_size = self.spec.chunk_size
-        ucm_keys_by_pp_rank = self.make_ucm_keys_by_pp_rank(
+        ucm_keys = make_ucm_chunk_ids(
             request_state.common_chunk_hashes[start_chunk_index:end_chunk_index],
             restore_policy,
         )
@@ -719,7 +686,7 @@ class UCMConnectorScheduler:
             )
         return UCMDispatchPlan(
             restore_policy,
-            ucm_keys_by_pp_rank,
+            ucm_keys,
             np.arange(start_chunk_index, end_chunk_index, dtype=np.uint64)
             * np.uint64(chunk_size),
             tuple(
@@ -734,11 +701,6 @@ class UCMConnectorScheduler:
                 for group in groups
             ),
             tuple(group.group_id for group in groups),
-            prepared_job=self._prepare_plan_job(
-                str(request_state.request.request_id),
-                ucm_keys_by_pp_rank,
-                is_load=is_load,
-            ),
             state_checkpoint_block_ids_by_group=state_checkpoint_block_ids_by_group,
         )
 
