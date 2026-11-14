@@ -75,12 +75,14 @@ jobs:
           jq -e '
             (.target_platform_tag | type == "string" and length > 0) and
             (.external_runtime_exclude_patterns | type == "array") and
-            all(.external_runtime_exclude_patterns[];
+            (.host_driver_libraries | type == "array") and
+            all(.external_runtime_exclude_patterns[], .host_driver_libraries[];
               type == "string" and length > 0 and
               index("\n") == null and index("\r") == null)
           ' out/wheel-task.json >/dev/null
-          jq -r '.external_runtime_exclude_patterns[]' out/wheel-task.json \
-            >.ucm-compact/auditwheel-exclude-patterns.txt
+          # Host driver libraries are excluded by SONAME because the Builder may not have them.
+          jq -r '.external_runtime_exclude_patterns[], .host_driver_libraries[]' \
+            out/wheel-task.json >.ucm-compact/auditwheel-exclude-patterns.txt
           artifact="ucm-wheel-${WHEEL_ID}-run-${GITHUB_RUN_ID}"
           source_date_epoch="$(git show -s --format=%ct HEAD)"
           test "${source_date_epoch}" -ge 315532800

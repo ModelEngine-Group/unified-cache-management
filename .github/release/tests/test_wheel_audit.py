@@ -238,6 +238,47 @@ def test_unresolved_transitive_library_is_derived_from_provider_closure() -> Non
     assert closure["deferred_external_libraries"] == ["libunknown.so"]
 
 
+def _direct_driver_report(driver_path: str | None) -> str:
+    return _report(
+        {
+            "libascendcl.so": "/usr/local/Ascend/cann/lib64/libascendcl.so",
+            "libruntime.so": "/usr/local/Ascend/cann/lib64/libruntime.so",
+            "libascend_hal.so": driver_path,
+        },
+        direct=["libascendcl.so", "libascend_hal.so"],
+        dependencies={
+            "libascendcl.so": ["libruntime.so"],
+            "libruntime.so": ["libascend_hal.so"],
+            "libascend_hal.so": [],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "driver_path",
+    [None, "/usr/local/Ascend/cann-9.0.0/devlib/linux/x86_64/libascend_hal.so"],
+)
+def test_host_driver_library_is_deferred_and_never_a_root(
+    driver_path: str | None,
+) -> None:
+    closure = wheel_audit.validate_external_library_closure(
+        _direct_driver_report(driver_path),
+        expected_patterns=["/usr/local/Ascend/*"],
+        host_driver_sonames=["libascend_hal.so"],
+    )
+
+    assert closure["external_library_roots"] == ["libascendcl.so"]
+    assert closure["deferred_external_libraries"] == ["libascend_hal.so"]
+
+
+def test_unresolved_direct_driver_library_requires_host_driver_policy() -> None:
+    with pytest.raises(ValueError, match="outside the provider boundary"):
+        wheel_audit.validate_external_library_closure(
+            _direct_driver_report(None),
+            expected_patterns=["/usr/local/Ascend/*"],
+        )
+
+
 def test_derived_deferred_library_requires_a_valid_soname() -> None:
     report = _report(
         {

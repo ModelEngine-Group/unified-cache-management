@@ -207,12 +207,14 @@ def _wheel_result_task(cpu_arch: str) -> dict[str, str]:
         "cpu_arch": cpu_arch,
         "target_platform_tag": target,
         "external_runtime_exclude_patterns": ["libcudart.so.13"],
+        "host_driver_libraries": [],
         "runtime_requirements": ["wrapt==1.17.2"],
         "repair": {
             "tool": "auditwheel",
             "version": "6.7.0",
             "target_platform": target,
             "excluded_patterns": ["libcudart.so.13"],
+            "host_driver_libraries": [],
         },
     }
 
@@ -496,6 +498,7 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
         and wheel["repair"]["target_platform"] == wheel["target_platform_tag"]
         and wheel["repair"]["excluded_patterns"]
         == wheel["external_runtime_exclude_patterns"]
+        and wheel["repair"]["host_driver_libraries"] == wheel["host_driver_libraries"]
         and "runtime_deferred_libraries" not in wheel
         for wheel in plan["wheels"]
     )
