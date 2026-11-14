@@ -1,4 +1,4 @@
-"""Build the real model on meta and allocate its MRV2 KV views on the host."""
+"""Build the model on meta and allocate its MRV2 KV views on the selected device."""
 
 import json
 import os
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 
 def make_engine(args):
-    if args.platform == "ascend-sim":
+    if args.platform in ("ascend-sim", "ascend"):
         from vllm_ascend.utils import adapt_patch
 
         adapt_patch(is_global_patch=True)
@@ -198,8 +198,7 @@ def make_model(engine):
     return model
 
 
-def allocate(engine, kv_mib, scratch_dir, cleanup):
-    import torch
+def allocate(engine, kv_mib, scratch_dir, cleanup, *, kv_device):
     from parallel import gather
     from vllm.config import set_current_vllm_config
     from vllm.distributed.kv_transfer.kv_connector.utils import (
@@ -312,7 +311,7 @@ def allocate(engine, kv_mib, scratch_dir, cleanup):
         kv_bytes += kv_cache_utils._pool_bytes_per_block(engine, groups)
     else:
         kv_bytes = kv_mib << 20
-    print(f"Host KV pool budget: {kv_bytes / (1 << 20):.1f} MiB", flush=True)
+    print(f"KV pool budget on {kv_device}: {kv_bytes / (1 << 20):.1f} MiB", flush=True)
     inputs = gather((specs, kv_bytes))
     all_specs, budgets = zip(*inputs)
     configs = kv_cache_utils.get_kv_cache_configs(
@@ -389,13 +388,11 @@ def allocate(engine, kv_mib, scratch_dir, cleanup):
             f"layers={len(group.layer_names)}",
             flush=True,
         )
-    views = model_runner.init_kv_cache(
-        layers, physical, torch.device("cpu"), sizes, engine
-    )
+    views = model_runner.init_kv_cache(layers, physical, kv_device, sizes, engine)
     for name, view in views.items():
         tensors = view if isinstance(view, (tuple, list)) else (view,)
-        if any(t.device.type != "cpu" for t in tensors):
-            raise RuntimeError(f"Native allocator placed {name} outside CPU memory")
+        if any(t.device != kv_device for t in tensors):
+            raise RuntimeError(f"Native allocator placed {name} outside {kv_device}")
     print(
         f"{type(model).__name__}: {packing.name}, {config.num_blocks} blocks, {len(views)} layer views"
     )

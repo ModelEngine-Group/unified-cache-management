@@ -124,8 +124,16 @@ SPEC_PROFILES = {
 def profile_args(profile):
     tp, service_block = profile
     args = [
-        "--tp", str(tp), "--pcp", "1", "--dcp", "1",
-        "--tokens", "32K", "--max-num-batched-tokens", "8K",
+        "--tp",
+        str(tp),
+        "--pcp",
+        "1",
+        "--dcp",
+        "1",
+        "--tokens",
+        "32K",
+        "--max-num-batched-tokens",
+        "8K",
     ]
     if service_block is not None:
         args += ["--block-size", str(service_block)]
@@ -136,11 +144,25 @@ def fixed_case_args(args):
     # Do not silently change the configuration associated with a case ID.
     # The generic test_model_check entry remains available for custom probes.
     fixed = {
-        "--tp", "--pcp", "--dcp", "--block-size", "--chunk-size",
-        "--tokens", "--max-num-batched-tokens", "--kv-mib", "--dtype",
-        "--quantization", "--kv-cache-dtype", "--indexer-kv-dtype",
-        "--mamba-ssm-cache-dtype", "--model", "--speculative-config",
-        "--assume-hit-percent", "--expect-policy", "--ucm-config",
+        "--tp",
+        "--pcp",
+        "--dcp",
+        "--block-size",
+        "--chunk-size",
+        "--tokens",
+        "--max-num-batched-tokens",
+        "--kv-mib",
+        "--dtype",
+        "--quantization",
+        "--kv-cache-dtype",
+        "--indexer-kv-dtype",
+        "--mamba-ssm-cache-dtype",
+        "--model",
+        "--speculative-config",
+        "--assume-hit-percent",
+        "--expect-policy",
+        "--ucm-config",
+        "--kv-device",
     }
     for arg in args:
         if arg.split("=", 1)[0] in fixed:

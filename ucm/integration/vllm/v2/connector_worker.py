@@ -50,9 +50,6 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
     failed_load_request_ids: set[str] = field(default_factory=set)
     job_results: set[JobResult] = field(default_factory=set)
 
-    def mark_load_failed(self, request_id: str) -> None:
-        self.failed_load_request_ids.add(request_id)
-
     def aggregate(self, other: KVConnectorWorkerMetadata) -> "UCMWorkerMetadata":
         self.failed_load_request_ids.update(other.failed_load_request_ids)
         self.job_results.update(other.job_results)
@@ -78,24 +75,19 @@ class UCMConnectorWorker:
         if context.rank is None:
             raise ValueError("Worker context requires parallel rank coordinates")
         self._parallel_rank = context.rank
-        self._store_worker = StoreWorkerClient(context.launch_config)
+        self._store_worker: StoreWorkerClient | None = None
         self._device = create_device()
         self._layer_load_tasks: dict[
             int | None, list[tuple[RequestMetadata, TransferTask]]
         ] = {}
         self._dump_tasks: list[TransferTask] = []
+        # Prefetch and offload own Store memory and can outlive the step.
+        self._prefetch_offload_tasks: dict[int, TransferTask] = {}
         self._dump_submitted_layer_ids: set[int] = set()
-        self._failed_load_request_ids: set[str] = set()
         self._failed_dump_jobs: set[int] = set()
-        # Keep completed tasks here until the step's parent results are reported.
-        self._transfer_tasks_by_job: dict[int, list[TransferTask]] = {}
-        self.layout: UCMKVCacheLayout | None = None
+        self.layout: UCMKVCacheLayout
         self._completion_metadata = UCMWorkerMetadata()
         self._invalid_vllm_block_ids = set()
-
-    def check_io_drained(self) -> None:
-        if self._layer_load_tasks or self._dump_tasks:
-            raise RuntimeError("UCM transfers still own KV pointers")
 
     def _record_transfer_event(self) -> int:
         if self._device is None:
@@ -119,32 +111,27 @@ class UCMConnectorWorker:
             self._release_transfer_event(task)
 
     def shutdown(self) -> None:
+        device_tasks = [
+            task for tasks in self._layer_load_tasks.values() for _, task in tasks
+        ] + self._dump_tasks
         first_error = None
-        for layer_tasks in self._layer_load_tasks.values():
-            for _, task in layer_tasks:
-                try:
-                    self._wait_transfer(task)
-                except Exception as exc:
-                    first_error = first_error or exc
-        for task in self._dump_tasks:
+        for task in device_tasks:
             try:
                 self._wait_transfer(task)
             except Exception as exc:
                 first_error = first_error or exc
         try:
-            self._store_worker.close()
+            if self._store_worker is not None:
+                self._store_worker.close()
         except Exception as exc:
             first_error = first_error or exc
         else:
-            # close drains the backend; keep descriptors if it cannot finish.
             self._layer_load_tasks.clear()
             self._dump_tasks.clear()
+            self._prefetch_offload_tasks.clear()
         finally:
-            for job_tasks in self._transfer_tasks_by_job.values():
-                for task in job_tasks:
-                    self._release_transfer_event(task)
-        if first_error is None:
-            self._transfer_tasks_by_job.clear()
+            for task in device_tasks:
+                self._release_transfer_event(task)
         if first_error is not None:
             raise first_error
 
@@ -155,24 +142,41 @@ class UCMConnectorWorker:
             kv_cache_config=self._kv_cache_config,
             num_hidden_layers=self._num_hidden_layers,
         )
-        self.layout.build_store_layouts(self.parallel_topology, self._parallel_rank)
+        requested_chunk_size = self.context.launch_config.get("chunk_size")
+        self.layout.build_store_layouts(
+            self.parallel_topology,
+            self._parallel_rank,
+            chunk_size=(
+                int(requested_chunk_size) if requested_chunk_size is not None else None
+            ),
+        )
+        self.spec = self.layout.spec
+        if self._store_worker is None:
+            from ucm.integration.vllm.device import get_current_device_id
+
+            self._cache_block_size = max(
+                self.layout.store_sizes_by_policy.values(), default=0
+            )
+            device_id = get_current_device_id() if self._device is not None else 0
+            self._store_worker = StoreWorkerClient(
+                self.context.launch_config,
+                self.context.store_runtime(self._cache_block_size, device_id=device_id),
+            )
 
     def get_handshake_metadata(self) -> UCMStorageHandshake | None:
         # PCP ranks share a stage's policies. Report one representative per TP rank
         # so CUDA's (pp_rank, tp_rank) handshake keys remain unique.
         if self._parallel_rank.pcp_rank != 0:
             return None
-        if self.layout is None:
-            raise RuntimeError("Register KV caches before the storage handshake")
         return UCMStorageHandshake(
             rank=self._parallel_rank,
-            store_sizes_by_policy=dict(self.layout.store_sizes_by_policy),
+            cache_block_size=self._cache_block_size,
+            spec=self.spec if self.parallel_topology.pp_size > 1 else None,
         )
 
     def _mark_load_failed(self, request_metadata: RequestMetadata) -> None:
         request_id = request_metadata.request_id
-        self._failed_load_request_ids.add(request_id)
-        self._completion_metadata.mark_load_failed(request_id)
+        self._completion_metadata.failed_load_request_ids.add(request_id)
         # Match the existing load_failure_patch's group 0 block table.
         self._invalid_vllm_block_ids.update(
             int(block_id)
@@ -187,44 +191,43 @@ class UCMConnectorWorker:
         )
 
     def begin_step(self, connector_metadata: UCMConnectorMetadata) -> None:
-        # No work from a previous step may outlive its KV block ownership.
         # Binding always precedes forward; start_load_kv may run afterwards
         # in 0.30 when this step has no synchronous loads.
-        self.check_io_drained()
         self._dump_submitted_layer_ids.clear()
-        self._failed_load_request_ids.clear()
         self._failed_dump_jobs.clear()
-        self._transfer_tasks_by_job.clear()
         for request_metadata in connector_metadata.requests.values():
             if request_metadata.prepare_get_failed:
                 self._mark_load_failed(request_metadata)
 
     def _report_job_result(self, job_id: int, success: bool) -> None:
-        job_tasks = self._transfer_tasks_by_job.get(job_id, ())
         self._completion_metadata.job_results.add(
-            JobResult(
-                job_id,
-                self._parallel_rank,
-                success and all(task.success is True for task in job_tasks),
-            )
+            JobResult(job_id, self._parallel_rank, success)
         )
 
     def _execute_prefetch(self, prefetch_job: PreparedJob) -> None:
-        success = True
         # All workers in this DP replica share shm, so rank (0, 0, 0) alone
         # submits the prefetch. Other ranks acknowledge the no-op so the
         # scheduler can collect a result from every rank for this job.
         if self._parallel_rank == ParallelRank(tp_rank=0, pp_rank=0, pcp_rank=0):
             try:
                 prefetch_task = self._store_worker.submit_prefetch(prefetch_job)
-                self._transfer_tasks_by_job[prefetch_job.job_id] = [prefetch_task]
-                self._store_worker.wait(prefetch_task)
+                self._prefetch_offload_tasks[prefetch_job.job_id] = prefetch_task
             except StoreIOError:
                 logger.warning(
                     "UCM prefetch failed; recomputing this request", exc_info=True
                 )
-                success = False
-        self._report_job_result(prefetch_job.job_id, success)
+                self._report_job_result(prefetch_job.job_id, False)
+        else:
+            self._report_job_result(prefetch_job.job_id, True)
+
+    def _execute_offload(self, job: PreparedJob) -> None:
+        try:
+            self._prefetch_offload_tasks[job.job_id] = (
+                self._store_worker.submit_offload(job)
+            )
+        except StoreIOError:
+            logger.warning("UCM offload submission failed", exc_info=True)
+            self._report_job_result(job.job_id, False)
 
     def _submit_load(
         self,
@@ -238,6 +241,7 @@ class UCMConnectorWorker:
         if not transfer_batches:
             return
         load_job = load_plan.prepared_job
+        assert load_job is not None
         # MRV2 may still be zeroing blocks or copying Mamba state on the
         # compute stream. Get must wait before writing those device ranges.
         event_handle = self._record_transfer_event()
@@ -253,7 +257,6 @@ class UCMConnectorWorker:
             if event_handle:
                 self._device.destroy_event_handle(event_handle)
             raise
-        self._transfer_tasks_by_job.setdefault(load_job.job_id, []).append(load_task)
         self._layer_load_tasks.setdefault(layer_id, []).append(
             (request_metadata, load_task)
         )
@@ -266,10 +269,14 @@ class UCMConnectorWorker:
         forward_context: "ForwardContext",
         **kwargs: Any,
     ) -> None:
+        if self._parallel_rank == ParallelRank(tp_rank=0, pp_rank=0, pcp_rank=0):
+            for job in connector_metadata.offload_jobs:
+                self._execute_offload(job)
+        failed_loads = self._completion_metadata.failed_load_request_ids
         for request_metadata in connector_metadata.requests.values():
             if request_metadata.prefetch_job is not None:
                 self._execute_prefetch(request_metadata.prefetch_job)
-            if request_metadata.request_id in self._failed_load_request_ids:
+            if request_metadata.request_id in failed_loads:
                 continue
             try:
                 for load_plan in request_metadata.load_plans:
@@ -329,7 +336,6 @@ class UCMConnectorWorker:
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self.use_layerwise:
             return
-        assert self.layout is not None
         layer_id = self.layout.layer_id_by_name.get(layer_name)
         if layer_id is not None:
             # An attention hook also waits for indexer caches of the same layer.
@@ -349,14 +355,17 @@ class UCMConnectorWorker:
     def _submit_request_dumps(
         self, request_metadata: RequestMetadata, layer_id: int | None = None
     ) -> None:
-        if request_metadata.request_id in self._failed_load_request_ids:
+        failed_loads = self._completion_metadata.failed_load_request_ids
+        if request_metadata.request_id in failed_loads:
             return
         for dump_plan in request_metadata.dump_plans:
             dump_job = dump_plan.prepared_job
             if dump_job is None or dump_job.job_id in self._failed_dump_jobs:
                 continue
             transfer_batches = self._build_transfer_batches(
-                dump_plan, is_dump=True, layer_id=layer_id
+                dump_plan,
+                is_dump=True,
+                layer_id=layer_id,
             )
             if not transfer_batches:
                 continue
@@ -394,7 +403,6 @@ class UCMConnectorWorker:
             if event_handle:
                 self._device.destroy_event_handle(event_handle)
             raise
-        self._transfer_tasks_by_job.setdefault(dump_job.job_id, []).append(dump_task)
         self._dump_tasks.append(dump_task)
 
     def save_kv_layer(
@@ -412,8 +420,7 @@ class UCMConnectorWorker:
             self._dump_layer(connector_metadata, layer_id)
 
     def wait_for_save(self, connector_metadata: UCMConnectorMetadata) -> None:
-        for layer_id in tuple(self._layer_load_tasks):
-            self._wait_layer_load(layer_id)
+        self._drain_load_tasks()
         if self.use_layerwise:
             try:
                 for layer_id in self.layout.layer_ids:
@@ -424,15 +431,12 @@ class UCMConnectorWorker:
             for request_metadata in connector_metadata.requests.values():
                 self._submit_request_dumps(request_metadata)
                 self._drain_dump_tasks()
+        failed_loads = self._completion_metadata.failed_load_request_ids
         for request_metadata in connector_metadata.requests.values():
-            load_succeeded = (
-                request_metadata.request_id not in self._failed_load_request_ids
-            )
+            load_succeeded = request_metadata.request_id not in failed_loads
             # Empty ranks acknowledge each prepared job after local IO drains.
-            for dispatch_plan in (
-                request_metadata.load_plans + request_metadata.dump_plans
-            ):
-                prepared_job = dispatch_plan.prepared_job
+            for plan in request_metadata.load_plans + request_metadata.dump_plans:
+                prepared_job = plan.prepared_job
                 if prepared_job is None:
                     continue
                 self._report_job_result(
@@ -441,14 +445,19 @@ class UCMConnectorWorker:
                     and prepared_job.job_id not in self._failed_dump_jobs,
                 )
 
+    def _drain_load_tasks(self) -> None:
+        for layer_id in tuple(self._layer_load_tasks):
+            self._wait_layer_load(layer_id)
+
     def poll_finished(self) -> None:
         # wait() and get_finished() consume the same native completion queue.
         # StoreWorkerClient caches consumed terminal status, so a later layer wait
         # never waits for a second notification of that job.
         self._store_worker.poll_finished()
-        for job_tasks in self._transfer_tasks_by_job.values():
-            for task in job_tasks:
-                self._release_transfer_event(task)
+        for job_id, task in tuple(self._prefetch_offload_tasks.items()):
+            if task.success is not None:
+                self._report_job_result(job_id, task.success)
+                del self._prefetch_offload_tasks[job_id]
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if (
@@ -473,13 +482,7 @@ class UCMConnectorWorker:
         layer_id: int | None = None,
     ) -> tuple[TransferBatch, ...]:
         """Resolve one prepared plan into this rank's device-to-store ranges."""
-        # Scheduler emits keys only for stages whose handshake declared this
-        # policy; that declaration comes from this stage's store layouts.
-        stage_ucm_keys = dispatch_plan.ucm_keys_by_pp_rank.get(
-            self._parallel_rank.pp_rank
-        )
-        if stage_ucm_keys is None:
-            return ()
+        ucm_keys = dispatch_plan.ucm_keys
         transfer_batches = []
         chunk_indices = dispatch_plan.token_starts // self.spec.chunk_size
         # A State plan restores the same source ranges to running and checkpoint
@@ -522,9 +525,7 @@ class UCMConnectorWorker:
             )
             transfer_batches.append(
                 TransferBatch(
-                    ucm_keys=tuple(
-                        stage_ucm_keys[int(row)] for row in selected_chunk_rows
-                    ),
+                    ucm_keys=tuple(ucm_keys[int(row)] for row in selected_chunk_rows),
                     device_ptrs=device_ptrs,
                     byte_sizes=byte_sizes,
                     store_offsets=store_offsets,

@@ -11,30 +11,30 @@ def components(view):
     return view if isinstance(view, (tuple, list)) else (view,)
 
 
-def fill_host_kv(views):
+def fill_kv(views):
     """Fill each shared backing once, so misaddressed data is visible on readback."""
     import torch
 
     random = np.random.default_rng(1579)
-    seen = set()
+    buffers = {}
     for view in views.values():
         for tensor in components(view):
             storage = tensor.untyped_storage()
-            if storage.data_ptr() in seen:
+            if storage.data_ptr() in buffers:
                 continue
-            seen.add(storage.data_ptr())
-            raw = (
-                torch.empty(0, dtype=torch.uint8)
-                .set_(storage, 0, (storage.nbytes(),), (1,))
-                .numpy()
+            raw = torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(
+                storage, 0, (storage.nbytes(),), (1,)
             )
-            for start in range(0, raw.size, 1 << 20):
+            buffers[storage.data_ptr()] = raw
+            for start in range(0, raw.numel(), 1 << 20):
                 part = raw[start : start + (1 << 20)]
-                part[:] = random.integers(0, 256, part.size, dtype=np.uint8)
+                data = random.integers(0, 256, part.numel(), dtype=np.uint8)
+                part.copy_(torch.from_numpy(data))
+    return [buffers[ptr] for ptr in sorted(buffers)]
 
 
 def spans(tensor):
-    """Enumerate the occupied byte intervals of a strided host tensor slice."""
+    """Enumerate the occupied byte intervals of a strided tensor slice."""
     width = tensor.element_size()
     dims = sorted(
         (stride, size)
@@ -166,6 +166,7 @@ def expected_records(
         gid
         for gid in config.prefix_cacheable_group_ids
         if config.kv_cache_groups[gid].layer_names
+        and layout.spec.groups[gid].restore_policy is not None
     }
     if expected_groups != layout.store_layouts.keys() or len(tables) != len(
         config.kv_cache_groups

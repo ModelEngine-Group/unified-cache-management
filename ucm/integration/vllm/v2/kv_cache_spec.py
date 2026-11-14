@@ -37,7 +37,7 @@ class RestorePolicy(Enum):
 
     @property
     def tag(self) -> bytes:
-        """Policy ID stored in the low three bits of a chunk ID's final byte."""
+        """Policy ID stored in a chunk key's final byte."""
         return _RESTORE_POLICY_TAGS[self]
 
 
@@ -390,10 +390,13 @@ def _sliding_tail_tokens(
     hf_text_config: Any,
     device_type: str,
     num_attn_module: int,
-) -> int:
+) -> int | None:
     """Resolve logical history retention; only legacy compressors subtract a pool."""
-    # The parser has already rejected empty persistent sliding groups.
     layer_specs = _concrete_specs(group)
+    if not layer_specs:
+        # An empty projection can lose the layer names needed to distinguish
+        # compressor caches. Its owning PP stage supplies the tail at handshake.
+        return None
     tail_sizes = set()
     for layer_name, spec in layer_specs:
         tail_tokens = spec.sliding_window
@@ -473,6 +476,7 @@ def parse_kv_cache_config(
     dcp_size: int = 1,
     device_type: str = "npu",
     num_attn_module: int = 1,
+    defer_chunk_size: bool = False,
 ) -> UCMKVCacheSpec:
     """Compile group persistence and restore policy on scheduler and worker.
 
@@ -514,11 +518,6 @@ def parse_kv_cache_config(
             raise ValueError("connector v2 requires mamba_cache_mode='align'")
         is_sliding_window = not spec_kinds.isdisjoint(_SLIDING_KINDS)
         if is_sliding_window:
-            if not native_group.layer_names:
-                raise NotImplementedError(
-                    f"Persistent SWA group {group_id} has no local PP layers; "
-                    "empty persistent SWA groups are not supported"
-                )
             tail_tokens = _sliding_tail_tokens(
                 native_group, hf_text_config, device_type, num_attn_module
             )
@@ -544,12 +543,16 @@ def parse_kv_cache_config(
                 dcp_size=group_dcp_size if is_persistent else 1,
             )
         )
-    selected_chunk_size = _select_chunk_size(
-        group_specs,
-        scheduler_block_size,
-        chunk_size,
-        tokens_per_state,
-        dcp_size,
+    selected_chunk_size = (
+        scheduler_block_size
+        if defer_chunk_size
+        else _select_chunk_size(
+            group_specs,
+            scheduler_block_size,
+            chunk_size,
+            tokens_per_state,
+            dcp_size,
+        )
     )
     spec = UCMKVCacheSpec(
         tuple(group_specs),

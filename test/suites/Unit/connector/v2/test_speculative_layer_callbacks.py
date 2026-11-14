@@ -17,9 +17,7 @@ def test_repeated_layer_visits_submit_once_per_step():
         layer_id_by_name={"layer.0.attn": 0, "layer.0.indexer": 0, "layer.1": 1}
     )
     worker._dump_submitted_layer_ids = set()
-    worker._failed_load_request_ids = set()
     worker._failed_dump_jobs = set()
-    worker._transfer_tasks_by_job = {}
     worker._layer_load_tasks = {}
     worker._dump_tasks = []
     worker._submit_request_dumps = Mock()

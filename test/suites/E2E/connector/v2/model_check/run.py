@@ -1,4 +1,4 @@
-"""Card-less Connector v2 model-check for chunked prefill and external prefix hits."""
+"""Connector v2 model-check for chunked prefill and external prefix hits."""
 
 import argparse
 import json
@@ -26,7 +26,17 @@ def arguments():
         type=Path,
         help="local model directory or its config.json",
     )
-    p.add_argument("--platform", choices=("cuda-sim", "ascend-sim"), required=True)
+    p.add_argument(
+        "--platform",
+        choices=("cuda-sim", "ascend-sim", "cuda", "ascend"),
+        required=True,
+    )
+    p.add_argument(
+        "--kv-device",
+        choices=("cpu", "cuda", "npu"),
+        default="cpu",
+        help="memory used for KV and Store readback (default: cpu)",
+    )
     p.add_argument("--cuda-capability", metavar="MAJOR.MINOR")
     p.add_argument("--ascend-soc", help="installed vllm-ascend SoC family, e.g. A2")
     p.add_argument(
@@ -63,7 +73,7 @@ def arguments():
     p.add_argument(
         "--kv-mib",
         type=int,
-        help="host KV pool budget in MiB (default: size one request with the platform KV planner)",
+        help="KV pool budget in MiB (default: size one request with the platform KV planner)",
     )
     p.add_argument("--tp", type=int, default=1, help="tensor parallel size")
     p.add_argument("--pcp", type=int, default=1, help="prefill context parallel size")
@@ -92,7 +102,7 @@ def arguments():
     modes.add_argument(
         "--ucm-config",
         type=Path,
-        help="also Dump and read back with this real, CPU-pointer-capable Store v2 YAML",
+        help="also Dump and read back with this Store v2 YAML and matching DMA build",
     )
     args = p.parse_args()
     if args.model.name == "config.json":
@@ -144,8 +154,19 @@ def arguments():
             r"[1-9][0-9]*\.[0-9]", args.cuda_capability or ""
         ):
             p.error("cuda-sim requires --cuda-capability, e.g. 9.0")
-    elif args.cuda_capability or not args.ascend_soc:
+    elif args.platform == "ascend-sim" and (
+        args.cuda_capability or not args.ascend_soc
+    ):
         p.error("ascend-sim requires --ascend-soc, e.g. A2")
+    elif args.platform in ("cuda", "ascend") and (
+        args.cuda_capability or args.ascend_soc
+    ):
+        p.error(
+            "Real platforms discover the CUDA capability or Ascend SoC from the device"
+        )
+    required_platform = {"cuda": "cuda", "npu": "ascend"}.get(args.kv_device)
+    if required_platform and args.platform != required_platform:
+        p.error(f"--kv-device {args.kv_device} requires --platform {required_platform}")
     return args
 
 
@@ -200,18 +221,18 @@ def schedule_step(scheduler, req, cursor, hit, first, args):
     )
 
 
-def run(args, cleanup, scratch):
+def run(args, cleanup, scratch, kv_device):
     from native_cache import allocate, make_engine
 
     engine = make_engine(args)
     cfg, sched_cfg, block, hash_size, views = allocate(
-        engine, args.kv_mib, scratch, cleanup
+        engine, args.kv_mib, scratch, cleanup, kv_device=kv_device
     )
     # Import the runtime entry points after the platform has installed its patches.
     import torch.distributed as dist
     from parallel import broadcast, inspect_workers
     from plans import assume_prefix, check_batches, unopened_clients
-    from ranges import expected_records, fill_host_kv
+    from ranges import expected_records, fill_kv
     from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
     from vllm.sampling_params import SamplingParams
@@ -237,14 +258,15 @@ def run(args, cleanup, scratch):
         worker = KVConnectorFactory.create_connector(
             engine, KVConnectorRole.WORKER, cfg
         )
-    if args.ucm_config:
-        cleanup.callback(worker.shutdown)
-        fill_host_kv(views)
-    worker.connector_worker._device = None  # host KV has no prerequisite device event
-    worker.register_kv_caches(views)
-    handshakes, placements = inspect_workers(worker, cfg, args)
-    if root:
-        scheduler.connector.set_xfer_handshake_metadata_pp_aware(handshakes)
+        if args.ucm_config:
+            cleanup.callback(worker.shutdown)
+        if kv_device.type == "cpu":
+            worker.connector_worker._device = None
+        worker.register_kv_caches(views)
+        handshakes, placements = inspect_workers(worker, cfg, args)
+        if root:
+            scheduler.connector.set_xfer_handshake_metadata_pp_aware(handshakes)
+    kv_buffers = fill_kv(views) if args.ucm_config else []
     layout = worker.connector_worker.layout
     chunk = layout.spec.chunk_size
     if args.tokens < chunk:
@@ -333,6 +355,8 @@ def run(args, cleanup, scratch):
                     req.request_id,
                     views,
                     dumps,
+                    kv_buffers,
+                    kv_device,
                 )
             else:
                 scheduler.update_from_output(output, model_output)
@@ -343,7 +367,12 @@ def run(args, cleanup, scratch):
 
     if root:
         scheduler.finish_requests(req.request_id, RequestStatus.FINISHED_ABORTED)
-        scheduler.schedule()
+        if args.ucm_config:
+            from dump import finish_store_work
+
+            finish_store_work(engine, scheduler, worker)
+        else:
+            scheduler.schedule()
     if not (num_get or num_dump):
         raise AssertionError(
             "No complete Get or Dump window was checked for this request"
@@ -365,14 +394,36 @@ def main():
     if launch(args):
         return
     os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
-    from host_runtime import install
+    import torch
+
+    kv_device = torch.device("cpu")
 
     if args.platform == "cuda-sim":
+        from host_runtime import install
+
         install("cuda", args.cuda_capability)
-    else:
+    elif args.platform == "ascend-sim":
+        from host_runtime import install
+
         install("npu", args.ascend_soc.upper())
+    else:
+        if args.platform == "ascend":
+            import torch_npu  # noqa: F401
+
+        from vllm.platforms import current_platform
+
+        device_type = "npu" if args.platform == "ascend" else "cuda"
+        if current_platform.device_type != device_type:
+            raise RuntimeError(
+                f"Expected {device_type}, vLLM selected {current_platform.device_type}"
+            )
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        accelerator = torch.device(device_type, local_rank)
+        current_platform.set_device(accelerator)
+        if args.kv_device != "cpu":
+            kv_device = accelerator
     with TemporaryDirectory() as scratch, ExitStack() as cleanup:
-        steps, gets, dumps = run(args, cleanup, scratch)
+        steps, gets, dumps = run(args, cleanup, scratch, kv_device)
     if int(os.environ.get("RANK", "0")) != 0:
         return
     mode = (

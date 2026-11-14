@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 
 if TYPE_CHECKING:
-    from .group_layout import KVCacheGroupLayout
+    from collections.abc import Mapping
+
+    from .group_layout import GroupLayoutMetadata, KVCacheGroupLayout
     from .kv_cache_spec import UCMKVCacheGroupSpec, UCMKVCacheSpec
     from .runtime import ParallelRank, ParallelTopology
 
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
 class UCMShard(NamedTuple):
     tp_shard: int
     dcp_shard: int
+    pp_rank: int
 
 
 def shard_replicas(
@@ -38,7 +41,9 @@ def shard_replicas(
                     dcp_shard = pcp_rank
                 else:
                     dcp_shard = tp_rank * topology.pcp_size + pcp_rank
-            shard = UCMShard(tp_rank * tp_shards // topology.tp_size, dcp_shard)
+            shard = UCMShard(
+                tp_rank * tp_shards // topology.tp_size, dcp_shard, pp_rank
+            )
             owners.setdefault(shard, []).append(
                 ParallelRank(tp_rank, pp_rank, pcp_rank)
             )
@@ -51,7 +56,7 @@ class GroupStoreLayout:
 
     spec: UCMKVCacheSpec
     group_id: int
-    group_layout: KVCacheGroupLayout
+    group_layout: KVCacheGroupLayout | None
     tp_shards: int
     shard: UCMShard | None
     replica_index: int
@@ -76,30 +81,35 @@ class GroupStoreLayout:
         cls,
         kv_cache_spec: UCMKVCacheSpec,
         group_id: int,
-        group_layout: KVCacheGroupLayout,
+        group_layout: KVCacheGroupLayout | None,
         parallel_topology: ParallelTopology,
         parallel_rank: ParallelRank,
+        metadata_by_stage: Mapping[int, GroupLayoutMetadata],
     ) -> GroupStoreLayout:
         """Assemble a full block, expand to a chunk, then create the final layout."""
         group_spec = kv_cache_spec.groups[group_id]
-        # PP objects are independent. Only this stage contributes bytes;
-        # the shard coordinates describe TP/DCP pieces inside the stage.
-        group_metadata = group_layout.export_metadata(parallel_topology.tp_size)
-        tp_shards = group_metadata.tp_shards
+        group_metadata = metadata_by_stage.get(parallel_rank.pp_rank)
+        tp_shards = group_metadata.tp_shards if group_metadata is not None else 0
         global_block_sizes, global_states_per_block = [], []
         local_segment_start, local_segment_count, local_shard = 0, 0, None
         replica_index, replica_count = 0, 1
-        for ucm_shard, replica_ranks in shard_replicas(
-            parallel_topology, parallel_rank.pp_rank, tp_shards, group_spec.dcp_sharded
-        ).items():
+        owners = {
+            shard: replicas
+            for pp_rank, metadata in metadata_by_stage.items()
+            for shard, replicas in shard_replicas(
+                parallel_topology, pp_rank, metadata.tp_shards, group_spec.dcp_sharded
+            ).items()
+        }
+        for ucm_shard, replica_ranks in sorted(owners.items()):
+            metadata = metadata_by_stage[ucm_shard.pp_rank]
             if parallel_rank in replica_ranks:
                 local_segment_start = len(global_block_sizes)
-                local_segment_count = len(group_metadata.sizes)
+                local_segment_count = len(metadata.sizes)
                 local_shard = ucm_shard
                 replica_index = replica_ranks.index(parallel_rank)
                 replica_count = len(replica_ranks)
-            global_block_sizes.extend(group_metadata.sizes)
-            global_states_per_block.extend(group_metadata.states_per_block)
+            global_block_sizes.extend(metadata.sizes)
+            global_states_per_block.extend(metadata.states_per_block)
         block_token_span = group_spec.block_token_span
         blocks_per_chunk = max(kv_cache_spec.blocks_per_chunk[group_id], 1)
         block_token_counts = np.full(
@@ -122,7 +132,9 @@ class GroupStoreLayout:
         block_segment_states = np.asarray(global_states_per_block, dtype=np.uint64)
         for token_count in block_token_counts:
             if token_count and token_count != block_token_span:
-                if not group_metadata.supports_partial_tokens:
+                if not all(
+                    meta.supports_partial_tokens for meta in metadata_by_stage.values()
+                ):
                     raise ValueError(
                         f"KV cache group {group_id} requires whole-block access: "
                         f"its KV layout is not token-contiguous for {int(token_count)}-token slices"
@@ -176,6 +188,7 @@ class GroupStoreLayout:
         segment_mask: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Final [chunk,entry] offsets, ptrs, sizes; layout compilation is over."""
+        assert self.group_layout is not None
         chunk_count = len(token_starts)
         segment_columns = slice(None) if segment_mask is None else segment_mask
         segment_byte_sizes = self.chunk_segment_bytes[:, segment_columns].copy()

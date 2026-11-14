@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -10,8 +9,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
-
-from ucm.utils import Config
 
 from .connector_scheduler import (
     UCMConnectorMetadata,
@@ -46,8 +43,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.context = UCMRuntimeContext.from_vllm_config(
             vllm_config, role, kv_cache_config
         )
+        graph_mode = vllm_config.compilation_config.cudagraph_mode
+        has_full_graphs = (
+            not vllm_config.model_config.enforce_eager
+            and graph_mode is not None
+            and graph_mode.has_full_cudagraphs()
+        )
+        speculative = vllm_config.speculative_config
+        recompute_tokens = 1
+        if has_full_graphs:
+            recompute_tokens = 2 + (
+                speculative.num_speculative_tokens if speculative is not None else 0
+            )
         self.connector_scheduler = (
-            UCMConnectorScheduler(self.context)
+            UCMConnectorScheduler(self.context, recompute_tokens=recompute_tokens)
             if role == KVConnectorRole.SCHEDULER
             else None
         )
@@ -59,14 +68,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
             if role == KVConnectorRole.WORKER
             else None
-        )
-
-    @classmethod
-    def requires_piecewise_for_cudagraph(cls, extra_config):
-        return bool(
-            Config(SimpleNamespace(kv_connector_extra_config=extra_config))
-            .get_config()
-            .get("use_layerwise", True)
         )
 
     @property
@@ -119,14 +120,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector_worker.begin_step(connector_metadata)
         super().bind_connector_metadata(connector_metadata)
 
-    def clear_connector_metadata(self):
-        self.connector_worker.check_io_drained()
-        super().clear_connector_metadata()
-
     def start_load_kv(self, forward_context, **kwargs):
         if self.has_connector_metadata():
             self.connector_worker.start_load_kv(
-                self._get_connector_metadata(), forward_context, **kwargs
+                self._get_connector_metadata(),
+                forward_context,
+                **kwargs,
             )
 
     def wait_for_layer_load(self, layer_name):
@@ -158,7 +157,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.connector_worker.get_block_ids_with_load_errors()
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
-        return None
+        self.connector_scheduler.update_state_after_alloc(request, num_external_tokens)
 
     def request_finished_all_groups(self, request, block_ids):
         self.connector_scheduler.request_finished(request.request_id)

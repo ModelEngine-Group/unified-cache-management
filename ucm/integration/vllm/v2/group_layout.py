@@ -127,7 +127,7 @@ class KVCacheGroupLayout:
         self.block_first = self._block_first_span() if block_first_layout else None
 
     def export_metadata(self, tp_size: int) -> GroupLayoutMetadata:
-        """Export actual segment geometry for the stage-local store template."""
+        """Export this stage's segment geometry for the shared Store layout."""
         from .kv_cache_spec import _spec_tp_shards
 
         tp_shards = lcm(
