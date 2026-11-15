@@ -29,9 +29,6 @@
 
 #define SLAB_NUM 999
 #define CQ_QUEN_HEAD "/IPC_for_task_"
-#ifdef __cplusplus
-using namespace std;
-#endif
 
 typedef struct {
     int max_qp_wr;

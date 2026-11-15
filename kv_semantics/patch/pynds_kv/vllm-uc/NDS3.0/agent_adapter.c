@@ -1,8 +1,12 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 #include "agent_adapter.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <unistd.h>
 #include "KVClientAgent.h"
 #include "log.h"
@@ -11,7 +15,9 @@
 
 // 后台线程：周期性轮询Agent，检测OSD上下线事件并触发hash环更新
 pthread_t update_hash_ring_tid;
-bool update_thread_running = false;
+std::atomic<bool> update_thread_running{false};
+std::mutex update_wait_mutex;
+std::condition_variable update_wait_cv;
 
 NDS_ERROR_T (*client_update_cb)() = NULL;
 uint64_t old_view_version = 0;
@@ -73,10 +79,17 @@ NDS_ERROR_T AgentInit(const char* path_config)
 
 NDS_ERROR_T AgentDestroy()
 {
-    update_thread_running = false;
-    pthread_join(update_hash_ring_tid, NULL);
+    int join_ret = 0;
+    if (update_thread_running.exchange(false)) {
+        update_wait_cv.notify_one();
+        join_ret = pthread_join(update_hash_ring_tid, NULL);
+    }
     client_update_cb = NULL;
     old_view_version = 0;
+    if (join_ret != 0) {
+        LOG_E("Failed to join UpdateHashRing thread: %d", join_ret);
+        return NDS_FAILED;
+    }
     return NDS_SUCCESS;
 }
 
@@ -91,10 +104,10 @@ NDS_ERROR_T AgentSetUpdateCb(NDS_ERROR_T (*update_cb)(), uint64_t view_version)
     client_update_cb = update_cb;
     old_view_version = view_version;
 
-    if (update_thread_running) { return NDS_SUCCESS; }
-    update_thread_running = true;
+    if (update_thread_running.load()) { return NDS_SUCCESS; }
+    update_thread_running.store(true);
     if (pthread_create(&update_hash_ring_tid, NULL, UpdateHashRing, NULL)) {
-        update_thread_running = false;
+        update_thread_running.store(false);
         perror("Create UpdateHashRing thread failed");
         return NDS_FAILED;
     }
@@ -104,7 +117,7 @@ NDS_ERROR_T AgentSetUpdateCb(NDS_ERROR_T (*update_cb)(), uint64_t view_version)
 void* UpdateHashRing(void* arg)
 {
     (void)arg;
-    while (update_thread_running) {
+    while (update_thread_running.load()) {
         uint64_t new_view_version = GetViewVersion();
         LOG_I("new_view_version: %ld", new_view_version);
         if (new_view_version != old_view_version && client_update_cb &&
@@ -115,7 +128,9 @@ void* UpdateHashRing(void* arg)
                 old_view_version, new_view_version);
             old_view_version = new_view_version;
         }
-        sleep(view_query_interval);
+        std::unique_lock<std::mutex> lock(update_wait_mutex);
+        update_wait_cv.wait_for(lock, std::chrono::seconds(view_query_interval),
+                                [] { return !update_thread_running.load(); });
     }
     return NULL;
 }

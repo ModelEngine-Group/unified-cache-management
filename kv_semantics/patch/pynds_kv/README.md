@@ -17,6 +17,8 @@ This source package targets NDS SDK v1.6. The Python package version is 1.7.3.
 - `setup.py`, `pyproject.toml`, `build.sh`: Python packaging and the compatibility build entry point.
 - `nds_wrapper.conf`: default wrapper I/O configuration, alongside `nds_config.conf.example`.
 - `key.txt`: 10,000 unique 16-digit block IDs used by the validation tests.
+- `pynds_kv_mock.py`: pure-Python in-memory mock for integration tests without NDS hardware.
+- `tests/test_mock_integration.py`: runnable mock API and multithreaded dispatch example.
 - `tests/test_read_write_correctness.py`: write/read data consistency validation.
 - `tests/test_multithread_get.py`: multithreaded read/write bandwidth measurement.
 
@@ -115,7 +117,32 @@ For writes, `length > value_size` is rejected. For `length < value_size`, the wr
 
 ## Validation tests
 
-The two test scripts require NumPy and a reachable NDS deployment. Use a dedicated test namespace because they write KV data.
+### Mock integration without NDS hardware
+
+Run the standard-library-only example from the package root. It does not import the native extension or require NumPy, pytest, a configuration file, or an NDS deployment:
+
+```bash
+python tests/test_mock_integration.py
+```
+
+The example covers `init`, `init_multi`, `put`, `get`, `batchPut`, `batchGet`, namespace isolation, prefix hit counts, data round trips, and concurrent batch dispatch. The mock records each API call and its thread ID for integration assertions.
+
+To test Python caller code without the native module, install the mock in `sys.modules` before importing that caller:
+
+```python
+import sys
+
+import pynds_kv_mock
+
+sys.modules["pynds_kv"] = pynds_kv_mock
+# Import the application or backend under test only after this point.
+```
+
+The mock validates Python-level integration and scheduling only. It does not validate the pybind11 extension, native ABI, MR registration, GIL release, RDMA transport, NDS server behavior, or performance.
+
+### Real NDS validation
+
+The two real-NDS test scripts below require NumPy and a reachable NDS deployment. Use a dedicated test namespace because they write KV data.
 
 ```bash
 # Write/read consistency, including prefix existence and namespace isolation checks.

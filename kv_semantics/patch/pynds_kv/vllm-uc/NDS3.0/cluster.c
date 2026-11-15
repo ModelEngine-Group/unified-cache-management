@@ -474,7 +474,7 @@ void AddConnToNewRing(
     for (int ip_index = 0; ip_index < IP_NUM_T; ip_index++) {
         struct rdma_connection* c = &conn[ip_index];
         if (!c->is_used) { continue; }
-        string dpu_ip(c->ip.server_ip);
+        std::string dpu_ip(c->ip.server_ip);
         AddConnToNsidRing(c, dpu_ip, new_dpuip_to_nsid, new_dpuip_to_dpuid, false);
     }
 }

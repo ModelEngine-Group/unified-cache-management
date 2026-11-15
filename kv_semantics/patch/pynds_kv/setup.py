@@ -71,6 +71,7 @@ setup(
     description="NDS interface with KV semantics",
     ext_modules=ext_modules,
     packages=[NATIVE_PACKAGE],
+    py_modules=["pynds_kv_mock"],
     extras_require={"test": ["pytest", "numpy", "xxhash"]},
     cmdclass={"build_ext": build_ext, "build_py": BuildPy},
     zip_safe=False,

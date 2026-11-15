@@ -37,17 +37,11 @@ size NDS_bin/libndsclient.so
 
 ## 测试样例
 
-`Test/test.c` 为简易一写一读样例：
-
-```bash
-g++ Test/test.c -o Test/test -L./NDS_bin -lndsclient -Wl,-rpath=./NDS_bin
-```
-
-使用前配置 `nds_config.conf` 中的地址；非集群构建设置 `sceneMode = 0`。
+无需盘框的 Python API 与多线程接入调度测试见 `../tests/test_mock_integration.py`。真实 NDS 读写一致性和性能测试见包根目录 `README.md` 的 Validation tests 一节。
 
 ## 参数配置注意
 
 - `QP_NUM_T`（`NDS_client.c`）配置 QP 个数，实际使用为 QP-1（QP0 为 Admin）。
 - `MAX_QP_WR`（`common.h`）配置每个 QP 最大在飞请求数量。
 - 以上参数修改后需要重新 `make`。
-- Test 中建议 `Batch 数 × QP_NUM_T × MAX_QP_WR < 8192`，避免超过盘框在飞资源上限。
+- 批量 I/O 测试建议 `Batch 数 × QP_NUM_T × MAX_QP_WR < 8192`，避免超过盘框在飞资源上限。
