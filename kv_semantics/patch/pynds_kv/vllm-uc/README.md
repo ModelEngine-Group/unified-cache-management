@@ -37,7 +37,7 @@ size NDS_bin/libndsclient.so
 
 ## 测试样例
 
-无需盘框的 Python API 与多线程接入调度测试见 `../tests/test_mock_integration.py`。真实 NDS 读写一致性和性能测试见包根目录 `README.md` 的 Validation tests 一节。
+无需盘框的 Python 读写接入测试见 `../tests/test_mock_integration.py`，包含 4 KiB 地址对齐检查与真实字节读回。真实 NDS 读写一致性和性能测试见包根目录 `README.md` 的 Validation tests 一节。
 
 ## 参数配置注意
 

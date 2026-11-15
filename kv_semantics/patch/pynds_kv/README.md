@@ -17,8 +17,7 @@ This source package targets NDS SDK v1.6. The Python package version is 1.7.3.
 - `setup.py`, `pyproject.toml`, `build.sh`: Python packaging and the compatibility build entry point.
 - `nds_wrapper.conf`: default wrapper I/O configuration, alongside `nds_config.conf.example`.
 - `key.txt`: 10,000 unique 16-digit block IDs used by the validation tests.
-- `pynds_kv_mock.py`: pure-Python in-memory mock for integration tests without NDS hardware.
-- `tests/test_mock_integration.py`: runnable mock API and multithreaded dispatch example.
+- `pynds_kv_mock.py`: optional in-memory test double with byte round trips and 4 KiB registration-alignment checks; `tests/test_mock_integration.py` is its runnable example.
 - `tests/test_read_write_correctness.py`: write/read data consistency validation.
 - `tests/test_multithread_get.py`: multithreaded read/write bandwidth measurement.
 
@@ -117,28 +116,29 @@ For writes, `length > value_size` is rejected. For `length < value_size`, the wr
 
 ## Validation tests
 
-### Mock integration without NDS hardware
+### In-memory mock without NDS hardware
 
-Run the standard-library-only example from the package root. It does not import the native extension or require NumPy, pytest, a configuration file, or an NDS deployment:
+The wheel includes the separate `pynds_kv_mock` module for customers developing a Python KV backend before NDS hardware is available. It is opt-in and never replaces the native extension automatically. Inject it before importing the backend under test:
+
+```python
+import sys
+import pynds_kv_mock
+
+sys.modules["pynds_kv"] = pynds_kv_mock
+# Import the customer KV backend only after this injection.
+```
+
+The mock stores actual bytes and supports `init`, `init_multi`, `is_exists`, `put`, `get`, `batchPut`, and `batchGet`. It models namespace isolation and consecutive-prefix existence semantics. Both initialization APIs reject zero or oversized lengths and buffer base addresses that are not 4 KiB aligned; the example demonstrates both a rejected unaligned buffer and a successful page-aligned `mmap` allocation.
+
+Run the standard-library-only example from the source package root:
 
 ```bash
 python tests/test_mock_integration.py
 ```
 
-The example covers `init`, `init_multi`, `put`, `get`, `batchPut`, `batchGet`, namespace isolation, prefix hit counts, data round trips, and concurrent batch dispatch. The mock records each API call and its thread ID for integration assertions.
+The example writes two different 64-byte blocks, clears the destination buffers, reads them back, and checks byte-for-byte equality, namespace isolation, and prefix hits. It requires neither NumPy, pytest, a configuration file, nor an NDS deployment.
 
-To test Python caller code without the native module, install the mock in `sys.modules` before importing that caller:
-
-```python
-import sys
-
-import pynds_kv_mock
-
-sys.modules["pynds_kv"] = pynds_kv_mock
-# Import the application or backend under test only after this point.
-```
-
-The mock validates Python-level integration and scheduling only. It does not validate the pybind11 extension, native ABI, MR registration, GIL release, RDMA transport, NDS server behavior, or performance.
+This is a process-local Python integration aid only. It does not validate the native ABI, actual MR registration, RDMA transport, GIL behavior, NDS server behavior, or performance.
 
 ### Real NDS validation
 
