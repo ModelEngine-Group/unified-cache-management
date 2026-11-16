@@ -14,6 +14,7 @@ CONFIG_ENV = "UCM_SGLANG_MODEL_CHECK_CONFIG"
 class CheckConfig:
     model: str
     mode: str = "inspect"
+    integration: str = "hicache"
     device_id: str = "0"
     platform: str = "auto"
     page_size: int = 0
