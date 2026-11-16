@@ -1,9 +1,9 @@
 """Layer submission, completion ordering and failure draining."""
 
-from concurrent.futures import Future
 import queue
 import types
 import unittest
+from concurrent.futures import Future
 from unittest.mock import patch
 
 from common.sglang_utils import linker_module
@@ -93,14 +93,16 @@ class LoadWorkerTest(unittest.TestCase):
             )
         if prefetch:
             future = Future()
-            future.add_done_callback(lambda f: events.append(
-                ("result", "cancelled" if f.cancelled() else f.result())
-            ))
+            future.add_done_callback(
+                lambda f: events.append(
+                    ("result", "cancelled" if f.cancelled() else f.result())
+                )
+            )
             if cancelled:
                 future.cancel()
-            obj._load_queue.put(linker_module._PrefetchLoad(
-                [object()], ready_events, future
-            ))
+            obj._load_queue.put(
+                linker_module._PrefetchLoad([object()], ready_events, future)
+            )
         else:
             obj._load_queue.put((0, {"req": [object()]}, ready_events))
         obj._load_queue.put(None)
