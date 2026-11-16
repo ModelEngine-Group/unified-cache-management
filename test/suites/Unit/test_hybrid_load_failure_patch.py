@@ -87,6 +87,23 @@ def test_attention_or_state_failure_evicts_all_groups(bad, reverse):
     assert obj._handle_invalid_blocks(set(), {"healthy": 1}) == set()
 
 
+def test_missing_failure_policy_uses_multi_group_fail_path():
+    obj = scheduler({"failed": ([10], [20]), "healthy": ([30], [40])})
+    del obj.recompute_kv_load_failures
+
+    assert obj._handle_invalid_blocks({20}, {}) == {"failed"}
+    obj.kv_cache_manager.evict_blocks.assert_called_once_with({10, 20})
+    obj.original.assert_not_called()
+
+
+def test_missing_failure_policy_preserves_single_group_handler():
+    obj = scheduler({"req": ([10],)}, groups=1)
+    del obj.recompute_kv_load_failures
+
+    assert obj._handle_invalid_blocks({10}, {}) == {"native"}
+    obj.original.assert_called_once_with({10}, {})
+
+
 def test_shared_failed_blocks_report_every_owner():
     obj = scheduler({"a": ([10], [20]), "b": ([11], [20]), "ok": ([30], [40])})
     assert obj._handle_invalid_blocks({20}, {}) == {"a", "b"}

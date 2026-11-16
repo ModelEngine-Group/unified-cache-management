@@ -36,7 +36,7 @@ def patch_core_sched_scheduler(mod):
 
         def wrapped_handle(self, invalid_block_ids, *args, **kwargs):
             num_groups = len(self.kv_cache_config.kv_cache_groups)
-            if num_groups <= 1 or self.recompute_kv_load_failures:
+            if num_groups <= 1 or getattr(self, "recompute_kv_load_failures", False):
                 return original_handle(self, invalid_block_ids, *args, **kwargs)
 
             # New engines reject flat invalid_block_ids before reaching
