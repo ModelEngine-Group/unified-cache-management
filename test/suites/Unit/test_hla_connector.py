@@ -105,6 +105,7 @@ def hla():
         },
         "UCMHybridLinearAttentionConnector": {
             "_scope_blocks",
+            "_scope_blocks_pcp",
             "_append_mamba_align_state_block",
             "_generate_hla_dispatch_meta",
             "build_connector_meta",
@@ -1263,3 +1264,172 @@ def test_layerwise_non_full_keeps_depth2_prefetch(hla, cudagraph_mode):
     assert submitted == [0, 1]
     assert drained == []
     connector._record_load_bytes.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Pure-PCP scoping: _scope_blocks dump grid and replica dedup.
+#
+# PCP policy (see UCMHybridLinearAttentionConnector._scope_blocks_pcp): no
+# hash changes; replicated content spreads across the PCP axis (MLA slice
+# grid widens to tp_size x pcp_world_size, each TP position's KDA / non-MLA
+# shard dump spreads across its PCP ranks), except TP=1 where every PCP
+# rank stores its full KDA section under a pcp_rank namespace; loads are
+# never sliced except for that TP=1 namespace.
+# ---------------------------------------------------------------------------
+
+
+def _cp_scope_connector(hla, tp_rank, tp_size, pcp_rank, pcp_world_size, is_mla=True):
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector.tp_rank = tp_rank
+    connector.tp_size = tp_size
+    connector.is_mla = is_mla
+    connector.pcp_rank = pcp_rank
+    connector.pcp_world_size = pcp_world_size
+    connector.request_hasher = lambda key: b"rk:" + key
+    return connector
+
+
+def _cp_scope_ids(n_mla=12, n_kda=3):
+    mla = [bytes([i]) for i in range(n_mla)]
+    kda = [bytes([0x80 + i]) for i in range(n_kda)]
+    return mla + kda, list(range(n_mla + n_kda)), [0] * n_mla + [1] * n_kda, n_mla
+
+
+def test_scope_blocks_pcp_dump_slices_partition_the_grid(hla):
+    """MLA dump slices over the tp x pcp grid are disjoint and complete."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    mla_ids = set(ucm[:n])
+    seen = set()
+    for pcp_rank in range(2):
+        for tp_rank in range(4):
+            connector = _cp_scope_connector(hla, tp_rank, 4, pcp_rank, 2)
+            grid = 4 * 2
+            g = pcp_rank * 4 + tp_rank
+            expected = ucm[n * g // grid : n * (g + 1) // grid]
+            _, scoped, _, _ = connector._scope_blocks(ucm, vllm, groups, n, True)
+            rank_mla = [key for key in scoped if key in mla_ids]
+            assert rank_mla == expected
+            assert not seen & set(rank_mla)
+            seen.update(rank_mla)
+    assert seen == mla_ids
+
+
+def test_scope_blocks_pcp_spreads_kda_across_pcp_ranks(hla):
+    """KDA shards spread across a TP position's PCP ranks; union = one copy."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    for tp_rank in (0, 1):
+        seen_scoped = set()
+        seen_context = set()
+        for pcp_rank in (0, 1):
+            connector = _cp_scope_connector(hla, tp_rank, 4, pcp_rank, 2)
+            context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+                ucm, vllm, groups, n, True
+            )
+            grid = 4 * 2
+            g = pcp_rank * 4 + tp_rank
+            mla_len = n * (g + 1) // grid - n * g // grid
+            kda_raw = ucm[n:]
+            start = len(kda_raw) * pcp_rank // 2
+            end = len(kda_raw) * (pcp_rank + 1) // 2
+            expected_raw = kda_raw[start:end]
+            assert context[mla_len:] == expected_raw
+            if tp_rank == 0:
+                assert scoped[mla_len:] == expected_raw
+            else:
+                assert scoped[mla_len:] == [b"rk:" + key for key in expected_raw]
+            assert scoped_vllm[mla_len:] == vllm[n:][start:end]
+            assert scoped_groups[mla_len:] == groups[n:][start:end]
+            seen_scoped.update(scoped[mla_len:])
+            seen_context.update(context[mla_len:])
+        if tp_rank == 0:
+            assert seen_context == set(ucm[n:])
+        else:
+            assert seen_scoped == {b"rk:" + key for key in ucm[n:]}
+
+
+def test_scope_blocks_pcp_loads_are_never_sliced(hla):
+    """Every PCP rank loads the full MLA set plus its own KDA namespace."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2)
+        _, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, n, False
+        )
+        assert scoped[:n] == ucm[:n]
+        assert scoped[n:] == [b"rk:" + key for key in ucm[n:]]
+        assert scoped_vllm == vllm
+        assert scoped_groups == groups
+
+
+def test_scope_blocks_without_pcp_matches_tp_only_scoping(hla):
+    """pcp_world_size=1 keeps the historical TP-only behavior."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    connector = _cp_scope_connector(hla, 1, 4, 0, 1)
+    _, scoped, _, _ = connector._scope_blocks(ucm, vllm, groups, n, True)
+    start, end = n * 1 // 4, n * 2 // 4
+    assert scoped[: end - start] == ucm[start:end]
+    assert scoped[end - start :] == [b"rk:" + key for key in ucm[n:]]
+
+
+def test_scope_blocks_non_mla_pcp_spreads_dump_across_pcp_ranks(hla):
+    ucm = [b"a", b"b"]
+    vllm, groups = [11, 22], [0, 0]
+    scoped_by_pcp = []
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2, is_mla=False)
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, 0, True
+        )
+        expected = ucm[pcp_rank : pcp_rank + 1]
+        assert context == expected
+        assert scoped == [b"rk:" + key for key in expected]
+        assert scoped_vllm == vllm[pcp_rank : pcp_rank + 1]
+        assert scoped_groups == groups[pcp_rank : pcp_rank + 1]
+        scoped_by_pcp.extend(scoped)
+    assert scoped_by_pcp == [b"rk:" + b"a", b"rk:" + b"b"]
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2, is_mla=False)
+        _, scoped_load, _, _ = connector._scope_blocks(ucm, vllm, groups, 0, False)
+        assert scoped_load == [b"rk:" + key for key in ucm]
+
+
+def test_scope_blocks_tp1_pcp_kda_full_section_per_rank_namespace(hla):
+    """TP=1+PCP: every PCP rank stores its FULL KDA section under a
+    pcp_rank namespace on both dump and load -- self-consistent for any
+    content distribution (sharded or replicated); MLA still spreads
+    across the pcp grid."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    mla_ids = set(ucm[:n])
+    seen_mla = set()
+    for pcp_rank in range(3):
+        prefix = b"shard%d:" % pcp_rank
+        connector = hla.UCMHybridLinearAttentionConnector()
+        connector.tp_rank = 0
+        connector.tp_size = 1
+        connector.is_mla = True
+        connector.pcp_rank = pcp_rank
+        connector.pcp_world_size = 3
+        connector._pcp_shard_hasher = lambda key, p=prefix: p + key
+        connector.request_hasher = lambda key: b"rk:" + key
+        expected_kda = (
+            list(ucm[n:]) if pcp_rank == 0 else [prefix + key for key in ucm[n:]]
+        )
+        # dump: MLA slice across the pcp grid; KDA full under its namespace.
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, n, True
+        )
+        mla_len = n * (pcp_rank + 1) // 3 - n * pcp_rank // 3
+        assert scoped[:mla_len] == ucm[n * pcp_rank // 3 : n * (pcp_rank + 1) // 3]
+        assert context[mla_len:] == ucm[n:]
+        assert scoped[mla_len:] == expected_kda
+        assert scoped_vllm[mla_len:] == vllm[n:]
+        assert scoped_groups[mla_len:] == groups[n:]
+        seen_mla.update(scoped[:mla_len])
+        # load: full MLA set + this rank's namespace KDA section.
+        _, scoped_load, scoped_vllm_load, _ = connector._scope_blocks(
+            ucm, vllm, groups, n, False
+        )
+        assert scoped_load[:n] == ucm[:n]
+        assert scoped_load[n:] == expected_kda
+        assert scoped_vllm_load == vllm
+    assert seen_mla == mla_ids
