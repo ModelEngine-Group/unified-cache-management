@@ -63,7 +63,7 @@ enable_metrics: true
 | `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 原生 Cache Store 启用共享 buffer 时默认为 256 GiB，`share_buffer_enable` 为 false 时默认为每个 worker 32 GiB。启用共享 buffer 且省略容量时，vLLM connector 会提供 128 GiB。MLA 默认启用共享 buffer。显式设置正数容量会覆盖原生默认值；非共享模式需汇总主机上所有 worker 的预算。启用流水线并行时，配置的容量还会按节点内共享该 buffer 的 PP stage 数均分；若整除结果为 0，启动时直接报错。 |
 | `use_dpc` | 选填 | bool | 默认 `false` | 非共享 buffer 模式下主机缓冲的分配方式。默认大页内存（传统 DirectIO 路径）；`true`：驱动内存接口（DPC 路径），可显式开启。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
-| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 即使在 cache 层命中还是会强制从 SSD 上加载，仅供测试使用。 |
+| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 测试模式：查询 backend，对无人引用的 Cache2 slot 原地重新加载。与旧 Cache 一致，正在被引用的 Ready slot 和进行中的加载可以共用。必须配置 backend，并在所有 worker 上启用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | MLA 默认启用，GQA 默认不启用 | 是否启用共享内存。MLA 如果不用 shm 或 GQA 用 shm 都会导致性能下降。 |
 

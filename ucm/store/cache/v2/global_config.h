@@ -71,6 +71,7 @@ struct Config {
      * cache_sdma_direct overrides either way. */
     bool sdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
     bool useGdr{false};
+    bool loadBackendOnly{false};
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     std::vector<ssize_t> cpuAffinityCores{};
@@ -122,6 +123,7 @@ struct Config {
         config.streamNumberExplicit = dict.Contains("cache_stream_number");
         dict.Get("cache_sdma_direct", config.sdmaDirect);
         dict.Get("use_gdr", config.useGdr);
+        dict.Get("cache_load_backend_only", config.loadBackendOnly);
         dict.GetNumbers("gpu_kv_buffer_addrs", config.gpuKvBufferAddrs);
         dict.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         dict.Get("cpu_affinity_cores", config.cpuAffinityCores);
@@ -150,6 +152,9 @@ struct Config {
     {
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
         if (uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
+        if (loadBackendOnly && storeBackend == nullptr) {
+            return Status::InvalidParam("cache_load_backend_only requires a backend store");
+        }
         for (const auto core : cpuAffinityCores) {
             if (core < 0 || core >= CPU_SETSIZE) {
                 return Status::InvalidParam("invalid cpu core({})", core);
@@ -222,6 +227,7 @@ struct Config {
                 storeBackend ? storeBackend->Readme() : "nullptr");
         UC_INFO("Set {}::UniqueId to {}.", ns, uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, deviceId);
+        UC_INFO("Set {}::LoadBackendOnly to {}.", ns, loadBackendOnly);
         const auto& v = tensorSizes;
         if (v.empty()) {
             UC_INFO("Set {}::TensorSizes to [].", ns);

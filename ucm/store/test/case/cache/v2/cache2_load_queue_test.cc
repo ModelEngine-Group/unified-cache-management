@@ -140,12 +140,16 @@ public:
         }
     }
     Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
-               size_t preferredRank = UC::Cache2::kInvalid)
+               size_t preferredRank = UC::Cache2::kInvalid, bool reload = false)
     {
         getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank});
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
-        if (it != slots_.end()) { return Handle{this, it->second, false, HostAccessibleOf(key)}; }
+        if (it != slots_.end()) {
+            const bool owner = reload && SlotStateOf(it->second) == SlotState::Ready;
+            if (owner) { SetSlotStateByIdx(it->second, SlotState::Loading); }
+            return Handle{this, it->second, owner, HostAccessibleOf(key)};
+        }
         const auto slotIdx = nextSlotIdx_++;
         slots_.emplace(key, slotIdx);
         return Handle{this, slotIdx, true, HostAccessibleOf(key)};
@@ -485,6 +489,56 @@ TEST_F(UCCache2LoadQueueTest, LoadCacheHitSkipsBackend)
     EXPECT_EQ(counters.at("cache_load_shards_total"), 1);
     EXPECT_EQ(counters.at("cache_load_wait_shards_total"), 0);
     EXPECT_TRUE(AwaitTrue([this] { return buffer_.LiveHandles() == 0; }));
+}
+
+TEST_F(UCCache2LoadQueueTest, BackendOnlyReloadsReadyDataOnRepeatedLoads)
+{
+    auto config = config_;
+    config.loadBackendOnly = true;
+    TestedQueue queue;
+    ASSERT_TRUE(queue.Setup(config, &failureSet_, &buffer_).Success());
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    EXPECT_CALL(backend_, Load).Times(2).WillRepeatedly(testing::Invoke(NextBackendHandle));
+    EXPECT_CALL(backend_, Wait).Times(2).WillRepeatedly(testing::Return(UC::Status::OK()));
+    for (size_t i = 0; i < 2; ++i) {
+        auto desc = MakeDesc(block);
+        desc.distributeBackendLoad = true;
+        auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+        auto waiter = std::make_shared<UC::Latch>();
+        queue.Submit(task, waiter);
+        ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+        EXPECT_FALSE(failureSet_.Contains(task->id));
+        ASSERT_TRUE(AwaitTrue([this] { return buffer_.LiveHandles() == 0; }));
+    }
+    queue.Close();
+    EXPECT_EQ(buffer_.MarkedReady(), 2);
+    EXPECT_TRUE(buffer_.PreallocCalls().empty());
+    for (const auto& call : buffer_.GetCalls()) {
+        EXPECT_EQ(call.preferredRank, UC::Cache2::kInvalid);
+    }
+    const auto counters = std::get<0>(UC::Metrics::GetAllStatsAndClear());
+    EXPECT_EQ(counters.at("cache_load_backend_shards_total"), 2);
+    EXPECT_EQ(counters.at("cache_load_success_shards_total"), 0);
+    EXPECT_EQ(counters.at("cache_posix_load_success_shards_total"), 2);
+}
+
+TEST_F(UCCache2LoadQueueTest, BackendOnlyPreservesBackendErrorsOnReadyData)
+{
+    auto config = config_;
+    config.loadBackendOnly = true;
+    TestedQueue queue;
+    ASSERT_TRUE(queue.Setup(config, &failureSet_, &buffer_).Success());
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block);
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Return(UC::Status::NotFound()));
+    EXPECT_CALL(backend_, Wait).Times(0);
+    auto task = std::make_shared<Task>(Task::Type::LOAD, MakeDesc(block));
+    auto waiter = std::make_shared<UC::Latch>();
+    queue.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::NotFound());
 }
 
 TEST_F(UCCache2LoadQueueTest, LoadMissSubmitsBackendAndH2d)

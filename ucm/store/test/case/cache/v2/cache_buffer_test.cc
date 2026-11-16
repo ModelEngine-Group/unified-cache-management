@@ -74,9 +74,11 @@ struct BufferTestAccess {
     }
 
     static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
-                                 size_t attempts, bool& owner, size_t preferredRank = kInvalid)
+                                 size_t attempts, bool& owner, size_t preferredRank = kInvalid,
+                                 bool reload = false)
     {
-        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner, preferredRank);
+        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner, preferredRank,
+                                     reload);
     }
 
     static void Release(Buffer& buffer, size_t slot) { buffer.Release(slot); }
@@ -134,6 +136,117 @@ protected:
 
     void TearDown() override { ::operator delete(memory_, std::align_val_t{64}); }
 };
+
+TEST_F(Cache2BufferTest, ReloadRefillsIdleReadySlotInPlaceAndPreservesNormalHits)
+{
+    const auto block = MakeBlockId(900);
+    size_t slot;
+    {
+        auto fill = buffer_.Get(block, 0);
+        slot = fill.SlotIndex();
+        fill.MarkReady();
+    }
+    {
+        auto reload = buffer_.Get(block, 0, true, kInvalid, true);
+        EXPECT_TRUE(reload.Owner());
+        EXPECT_EQ(reload.SlotIndex(), slot);
+        EXPECT_EQ(reload.GetState(), CtrlLayout::SlotMeta::State::Loading);
+        reload.MarkReady();
+    }
+    auto hit = buffer_.Get(block, 0);
+    EXPECT_FALSE(hit.Owner());
+    EXPECT_EQ(hit.GetState(), CtrlLayout::SlotMeta::State::Ready);
+}
+
+TEST_F(Cache2BufferTest, ReloadSharesPinnedReadyDataAndRefillsAfterRelease)
+{
+    const auto block = MakeBlockId(901);
+    size_t slot;
+    {
+        auto reader = buffer_.Get(block, 0);
+        slot = reader.SlotIndex();
+        reader.MarkReady();
+        auto reload = buffer_.Get(block, 0, true, kInvalid, true);
+        EXPECT_FALSE(reload.Owner());
+        EXPECT_EQ(reload.SlotIndex(), slot);
+        EXPECT_EQ(reload.GetState(), CtrlLayout::SlotMeta::State::Ready);
+        EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Ready);
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 2);
+    }
+    auto reload = buffer_.Get(block, 0, true, kInvalid, true);
+    EXPECT_TRUE(reload.Owner());
+    EXPECT_EQ(reload.SlotIndex(), slot);
+    EXPECT_EQ(reload.GetState(), CtrlLayout::SlotMeta::State::Loading);
+}
+
+TEST_F(Cache2BufferTest, ReloadSharesAnInFlightFill)
+{
+    const auto block = MakeBlockId(902);
+    auto fill = buffer_.Get(block, 0, true, kInvalid, true);
+    auto follower = buffer_.Get(block, 0, true, kInvalid, true);
+    EXPECT_TRUE(fill.Owner());
+    EXPECT_FALSE(follower.Owner());
+    EXPECT_EQ(follower.GetState(), CtrlLayout::SlotMeta::State::Loading);
+    fill.MarkReady();
+    EXPECT_EQ(follower.GetState(), CtrlLayout::SlotMeta::State::Ready);
+}
+
+TEST_F(Cache2BufferTest, ReloadClaimsReadySlotWhileBucketStripeIsLocked)
+{
+    const auto block = MakeBlockId(903);
+    size_t slot;
+    {
+        auto fill = buffer_.Get(block, 0);
+        slot = fill.SlotIndex();
+        fill.MarkReady();
+    }
+    auto& layout = BufferTestAccess::Layout(buffer_);
+    auto* lock = layout.LockOf(BufferTestAccess::BucketOf(buffer_, block));
+    lock->Lock();
+    bool owner = false;
+    const auto acquired =
+        BufferTestAccess::TryAcquireSlot(buffer_, block, 0, 1, owner, kInvalid, true);
+    lock->Unlock();
+    ASSERT_NE(acquired, kInvalid);
+    EXPECT_TRUE(owner);
+    EXPECT_EQ(acquired, slot);
+    EXPECT_EQ(layout.SlotMetaArr()[slot].state.load(), CtrlLayout::SlotMeta::State::Loading);
+    BufferTestAccess::MarkReady(buffer_, acquired);
+    BufferTestAccess::Release(buffer_, acquired);
+}
+
+TEST_F(Cache2BufferTest, ConcurrentReloadsElectOneOwnerAndShareTheSameSlot)
+{
+    constexpr size_t kThreads{16};
+    const auto block = MakeBlockId(904);
+    size_t slot;
+    {
+        auto fill = buffer_.Get(block, 0);
+        slot = fill.SlotIndex();
+        fill.MarkReady();
+    }
+    for (size_t round = 0; round < 32; ++round) {
+        std::atomic<bool> start{false};
+        std::atomic<size_t> acquired{0}, owners{0}, wrongSlots{0};
+        std::vector<std::thread> loads;
+        for (size_t i = 0; i < kThreads; ++i) {
+            loads.emplace_back([&] {
+                while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+                auto handle = buffer_.Get(block, 0, true, kInvalid, true);
+                if (handle.Owner()) { owners.fetch_add(1); }
+                if (handle.SlotIndex() != slot) { wrongSlots.fetch_add(1); }
+                acquired.fetch_add(1);
+                while (acquired.load() != kThreads) { std::this_thread::yield(); }
+                if (handle.Owner()) { handle.MarkReady(); }
+            });
+        }
+        start.store(true, std::memory_order_release);
+        for (auto& load : loads) { load.join(); }
+        EXPECT_EQ(owners.load(), 1) << "round " << round;
+        EXPECT_EQ(wrongSlots.load(), 0) << "round " << round;
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
+    }
+}
 
 TEST_F(Cache2BufferTest, LayerOffsetsUseDevelopHashMixAndSeparateBuckets)
 {
