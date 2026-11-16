@@ -238,7 +238,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_duration_ms` 记录 Cache Load 任务端到端耗时；本面板使用 Histogram 的 `_count` 增速表示每秒完成的 Load 任务数。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "指标：`ucm:cache_load_duration_ms` 记录 Cache Load 任务端到端耗时；本面板使用 Histogram 的 `_count` 增速表示每秒完成的 Load 任务数。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -334,7 +334,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_duration_ms` 记录 Cache Dump 任务端到端耗时；本面板使用 Histogram 的 `_count` 增速表示每秒完成的 Dump 任务数。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "指标：`ucm:cache_dump_duration_ms` 记录 Cache Dump 任务端到端耗时；本面板使用 Histogram 的 `_count` 增速表示每秒完成的 Dump 任务数。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -430,7 +430,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务从提交到完成的端到端耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务从提交到完成的端到端耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -637,7 +637,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务从提交到完成的端到端耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务从提交到完成的端到端耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -844,7 +844,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "- `queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；Load 任务从提交到调度线程取出的等待时间。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::DispatchOneTask` / 开始处理任务时。\n- `backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；分配 Cache buffer 并向下层 Store 提交 Load 的耗时。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::DispatchOneTask` / shard 分发完成后。\n- `backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；单个 Load shard 等待 Cache buffer 或下层 Load 任务就绪的时间。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::TransferOneTask` / `WaitBackendTaskReady` 返回后。\n- `H2D sync`：指标 `ucm:cache_h2d_sync_ms`；最后一组 shard 的 H2D stream 同步耗时。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::RecordH2dSyncMetrics` / stream 同步完成后。\n- `h2d submit & other`：计算方法 `Load 总耗时 - queue wait - backend submit - backend wait - H2D sync`；总耗时扣除其他分段平均耗时后的估算值。总耗时代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "- `queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；Load 任务从提交到调度线程取出的等待时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / 开始处理任务时。\n- `backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；分配 Cache buffer 并向下层 Store 提交 Load 的耗时。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / shard 分发完成后。\n- `backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；单个 Load shard 等待 Cache buffer 或下层 Load 任务就绪的时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `WaitShardReady` 返回后。\n- `H2D sync`：指标 `ucm:cache_h2d_sync_ms`；最后一组 shard 的 H2D stream 同步耗时。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::SynchronizeH2d` / stream 同步完成后。\n- `h2d submit & other`：计算方法 `Load 总耗时 - queue wait - backend submit - backend wait - H2D sync`；总耗时扣除其他分段平均耗时后的估算值。总耗时代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -985,7 +985,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标与代码位置：\n- `ucm:cache_dump_queue_wait_duration_ms`：Dump 任务从提交到调度线程取出的等待时间。位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:cache_dump_mkbuf_duration_ms`：准备 Cache buffer 并提交 D2H 异步拷贝的耗时。位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / buffer 准备完成后。\n- `ucm:cache_d2h_duration_ms`：包含前置计算等待的 D2H stream 同步耗时。位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / stream 同步完成后。\n- `ucm:cache_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的同步耗时。位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。\n- `ucm:cache_dump_duration_ms`：Dump 任务端到端耗时。位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。\n`other` 为总耗时减去前四项平均耗时后的估算值。",
+      "description": "指标与代码位置：\n- `ucm:cache_dump_queue_wait_duration_ms`：Dump 任务从提交到调度线程取出的等待时间。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:cache_dump_mkbuf_duration_ms`：准备 Cache buffer 并提交 D2H 异步拷贝的耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / buffer 准备完成后。\n- `ucm:cache_d2h_duration_ms`：包含前置计算等待的 D2H stream 同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / stream 同步完成后。\n- `ucm:cache_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。\n- `ucm:cache_dump_duration_ms`：Dump 任务端到端耗时。位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。\n`other` 为总耗时减去前四项平均耗时后的估算值。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1126,7 +1126,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_bytes_total` 表示 Cache Load 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+      "description": "指标：`ucm:cache_load_bytes_total` 表示 Cache Load 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1223,7 +1223,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_bytes_total` 表示 Cache Dump 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+      "description": "指标：`ucm:cache_dump_bytes_total` 表示 Cache Dump 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1320,7 +1320,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_queue_wait_duration_ms` 表示 Cache Load 任务从提交到调度线程取出的排队时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::DispatchOneTask` / 开始处理任务时。",
+      "description": "指标：`ucm:cache_load_queue_wait_duration_ms` 表示 Cache Load 任务从提交到调度线程取出的排队时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / 开始处理任务时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1527,7 +1527,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_queue_wait_duration_ms` 表示 Cache Dump 任务从提交到调度线程取出的排队时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。",
+      "description": "指标：`ucm:cache_dump_queue_wait_duration_ms` 表示 Cache Dump 任务从提交到调度线程取出的排队时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DispatchOneTask` / 开始处理任务时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1734,7 +1734,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_prereq_wait_ms` 表示 Dump 在开始 D2H 前等待前置计算事件完成的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / 前置事件回调完成后。",
+      "description": "指标：`ucm:cache_dump_prereq_wait_ms` 表示 Dump 在开始 D2H 前等待前置计算事件完成的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / 前置事件回调完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1941,7 +1941,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_h2d_sync_ms` 表示最后一组 Cache Load shard 提交后等待 H2D stream 完成的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::RecordH2dSyncMetrics` / stream 同步完成后。",
+      "description": "指标：`ucm:cache_h2d_sync_ms` 表示最后一组 Cache Load shard 提交后等待 H2D stream 完成的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::SynchronizeH2d` / stream 同步完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2148,7 +2148,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_d2h_duration_ms` 表示 Cache Dump 的 D2H stream 同步时间，其中包含前置计算等待，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / stream 同步完成后。",
+      "description": "指标：`ucm:cache_d2h_duration_ms` 表示 Cache Dump 的 D2H stream 同步时间，其中包含前置计算等待，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / stream 同步完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2355,7 +2355,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_backend_submit_duration_ms` 表示分配 Cache buffer 并向下层 Store 同步提交 Load 的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::DispatchOneTask` / shard 分发完成后。",
+      "description": "指标：`ucm:cache_load_backend_submit_duration_ms` 表示分配 Cache buffer 并向下层 Store 同步提交 Load 的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / shard 分发完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2562,7 +2562,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_mkbuf_duration_ms` 表示准备 Cache buffer 并提交 D2H 异步拷贝的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / buffer 准备完成后。",
+      "description": "指标：`ucm:cache_dump_mkbuf_duration_ms` 表示准备 Cache buffer 并提交 D2H 异步拷贝的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / buffer 准备完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2769,7 +2769,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_h2d_submit_ms` 表示单个 shard 在下层数据就绪后提交 H2D 异步拷贝的 CPU 耗时，不包含实际传输和 stream 同步时间。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::TransferOneTask` / `HostToDeviceAsync` 返回后。",
+      "description": "指标：`ucm:cache_h2d_submit_ms` 表示单个 shard 在下层数据就绪后提交 H2D 异步拷贝的 CPU 耗时，不包含实际传输和 stream 同步时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `HostToDeviceAsync` 返回后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2976,7 +2976,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_backend_submit_duration_ms` 表示向下层 Store 同步提交 Dump 的耗时，不包含下层写入完成时间。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。",
+      "description": "指标：`ucm:cache_dump_backend_submit_duration_ms` 表示向下层 Store 同步提交 Dump 的耗时，不包含下层写入完成时间。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3183,7 +3183,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的字节数除以该任务端到端耗时所得带宽，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+      "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的字节数除以该任务端到端耗时所得带宽，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3390,7 +3390,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的字节数除以该任务端到端耗时所得带宽，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+      "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的字节数除以该任务端到端耗时所得带宽，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3597,7 +3597,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_shard_backend_wait_ms` 表示单个 Cache Load shard 等待 buffer 或下层 Load 任务就绪的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/load_queue.cc` / `LoadQueue::TransferOneTask` / `WaitBackendTaskReady` 返回后。",
+      "description": "指标：`ucm:cache_shard_backend_wait_ms` 表示单个 Cache Load shard 等待 buffer 或下层 Load 任务就绪的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `WaitShardReady` 返回后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3804,7 +3804,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_lookup_duration_ms` 表示 Cache 内存 buffer 扫描的耗时，本面板展示每次 Lookup 调用的 p50、p90、p99 和平均值。未开启共享内存时不会查询 Cache buffer，请求会直接查询下层 Store，因此该指标不会产生数据。代码位置：`ucm/store/cache/cc/buffer_manager.h` / `BufferManager::Lookup`（私有快速扫描函数）/ 扫描完成后。",
+      "description": "指标：`ucm:cache_lookup_duration_ms` 表示 Cache 内存 buffer 扫描的耗时，本面板展示每次 Lookup 调用的 p50、p90、p99 和平均值。Cache2 查询 Cache 域的共享控制面。代码位置：`ucm/store/cache/v2/buffer_manager.h` / `BufferManager::Lookup`（私有快速扫描函数）/ 扫描完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4011,7 +4011,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_lookup_backend_duration_ms` 表示 Cache 未命中或未启用 buffer 时查询下层 Store 的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/buffer_manager.h` / `BufferManager::LookupThrough`、`LookupFast`、`LookupOnPrefixFast`、`LookupOnReverseFast` / 下层 Lookup 返回后。",
+      "description": "指标：`ucm:cache_lookup_backend_duration_ms` 表示 Cache 未命中或未启用 buffer 时查询下层 Store 的耗时，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/buffer_manager.h` / `BufferManager::Lookup`、`LookupOnPrefix`、`LookupOnReverse` / 下层 Lookup 返回后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4218,7 +4218,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_backend_wait_duration_ms` 表示等待下层 Store 完成 Cache Dump 写入的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/dump_queue.cc` / `DumpQueue::BackendDumpStage` / `backend_->Wait` 返回后。",
+      "description": "指标：`ucm:cache_dump_backend_wait_duration_ms` 表示等待下层 Store 完成 Cache Dump 写入的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::BackendWaitStage` / `backend_->Wait` 返回后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4444,7 +4444,7 @@
           },
           "id": 15,
           "title": "Cache / Load Duration",
-          "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+          "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4529,7 +4529,7 @@
           },
           "id": 16,
           "title": "Cache / Load Bandwidth (per task)",
-          "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+          "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4614,7 +4614,7 @@
           },
           "id": 17,
           "title": "Cache / Dump Duration",
-          "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+          "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4699,7 +4699,7 @@
           },
           "id": 18,
           "title": "Cache / Dump Bandwidth (per task)",
-          "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+          "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -5374,7 +5374,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "description": "指标与代码位置：\n- `ucm:mooncake_dump_queue_wait_duration_ms`：Dump 任务排队时间。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:mooncake_exists_duration_ms`：调用 Mooncake `batchIsExist` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / 调用返回后。\n- `ucm:mooncake_dump_prereq_wait_ms`：等待前置计算事件的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::WaitPrerequisite` / 事件同步返回后。\n- `ucm:mooncake_d2h_duration_ms`：D2H stream 同步耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::RecordD2hMetrics` / stream 同步完成后。\n- `ucm:mooncake_put_duration_ms`：调用 Mooncake `batch_put` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::PutToMooncake` / 调用返回后。\n- `ucm:mooncake_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::SubmitBackendDump` / `backend_->Dump` 返回后。\n- `ucm:mooncake_dump_backend_wait_duration_ms`：等待下层 Dump 完成的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::BackendDumpStage` / `backend_->Wait` 返回后。",
+          "description": "指标与代码位置：\n- `ucm:mooncake_dump_queue_wait_duration_ms`：Dump 任务排队时间。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:mooncake_exists_duration_ms`：调用 Mooncake `batchIsExist` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / 调用返回后。\n- `ucm:mooncake_dump_prereq_wait_ms`：等待前置计算事件的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::WaitPrerequisite` / 事件同步返回后。\n- `ucm:mooncake_d2h_duration_ms`：D2H stream 同步耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::RecordD2hMetrics` / stream 同步完成后。\n- `ucm:mooncake_put_duration_ms`：调用 Mooncake `batch_put` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::PutToMooncake` / 调用返回后。\n- `ucm:mooncake_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::SubmitBackendDump` / `backend_->Dump` 返回后。\n- `ucm:mooncake_dump_backend_wait_duration_ms`：等待下层 Dump 完成的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::BackendWaitStage` / `backend_->Wait` 返回后。",
           "fieldConfig": {
             "defaults": {
               "unit": "ms"

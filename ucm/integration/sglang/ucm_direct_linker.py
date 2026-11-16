@@ -252,10 +252,17 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def _create_adapter(
         self, params: CacheInitParams, extra_config: dict[str, Any] | None
     ) -> UcmDirectStoreAdapter:
+        parallel = get_parallel()
+        # Like vLLM: derive node-local workers from the launch world and node count,
+        # then limit the Cache domain to its attention TP group.
+        world_size = self._tp_size
+        local_world_size = parallel.tp_size * parallel.pp_size // parallel.nnodes
+        local_count = min(world_size, local_world_size)
         identity = {
             "model": getattr(get_model(), "model_path", None),
             "tp_rank": self._tp_rank,
             "tp_size": self._tp_size,
+            "cache_local_rank_size": local_count,
             "dp_rank": self._dp_rank,
             "attn_dp_rank": self._attn_dp_rank,
             "pp_rank": params.pp_rank,
