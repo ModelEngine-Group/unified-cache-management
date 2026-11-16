@@ -35,13 +35,14 @@ namespace {
 constexpr std::uint8_t kResultKindNone = 0;
 constexpr std::uint8_t kResultKindHits = 1;
 constexpr std::uint8_t kResultKindSlots = 2;
+constexpr std::uint8_t kResultKindPlan = 3;
 
 constexpr std::uint16_t kMaxShortStringLength = 65535;
 
-bool IsDataOp(std::uint8_t op)
+bool IsControlOp(std::uint8_t op)
 {
     return op >= static_cast<std::uint8_t>(ControlOp::Lookup) &&
-           op <= static_cast<std::uint8_t>(ControlOp::Commit);
+           op <= static_cast<std::uint8_t>(ControlOp::CompleteOffload);
 }
 
 /** Fail-safe little-endian encoder; never fails -- all validity is checked up front. */
@@ -182,8 +183,8 @@ Status TruncatedError()
 Expected<std::vector<std::byte>> EncodeRequest(const ControlRequest& request)
 {
     const std::uint8_t op = static_cast<std::uint8_t>(request.op);
-    if (!IsDataOp(op)) {
-        return Status::InvalidParam("control request op {} is not a data-plane opcode", op);
+    if (!IsControlOp(op)) {
+        return Status::InvalidParam("control request op {} is not a control-plane opcode", op);
     }
 
     Encoder enc;
@@ -194,6 +195,7 @@ Expected<std::vector<std::byte>> EncodeRequest(const ControlRequest& request)
     enc.U8(request.hasTtl ? 1 : 0);
     enc.I64(request.ttlMs);
     enc.U8(request.success ? 1 : 0);
+    enc.U64(request.planId);
     return enc.Take();
 }
 
@@ -201,8 +203,8 @@ Expected<ControlRequest> DecodeRequest(const std::vector<std::byte>& data)
 {
     Decoder dec{data};
     const std::uint8_t op = dec.U8();
-    if (!dec.Failed() && !IsDataOp(op)) {
-        return Status::InvalidParam("control request op {} is not a data-plane opcode", op);
+    if (!dec.Failed() && !IsControlOp(op)) {
+        return Status::InvalidParam("control request op {} is not a control-plane opcode", op);
     }
 
     ControlRequest request;
@@ -216,6 +218,7 @@ Expected<ControlRequest> DecodeRequest(const std::vector<std::byte>& data)
     request.hasTtl = dec.U8() != 0;
     request.ttlMs = dec.I64();
     request.success = dec.U8() != 0;
+    request.planId = dec.U64();
 
     if (dec.Failed()) { return TruncatedError(); }
     if (!dec.AtEnd()) {
@@ -226,8 +229,13 @@ Expected<ControlRequest> DecodeRequest(const std::vector<std::byte>& data)
 
 Expected<std::vector<std::byte>> EncodeResponse(const ControlResponse& response)
 {
-    if (!response.hits.empty() && !response.slots.empty()) {
-        return Status::InvalidParam("control response carries both hits and slots result bodies");
+    /* The result body is single-choice: at most one of hits, slots, or a plan's keys. */
+    const std::size_t resultBodies = (response.hits.empty() ? 0 : 1) +
+                                     (response.slots.empty() ? 0 : 1) +
+                                     (response.keys.empty() ? 0 : 1);
+    if (resultBodies > 1) {
+        return Status::InvalidParam(
+            "control response carries conflicting result bodies (hits/slots/plan)");
     }
 
     Encoder enc;
@@ -244,6 +252,10 @@ Expected<std::vector<std::byte>> EncodeResponse(const ControlResponse& response)
         enc.U8(kResultKindSlots);
         enc.U32(static_cast<std::uint32_t>(response.slots.size()));
         for (std::uint32_t slot : response.slots) { enc.U32(slot); }
+    } else if (!response.keys.empty()) {
+        enc.U8(kResultKindPlan);
+        enc.U32(static_cast<std::uint32_t>(response.keys.size()));
+        for (const BlockId& key : response.keys) { enc.Block(key); }
     } else {
         enc.U8(kResultKindNone);
     }
@@ -267,7 +279,7 @@ Expected<ControlResponse> DecodeResponse(const std::vector<std::byte>& data)
 
     const std::uint8_t kind = dec.U8();
     if (!dec.Failed() && kind != kResultKindNone && kind != kResultKindHits &&
-        kind != kResultKindSlots) {
+        kind != kResultKindSlots && kind != kResultKindPlan) {
         return Status::InvalidParam("control response has unknown result kind {}", kind);
     }
     if (kind == kResultKindHits) {
@@ -283,6 +295,13 @@ Expected<ControlResponse> DecodeResponse(const std::vector<std::byte>& data)
             std::min<std::uint32_t>(count, static_cast<std::uint32_t>(dec.Remaining() / 4)));
         for (std::uint32_t i = 0; i < count && !dec.Failed(); ++i) {
             response.slots.push_back(dec.U32());
+        }
+    } else if (kind == kResultKindPlan) {
+        const std::uint32_t count = dec.U32();
+        response.keys.reserve(std::min<std::uint32_t>(
+            count, static_cast<std::uint32_t>(dec.Remaining() / sizeof(BlockId))));
+        for (std::uint32_t i = 0; i < count && !dec.Failed(); ++i) {
+            response.keys.push_back(dec.Block());
         }
     }
 

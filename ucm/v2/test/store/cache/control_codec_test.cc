@@ -52,6 +52,7 @@ ControlRequest MakeRequest(ControlOp op)
     request.hasTtl = true;
     request.ttlMs = -9500;
     request.success = true;
+    request.planId = std::uint64_t{0x0102030405060708};
     return request;
 }
 
@@ -66,6 +67,7 @@ void ExpectRequestsEqual(const ControlRequest& actual, const ControlRequest& exp
     EXPECT_EQ(actual.hasTtl, expected.hasTtl);
     EXPECT_EQ(actual.ttlMs, expected.ttlMs);
     EXPECT_EQ(actual.success, expected.success);
+    EXPECT_EQ(actual.planId, expected.planId);
 }
 
 std::vector<std::byte> Slice(const std::vector<std::byte>& data, std::size_t len)
@@ -75,8 +77,10 @@ std::vector<std::byte> Slice(const std::vector<std::byte>& data, std::size_t len
 
 TEST(ControlCodecTest, RequestRoundTripPerOp)
 {
-    const std::array<ControlOp, 6> ops = {ControlOp::Lookup, ControlOp::Touch, ControlOp::Pin,
-                                          ControlOp::Unpin,  ControlOp::Alloc, ControlOp::Commit};
+    const std::array<ControlOp, 8> ops = {
+        ControlOp::Lookup,         ControlOp::Touch,          ControlOp::Pin,
+        ControlOp::Unpin,          ControlOp::Alloc,          ControlOp::Commit,
+        ControlOp::PrepareOffload, ControlOp::CompleteOffload};
     for (ControlOp op : ops) {
         const ControlRequest request = MakeRequest(op);
         auto encoded = EncodeRequest(request);
@@ -110,10 +114,27 @@ TEST(ControlCodecTest, RequestLargeBatchRoundTrip)
     auto encoded = EncodeRequest(request);
     ASSERT_TRUE(encoded.HasValue());
     EXPECT_EQ(encoded.Value().size(),
-              19u + 16u * request.blockIds.size());  // header 19B + 16B per block id
+              27u + 16u * request.blockIds.size());  // header 27B + 16B per block id
     auto decoded = DecodeRequest(encoded.Value());
     ASSERT_TRUE(decoded.HasValue());
     ExpectRequestsEqual(decoded.Value(), request);
+}
+
+TEST(ControlCodecTest, RequestPlanIdTailIsLittleEndian)
+{
+    ControlRequest request;
+    request.op = ControlOp::CompleteOffload;
+    request.planId = std::uint64_t{0x0102030405060708};
+    auto encoded = EncodeRequest(request);
+    ASSERT_TRUE(encoded.HasValue());
+    // Empty batch: op(1) + seq(4) + count(4) + hasTtl(1) + ttlMs(8) + success(1) = 19 bytes of
+    // head, then the u64 planId tail, least significant byte first.
+    ASSERT_EQ(encoded.Value().size(), 27u);
+    const std::vector<std::byte> tail(encoded.Value().begin() + 19, encoded.Value().end());
+    const std::vector<std::byte> expected{std::byte{0x08}, std::byte{0x07}, std::byte{0x06},
+                                          std::byte{0x05}, std::byte{0x04}, std::byte{0x03},
+                                          std::byte{0x02}, std::byte{0x01}};
+    EXPECT_EQ(tail, expected);
 }
 
 TEST(ControlCodecTest, EncodeRequestRejectsHelloOp)
@@ -205,6 +226,7 @@ TEST(ControlCodecTest, ResponseHitsRoundTrip)
     EXPECT_EQ(out.message, response.message);
     EXPECT_EQ(out.hits, response.hits);
     EXPECT_TRUE(out.slots.empty());
+    EXPECT_TRUE(out.keys.empty());
     EXPECT_TRUE(out.tokenPayload.empty());
 }
 
@@ -225,6 +247,7 @@ TEST(ControlCodecTest, ResponseSlotsWithTokenRoundTrip)
     EXPECT_TRUE(out.ok);
     EXPECT_TRUE(out.hits.empty());
     EXPECT_EQ(out.slots, response.slots);
+    EXPECT_TRUE(out.keys.empty());
     EXPECT_EQ(out.tokenPayload, response.tokenPayload);
 }
 
@@ -246,15 +269,76 @@ TEST(ControlCodecTest, ResponseErrorRoundTrip)
     EXPECT_EQ(out.message, response.message);
     EXPECT_TRUE(out.hits.empty());
     EXPECT_TRUE(out.slots.empty());
+    EXPECT_TRUE(out.keys.empty());
     EXPECT_TRUE(out.tokenPayload.empty());
+}
+
+TEST(ControlCodecTest, ResponsePlanRoundTrip)
+{
+    ControlResponse response;
+    response.seq = 14;
+    response.ok = true;
+    response.message = "planned";
+    response.keys = {MakeBlockId(4), MakeBlockId(5)};
+    // Token tail carries the plan payload (see PlanPayload): batchId 7, then
+    // one source slot per key.
+    response.tokenPayload = {std::byte{7}, std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{2}, std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{9}, std::byte{0}, std::byte{0}, std::byte{0}};
+    auto encoded = EncodeResponse(response);
+    ASSERT_TRUE(encoded.HasValue());
+    auto decoded = DecodeResponse(encoded.Value());
+    ASSERT_TRUE(decoded.HasValue());
+    const ControlResponse& out = decoded.Value();
+    EXPECT_EQ(out.seq, response.seq);
+    EXPECT_TRUE(out.ok);
+    EXPECT_EQ(out.message, response.message);
+    EXPECT_TRUE(out.hits.empty());
+    EXPECT_TRUE(out.slots.empty());
+    EXPECT_EQ(out.keys, response.keys);
+    EXPECT_EQ(out.tokenPayload, response.tokenPayload);
+}
+
+TEST(ControlCodecTest, ResponseIdlePlanEncodesAsNone)
+{
+    // An idle PrepareOffload answers with no keys and no payload: the empty
+    // plan falls back to the none kind instead of a bodyless plan kind, so
+    // the frame is indistinguishable from any other bodyless success.
+    ControlResponse response;
+    response.seq = 15;
+    response.ok = true;
+    auto encoded = EncodeResponse(response);
+    ASSERT_TRUE(encoded.HasValue());
+    // seq(4) | ok(1) | statusCode(4) | msgLen(4) put the kind byte at index 13.
+    EXPECT_EQ(encoded.Value()[13], std::byte{0});
+
+    auto decoded = DecodeResponse(encoded.Value());
+    ASSERT_TRUE(decoded.HasValue());
+    EXPECT_TRUE(decoded.Value().keys.empty());
+    EXPECT_TRUE(decoded.Value().tokenPayload.empty());
 }
 
 TEST(ControlCodecTest, EncodeResponseRejectsConflictingResultBodies)
 {
+    // The result body is single-choice: every pairing of hits, slots and
+    // plan keys is rejected.
     ControlResponse response;
     response.hits = {1, 0};
     response.slots = {7};
     auto encoded = EncodeResponse(response);
+    ASSERT_FALSE(encoded.HasValue());
+    EXPECT_EQ(encoded.Error(), Status::InvalidParam());
+
+    response.slots.clear();
+    response.keys = {MakeBlockId(1)};
+    encoded = EncodeResponse(response);
+    ASSERT_FALSE(encoded.HasValue());
+    EXPECT_EQ(encoded.Error(), Status::InvalidParam());
+
+    response.hits.clear();
+    response.slots = {7};
+    encoded = EncodeResponse(response);
     ASSERT_FALSE(encoded.HasValue());
     EXPECT_EQ(encoded.Error(), Status::InvalidParam());
 }
@@ -282,7 +366,21 @@ TEST(ControlCodecTest, DecodeResponseRejectsEveryTruncation)
     ASSERT_TRUE(encoded.HasValue());
     for (std::size_t cut = 0; cut < encoded.Value().size(); ++cut) {
         auto decoded = DecodeResponse(Slice(encoded.Value(), cut));
-        EXPECT_FALSE(decoded.HasValue()) << "truncation to " << cut << " was accepted";
+        EXPECT_FALSE(decoded.HasValue()) << "hits truncation to " << cut << " was accepted";
+    }
+
+    // The plan kind's key body and plan payload must survive every cut too.
+    ControlResponse plan;
+    plan.seq = 2;
+    plan.ok = true;
+    plan.message = "m";
+    plan.keys = {MakeBlockId(1), MakeBlockId(2)};
+    plan.tokenPayload = std::vector<std::byte>(16, std::byte{0});
+    auto encodedPlan = EncodeResponse(plan);
+    ASSERT_TRUE(encodedPlan.HasValue());
+    for (std::size_t cut = 0; cut < encodedPlan.Value().size(); ++cut) {
+        auto decoded = DecodeResponse(Slice(encodedPlan.Value(), cut));
+        EXPECT_FALSE(decoded.HasValue()) << "plan truncation to " << cut << " was accepted";
     }
 }
 
@@ -348,6 +446,7 @@ TEST(ControlCodecTest, HandshakeReplyIsPlainControlResponse)
     EXPECT_TRUE(ack.message.empty());
     EXPECT_TRUE(ack.hits.empty());
     EXPECT_TRUE(ack.slots.empty());
+    EXPECT_TRUE(ack.keys.empty());
     EXPECT_TRUE(ack.tokenPayload.empty());
 
     // A rejected Hello answers ok=0 with the leader's reason.

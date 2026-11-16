@@ -41,13 +41,15 @@ enum class ControlOp : std::uint8_t {
     Unpin = 4,
     Alloc = 5,
     Commit = 6,
+    PrepareOffload = 7,  /** Mint the next offload plan */
+    CompleteOffload = 8, /** Receipt a concluded offload plan */
 };
 
 /**
  * @brief One control-plane request (any op except Hello). Wire layout,
  *        little-endian:
  *        u8 op | u32 seq | u32 count | BlockId[count] (16B each) | u8 hasTtl | i64 ttlMs | u8
- * success
+ * success | u64 planId
  */
 struct ControlRequest {
     ControlOp op{ControlOp::Lookup};
@@ -58,18 +60,22 @@ struct ControlRequest {
     std::int64_t ttlMs{0};
     /** Commit's success flag; ignored by the other ops. */
     bool success{false};
+    /** Handle of the plan this request is about. */
+    std::uint64_t planId{0};
 };
 
 /**
  * @brief One control-plane response. Wire layout, little-endian:
  *        u32 seq | u8 ok | i32 statusCode | u32 msgLen | msg |
- *        u8 resultKind (0 none, 1 hits, 2 slots) | [result body] | u32 tokenLen | token bytes
+ *        u8 resultKind (0 none, 1 hits, 2 slots, 3 plan) | [result body] |
+ *        u32 tokenLen | token bytes
  *
  * The result body is single-choice by op: Lookup answers with hits, Pin/Alloc
- * with slots; every other op (and any failure) carries none. A successful
- * Pin/Alloc additionally attaches the minted AddressedToken payload
- * (self-addressing envelope) as opaque bytes -- its internal encoding belongs
- * to shm_layout.
+ * with slots, PrepareOffload with the planned keys; every other op (and any
+ * failure) carries none. A successful Pin/Alloc additionally attaches the
+ * minted AddressedToken payload (self-addressing envelope) as opaque bytes,
+ * and a successful PrepareOffload its plan payload (see PlanPayload) -- the
+ * token tail's internal encoding belongs to shm_layout.
  *
  * Handshake replies reuse this frame: seq stays 0. A
  * successful Hello answers ok=1 with no result body, the shared memfd riding
@@ -85,7 +91,10 @@ struct ControlResponse {
     std::vector<std::uint8_t> hits;
     /** Pin/Alloc result: slot index per block. */
     std::vector<std::uint32_t> slots;
-    /** AddressedToken payload of a successful Pin/Alloc; empty otherwise. */
+    /** PrepareOffload result: the planned keys; keys[i] pairs with slot i of the plan payload. */
+    std::vector<BlockId> keys;
+    /** Opaque tail of a successful Pin/Alloc (AddressedToken) or PrepareOffload (plan payload);
+     *  empty otherwise. */
     std::vector<std::byte> tokenPayload;
 };
 
@@ -107,7 +116,7 @@ struct HelloRequest {
 };
 
 /**
- * @brief Encodes a data-plane request (Lookup/Touch/Pin/Unpin/Alloc/Commit).
+ * @brief Encodes a control-plane request (Lookup through CompleteOffload).
  *
  * @return Expected the wire bytes on success; InvalidParam when op is Hello or
  *         out of range.
@@ -115,14 +124,14 @@ struct HelloRequest {
 [[nodiscard]] Expected<std::vector<std::byte>> EncodeRequest(const ControlRequest& request);
 
 /**
- * @brief Decodes a data-plane request; rejects Hello bodies, truncated or
+ * @brief Decodes a control-plane request; rejects Hello bodies, truncated or
  *        over-long inputs, and unknown opcodes with InvalidParam.
  */
 [[nodiscard]] Expected<ControlRequest> DecodeRequest(const std::vector<std::byte>& data);
 
 /**
- * @brief Encodes a response. InvalidParam when both hits and slots are set
- *         (the result body is single-choice).
+ * @brief Encodes a response. InvalidParam when more than one of hits, slots
+ *         and keys is set (the result body is single-choice).
  */
 [[nodiscard]] Expected<std::vector<std::byte>> EncodeResponse(const ControlResponse& response);
 
