@@ -23,6 +23,7 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
     UnifiedCacheLinker,
 )
 from sglang.srt.runtime_context import get_model
+from sglang.srt.utils import get_device_module
 
 from ucm.integration.sglang.patch.request_hooks import install_request_hooks
 
@@ -105,7 +106,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         self._job_ids = count(1)
         self._io_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="ucm-v2-io"
+            max_workers=1,
+            thread_name_prefix="ucm-v2-io",
+            initializer=get_device_module().set_device,
+            initargs=(self.layout.device_id,),
         )
         self._control_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-v2-control"
@@ -205,8 +209,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
         record_ready = getattr(self, "record_transfer_ready", None)
         if record_ready is not None:
             return record_ready().events
-
-        from sglang.srt.utils import get_device_module
 
         device_module = get_device_module()
         indices_ready = device_module.Event()

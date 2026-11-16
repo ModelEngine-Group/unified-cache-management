@@ -151,8 +151,7 @@ private:
      * direction's stream is left untouched: its in-flight jobs keep the
      * buffer-alive contract and settle through their own completions.
      */
-    Status AbortSubmit(std::size_t jobId, cudaEvent_t event, cudaError_t code, Direction lane,
-                       const char* operation);
+    Status AbortSubmit(std::size_t jobId, cudaEvent_t event, cudaError_t code, Direction lane);
     /** @brief Returns one settled event to the pool; a pool that cannot
      *         grow destroys the event instead of leaking it. */
     void ReleaseEvent(cudaEvent_t event);
@@ -167,7 +166,6 @@ private:
     std::array<cudaStream_t, kDirectionCount> streams_ = {};
     void* registeredBase_ = nullptr; /* page-locked region this engine owns, for unregister */
     std::size_t maxLength_ = 0;
-    int deviceId_ = 0;
     bool registered_ = false;
 #if defined(CUDART_VERSION) && CUDART_VERSION >= 13000
     bool batchUsable_ = true;
@@ -214,7 +212,6 @@ Status NaiveDmaEngine::Setup(const InitParam& param)
                                   cudaGetErrorString(code));
     }
     maxLength_ = param.maxLength;
-    deviceId_ = param.deviceId;
 
     /* best effort: a failure costs performance only */
     if (param.hostBase != nullptr && param.hostLength > 0) {
@@ -314,14 +311,6 @@ Status NaiveDmaEngine::Submit(std::size_t jobId, const DmaJob& job, cudaMemcpyKi
         return Status::DuplicateKey("job {} is already in flight", jobId);
     }
 
-    // CUDA's current device is per host thread. Setup and Submit may run
-    // on different threads; the completion event must belong to the stream's device.
-    cudaError_t code = cudaSetDevice(deviceId_);
-    if (code != cudaSuccess) {
-        return Status::OsApiError("binding DMA job {} to device {} failed: {}", jobId, deviceId_,
-                                  cudaGetErrorString(code));
-    }
-
     /* the kind picks the lane: its stream carries the batch below */
     const Direction lane = kind == cudaMemcpyHostToDevice ? kH2D : kD2H;
     cudaStream_t& stream = streams_[lane];
@@ -334,16 +323,13 @@ Status NaiveDmaEngine::Submit(std::size_t jobId, const DmaJob& job, cudaMemcpyKi
 
     /* the lane's stream maps the batch: an optional prerequisite wait, the
      * copy calls, the closing record; the first failure aborts */
+    cudaError_t code = cudaSuccess;
     if (job.prerequisite != 0) {
         code = cudaStreamWaitEvent(stream, reinterpret_cast<cudaEvent_t>(job.prerequisite), 0);
-        if (code != cudaSuccess) {
-            return AbortSubmit(jobId, event, code, lane, "cudaStreamWaitEvent");
-        }
     }
-    code = EnqueueCopies(job, kind, stream);
-    if (code != cudaSuccess) { return AbortSubmit(jobId, event, code, lane, "copy enqueue"); }
-    code = cudaEventRecord(event, stream);
-    if (code != cudaSuccess) { return AbortSubmit(jobId, event, code, lane, "cudaEventRecord"); }
+    if (code == cudaSuccess) { code = EnqueueCopies(job, kind, stream); }
+    if (code == cudaSuccess) { code = cudaEventRecord(event, stream); }
+    if (code != cudaSuccess) { return AbortSubmit(jobId, event, code, lane); }
     return Status::Ok();
 }
 
@@ -442,14 +428,13 @@ cudaError_t NaiveDmaEngine::EnqueueCopies(const DmaJob& job, cudaMemcpyKind kind
 }
 
 Status NaiveDmaEngine::AbortSubmit(std::size_t jobId, cudaEvent_t event, cudaError_t code,
-                                   Direction lane, const char* operation)
+                                   Direction lane)
 {
     cudaStreamSynchronize(streams_[lane]);
     jobs_.erase(jobId);
     inFlight_[lane].pop_back();
     ReleaseEvent(event);
-    return Status::OsApiError("submitting job {} on device {} failed at {}: {}", jobId, deviceId_,
-                              operation, cudaGetErrorString(code));
+    return Status::OsApiError("submitting job {} failed: {}", jobId, cudaGetErrorString(code));
 }
 
 void NaiveDmaEngine::ReleaseEvent(cudaEvent_t event)

@@ -27,9 +27,12 @@ def load_linker():
         "v2_offload_test",
         "v2_offload_test.device_layout",
         "v2_offload_test.runtime",
+        "sglang.srt.utils",
     ]
     modules = {name: types.ModuleType(name) for name in names}
     modules["torch"].distributed = modules["torch.distributed"]
+    device_module = Mock()
+    modules["sglang.srt.utils"].get_device_module = lambda: device_module
     group = types.SimpleNamespace(rank_replicated=False)
     modules[names[6]].resolve_hybrid_device_pool_group = lambda **kwargs: group
     modules[names[8]].LayerWiseLoadCounter = lambda layers: Mock()
