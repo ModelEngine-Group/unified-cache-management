@@ -27,6 +27,7 @@
 #include <cuda_runtime_api.h>
 #include <deque>
 #include <new>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -396,17 +397,22 @@ cudaError_t NaiveDmaEngine::EnqueueCopies(const DmaJob& job, cudaMemcpyKind kind
         cudaMemcpyAttributes attr{};
         attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream; /* sources read in stream order */
         std::size_t attrIndex = 0; /* the one attribute set covers the whole batch */
-        /* the call spells both arrays as const void** while a const
-         * DmaJob exposes them element-const, and the two const positions
-         * admit no single-cast bridge: each array is widened to
-         * const void* const* and const_cast off the element const --
-         * the driver reads these caller-owned arrays, never rewrites
-         * them */
-        const void* const* destinations = job.destinations.data();
-        const void* const* sources = job.sources.data();
-        const cudaError_t batchCode = cudaMemcpyBatchAsync(
-            const_cast<const void**>(destinations), const_cast<const void**>(sources),
-            job.sizes.data(), segmentCount, &attr, &attrIndex, 1, stream);
+        // Select the call from the declaration in the installed CUDA header.
+        const auto submitBatch = [&](auto copyBatch) {
+            if constexpr (std::is_invocable_v<decltype(copyBatch), void* const*,
+                                              const void* const*, const std::size_t*,
+                                              std::size_t, cudaMemcpyAttributes*, std::size_t*,
+                                              std::size_t, cudaStream_t>) {
+                return copyBatch(job.destinations.data(), job.sources.data(), job.sizes.data(),
+                                 segmentCount, &attr, &attrIndex, 1, stream);
+            } else {
+                const void* const* destinations = job.destinations.data();
+                return copyBatch(const_cast<const void**>(destinations),
+                                 const_cast<const void**>(job.sources.data()), job.sizes.data(),
+                                 segmentCount, &attr, &attrIndex, 1, stream);
+            }
+        };
+        const cudaError_t batchCode = submitBatch(cudaMemcpyBatchAsync);
         batched = (batchCode == cudaSuccess);
         if (!batched) { batchUsable_ = false; }
     }
