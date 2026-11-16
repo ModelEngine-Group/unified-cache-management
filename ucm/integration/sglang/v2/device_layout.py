@@ -87,6 +87,7 @@ class DsaLayout:
                     "DSA layer mapping does not cover every physical buffer"
                 )
         self.total_size = offset
+        self.section_sizes = {"FA": offset}
         self.identity = fingerprint((namespace, model_identity, group.page_size, facts))
         self.num_layers = group.num_layers
 

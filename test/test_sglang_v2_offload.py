@@ -35,13 +35,14 @@ def load_linker():
     modules[names[8]].LayerWiseLoadCounter = lambda layers: Mock()
     modules[names[8]].UnifiedCacheLinker = object
     modules[names[9]].get_model = lambda: types.SimpleNamespace(model_path="test")
-    layout = Mock(num_layers=1)
+    layout = Mock(num_layers=1, identity="test-layout", section_sizes={"FA": 8192})
     layout.expand.side_effect = lambda transfers: transfers
     layout.block_ids.return_value = (b"x" * 16,)
     layout.prepare.return_value = types.SimpleNamespace(
         keys=("page",), payloads=lambda: [object()]
     )
     modules["v2_offload_test.device_layout"].DsaLayout = lambda *args: layout
+    modules["v2_offload_test.device_layout"].fingerprint = lambda _: "a" * 64
     modules["v2_offload_test.request_hooks"] = types.SimpleNamespace(
         install_request_hooks=lambda linker_type: None
     )
@@ -158,6 +159,10 @@ class OffloadTest(unittest.TestCase):
             token_to_kv_pool_allocator=Mock(),
             attn_tp_cache_group=None,
             tp_cache_group=None,
+            pp_rank=0,
+            pp_size=1,
+            attn_cp_rank=0,
+            attn_cp_size=1,
         )
         self.linker = self.module.UcmDirectLinker(
             None, params, components=(), extra_config={"runtime": self.store}

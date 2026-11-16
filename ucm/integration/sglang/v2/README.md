@@ -32,6 +32,10 @@ Runtime reads the YAML path from `extra_config["UCM_CONFIG_FILE"]`, as in V1.
 The YAML must contain exactly one `ucm_connectors` entry; its
 `ucm_connector_config` dictionary is passed to StoreAssembler, with
 `llm_role: both` defaulted for each tier that does not specify a role.
+The linker supplies `unique_id` from the model, layout, and parallel topology
+and `block_size` from the largest section's page size in bytes. StoreAssembler
+adds a branch and tier suffix to the ID. Both derived values take precedence
+over legacy values in the YAML.
 The V1 connector factory/name is not used to create a V2 assembler.
 
 ```yaml

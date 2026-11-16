@@ -15,7 +15,14 @@ def proxy():
 
 
 class Runtime:
-    def __init__(self, extra_config: dict, *, dump_partitions: int = 1):
+    def __init__(
+        self,
+        extra_config: dict,
+        *,
+        unique_id: str,
+        block_size: int,
+        dump_partitions: int = 1,
+    ):
         config_file = extra_config.get("UCM_CONFIG_FILE")
         if not config_file:
             raise ValueError(
@@ -56,7 +63,12 @@ class Runtime:
                             options = tier.setdefault("config", {})
                             if isinstance(options, dict):
                                 options.setdefault("llm_role", "both")
-        self.assembler = proxy().StoreAssembler(config)
+                                # Existing YAML may still carry these derived values.
+                                options.pop("unique_id", None)
+                                options.pop("block_size", None)
+        self.assembler = proxy().StoreAssembler(
+            config, {"unique_id": unique_id, "block_size": block_size}
+        )
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()
 

@@ -24,7 +24,7 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 )
 from sglang.srt.runtime_context import get_model
 
-from .device_layout import DsaLayout
+from .device_layout import DsaLayout, fingerprint
 from .request_hooks import install_request_hooks
 from .runtime import Runtime, proxy
 
@@ -56,7 +56,25 @@ class UcmDirectLinker(UnifiedCacheLinker):
         extra_config = extra_config or {}
         # The assembler has no capability query for prerequisite events.
         self._forward_event_to_store = extra_config.get("forward_event_to_store", False)
-        self.runtime = Runtime(extra_config, dump_partitions=self._dump_size)
+        # Replicated TP ranks share a Store domain. Device addresses and rank
+        # within the replicated group are deliberately absent from the ID.
+        unique_id = fingerprint(
+            (
+                self.layout.identity,
+                self._dump_size,
+                params.pp_rank,
+                params.pp_size,
+                params.attn_cp_rank,
+                params.attn_cp_size,
+                self.layout.section_sizes,
+            )
+        )[:32]
+        self.runtime = Runtime(
+            extra_config,
+            unique_id=unique_id,
+            block_size=max(self.layout.section_sizes.values()),
+            dump_partitions=self._dump_size,
+        )
         install_request_hooks(type(self))
         self._registered_requests = set()
         self._request_pages = {}

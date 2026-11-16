@@ -29,7 +29,7 @@ class RuntimeTest(unittest.TestCase):
             "branches": [
                 {
                     "pipe": [
-                        {"store": "test"},
+                        {"store": "test", "config": {"unique_id": "old", "block_size": 1}},
                         {"store": "test", "config": {"llm_role": "worker"}},
                     ]
                 }
@@ -42,7 +42,10 @@ class RuntimeTest(unittest.TestCase):
             yaml.safe_dump({"ucm_connectors": [{"ucm_connector_config": self.config}]}),
             encoding="utf-8",
         )
-        self.runtime = runtime.Runtime({"UCM_CONFIG_FILE": str(self.config_file)})
+        self.runtime_args = {"unique_id": "sglang-test", "block_size": 8192}
+        self.runtime = runtime.Runtime(
+            {"UCM_CONFIG_FILE": str(self.config_file)}, **self.runtime_args
+        )
 
     def test_partitioned_dump_rejects_multiple_store_branches(self):
         config = {"branches": [{"pipe": []}, {"pipe": []}]}
@@ -52,7 +55,11 @@ class RuntimeTest(unittest.TestCase):
         )
         self.native.StoreAssembler.reset_mock()
         with self.assertRaisesRegex(ValueError, "single shared Store branch"):
-            runtime.Runtime({"UCM_CONFIG_FILE": str(self.config_file)}, dump_partitions=2)
+            runtime.Runtime(
+                {"UCM_CONFIG_FILE": str(self.config_file)},
+                dump_partitions=2,
+                **self.runtime_args,
+            )
         self.native.StoreAssembler.assert_not_called()
 
     def test_one_assembler_provides_both_roles(self):
@@ -66,7 +73,8 @@ class RuntimeTest(unittest.TestCase):
                         ]
                     }
                 ]
-            }
+            },
+            self.runtime_args,
         )
         self.assertIs(self.runtime.scheduler, self.assembler.get_scheduler.return_value)
         self.assertIs(self.runtime.worker, self.assembler.get_worker.return_value)
