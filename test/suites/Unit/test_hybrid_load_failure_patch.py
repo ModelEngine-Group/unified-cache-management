@@ -104,6 +104,134 @@ def test_missing_failure_policy_preserves_single_group_handler():
     obj.original.assert_called_once_with({10}, {})
 
 
+@pytest.mark.parametrize("reuse", [False, True])
+def test_cancel_before_failed_output_evicts_step_blocks(reuse):
+    class Scheduler:
+        def schedule(self):
+            return NS(
+                kv_connector_metadata=NS(
+                    request_meta={"req": NS(load_block_ids=([b"load"], [1]))}
+                )
+            )
+
+        def update_from_output(self, step, output):
+            return "processed"
+
+    obj = scheduler({"req": ([1, 2], [3])}, cls=Scheduler)
+    pool = obj.kv_cache_manager.block_pool
+    pool.blocks = [
+        NS(block_hash=value)
+        for value in (None, b"load", b"new", b"state", b"unrelated")
+    ]
+    step = obj.schedule()
+    # Abort drops request ownership, but prefix entries still exist.
+    obj.requests.clear()
+    obj.running.clear()
+    obj.kv_cache_manager.get_block_ids.side_effect = AssertionError(
+        "request was cancelled"
+    )
+    if reuse:
+        pool.blocks[2].block_hash = b"new-owner"
+    result = obj.update_from_output(
+        step, NS(kv_connector_output=NS(invalid_block_ids={1}))
+    )
+    assert result == "processed"
+    obj.kv_cache_manager.evict_blocks.assert_called_once_with(
+        {1, 3} if reuse else {1, 2, 3}
+    )
+    # A subsequent successful step must not inherit old failure state.
+    obj.kv_cache_manager.evict_blocks.reset_mock()
+    obj.update_from_output(step, NS(kv_connector_output=NS(invalid_block_ids=set())))
+    obj.kv_cache_manager.evict_blocks.assert_not_called()
+
+
+@pytest.mark.parametrize("ref", ["v0.23.0", "v0.30.0"])
+def test_cancelled_step_invalidates_real_prefix_cache(ref):
+    source_dir = os.environ.get("VLLM_SOURCE_DIR")
+    if not source_dir:
+        pytest.skip("set VLLM_SOURCE_DIR for real BlockPool checks")
+    source = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            source_dir,
+            "show",
+            f"refs/tags/{ref}:vllm/v1/core/block_pool.py",
+        ],
+        text=True,
+        encoding="utf-8",
+    )
+
+    class Block(NS):
+        def reset_hash(self):
+            self.block_hash = None
+
+    namespace = {
+        "KVCacheBlock": Block,
+        "make_block_hash_with_group_id": lambda value, group: (value, group),
+    }
+    module = ast.parse("from __future__ import annotations")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ClassDef) and node.name == "BlockHashToBlockMap":
+            module.body.append(node)
+        if isinstance(node, ast.ClassDef) and node.name == "BlockPool":
+            node.body = [
+                n
+                for n in node.body
+                if getattr(n, "name", None)
+                in {
+                    "free_blocks",
+                    "evict_blocks",
+                    "get_cached_block",
+                    "_maybe_evict_cached_block",
+                    "_remove_cached_block_hashes",
+                    "_emit_block_removed_events",
+                }
+            ]
+            module.body.append(node)
+    exec(compile(module, f"{ref}/block_pool.py", "exec"), namespace)
+    pool = namespace["BlockPool"]()
+    pool.blocks = [
+        Block(
+            block_id=i, block_hash=(bytes([i]), 0), ref_cnt=1, is_null=i == 0, pool=None
+        )
+        for i in range(5)
+    ]
+    pool.null_block = pool.blocks[0]
+    pool.enable_caching = True
+    pool.enable_kv_cache_events = False
+    pool.metrics_collector = None
+    pool.free_block_queue = Mock()
+    pool.cached_block_hashes_by_block = {}
+    pool.cached_block_hash_to_block = namespace["BlockHashToBlockMap"]()
+    for block in pool.blocks[1:]:
+        pool.cached_block_hash_to_block.insert(block.block_hash, block)
+
+    class Scheduler:
+        def schedule(self):
+            return NS(
+                kv_connector_metadata=NS(
+                    request_meta={"req": NS(load_block_ids=([b"load"], [1]))}
+                )
+            )
+
+        def update_from_output(self, step, output):
+            return "processed"
+
+    obj = scheduler({"req": ([1, 2], [3])}, cls=Scheduler)
+    obj.kv_cache_manager.block_pool = pool
+    obj.kv_cache_manager.evict_blocks = pool.evict_blocks
+    step = obj.schedule()
+    pool.free_blocks(pool.blocks[1:4])
+    obj.requests.clear()
+    obj.running.clear()
+    # Cancellation alone preserves the bad prefix entries.
+    assert all(pool.get_cached_block(bytes([i]), [0]) for i in (1, 2, 3))
+    obj.update_from_output(step, NS(kv_connector_output=NS(invalid_block_ids={1})))
+    assert all(pool.get_cached_block(bytes([i]), [0]) is None for i in (1, 2, 3))
+    assert pool.get_cached_block(bytes([4]), [0]) == [pool.blocks[4]]
+
+
 def test_shared_failed_blocks_report_every_owner():
     obj = scheduler({"a": ([10], [20]), "b": ([11], [20]), "ok": ([30], [40])})
     assert obj._handle_invalid_blocks({20}, {}) == {"a", "b"}
@@ -143,7 +271,16 @@ def test_other_policies_and_single_group_delegate(groups, recompute):
 
 
 @pytest.mark.parametrize(
-    "ref", ["v0.18.0", "v0.20.2", "v0.27.1", "v0.30.0", "v0.31.0", "v0.32.0"]
+    "ref",
+    [
+        "v0.18.0",
+        "v0.20.2",
+        "v0.23.0",
+        "v0.27.1",
+        "v0.30.0",
+        "v0.31.0",
+        "v0.32.0",
+    ],
 )
 def test_real_scheduler_failure_protocol(ref):
     source_dir = os.environ.get("VLLM_SOURCE_DIR")

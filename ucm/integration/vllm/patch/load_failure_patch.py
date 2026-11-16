@@ -31,6 +31,72 @@ def patch_core_sched_scheduler(mod):
     rejected by UCMConnector's constructor.
     """
 
+    original_schedule = getattr(mod.Scheduler, "schedule", None)
+    if original_schedule is not None:
+
+        def wrapped_schedule(self, *args, **kwargs):
+            output = original_schedule(self, *args, **kwargs)
+            if len(self.kv_cache_config.kv_cache_groups) > 1 and not getattr(
+                self, "recompute_kv_load_failures", False
+            ):
+                metadata = getattr(output, "kv_connector_metadata", None)
+                pool = self.kv_cache_manager.block_pool
+                snapshots = []
+                for req_id, dispatch in getattr(metadata, "request_meta", {}).items():
+                    targets = set(dispatch.load_block_ids[1]) - {
+                        pool.null_block.block_id
+                    }
+                    if not targets:
+                        continue
+                    groups = self.kv_cache_manager.get_block_ids(req_id)
+                    ids = {bid for group in groups for bid in group} - {
+                        pool.null_block.block_id
+                    }
+                    snapshots.append(
+                        (targets, [(bid, pool.blocks[bid].block_hash) for bid in ids])
+                    )
+                output._ucm_load_failure_blocks = snapshots
+            return output
+
+        patch_or_inject(mod.Scheduler, "schedule", wrapped_schedule)
+
+    original_output = getattr(mod.Scheduler, "update_from_output", None)
+    if original_output is not None:
+
+        def wrapped_output(
+            self, scheduler_output, model_runner_output, *args, **kwargs
+        ):
+            output = getattr(model_runner_output, "kv_connector_output", None)
+            invalid = getattr(output, "invalid_block_ids", None)
+            if (
+                invalid
+                and len(self.kv_cache_config.kv_cache_groups) > 1
+                and not getattr(self, "recompute_kv_load_failures", False)
+            ):
+                # EngineCore processes aborts before this call. The step's
+                # snapshot survives request removal and includes both external
+                # load targets and blocks allocated for this forward.
+                pool = self.kv_cache_manager.block_pool
+                null_id = pool.null_block.block_id
+                failed = set(invalid) - {null_id}
+                evict = set()
+                for targets, blocks in getattr(
+                    scheduler_output, "_ucm_load_failure_blocks", ()
+                ):
+                    if targets & failed:
+                        for bid, block_hash in blocks:
+                            # Cancellation frees references but preserves hashes.
+                            # A different hash means this physical ID was reused.
+                            if pool.blocks[bid].block_hash == block_hash:
+                                evict.add(bid)
+                if evict:
+                    self.kv_cache_manager.evict_blocks(evict)
+            return original_output(
+                self, scheduler_output, model_runner_output, *args, **kwargs
+            )
+
+        patch_or_inject(mod.Scheduler, "update_from_output", wrapped_output)
+
     original_handle = getattr(mod.Scheduler, "_handle_invalid_blocks", None)
     if original_handle is not None:
 
