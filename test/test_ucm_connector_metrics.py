@@ -1380,6 +1380,27 @@ def test_scheduler_cache_reset_reports_store_errors():
     inner.store.reset_cache.assert_called_once_with()
 
 
+def test_scheduler_cache_reset_accepts_a_store_without_the_optional_hook():
+    inner = object.__new__(UCMDirectConnector)
+    inner.store = SimpleNamespace()
+    assert inner.reset_cache() is False
+
+
+@pytest.mark.parametrize("missing_hook", ["fa_store", "wa_store"])
+def test_fawa_scheduler_requires_reset_hooks_before_clearing_either_store(missing_hook):
+    from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+    inner = object.__new__(UCMFAWAConnector)
+    inner.fa_store = SimpleNamespace(reset_cache=Mock(return_value=True))
+    inner.wa_store = SimpleNamespace(reset_cache=Mock(return_value=True))
+    inner.window_group_ids = [1]
+    other_store = inner.wa_store if missing_hook == "fa_store" else inner.fa_store
+    setattr(inner, missing_hook, SimpleNamespace())
+
+    assert inner.reset_cache() is False
+    other_store.reset_cache.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "fa_result,wa_result", [(True, True), (False, True), (True, False)]
 )

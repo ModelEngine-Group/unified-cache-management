@@ -2858,7 +2858,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         store = getattr(self, "store", None)
         if store is None:
             return False
-        return bool(store.reset_cache())
+        reset = getattr(store, "reset_cache", None)
+        return bool(reset()) if callable(reset) else False
 
     def get_finished(
         self,

@@ -187,13 +187,6 @@ Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
     }
 }
 
-Status HealthBreakerStore::ResetCache()
-{
-    // A cache reset is an explicit operator action, not a health probe: the
-    // result must reach the caller unchanged even while the store is unhealthy.
-    return store_->ResetCache();
-}
-
 // Returns whether the result was counted as a passive health sample.
 bool HealthBreakerStore::RecordPassiveResult(const Status& status, uint64_t generation)
 {
