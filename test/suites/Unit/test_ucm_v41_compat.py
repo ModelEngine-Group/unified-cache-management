@@ -306,7 +306,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             "replay",
             "disabled_transfer",
             "missing_page",
-            "folded",
+            "unknown_member",
+            "wrong_folded",
+            "missing_indexer",
             "layer_stride",
             "context_parallel",
         ):
@@ -319,15 +321,24 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     cfg.kv_cache_groups[2].enable_kv_transfer = False
                 elif change == "missing_page":
                     cfg.kv_cache_tensors.pop()
-                elif change == "folded":
-                    folded = "model.layers.0.self_attn.indexer.k_cache_folded"
-                    cfg.kv_cache_groups[0].layer_names.append(folded)
-                    cfg.kv_cache_tensors[0].layers.append(folded)
-                    cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[folded] = next(
+                elif change in ("unknown_member", "wrong_folded"):
+                    member = (
+                        "model.layers.0.self_attn.unknown_cache"
+                        if change == "unknown_member"
+                        else "model.layers.1.self_attn.indexer.k_cache_folded"
+                    )
+                    cfg.kv_cache_groups[0].layer_names.append(member)
+                    cfg.kv_cache_tensors[0].layers.append(member)
+                    cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[member] = next(
                         iter(
                             cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs.values()
                         )
                     )
+                elif change == "missing_indexer":
+                    indexer = "model.layers.0.self_attn.indexer.k_cache"
+                    cfg.kv_cache_groups[0].layer_names.remove(indexer)
+                    cfg.kv_cache_tensors[0].layers.remove(indexer)
+                    del cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[indexer]
                 elif change == "layer_stride":
                     cfg.kv_cache_tensors[0].layer_stride = 128
                 else:
@@ -403,7 +414,25 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     methods["_init_group_metas"](connector)
 
     def test_ascend_v41_registers_one_page_owner_and_roundtrips_scales(self):
+        self._assert_ascend_v41_page_roundtrip()
+
+    def test_ascend_v41_folded_page_roundtrips_all_members(self):
+        self._assert_ascend_v41_page_roundtrip(folded=True)
+
+    def _assert_ascend_v41_page_roundtrip(self, folded=False):
         methods, connector = self._ascend_v41_connector()
+        if folded:
+            self._enable_ascend_bounded_replay(connector)
+            cfg = connector._kv_cache_config
+            group = cfg.kv_cache_groups[0]
+            indexer = "model.layers.0.self_attn.indexer.k_cache"
+            folded_name = indexer + "_folded"
+            group.layer_names.append(folded_name)
+            group.kv_cache_spec.kv_cache_specs[folded_name] = copy.copy(
+                group.kv_cache_spec.kv_cache_specs[indexer]
+            )
+            cfg.kv_cache_tensors[0].layers.append(folded_name)
+            cfg.kv_cache_tensors[0].block_stride = 327680
         methods["_init_group_metas"](connector)
         tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
         layout_node = next(
@@ -462,19 +491,49 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         for name, size in connector.whole_page_sizes.items():
             caches[name] = Tensor(size)
         register["register_kv_caches"](connector, caches)
-        self.assertEqual(set(connector.group_layouts), {0, 2})
+        self.assertEqual(set(connector.group_layouts), {0} if folded else {0, 2})
         layout = connector.group_layouts[0]
         self.assertEqual(len(layout.base_ptrs), 2)
-        self.assertEqual(layout.segment_tensor_size_list(128, 128), [262144] * 2)
+        page_sizes = [327680, 262144] if folded else [262144, 262144]
+        self.assertEqual(layout.segment_tensor_size_list(128, 128), page_sizes)
+        self.assertEqual(
+            set(layout.kvcaches),
+            {
+                "model.layers.0.self_attn.long_kv_cache",
+                "model.layers.1.self_attn.long_kv_cache",
+            },
+        )
         np = __import__("numpy")
         src = layout.extract_addrs(np.array([1]))
         dst = layout.extract_addrs(np.array([2]))
         for col, size in enumerate(layout.segment_tensor_size_list(128, 128)):
             # Cover main KV, the separate indexer/scales, and page padding.
-            pattern = bytes(range(256)) * (size // 256)
+            if folded and col == 0:
+                regions = (
+                    ("main_kv", 65536, 17),
+                    ("indexer", 8192, 34),
+                    ("folded", 4096, 51),
+                    ("padding", size - 77824, 68),
+                )
+                pattern = b"".join(
+                    bytes([value]) * length for _, length, value in regions
+                )
+            else:
+                regions = (("page", size, 0),)
+                pattern = bytes(range(256)) * (size // 256)
             ctypes.memmove(int(src[0, col]), pattern, size)
-            ctypes.memmove(int(dst[0, col]), int(src[0, col]), size)
+            saved = ctypes.string_at(int(src[0, col]), size)
+            ctypes.memset(int(src[0, col]), 0, size)
+            ctypes.memmove(int(dst[0, col]), saved, size)
             self.assertEqual(ctypes.string_at(int(dst[0, col]), size), pattern)
+            offset = 0
+            for label, length, _ in regions:
+                with self.subTest(folded=folded, page=col, region=label):
+                    self.assertEqual(
+                        ctypes.string_at(int(dst[0, col]) + offset, length),
+                        pattern[offset : offset + length],
+                    )
+                offset += length
             self.assertEqual(
                 ctypes.string_at(int(layout.base_ptrs[col]), size), bytes(size)
             )

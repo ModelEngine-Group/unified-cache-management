@@ -696,7 +696,8 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
                     raise ValueError("Ascend V4.1 FA page needs one long KV owner.")
                 owner = owners[0]
                 indexer = owner.removesuffix(".long_kv_cache") + ".indexer.k_cache"
-                if members != {owner, indexer}:
+                folded = indexer + "_folded"
+                if members not in ({owner, indexer}, {owner, indexer, folded}):
                     raise ValueError("Unsupported Ascend V4.1 FA page contents.")
             sizes[owner] = tensor.block_stride
             remaining.difference_update(members)
