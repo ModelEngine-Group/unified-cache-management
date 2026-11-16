@@ -46,7 +46,7 @@ These options configure Posix in a Pipeline. Provide `storage_backends` when Pos
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
-| `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Local directory or mount point. Multiple mount points are separated by colons. |
+| `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Local directory or mount point. Multiple mount points are separated by colons. **Required when pipeline parallelism is enabled**: every stage needs the same shared Posix backend, and the connector stores each stage under `<path>/pp_<pp_rank>_l<first_layer>-<layer_count>`, so a re-partitioned restart cannot read another stage's layers. |
 | `io_direct` | Optional | bool | Default: `true` | Enable Direct I/O (bypass OS page cache). `false`: uses PageCache; `true`: skips PageCache. |
 | `posix_io_engine` | Optional | string | Default: `psync` | File I/O mode. `psync`: synchronous; `aio`: asynchronous, requires `io_direct=true`. |
 | `posix_data_trans_concurrency` | Optional | int | Default: `128` | Read/write threads per card in `psync` mode. NFS over RDMA: 128/card. Not used in `aio` mode. |
@@ -60,7 +60,7 @@ These fields apply to pipelines containing Cache. Budget shared buffers per shar
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
-| `cache_buffer_capacity_gb` | Optional | int | See description | Native Cache Store defaults to 256 GiB with shared buffers, or 32 GiB per worker when `share_buffer_enable` is false. The vLLM connector supplies 128 GiB when shared buffers are enabled and capacity is omitted. Shared buffers default on for MLA. A positive explicit capacity overrides the native defaults; budget all unshared workers on the host. |
+| `cache_buffer_capacity_gb` | Optional | int | See description | Native Cache Store defaults to 256 GiB with shared buffers, or 32 GiB per worker when `share_buffer_enable` is false. The vLLM connector supplies 128 GiB when shared buffers are enabled and capacity is omitted. Shared buffers default on for MLA. A positive explicit capacity overrides the native defaults; budget all unshared workers on the host. With pipeline parallelism, the configured capacity is further divided by the number of PP stages sharing the node, and a split that would round down to 0 is rejected at startup. |
 | `use_dpc` | Optional | bool | Default: `false` | Host buffer allocation in non-shared-buffer mode. Defaults to huge pages (legacy DirectIO path); set `true` to use the driver memory API (DPC path). |
 | `cache_sdma_direct` | Optional | bool | Depends on build env: `true` when `PLATFORM=ascend-a3`, `false` otherwise | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
 | `cache_load_backend_only` | Optional | bool | Default: `false` | Force load from SSD even on cache hit. Test only. |
@@ -73,7 +73,7 @@ Capacity settings do not reserve filesystem space. Coordinate GC ownership for s
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
-| `posix_capacity_gb` | Optional | int | Default: `0` (no GC); must not exceed mounted filesystem available capacity | Max disk storage capacity (GB). Triggers GC when used >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio`. In multi-instance deployments sharing the same filesystem, only one instance should enable GC; others should not. |
+| `posix_capacity_gb` | Optional | int | Default: `0` (no GC); must not exceed mounted filesystem available capacity | Max disk storage capacity (GB). Triggers GC when used >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio`. In multi-instance deployments sharing the same filesystem, only one instance should enable GC; others should not. With pipeline parallelism, the value is divided by `pipeline_parallel_size` because each stage owns a separate directory, and a split that would round down to 0 is rejected at startup. |
 | `posix_gc_trigger_threshold_ratio` | Conditional | float | Default: `0.7`, 0~1. Not set when `posix_capacity_gb` is not configured | GC trigger threshold ratio. Used with `posix_capacity_gb`. |
 | `posix_gc_recycle_percent` | Optional | float | Default: `0.1`, 0~1. Not set when `posix_capacity_gb` is not configured | Ratio of current capacity deleted per GC round. |
 | `posix_gc_max_recycle_count_per_shard` | Optional | int | Default: `50000`, >0. Not recommended to modify. Not set when `posix_capacity_gb` is not configured | Max file deletion count per directory per GC round. |

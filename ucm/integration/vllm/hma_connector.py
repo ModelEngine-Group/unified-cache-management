@@ -784,6 +784,7 @@ class FAWAPendingLoad:
     tasks: list[FAWALoadTask] = field(default_factory=list)
     failed: bool = False
     successful_bytes: int = 0
+    event_handle: int = 0
 
 
 @dataclass
@@ -878,6 +879,50 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
 
+        # PCP expands the dump-ownership domain: with PCP>1 and DCP=1 every
+        # PCP peer holds a full KV replica after the step's PCP gather, so
+        # exactly one of the TP*PCP workers must dump each block (same idea
+        # as the TP-only dedup, spanning the PCP axis too). DCP>1 shards the
+        # KV cache, so the PCP axis must not be merged there.
+        self.pcp_world_size = 1
+        self.pcp_rank = 0
+        if (
+            role == KVConnectorRole.WORKER
+            and getattr(
+                self._vllm_config.parallel_config,
+                "prefill_context_parallel_size",
+                1,
+            )
+            > 1
+        ):
+            try:
+                from vllm.distributed import get_dcp_group, get_pcp_group
+
+                if get_dcp_group().world_size == 1:
+                    self.pcp_world_size = get_pcp_group().world_size
+                    self.pcp_rank = get_pcp_group().rank_in_group
+                else:
+                    logger.warning(
+                        "FAWA dump dedup keeps the TP-only domain because "
+                        "DCP>1 shards the KV cache across ranks."
+                    )
+            except (ImportError, AssertionError):
+                logger.warning(
+                    "FAWA dump dedup keeps the TP-only domain because the "
+                    "PCP process group is unavailable."
+                )
+        self.dump_owner_size = self.tp_size * self.pcp_world_size
+        self.dump_owner_rank = (
+            self.tp_rank % self.tp_size
+        ) + self.tp_size * self.pcp_rank
+        logger.info(
+            "FAWA dump ownership: tp_rank=%s, pcp_rank=%s, " "dump_owner_rank=%s/%s",
+            self.tp_rank,
+            self.pcp_rank,
+            self.dump_owner_rank,
+            self.dump_owner_size,
+        )
+
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
@@ -954,6 +999,18 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def get_block_size(self) -> int:
         return self.hash_block_size
+
+    def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
+        """Select this worker's MLA records across the TP*PCP replica domain.
+
+        The base implementation selects by absolute block position modulo
+        tp_size only. With PCP>1 (DCP=1) both PCP peers share a tp_rank, so
+        both would dump the same keys into the shared store concurrently.
+        The ownership domain here is TP*PCP; with PCP=1 this is identical
+        to the upstream TP-only slice.
+        """
+        first_index = (self.dump_owner_rank - dump_block_start) % self.dump_owner_size
+        return slice(first_index, None, self.dump_owner_size)
 
     @staticmethod
     def ascend_compression_ratio(spec) -> int:
@@ -2201,6 +2258,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
+        event_handle: int = 0,
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -2212,6 +2270,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             shard_indices,
             ptrs,
             distribute_backend_load=self.is_mla,
+            event_handle=event_handle,
         )
         return FAWALoadTask(
             request_id=request_id,
@@ -2384,12 +2443,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.is_v41_layout and any(
-            request.load_keys for request in metadata.request_meta.values()
+        # Fence load DMA behind pending zeroing: sync loads share one event
+        # destroyed below; each async request owns one, released at drain.
+        load_event_handle = 0
+        if any(
+            request.load_keys and (not request.load_async or not self.enable_event_sync)
+            for request in metadata.request_meta.values()
         ):
-            # Finish pending KV page writes before the store starts its H2D copies.
-            self.device.synchronize()
-            logger.info_once("V4.1 compute stream synchronized before external KV load")
+            load_event_handle = self._get_event_handle()
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
@@ -2409,6 +2470,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if self.window_group_ids and self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
 
+                # Async requests fence with one event of their own, shared by
+                # the FA/WA tasks and released when the pending drains.
+                submit_handle = load_event_handle
+                if request.load_async and self.enable_event_sync:
+                    pending.event_handle = self._get_event_handle()
+                    submit_handle = pending.event_handle
+
                 # FA groups are loaded for every external-hit canonical block.
                 fa_ptrs = self._extract_fa_ptr(
                     request.load_keys,
@@ -2422,6 +2490,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
+                    event_handle=submit_handle,
                 )
                 tasks.append(fa_task)
                 pending.tasks.append(fa_task)
@@ -2442,6 +2511,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
+                    event_handle=submit_handle,
                 )
                 tasks.append(wa_task)
                 pending.tasks.append(wa_task)
@@ -2463,6 +2533,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._finished_async_load_req_ids.add(request_id)
                         self._failed_fawa_loads.add(request_id)
                         self._connector_worker_meta.mark_failed(request_id)
+                        # No submitted task ever referenced the event.
+                        if pending.event_handle:
+                            self.device.destroy_event_handle(pending.event_handle)
+                            pending.event_handle = 0
                 else:
                     # Keep the historical sync behavior: invalidate both the
                     # load and dump blocks through the request metadata.
@@ -2491,6 +2565,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             if task.request_id == request_id
         ]
         self._wait_all_load_task(sync_tasks)
+
+        if load_event_handle:
+            self.device.destroy_event_handle(load_event_handle)
 
     def _poll_pending_fawa_loads(self) -> set[str]:
         finished = set(self._finished_async_load_req_ids)
@@ -2522,6 +2599,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             pending.tasks = remaining
             if not remaining:
                 self._pending_fawa_loads.pop(request_id, None)
+                # Drained: the lazy WaitEvents have run; release the event.
+                if pending.event_handle:
+                    self.device.destroy_event_handle(pending.event_handle)
+                    pending.event_handle = 0
                 finished.add(request_id)
                 if pending.failed:
                     self._failed_fawa_loads.add(request_id)
@@ -2560,9 +2641,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
-        if self.tp_size > 1:
+        if self.dump_owner_size > 1:
             # Split FA rows by canonical block index. Block-wise WA follows the same
-            # TP key slice; chunk-wise WA assigns one final boundary per request.
+            # owner key slice (TP*PCP dedup domain); chunk-wise WA assigns one final
+            # boundary per request.
             wa_dump_ring_idx = 0
             for request_id, request in metadata.request_meta.items():
                 if not request.dump_keys:
@@ -2622,7 +2704,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                                 wa_dump_vllm_block_ids,
                             )
                         )
-                elif wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                elif wa_dump_ring_idx % self.dump_owner_size == self.dump_owner_rank:
                     request_wa_dump_keys = request.dump_keys[-1:]
                     wa_dump_blocks_by_request[request_id] = set(request_wa_dump_keys)
                     wa_dump_keys.extend(request_wa_dump_keys)
@@ -2671,7 +2753,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
 
         if fa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             fa_ptrs = np.vstack(fa_ptr_rows)
             try:
                 fa_dump_task = self._submit_dump_task(
@@ -2689,7 +2771,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
         if wa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
             try:
                 wa_dump_task = self._submit_dump_task(

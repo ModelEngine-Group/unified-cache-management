@@ -84,6 +84,82 @@ a write/read/compare/remove probe. A successful probe establishes filesystem
 health; only request-level hits and completed loads establish KV reuse. See
 [Health metrics](../../user-guide/observability/health-metrics.md).
 
+## Pipeline parallelism
+
+With `pipeline_parallel_size > 1` the layer-wise connector gives every PP stage
+its own store instead of sharing one namespace:
+
+| | Example (PP=2, backend `/data/ucm`, engine id `3f9c1a`, layers 8) |
+| --- | --- |
+| Storage path | `/data/ucm/pp_0_l0-4`, `/data/ucm/pp_1_l4-4` |
+| Cache id | `3f9c1a_pp_0_l0-4`, `3f9c1a_pp_1_l4-4` |
+
+The stage directory is created before the Posix store opens, and the block key
+format is unchanged, so keys stay comparable across stages.
+
+**The layer allocation is part of the namespace.** A stage directory names the
+rank together with the layers that stage owns (`pp_<rank>_l<first>-<count>`),
+where the allocation comes from `VLLM_PP_LAYER_PARTITION`. This is not cosmetic:
+keying only on the rank makes a re-partitioned restart read the wrong layers.
+With 12 layers, `4,4,4` gives stage 1 layers 4-7 and `2,4,6` gives stage 1
+layers 2-5. Stage 1 keeps four layers in both runs, so `block_size` and
+`shard_size` still match, the old files still load, and shard 0 — layer 4
+before, layer 2 after — would silently feed layer 2 the cached KV of layer 4.
+Including the allocation in the directory (and in the Cache id) makes the
+old data unreachable instead. Every worker publishes its allocation through
+the handshake so the scheduler names the directory identically.
+
+**Budget split.** On a node holding several stages, `cache_buffer_capacity_gb` is
+divided by the number of local stages, and `posix_capacity_gb` is divided by the
+full `pipeline_parallel_size`. A split that would round down to 0 aborts startup
+rather than silently falling back to a native default.
+
+**Geometry comes from the handshake.** Each worker publishes the real block and
+shard sizes of its stage, and the scheduler builds the matching stores from that
+metadata. The previous "per-layer size × total model layers" estimate is gone
+because it sized a stage's block by layers the stage does not hold.
+
+**Shard indices are stage-local.** A stage stores only its own layers, so its
+shard indices restart at 0. With PP=2 over 32 layers, layer 16 is shard 0 of
+stage 1, not shard 16.
+
+**A block is a hit only when every stage has it.** Lookup runs against each
+stage store and takes the shortest common prefix: PP0 may report ten blocks
+while PP1 has only four, in which case four is the hit and the remaining six are
+recomputed by vLLM. A block is never handed to the load path unless all stages
+can serve it, so a failed or still-in-flight stage dump, a restarted stage, or a
+stage-local GC eviction simply shortens the hit instead of producing a load
+error. The cost is one lookup round trip per stage — the later stages keep
+Posix-only stores, so a stage on another node pays a network round trip on the
+scheduler's critical path, once per batch of candidate blocks rather than once
+per block.
+
+**Stage queries run in parallel.** PP0 is queried first because a full miss there
+settles the lookup without touching the remote stages; the remaining stages are then
+queried concurrently on a connector-owned thread pool sized to the stage count. The
+pool lives for the whole process, so the metrics registry sees a fixed number of
+threads that does not grow with the number of lookups.
+
+**`kv_load_failure_policy="recompute"` is still recommended.** The intersection
+removes the PP0-versus-later-stage mismatch, but one race remains: a stage store
+can evict a block after the lookup reported it and before the load runs. With
+the default `"fail"` that race ends the request; with `"recompute"` it degrades
+to partial reuse. A stage load error is still reported through
+`get_block_ids_with_load_errors()` as the safety net.
+
+**Scope.** PP is supported by the layer-wise connector on a shared Posix backend
+reachable from every stage. Non-Posix backends and the direct connector are out
+of scope, and context parallelism combined with PP is rejected at startup.
+
+**Upgrading from a flat layout.** Data written by an earlier version sits
+directly under the configured root rather than under a stage directory. Data
+written by the first PP version sits under `pp_<rank>` without the layer
+suffix. Neither layout is found after the upgrade, and the new stage namespaces
+do not reclaim them. Delete both once you have confirmed nothing else still
+reads those directories. Because changing `VLLM_PP_LAYER_PARTITION` produces a
+new directory set, an intentional repartition leaves the previous directories
+behind as well; remove them when the disk budget matters.
+
 ## Other registered pipelines
 
 | Requirement | Selection |

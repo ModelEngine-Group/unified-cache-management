@@ -200,6 +200,7 @@ bool LoadQueue::SubmitMissShards(TaskPtr task, WaiterPtr waiter, const std::vect
 
         Detail::TaskDesc backendTask;
         backendTask.brief = "Backend2Host";
+        backendTask.memoryType = Detail::TaskDesc::MemoryType::DDR;
         backendTask.push_back(Detail::Shard{shard.owner, shard.index, {buf.get()}});
 
         auto res = backend_->Load(std::move(backendTask));
