@@ -40,6 +40,7 @@ class DsaLayout:
             )
         self.layers = []
         facts = []
+        devices = set()
         offset = 0
         covered = {entry.name: set() for entry in self.entries}
         for layer in range(group.num_layers):
@@ -62,6 +63,7 @@ class DsaLayout:
                         covered[entry.name].add(fragment)
                         base, stride, size = component[index]
                         buffer = entry.components[component_id][index]
+                        devices.add(buffer.device)
                         if not buffer.is_contiguous():
                             raise ValueError("DSA requires contiguous physical buffers")
                         items.append((int(base), int(stride)))
@@ -86,6 +88,11 @@ class DsaLayout:
                 raise ValueError(
                     "DSA layer mapping does not cover every physical buffer"
                 )
+        if len(devices) != 1:
+            raise ValueError("Store v2 requires all DSA buffers on one device per rank")
+        self.device_id = devices.pop().index
+        if self.device_id is None:
+            raise ValueError("Store v2 requires an indexed accelerator device")
         self.total_size = offset
         self.section_sizes = {"FA": offset}
         self.identity = fingerprint((namespace, model_identity, group.page_size, facts))

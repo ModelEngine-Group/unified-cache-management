@@ -35,7 +35,9 @@ def load_linker():
     modules[names[8]].LayerWiseLoadCounter = lambda layers: Mock()
     modules[names[8]].UnifiedCacheLinker = object
     modules[names[9]].get_model = lambda: types.SimpleNamespace(model_path="test")
-    layout = Mock(num_layers=1, identity="test-layout", section_sizes={"FA": 8192})
+    layout = Mock(
+        num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3
+    )
     layout.expand.side_effect = lambda transfers: transfers
     layout.block_ids.return_value = (b"x" * 16,)
     layout.prepare.return_value = types.SimpleNamespace(

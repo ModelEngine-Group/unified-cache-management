@@ -73,6 +73,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             extra_config,
             unique_id=unique_id,
             block_size=max(self.layout.section_sizes.values()),
+            device_id=self.layout.device_id,
             dump_partitions=self._dump_size,
         )
         install_request_hooks(type(self))

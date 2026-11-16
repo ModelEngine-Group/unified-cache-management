@@ -21,6 +21,7 @@ class Runtime:
         *,
         unique_id: str,
         block_size: int,
+        device_id: int,
         dump_partitions: int = 1,
     ):
         config_file = extra_config.get("UCM_CONFIG_FILE")
@@ -66,8 +67,10 @@ class Runtime:
                                 # Existing YAML may still carry these derived values.
                                 options.pop("unique_id", None)
                                 options.pop("block_size", None)
+                                options.pop("device_id", None)
         self.assembler = proxy().StoreAssembler(
-            config, {"unique_id": unique_id, "block_size": block_size}
+            config,
+            {"unique_id": unique_id, "block_size": block_size, "device_id": device_id},
         )
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()

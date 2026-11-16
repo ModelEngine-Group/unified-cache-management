@@ -29,7 +29,10 @@ class RuntimeTest(unittest.TestCase):
             "branches": [
                 {
                     "pipe": [
-                        {"store": "test", "config": {"unique_id": "old", "block_size": 1}},
+                        {
+                            "store": "test",
+                            "config": {"unique_id": "old", "block_size": 1, "device_id": 0},
+                        },
                         {"store": "test", "config": {"llm_role": "worker"}},
                     ]
                 }
@@ -42,7 +45,11 @@ class RuntimeTest(unittest.TestCase):
             yaml.safe_dump({"ucm_connectors": [{"ucm_connector_config": self.config}]}),
             encoding="utf-8",
         )
-        self.runtime_args = {"unique_id": "sglang-test", "block_size": 8192}
+        self.runtime_args = {
+            "unique_id": "sglang-test",
+            "block_size": 8192,
+            "device_id": 3,
+        }
         self.runtime = runtime.Runtime(
             {"UCM_CONFIG_FILE": str(self.config_file)}, **self.runtime_args
         )

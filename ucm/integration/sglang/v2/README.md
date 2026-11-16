@@ -34,8 +34,9 @@ The YAML must contain exactly one `ucm_connectors` entry; its
 `llm_role: both` defaulted for each tier that does not specify a role.
 The linker supplies `unique_id` from the model, layout, and parallel topology
 and `block_size` from the largest section's page size in bytes. StoreAssembler
-adds a branch and tier suffix to the ID. Both derived values take precedence
-over legacy values in the YAML.
+adds a branch and tier suffix to the ID. The linker also supplies each rank's
+`device_id` from the device holding its DSA buffers. These derived values take
+precedence over legacy values in the YAML.
 The V1 connector factory/name is not used to create a V2 assembler.
 
 ```yaml
