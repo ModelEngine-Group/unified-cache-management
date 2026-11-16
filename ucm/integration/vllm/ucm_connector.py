@@ -49,11 +49,7 @@ from ucm.integration.vllm.cache_config import (
     configure_cache_capacity,
     configure_cache_numa,
 )
-from ucm.integration.vllm.cache_reset import (
-    CacheResetServer,
-    get_local_ip,
-    reset_cache_endpoints,
-)
+from ucm.integration.vllm.cache_reset import CacheResetServer, reset_cache_endpoints
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -2999,12 +2995,25 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             config["posix_capacity_gb"] = capacity
 
     def get_handshake_metadata(self) -> Optional[dict]:
-        """Publish this PP stage's store geometry for the scheduler stores."""
         if self._is_pp:
             sizes = getattr(self, "_pp_store_sizes", None)
             if sizes is None:
                 return None
-            return dict(sizes)
+            server = getattr(self, "_cache_reset_server", None)
+            if server is None:
+                store = getattr(self, "store", None)
+                if store is None:
+                    return None
+                reset = getattr(store, "reset_cache", None)
+                try:
+                    server = CacheResetServer(
+                        lambda: bool(reset()) if callable(reset) else False
+                    )
+                except Exception as exc:
+                    logger.warning("PP Cache reset endpoint unavailable: %s", exc)
+                    return dict(sizes)
+                self._cache_reset_server = server
+            return {**sizes, "cache_reset_endpoint": server.endpoint}
         return None
 
     def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
@@ -3030,10 +3039,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     f"received keys: {list(metadata)}."
                 )
             stage_meta = dict(stage_meta)
-            # Cache reset endpoints are owned by the outer connector.
             stage_meta.pop("cache_reset_endpoint", None)
-            stage_meta.pop("cache_reset_host", None)
-            stage_meta.pop("cache_reset_domain", None)
             layer_start = stage_meta.pop("layer_start", None)
             layer_count = stage_meta.pop("layer_count", None)
             if layer_start is None or layer_count is None:
@@ -3059,6 +3065,35 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         self._pp_stores = stores
         self.store = stores[0]
+        # Every worker must advertise reset support. One worker per host and
+        # stage suffices because its Cache2 control region is shared locally.
+        expected = (
+            (pp_rank, tp_rank)
+            for pp_rank in range(
+                self._vllm_config.parallel_config.pipeline_parallel_size
+            )
+            for tp_rank in range(self.tp_size)
+        )
+        if all(
+            metadata.get(rank, {}).get("cache_reset_endpoint") for rank in expected
+        ) and all(
+            stage_meta.get("cache_reset_endpoint") for stage_meta in metadata.values()
+        ):
+            endpoints = {}
+            for (pp_rank, _), stage_meta in metadata.items():
+                endpoint = stage_meta.get("cache_reset_endpoint")
+                if endpoint:
+                    endpoints.setdefault((pp_rank, endpoint["host"]), endpoint)
+            self._pp_reset_endpoints = list(endpoints.values())
+
+    def reset_cache(self) -> bool:
+        if not self._is_pp or self._role == KVConnectorRole.WORKER:
+            return super().reset_cache()
+        endpoints = getattr(self, "_pp_reset_endpoints", None)
+        if not endpoints:
+            logger.warning("PP Cache reset requires reset endpoints from every worker")
+            return False
+        return reset_cache_endpoints(endpoints)
 
     def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
         """Return the last prefix hit every PP stage can serve (-1 = none).
@@ -3099,6 +3134,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def shutdown(self) -> None:
         """Release the lookup pool so process exit cannot block on it."""
+        server = getattr(self, "_cache_reset_server", None)
+        if server is not None:
+            server.close()
+            self._cache_reset_server = None
         pool = getattr(self, "_lookup_pool", None)
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -3793,13 +3832,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     "Use the default kv_load_failure_policy='fail'."
                 )
         self.connector: KVConnectorBase_V1
-        # Cross-host Cache reset is owned by the outer connector so it also
-        # runs when PP is disabled. The inner connector only clears its own
-        # local store when the reset server asks it to.
-        self._cache_reset_server: Optional[CacheResetServer] = None
-        # None means vLLM never delivered the reset handshake (for example an
-        # older release). A dict is the validated dispatch plan.
-        self._cache_reset_plan: Optional[dict] = None
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
@@ -4151,277 +4183,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.bind_connector_metadata(connector_metadata)
 
-    @staticmethod
-    def _valid_cache_reset_endpoint(endpoint: object) -> bool:
-        if not isinstance(endpoint, dict):
-            return False
-        host = endpoint.get("host")
-        port = endpoint.get("port")
-        token = endpoint.get("token")
-        if not (
-            isinstance(host, str)
-            and host
-            and isinstance(port, int)
-            and not isinstance(port, bool)
-            and 0 < port < 65536
-            and isinstance(token, str)
-            and token
-        ):
-            return False
-        try:
-            return bool(bytes.fromhex(token))
-        except ValueError:
-            return False
-
-    def _cache_reset_supported(self) -> bool:
-        """PCP>1 with DCP==1 reuses vLLM's tp_rank key for several workers.
-
-        vLLM merges those handshake dictionaries, so the scheduler cannot
-        prove that every worker reported. Fail closed instead of resetting a
-        subset; inference itself is unaffected.
-        """
-        parallel = getattr(getattr(self, "_vllm_config", None), "parallel_config", None)
-        if parallel is None:
-            return True
-        try:
-            pcp_size = int(getattr(parallel, "prefill_context_parallel_size", 1) or 1)
-            dcp_size = int(getattr(parallel, "decode_context_parallel_size", 1) or 1)
-        except (TypeError, ValueError):
-            return False
-        return not (pcp_size > 1 and dcp_size <= 1)
-
-    def _cache_reset_ranks(self) -> list[tuple[int, int]]:
-        """Return the (pp_rank, tp_rank) keys every worker must advertise."""
-        if not self._cache_reset_supported():
-            return []
-        parallel = getattr(getattr(self, "_vllm_config", None), "parallel_config", None)
-        if parallel is None:
-            return []
-        try:
-            pp_size = max(int(getattr(parallel, "pipeline_parallel_size", 1) or 1), 1)
-            tp_size = max(int(getattr(parallel, "tensor_parallel_size", 1) or 1), 1)
-            pcp_size = max(
-                int(getattr(parallel, "prefill_context_parallel_size", 1) or 1), 1
-            )
-            dcp_size = max(
-                int(getattr(parallel, "decode_context_parallel_size", 1) or 1), 1
-            )
-        except (TypeError, ValueError):
-            return []
-        # vLLM's handshake adds the PCP offset to tp_rank when PCP and DCP are
-        # both enabled. Mirror that key space instead of assuming tp_size.
-        ranks_per_stage = tp_size * (pcp_size if pcp_size > 1 and dcp_size > 1 else 1)
-        return [
-            (pp_rank, tp_rank)
-            for pp_rank in range(pp_size)
-            for tp_rank in range(ranks_per_stage)
-        ]
-
-    def _cache_reset_pp_enabled(self) -> bool:
-        parallel = getattr(getattr(self, "_vllm_config", None), "parallel_config", None)
-        try:
-            return int(getattr(parallel, "pipeline_parallel_size", 1) or 1) > 1
-        except (TypeError, ValueError):
-            return False
-
-    def _all_workers_on_this_node(self) -> bool:
-        """Best-effort legacy geometry check for a release without handshake.
-
-        ``world_size`` counts one DP replica (PP * TP * PCP); ``nnodes`` counts
-        the whole deployment, so the per-DP node count is derived. Ray and
-        external launchers may report one node while workers span hosts, so
-        they are always treated as unverified.
-        """
-        parallel = getattr(getattr(self, "_vllm_config", None), "parallel_config", None)
-        if parallel is None:
-            return True
-        if getattr(parallel, "distributed_executor_backend", None) in {
-            "ray",
-            "external_launcher",
-        }:
-            return False
-        try:
-            world_size = int(getattr(parallel, "world_size", None))
-        except (TypeError, ValueError):
-            return False
-        local_world_size = getattr(parallel, "local_world_size", None)
-        if local_world_size is not None:
-            try:
-                return world_size <= int(local_world_size)
-            except (TypeError, ValueError):
-                return False
-        # Older vLLM releases only expose nnodes. Reproduce
-        # ParallelConfig.nnodes_within_dp so single-node multi-DP stays local.
-        try:
-            nnodes = int(getattr(parallel, "nnodes", None))
-            dp_size = max(int(getattr(parallel, "data_parallel_size", 1) or 1), 1)
-            dp_local = int(getattr(parallel, "data_parallel_size_local", dp_size))
-            nodes_per_dp = nnodes // max(dp_size // max(dp_local, 1), 1)
-        except (TypeError, ValueError, ZeroDivisionError):
-            return False
-        return nodes_per_dp <= 1
-
-    def _cache_reset_domain(self) -> str:
-        """Name the local Cache2 control region served by this process."""
-        inner = getattr(self, "connector", None)
-        domain = getattr(inner, "unique_id", None)
-        if not domain:
-            domain = getattr(self, "engine_id", "")
-        return str(domain)
-
-    def _get_cache_reset_server(self, host: str) -> Optional[CacheResetServer]:
-        server = getattr(self, "_cache_reset_server", None)
-        if server is not None:
-            return server
-        reset = getattr(getattr(self, "connector", None), "reset_cache", None)
-        if not callable(reset):
-            return None
-
-        def reset_local() -> bool:
-            try:
-                # FAWA/HLA and every other inner connector keep their own
-                # reset semantics; the server only makes them reachable.
-                return bool(reset())
-            except Exception as e:
-                logger.warning(f"UCM local cache reset failed: {type(e).__name__}: {e}")
-                return False
-
-        try:
-            server = CacheResetServer(reset_local, host=host)
-        except Exception as e:
-            # Reset is optional: a worker that cannot serve reset requests
-            # still starts and simply publishes no endpoint.
-            logger.warning(
-                f"UCM cache reset server unavailable: {type(e).__name__}: {e}"
-            )
-            return None
-        self._cache_reset_server = server
-        return server
-
-    def _build_cache_reset_plan(self, metadata: dict) -> dict:
-        """Validate the handshake and decide local versus remote reset.
-
-        Every expected worker must publish a usable endpoint. Local reset is
-        only allowed when the handshake also proves all workers share the
-        scheduler's host and one Cache domain; otherwise the endpoints must be
-        contacted even if the configured topology looks single-node.
-        """
-        ranks = self._cache_reset_ranks()
-        if not ranks:
-            return {"local": False, "complete": False, "endpoints": []}
-        try:
-            scheduler_host = get_local_ip()
-        except Exception as e:
-            logger.warning(
-                f"UCM cache reset cannot determine the local host: "
-                f"{type(e).__name__}: {e}"
-            )
-            scheduler_host = None
-        endpoints: dict[tuple, dict] = {}
-        workers: list[tuple[str, str]] = []
-        complete = True
-        topology_complete = True
-        for rank in ranks:
-            stage_meta = metadata.get(rank) if isinstance(metadata, dict) else None
-            endpoint = (
-                stage_meta.get("cache_reset_endpoint")
-                if isinstance(stage_meta, dict)
-                else None
-            )
-            endpoint_valid = self._valid_cache_reset_endpoint(endpoint)
-            if not endpoint_valid:
-                complete = False
-            host = (
-                stage_meta.get("cache_reset_host")
-                if isinstance(stage_meta, dict)
-                else None
-            )
-            domain = (
-                stage_meta.get("cache_reset_domain")
-                if isinstance(stage_meta, dict)
-                else None
-            )
-            if not isinstance(host, str) or not host:
-                host = endpoint.get("host") if endpoint_valid else None
-            if not isinstance(domain, str) or not domain:
-                domain = (
-                    endpoint.get("domain")
-                    if endpoint_valid and isinstance(endpoint.get("domain"), str)
-                    else None
-                )
-            if not host or not domain:
-                topology_complete = False
-            if not endpoint_valid:
-                continue
-            endpoint_domain = endpoint.get("domain")
-            if not isinstance(endpoint_domain, str):
-                endpoint_domain = ""
-            # Dedupe by the worker's real host/domain, not the address used to
-            # reach it: a forwarded loopback port can differ from worker host.
-            endpoints.setdefault(
-                (
-                    rank[0],
-                    host or endpoint["host"],
-                    domain or endpoint_domain,
-                ),
-                endpoint,
-            )
-            workers.append((host, domain))
-        scheduler_domain = self._cache_reset_domain()
-        local = (
-            topology_complete
-            and complete
-            and scheduler_host is not None
-            and scheduler_domain
-            and len(workers) == len(ranks)
-            and all(host == scheduler_host for host, _ in workers)
-            and all(domain == scheduler_domain for _, domain in workers)
-        ) and not self._cache_reset_pp_enabled()
-        return {
-            "local": local,
-            "complete": complete,
-            "endpoints": list(endpoints.values()),
-        }
-
-    def _local_cache_reset(self) -> bool:
-        reset = getattr(getattr(self, "connector", None), "reset_cache", None)
-        if not callable(reset):
-            logger.warning("UCM connector does not support cache reset")
-            return False
-        return bool(reset())
-
     def reset_cache(self) -> bool:
-        """Synchronously invalidate every Cache domain of this DP engine."""
+        """Synchronously invalidate the scheduler-visible Cache tier."""
         try:
-            if getattr(self, "_role", None) != KVConnectorRole.SCHEDULER:
-                return self._local_cache_reset()
-            if not self._cache_reset_supported():
-                logger.warning(
-                    "UCM cache reset is disabled for PCP>1 with DCP==1 because "
-                    "vLLM reuses handshake keys for multiple workers."
-                )
-                return False
-            plan = getattr(self, "_cache_reset_plan", None)
-            if plan is not None:
-                if plan.get("local"):
-                    return self._local_cache_reset()
-                if plan.get("complete"):
-                    return reset_cache_endpoints(plan.get("endpoints") or [])
-                logger.warning(
-                    "UCM cache reset requires a complete worker handshake: "
-                    f"received {len(plan.get('endpoints') or [])} endpoint(s), "
-                    f"expected {len(self._cache_reset_ranks())} worker(s)."
-                )
-                return False
-            # No handshake at all: an older release on one verified node can
-            # still clear the shared local control region.
-            if not self._cache_reset_pp_enabled() and self._all_workers_on_this_node():
-                return self._local_cache_reset()
-            logger.warning(
-                "UCM cache reset has no worker handshake and cannot verify "
-                "that this DP engine is single-node."
-            )
-            return False
+            return bool(self.connector.reset_cache())
         except Exception as e:
             logger.warning(f"UCM cache reset failed: {type(e).__name__}: {e}")
             return False
@@ -4535,10 +4300,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.connector.get_transfer_results(finished_req_ids)
 
     def shutdown(self) -> None:
-        server = getattr(self, "_cache_reset_server", None)
-        if server is not None:
-            self._cache_reset_server = None
-            server.close()
         shutdown = getattr(self.connector, "shutdown", None)
         if shutdown is not None:
             shutdown()
@@ -4573,51 +4334,16 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
     @_record_connector_interface_duration
     def get_handshake_metadata(self) -> Optional[dict]:
-        """Publish this worker's Cache reset endpoint (and PP geometry)."""
-        if getattr(self, "_role", None) != KVConnectorRole.WORKER:
-            return None
-        metadata: dict = {}
-        inner_handshake = getattr(self.connector, "get_handshake_metadata", None)
-        if callable(inner_handshake):
-            inner_metadata = inner_handshake()
-            if inner_metadata:
-                metadata.update(inner_metadata)
-        try:
-            host = get_local_ip()
-        except Exception as e:
-            # Reset is optional and must never hide the rest of the handshake.
-            logger.warning(
-                f"UCM cache reset topology unavailable: {type(e).__name__}: {e}"
-            )
-            return metadata or None
-        domain = self._cache_reset_domain()
-        metadata["cache_reset_host"] = host
-        metadata["cache_reset_domain"] = domain
-        server = self._get_cache_reset_server(host)
-        if server is not None:
-            endpoint = dict(server.endpoint)
-            endpoint["host"] = host
-            endpoint["domain"] = domain
-            metadata["cache_reset_endpoint"] = endpoint
-        return metadata
+        if getattr(self.connector, "_is_pp", False):
+            return self.connector.get_handshake_metadata()
+        return None
 
     @_record_connector_interface_duration
     def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
-        if getattr(self, "_role", None) != KVConnectorRole.SCHEDULER:
-            return
-        if not isinstance(metadata, dict):
-            metadata = {}
-        plan = self._build_cache_reset_plan(metadata)
-        self._cache_reset_plan = plan
-        if not plan.get("complete"):
-            logger.warning(
-                "Incomplete Cache reset handshake: got endpoints for "
-                f"{len(plan.get('endpoints') or [])} domain(s); reset will not "
-                f"be attempted. received keys: {list(metadata)}"
-            )
-        # PP still needs the per-stage store geometry. Reset endpoints stay in
-        # the outer connector so non-PP uses the same dispatch path. Geometry
-        # errors intentionally propagate and keep their original startup
-        # failure semantics.
         if getattr(self.connector, "_is_pp", False):
-            self.connector.set_xfer_handshake_metadata_pp_aware(metadata)
+            return self.connector.set_xfer_handshake_metadata_pp_aware(metadata)
+        logger.info(
+            "UCMConnector ignores PP-disaggregated handshake metadata: %s",
+            list(metadata.keys()),
+        )
+        return

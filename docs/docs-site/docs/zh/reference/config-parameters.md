@@ -67,6 +67,8 @@ enable_metrics: true
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | MLA 默认启用，GQA 默认不启用 | 是否启用共享内存。MLA 如果不用 shm 或 GQA 用 shm 都会导致性能下降。 |
 
+Cache2 运行时 reset 清理 DRAM 条目，保留 backend 文件。调用前需停止 Cache 流量。支持单机 TP 和现有 LayerWise PP 路径，PP 会等待各 stage 的 worker Cache 清理完成。不支持跨机 TP 清理：不开 PP 时只能清理 scheduler 所在主机的 Cache 域。跨机 PP 需要 scheduler 能访问 worker 的 reset 地址，仍待目标平台验证。各 DP engine 只清理自己的 Cache 域，能否覆盖全部 DP 取决于 vLLM 的请求分发。
+
 ## Posix 容量回收
 
 回收配置不预留磁盘空间。共享存储命名空间必须协调 GC 归属，不能由多个独立实例同时按自身预算回收。
