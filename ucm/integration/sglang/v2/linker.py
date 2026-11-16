@@ -16,6 +16,7 @@ from time import sleep
 from uuid import uuid4
 
 import torch.distributed as dist
+from sglang.srt.mem_cache.hicache_storage import PoolName
 from sglang.srt.mem_cache.hybrid_cache.linker_pool_assembler import (
     resolve_hybrid_device_pool_group,
 )
@@ -23,7 +24,7 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
     LayerWiseLoadCounter,
     UnifiedCacheLinker,
 )
-from sglang.srt.runtime_context import get_model
+from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import get_device_module
 
 from ucm.integration.sglang.patch.request_hooks import install_request_hooks
@@ -35,6 +36,12 @@ from .runtime import Runtime, proxy
 logger = logging.getLogger(__name__)
 
 
+class _OffloadResult(Future):
+    def __init__(self):
+        super().__init__()
+        self.reservations = []
+
+
 class UcmDirectLinker(UnifiedCacheLinker):
     load_mode = "layer_wise"
     prefetch_policy = "timeout"
@@ -44,27 +51,34 @@ class UcmDirectLinker(UnifiedCacheLinker):
     ):
         self.forward_stream = forward_stream
         self.page_size = params.page_size
+        tp_group = params.attn_tp_cache_group or params.tp_cache_group
+        self._require_single_host(params)
         pool_group = resolve_hybrid_device_pool_group(
             kvcache=params.token_to_kv_pool_allocator.get_kvcache(),
             page_size=self.page_size,
             params=params,
             components=components,
         )
-        self.layout = DeviceLayout(pool_group, "sglang", get_model().model_path)
+        self.layout = DeviceLayout(
+            pool_group, "sglang", get_model().model_path, tp_group=tp_group
+        )
         self.pools = {entry.name: entry for entry in self.layout.entries}
+        self._coordinated_puts = self.layout.has_shared_shards
         self._dump_rank, self._dump_size = 0, 1
-        tp_group = params.attn_tp_cache_group or params.tp_cache_group
-        if pool_group.rank_replicated and tp_group is not None and dist.is_initialized():
-            self._dump_rank = dist.get_rank(tp_group)
-            self._dump_size = dist.get_world_size(tp_group)
+        if tp_group is not None and dist.is_initialized():
+            if pool_group.rank_replicated:
+                self._dump_rank = dist.get_rank(tp_group)
+                self._dump_size = dist.get_world_size(tp_group)
         extra_config = extra_config or {}
         # The assembler has no capability query for prerequisite events.
         self._forward_event_to_store = extra_config.get("forward_event_to_store", False)
-        # Replicated TP ranks share a Store domain. Device addresses and rank
-        # within the replicated group are deliberately absent from the ID.
+        # Cache domains are scoped to a DP replica and shared by its TP ranks.
+        parallel = get_parallel()
         unique_id = fingerprint(
             (
                 self.layout.identity,
+                getattr(parallel, "dp_rank", None) or 0,
+                getattr(parallel, "attn_dp_rank", None) or 0,
                 self._dump_size,
                 params.pp_rank,
                 params.pp_size,
@@ -79,8 +93,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             block_size=max(self.layout.section_sizes.values()),
             device_id=self.layout.device_id,
             dump_partitions=self._dump_size,
+            coordinated_puts=self._coordinated_puts,
         )
-        install_request_hooks(type(self))
+        install_request_hooks(type(self), coordinated_puts=self._coordinated_puts)
         self._registered_requests = set()
         self._request_pages = {}
         self._page_requests = {}
@@ -88,9 +103,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._finished_requests = set()
         self._scheduler_lock = Lock()
         self.layer_done_counter = LayerWiseLoadCounter(self.layout.num_layers)
+        if PoolName.MAMBA in self.pools:
+            params.req_to_token_pool.register_layer_transfer_counter(
+                self.layer_done_counter
+            )
         self._pending_loads = {}
         self._load_batches = {}
         self._offload_results = deque()
+        self._uncommitted_offloads = deque()
         self._jobs = {}
         self._poll_queued = False
         self._store_offloads = set()
@@ -115,6 +135,46 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._control_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-v2-control"
         )
+
+    @staticmethod
+    def _require_single_host(params):
+        """Check the worker axes of one DP replica before building its layout."""
+        if not dist.is_initialized():
+            return
+        groups = tuple(
+            dict.fromkeys(
+                group
+                for group in (
+                    params.tp_cache_group,
+                    params.attn_tp_cache_group,
+                    getattr(params, "attn_cp_cache_group", None),
+                    getattr(params, "pp_cache_group", None),
+                )
+                if group is not None and dist.get_world_size(group) > 1
+            )
+        )
+        if not groups:
+            return
+
+        host_id = None
+        try:
+            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as stream:
+                host_id = stream.read().strip() or None
+        except OSError:
+            host_id = None
+        # Carry the earlier axes' observations into the later axes, so a
+        # mismatch discovered in one TP slice reaches the whole replica.
+        host_ids = {host_id}
+        for group in groups:
+            peers = [None] * dist.get_world_size(group)
+            dist.all_gather_object(peers, host_ids, group=group)
+            host_ids = set().union(*peers)
+        if None in host_ids or len(host_ids) != 1:
+            raise ValueError(
+                "SGLang UCM Store V2 requires all workers of each DP replica "
+                "on one host with a readable boot ID. Cross-node TP, PP, and "
+                "attention CP within a DP replica are not supported."
+            )
 
     def lookup(self, rid, transfers):
         """Intersect restorable boundaries across the requested sections."""
@@ -315,7 +375,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def _submit_load_layer(self, submissions, context, jobs):
         for payloads, token in submissions:
-            result = Future()
+            result = _OffloadResult()
             self._submit_job(self.runtime.submit_get, result, payloads, token, context)
             jobs.append(result)
 
@@ -356,7 +416,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             self._offload_results.append(result)
             return True
         events = self._record_transfer_events()
-        result = Future()
+        result = _OffloadResult()
         pages_by_request = {}
         with self._scheduler_lock:
             keys = (key for _, transfers in expanded for key in transfers[0].keys)
@@ -479,9 +539,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 context,
                 (prepared, events),
                 write,
+                result.reservations if self._coordinated_puts else None,
             )
 
-    def _submit_offload(self, rid, block_ids, payloads, context, resources, result):
+    def _submit_offload(
+        self, rid, block_ids, payloads, context, resources, result, reservations
+    ):
         temporary = rid is None
         if temporary:
             rid = f"ucm-offload:{uuid4().hex}"
@@ -506,6 +569,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             result,
                             done.result(),
                             temporary,
+                            reservations,
                         )
                     )
                     # Keep the pages and events in the in-flight record.
@@ -535,7 +599,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
             result.set_result(False)
             return
 
-    def _finish_offload(self, rid, token, result, success, temporary):
+    def _finish_offload(self, rid, token, result, success, temporary, reservations):
+        if reservations is not None:
+            reservations.append((rid, token, temporary))
+            result.set_result(success)
+            return
+        result.set_result(self._complete_put(rid, token, temporary, success))
+
+    def _complete_put(self, rid, token, temporary, success):
         try:
             with self._scheduler_lock:
                 try:
@@ -547,12 +618,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         self._release_put_request(rid)
         except Exception:
             logger.exception("UCM V2 offload cleanup failed for %s", rid)
-            result.set_result(False)
-            return
-        result.set_result(success)
+            return False
         # Commit may wake the topology's drain loop, but its plans do not
         # belong to this node and cannot change the node's Put result.
         self._request_store_offload()
+        return success
 
     def _request_store_offload(self):
         with self._store_offload_lock:
@@ -672,13 +742,29 @@ class UcmDirectLinker(UnifiedCacheLinker):
         return completed
 
     def pop_completed_offload(self):
-        return self._offload_results.popleft().result()
+        result = self._offload_results.popleft()
+        success = result.result()
+        if self._coordinated_puts:
+            self._uncommitted_offloads.append(result)
+        return success
+
+    def commit_completed_puts(self, successes):
+        results = []
+        for success in successes:
+            result = self._uncommitted_offloads.popleft()
+            committed = success
+            for rid, token, temporary in result.reservations:
+                committed &= self._complete_put(rid, token, temporary, success)
+            results.append(committed)
+        return results
 
     def reset(self):
         for index in tuple(self._load_batches):
             self.finish_layer_wise_loading(index)
         while self._offload_results:
             self.pop_completed_offload()
+        # Reset has no group verdict. Abort unpublished reservations.
+        self.commit_completed_puts([False] * len(self._uncommitted_offloads))
         self._pending_loads.clear()
         self.layer_done_counter.reset()
         for rid in tuple(self._registered_requests):

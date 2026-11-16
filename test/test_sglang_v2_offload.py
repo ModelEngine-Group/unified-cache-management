@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+from io import StringIO
 import sys
 import types
 import unittest
@@ -14,7 +15,7 @@ from threading import Event, Lock
 from unittest.mock import Mock, patch
 
 
-def load_linker():
+def load_linker(*, mamba=False):
     names = [
         "torch",
         "torch.distributed",
@@ -30,9 +31,11 @@ def load_linker():
         "v2_offload_test.device_layout",
         "v2_offload_test.runtime",
         "sglang.srt.utils",
+        "sglang.srt.mem_cache.hicache_storage",
     ]
     modules = {name: types.ModuleType(name) for name in names}
     modules["torch"].distributed = modules["torch.distributed"]
+    modules["torch.distributed"].is_initialized = lambda: False
     device_module = Mock()
     modules["sglang.srt.utils"].get_device_module = lambda: device_module
     group = types.SimpleNamespace(rank_replicated=False)
@@ -40,10 +43,15 @@ def load_linker():
     modules[names[8]].LayerWiseLoadCounter = lambda layers: Mock()
     modules[names[8]].UnifiedCacheLinker = object
     modules[names[9]].get_model = lambda: types.SimpleNamespace(model_path="test")
-    layout = Mock(
-        num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3
+    modules[names[9]].get_parallel = lambda: types.SimpleNamespace(
+        dp_rank=None, attn_dp_rank=0
     )
-    layout.entries = ()
+    layout = Mock(
+        num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3,
+        has_shared_shards=False,
+    )
+    modules[names[-1]].PoolName = types.SimpleNamespace(MAMBA="mamba")
+    layout.entries = (types.SimpleNamespace(name="mamba"),) if mamba else ()
     layout.expand.side_effect = lambda transfers, **kwargs: (
         [(layout, transfers)] if transfers else []
     )
@@ -51,10 +59,10 @@ def load_linker():
     layout.prepare.return_value = types.SimpleNamespace(
         keys=("page",), payloads=lambda: [object()]
     )
-    modules["v2_offload_test.device_layout"].DeviceLayout = lambda *args: layout
+    modules["v2_offload_test.device_layout"].DeviceLayout = lambda *args, **kwargs: layout
     modules["v2_offload_test.device_layout"].fingerprint = lambda _: "a" * 64
     modules["ucm.integration.sglang.patch.request_hooks"] = types.SimpleNamespace(
-        install_request_hooks=lambda linker_type: None
+        install_request_hooks=lambda linker_type, **kwargs: None
     )
     modules["v2_offload_test.runtime"].Runtime = lambda config, **kwargs: config["runtime"]
     modules["v2_offload_test.runtime"].proxy = lambda: types.SimpleNamespace(
@@ -195,7 +203,9 @@ class OffloadTest(unittest.TestCase):
             pp_size=1,
             attn_cp_rank=0,
             attn_cp_size=1,
+            req_to_token_pool=Mock(),
         )
+        self.params = params
         self.linker = self.module.UcmDirectLinker(
             None, params, components=(), extra_config={"runtime": self.store}
         )
@@ -203,6 +213,82 @@ class OffloadTest(unittest.TestCase):
             events=[types.SimpleNamespace(synchronize=lambda: None)]
         )
         self.addCleanup(self.cleanup)
+
+    def test_mamba_pool_uses_the_linkers_layer_counter(self):
+        self.params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
+        module = load_linker(mamba=True)
+        linker = module.UcmDirectLinker(
+            None, self.params, components=(), extra_config={"runtime": self.store}
+        )
+        self.addCleanup(linker.close)
+        self.params.req_to_token_pool.register_layer_transfer_counter.assert_called_once_with(
+            linker.layer_done_counter
+        )
+
+    def test_cache_domain_is_shared_within_a_dp_replica(self):
+        domains = []
+
+        def make_runtime(config, *, unique_id, **kwargs):
+            domains.append(unique_id)
+            return config["runtime"]
+
+        with (
+            patch.object(self.module, "Runtime", side_effect=make_runtime),
+            patch.object(
+                self.module,
+                "fingerprint",
+                side_effect=lambda value: hashlib.sha256(repr(value).encode()).hexdigest(),
+            ),
+            patch.object(self.module, "get_parallel") as get_parallel,
+        ):
+            for dp_rank, attn_dp_rank, tp_rank in (
+                (None, 0, 0),
+                (0, 0, 1),
+                (1, 0, 0),
+                (None, 1, 0),
+            ):
+                get_parallel.return_value = types.SimpleNamespace(
+                    dp_rank=dp_rank, attn_dp_rank=attn_dp_rank, tp_rank=tp_rank
+                )
+                linker = self.module.UcmDirectLinker(
+                    None, self.params, components=(), extra_config={"runtime": Store()}
+                )
+                self.addCleanup(linker.close)
+
+        self.assertEqual(domains[0], domains[1])
+        self.assertEqual(len(set(domains)), 3)
+
+    def test_single_host_guard_checks_replica_groups(self):
+        params = types.SimpleNamespace(
+            tp_cache_group="tp",
+            attn_tp_cache_group="tp",
+            attn_cp_cache_group="cp",
+            pp_cache_group="pp",
+        )
+        for affected_group in (None, "tp", "cp", "pp"):
+            for peer_host in ("other-host", None):
+                with self.subTest(group=affected_group, peer_host=peer_host):
+                    visited = []
+
+                    def gather(output, local_hosts, *, group):
+                        visited.append(group)
+                        peer = peer_host if group == affected_group else "local-host"
+                        output[:] = [local_hosts, {peer}]
+
+                    distributed = Mock()
+                    distributed.is_initialized.return_value = True
+                    distributed.get_world_size.return_value = 2
+                    distributed.all_gather_object.side_effect = gather
+                    with (
+                        patch.object(self.module, "dist", distributed),
+                        patch("builtins.open", return_value=StringIO("local-host")),
+                    ):
+                        if affected_group is None:
+                            self.linker._require_single_host(params)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "each DP replica"):
+                                self.linker._require_single_host(params)
+                    self.assertEqual(visited, ["tp", "cp", "pp"])
 
     def cleanup(self):
         self.store.prepare_error = False
@@ -222,6 +308,25 @@ class OffloadTest(unittest.TestCase):
         job_id, _ = self.next_job("put")
         node = self.linker._offload_results[-1]
         return job_id, node
+
+    def test_sharded_put_waits_for_group_verdict(self):
+        self.linker._coordinated_puts = True
+        for group_success in (True, False):
+            job_id, node = self.put()
+            self.store.completions.put(types.SimpleNamespace(job_id=job_id, success=True))
+            self.assertTrue(node.result(timeout=2))
+            self.assertTrue(self.linker.pop_completed_offload())
+            self.assertEqual(len(self.store.commits), int(not group_success))
+            self.assertEqual(self.linker.commit_completed_puts([group_success]), [group_success])
+            self.assertEqual(self.store.commits[-1][1], group_success)
+
+    def test_sharded_put_reset_aborts_without_group_verdict(self):
+        self.linker._coordinated_puts = True
+        job_id, node = self.put()
+        self.store.completions.put(types.SimpleNamespace(job_id=job_id, success=True))
+        self.assertTrue(node.result(timeout=2))
+        self.linker.reset()
+        self.assertEqual([success for _, success in self.store.commits], [False])
 
     def test_dump_uses_each_lookup_request_and_holds_its_route_until_commit(self):
         transfers = (types.SimpleNamespace(keys=("page",), hit_policy="all_pages"),)

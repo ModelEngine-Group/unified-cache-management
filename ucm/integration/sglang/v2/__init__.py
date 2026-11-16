@@ -2,5 +2,6 @@
 
 linker.py implements initialization and lookup for UcmDirectLinker.
 runtime.py initializes one assembler and forwards Scheduler/Worker calls.
-device_layout.py defines the GLM-5.2 DSA layout and its object IDs.
+device_layout.py defines the DSA, DeepSeek V4 and Mamba object layouts and
+their block identities.
 """

@@ -54,20 +54,19 @@ class RuntimeTest(unittest.TestCase):
             {"UCM_CONFIG_FILE": str(self.config_file)}, **self.runtime_args
         )
 
-    def test_partitioned_dump_rejects_multiple_store_branches(self):
+    def test_partitioned_dump_accepts_multiple_store_branches(self):
         config = {"branches": [{"pipe": []}, {"pipe": []}]}
         self.config_file.write_text(
             yaml.safe_dump({"ucm_connectors": [{"ucm_connector_config": config}]}),
             encoding="utf-8",
         )
         self.native.StoreAssembler.reset_mock()
-        with self.assertRaisesRegex(ValueError, "single shared Store branch"):
-            runtime.Runtime(
-                {"UCM_CONFIG_FILE": str(self.config_file)},
-                dump_partitions=2,
-                **self.runtime_args,
-            )
-        self.native.StoreAssembler.assert_not_called()
+        runtime.Runtime(
+            {"UCM_CONFIG_FILE": str(self.config_file)},
+            dump_partitions=2,
+            **self.runtime_args,
+        )
+        self.native.StoreAssembler.assert_called_once_with(config, self.runtime_args)
 
     def test_one_assembler_provides_both_roles(self):
         self.native.StoreAssembler.assert_called_once_with(

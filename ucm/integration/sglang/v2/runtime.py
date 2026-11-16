@@ -23,6 +23,7 @@ class Runtime:
         block_size: int,
         device_id: int,
         dump_partitions: int = 1,
+        coordinated_puts: bool = False,
     ):
         config_file = extra_config.get("UCM_CONFIG_FILE")
         if not config_file:
@@ -47,12 +48,21 @@ class Runtime:
         if not isinstance(config, dict):
             raise ValueError("UCM connector entry is missing ucm_connector_config.")
         branches = config.get("branches")
-        if dump_partitions > 1 and isinstance(branches, list) and len(branches) > 1:
-            raise ValueError(
-                "Rank-partitioned Dump requires a single shared Store branch: "
-                "independent Put requests cannot guarantee that all pages "
-                "of a node are routed to the same branch."
+        if coordinated_puts:
+            pipe = (
+                branches[0].get("pipe")
+                if isinstance(branches, list)
+                and len(branches) == 1
+                and isinstance(branches[0], dict)
+                else None
             )
+            if (
+                not isinstance(pipe, list)
+                or not pipe
+                or not isinstance(pipe[0], dict)
+                or pipe[0].get("store") != "cache"
+            ):
+                raise ValueError("Sharded Store V2 Put requires one Cache-first branch")
         if isinstance(branches, list):
             for branch in branches:
                 pipe = branch.get("pipe") if isinstance(branch, dict) else None

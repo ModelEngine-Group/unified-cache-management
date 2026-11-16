@@ -1,8 +1,14 @@
-"""Layout of each Store V2 object for replicated DSA and DeepSeek V4.
+"""Layout of each Store V2 object for replicated DSA/DeepSeek V4 and Mamba.
 
 Object fragments are ordered by logical layer, pool, component and physical
 buffer. GPU addresses are never part of persistent identity. Draft buffers
 attached to a target layer by SGLang are included in that layer's fragments.
+
+A sharded section (Mamba state under attention TP) holds a different byte
+range on every rank, but its block identity is still derived from the full
+unsharded layout so the same logical block maps to the same physical block on
+every rank. Each rank then writes only its own shard at its canonical offset
+within that block.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import json
 from dataclasses import dataclass
 
 import numpy as np
+import torch.distributed as dist
 
 from .runtime import proxy
 
@@ -29,39 +36,42 @@ class LayerLayout:
 
 
 class DeviceLayout:
-    def __init__(self, group, namespace: str, model_identity: str):
+    def __init__(self, group, namespace: str, model_identity: str, tp_group=None):
         self.group = group
+        self.tp_group = tp_group
         self.entries = tuple(sorted(group.entries, key=lambda entry: str(entry.name)))
-        names = {entry.name for entry in self.entries}
-        is_dsa = names == {"kv", "indexer"}
-        is_v4 = any(name.startswith("deepseek_v4_") for name in names)
-        if not group.rank_replicated or not (is_dsa or is_v4):
-            raise ValueError(
-                "Store v2 requires a replicated DSA or DeepSeek V4 layout"
-            )
+        # SGLang's pool assembler already chose the hybrid layout; here we
+        # only group the entries it produced by their index source. Section
+        # names are stable block-id namespaces, not layout classifiers.
+        section_names = {"kv": "FA", "swa": "SWA", "mamba": "MAMBA"}
         by_source = {}
         for entry in self.entries:
             source = entry.indices_from_pool
-            if source not in {"kv", "swa"} or not entry.packed:
+            if source not in section_names or not entry.packed:
                 raise ValueError(f"Unsupported Store v2 pool layout: {entry.name}")
-            if source == "swa" and is_dsa:
-                raise ValueError("DSA KV and Indexer must share KV indices")
             by_source.setdefault(source, []).append(entry)
         if "kv" not in by_source:
             raise ValueError("Store v2 requires a full-attention section")
 
         self.sections = {
             source: SectionLayout(
-                "FA" if source == "kv" else "SWA",
+                section_names[source],
                 entries,
                 group.num_layers,
                 group.page_size,
                 namespace,
                 model_identity,
-                require_all_layers=is_dsa,
+                sharded=(
+                    not group.rank_replicated
+                    and not all(getattr(e, "tp_replicated", False) for e in entries)
+                ),
+                tp_group=tp_group,
             )
             for source, entries in sorted(by_source.items())
         }
+        self.has_shared_shards = any(
+            section.shared_shards for section in self.sections.values()
+        )
         devices = {section.device for section in self.sections.values()}
         if len(devices) != 1:
             raise ValueError("Store v2 requires all buffers on one device per rank")
@@ -70,10 +80,8 @@ class DeviceLayout:
             raise ValueError("Store v2 requires an indexed accelerator device")
         self.num_layers = group.num_layers
         self.section_sizes = {s.name: s.total_size for s in self.sections.values()}
-        self.identity = (
-            self.sections["kv"].identity
-            if is_dsa
-            else fingerprint({source: s.identity for source, s in self.sections.items()})
+        self.identity = fingerprint(
+            {source: s.identity for source, s in self.sections.items()}
         )
 
     def expand(self, transfers, **kwargs):
@@ -95,7 +103,7 @@ class DeviceLayout:
 
 class SectionLayout:
     def __init__(self, name, entries, num_layers, page_size, namespace, model_identity,
-                 *, require_all_layers):
+                 *, sharded=False, tp_group=None):
         self.name = name
         self.entries = entries
         self.layers = []
@@ -108,8 +116,6 @@ class SectionLayout:
             for entry in self.entries:
                 mapped = entry.layer_mapping.get(layer)
                 if mapped is None:
-                    if require_all_layers:
-                        raise ValueError(f"DSA pool {entry.name} misses layer {layer}")
                     continue
                 indices = (mapped,) if isinstance(mapped, int) else tuple(mapped)
                 items = []
@@ -125,7 +131,7 @@ class SectionLayout:
                         buffer = entry.components[component_id][index]
                         devices.add(buffer.device)
                         if not buffer.is_contiguous():
-                            raise ValueError("DSA requires contiguous physical buffers")
+                            raise ValueError("Store v2 requires contiguous physical buffers")
                         items.append((int(base), int(stride)))
                         sizes.append(int(size))
                         offsets.append(offset)
@@ -146,13 +152,80 @@ class SectionLayout:
             expected = sum(len(component) for component in entry.buffer_meta)
             if len(covered[entry.name]) != expected:
                 raise ValueError(
-                    "DSA layer mapping does not cover every physical buffer"
+                    "Pool layer mapping does not cover every physical buffer"
                 )
         if len(devices) != 1:
             raise ValueError(f"Store v2 requires section {name} on one device")
         self.device = devices.pop()
         self.total_size = offset
         self.identity = fingerprint((namespace, model_identity, page_size, facts))
+        self.shared_shards = bool(
+            sharded
+            and tp_group is not None
+            and dist.is_initialized()
+            and dist.get_world_size(tp_group) > 1
+        )
+        if self.shared_shards:
+            self._globalize(tp_group, facts, namespace, model_identity, page_size)
+
+    def _globalize(self, tp_group, facts, namespace, model_identity, page_size):
+        """Derive one rank-independent block layout for a sharded section.
+
+        A sharded section (Mamba state sharded across attention-TP ranks) has
+        one fragment per (layer, entry, component, buffer) on every rank, but
+        each rank's fragment covers only its own slice. ``facts`` therefore
+        differs per rank only in the final ``size`` element. This gathers the
+        per-rank facts and re-derives:
+
+        * ``identity`` from the full unsharded sizes, so ``block_ids`` map the
+          same logical block to the same physical block on every rank;
+        * ``total_size`` as the sum of every rank's shard;
+        * each fragment's offset as its global base plus the preceding ranks'
+          shard sizes, so a rank writes its shard at its canonical position.
+        """
+        if tp_group is None or not dist.is_initialized():
+            return
+        world = dist.get_world_size(tp_group)
+        if world <= 1:
+            return
+        rank = dist.get_rank(tp_group)
+        all_facts = [None] * world
+        dist.all_gather_object(all_facts, facts, group=tp_group)
+        structure = [fact[:5] for fact in facts]
+        for peer in all_facts:
+            if len(peer) != len(facts) or [fact[:5] for fact in peer] != structure:
+                raise ValueError(
+                    f"Store v2 section {self.name} has an inconsistent shard "
+                    "layout across ranks"
+                )
+        global_sizes = [
+            sum(all_facts[r][i][5] for r in range(world)) for i in range(len(facts))
+        ]
+        global_base = []
+        offset = 0
+        for size in global_sizes:
+            global_base.append(offset)
+            offset += size
+        rank_prefix = [
+            sum(all_facts[r][i][5] for r in range(rank)) for i in range(len(facts))
+        ]
+        local_offsets = [global_base[i] + rank_prefix[i] for i in range(len(facts))]
+        global_facts = [structure[i] + (global_sizes[i],) for i in range(len(facts))]
+        self.total_size = offset
+        self.identity = fingerprint((namespace, model_identity, page_size, global_facts))
+        rebuilt = []
+        cursor = 0
+        for layout in self.layers:
+            count = len(layout.sizes)
+            rebuilt.append(
+                LayerLayout(
+                    layout.pools,
+                    layout.sizes,
+                    tuple(local_offsets[cursor:cursor + count]),
+                )
+            )
+            cursor += count
+        self.layers = rebuilt
 
     def block_ids(self, keys):
         prefix = (self.identity + ":" + self.name + ":").encode()
