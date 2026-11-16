@@ -7,6 +7,7 @@ or establish the safety of every model-selection/state-copy configuration.
 
 import ast
 import math
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -106,6 +107,8 @@ def hla():
         "UCMHybridLinearAttentionConnector": {
             "_scope_blocks",
             "_scope_blocks_pcp",
+            "_setup_cp_scoping",
+            "_make_other_rank_hashers",
             "_append_mamba_align_state_block",
             "_generate_hla_dispatch_meta",
             "build_connector_meta",
@@ -152,17 +155,19 @@ def hla():
             "_BLNHC_UNHASHED_ROLES assignment missing from hla_connector.py"
         )
     connector_path = ROOT / "ucm/integration/vllm/ucm_connector.py"
+    connector_names = {
+        "KVCacheSegment",
+        "RequestMeta",
+        "RequestDispatchMeta",
+        "UCMConnectorMetadata",
+        "build_kv_hash_meta",
+        "_get_sparse_c8_flags",
+    }
     base_nodes = [
         node
         for node in ast.parse(connector_path.read_text(encoding="utf-8-sig")).body
-        if isinstance(node, ast.ClassDef)
-        and node.name
-        in {
-            "KVCacheSegment",
-            "RequestMeta",
-            "RequestDispatchMeta",
-            "UCMConnectorMetadata",
-        }
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        and node.name in connector_names
     ]
     for node in base_nodes:
         if node.name == "UCMConnectorMetadata":
@@ -189,6 +194,10 @@ def hla():
         "ucmmetrics": MagicMock(),
         "current_platform": SimpleNamespace(
             device_type="npu", is_cuda_alike=lambda: False
+        ),
+        "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
+        "request_hasher_module": SimpleNamespace(
+            _layout_source_digest=lambda: "test-layout-digest"
         ),
     }
     future = ast.ImportFrom(
@@ -1433,3 +1442,144 @@ def test_scope_blocks_tp1_pcp_kda_full_section_per_rank_namespace(hla):
         assert scoped_load[n:] == expected_kda
         assert scoped_vllm_load == vllm
     assert seen_mla == mla_ids
+
+
+def test_scope_blocks_non_mla_tp1_pcp_splits_gqa_and_gdn(hla):
+    """TP=1+PCP non-MLA: GQA stays shared (spread on dump); GDN state takes
+    the pcp_rank namespace with a full section per rank, dump and load."""
+    ucm = [b"a", b"b", b"s0", b"s1", b"s2"]
+    vllm = [10, 11, 20, 21, 22]
+    groups = [0, 0, 1, 1, 1]
+    for pcp_rank in range(2):
+        prefix = b"shard%d:" % pcp_rank
+        connector = hla.UCMHybridLinearAttentionConnector()
+        connector.tp_rank = 0
+        connector.tp_size = 1
+        connector.is_mla = False
+        connector.pcp_rank = pcp_rank
+        connector.pcp_world_size = 2
+        connector._state_group_ids = {1}
+        connector._pcp_shard_hasher = lambda key, p=prefix: p + key
+        connector.request_hasher = lambda key: b"rk:" + key
+        expected_gdn = (
+            list(ucm[2:]) if pcp_rank == 0 else [prefix + key for key in ucm[2:]]
+        )
+        # dump: GQA spread (1 of 2 blocks each), GDN full under the namespace.
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, 0, True
+        )
+        assert scoped == ucm[pcp_rank : pcp_rank + 1] + expected_gdn
+        assert context == ucm[pcp_rank : pcp_rank + 1] + ucm[2:]
+        assert scoped_vllm == vllm[pcp_rank : pcp_rank + 1] + vllm[2:]
+        assert scoped_groups == [0, 1, 1, 1]
+        # load: full GQA set + this rank's namespaced GDN section.
+        _, scoped_load, scoped_vllm_load, _ = connector._scope_blocks(
+            ucm, vllm, groups, 0, False
+        )
+        assert scoped_load == ucm[:2] + expected_gdn
+        assert scoped_vllm_load == vllm
+
+
+def _cp_vllm_config(tp=1, pcp=1, dcp=1):
+    return SimpleNamespace(
+        model_config=SimpleNamespace(model="test-model", dtype="bfloat16"),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=tp,
+            prefill_context_parallel_size=pcp,
+            decode_context_parallel_size=dcp,
+        ),
+        speculative_config=None,
+        additional_config={},
+        cache_config=SimpleNamespace(cache_dtype="auto"),
+        attention_config=SimpleNamespace(),
+    )
+
+
+def test_build_kv_hash_meta_has_no_pcp_field(hla):
+    """build_kv_hash_meta stays CP-free: non-hybrid models never see the
+    suffix, and the tp field already separates tp1+pcp2 from tp2+pcp1."""
+    tp1_meta = hla.build_kv_hash_meta(_cp_vllm_config(pcp=2), 0)
+    tp2_meta = hla.build_kv_hash_meta(_cp_vllm_config(tp=2), 0)
+    assert "pcp" not in tp1_meta
+    assert tp1_meta != tp2_meta
+
+
+class _FakeMetaHasher:
+    def __init__(self, meta):
+        self.meta_bytes = meta.encode()
+        self.seed = b"seed:" + self.meta_bytes
+
+
+def _patch_hasher_modules(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.request_hasher",
+        SimpleNamespace(RequestHasher=_FakeMetaHasher),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.ucm_connector",
+        SimpleNamespace(build_kv_hash_meta=lambda cfg, rank: f"meta:{rank}"),
+    )
+
+
+def test_setup_cp_scoping_scheduler_tp1_rebuilds_hasher_with_suffix(hla, monkeypatch):
+    """At TP=1+PCP the scheduler's own hasher carries the suffix: rank 0's
+    shard keys ARE the scheduler's chain and state hashes."""
+    _patch_hasher_modules(monkeypatch)
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config(pcp=2))
+    assert connector.request_hasher.meta_bytes == b"meta:0:pcp=2"
+    assert connector._seed == b"seed:meta:0:pcp=2"
+    assert connector.pcp_world_size == 2
+    assert connector.pcp_rank == 0  # scheduler never touches the group
+    assert connector._pcp_shard_hasher is None
+
+
+def test_setup_cp_scoping_scheduler_never_touches_the_pcp_group(hla):
+    """The scheduler process does not initialize the PCP group under the
+    multiprocess executor: the pcp size must come from parallel_config.
+    TP>1 needs no hasher rebuild at all."""
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config(tp=8, pcp=2))
+    assert connector.pcp_world_size == 2
+    assert connector.pcp_rank == 0
+    assert connector._pcp_shard_hasher is None
+
+
+def test_setup_cp_scoping_dcp_guard_fires_before_the_pcp_early_return(hla):
+    """pcp=1 + dcp>1 must raise instead of silently returning."""
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    with pytest.raises(ValueError, match="pure PCP only"):
+        connector._setup_cp_scoping(_cp_vllm_config(dcp=2))
+
+
+def test_setup_cp_scoping_pcp1_scheduler_is_a_noop(hla):
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config())
+    assert connector.pcp_world_size == 1
+    assert connector.pcp_rank == 0
+    assert connector._pcp_shard_hasher is None
+
+
+def test_make_other_rank_hashers_covers_pcp_shards_at_tp1(hla, monkeypatch):
+    """State shards live per-TP at TP>1 and per-pcp-shard at TP=1+PCP; the
+    base is_mla shortcut no longer skips hybrid KDA namespaces."""
+    _patch_hasher_modules(monkeypatch)
+    connector = hla.UCMHybridLinearAttentionConnector()
+    tp_hashers = connector._make_other_rank_hashers(_cp_vllm_config(tp=4))
+    assert [hasher.meta_bytes for hasher in tp_hashers] == [
+        b"meta:1",
+        b"meta:2",
+        b"meta:3",
+    ]
+    pcp_hashers = connector._make_other_rank_hashers(_cp_vllm_config(pcp=3))
+    assert [hasher.meta_bytes for hasher in pcp_hashers] == [
+        b"meta:1:pcp=3",
+        b"meta:2:pcp=3",
+    ]
+    assert connector._make_other_rank_hashers(_cp_vllm_config()) == []
