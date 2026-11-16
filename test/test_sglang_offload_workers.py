@@ -6,8 +6,9 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 
-from common.sglang_utils import linker_module
+from common.sglang_utils import linker_module, metrics_module
 
 linker_module.deque = collections.deque
 linker_module.Empty = queue.Empty
@@ -25,6 +26,7 @@ class OffloadWorkerTest(unittest.TestCase):
         self.events = {}
         obj = object.__new__(linker_module.UcmDirectLinker)
         obj._tp_rank, obj._closed = 0, False
+        obj._metrics_enabled, obj._metrics_logger = False, None
         obj._offload_queue, obj._offload_results = queue.Queue(), queue.Queue()
         obj._load_queue, obj._completed_loads = queue.Queue(), queue.Queue()
         obj._load_results, obj._lookup_progress, obj._pending_loads = {}, {}, {}
@@ -85,7 +87,45 @@ class OffloadWorkerTest(unittest.TestCase):
             cuda_event=77,
             synchronize=lambda: self.fail("KV event should be forwarded to Store"),
         )
-        self.obj._offload_queue.put(([key], [index_event, kv_event]))
+        observation = metrics_module.LinkerOperation.begin(
+            self.obj._metrics_enabled, "offload"
+        )
+        self.obj._offload_queue.put(([key], [index_event, kv_event], observation))
+
+    def test_metrics_complete_at_reap_before_ordered_publication(self):
+        samples = []
+        completed = threading.Event()
+
+        def record(values):
+            samples.append(values)
+            if values.get("sglang_linker_offload_completed_total"):
+                completed.set()
+
+        self.enterContext(patch.object(metrics_module, "record_metrics", record))
+        self.enterContext(patch.object(linker_module, "record_metrics", samples.append))
+        self.obj._metrics_enabled = True
+        self.enqueue("A")
+        self.enqueue("B")
+        self.complete["B"].set()
+        self.assertTrue(self.waited["B"].wait(2))
+        # A blocks ordered publication, while B must already be observed.
+        self.assertTrue(completed.wait(2))
+        self.assertTrue(self.obj._offload_results.empty())
+        self.assertEqual(
+            sum(s.get("sglang_linker_offload_completed_total", 0) for s in samples), 1
+        )
+        self.complete["A"].set()
+        self.assertTrue(self.obj._offload_results.get(timeout=2))
+        self.assertTrue(self.obj._offload_results.get(timeout=2))
+        self.assertEqual(
+            sum(s.get("sglang_linker_offload_completed_total", 0) for s in samples), 2
+        )
+        self.assertEqual(
+            sum(s.get("sglang_linker_offload_operations_total", 0) for s in samples), 2
+        )
+        self.assertEqual(
+            sum(s.get("sglang_linker_offload_errors_total", 0) for s in samples), 0
+        )
 
     def test_pending_tasks_do_not_block_new_submissions(self):
         self.enqueue("A")
@@ -130,7 +170,7 @@ class OffloadWorkerTest(unittest.TestCase):
 
     def test_empty_rank_result_does_not_overtake_owned_node(self):
         self.enqueue("A")
-        self.obj._offload_queue.put(([], []))
+        self.obj._offload_queue.put(([], [], None))
         self.enqueue("C")
         self.complete["C"].set()
         self.assertTrue(self.waited["C"].wait(2))
