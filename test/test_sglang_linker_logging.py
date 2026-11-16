@@ -17,6 +17,7 @@ def linker(monkeypatch, caplog):
         linker_module, "PoolName", types.SimpleNamespace(KV="kv"), raising=False
     )
     obj = object.__new__(linker_module.UcmDirectLinker)
+    obj._metrics_enabled = False
     obj._lookup_owner = True
     obj._lookup_progress = OrderedDict()
     obj._pending_loads = {}

@@ -25,7 +25,7 @@ class LoadWorkerTest(unittest.TestCase):
         obj = object.__new__(linker_module.UcmDirectLinker)
         obj._metrics_enabled = False
         obj.num_layers = 4
-        obj._tp_rank = 0
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
         obj._requires_load_finish = True
         obj._load_queue = queue.Queue()
         obj._load_results = {
@@ -169,7 +169,7 @@ class LoadWorkerTest(unittest.TestCase):
         obj._load_queue = queue.Queue()
         obj._offload_queue = queue.Queue()
         obj._dump_ranks = (0,)
-        obj._tp_rank = 0
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
         obj._expand = lambda transfers, **kwargs: transfers
         streams = []
 

@@ -196,6 +196,8 @@ class LinkerMetricsTest(unittest.TestCase):
 
     def lookup_linker(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
+        obj.page_size = 4
         obj._metrics_enabled = True
         obj._lookup_owner = True
         obj._lookup_progress = collections.OrderedDict()
@@ -280,6 +282,8 @@ class LinkerMetricsTest(unittest.TestCase):
 
     def test_load_worker_counts_failure_and_drains_prefetched_tasks(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
+        obj.page_size = 4
         obj._metrics_enabled, obj._tp_rank = True, 0
         obj._requires_load_finish = False
         obj._load_queue, obj._completed_loads = queue.Queue(), queue.Queue()
@@ -343,6 +347,8 @@ class LinkerMetricsTest(unittest.TestCase):
 
     def test_linker_logger_identity_config_and_disable(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
+        obj.page_size = 4
         obj._dp_rank, obj._attn_dp_rank, obj._tp_rank = 0, 3, 1
         obj.adapter = types.SimpleNamespace(
             launch_config={"metrics_config_path": "file.yaml"}
@@ -454,6 +460,8 @@ class LinkerMetricsTest(unittest.TestCase):
 
     def test_non_owner_offload_and_pending_cancel_never_create_io_samples(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
+        obj.page_size = 4
         obj._metrics_enabled = True
         obj._partition_offload = lambda transfers: []
         obj._offload_queue = queue.Queue()
