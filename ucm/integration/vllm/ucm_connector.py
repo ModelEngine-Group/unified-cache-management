@@ -3121,7 +3121,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
             shard_id = local_layer_id if self._is_pp else layer_id
             shard_indexs = [shard_id] * len(total_ucm_block_ids)
-            event_handle = self._get_event_handle
+            event_handle = self._get_event_handle()
             task = self._rank_consistency.submit_dump(
                 self.store,
                 block_ids_by_request,
