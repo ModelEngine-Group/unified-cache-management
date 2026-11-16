@@ -1,0 +1,77 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include "index_pool.h"
+#include "kv_types.h"
+
+namespace kv {
+
+// Fixed per-connection information size in HBM. Connection information is
+// temporarily described by a constant; the HBM region is carved into slots of
+// this size.
+constexpr std::size_t kHccpKvRoceConnInfoSlotBytes = 4096;
+constexpr std::uint32_t kHccpKvRoceDefaultSlotCapacity = 256;
+
+// Owns one contiguous NPU/HBM region and hands out fixed-size slots. Each slot
+// is tracked with an IndexPool index (the "slotid" recorded by the provider).
+// The class is thread-safe: Acquire/Release are lock-free, and the slot base
+// address never changes after Init().
+class HbmSlotAllocator {
+public:
+    HbmSlotAllocator(std::int32_t deviceId, std::size_t slotBytes, std::uint32_t capacity);
+    ~HbmSlotAllocator();
+
+    HbmSlotAllocator(const HbmSlotAllocator&) = delete;
+    HbmSlotAllocator& operator=(const HbmSlotAllocator&) = delete;
+    HbmSlotAllocator(HbmSlotAllocator&&) = delete;
+    HbmSlotAllocator& operator=(HbmSlotAllocator&&) = delete;
+
+    // Allocates the HBM region on the configured (or current) ACL device.
+    Status Init();
+
+    Status Acquire(std::uint32_t& slotId);
+    Status Release(std::uint32_t slotId);
+    Status Write(std::uint32_t slotId, const void* data, std::size_t size);
+    Status Clear(std::uint32_t slotId);
+
+    std::int32_t deviceId() const noexcept { return deviceId_; }
+    std::size_t slotBytes() const noexcept { return slotBytes_; }
+    std::uint32_t capacity() const noexcept { return capacity_; }
+
+private:
+    bool ValidSlot(std::uint32_t slotId) const noexcept;
+    void* SlotAddress(std::uint32_t slotId) const noexcept;
+
+    std::int32_t deviceId_;
+    std::size_t slotBytes_;
+    std::uint32_t capacity_;
+    void* base_{nullptr};
+    bool initialized_{false};
+    IndexPool indexPool_;
+};
+
+}  // namespace kv
