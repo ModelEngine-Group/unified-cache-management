@@ -18,7 +18,7 @@ The first target is GLM-5.2 DSA. This directory is not a runnable linker backend
   jobs can be in flight. Load and Dump wait on device events and prepare
   payloads on separate threads. A shared executor submits and polls Store
   jobs, delivering results by job ID. Device prefetch remains pseudocode.
-- `request_hooks.py`: associates the page-aligned radix insert with its request
+- `../patch/request_hooks.py`: associates the page-aligned radix insert with its request
   before SGLang dispatches write-through. Request retirement and abandonment
   release those associations.
 - `runtime.py`: initializes one StoreAssembler and obtains both Scheduler and

@@ -38,6 +38,7 @@ def load_linker():
     layout = Mock(
         num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3
     )
+    layout.entries = ()
     layout.expand.side_effect = lambda transfers: transfers
     layout.block_ids.return_value = (b"x" * 16,)
     layout.prepare.return_value = types.SimpleNamespace(
@@ -45,7 +46,7 @@ def load_linker():
     )
     modules["v2_offload_test.device_layout"].DsaLayout = lambda *args: layout
     modules["v2_offload_test.device_layout"].fingerprint = lambda _: "a" * 64
-    modules["v2_offload_test.request_hooks"] = types.SimpleNamespace(
+    modules["ucm.integration.sglang.patch.request_hooks"] = types.SimpleNamespace(
         install_request_hooks=lambda linker_type: None
     )
     modules["v2_offload_test.runtime"].Runtime = lambda config, **kwargs: config["runtime"]

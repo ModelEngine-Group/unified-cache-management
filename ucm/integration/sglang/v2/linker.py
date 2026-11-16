@@ -24,8 +24,9 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 )
 from sglang.srt.runtime_context import get_model
 
+from ucm.integration.sglang.patch.request_hooks import install_request_hooks
+
 from .device_layout import DsaLayout, fingerprint
-from .request_hooks import install_request_hooks
 from .runtime import Runtime, proxy
 
 
@@ -48,6 +49,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             components=components,
         )
         self.layout = DsaLayout(pool_group, "sglang", get_model().model_path)
+        self.pools = {entry.name: entry for entry in self.layout.entries}
         self._dump_rank, self._dump_size = 0, 1
         tp_group = params.attn_tp_cache_group or params.tp_cache_group
         if pool_group.rank_replicated and tp_group is not None and dist.is_initialized():
@@ -187,11 +189,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def start_layer_wise_loading(self):
         if not self._pending_loads:
             return -1
-        ready = self.record_transfer_ready()
+        events = self._record_transfer_events()
         index = self.layer_done_counter.update_producer()
         pending, self._pending_loads = self._pending_loads, {}
         self._load_batches[index] = self._load_executor.submit(
-            self._load_worker, index, pending, ready
+            self._load_worker, index, pending, events
         )
         return index
 
@@ -199,10 +201,27 @@ class UcmDirectLinker(UnifiedCacheLinker):
         with self._scheduler_lock:
             self.runtime.complete_get(rid, token)
 
-    def _load_worker(self, index, pending, ready):
+    def _record_transfer_events(self):
+        record_ready = getattr(self, "record_transfer_ready", None)
+        if record_ready is not None:
+            return record_ready().events
+
+        from sglang.srt.utils import get_device_module
+
+        device_module = get_device_module()
+        indices_ready = device_module.Event()
+        indices_ready.record()
+        events = [indices_ready]
+        if self.forward_stream is not None:
+            forward_done = device_module.Event()
+            forward_done.record(self.forward_stream)
+            events.append(forward_done)
+        return events
+
+    def _load_worker(self, index, pending, events):
         try:
             with ExitStack() as requests:
-                indices_ready, *forward_events = ready.events
+                indices_ready, *forward_events = events
                 indices_ready.synchronize()
                 context = proxy().IoContext()
                 prepared = []
@@ -303,7 +322,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             result.set_result(True)
             self._offload_results.append(result)
             return True
-        ready = self.record_transfer_ready()
+        events = self._record_transfer_events()
         result = Future()
         pages_by_request = {}
         with self._scheduler_lock:
@@ -314,7 +333,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 self._pending_puts[rid] = self._pending_puts.get(rid, 0) + 1
         try:
             self._dump_executor.submit(
-                self._submit_offloads, expanded, ready, result, pages_by_request
+                self._submit_offloads, expanded, events, result, pages_by_request
             )
         except Exception:
             with self._scheduler_lock:
@@ -351,9 +370,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return tuple(selected)
 
-    def _submit_offloads(self, transfers, ready, result, pages_by_request):
+    def _submit_offloads(self, transfers, events, result, pages_by_request):
         try:
-            indices_ready, *forward_events = ready.events
+            indices_ready, *forward_events = events
             indices_ready.synchronize()
             pages = self.layout.prepare(transfers)
             block_ids = self.layout.block_ids(pages.keys)
@@ -393,7 +412,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 tuple(block_ids[i] for i in indices),
                 [payloads[i] for i in indices],
                 context,
-                (pages, ready),
+                (pages, events),
                 write,
             )
 
