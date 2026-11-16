@@ -48,6 +48,7 @@ from ucm.integration.vllm.cache_config import (
     configure_cache_capacity,
     configure_cache_numa,
 )
+from ucm.integration.vllm.cache_reset import CacheResetServer, reset_cache_endpoints
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -3005,7 +3006,20 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def get_handshake_metadata(self) -> Optional[dict]:
         if self._is_pp:
-            return getattr(self, "_pp_store_sizes", None)
+            sizes = getattr(self, "_pp_store_sizes", None)
+            if sizes is None:
+                return None
+            server = getattr(self, "_cache_reset_server", None)
+            if server is None:
+                store = getattr(self, "store", None)
+                if store is None:
+                    return None
+                reset = getattr(store, "reset_cache", None)
+                server = CacheResetServer(
+                    lambda: bool(reset()) if callable(reset) else False
+                )
+                self._cache_reset_server = server
+            return {**sizes, "cache_reset_endpoint": server.endpoint}
         return None
 
     def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
@@ -3044,6 +3058,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     f"received keys: {list(metadata)}."
                 )
             stage_meta = dict(stage_meta)
+            stage_meta.pop("cache_reset_endpoint", None)
             geometry_keys = ("block_size", "shard_size", "layer_start", "layer_count")
             for key, candidate in metadata.items():
                 if key[0] != pp_rank:
@@ -3081,6 +3096,35 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         self._pp_stores = stores
         self.store = stores[0]
+        # Every worker must advertise reset support. One worker per host and
+        # stage suffices because its Cache2 control region is shared locally.
+        expected = (
+            (pp_rank, tp_rank)
+            for pp_rank in range(
+                self._vllm_config.parallel_config.pipeline_parallel_size
+            )
+            for tp_rank in range(self.tp_size)
+        )
+        if all(
+            metadata.get(rank, {}).get("cache_reset_endpoint") for rank in expected
+        ) and all(
+            stage_meta.get("cache_reset_endpoint") for stage_meta in metadata.values()
+        ):
+            endpoints = {}
+            for (pp_rank, _), stage_meta in metadata.items():
+                endpoint = stage_meta.get("cache_reset_endpoint")
+                if endpoint:
+                    endpoints.setdefault((pp_rank, endpoint["host"]), endpoint)
+            self._pp_reset_endpoints = list(endpoints.values())
+
+    def reset_cache(self) -> bool:
+        if not self._is_pp or self._role == KVConnectorRole.WORKER:
+            return super().reset_cache()
+        endpoints = getattr(self, "_pp_reset_endpoints", None)
+        if not endpoints:
+            logger.warning("PP Cache reset requires reset endpoints from every worker")
+            return False
+        return reset_cache_endpoints(endpoints)
 
     def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
         """Return the last prefix hit every PP stage can serve (-1 = none).
@@ -3124,6 +3168,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def shutdown(self) -> None:
         """Release the lookup pool so process exit cannot block on it."""
+        server = getattr(self, "_cache_reset_server", None)
+        if server is not None:
+            server.close()
+            self._cache_reset_server = None
         pool = getattr(self, "_lookup_pool", None)
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)

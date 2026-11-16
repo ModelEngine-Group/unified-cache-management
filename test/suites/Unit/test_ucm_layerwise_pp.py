@@ -5,7 +5,8 @@ ucm_connector.py with AST so the tests run without torch, vLLM or NPU
 libraries. The filesystem is faked as well, so the tests only assert the
 stage directory layout the connector *asks for* rather than touching a real
 backend. They do not exercise the C++ stores, shard-index mapping or
-end-to-end PP accuracy.
+end-to-end PP accuracy. Reset checks use real loopback sockets, including
+two separate worker processes, with in-memory stand-ins for native stores.
 
 Run with ``--noconftest``; the repository conftest pulls in the end-to-end
 harness (pynvml, evaluator configs) which these tests do not need.
@@ -13,9 +14,14 @@ harness (pynvml, evaluator configs) which these tests do not need.
 
 import ast
 import copy
+import importlib.util
 import math
+import multiprocessing
 import posixpath
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -25,6 +31,16 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 CONNECTOR_PATH = ROOT / "ucm/integration/vllm/ucm_connector.py"
+RESET_PATH = ROOT / "ucm/integration/vllm/cache_reset.py"
+reset_spec = importlib.util.spec_from_file_location("ucm_cache_reset", RESET_PATH)
+reset_module = importlib.util.module_from_spec(reset_spec)
+reset_spec.loader.exec_module(reset_module)
+
+
+class KVConnectorRole(Enum):
+    WORKER = "worker"
+    SCHEDULER = "scheduler"
+
 
 CLASS_NAME = "UCMLayerWiseConnector"
 METHODS = {
@@ -36,6 +52,7 @@ METHODS = {
     "shutdown",
     "get_handshake_metadata",
     "set_xfer_handshake_metadata_pp_aware",
+    "reset_cache",
 }
 
 DIRECT_CLASS = "UCMDirectConnector"
@@ -44,6 +61,7 @@ DIRECT_METHODS = {
     "_lookup_one_stage",
     "_record_load_error",
     "get_block_ids_with_load_errors",
+    "reset_cache",
 }
 
 BACKEND = "/data/ucm"
@@ -84,7 +102,7 @@ def _load_connector_class(existing=(BACKEND,)):
     nodes = []
     for node in ast.parse(CONNECTOR_PATH.read_text(encoding="utf-8-sig")).body:
         if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME:
-            node.bases = []
+            node.bases = [ast.Name(id=DIRECT_CLASS, ctx=ast.Load())]
             node.body = [
                 item for item in node.body if getattr(item, "name", None) in METHODS
             ]
@@ -105,6 +123,12 @@ def _load_connector_class(existing=(BACKEND,)):
         "logger": logger,
         "UcmConnectorFactoryV1": SimpleNamespace(create_connector=factory),
         "ThreadPoolExecutor": ThreadPoolExecutor,
+        DIRECT_CLASS: _load_direct_class(),
+        "KVConnectorRole": KVConnectorRole,
+        "CacheResetServer": lambda reset: reset_module.CacheResetServer(
+            reset, host="127.0.0.1"
+        ),
+        "reset_cache_endpoints": reset_module.reset_cache_endpoints,
     }
     module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
     exec(compile(module, str(CONNECTOR_PATH), "exec"), namespace)
@@ -173,6 +197,7 @@ def _make_connector(
         entry["ucm_connector_module_path"] = module_path
 
     conn = cls.__new__(cls)
+    conn._role = KVConnectorRole.SCHEDULER
     conn._vllm_config = SimpleNamespace(
         parallel_config=SimpleNamespace(pipeline_parallel_size=pp_size)
     )
@@ -371,13 +396,17 @@ def test_get_handshake_metadata_publishes_geometry_and_allocation():
         "layer_start": 4,
         "layer_count": 4,
     }
+    conn.store = SimpleNamespace(reset_cache=lambda: True)
 
-    assert conn.get_handshake_metadata() == {
-        "block_size": 12288,
-        "shard_size": 4096,
-        "layer_start": 4,
-        "layer_count": 4,
-    }
+    try:
+        metadata = conn.get_handshake_metadata()
+        endpoint = metadata.pop("cache_reset_endpoint")
+        assert metadata == conn._pp_store_sizes
+        assert reset_module.reset_cache_endpoints([endpoint]) is True
+        assert conn.get_handshake_metadata()["cache_reset_endpoint"] == endpoint
+        assert "cache_reset_endpoint" not in conn._pp_store_sizes
+    finally:
+        conn.shutdown()
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +519,249 @@ def test_handshake_is_noop_without_pp():
     conn.set_xfer_handshake_metadata_pp_aware(_metadata([(0, 4)]))
 
     assert factory.call_count == 0
+
+
+def _reset_handshake(cls, factory, stack, *, fail_stage=None, missing_rank=None):
+    """Use real reset sockets while scheduler stores remain Cache|Posix/Posix."""
+    metadata = _metadata([(0, 4), (4, 4)])
+    dram = [{b"block"}, {b"block"}]
+    persistent = [{b"block"}, {b"block"}]
+    calls = [0, 0]
+    for pp_rank in range(2):
+
+        def reset(stage=pp_rank):
+            calls[stage] += 1
+            if stage == fail_stage:
+                raise RuntimeError("reset failed")
+            dram[stage].clear()
+            return True
+
+        server = reset_module.CacheResetServer(reset, host="127.0.0.1")
+        stack.callback(server.close)
+        for tp_rank in range(2):
+            rank = (pp_rank, tp_rank)
+            metadata[rank] = dict(metadata[(pp_rank, 0)])
+            if rank != missing_rank:
+                metadata[rank]["cache_reset_endpoint"] = server.endpoint
+            else:
+                metadata[rank].pop("cache_reset_endpoint", None)
+    conn = _make_connector(cls, tp_size=2, world_size=4)
+    conn._is_pp = True
+    conn.set_xfer_handshake_metadata_pp_aware(metadata)
+    assert factory.call_args_list[1].args[1]["store_pipeline"] == "Posix"
+    assert all(
+        "cache_reset_endpoint" not in call.args[1] for call in factory.call_args_list
+    )
+    return conn, dram, persistent, calls
+
+
+def test_pp_reset_clears_all_worker_domains_and_keeps_persistent_data():
+    cls, factory, _ = _load_connector_class(Caps(partitioned=True))
+    with ExitStack() as stack:
+        conn, dram, persistent, calls = _reset_handshake(cls, factory, stack)
+
+        assert conn.reset_cache() is True
+        assert dram == [set(), set()]
+        assert persistent == [{b"block"}, {b"block"}]
+        # Two TP workers share each stage's host domain; reset it only once.
+        assert calls == [1, 1]
+        # Scheduler Posix-only stores cannot clear worker Cache memory.
+        factory.return_value.reset_cache.assert_not_called()
+
+
+@pytest.mark.parametrize("failed_stage", [0, 1])
+def test_pp_reset_reports_failure_and_still_attempts_other_stages(failed_stage):
+    cls, factory, _ = _load_connector_class(Caps(partitioned=True))
+    with ExitStack() as stack:
+        conn, dram, _, calls = _reset_handshake(
+            cls, factory, stack, fail_stage=failed_stage
+        )
+
+        assert conn.reset_cache() is False
+        assert calls == [1, 1]
+        assert dram[failed_stage] == {b"block"}
+        assert dram[1 - failed_stage] == set()
+
+
+def test_pp_reset_rejects_incomplete_worker_handshake_before_clearing():
+    cls, factory, _ = _load_connector_class(Caps(partitioned=True))
+    with ExitStack() as stack:
+        conn, dram, _, calls = _reset_handshake(
+            cls, factory, stack, missing_rank=(1, 1)
+        )
+
+        assert conn.reset_cache() is False
+        assert dram == [{b"block"}, {b"block"}]
+        assert calls == [0, 0]
+
+
+def test_pp_reset_before_handshake_reports_failure():
+    cls, _, _ = _load_connector_class(Caps())
+    conn = _make_connector(cls)
+    conn._is_pp = True
+
+    assert conn.reset_cache() is False
+
+
+@pytest.mark.parametrize(
+    "is_pp,role", [(False, KVConnectorRole.SCHEDULER), (True, KVConnectorRole.WORKER)]
+)
+def test_local_reset_uses_the_existing_store_hook(is_pp, role):
+    cls, _, _ = _load_connector_class(Caps())
+    conn = _make_connector(cls)
+    conn._is_pp = is_pp
+    conn._role = role
+    conn.store = SimpleNamespace(reset_cache=MagicMock(return_value=True))
+
+    assert conn.reset_cache() is True
+    conn.store.reset_cache.assert_called_once_with()
+
+
+def test_reset_reply_waits_for_worker_completion():
+    entered = threading.Event()
+    release = threading.Event()
+
+    def reset():
+        entered.set()
+        return release.wait(timeout=3)
+
+    server = reset_module.CacheResetServer(reset, host="127.0.0.1")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(reset_module.reset_cache_endpoints, [server.endpoint])
+            try:
+                assert entered.wait(timeout=3)
+                assert not result.done()
+            finally:
+                release.set()
+            assert result.result(timeout=3) is True
+    finally:
+        server.close()
+
+
+def test_reset_rejects_wrong_token_without_touching_cache():
+    reset = MagicMock(return_value=True)
+    server = reset_module.CacheResetServer(reset, host="127.0.0.1")
+    try:
+        wrong = {**server.endpoint, "token": "00" * 32}
+        assert reset_module.reset_cache_endpoints([wrong]) is False
+        reset.assert_not_called()
+    finally:
+        server.close()
+
+
+def test_reset_reports_closed_endpoint_and_continues_to_live_domain():
+    closed = reset_module.CacheResetServer(lambda: True, host="127.0.0.1")
+    closed.close()
+    reset = MagicMock(return_value=True)
+    live = reset_module.CacheResetServer(reset, host="127.0.0.1")
+    try:
+        assert (
+            reset_module.reset_cache_endpoints(
+                [closed.endpoint, live.endpoint], timeout=0.5
+            )
+            is False
+        )
+        reset.assert_called_once_with()
+    finally:
+        live.close()
+
+
+def test_reset_timeout_reports_failure_and_continues_to_other_domains():
+    release = threading.Event()
+    slow = reset_module.CacheResetServer(
+        lambda: release.wait(timeout=3), host="127.0.0.1"
+    )
+    reset = MagicMock(return_value=True)
+    live = reset_module.CacheResetServer(reset, host="127.0.0.1")
+    try:
+        assert (
+            reset_module.reset_cache_endpoints(
+                [slow.endpoint, live.endpoint], timeout=0.05
+            )
+            is False
+        )
+        reset.assert_called_once_with()
+    finally:
+        release.set()
+        slow.close()
+        live.close()
+
+
+def test_pp_reset_collects_separate_hosts_within_the_same_stage():
+    cls, factory, _ = _load_connector_class(Caps(partitioned=True))
+    metadata = _metadata([(0, 4), (4, 4)])
+    for pp_rank in range(2):
+        for tp_rank in range(2):
+            rank = (pp_rank, tp_rank)
+            metadata[rank] = dict(metadata[(pp_rank, 0)])
+            metadata[rank]["cache_reset_endpoint"] = {
+                "host": f"node-{tp_rank}",
+                "port": 1234,
+                "token": "00" * 32,
+            }
+    conn = _make_connector(cls, tp_size=2, world_size=2)
+    conn._is_pp = True
+    conn.set_xfer_handshake_metadata_pp_aware(metadata)
+
+    assert sorted(endpoint["host"] for endpoint in conn._pp_reset_endpoints) == [
+        "node-0",
+        "node-0",
+        "node-1",
+        "node-1",
+    ]
+
+
+def _reset_worker_process(pipe):
+    dram = {b"block"}
+    persistent = {b"block"}
+
+    def reset():
+        dram.clear()
+        return True
+
+    server = reset_module.CacheResetServer(reset, host="127.0.0.1")
+    try:
+        pipe.send(server.endpoint)
+        while pipe.recv() == "inspect":
+            pipe.send((dram, persistent))
+    finally:
+        server.close()
+        pipe.close()
+
+
+def test_pp_reset_reaches_two_separate_worker_processes():
+    cls, factory, _ = _load_connector_class(Caps(partitioned=True))
+    ctx = multiprocessing.get_context("spawn")
+    workers = []
+    try:
+        metadata = _metadata([(0, 4), (4, 4)])
+        for pp_rank in range(2):
+            parent, child = ctx.Pipe()
+            process = ctx.Process(target=_reset_worker_process, args=(child,))
+            process.start()
+            child.close()
+            workers.append((process, parent))
+            assert parent.poll(10)
+            metadata[(pp_rank, 0)]["cache_reset_endpoint"] = parent.recv()
+        conn = _make_connector(cls, tp_size=1, world_size=2)
+        conn._is_pp = True
+        conn.set_xfer_handshake_metadata_pp_aware(metadata)
+
+        assert conn.reset_cache() is True
+        for _, pipe in workers:
+            pipe.send("inspect")
+            assert pipe.poll(3)
+            assert pipe.recv() == (set(), {b"block"})
+    finally:
+        for process, pipe in workers:
+            if process.is_alive():
+                pipe.send("close")
+            process.join(timeout=3)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=3)
+            pipe.close()
 
 
 # --------------------------------------------------------------------------
