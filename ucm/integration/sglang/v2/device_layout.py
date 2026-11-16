@@ -1,4 +1,4 @@
-"""GLM-5.2 DSA layout: one FA object per logical page, KV + indexer.
+"""Layout of each Store V2 object for replicated DSA and DeepSeek V4.
 
 Object fragments are ordered by logical layer, pool, component and physical
 buffer. GPU addresses are never part of persistent identity. Draft buffers
@@ -28,29 +28,89 @@ class LayerLayout:
     offsets: tuple[int, ...]
 
 
-class DsaLayout:
+class DeviceLayout:
     def __init__(self, group, namespace: str, model_identity: str):
         self.group = group
         self.entries = tuple(sorted(group.entries, key=lambda entry: str(entry.name)))
-        names = {str(getattr(e.name, "value", e.name)) for e in self.entries}
-        # PoolName values in SGLang are lower-case strings.
-        if names != {"kv", "indexer"} or not group.rank_replicated:
+        names = {entry.name for entry in self.entries}
+        is_dsa = names == {"kv", "indexer"}
+        is_v4 = any(name.startswith("deepseek_v4_") for name in names)
+        if not group.rank_replicated or not (is_dsa or is_v4):
             raise ValueError(
-                "Store v2 currently supports the replicated DSA KV/indexer layout only"
+                "Store v2 requires a replicated DSA or DeepSeek V4 layout"
             )
+        by_source = {}
+        for entry in self.entries:
+            source = entry.indices_from_pool
+            if source not in {"kv", "swa"} or not entry.packed:
+                raise ValueError(f"Unsupported Store v2 pool layout: {entry.name}")
+            if source == "swa" and is_dsa:
+                raise ValueError("DSA KV and Indexer must share KV indices")
+            by_source.setdefault(source, []).append(entry)
+        if "kv" not in by_source:
+            raise ValueError("Store v2 requires a full-attention section")
+
+        self.sections = {
+            source: SectionLayout(
+                "FA" if source == "kv" else "SWA",
+                entries,
+                group.num_layers,
+                group.page_size,
+                namespace,
+                model_identity,
+                require_all_layers=is_dsa,
+            )
+            for source, entries in sorted(by_source.items())
+        }
+        devices = {section.device for section in self.sections.values()}
+        if len(devices) != 1:
+            raise ValueError("Store v2 requires all buffers on one device per rank")
+        self.device_id = devices.pop().index
+        if self.device_id is None:
+            raise ValueError("Store v2 requires an indexed accelerator device")
+        self.num_layers = group.num_layers
+        self.section_sizes = {s.name: s.total_size for s in self.sections.values()}
+        self.identity = (
+            self.sections["kv"].identity
+            if is_dsa
+            else fingerprint({source: s.identity for source, s in self.sections.items()})
+        )
+
+    def expand(self, transfers, **kwargs):
+        by_name = {transfer.name: transfer for transfer in self.group.resolve_transfers(
+            transfers, **kwargs
+        )}
+        sections = []
+        for section in self.sections.values():
+            selected = tuple(by_name[entry.name] for entry in section.entries
+                             if entry.name in by_name)
+            if not selected:
+                continue
+            keys = selected[0].keys
+            if len(selected) != len(section.entries) or any(t.keys != keys for t in selected):
+                raise ValueError(f"Pools in section {section.name} must share logical pages")
+            sections.append((section, selected))
+        return sections
+
+
+class SectionLayout:
+    def __init__(self, name, entries, num_layers, page_size, namespace, model_identity,
+                 *, require_all_layers):
+        self.name = name
+        self.entries = entries
         self.layers = []
         facts = []
         devices = set()
         offset = 0
         covered = {entry.name: set() for entry in self.entries}
-        for layer in range(group.num_layers):
+        for layer in range(num_layers):
             pools, sizes, offsets = [], [], []
             for entry in self.entries:
-                if entry.indices_from_pool != "kv" or not entry.packed:
-                    raise ValueError("DSA requires packed pools sharing KV indices")
                 mapped = entry.layer_mapping.get(layer)
                 if mapped is None:
-                    raise ValueError(f"DSA pool {entry.name} misses layer {layer}")
+                    if require_all_layers:
+                        raise ValueError(f"DSA pool {entry.name} misses layer {layer}")
+                    continue
                 indices = (mapped,) if isinstance(mapped, int) else tuple(mapped)
                 items = []
                 for component_id, component in enumerate(entry.buffer_meta):
@@ -89,34 +149,17 @@ class DsaLayout:
                     "DSA layer mapping does not cover every physical buffer"
                 )
         if len(devices) != 1:
-            raise ValueError("Store v2 requires all DSA buffers on one device per rank")
-        self.device_id = devices.pop().index
-        if self.device_id is None:
-            raise ValueError("Store v2 requires an indexed accelerator device")
+            raise ValueError(f"Store v2 requires section {name} on one device")
+        self.device = devices.pop()
         self.total_size = offset
-        self.section_sizes = {"FA": offset}
-        self.identity = fingerprint((namespace, model_identity, group.page_size, facts))
-        self.num_layers = group.num_layers
+        self.identity = fingerprint((namespace, model_identity, page_size, facts))
 
     def block_ids(self, keys):
-        prefix = (self.identity + ":FA:").encode()
+        prefix = (self.identity + ":" + self.name + ":").encode()
         return tuple(
             hashlib.blake2b(prefix + key.encode(), digest_size=16).digest()
             for key in keys
         )
-
-    def expand(self, transfers):
-        expanded = self.group.resolve_transfers(transfers)
-        if not expanded:
-            return ()
-        by_name = {transfer.name: transfer for transfer in expanded}
-        if set(by_name) != {entry.name for entry in self.entries}:
-            raise ValueError("Both DSA KV and indexer transfers are required")
-        ordered = tuple(by_name[entry.name] for entry in self.entries)
-        keys = tuple(ordered[0].keys)
-        if any(tuple(t.keys) != keys for t in ordered):
-            raise ValueError("DSA KV and indexer must describe the same logical pages")
-        return ordered
 
     def prepare(self, transfers):
         """Snapshot shared indices once, then interpret each pool's row geometry."""
@@ -138,7 +181,7 @@ class DsaLayout:
 
 @dataclass
 class PreparedPages:
-    layout: DsaLayout
+    layout: SectionLayout
     keys: tuple[str, ...]
     locations: dict
     # Retain source tensors until the job ends, including a sliced index view.
@@ -154,6 +197,8 @@ class PreparedPages:
                 matrices.append(rows[:, None] * items[None, :, 1] + items[None, :, 0])
             sizes.extend(layout.sizes)
             offsets.extend(layout.offsets)
+        if not matrices:
+            return []
         pointers = np.concatenate(matrices, axis=1)
         result = []
         for row in pointers:

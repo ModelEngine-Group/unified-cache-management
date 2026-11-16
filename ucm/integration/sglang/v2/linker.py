@@ -1,9 +1,10 @@
 """SGLang direct linker for Store V2.
 
 Lookup, layerwise Get and Put for known pages share a Store request route.
-The first target is GLM-5.2 DSA (KV + indexer in one FA object per logical page).
+Supports replicated DSA and DeepSeek V4 device pools.
 """
 
+import hashlib
 import logging
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -27,7 +28,7 @@ from sglang.srt.utils import get_device_module
 
 from ucm.integration.sglang.patch.request_hooks import install_request_hooks
 
-from .device_layout import DsaLayout, fingerprint
+from .device_layout import DeviceLayout, fingerprint
 from .runtime import Runtime, proxy
 
 
@@ -49,7 +50,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             params=params,
             components=components,
         )
-        self.layout = DsaLayout(pool_group, "sglang", get_model().model_path)
+        self.layout = DeviceLayout(pool_group, "sglang", get_model().model_path)
         self.pools = {entry.name: entry for entry in self.layout.entries}
         self._dump_rank, self._dump_size = 0, 1
         tp_group = params.attn_tp_cache_group or params.tp_cache_group
@@ -116,19 +117,39 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
 
     def lookup(self, rid, transfers):
-        """Return restorable boundaries for joint KV/indexer objects."""
+        """Intersect restorable boundaries across the requested sections."""
         self._check_open()
         expanded = self.layout.expand(transfers)
         if not expanded:
             return []
-        page_keys = expanded[0].keys
-        keys = b"".join(self.layout.block_ids(page_keys))
+        _, fa_transfers = expanded[0]
+        page_keys = fa_transfers[0].keys
+        candidates = list(range(1, len(page_keys) + 1))
         with self._scheduler_lock:
             self._associate_pages(rid, page_keys)
-            hits, _prefetchable = self.runtime.lookup(rid, keys)
-
-        prefix_pages = next((i for i, hit in enumerate(hits) if not hit), len(hits))
-        return list(range(1, prefix_pages + 1))
+            for section, section_transfers in expanded:
+                keys = b"".join(section.block_ids(page_keys[:candidates[-1]]))
+                hits, _prefetchable = self.runtime.lookup(rid, keys)
+                transfer = section_transfers[0]
+                if transfer.hit_policy == "trailing_pages":
+                    prefix = [0]
+                    for hit in hits:
+                        prefix.append(prefix[-1] + int(not hit))
+                    window = len(transfer.keys)
+                    candidates = [
+                        end
+                        for end in candidates
+                        if end < len(prefix)
+                        and prefix[end] == prefix[max(0, end - window)]
+                    ]
+                else:
+                    prefix_pages = next(
+                        (i for i, hit in enumerate(hits) if not hit), len(hits)
+                    )
+                    candidates = [end for end in candidates if end <= prefix_pages]
+                if not candidates:
+                    break
+        return candidates
 
     def associate_pages(self, rid, keys):
         with self._scheduler_lock:
@@ -176,7 +197,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def load(self, rid, transfers):
         self._check_open()
-        expanded = self.layout.expand(transfers)
+        expanded = self.layout.expand(
+            transfers, allow_partial=True, allow_missing_kv=True
+        )
         if not expanded or rid not in self._registered_requests:
             return False
         if rid in self._pending_loads:
@@ -227,17 +250,18 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 indices_ready.synchronize()
                 context = proxy().IoContext()
                 prepared = []
-                for rid, transfers in pending.items():
-                    pages = self.layout.prepare(transfers)
-                    block_ids = self.layout.block_ids(pages.keys)
-                    with self._scheduler_lock:
-                        token = self.runtime.prepare_get(rid, b"".join(block_ids))
-                    requests.callback(self._complete_get, rid, token)
-                    if tuple(key.to_bytes() for key in token.keys) != block_ids:
-                        raise RuntimeError(
-                            f"Store Get token does not match the requested pages for {rid}"
-                        )
-                    prepared.append((pages, token))
+                for rid, sections in pending.items():
+                    for section, transfers in sections:
+                        pages = section.prepare(transfers)
+                        block_ids = section.block_ids(pages.keys)
+                        with self._scheduler_lock:
+                            token = self.runtime.prepare_get(rid, b"".join(block_ids))
+                        requests.callback(self._complete_get, rid, token)
+                        if tuple(key.to_bytes() for key in token.keys) != block_ids:
+                            raise RuntimeError(
+                                f"Store Get token does not match the requested pages for {rid}"
+                            )
+                        prepared.append((pages, token))
 
                 self._apply_forward_dependency(context, forward_events)
                 self._load_layers(index, prepared, context)
@@ -264,7 +288,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         try:
             for layer in range(self.layout.num_layers):
                 submissions = [
-                    (pages.payloads(layer), token) for pages, token in prepared
+                    (payloads, token)
+                    for pages, token in prepared
+                    if (payloads := pages.payloads(layer))
                 ]
                 jobs = []
                 layer_jobs.append(jobs)
@@ -314,10 +340,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def offload(self, transfers, session_id=None):
         self._check_open()
-        expanded = self.layout.expand(transfers)
+        expanded = self.layout.expand(transfers, allow_partial=True)
         if not expanded:
             return False
-        expanded = self._partition_offload(expanded)
+        tail_owner = self._tail_owner(expanded)
+        expanded = [
+            (section, selected)
+            for section, transfers in expanded
+            if (selected := self._partition_offload(section, transfers, tail_owner))
+        ]
         if not expanded:
             # Every rank acknowledges the node, even when its page slice is empty.
             result = Future()
@@ -328,7 +359,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         result = Future()
         pages_by_request = {}
         with self._scheduler_lock:
-            for index, key in enumerate(expanded[0].keys):
+            keys = (key for _, transfers in expanded for key in transfers[0].keys)
+            for index, key in enumerate(keys):
                 for rid in sorted(self._page_requests.get(key, ())):
                     pages_by_request.setdefault(rid, []).append(index)
             for rid in pages_by_request:
@@ -345,9 +377,37 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._offload_results.append(result)
         return True
 
-    def _partition_offload(self, transfers):
+    def _tail_owner(self, sections):
+        """Pick the rank that keeps trailing-window sections whole.
+
+        Full-attention pages split across ranks, but a trailing window
+        (SWA/state) only exists at a node boundary and must stay together, so
+        one rank owns all of it. The choice is independent of local device
+        addresses: it hashes the node's tail key, preferring a non-empty FA
+        tail key (visible identically on every rank) and falling back to the
+        trailing section's own tail key.
+        """
+        if self._dump_size == 1:
+            return 0
+        fa = next(
+            (t[0] for s, t in sections if s.name == "FA" and t and t[0].keys),
+            None,
+        )
+        key_transfer = fa if fa is not None else next(
+            (t[0] for _, t in sections if t and t[0].keys), None
+        )
+        if key_transfer is None:
+            return 0
+        digest = hashlib.sha256(key_transfer.keys[-1].encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "little") % self._dump_size
+
+    def _partition_offload(self, section, transfers, tail_owner):
         if self._dump_size == 1:
             return transfers
+        if section.name != "FA":
+            # Trailing-window sections are indivisible: keep them whole on the
+            # tail owner and drop them everywhere else.
+            return transfers if self._dump_rank == tail_owner else ()
         pages = len(transfers[0].keys)
         start = pages * self._dump_rank // self._dump_size
         end = pages * (self._dump_rank + 1) // self._dump_size
@@ -356,7 +416,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
         views = {}
         selected = []
-        for entry, transfer in zip(self.layout.entries, transfers):
+        for entry, transfer in zip(section.entries, transfers):
             indices = transfer.host_indices
             view_key = (id(indices), entry.page_size)
             if view_key not in views:
@@ -372,13 +432,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return tuple(selected)
 
-    def _submit_offloads(self, transfers, events, result, pages_by_request):
+    def _submit_offloads(self, sections, events, result, pages_by_request):
         try:
             indices_ready, *forward_events = events
             indices_ready.synchronize()
-            pages = self.layout.prepare(transfers)
-            block_ids = self.layout.block_ids(pages.keys)
-            payloads = pages.payloads()
+            prepared, block_ids, payloads = [], [], []
+            for section, transfers in sections:
+                pages = section.prepare(transfers)
+                prepared.append(pages)
+                block_ids.extend(section.block_ids(pages.keys))
+                payloads.extend(pages.payloads())
             context = proxy().IoContext()
             self._apply_forward_dependency(context, forward_events)
         except Exception:
@@ -414,7 +477,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 tuple(block_ids[i] for i in indices),
                 [payloads[i] for i in indices],
                 context,
-                (pages, events),
+                (prepared, events),
                 write,
             )
 

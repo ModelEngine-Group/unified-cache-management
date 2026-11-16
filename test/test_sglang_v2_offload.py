@@ -1,11 +1,13 @@
 """Exercise the real linker executors with a controllable Store, without GPUs."""
 
+import hashlib
 import importlib.util
 import sys
 import types
 import unittest
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
@@ -42,12 +44,14 @@ def load_linker():
         num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3
     )
     layout.entries = ()
-    layout.expand.side_effect = lambda transfers: transfers
+    layout.expand.side_effect = lambda transfers, **kwargs: (
+        [(layout, transfers)] if transfers else []
+    )
     layout.block_ids.return_value = (b"x" * 16,)
     layout.prepare.return_value = types.SimpleNamespace(
         keys=("page",), payloads=lambda: [object()]
     )
-    modules["v2_offload_test.device_layout"].DsaLayout = lambda *args: layout
+    modules["v2_offload_test.device_layout"].DeviceLayout = lambda *args: layout
     modules["v2_offload_test.device_layout"].fingerprint = lambda _: "a" * 64
     modules["ucm.integration.sglang.patch.request_hooks"] = types.SimpleNamespace(
         install_request_hooks=lambda linker_type: None
@@ -156,6 +160,28 @@ class Store:
         self.receipts.put(plan)
 
 
+@dataclass
+class PartitionTransfer:
+    name: str
+    keys: list
+    host_indices: object
+    hit_policy: str = "all_pages"
+
+
+class PartitionIndices:
+    """Minimal list-like stand-in for a flattened device index tensor."""
+
+    def __init__(self, values):
+        self.values = list(values)
+
+    def reshape(self, *shape):
+        del shape
+        return self
+
+    def __getitem__(self, item):
+        return self.values[item]
+
+
 class OffloadTest(unittest.TestCase):
     def setUp(self):
         self.module = load_linker()
@@ -198,7 +224,7 @@ class OffloadTest(unittest.TestCase):
         return job_id, node
 
     def test_dump_uses_each_lookup_request_and_holds_its_route_until_commit(self):
-        transfers = (types.SimpleNamespace(keys=("page",)),)
+        transfers = (types.SimpleNamespace(keys=("page",), hit_policy="all_pages"),)
         for rid in ("a", "b"):
             self.assertEqual(self.linker.lookup(rid, transfers), [1])
         first, node = self.put()
@@ -405,6 +431,93 @@ class OffloadTest(unittest.TestCase):
         self.store.receipt_error = False
         self.store.complete_offload("unreleased")
         self.linker._store_offload_error = None
+
+    def _fa_section(self, pages):
+        entries = [
+            types.SimpleNamespace(page_size=2),
+            types.SimpleNamespace(page_size=2),
+        ]
+        indices = PartitionIndices(range(pages * 2))
+        transfers = tuple(
+            PartitionTransfer(
+                name=name,
+                keys=[f"page-{i}" for i in range(pages)],
+                host_indices=indices,
+            )
+            for name in ("kv", "indexer")
+        )
+        return types.SimpleNamespace(name="FA", entries=entries), transfers
+
+    def _swa_section(self, pages=2):
+        return (
+            types.SimpleNamespace(
+                name="SWA", entries=[types.SimpleNamespace(page_size=2)]
+            ),
+            (
+                PartitionTransfer(
+                    name="swa",
+                    keys=[f"tail-{i}" for i in range(pages)],
+                    host_indices=PartitionIndices(range(pages * 2)),
+                    hit_policy="trailing_pages",
+                ),
+            ),
+        )
+
+    def test_tail_owner_keeps_trailing_window_whole_and_agrees_across_ranks(self):
+        fa_section, fa_transfers = self._fa_section(8)
+        swa_section, swa_transfers = self._swa_section()
+        sections = [(fa_section, fa_transfers), (swa_section, swa_transfers)]
+        owners = []
+        for rank in range(4):
+            self.linker._dump_rank = rank
+            self.linker._dump_size = 4
+            owner = self.linker._tail_owner(sections)
+            owners.append(owner)
+            selected = self.linker._partition_offload(swa_section, swa_transfers, owner)
+            if rank == owner:
+                self.assertIs(selected, swa_transfers)
+            else:
+                self.assertEqual(selected, ())
+        self.assertEqual(len(set(owners)), 1)
+        # Prefers the FA tail key, so the owner is the hash of "page-7".
+        expected = int.from_bytes(hashlib.sha256(b"page-7").digest()[:8], "little") % 4
+        self.assertEqual(owners[0], expected)
+
+    def test_fa_pages_partitioned_disjoint_complete_and_balanced(self):
+        for pages in (1, 2, 3, 5, 8, 11):
+            all_keys = []
+            slice_lengths = []
+            for rank in range(4):
+                self.linker._dump_rank = rank
+                self.linker._dump_size = 4
+                fa_section, fa_transfers = self._fa_section(pages)
+                selected = self.linker._partition_offload(fa_section, fa_transfers, 0)
+                start = pages * rank // 4
+                end = pages * (rank + 1) // 4
+                if start == end:
+                    self.assertEqual(selected, ())
+                    slice_lengths.append(0)
+                    continue
+                expected_keys = [f"page-{i}" for i in range(start, end)]
+                self.assertEqual([t.keys for t in selected], [expected_keys] * 2)
+                self.assertIs(selected[0].host_indices, selected[1].host_indices)
+                slice_lengths.append(end - start)
+                all_keys.extend(selected[0].keys)
+            self.assertEqual(all_keys, [f"page-{i}" for i in range(pages)])
+            self.assertLessEqual(max(slice_lengths) - min(slice_lengths), 1)
+
+    def test_single_rank_partition_keeps_transfers_unchanged(self):
+        fa_section, fa_transfers = self._fa_section(5)
+        swa_section, swa_transfers = self._swa_section()
+        self.linker._dump_rank = 0
+        self.linker._dump_size = 1
+        self.assertIs(
+            self.linker._partition_offload(fa_section, fa_transfers, 0), fa_transfers
+        )
+        self.assertIs(
+            self.linker._partition_offload(swa_section, swa_transfers, 0),
+            swa_transfers,
+        )
 
 
 if __name__ == "__main__":
