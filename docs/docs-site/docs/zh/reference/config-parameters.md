@@ -64,6 +64,7 @@ enable_metrics: true
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | 选填 | int | 默认 `160` | 原生调用方按 Cache 域配置容量，单位 GiB。vLLM 按节点预算分配给本机 DP 域和 FA/WA store，PP stage store 进一步分摊。外部 DP 服务配置每个实例的预算。Cache2 将每个域的容量均分给域内本机 worker。vLLM 对每个 store 分摊的容量低于 1 GiB 时启动报错。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
+| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 测试模式：查询 backend，对无人引用的 Cache2 slot 原地重新加载。与旧 Cache 一致，正在被引用的 Ready slot 和进行中的加载可以共用。必须配置 backend，并在所有 worker 上启用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | 兼容旧配置 | Cache2 在每个 Cache 域内统一使用共享控制面和每个 worker 独立的 memfd 数据段。 |
 

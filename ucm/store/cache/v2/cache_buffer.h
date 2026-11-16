@@ -188,10 +188,11 @@ public:
     // Requires successful worker-side Setup; observers must not call Get.
     // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
-               size_t preferredRank = kInvalid)
+               size_t preferredRank = kInvalid, bool reload = false)
     {
         assert(myRank_ < rankCount_);
         assert(preferredRank == kInvalid || preferredRank < rankCount_);
+        assert(!reload || preferredRank == kInvalid);
         assert(reservedSlots_ < slotsPerRank_);
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
@@ -199,8 +200,8 @@ public:
                             : 2 * usable;
         for (;;) {
             bool owner = false;
-            auto slot =
-                TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
+            auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner,
+                                       preferredRank, reload);
             if (slot != kInvalid) { return Handle{this, slot, owner}; }
             std::this_thread::yield();
         }
@@ -328,14 +329,16 @@ private:
     // On success, the caller owns one reference and must transfer it into a Handle.
     // kInvalid means retry; owner is only meaningful on success.
     size_t TryAcquireSlot(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
-                          size_t attempts, bool& owner, size_t preferredRank = kInvalid)
+                          size_t attempts, bool& owner, size_t preferredRank = kInvalid,
+                          bool reload = false)
     {
         auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         const bool mayOwn = preferredRank == kInvalid || myRank_ == preferredRank;
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, mayOwn)) {
+            if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, mayOwn,
+                       reload)) {
                 return iNode;
             }
         }
@@ -348,7 +351,8 @@ private:
         if (!targetLock->TryLock()) { return kInvalid; }
         iNode = Lookup(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            auto pinned = PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner);
+            auto pinned =
+                PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, true, reload);
             targetLock->Unlock();
             return pinned ? iNode : kInvalid;
         }
@@ -377,7 +381,8 @@ private:
     }
 
     bool PinHit(CtrlLayout& layout, size_t iNode, size_t iBucket, const Detail::BlockId& blockId,
-                size_t offset, size_t spinBudget, bool& owner, bool takeOwnership = true)
+                size_t offset, size_t spinBudget, bool& owner, bool takeOwnership = true,
+                bool reload = false)
     {
         auto* meta = &layout.SlotMetaArr()[iNode];
         for (size_t spin = 0; spin < spinBudget;) {
@@ -389,6 +394,23 @@ private:
                 continue;
             }
             if (reference == kSlotClaimed - 1) { return false; }
+            if (reload && takeOwnership && reference == 0) {
+                // Block optimistic readers while restarting an idle slot in place.
+                if (!meta->reference.compare_exchange_weak(reference, kSlotClaimed,
+                                                           std::memory_order_acq_rel)) {
+                    ++spin;
+                    continue;
+                }
+                if (!MatchKey(*meta, iBucket, blockId, offset)) {
+                    meta->reference.store(0, std::memory_order_release);
+                    return false;
+                }
+                meta->state.store(State::Loading, std::memory_order_relaxed);
+                meta->accessed.store(1, std::memory_order_relaxed);
+                meta->reference.store(1, std::memory_order_release);
+                owner = true;
+                return true;
+            }
             auto state = meta->state.load(std::memory_order_acquire);
             /* A non-owner may observe Ready or Failed. Loading with no
              * reference is a preallocated slot that still needs its selected
