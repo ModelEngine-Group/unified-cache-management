@@ -111,3 +111,129 @@ def test_layer_names_need_no_spec_metadata(policy):
     config = {"use_layerwise": True}
     apply(config, SimpleNamespace(kv_cache_groups=[group]))
     assert config["use_layerwise"] is False
+
+
+@pytest.mark.parametrize("layout", ["new", "wrapped", "merged"])
+@pytest.mark.parametrize("layerwise", [False, True])
+def test_cuda_indexer_pp_rejected_before_config_mutation(policy, layout, layerwise):
+    apply, _ = policy
+    config = {"use_layerwise": layerwise, "use_request_async_load": False}
+    before = config.copy()
+    with pytest.raises(RuntimeError, match="pipeline_parallel_size=1"):
+        apply(config, cache_config(layout), pipeline_parallel_size=2)
+    assert config == before
+
+
+@pytest.mark.parametrize(
+    "cuda,name",
+    [
+        (False, "model.layers.0.indexer.k_cache"),
+        (True, "model.layers.0.self_attn.attn"),
+    ],
+)
+def test_other_pp_models_preserve_config(policy, cuda, name):
+    apply, platform = policy
+    platform.is_cuda.return_value = cuda
+    config = {"use_layerwise": True}
+    apply(config, cache_config("new", name), pipeline_parallel_size=2)
+    assert config == {"use_layerwise": True}
+
+
+@pytest.fixture
+def connector_selection(policy, monkeypatch):
+    import os
+    import sys
+    from types import ModuleType
+
+    apply, platform = policy
+    source = (
+        Path(__file__).resolve().parents[3] / "ucm/integration/vllm/ucm_connector.py"
+    )
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    cls = next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UCMConnector"
+    )
+    cls.body = [
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+    ]
+
+    class Base:
+        def __init__(self, vllm_config, **kwargs):
+            self._vllm_config = vllm_config
+
+    direct, layerwise = Mock(), Mock()
+    hla = ModuleType("ucm.integration.vllm.hla_connector")
+    hla.UCMHybridLinearAttentionConnector = Mock()
+    hla.UCMHybridLinearAttentionConnector.supports_kv_cache_layout.return_value = False
+    hla.UCMHybridLinearAttentionLayerWiseConnector = Mock()
+    hla.is_cuda_blnhc_layout = Mock(return_value=False)
+    hma = ModuleType("ucm.integration.vllm.hma_connector")
+    hma.UCMFAWAConnector = Mock()
+    hma.UCMFAWAConnector.can_handle_kv_cache_config.return_value = False
+    monkeypatch.setitem(sys.modules, hla.__name__, hla)
+    monkeypatch.setitem(sys.modules, hma.__name__, hma)
+    ns = {
+        "KVConnectorBase_V1": Base,
+        "SupportsHMA": type("SupportsHMA", (), {}),
+        "KVConnectorRole": SimpleNamespace(SCHEDULER="scheduler", WORKER="worker"),
+        "Config": lambda transfer: SimpleNamespace(get_config=lambda: transfer.config),
+        "_apply_cuda_indexer_io_config": apply,
+        "current_platform": platform,
+        "os": os,
+        "logger": Mock(),
+        "get_world_group": lambda: SimpleNamespace(rank=0),
+        "UCMDirectConnector": direct,
+        "UCMLayerWiseConnector": layerwise,
+    }
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            cls,
+        ],
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), ns)
+    connector = ns["UCMConnector"]
+    connector._setup_ucm_metrics = Mock()
+    return connector, direct, layerwise
+
+
+@pytest.mark.parametrize("role", ["scheduler", "worker"])
+@pytest.mark.parametrize("layout", ["new", "wrapped"])
+@pytest.mark.parametrize("pp,indexer", [(2, True), (1, True), (2, False)])
+def test_connector_initialization_selects_pp_path(
+    connector_selection, role, layout, pp, indexer
+):
+    connector, direct, layerwise = connector_selection
+    config = {"use_layerwise": True, "use_request_async_load": False}
+    vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(pipeline_parallel_size=pp),
+        scheduler_config=SimpleNamespace(),
+        kv_transfer_config=SimpleNamespace(engine_id="test", config=config),
+    )
+    name = (
+        "model.layers.0.self_attn.indexer.k_cache"
+        if indexer
+        else "model.layers.0.self_attn.attn"
+    )
+    cache = cache_config(layout, name)
+    if pp == 2 and indexer:
+        before = config.copy()
+        with pytest.raises(RuntimeError, match="pipeline_parallel_size=1") as exc:
+            connector(vllm_config, role, cache)
+        assert "please set use_layerwise=True" not in str(exc.value)
+        assert config == before
+        direct.assert_not_called()
+        layerwise.assert_not_called()
+    else:
+        instance = connector(vllm_config, role, cache)
+        selected, other = (direct, layerwise) if indexer else (layerwise, direct)
+        selected.assert_called_once_with(vllm_config, role, cache)
+        other.assert_not_called()
+        assert instance.connector is selected.return_value
+        assert config == {
+            "use_layerwise": not indexer,
+            "use_request_async_load": indexer,
+        }

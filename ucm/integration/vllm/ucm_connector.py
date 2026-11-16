@@ -96,7 +96,9 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
-def _apply_cuda_indexer_io_config(launch_config: dict, kv_cache_config) -> None:
+def _apply_cuda_indexer_io_config(
+    launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
+) -> None:
     """Resolve IO mode before connector selection and cache layout creation."""
     if not current_platform.is_cuda() or kv_cache_config is None:
         return
@@ -107,6 +109,13 @@ def _apply_cuda_indexer_io_config(launch_config: dict, kv_cache_config) -> None:
         for name in layer_names:
             if not {"indexer", "index_cache"}.intersection(name.split(".")):
                 continue
+            if pipeline_parallel_size > 1:
+                raise RuntimeError(
+                    "UCM does not support CUDA indexer models with pipeline "
+                    "parallelism: whole-block loading requires "
+                    "pipeline_parallel_size=1. Set pipeline_parallel_size=1 "
+                    "to use this configuration."
+                )
             launch_config["use_layerwise"] = False
             launch_config["use_request_async_load"] = True
             logger.warning(
@@ -1715,7 +1724,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not uses_partitioned_cache():
             self.engine_id = self.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(self.launch_config, kv_cache_config)
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         share_buffer_enable = (
@@ -3797,7 +3810,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(self.launch_config, kv_cache_config)
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
