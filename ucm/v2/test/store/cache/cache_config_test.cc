@@ -22,11 +22,15 @@
  * SOFTWARE.
  * */
 #include "cache/cache_config.h"
+#include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 #include "status/status.h"
+#include "store.h"
 #include "type/dictionary.h"
 
 namespace UC::Store {
@@ -249,6 +253,56 @@ TEST(CacheConfigTest, FromRejectsBadTierBatchSize)
     auto res = CacheConfig::From(dict);
     ASSERT_FALSE(res.HasValue());
     EXPECT_EQ(res.Error(), Status::InvalidParam());
+}
+
+/*== Assembler-injected lower-tier wiring ==*/
+
+/** A minimal live Store: the lower-tier extraction needs a real Store
+ *  pointer to carry, not just the type name. */
+class NullStore final : public Store {
+public:
+    Status Setup(const Dictionary&) override { return Status::Ok(); }
+    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>&) override
+    {
+        return Status::Unsupported();
+    }
+    Status Load(std::size_t, JobDescriptor, AddressedToken) override
+    {
+        return Status::Unsupported();
+    }
+    Status Dump(std::size_t, JobDescriptor, AddressedToken) override
+    {
+        return Status::Unsupported();
+    }
+    std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
+    Status Wait(std::size_t) override { return Status::InvalidParam(); }
+};
+
+TEST(CacheConfigTest, FromCarriesTheWiredLowerStore)
+{
+    NullStore store;
+    Dictionary dict = MakeDict();
+    Store* wired = &store; /* The assembler stores a Store*, never the derived pointer. */
+    dict.Set("__ucm_lower_store__", wired);
+    auto res = CacheConfig::From(dict);
+    ASSERT_TRUE(res.HasValue());
+    EXPECT_EQ(res.Value().lowerStore, wired);
+}
+
+TEST(CacheConfigTest, FromLeavesLowerStoreNullWhenNotWired)
+{
+    /* Absent wiring: nothing carried. */
+    auto res = CacheConfig::From(MakeDict());
+    ASSERT_TRUE(res.HasValue());
+    EXPECT_EQ(res.Value().lowerStore, nullptr);
+
+    /* Ill-typed wiring: the key belongs to the assembler, so a wrong
+     * payload is ignored rather than diagnosed. */
+    Dictionary dict = MakeDict();
+    dict.Set("__ucm_lower_store__", std::string("not a store"));
+    auto res2 = CacheConfig::From(dict);
+    ASSERT_TRUE(res2.HasValue());
+    EXPECT_EQ(res2.Value().lowerStore, nullptr);
 }
 
 }  // namespace

@@ -30,7 +30,12 @@
 
 namespace UC::Store {
 
+class Store;
+
 struct CacheConfig {
+    /** Private configuration */
+    Store* lowerStore{nullptr}; /* the pipe's next tier down. */
+
     /** Common configuration */
     std::string uniqueId;  /* Unique identifier of the current shared domain. */
     std::string llmRole;   /* Role of the LLM inference process. */
@@ -52,6 +57,7 @@ struct CacheConfig {
         CacheConfig cfg;
         DictionaryReader reader{dict, "cache_config"};
 
+        reader.Optional("__ucm_lower_store__", cfg.lowerStore);
         reader.RequiredNonEmpty("unique_id", cfg.uniqueId);
         reader.RequiredEnum("llm_role", cfg.llmRole, {"scheduler", "worker", "both"});
         reader.RequiredPositive("worker_number", cfg.nWorker);

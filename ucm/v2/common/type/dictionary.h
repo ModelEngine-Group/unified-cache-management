@@ -199,6 +199,15 @@ public:
         target = static_cast<T>(value);
     }
 
+    /** Read an optional value of any type: absent or ill-typed keeps the
+     *  target, and this read never fails. */
+    template <typename T>
+    void Optional(const char* key, T& target)
+    {
+        if (status_.Failure()) { return; }
+        (void)dict_.Get<T>(key, target);
+    }
+
     /** Read a required integer that must fit the int32 range (negatives allowed). */
     void RequiredInt32(const char* key, std::int32_t& target)
     {
