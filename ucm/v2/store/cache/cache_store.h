@@ -42,7 +42,9 @@ namespace UC::Store {
  * The facade stays default-constructible (the plugin contract) and stateless
  * apart from that implementation. The Prefetchable facet is not implemented:
  * AsPrefetchable answers nullptr, so the proxy-side capability dispatch
- * serves the basic interface and synthesizes prefetch completions.
+ * serves the basic interface and synthesizes prefetch completions. The
+ * Offloadable facet is the installed implementation's: AsOffloadable
+ * forwards to it.
  *
  * @note Lifecycle: the upper layer guarantees exactly one Setup before
  *       any call and no calls during destruction; the facade deliberately
@@ -69,6 +71,10 @@ public:
     std::vector<std::pair<std::size_t, bool>> GetFinished() override;
 
     Status Wait(std::size_t jobId) override;
+
+    /*== Facets ==*/
+
+    Offloadable* AsOffloadable() override { return impl_->AsOffloadable(); }
 
     /*== Addressing & admission ==*/
 

@@ -90,6 +90,13 @@ Expected<std::unique_ptr<CacheStoreWorker>> CacheStoreWorker::Create(const Cache
     auto plane = DataPlane::Create(config, worker->Pool());
     if (!plane.HasValue()) { return plane.Error(); }
     worker->dataPlane_ = std::move(plane.Value());
+    /* The relay lands only when a lower tier is wired: the executor half
+     * needs one. */
+    if (config.lowerStore != nullptr) {
+        auto relay = TierRelay::Create(config, worker->Pool());
+        if (!relay.HasValue()) { return relay.Error(); }
+        worker->relay_ = std::move(relay.Value());
+    }
     return worker;
 }
 
@@ -191,11 +198,25 @@ Status CacheStoreWorker::Dump(std::size_t jobId, JobDescriptor job, AddressedTok
     return dataPlane_->Dump(jobId, job, token);
 }
 
-std::vector<std::pair<std::size_t, bool>> CacheStoreWorker::GetFinished()
+Status CacheStoreWorker::Offload(std::size_t jobId, AddressedToken plan)
 {
-    return dataPlane_->GetFinished();
+    return relay_->Offload(jobId, std::move(plan));
 }
 
-Status CacheStoreWorker::Wait(std::size_t jobId) { return dataPlane_->Wait(jobId); }
+std::vector<std::pair<std::size_t, bool>> CacheStoreWorker::GetFinished()
+{
+    auto finished = dataPlane_->GetFinished();
+    if (relay_ != nullptr) {
+        std::vector<std::pair<std::size_t, bool>> offloaded = relay_->GetFinished();
+        finished.insert(finished.end(), offloaded.begin(), offloaded.end());
+    }
+    return finished;
+}
+
+Status CacheStoreWorker::Wait(std::size_t jobId)
+{
+    if (relay_ != nullptr && relay_->Owns(jobId)) { return relay_->Wait(jobId); }
+    return dataPlane_->Wait(jobId);
+}
 
 }  // namespace UC::Store

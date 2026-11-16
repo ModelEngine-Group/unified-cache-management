@@ -25,6 +25,7 @@
 #include "bootstrap.h"
 #include "control_ops.h"
 #include "policy/replacement_policy_registry.h"
+#include "shm_layout.h"
 
 namespace UC::Store {
 namespace {
@@ -113,6 +114,25 @@ Status CacheStoreScheduler::Load(std::size_t /*jobId*/, JobDescriptor /*job*/,
 
 Status CacheStoreScheduler::Dump(std::size_t /*jobId*/, JobDescriptor /*job*/,
                                  AddressedToken /*token*/)
+{
+    return Status::Unsupported(kDataPlaneMessage);
+}
+
+AddressedToken CacheStoreScheduler::PrepareOffload()
+{
+    auto plan = PlanOutcomeFrom(
+        ExecuteControl(buffer_, MakeRequest(ControlOp::PrepareOffload, {}, RequestContext{})));
+    return plan.HasValue() ? std::move(plan.Value()) : AddressedToken{};
+}
+
+void CacheStoreScheduler::CompleteOffload(const AddressedToken& plan)
+{
+    ControlRequest request = MakeRequest(ControlOp::CompleteOffload, {}, RequestContext{});
+    request.planId = DecodePlanPayload(plan.payload).batchId;
+    (void)ExecuteControl(buffer_, request);
+}
+
+Status CacheStoreScheduler::Offload(std::size_t /*jobId*/, AddressedToken /*plan*/)
 {
     return Status::Unsupported(kDataPlaneMessage);
 }

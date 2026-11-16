@@ -30,8 +30,10 @@
 #include "cache_config.h"
 #include "control_codec.h"
 #include "data_plane.h"
+#include "offloadable.h"
 #include "shm_layout.h"
 #include "store.h"
+#include "tier_relay.h"
 #include "type/block.h"
 #include "type/request.h"
 #include "type/token.h"
@@ -54,10 +56,17 @@ namespace UC::Store {
  * dropped, and the dead connection reports itself at the next
  * value-returning call.
  *
+ * The Offloadable facet spans both planes: the engine half rides the
+ * control round trips to the primary, while the executor half runs
+ * locally through a tier relay over the attached pool, whose outer
+ * jobs share the store's completion stream and wait with the plane's
+ * jobs. The facet is served only when the configuration wires a lower
+ * tier.
+ *
  * @note Threading contract: one calling thread or external serialization;
  *       the sequence numbers and the connection are single-consumer state.
  */
-class CacheStoreReplica final : public Store {
+class CacheStoreReplica final : public Store, public Offloadable {
 public:
     /**
      * @brief Joins the caller's cache domain and builds the replica.
@@ -93,6 +102,16 @@ public:
 
     Status Wait(std::size_t jobId) override;
 
+    /*== The Offloadable facet ==*/
+
+    AddressedToken PrepareOffload() override;
+
+    void CompleteOffload(const AddressedToken& plan) override;
+
+    Status Offload(std::size_t jobId, AddressedToken plan) override;
+
+    Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
+
     Prefetchable* AsPrefetchable() override { return nullptr; }
 
 private:
@@ -122,6 +141,9 @@ private:
     /* The transfers: declared after the mapping so in-flight jobs drain
      * while the mapping is still valid. */
     std::unique_ptr<DataPlane> dataPlane_;
+    /* The tier relay of the offload executor half, declared after the
+     * mapping so its jobs drain while it is still valid. */
+    std::unique_ptr<TierRelay> relay_;
     std::uint32_t seq_{0};
 };
 

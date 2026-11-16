@@ -39,6 +39,13 @@ Expected<std::unique_ptr<CacheStoreReplica>> CacheStoreReplica::Create(const Cac
     auto plane = DataPlane::Create(config, replica->mapping_);
     if (!plane.HasValue()) { return plane.Error(); }
     replica->dataPlane_ = std::move(plane.Value());
+    /* The relay lands only when a lower tier is wired: the executor half
+     * needs one. */
+    if (config.lowerStore != nullptr) {
+        auto relay = TierRelay::Create(config, replica->mapping_);
+        if (!relay.HasValue()) { return relay.Error(); }
+        replica->relay_ = std::move(relay.Value());
+    }
     return replica;
 }
 
@@ -136,11 +143,40 @@ Status CacheStoreReplica::Dump(std::size_t jobId, JobDescriptor job, AddressedTo
     return dataPlane_->Dump(jobId, job, token);
 }
 
-std::vector<std::pair<std::size_t, bool>> CacheStoreReplica::GetFinished()
+AddressedToken CacheStoreReplica::PrepareOffload()
 {
-    return dataPlane_->GetFinished();
+    auto response = RoundTrip(MakeRequest(ControlOp::PrepareOffload, {}, RequestContext{}));
+    if (!response.HasValue()) { return {}; }
+    auto plan = PlanOutcomeFrom(std::move(response.Value()));
+    return plan.HasValue() ? std::move(plan.Value()) : AddressedToken{};
 }
 
-Status CacheStoreReplica::Wait(std::size_t jobId) { return dataPlane_->Wait(jobId); }
+void CacheStoreReplica::CompleteOffload(const AddressedToken& plan)
+{
+    ControlRequest request = MakeRequest(ControlOp::CompleteOffload, {}, RequestContext{});
+    request.planId = DecodePlanPayload(plan.payload).batchId;
+    Discard(std::move(request));
+}
+
+Status CacheStoreReplica::Offload(std::size_t jobId, AddressedToken plan)
+{
+    return relay_->Offload(jobId, std::move(plan));
+}
+
+std::vector<std::pair<std::size_t, bool>> CacheStoreReplica::GetFinished()
+{
+    auto finished = dataPlane_->GetFinished();
+    if (relay_ != nullptr) {
+        std::vector<std::pair<std::size_t, bool>> offloaded = relay_->GetFinished();
+        finished.insert(finished.end(), offloaded.begin(), offloaded.end());
+    }
+    return finished;
+}
+
+Status CacheStoreReplica::Wait(std::size_t jobId)
+{
+    if (relay_ != nullptr && relay_->Owns(jobId)) { return relay_->Wait(jobId); }
+    return dataPlane_->Wait(jobId);
+}
 
 }  // namespace UC::Store
