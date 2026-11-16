@@ -172,9 +172,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
         self.layer_done_counter = LayerWiseLoadCounter(self.num_layers)
         if PoolName.MAMBA in self.pools:
-            params.req_to_token_pool.register_layer_transfer_counter(
-                self.layer_done_counter
+            register = getattr(
+                params.req_to_token_pool, "register_layer_transfer_counter", None
             )
+            if callable(register):
+                register(self.layer_done_counter)
+            elif not callable(
+                getattr(self._kv_cache, "register_layer_transfer_counter", None)
+            ):
+                raise RuntimeError(
+                    "SGLang provides no layer transfer counter registration"
+                )
+            # New SGLang registers the KV pool in its cache registry after
+            # constructing the linker, including Mamba layer-router setup.
 
         self._load_thread = threading.Thread(
             target=self._load_worker, daemon=True, name=f"ucm-load-tp{self._tp_rank}"

@@ -159,6 +159,7 @@ class RankConsistencyManager:
         ptrs: Any,
         *,
         distribute_backend_load: bool = False,
+        event_handle: int = 0,
     ) -> Any:
         """Retain request block IDs and classify immediate NotFound errors."""
         request_context = (
@@ -172,6 +173,8 @@ class RankConsistencyManager:
         load_options: dict[str, Any] = {}
         if getattr(store, "supports_distributed_backend_load", False):
             load_options["distribute_backend_load"] = distribute_backend_load
+        if event_handle:
+            load_options["prerequisite_handle"] = event_handle
         try:
             task = store.load_data(
                 block_ids,
