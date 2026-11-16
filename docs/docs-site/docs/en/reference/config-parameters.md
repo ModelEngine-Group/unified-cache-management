@@ -19,6 +19,8 @@ Root fields configure engine integration; fields inside `ucm_connector_config` c
 
 These fields belong at the YAML root. Descriptions identify model- or engine-specific restrictions.
 
+On CUDA, models with indexer caches automatically use whole-block load/save (`use_layerwise=false`) and request-level asynchronous loading where the connector supports it. This combination requires vLLM `pipeline_parallel_size=1`; initialization fails when pipeline parallelism is enabled. Setting `use_layerwise=true` does not override this restriction.
+
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
 | `use_layerwise` | Optional | bool | Default: `true` | Enable layer-wise (per-layer) load/save mode. Recommended `true`; DeepSeek V4 series recommends `false`. |
