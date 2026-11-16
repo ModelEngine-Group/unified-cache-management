@@ -62,7 +62,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
-    Status ResetCache() override;
 
 private:
     bool RecordPassiveResult(const Status& status, uint64_t generation);

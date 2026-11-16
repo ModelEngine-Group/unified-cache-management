@@ -970,8 +970,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return False
         if self.window_group_ids and self.wa_store is None:
             return False
-        fa_cleared = bool(self.fa_store.reset_cache())
-        wa_cleared = self.wa_store is None or bool(self.wa_store.reset_cache())
+        fa_reset = getattr(self.fa_store, "reset_cache", None)
+        wa_reset = getattr(self.wa_store, "reset_cache", None)
+        if not callable(fa_reset) or (
+            self.wa_store is not None and not callable(wa_reset)
+        ):
+            return False
+        fa_cleared = bool(fa_reset())
+        wa_cleared = self.wa_store is None or bool(wa_reset())
         return fa_cleared and wa_cleared
 
     def _init_fawa_request_hasher(self, vllm_config, role) -> None:
