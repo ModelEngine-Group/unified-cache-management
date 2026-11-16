@@ -11,6 +11,8 @@ No engine import, remote access or GPU is required.
 import ast
 import os
 import subprocess
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
@@ -104,49 +106,7 @@ def test_missing_failure_policy_preserves_single_group_handler():
     obj.original.assert_called_once_with({10}, {})
 
 
-@pytest.mark.parametrize("reuse", [False, True])
-def test_cancel_before_failed_output_evicts_step_blocks(reuse):
-    class Scheduler:
-        def schedule(self):
-            return NS(
-                kv_connector_metadata=NS(
-                    request_meta={"req": NS(load_block_ids=([b"load"], [1]))}
-                )
-            )
-
-        def update_from_output(self, step, output):
-            return "processed"
-
-    obj = scheduler({"req": ([1, 2], [3])}, cls=Scheduler)
-    pool = obj.kv_cache_manager.block_pool
-    pool.blocks = [
-        NS(block_hash=value)
-        for value in (None, b"load", b"new", b"state", b"unrelated")
-    ]
-    step = obj.schedule()
-    # Abort drops request ownership, but prefix entries still exist.
-    obj.requests.clear()
-    obj.running.clear()
-    obj.kv_cache_manager.get_block_ids.side_effect = AssertionError(
-        "request was cancelled"
-    )
-    if reuse:
-        pool.blocks[2].block_hash = b"new-owner"
-    result = obj.update_from_output(
-        step, NS(kv_connector_output=NS(invalid_block_ids={1}))
-    )
-    assert result == "processed"
-    obj.kv_cache_manager.evict_blocks.assert_called_once_with(
-        {1, 3} if reuse else {1, 2, 3}
-    )
-    # A subsequent successful step must not inherit old failure state.
-    obj.kv_cache_manager.evict_blocks.reset_mock()
-    obj.update_from_output(step, NS(kv_connector_output=NS(invalid_block_ids=set())))
-    obj.kv_cache_manager.evict_blocks.assert_not_called()
-
-
-@pytest.mark.parametrize("ref", ["v0.23.0", "v0.30.0"])
-def test_cancelled_step_invalidates_real_prefix_cache(ref):
+def real_block_pool(ref):
     source_dir = os.environ.get("VLLM_SOURCE_DIR")
     if not source_dir:
         pytest.skip("set VLLM_SOURCE_DIR for real BlockPool checks")
@@ -207,27 +167,19 @@ def test_cancelled_step_invalidates_real_prefix_cache(ref):
     for block in pool.blocks[1:]:
         pool.cached_block_hash_to_block.insert(block.block_hash, block)
 
-    class Scheduler:
-        def schedule(self):
-            return NS(
-                kv_connector_metadata=NS(
-                    request_meta={"req": NS(load_block_ids=([b"load"], [1]))}
-                )
-            )
+    return pool
 
-        def update_from_output(self, step, output):
-            return "processed"
 
-    obj = scheduler({"req": ([1, 2], [3])}, cls=Scheduler)
+@pytest.mark.parametrize("ref", ["v0.23.0", "v0.30.0", "v0.32.0"])
+def test_sync_failure_invalidates_real_prefix_cache(ref):
+    pool = real_block_pool(ref)
+    obj = scheduler({"failed": ([1, 2], [3]), "healthy": ([4], [])})
     obj.kv_cache_manager.block_pool = pool
     obj.kv_cache_manager.evict_blocks = pool.evict_blocks
-    step = obj.schedule()
+    assert all(pool.get_cached_block(bytes([i]), [0]) for i in (1, 2, 3, 4))
+    assert obj._handle_invalid_blocks({3}, {"failed": 1, "healthy": 1}) == {"failed"}
+    # Native request finishing drops ownership after the hash entries are evicted.
     pool.free_blocks(pool.blocks[1:4])
-    obj.requests.clear()
-    obj.running.clear()
-    # Cancellation alone preserves the bad prefix entries.
-    assert all(pool.get_cached_block(bytes([i]), [0]) for i in (1, 2, 3))
-    obj.update_from_output(step, NS(kv_connector_output=NS(invalid_block_ids={1})))
     assert all(pool.get_cached_block(bytes([i]), [0]) is None for i in (1, 2, 3))
     assert pool.get_cached_block(bytes([4]), [0]) == [pool.blocks[4]]
 
@@ -268,6 +220,224 @@ def test_other_policies_and_single_group_delegate(groups, recompute):
     obj = scheduler({"req": ([10],)}, groups=groups, recompute=recompute)
     assert obj._handle_invalid_blocks({10}, {"req": 1}) == {"native"}
     obj.original.assert_called_once_with({10}, {"req": 1})
+
+
+def connector_plan(kind):
+    """Use the production metadata schemas, without importing accelerator code."""
+    namespace = {"__name__": __name__, "dataclass": dataclass, "field": field}
+    module = ast.parse("from __future__ import annotations")
+    for filename, names in (
+        ("ucm_connector.py", {"RequestDispatchMeta", "UCMConnectorMetadata"}),
+        ("hla_connector.py", {"HLARequestDispatchMeta"}),
+        ("hma_connector.py", {"FAWARequestDispatchMeta", "UCMFAWAConnectorMetadata"}),
+    ):
+        path = ROOT / "ucm/integration/vllm" / filename
+        for node in ast.parse(path.read_text(encoding="utf-8-sig")).body:
+            if isinstance(node, ast.ClassDef) and node.name in names:
+                if node.name.endswith("ConnectorMetadata"):
+                    node.bases = []
+                module.body.append(node)
+    exec(compile(module, "connector_metadata", "exec"), namespace)
+    if kind.endswith("hla"):
+        plan = namespace["HLARequestDispatchMeta"](
+            load_block_ids=([b"attention", b"state"], [1, 3]),
+            dump_block_ids=([b"new"], [2]),
+            load_group_ids=[0, 1],
+            dump_group_ids=[0],
+        )
+        metadata = namespace["UCMConnectorMetadata"](request_meta={"failed": plan})
+        invalid = {3}  # State-only failure; group 0 must not hide it.
+    else:
+        plan = namespace["FAWARequestDispatchMeta"](
+            load_keys=[b"prefix"],
+            load_vllm_block_ids=([1], [3]),
+            dump_keys=[b"new"],
+            dump_vllm_block_ids=([2], []),
+        )
+        metadata = namespace["UCMFAWAConnectorMetadata"](request_meta={"failed": plan})
+        invalid = {3}
+    if kind.startswith("multi_"):
+        # MultiConnector's envelope has child metadata, not request_meta.
+        metadata = NS(metadata=(metadata,))
+    return metadata, invalid
+
+
+@pytest.mark.parametrize("kind", ["hla", "fawa", "multi_hla", "multi_fawa"])
+def test_normal_schedule_preserves_connector_plans(kind):
+    metadata, _ = connector_plan(kind)
+
+    class Scheduler:
+        def schedule(self):
+            return NS(kv_connector_metadata=metadata)
+
+        def update_from_output(self, step, output):
+            return output
+
+        def _update_requests_with_invalid_blocks(self, *args):
+            return "native updater"
+
+        def _handle_invalid_blocks(self, *args):
+            return set()
+
+    originals = {
+        name: getattr(Scheduler, name)
+        for name in (
+            "schedule",
+            "update_from_output",
+            "_update_requests_with_invalid_blocks",
+        )
+    }
+    obj = scheduler({"failed": ([1, 2], [3])}, cls=Scheduler)
+    assert obj.schedule().kv_connector_metadata is metadata
+    for name, original in originals.items():
+        assert getattr(Scheduler, name) is original
+
+
+@pytest.mark.parametrize("kind", ["hla", "fawa", "multi_hla", "multi_fawa"])
+def test_real_v032_output_isolates_sync_failure_and_invalidates_cache(kind):
+    """Run the whole native output method with stubbed model/request services."""
+    pool = real_block_pool("v0.32.0")
+    source = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            os.environ["VLLM_SOURCE_DIR"],
+            "show",
+            "refs/tags/v0.32.0:vllm/v1/core/sched/scheduler.py",
+        ],
+        text=True,
+        encoding="utf-8",
+    )
+    cls = next(
+        n for n in ast.parse(source).body if getattr(n, "name", None) == "Scheduler"
+    )
+    cls.bases = []
+    cls.body = [
+        n
+        for n in cls.body
+        if getattr(n, "name", None)
+        in {
+            "update_from_output",
+            "_handle_invalid_blocks",
+            "_update_requests_with_invalid_blocks",
+        }
+    ]
+    module = ast.parse("from __future__ import annotations")
+    module.body.append(cls)
+    namespace = dict(
+        defaultdict=defaultdict,
+        RequestStatus=STATUS,
+        logger=Mock(),
+        EngineCoreOutput=NS,
+        EngineCoreOutputs=NS,
+        remove_all=lambda requests, removed: [r for r in requests if r not in removed],
+    )
+    STATUS.FINISHED_ERROR = "error"
+    exec(compile(module, "v0.32.0/scheduler.py", "exec"), namespace)
+    obj = scheduler(
+        {"failed": ([1, 2], [3]), "healthy": ([4], [])}, cls=namespace["Scheduler"]
+    )
+    obj.kv_cache_manager.block_pool = pool
+    obj.kv_cache_manager.evict_blocks = pool.evict_blocks
+    obj.kv_cache_manager.take_events = lambda: None
+
+    class Request(NS):
+        __hash__ = object.__hash__
+
+        def is_finished(self):
+            return self.status in ("error", "stop")
+
+        def get_finished_reason(self):
+            return self.status if self.is_finished() else None
+
+        def take_events(self):
+            return []
+
+        def take_prefill_stats(self):
+            return None
+
+    obj.requests = {
+        key: Request(
+            request_id=key,
+            status=STATUS.RUNNING,
+            num_in_flight_tokens=1,
+            num_stale_output_tokens=0,
+            has_encoder_inputs=False,
+            sampling_params=None,
+            client_index=0,
+            stop_reason=None,
+            trace_headers=None,
+            spec_decode_metrics=None,
+            num_nans_in_logits=0,
+        )
+        for key in ("failed", "healthy")
+    }
+    obj.running = list(obj.requests.values())
+    obj.defer_block_free = False
+    obj.perf_metrics = None
+    obj.aux_output_connector = None
+    obj.return_sampling_mask = False
+    obj.ec_connector = obj.connector = None
+    obj.grammar_compile_error_reqs = set()
+    obj.encoder_cache_mismatch_reqs = set()
+    obj.finished_req_ids_dict = {}
+    obj.make_stats = lambda *args, **kwargs: None
+    obj.structured_output_manager = NS(accept_tokens=lambda *args: True)
+    obj._handle_stopped_request = lambda req: True
+    obj._update_from_kv_xfer_finished = Mock()
+
+    def complete(request, tokens, **kwargs):
+        request.status = "stop"
+        return tokens, True
+
+    def free_request(request):
+        ids = (1, 2, 3) if request.request_id == "failed" else (4,)
+        pool.free_blocks([pool.blocks[i] for i in ids])
+        obj.requests.pop(request.request_id)
+        return None, None
+
+    def finish_requests(ids, status):
+        requests = [obj.requests[key] for key in ids]
+        for request in requests:
+            request.status = status
+            free_request(request)
+            obj.running.remove(request)
+        return requests
+
+    obj._update_request_with_output = Mock(side_effect=complete)
+    obj._free_request = free_request
+    obj.finish_requests = Mock(side_effect=finish_requests)
+    metadata, invalid = connector_plan(kind)
+    step = NS(
+        kv_connector_metadata=metadata,
+        num_scheduled_tokens={"failed": 1, "healthy": 1},
+        scheduled_spec_decode_tokens={},
+    )
+    output = NS(
+        sampled_token_ids=[[101], [202]],
+        req_id_to_index={"failed": 0, "healthy": 1},
+        logprobs=None,
+        prompt_logprobs_dict={},
+        prompt_token_id_logprobs_dict={},
+        pooler_output=None,
+        num_nans_in_logits=None,
+        ec_connector_output=None,
+        cudagraph_stats=None,
+        kv_connector_output=NS(
+            invalid_block_ids=invalid, failed_recving=set(), kv_connector_stats=None
+        ),
+    )
+    results = obj.update_from_output(step, output)[0].outputs
+    by_id = {result.request_id: result for result in results}
+    assert by_id["failed"].finish_reason == "error"
+    assert by_id["failed"].new_token_ids == []
+    assert by_id["healthy"].finish_reason == "stop"
+    assert by_id["healthy"].new_token_ids == [202]
+    obj.finish_requests.assert_called_once_with({"failed"}, "error")
+    assert obj._update_request_with_output.call_count == 1
+    assert not obj.requests and not obj.running
+    assert all(pool.get_cached_block(bytes([i]), [0]) is None for i in (1, 2, 3))
+    assert pool.get_cached_block(bytes([4]), [0]) == [pool.blocks[4]]
 
 
 @pytest.mark.parametrize(
