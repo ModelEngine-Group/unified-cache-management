@@ -180,8 +180,17 @@ class UCMRuntimeContext:
     fingerprint: str
 
     def store_runtime(self, block_size: int, *, device_id: int = 0) -> dict[str, Any]:
+        # Cache rejects domain ids above 88 bytes: its rendezvous paths are
+        # /dev/shm/ucm-<id>.{lock,sock}. Hash the engine id (vLLM/Ascend may
+        # extend it) to a fixed 32 hex characters.
+        domain_id = (
+            hashlib.sha256(self.engine_id.encode("utf-8")).hexdigest()[:32]
+            if self.engine_id is not None
+            else None
+        )
+        logger.info("UCM cache domain %s from engine_id %s", domain_id, self.engine_id)
         return {
-            "unique_id": self.engine_id,
+            "unique_id": domain_id,
             "llm_role": (
                 "scheduler" if self.role == KVConnectorRole.SCHEDULER else "worker"
             ),

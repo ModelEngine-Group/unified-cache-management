@@ -1,5 +1,6 @@
 """Connector v2 uses the native Store's snapshots, windows and receipts."""
 
+import hashlib
 from dataclasses import replace
 from itertools import count
 from types import SimpleNamespace as NS
@@ -50,7 +51,7 @@ def test_connector_sets_recompute_tokens_from_graph_mode(
     assert not ucm_connector.UCMConnector.requires_piecewise_for_cudagraph({})
 
 
-def test_store_runtime_passes_through_engine_id_for_both_roles():
+def test_store_runtime_hashes_engine_id_for_cache_domain():
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
     from ucm.integration.vllm.v2.runtime import (
@@ -74,12 +75,20 @@ def test_store_runtime_passes_through_engine_id_for_both_roles():
         fingerprint="",
     )
     scheduler = replace(worker, role=KVConnectorRole.SCHEDULER, rank=None)
+    domain_id = hashlib.sha256(engine_id.encode("utf-8")).hexdigest()[:32]
 
-    assert worker.store_runtime(4096)["unique_id"] == engine_id
-    assert scheduler.store_runtime(4096)["unique_id"] == engine_id
+    assert len(domain_id) == 32
+    assert replace(worker, engine_id=None).store_runtime(4096)["unique_id"] is None
+    assert worker.store_runtime(4096)["unique_id"] == domain_id
+    assert scheduler.store_runtime(4096)["unique_id"] == domain_id
     assert scheduler.store_runtime(4096)["worker_number"] == 8
     other_dp = replace(worker, engine_id=engine_id + "_dp1")
-    assert other_dp.store_runtime(4096)["unique_id"] == engine_id + "_dp1"
+    other_domain_id = other_dp.store_runtime(4096)["unique_id"]
+    assert (
+        other_domain_id
+        == hashlib.sha256((engine_id + "_dp1").encode("utf-8")).hexdigest()[:32]
+    )
+    assert other_domain_id != domain_id
 
 
 def test_cache_worker_uses_largest_complete_record_without_reducing(monkeypatch):
