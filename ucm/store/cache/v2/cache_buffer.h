@@ -463,7 +463,7 @@ private:
                         meta->reference.store(0, std::memory_order_release);
                         continue;
                     }
-                    // Reset may have unlinked this claimed slot before we acquired its old lock.
+                    // The slot may have been unlinked before we acquired its old lock.
                     if (meta->hash.load(std::memory_order_acquire) == oldBucket) {
                         Remove(layout, oldBucket, iNode);
                     }

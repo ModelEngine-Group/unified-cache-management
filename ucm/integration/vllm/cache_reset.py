@@ -1,4 +1,4 @@
-"""Synchronous Cache reset requests to worker-owned Cache domains."""
+"""Synchronous PP Cache reset requests to worker-owned Cache domains."""
 
 import hmac
 import secrets
@@ -8,22 +8,17 @@ import threading
 from typing import Callable
 
 
-def get_local_ip() -> str:
-    """Return the address peers use to reach this worker."""
-    try:
-        from vllm.utils.network_utils import get_ip
-    except ImportError:
-        from vllm.utils import get_ip
-
-    return str(get_ip())
-
-
 class CacheResetServer:
-    """Expose one worker's optional reset hook through handshake metadata."""
+    """Expose one worker's optional reset hook through PP handshake metadata."""
 
     def __init__(self, reset: Callable[[], bool], host: str | None = None):
         if host is None:
-            host = get_local_ip()
+            try:
+                from vllm.utils.network_utils import get_ip
+            except ImportError:
+                from vllm.utils import get_ip
+
+            host = get_ip()
         token = secrets.token_bytes(32)
 
         class Handler(socketserver.BaseRequestHandler):
@@ -59,20 +54,9 @@ class CacheResetServer:
             name="ucm-cache-reset",
             daemon=True,
         )
-        self._closed = False
-        try:
-            self._thread.start()
-        except BaseException:
-            # Reset is optional: never leak the bound port when the server
-            # thread cannot start.
-            self._closed = True
-            self._server.server_close()
-            raise
+        self._thread.start()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()

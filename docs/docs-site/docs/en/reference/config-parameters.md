@@ -67,6 +67,8 @@ These fields apply to pipelines containing Cache. Cache2 capacity is planned per
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
 | `share_buffer_enable` | Optional | bool | Legacy compatibility | Cache2 always uses a shared control plane and per-worker memfd data segments within each cache domain. |
 
+Runtime Cache2 reset clears DRAM entries and keeps backend files. Quiesce Cache traffic before resetting. Single-host TP and the existing LayerWise PP path are supported; PP waits for the worker Cache domains of every stage. Cross-host TP reset is unsupported: without PP, only the scheduler-host Cache domain is cleared. Cross-host PP requires reachable worker reset endpoints and remains pending target-platform validation. Each DP engine resets its own Cache domains; reaching every DP engine depends on vLLM request routing.
+
 ## Posix capacity reclamation
 
 Capacity settings do not reserve filesystem space. Coordinate GC ownership for shared namespaces instead of letting independent instances reclaim against separate budgets.
