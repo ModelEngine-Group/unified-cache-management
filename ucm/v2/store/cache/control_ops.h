@@ -47,8 +47,9 @@ namespace UC::Store {
  *
  * @return ControlResponse echoing the request's seq; ok with the op's result
  *         body (Lookup answers with hits, Pin/Alloc with slots plus the
- *         minted token payload, the void ops with none), or the engine's
- *         error Status recoded into statusCode and message.
+ *         minted token payload, PrepareOffload with the planned keys plus
+ *         its plan payload, the void ops with none), or the engine's error
+ *         Status recoded into statusCode and message.
  */
 [[nodiscard]] ControlResponse ExecuteControl(CacheBuffer& buffer, const ControlRequest& request);
 
@@ -75,5 +76,21 @@ namespace UC::Store {
  */
 [[nodiscard]] Expected<AddressedToken> TokenOutcomeFrom(ControlResponse&& response,
                                                         const std::vector<BlockId>& blockIds);
+
+/**
+ * @brief Recovers the PrepareOffload outcome of a control response: the
+ *        minted plan token, keys as reported by the engine.
+ *
+ * @param response The response of the matching PrepareOffload request;
+ *                 its planned keys and token payload are moved into the
+ *                 returned token.
+ *
+ * @return Expected the token on success -- payload as carried, verified
+ *         against the reported keys to catch codec-integration drift,
+ *         then moved out of the response; the empty token for the idle
+ *         plan; the recoded error Status of a failed response, or a
+ *         General error when payload and keys disagree.
+ */
+[[nodiscard]] Expected<AddressedToken> PlanOutcomeFrom(ControlResponse&& response);
 
 }  // namespace UC::Store

@@ -591,5 +591,255 @@ TEST_F(CacheBufferTest, UnpinWithoutMatchingPinIsNoOp)
     buffer_.Commit({y}, true);
 }
 
+TEST_F(CacheBufferTest, OffloadIsIdleWithoutConcludedAdmissions)
+{
+    // Before a successful Setup the mint is inert, like every other op.
+    const AddressedToken unset = buffer_.PrepareOffload();
+    EXPECT_TRUE(unset.keys.empty());
+    EXPECT_TRUE(unset.payload.empty());
+
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+    buffer_.CompleteOffload(1);  // unknown handle: a no-op, not an error
+}
+
+TEST_F(CacheBufferTest, OffloadPlanCoversConcludedAdmissionsInOrder)
+{
+    ASSERT_TRUE(buffer_.Setup(3, MakePolicy()).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
+    ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
+    buffer_.Commit(blocks, true);
+
+    auto plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, blocks);  // conclusion order
+    const PlanPayload payload = DecodePlanPayload(plan.payload);
+    EXPECT_EQ(payload.batchId, std::uint64_t{1});  // minted from 1; 0 is reserved
+    EXPECT_EQ(payload.slots, (std::vector<std::uint32_t>{0, 1, 2}));
+
+    // The mint drained the pending set: the next plan is idle.
+    const AddressedToken idle = buffer_.PrepareOffload();
+    EXPECT_TRUE(idle.keys.empty());
+    EXPECT_TRUE(idle.payload.empty());
+}
+
+TEST_F(CacheBufferTest, OffloadSkipsFailedConclusions)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const BlockId good = MakeBlock(1);
+    const BlockId bad = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({good}, RequestContext{}));
+    buffer_.Commit({good}, true);
+    ASSERT_TRUE(buffer_.Reserve({bad}, RequestContext{}));
+    buffer_.Commit({bad}, false);
+
+    auto plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, (std::vector<BlockId>{good}));
+    EXPECT_EQ(DecodePlanPayload(plan.payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, OffloadPinsDeferEviction)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId first = MakeBlock(1);
+    const BlockId second = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
+    buffer_.Commit({first}, true);
+    ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
+
+    // The plan pin holds the pool's only slot: no eligible victim.
+    auto blocked = buffer_.Reserve({second}, RequestContext{});
+    ASSERT_FALSE(blocked);
+    EXPECT_EQ(blocked.Error(), Status::NoSpace());
+
+    buffer_.CompleteOffload(1);
+    auto admitted = buffer_.Reserve({second}, RequestContext{});
+    ASSERT_TRUE(admitted);
+    buffer_.Commit({second}, true);
+    EXPECT_EQ(buffer_.Lookup({first}), (std::vector<std::uint8_t>{0}));
+}
+
+TEST_F(CacheBufferTest, OffloadPinsDeferExpiry)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, Ctx(30ms)));
+    buffer_.Commit({block}, true);
+    ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
+
+    std::this_thread::sleep_for(60ms);
+    // Expired but plan-pinned: probed as a miss, yet the slot is still held.
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+    auto blocked = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
+    ASSERT_FALSE(blocked);
+    EXPECT_EQ(blocked.Error(), Status::NoSpace());
+
+    // The receipt releases the pin; the expired block is swept away.
+    buffer_.CompleteOffload(1);
+    auto admitted = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
+    ASSERT_TRUE(admitted);
+    buffer_.Commit({MakeBlock(2)}, true);
+}
+
+TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+
+    // A re-admission is rewriting the block: the mint holds it back.
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    const AddressedToken idle = buffer_.PrepareOffload();
+    EXPECT_TRUE(idle.keys.empty());
+    EXPECT_TRUE(idle.payload.empty());
+
+    buffer_.Commit({block}, true);
+    auto plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, (std::vector<BlockId>{block}));
+    // The skipped mint consumed no handle: this one is still the first.
+    EXPECT_EQ(DecodePlanPayload(plan.payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, OffloadQueueDropsBlocksEvictedBeforeMint)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId first = MakeBlock(1);
+    const BlockId second = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
+    buffer_.Commit({first}, true);
+    // first is evicted by second's admission before any mint.
+    ASSERT_TRUE(buffer_.Reserve({second}, RequestContext{}));
+    buffer_.Commit({second}, true);
+
+    auto plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, (std::vector<BlockId>{second}));
+    const PlanPayload payload = DecodePlanPayload(plan.payload);
+    EXPECT_EQ(payload.batchId, std::uint64_t{1});
+    EXPECT_EQ(payload.slots, (std::vector<std::uint32_t>{0}));
+}
+
+TEST_F(CacheBufferTest, OffloadReceiptIsIdempotent)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+    ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
+    buffer_.Commit(blocks, true);
+    ASSERT_EQ(buffer_.PrepareOffload().keys, blocks);
+
+    buffer_.CompleteOffload(1);
+    buffer_.CompleteOffload(1);   // already received: never unpins twice
+    buffer_.CompleteOffload(99);  // unknown handle: a no-op
+
+    // Both pins released exactly once: the two blocks are evictable now.
+    ASSERT_TRUE(buffer_.Reserve({MakeBlock(3), MakeBlock(4)}, RequestContext{}));
+}
+
+TEST_F(CacheBufferTest, EvictedBlockOffloadsAgainAfterReadmission)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId first = MakeBlock(1);
+    const BlockId second = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
+    buffer_.Commit({first}, true);
+    auto firstPlan = buffer_.PrepareOffload();
+    ASSERT_EQ(firstPlan.keys, (std::vector<BlockId>{first}));
+    buffer_.CompleteOffload(DecodePlanPayload(firstPlan.payload).batchId);
+
+    // first is evicted by second, then re-admitted: it offloads again.
+    ASSERT_TRUE(buffer_.Reserve({second}, RequestContext{}));
+    buffer_.Commit({second}, true);
+    ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
+    buffer_.Commit({first}, true);
+
+    auto secondPlan = buffer_.PrepareOffload();
+    EXPECT_EQ(secondPlan.keys, (std::vector<BlockId>{first}));
+    const PlanPayload payload = DecodePlanPayload(secondPlan.payload);
+    EXPECT_EQ(payload.batchId, std::uint64_t{2});  // the handle is monotone
+    EXPECT_EQ(payload.slots, (std::vector<std::uint32_t>{0}));
+}
+
+TEST_F(CacheBufferTest, OffloadPinsAreInvisibleToUnpin)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+    ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
+
+    // A data-plane Unpin cannot steal a plan pin: the block stays put.
+    buffer_.Unpin({block});
+    auto blocked = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
+    ASSERT_FALSE(blocked);
+    EXPECT_EQ(blocked.Error(), Status::NoSpace());
+
+    buffer_.CompleteOffload(1);
+    auto admitted = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
+    ASSERT_TRUE(admitted);
+}
+
+TEST_F(CacheBufferTest, ReadmissionOfInFlightOffloadKeyIsRefused)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    const BlockId other = MakeBlock(3);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+    ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
+
+    // The refusal is whole-batch and settles nothing.
+    auto refused = buffer_.Reserve({block, other}, RequestContext{});
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.Error(), Status::NotFound());
+
+    // Clean members still admit while the plan flies.
+    ASSERT_TRUE(buffer_.Reserve({other}, RequestContext{}));
+    buffer_.Commit({other}, true);
+
+    // Once receipted, the block is re-admittable again.
+    buffer_.CompleteOffload(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+}
+
+TEST_F(CacheBufferTest, SuccessfulReadmissionRequeuesOffload)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+    buffer_.CompleteOffload(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId);
+
+    // A concluded re-admission rewrites the block: it offloads again.
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+    auto plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, (std::vector<BlockId>{block}));
+    EXPECT_EQ(DecodePlanPayload(plan.payload).batchId, std::uint64_t{2});
+}
+
+TEST_F(CacheBufferTest, SetupResetsOffloadState)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true);
+    ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
+
+    // A fresh Setup drops the queue, the in-flight plans and the handle
+    // counter; a receipt for the dead plan is a no-op.
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    buffer_.CompleteOffload(1);
+    const AddressedToken idle = buffer_.PrepareOffload();
+    EXPECT_TRUE(idle.keys.empty());
+    EXPECT_TRUE(idle.payload.empty());
+
+    const BlockId fresh = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({fresh}, RequestContext{}));
+    buffer_.Commit({fresh}, true);
+    EXPECT_EQ(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId, std::uint64_t{1});
+}
+
 }  // namespace
 }  // namespace UC::Store
