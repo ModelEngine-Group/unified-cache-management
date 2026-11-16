@@ -113,7 +113,6 @@ public:
                bool isLoad = false);
     void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
-    void Reset();
 
 private:
     bool ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx);

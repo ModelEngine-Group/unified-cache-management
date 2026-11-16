@@ -352,6 +352,7 @@ def _install_stubs():
     )
     _install_module(
         "vllm.distributed.parallel_state",
+        get_pp_group=lambda: SimpleNamespace(world_size=1, rank_in_group=0),
         get_world_group=lambda: SimpleNamespace(local_rank=0, rank=0),
     )
     _install_module(

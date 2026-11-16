@@ -53,7 +53,6 @@ struct BufferMetaNode {
     size_t hash;
     size_t prev;
     size_t next;
-    uint64_t generation;
     alignas(64) std::atomic<TransBuffer::State> state;
     std::atomic<int32_t> errorCode;
     void Init()
@@ -62,7 +61,6 @@ struct BufferMetaNode {
         hash = invalidIndex;
         prev = invalidIndex;
         next = invalidIndex;
-        generation = 0;
         state.store(TransBuffer::State::LOADING, std::memory_order_relaxed);
         errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
     }
@@ -98,8 +96,6 @@ public:
     virtual void* DeviceDataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
     virtual void MarkAccessed(size_t iNode) = 0;
-    virtual uint64_t Generation() = 0;
-    virtual void ResetGeneration() = 0;
 };
 
 class LocalBufferStrategy : public BufferStrategy {
@@ -108,7 +104,6 @@ class LocalBufferStrategy : public BufferStrategy {
         size_t nodeCursor;
         size_t nodeSize;
         size_t nNode;
-        std::atomic<uint64_t> generation;
     };
     struct LocalMutex {
         pthread_mutex_t mutex;
@@ -216,7 +211,6 @@ public:
         header_.nodeCursor = 0;
         header_.nodeSize = nodeSize;
         header_.nNode = nNode;
-        header_.generation.store(0, std::memory_order_relaxed);
         return Status::OK();
     }
     void BucketLock(size_t iBucket) override { bucketLocks_[iBucket].Lock(); }
@@ -243,8 +237,6 @@ public:
     {
         accessed_[iNode].store(1, std::memory_order_relaxed);
     }
-    uint64_t Generation() override { return header_.generation.load(std::memory_order_acquire); }
-    void ResetGeneration() override { header_.generation.fetch_add(1, std::memory_order_acq_rel); }
     void* DataAt(size_t iNode) override
     {
         return ((std::byte*)data_.get()) + header_.nodeSize * iNode;
@@ -284,13 +276,12 @@ protected:
         bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
         void Unlock() { pthread_spin_unlock(&lock); }
     };
-    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 3);
+    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 2);
     struct BufferHeader {
         std::atomic<size_t> magic;
         size_t nNode;
         alignas(64) std::atomic<size_t> nodeCursor;
         char nodeCursorPad[64 - sizeof(std::atomic<size_t>)];
-        alignas(64) std::atomic<uint64_t> generation;
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
         ShareLock nodeLocks[0];
@@ -402,7 +393,6 @@ protected:
                                                             AccessedOffset());
         header_->nNode = nNode_;
         header_->nodeCursor.store(0, std::memory_order_relaxed);
-        header_->generation.store(0, std::memory_order_relaxed);
         for (size_t i = 0; i < nHashTableBucket; i++) {
             header_->buckets[i] = invalidIndex;
             header_->bucketLocks[i].Init();
@@ -515,8 +505,6 @@ public:
     {
         accessed_[iNode].store(1, std::memory_order_relaxed);
     }
-    uint64_t Generation() override { return header_->generation.load(std::memory_order_acquire); }
-    void ResetGeneration() override { header_->generation.fetch_add(1, std::memory_order_acq_rel); }
     void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
     void* DeviceDataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
     BufferMetaNode* MetaAt(size_t iNode) override { return meta_ + iNode; }
@@ -622,23 +610,12 @@ bool TransBuffer::Exist(const Detail::BlockId& blockId, size_t shardIdx)
     return exist;
 }
 
-void TransBuffer::Reset()
-{
-    // Bumping the generation invalidates every published key at once. Slot
-    // data and in-flight task handles stay valid; entries completed after the
-    // bump remain invisible and are reclaimed by later allocation.
-    strategy_->ResetGeneration();
-}
-
 bool TransBuffer::ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx)
 {
-    const auto generation = strategy_->Generation();
     auto iNode = strategy_->FirstAt(iBucket);
     while (iNode != invalidIndex) {
         auto meta = strategy_->MetaAt(iNode);
-        if (meta->block == blockId && meta->shard == shardIdx && meta->generation == generation) {
-            return true;
-        }
+        if (meta->block == blockId && meta->shard == shardIdx) { return true; }
         iNode = meta->next;
     }
     return false;
@@ -647,11 +624,10 @@ bool TransBuffer::ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t
 size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx,
                            bool& owner)
 {
-    const auto generation = strategy_->Generation();
     auto iNode = strategy_->FirstAt(iBucket);
     while (iNode != invalidIndex) {
         auto meta = strategy_->MetaAt(iNode);
-        if (meta->block == blockId && meta->shard == shardIdx && meta->generation == generation) {
+        if (meta->block == blockId && meta->shard == shardIdx) {
             strategy_->NodeLock(iNode);
             owner = meta->reference == 0;
             if (owner && meta->state.load(std::memory_order_relaxed) == State::FAILED) {
@@ -695,7 +671,6 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         strategy_->MarkAccessed(iNode);
         meta->block = blockId;
         meta->shard = shardIdx;
-        meta->generation = strategy_->Generation();
         meta->state.store(State::LOADING, std::memory_order_relaxed);
         meta->errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
         strategy_->NodeUnlock(iNode);

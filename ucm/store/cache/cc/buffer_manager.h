@@ -89,14 +89,6 @@ public:
         if (backend_) { backend_->Prefetch(blocks, num); }
     }
 
-    /* Invalidates this store's cache tier only; the backend stays untouched. */
-    bool Reset()
-    {
-        if (!buffer_) { return false; }
-        buffer_->Reset();
-        return true;
-    }
-
 private:
     void Lookup(const Detail::BlockId* blocks, size_t num, std::vector<uint8_t>& results,
                 std::vector<Detail::BlockId>& missBlk, std::vector<size_t>& missIdx)

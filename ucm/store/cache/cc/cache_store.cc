@@ -162,12 +162,6 @@ public:
         }
         return s;
     }
-    Status ResetCache() override
-    {
-        // No cache buffer means this participant only speaks to the backend
-        // (e.g. a scheduler process without the shared host buffer).
-        return bufferMgr_.Reset() ? Status::OK() : Status::Unsupported();
-    }
 
 private:
     Config ParseConfig(const Detail::Dictionary& config)

@@ -344,37 +344,3 @@ TEST_P(UCCacheTransBufferTest, ClockSparesRecentlyTouchedBlock)
     ASSERT_TRUE(transBuffer.Exist(b5, shardIdx));
     ASSERT_FALSE(transBuffer.Exist(b3, shardIdx));
 }
-
-TEST_P(UCCacheTransBufferTest, ResetHidesEntriesUntilTheyAreRefilled)
-{
-    UC::CacheStore::TransBuffer transBuffer;
-    UC::CacheStore::Config config;
-    config.uniqueId = rd.RandomString(10);
-    config.shardSize = 32768;
-    config.bufferCapacity = config.shardSize * 32768;
-    config.shareBufferEnable = GetParam();
-    config.deviceId = 0;
-    config.loadExclusiveBufferNumber = 0;
-    auto s = transBuffer.Setup(config);
-    ASSERT_EQ(s, UC::Status::OK());
-    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
-    constexpr size_t shardIdx = 0;
-    {
-        auto handle = transBuffer.Get(blockId, shardIdx);
-        ASSERT_TRUE(handle);
-        ASSERT_TRUE(handle.Owner());
-        handle.MarkReady();
-    }
-    ASSERT_TRUE(transBuffer.Exist(blockId, shardIdx));
-
-    transBuffer.Reset();
-
-    // The slot is invalidated but its memory is reused on the next request.
-    ASSERT_FALSE(transBuffer.Exist(blockId, shardIdx));
-    auto handle = transBuffer.Get(blockId, shardIdx);
-    ASSERT_TRUE(handle);
-    ASSERT_TRUE(handle.Owner());
-    ASSERT_FALSE(handle.Ready());
-    handle.MarkReady();
-    ASSERT_TRUE(transBuffer.Exist(blockId, shardIdx));
-}
