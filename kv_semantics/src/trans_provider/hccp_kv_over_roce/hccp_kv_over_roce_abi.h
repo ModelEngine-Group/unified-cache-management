@@ -30,6 +30,11 @@
  * All other symbols are optional: when present the provider forwards the matching
  * TransProvider operation, otherwise the provider keeps the documented fallback.
  *
+ * Memory registration is descriptor based: RegisterMemory only registers the MR
+ * itself and reports one HccpKvRoceMemoryInfo per descriptor. The provider owns
+ * the MR handle space and keeps a one-to-one mapping between its own handle and
+ * the reported memory info, so no handle ever crosses this ABI.
+ *
  * Every function returns 0 on success and a non-zero HccpKvRoceReturnCode (or an
  * implementation-defined positive value) on failure. Strings are passed as
  * NUL-terminated const char* instead of C++ std::string to keep the ABI stable.
@@ -68,12 +73,14 @@ typedef struct HccpKvRoceRegisterMemoryDesc {
     uint64_t localAddr;
 } HccpKvRoceRegisterMemoryDesc;
 
-typedef struct HccpKvRoceBindMemoryDesc {
-    int32_t memoryType;
+/* One registered MR as reported by the external library. rkey is the token id
+ * the client uses to address the region. */
+typedef struct HccpKvRoceMemoryInfo {
     uint64_t addr;
     uint64_t size;
-    uint32_t tokenId;
-} HccpKvRoceBindMemoryDesc;
+    uint32_t access;
+    uint32_t rkey;
+} HccpKvRoceMemoryInfo;
 
 typedef struct HccpKvRoceSendIoBatch {
     void* connectionHandle;
@@ -98,25 +105,23 @@ typedef struct HccpKvRoceServerCapabilities {
 } HccpKvRoceServerCapabilities;
 
 /* Required symbols. connectionHandles must point to qpNum writable slots;
- * RegisterMemory must fill descNum writable mrHandles. */
+ * RegisterMemory must fill descNum writable memoryInfos entries. */
 int32_t CreateConnection(const char* localIp, const char* remoteIp, uint32_t port, uint32_t qpNum,
                          uint32_t timeout, void** connectionHandles);
 int32_t DeleteConnections(void* const* connectionHandles, uint32_t handleNum);
 int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uint32_t descNum,
-                       uint64_t* mrHandles);
+                       HccpKvRoceMemoryInfo* memoryInfos);
 
 /* Optional symbols.
- * BindMemory returns provider-local handles for an existing registration; those
- * handles must be released through UnregisterMemory.
+ * UnregisterMemory deregisters MRs identified by the memory info reported by
+ * RegisterMemory; the provider owns no cross-ABI handles.
  * Send and FreeThread fill one statuses entry per input batch/thread. */
 uint32_t GetAbiVersion(void);
-int32_t BindMemory(const HccpKvRoceBindMemoryDesc* descs, uint32_t descNum, uint64_t* mrHandles);
-int32_t UnregisterMemory(const uint64_t* mrHandles, uint32_t handleNum);
+int32_t UnregisterMemory(const HccpKvRoceMemoryInfo* memoryInfos, uint32_t infoNum);
 int32_t Send(const HccpKvRoceSendIoBatch* batches, uint32_t batchNum, uint32_t kernelCount,
              uint32_t quietCount, int32_t* statuses);
 int32_t AllocThread(uint32_t threadNum, const uint32_t* notifyNumPerThread, void** threads);
 int32_t FreeThread(void* const* threads, uint32_t threadNum, int32_t* statuses);
-int32_t GetMemTokenId(uint64_t mrHandle, uint32_t* tokenId);
 int32_t GetServerCapabilities(void* connectionHandle, HccpKvRoceServerCapabilities* capabilities);
 
 #ifdef __cplusplus

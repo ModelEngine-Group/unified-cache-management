@@ -78,12 +78,10 @@ using CreateConnectionFn = decltype(&::CreateConnection);
 using DeleteConnectionsFn = decltype(&::DeleteConnections);
 using RegisterMemoryFn = decltype(&::RegisterMemory);
 using GetAbiVersionFn = decltype(&::GetAbiVersion);
-using BindMemoryFn = decltype(&::BindMemory);
 using UnregisterMemoryFn = decltype(&::UnregisterMemory);
 using SendFn = decltype(&::Send);
 using AllocThreadFn = decltype(&::AllocThread);
 using FreeThreadFn = decltype(&::FreeThread);
-using GetMemTokenIdFn = decltype(&::GetMemTokenId);
 using GetServerCapabilitiesFn = decltype(&::GetServerCapabilities);
 
 StatusCode MapAbiStatusCode(std::int32_t code)
@@ -175,12 +173,10 @@ struct AbiApi {
     CreateConnectionFn createConnection{nullptr};
     DeleteConnectionsFn deleteConnections{nullptr};
     RegisterMemoryFn registerMemory{nullptr};
-    BindMemoryFn bindMemory{nullptr};
     UnregisterMemoryFn unregisterMemory{nullptr};
     SendFn send{nullptr};
     AllocThreadFn allocThread{nullptr};
     FreeThreadFn freeThread{nullptr};
-    GetMemTokenIdFn getMemTokenId{nullptr};
     GetServerCapabilitiesFn getServerCapabilities{nullptr};
 
     AbiApi() = default;
@@ -232,12 +228,10 @@ struct AbiApi {
         }
 
         // Optional symbols: a missing entry keeps the provider fallback.
-        bindMemory = reinterpret_cast<BindMemoryFn>(resolve("BindMemory"));
         unregisterMemory = reinterpret_cast<UnregisterMemoryFn>(resolve("UnregisterMemory"));
         send = reinterpret_cast<SendFn>(resolve("Send"));
         allocThread = reinterpret_cast<AllocThreadFn>(resolve("AllocThread"));
         freeThread = reinterpret_cast<FreeThreadFn>(resolve("FreeThread"));
-        getMemTokenId = reinterpret_cast<GetMemTokenIdFn>(resolve("GetMemTokenId"));
         getServerCapabilities =
             reinterpret_cast<GetServerCapabilitiesFn>(resolve("GetServerCapabilities"));
 
@@ -257,11 +251,10 @@ struct AbiApi {
         handle = library;
         KV_INFO(
             "HccpKvOverRoceTransProvider: external library loaded path={} optional_symbols="
-            "bind={} unregister={} send={} alloc_thread={} free_thread={} mem_token={} "
-            "capabilities={}",
-            libraryPath, bindMemory != nullptr ? 1 : 0, unregisterMemory != nullptr ? 1 : 0,
-            send != nullptr ? 1 : 0, allocThread != nullptr ? 1 : 0, freeThread != nullptr ? 1 : 0,
-            getMemTokenId != nullptr ? 1 : 0, getServerCapabilities != nullptr ? 1 : 0);
+            "unregister={} send={} alloc_thread={} free_thread={} capabilities={}",
+            libraryPath, unregisterMemory != nullptr ? 1 : 0, send != nullptr ? 1 : 0,
+            allocThread != nullptr ? 1 : 0, freeThread != nullptr ? 1 : 0,
+            getServerCapabilities != nullptr ? 1 : 0);
         return Status::OK();
     }
 };
@@ -291,6 +284,21 @@ struct HccpKvOverRoceTransProvider::Impl {
     };
 
     using ConnectionMap = std::unordered_map<ConnectionHandle, std::shared_ptr<ConnectionRecord>>;
+
+    // Provider-owned MR bookkeeping. The external library only reports the
+    // registered memory info; the handle that crosses the TransProvider API is
+    // allocated here and never leaves the provider.
+    struct MemoryRecord {
+        MRHandle handle{kInvalidMRHandle};
+        HccpKvRoceMemoryInfo info{};
+        TransProvider::MemType memoryType{TransProvider::MemType::MEM_DEVICE};
+        std::uintptr_t localAddr{0};
+        // True for records created by RegisterMemory, false for BindMemory
+        // records that reuse an MR registered by another provider.
+        bool registeredWithOperator{false};
+    };
+
+    using MemoryMap = std::unordered_map<MRHandle, std::shared_ptr<MemoryRecord>>;
 
     explicit Impl(const TransportConfig& config)
         : libraryPath(ResolveLibraryPath(config)), slotCapacity(ResolveSlotCapacity(config))
@@ -340,7 +348,18 @@ struct HccpKvOverRoceTransProvider::Impl {
     ConnectionMap connections;
 
     mutable std::shared_mutex memoryMu;
-    std::unordered_set<MRHandle> memories;
+    MemoryMap memories;
+    std::uint64_t nextMemoryHandle{1};
+
+    // Caller must hold memoryMu exclusively. Handles start at one so that zero
+    // always means "invalid".
+    MRHandle NextMemoryHandleLocked()
+    {
+        MRHandle handle = nextMemoryHandle;
+        if (handle == kInvalidMRHandle) { handle = 1; }
+        nextMemoryHandle = handle + 1;
+        return handle;
+    }
 };
 
 HccpKvOverRoceTransProvider::HccpKvOverRoceTransProvider(const TransportConfig& config)
@@ -369,17 +388,22 @@ HccpKvOverRoceTransProvider::~HccpKvOverRoceTransProvider()
         }
     }
 
-    std::vector<MRHandle> memoryHandles;
+    std::vector<HccpKvRoceMemoryInfo> memoryInfos;
     {
         std::shared_lock<std::shared_mutex> lock(impl_->memoryMu);
-        memoryHandles.assign(impl_->memories.begin(), impl_->memories.end());
+        memoryInfos.reserve(impl_->memories.size());
+        for (const auto& item : impl_->memories) {
+            const auto& record = item.second;
+            if (record == nullptr || !record->registeredWithOperator) { continue; }
+            memoryInfos.push_back(record->info);
+        }
     }
-    if (!memoryHandles.empty() && impl_->api.unregisterMemory != nullptr) {
+    if (!memoryInfos.empty() && impl_->api.unregisterMemory != nullptr) {
         const auto ret = impl_->api.unregisterMemory(
-            memoryHandles.data(), static_cast<std::uint32_t>(memoryHandles.size()));
+            memoryInfos.data(), static_cast<std::uint32_t>(memoryInfos.size()));
         if (ret != 0) {
             KV_WARN("HccpKvOverRoceTransProvider: memory cleanup failed count={} code={}",
-                    memoryHandles.size(), ret);
+                    memoryInfos.size(), ret);
         }
     }
 }
@@ -729,33 +753,71 @@ Status HccpKvOverRoceTransProvider::RegisterMemory(
                             static_cast<std::uint64_t>(desc.localAddr)});
     }
 
-    std::vector<std::uint64_t> handles(memoryDescs.size(), 0);
-    const auto ret = impl_->api.registerMemory(abiDescs.data(),
-                                               static_cast<std::uint32_t>(abiDescs.size()),
-                                               handles.data());
-    if (ret != 0) { return AbiError("RegisterMemory", ret, StatusCode::BUFFER_NOT_SUPPORTED); }
+    // The operator only registers the MRs and reports addr/size/access/rkey. The
+    // provider owns the MR handle space and keeps the handle-to-info mapping.
+    std::vector<HccpKvRoceMemoryInfo> memoryInfos(memoryDescs.size());
+    const auto ret = impl_->api.registerMemory(
+        abiDescs.data(), static_cast<std::uint32_t>(abiDescs.size()), memoryInfos.data());
 
-    for (const auto handle : handles) {
-        if (handle != 0) { continue; }
-        std::vector<std::uint64_t> validHandles;
-        validHandles.reserve(handles.size());
-        for (const auto candidate : handles) {
-            if (candidate != 0) { validHandles.push_back(candidate); }
+    auto rollback = [&](const char* reason) {
+        std::vector<HccpKvRoceMemoryInfo> registered;
+        registered.reserve(memoryInfos.size());
+        for (const auto& info : memoryInfos) {
+            if (info.rkey != 0) { registered.push_back(info); }
         }
-        if (!validHandles.empty() && impl_->api.unregisterMemory != nullptr) {
-            (void)impl_->api.unregisterMemory(validHandles.data(),
-                                              static_cast<std::uint32_t>(validHandles.size()));
+        if (registered.empty()) { return; }
+        if (impl_->api.unregisterMemory == nullptr) {
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: RegisterMemory rollback skipped ({}); external "
+                "library does not export UnregisterMemory",
+                reason);
+            return;
         }
+        const auto rollbackRet = impl_->api.unregisterMemory(
+            registered.data(), static_cast<std::uint32_t>(registered.size()));
+        if (rollbackRet != 0) {
+            KV_WARN("HccpKvOverRoceTransProvider: RegisterMemory rollback failed count={} code={}",
+                    registered.size(), rollbackRet);
+        }
+    };
+
+    if (ret != 0) {
+        rollback("operator registration failed");
+        return AbiError("RegisterMemory", ret, StatusCode::BUFFER_NOT_SUPPORTED);
+    }
+
+    for (std::size_t index = 0; index < memoryInfos.size(); ++index) {
+        if (memoryInfos[index].rkey != 0) { continue; }
+        rollback("zero rkey");
         return Status::Error(StatusCode::INTERNAL_ERROR,
-                             "HccpKvOverRoceTransProvider: RegisterMemory returned an invalid "
-                             "handle");
+                             "HccpKvOverRoceTransProvider: RegisterMemory returned a zero "
+                             "token id at index " +
+                                 std::to_string(index));
     }
 
     {
         std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);
-        for (const auto handle : handles) { impl_->memories.insert(handle); }
+        std::vector<std::shared_ptr<Impl::MemoryRecord>> records;
+        records.reserve(memoryDescs.size());
+        for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
+            auto record = std::make_shared<Impl::MemoryRecord>();
+            record->handle = impl_->NextMemoryHandleLocked();
+            record->info = memoryInfos[index];
+            record->memoryType = memoryDescs[index].memoryType;
+            record->localAddr = memoryDescs[index].localAddr;
+            record->registeredWithOperator = true;
+            records.push_back(std::move(record));
+        }
+        for (const auto& record : records) {
+            impl_->memories.emplace(record->handle, record);
+            mrHandles.push_back(record->handle);
+        }
     }
-    mrHandles.assign(handles.begin(), handles.end());
+
+    KV_INFO(
+        "HccpKvOverRoceTransProvider: RegisterMemory complete count={} first_handle={} "
+        "last_handle={} first_token_id={}",
+        mrHandles.size(), mrHandles.front(), mrHandles.back(), memoryInfos.front().rkey);
     return Status::OK();
 }
 
@@ -767,53 +829,45 @@ Status HccpKvOverRoceTransProvider::BindMemory(
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HccpKvOverRoceTransProvider is not initialized");
     }
-    if (impl_->api.bindMemory == nullptr) {
-        return Status::Error(StatusCode::UNSUPPORTED,
-                             "HccpKvOverRoceTransProvider: BindMemory is not exported by the "
-                             "external library");
-    }
     if (memoryDescs.empty()) { return Status::OK(); }
 
-    std::vector<HccpKvRoceBindMemoryDesc> abiDescs;
-    abiDescs.reserve(memoryDescs.size());
     for (const auto& desc : memoryDescs) {
-        if (desc.addr == 0 || desc.size == 0) {
+        if (desc.addr == 0 || desc.size == 0 || desc.tokenId == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "HccpKvOverRoceTransProvider: BindMemory requires a non-zero "
-                                 "address and size");
-        }
-        abiDescs.push_back({ToAbiMemoryType(desc.memoryType), static_cast<std::uint64_t>(desc.addr),
-                            static_cast<std::uint64_t>(desc.size), desc.tokenId});
-    }
-
-    std::vector<std::uint64_t> handles(memoryDescs.size(), 0);
-    const auto ret = impl_->api.bindMemory(abiDescs.data(),
-                                           static_cast<std::uint32_t>(abiDescs.size()),
-                                           handles.data());
-    if (ret != 0) { return AbiError("BindMemory", ret, StatusCode::BUFFER_NOT_SUPPORTED); }
-
-    for (const auto handle : handles) {
-        if (handle == 0) {
-            std::vector<std::uint64_t> validHandles;
-            validHandles.reserve(handles.size());
-            for (const auto candidate : handles) {
-                if (candidate != 0) { validHandles.push_back(candidate); }
-            }
-            if (!validHandles.empty() && impl_->api.unregisterMemory != nullptr) {
-                (void)impl_->api.unregisterMemory(
-                    validHandles.data(), static_cast<std::uint32_t>(validHandles.size()));
-            }
-            return Status::Error(StatusCode::INTERNAL_ERROR,
-                                 "HccpKvOverRoceTransProvider: BindMemory returned an invalid "
-                                 "handle");
+                                 "address, size and token id");
         }
     }
 
+    // The MR was already registered by another provider, so binding must not call
+    // the operator again. Only a provider-local record is created; UnregisterMemory
+    // drops it without forwarding anything.
     {
         std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);
-        for (const auto handle : handles) { impl_->memories.insert(handle); }
+        std::vector<std::shared_ptr<Impl::MemoryRecord>> records;
+        records.reserve(memoryDescs.size());
+        for (const auto& desc : memoryDescs) {
+            auto record = std::make_shared<Impl::MemoryRecord>();
+            record->handle = impl_->NextMemoryHandleLocked();
+            record->info.addr = static_cast<std::uint64_t>(desc.addr);
+            record->info.size = static_cast<std::uint64_t>(desc.size);
+            record->info.access = 0;
+            record->info.rkey = desc.tokenId;
+            record->memoryType = desc.memoryType;
+            record->localAddr = desc.addr;
+            record->registeredWithOperator = false;
+            records.push_back(std::move(record));
+        }
+        for (const auto& record : records) {
+            impl_->memories.emplace(record->handle, record);
+            mrHandles.push_back(record->handle);
+        }
     }
-    mrHandles.assign(handles.begin(), handles.end());
+
+    KV_INFO(
+        "HccpKvOverRoceTransProvider: BindMemory complete count={} first_handle={} "
+        "last_handle={} first_token_id={}",
+        mrHandles.size(), mrHandles.front(), mrHandles.back(), memoryDescs.front().tokenId);
     return Status::OK();
 }
 
@@ -829,48 +883,62 @@ std::vector<Status> HccpKvOverRoceTransProvider::UnregisterMemory(
     }
     if (memoryDescs.empty()) { return results; }
 
-    std::vector<std::uint64_t> handles;
-    std::vector<std::size_t> indices;
-    handles.reserve(memoryDescs.size());
-    indices.reserve(memoryDescs.size());
+    std::vector<std::shared_ptr<Impl::MemoryRecord>> removed(memoryDescs.size());
+    std::vector<HccpKvRoceMemoryInfo> operatorInfos;
+    std::vector<std::size_t> operatorIndices;
+    std::unordered_set<MRHandle> seen;
 
     std::int32_t ret = 0;
     {
-        // Hold the memory lock across the ABI call so GetMemTokenId cannot query a
-        // handle that is being unregistered concurrently.
         std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);
         for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
             const auto handle = memoryDescs[index].mrHandle;
-            if (impl_->memories.count(handle) == 0) {
+            if (!seen.insert(handle).second) {
+                results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
+                                               "HccpKvOverRoceTransProvider: duplicate memory "
+                                               "handle");
+                continue;
+            }
+            const auto iter = impl_->memories.find(handle);
+            if (iter == impl_->memories.end()) {
                 results[index] = Status::Error(StatusCode::BUFFER_NOT_REGISTERED,
                                                "HccpKvOverRoceTransProvider: invalid memory "
                                                "handle");
                 continue;
             }
-            handles.push_back(handle);
-            indices.push_back(index);
+            removed[index] = std::move(iter->second);
+            impl_->memories.erase(iter);
+            if (removed[index]->registeredWithOperator) {
+                operatorInfos.push_back(removed[index]->info);
+                operatorIndices.push_back(index);
+            }
         }
-        if (handles.empty()) { return results; }
 
-        if (impl_->api.unregisterMemory != nullptr) {
-            ret = impl_->api.unregisterMemory(handles.data(),
-                                              static_cast<std::uint32_t>(handles.size()));
-        } else {
-            // The external library only exports the three required methods. Drop
-            // the local records so the client can still release its buffers.
-            KV_WARN(
-                "HccpKvOverRoceTransProvider: external library does not export "
-                "UnregisterMemory; dropping local records for {} memories",
-                handles.size());
-        }
-        if (ret == 0) {
-            for (const auto handle : handles) { impl_->memories.erase(handle); }
+        if (!operatorInfos.empty()) {
+            if (impl_->api.unregisterMemory != nullptr) {
+                ret = impl_->api.unregisterMemory(
+                    operatorInfos.data(), static_cast<std::uint32_t>(operatorInfos.size()));
+            } else {
+                // The external library only exports the three required methods. Drop
+                // the local records so the client can still release its buffers.
+                KV_WARN(
+                    "HccpKvOverRoceTransProvider: external library does not export "
+                    "UnregisterMemory; dropping local records for {} memories",
+                    operatorInfos.size());
+            }
+            if (ret != 0) {
+                // Keep operator-owned records so a later call can retry; bind-only
+                // records are local and stay released.
+                for (const auto index : operatorIndices) {
+                    impl_->memories.emplace(removed[index]->handle, std::move(removed[index]));
+                }
+            }
         }
     }
 
     if (ret != 0) {
         const auto error = AbiError("UnregisterMemory", ret, StatusCode::INTERNAL_ERROR);
-        for (const auto index : indices) { results[index] = error; }
+        for (const auto index : operatorIndices) { results[index] = error; }
     }
     return results;
 }
@@ -934,28 +1002,21 @@ std::vector<Status> HccpKvOverRoceTransProvider::FreeThread(
 
 Status HccpKvOverRoceTransProvider::GetMemTokenId(MRHandle mrHandle, std::uint32_t& tokenId)
 {
+    tokenId = 0;
     if (!impl_) {
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HccpKvOverRoceTransProvider is not initialized");
     }
-    if (impl_->api.getMemTokenId == nullptr) {
-        return Status::Error(StatusCode::UNSUPPORTED,
-                             "HccpKvOverRoceTransProvider: GetMemTokenId is not exported by the "
-                             "external library");
-    }
 
-    std::uint32_t token = 0;
-    std::int32_t ret = 0;
-    {
-        std::shared_lock<std::shared_mutex> lock(impl_->memoryMu);
-        if (impl_->memories.count(mrHandle) == 0) {
-            return Status::Error(StatusCode::BUFFER_NOT_REGISTERED,
-                                 "HccpKvOverRoceTransProvider: invalid memory handle");
-        }
-        ret = impl_->api.getMemTokenId(mrHandle, &token);
+    // The token id was captured when the MR was registered or bound; no operator
+    // call is needed here.
+    std::shared_lock<std::shared_mutex> lock(impl_->memoryMu);
+    const auto iter = impl_->memories.find(mrHandle);
+    if (iter == impl_->memories.end()) {
+        return Status::Error(StatusCode::BUFFER_NOT_REGISTERED,
+                             "HccpKvOverRoceTransProvider: invalid memory handle");
     }
-    if (ret != 0) { return AbiError("GetMemTokenId", ret, StatusCode::INTERNAL_ERROR); }
-    tokenId = token;
+    tokenId = iter->second->info.rkey;
     return Status::OK();
 }
 
