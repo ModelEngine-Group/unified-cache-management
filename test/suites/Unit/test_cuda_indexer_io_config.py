@@ -13,7 +13,7 @@ def policy():
     source = (
         Path(__file__).resolve().parents[3] / "ucm/integration/vllm/ucm_connector.py"
     )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
     function = next(
         node
         for node in tree.body
@@ -23,7 +23,21 @@ def policy():
     platform = SimpleNamespace(is_cuda=Mock(return_value=True))
     namespace = {"current_platform": platform, "logger": Mock()}
     exec(
-        compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"),
+        compile(
+            ast.Module(
+                body=[
+                    next(
+                        n
+                        for n in tree.body
+                        if getattr(n, "name", None) == "_has_layer_component"
+                    ),
+                    function,
+                ],
+                type_ignores=[],
+            ),
+            str(source),
+            "exec",
+        ),
         namespace,
     )
     return namespace[function.name], platform
@@ -149,7 +163,7 @@ def connector_selection(policy, monkeypatch):
     source = (
         Path(__file__).resolve().parents[3] / "ucm/integration/vllm/ucm_connector.py"
     )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
     cls = next(
         n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UCMConnector"
     )
@@ -237,3 +251,35 @@ def test_connector_initialization_selects_pp_path(
             "use_layerwise": not indexer,
             "use_request_async_load": indexer,
         }
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(layer_names=[], kv_cache_specs=None),
+        SimpleNamespace(layer_names=None, kv_cache_specs={}),
+    ],
+)
+def test_missing_layer_names_preserves_config(policy, group):
+    apply, _ = policy
+    config = {"use_layerwise": True}
+    apply(config, SimpleNamespace(kv_cache_groups=[group]))
+    assert config == {"use_layerwise": True}
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("model.layers.0.INDEXER.k_cache", True),
+        ("model.layers.0.attn.INDEX_CACHE", True),
+        ("model.layers.0.INDEXER_AUX.k_cache", False),
+        ("model.layers.0.attn.INDEX_CACHE_AUX", False),
+    ],
+)
+def test_empty_layer_names_falls_back_to_specs(policy, name, expected):
+    apply, _ = policy
+    group = SimpleNamespace(layer_names=[], kv_cache_specs={name: SimpleNamespace()})
+    config = {"use_layerwise": True}
+    apply(config, SimpleNamespace(kv_cache_groups=[group]))
+    assert config["use_layerwise"] is (not expected)

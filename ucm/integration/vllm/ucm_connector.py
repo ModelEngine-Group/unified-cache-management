@@ -96,6 +96,11 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _has_layer_component(layer_name: str, components: set[str]) -> bool:
+    """Match complete path components, ignoring case and avoiding substrings."""
+    return not components.isdisjoint(layer_name.lower().split("."))
+
+
 def _apply_cuda_indexer_io_config(
     launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
 ) -> None:
@@ -103,11 +108,13 @@ def _apply_cuda_indexer_io_config(
     if not current_platform.is_cuda() or kv_cache_config is None:
         return
     for group in kv_cache_config.kv_cache_groups:
-        layer_names = getattr(group, "layer_names", None)
-        if layer_names is None:
-            layer_names = group.kv_cache_specs.keys()
+        layer_names = (
+            getattr(group, "layer_names", None)
+            or getattr(group, "kv_cache_specs", None)
+            or {}
+        )
         for name in layer_names:
-            if not {"indexer", "index_cache"}.intersection(name.split(".")):
+            if not _has_layer_component(name, {"indexer", "index_cache"}):
                 continue
             if pipeline_parallel_size > 1:
                 raise RuntimeError(
@@ -1372,8 +1379,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     def _is_indexer(layer_name: str) -> bool:
         # Match a complete path component instead of a substring so an unrelated
         # module whose name merely contains "index_cache" cannot be misclassified.
-        components = layer_name.lower().split(".")
-        return "index_cache" in components
+        return _has_layer_component(layer_name, {"index_cache"})
 
     def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
         # All supported M3 tensors are block-first. Dimension zero is therefore
