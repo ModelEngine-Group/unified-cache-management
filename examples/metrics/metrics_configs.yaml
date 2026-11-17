@@ -610,16 +610,16 @@ histogram:
   # -- Cache stage (in-memory buffer on top of the stack) -------------------
   - name: "cache_lookup_duration_ms"
     documentation: "Cache buffer lookup wall-clock time per `Lookup` / `LookupOnPrefix` call (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_lookup_backend_duration_ms"
     documentation: "Backend lookup wall-clock time when descending due to no buffer or buffer miss (ms)"
-    buckets: [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_load_duration_ms"
     documentation: "End-to-end Cache stage load task duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_duration_ms"
     documentation: "End-to-end Cache stage dump task duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_load_bandwidth_gbps"
     documentation: "Cache stage effective load bandwidth (GB/s)"
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
@@ -628,63 +628,63 @@ histogram:
     buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
   - name: "cache_load_queue_wait_duration_ms"
     documentation: "Time a Cache load task spent queued before dispatch worker pickup (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_queue_wait_duration_ms"
     documentation: "Time a Cache dump task spent queued before dispatch worker pickup (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_load_backend_submit_duration_ms"
     documentation: "Cache load backend submit duration: buffer allocation plus synchronous backend load submission (ms)."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_load_prealloc_duration_ms"
     documentation: "Cache load time spent preallocating the next shard slot of each loaded block during dispatch (ms). CPU-side buffer work; excludes the backend submit and the shard transfers."
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_shard_running_queue_wait_ms"
     documentation: "Cache load per-shard time from enqueue into the running queue until the H2D thread pops it (ms). Includes dispatch-side backpressure when the queue is full; large values mean the H2D thread cannot keep up."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_shard_backend_wait_ms"
     documentation: "Cache load per-shard time spent in WaitShardReady before H2D submit (ms). This is not a task-level duration."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_shard_ready_wait_ms"
     documentation: "Cache load per-shard time spent polling the cache slot until it becomes ready or fails (ms). Covers shards whose slot is filled by another in-flight task; backend-owned slots are reported by cache_shard_backend_wait_ms instead."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_task_total_backend_wait_ms"
     documentation: "Per-task sum over the task's shards of cache_shard_backend_wait_ms (ms), reported once per completed Cache load task."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_task_total_ready_wait_ms"
     documentation: "Per-task sum over the task's shards of cache_shard_ready_wait_ms (ms), reported once per completed Cache load task."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_task_total_h2d_submit_ms"
     documentation: "Per-task sum over the task's shards of cache_h2d_submit_ms (ms), reported once per completed Cache load task."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_h2d_submit_ms"
     documentation: "Cache load per-shard H2D async submit CPU cost after backend wait (ms). Submission only; NOT the actual transfer time (see cache_h2d_sync_ms)."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_h2d_sync_ms"
     documentation: "Cache load residual H2D stream drain after the last shard submit (ms). Large => H2D copy is the bottleneck; ~0 with large cache_shard_backend_wait_ms => storage read is the bottleneck."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_mkbuf_duration_ms"
     documentation: "Cache dump mk_buf phase: buffer allocation/reuse + D2H async submit before stream sync (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_prereq_wait_ms"
     documentation: "Cache dump time waiting for the prerequisite compute event (layer KV ready) to fire before D2H can start (ms). Large => dump is compute-gated, not copy-gated."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_d2h_duration_ms"
     documentation: "Cache dump stream synchronize duration including prerequisite compute wait and D2H copy (ms). Use cache_dump_prereq_wait_ms to estimate the compute-gated portion."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_backend_submit_duration_ms"
     documentation: "Cache dump backend submit duration: synchronous time to pass buffers to the lower tier (ms). Does NOT include the lower tier's actual write time."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_dump_backend_wait_duration_ms"
     documentation: "Cache dump time waiting for the lower tier to finish writing a dumped task (ms). Large => storage write is the bottleneck."
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
 
   # -- Posix stage (disk tier) ---------------------------------------------
   - name: "posix_load_task_duration_ms"
     documentation: "End-to-end Posix load task duration (ms): submit to last shard finished, task-level (compare with cache_load_duration_ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "posix_dump_task_duration_ms"
     documentation: "End-to-end Posix dump task duration (ms): submit to last shard finished, task-level (compare with cache_dump_duration_ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   # Bucket layout: typical Posix throughput sits in 1-12 GB/s, so this range
   # is sampled densely (0.5 GB/s steps for 1-4, 1 GB/s steps for 5-12) so
   # that p50/p90/p99 bandwidth is meaningfully resolved. Sub-1 GB/s coverage
@@ -703,10 +703,10 @@ histogram:
               14, 16, 20, 24, 32]
   - name: "posix_load_queue_wait_duration_ms"
     documentation: "Time a Posix load task spent queued before first worker pickup (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "posix_dump_queue_wait_duration_ms"
     documentation: "Time a Posix dump task spent queued before first worker pickup (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
 
   # -- Mooncake stage -------------------------------------------------------
   - name: "mooncake_load_duration_ms"
@@ -761,64 +761,64 @@ histogram:
   # vLLM Connector public interfaces
   - name: "connector_get_block_size_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.get_block_size invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_get_kv_connector_stats_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.get_kv_connector_stats invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_get_num_new_matched_tokens_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.get_num_new_matched_tokens invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_update_state_after_alloc_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.update_state_after_alloc invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_register_kv_caches_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.register_kv_caches invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_build_connector_meta_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.build_connector_meta invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_bind_connector_metadata_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.bind_connector_metadata invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_handle_preemptions_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.handle_preemptions invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_has_connector_metadata_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.has_connector_metadata invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_start_load_kv_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.start_load_kv invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_wait_for_layer_load_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.wait_for_layer_load invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_save_kv_layer_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.save_kv_layer invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_wait_for_save_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.wait_for_save invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_request_finished_all_groups_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.request_finished_all_groups invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_request_finished_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.request_finished invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_get_finished_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.get_finished invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_build_connector_worker_meta_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.build_connector_worker_meta invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_update_connector_output_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.update_connector_output invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_clear_connector_metadata_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.clear_connector_metadata invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "connector_get_block_ids_with_load_errors_duration_ms"
     documentation: "Wall-clock duration of UCMConnector.get_block_ids_with_load_errors invoked by vLLM (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
 
   # =========================================================================
   # Layerwise Connector — overlap / pipelining health

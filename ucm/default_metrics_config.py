@@ -855,9 +855,11 @@ _CONNECTOR_INTERFACE_METHODS = [
     "set_xfer_handshake_metadata_pp_aware",
     "get_block_ids_with_load_errors",
 ]
-_CONNECTOR_INTERFACE_DURATION_BUCKETS = [
-    0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000,
-    2000, 5000, 10000,
+# Shared bucket layout for every millisecond duration histogram (connector
+# interface calls, Cache stage and Posix stage), up to 100 s.
+_DURATION_MS_BUCKETS = [
+    0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50,
+    100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000,
 ]
 _HISTOGRAM_METRICS = [
     ("asu_lookup_duration_ms", "AsuStore lookup call duration including key conversion, query wait and result processing (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
@@ -893,7 +895,7 @@ _HISTOGRAM_METRICS = [
     (
         "cache_lookup_duration_ms",
         "Cache buffer lookup wall-clock time per `Lookup` / `LookupOnPrefix` call (ms)",
-        [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_lookup_backend_duration_ms",
@@ -901,17 +903,17 @@ _HISTOGRAM_METRICS = [
             "Backend lookup wall-clock time when descending due to no buffer or buffer "
             "miss (ms)"
         ),
-        [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_load_duration_ms",
         "End-to-end Cache stage load task duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_duration_ms",
         "End-to-end Cache stage dump task duration (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_load_bandwidth_gbps",
@@ -926,12 +928,12 @@ _HISTOGRAM_METRICS = [
     (
         "cache_load_queue_wait_duration_ms",
         "Time a Cache load task spent queued before dispatch worker pickup (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_queue_wait_duration_ms",
         "Time a Cache dump task spent queued before dispatch worker pickup (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_load_backend_submit_duration_ms",
@@ -939,7 +941,7 @@ _HISTOGRAM_METRICS = [
             "Cache load backend submit duration: buffer allocation plus synchronous "
             "backend load submission (ms)."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_load_prealloc_duration_ms",
@@ -948,7 +950,7 @@ _HISTOGRAM_METRICS = [
             "block during dispatch (ms). CPU-side buffer work; excludes the backend "
             "submit and the shard transfers."
         ),
-        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_shard_running_queue_wait_ms",
@@ -957,7 +959,7 @@ _HISTOGRAM_METRICS = [
             "H2D thread pops it (ms). Includes dispatch-side backpressure when the "
             "queue is full; large values mean the H2D thread cannot keep up."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_shard_backend_wait_ms",
@@ -965,7 +967,7 @@ _HISTOGRAM_METRICS = [
             "Cache load per-shard time spent in WaitShardReady before H2D submit "
             "(ms). This is not a task-level duration."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_shard_ready_wait_ms",
@@ -975,7 +977,7 @@ _HISTOGRAM_METRICS = [
             "in-flight task; backend-owned slots are reported by "
             "cache_shard_backend_wait_ms instead."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_task_total_backend_wait_ms",
@@ -983,7 +985,7 @@ _HISTOGRAM_METRICS = [
             "Per-task sum over the task's shards of cache_shard_backend_wait_ms (ms), "
             "reported once per completed Cache load task."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_task_total_ready_wait_ms",
@@ -991,7 +993,7 @@ _HISTOGRAM_METRICS = [
             "Per-task sum over the task's shards of cache_shard_ready_wait_ms (ms), "
             "reported once per completed Cache load task."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_task_total_h2d_submit_ms",
@@ -999,7 +1001,7 @@ _HISTOGRAM_METRICS = [
             "Per-task sum over the task's shards of cache_h2d_submit_ms (ms), reported "
             "once per completed Cache load task."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_h2d_submit_ms",
@@ -1007,7 +1009,7 @@ _HISTOGRAM_METRICS = [
             "Cache load per-shard H2D async submit CPU cost after backend wait (ms). "
             "Submission only; NOT the actual transfer time (see cache_h2d_sync_ms)."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_h2d_sync_ms",
@@ -1016,7 +1018,7 @@ _HISTOGRAM_METRICS = [
             "Large => H2D copy is the bottleneck; ~0 with large "
             "cache_shard_backend_wait_ms => storage read is the bottleneck."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_mkbuf_duration_ms",
@@ -1024,7 +1026,7 @@ _HISTOGRAM_METRICS = [
             "Cache dump mk_buf phase: buffer allocation/reuse + D2H async submit before "
             "stream sync (ms)"
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_prereq_wait_ms",
@@ -1033,7 +1035,7 @@ _HISTOGRAM_METRICS = [
             "ready) to fire before D2H can start (ms). Large => dump is compute-gated, "
             "not copy-gated."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_d2h_duration_ms",
@@ -1042,7 +1044,7 @@ _HISTOGRAM_METRICS = [
             "and D2H copy (ms). Use cache_dump_prereq_wait_ms to estimate the "
             "compute-gated portion."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_backend_submit_duration_ms",
@@ -1050,7 +1052,7 @@ _HISTOGRAM_METRICS = [
             "Cache dump backend submit duration: synchronous time to pass buffers to "
             "the lower tier (ms). Does NOT include the lower tier's actual write time."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "cache_dump_backend_wait_duration_ms",
@@ -1058,7 +1060,7 @@ _HISTOGRAM_METRICS = [
             "Cache dump time waiting for the lower tier to finish writing a dumped task "
             "(ms). Large => storage write is the bottleneck."
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "posix_load_task_duration_ms",
@@ -1066,7 +1068,7 @@ _HISTOGRAM_METRICS = [
             "End-to-end Posix load task duration (ms): submit to last shard finished, "
             "task-level (compare with cache_load_duration_ms)"
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "posix_dump_task_duration_ms",
@@ -1074,7 +1076,7 @@ _HISTOGRAM_METRICS = [
             "End-to-end Posix dump task duration (ms): submit to last shard finished, "
             "task-level (compare with cache_dump_duration_ms)"
         ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "posix_s2h_bandwidth_gbps",
@@ -1089,12 +1091,12 @@ _HISTOGRAM_METRICS = [
     (
         "posix_load_queue_wait_duration_ms",
         "Time a Posix load task spent queued before first worker pickup (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "posix_dump_queue_wait_duration_ms",
         "Time a Posix dump task spent queued before first worker pickup (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "mooncake_load_duration_ms",
@@ -1180,7 +1182,7 @@ _HISTOGRAM_METRICS = [
         (
             f"connector_{method}_duration_ms",
             f"Wall-clock duration of UCMConnector.{method} invoked by vLLM (ms)",
-            _CONNECTOR_INTERFACE_DURATION_BUCKETS,
+            _DURATION_MS_BUCKETS,
         )
         for method in _CONNECTOR_INTERFACE_METHODS
     ],
