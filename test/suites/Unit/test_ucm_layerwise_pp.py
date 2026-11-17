@@ -80,14 +80,7 @@ class FakeOs:
         self.path.makedirs(path, exist_ok=exist_ok)
 
 
-class Caps:
-    """Toggles the partitioned-cache feature flag the connector reads."""
-
-    def __init__(self, partitioned: bool = False):
-        self.partitioned = partitioned
-
-
-def _load_connector_class(caps: Caps, existing=(BACKEND,)):
+def _load_connector_class(existing=(BACKEND,)):
     nodes = []
     for node in ast.parse(CONNECTOR_PATH.read_text(encoding="utf-8-sig")).body:
         if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME:
@@ -110,7 +103,6 @@ def _load_connector_class(caps: Caps, existing=(BACKEND,)):
         "os": fake_os,
         "copy": copy,
         "logger": logger,
-        "uses_partitioned_cache": lambda: caps.partitioned,
         "UcmConnectorFactoryV1": SimpleNamespace(create_connector=factory),
         "ThreadPoolExecutor": ThreadPoolExecutor,
     }
@@ -215,7 +207,7 @@ def _metadata(allocations: list[tuple[int, int]]) -> dict:
 
 
 def test_stage_name_encodes_layer_allocation():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
 
     assert cls._pp_stage_name(1, 4, 4) == "pp_1_l4-4"
     assert cls._pp_stage_name(0, 0, 2) == "pp_0_l0-2"
@@ -223,7 +215,7 @@ def test_stage_name_encodes_layer_allocation():
 
 def test_stage_name_separates_repartitioned_stages():
     """The 4,4,4 -> 2,4,6 case: stage 1 keeps 4 layers but starts at 2."""
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
 
     before = cls._pp_stage_name(1, 4, 4)
     after = cls._pp_stage_name(1, 2, 4)
@@ -232,7 +224,7 @@ def test_stage_name_separates_repartitioned_stages():
 
 
 def test_stage_paths_creates_layer_scoped_directory():
-    cls, _, fake_os = _load_connector_class(Caps())
+    cls, _, fake_os = _load_connector_class()
 
     paths = cls._pp_stage_paths(BACKEND, 1, 4, 4)
 
@@ -241,7 +233,7 @@ def test_stage_paths_creates_layer_scoped_directory():
 
 
 def test_stage_paths_do_not_reuse_directory_after_repartition():
-    cls, _, fake_os = _load_connector_class(Caps())
+    cls, _, fake_os = _load_connector_class()
 
     cls._pp_stage_paths(BACKEND, 1, 4, 4)
     cls._pp_stage_paths(BACKEND, 1, 2, 4)
@@ -253,9 +245,7 @@ def test_stage_paths_do_not_reuse_directory_after_repartition():
 
 
 def test_stage_paths_is_idempotent_for_existing_directory():
-    cls, _, fake_os = _load_connector_class(
-        Caps(), existing={BACKEND, f"{BACKEND}/pp_0_l0-4"}
-    )
+    cls, _, fake_os = _load_connector_class(existing={BACKEND, f"{BACKEND}/pp_0_l0-4"})
 
     paths = cls._pp_stage_paths(BACKEND, 0, 0, 4)
 
@@ -265,21 +255,21 @@ def test_stage_paths_is_idempotent_for_existing_directory():
 
 
 def test_stage_paths_rejects_empty_root():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
 
     with pytest.raises(ValueError, match="nonempty shared Posix roots"):
         cls._pp_stage_paths("", 0, 0, 4)
 
 
 def test_stage_paths_rejects_missing_root():
-    cls, _, _ = _load_connector_class(Caps(), existing={BACKEND})
+    cls, _, _ = _load_connector_class(existing={BACKEND})
 
     with pytest.raises(FileNotFoundError, match="does not exist"):
         cls._pp_stage_paths("/data/absent", 0, 0, 4)
 
 
 def test_stage_paths_supports_multiple_roots():
-    cls, _, fake_os = _load_connector_class(Caps(), existing={"/data/a", "/data/b"})
+    cls, _, fake_os = _load_connector_class(existing={"/data/a", "/data/b"})
 
     paths = cls._pp_stage_paths("/data/a:/data/b", 3, 6, 2)
 
@@ -293,7 +283,7 @@ def test_stage_paths_supports_multiple_roots():
 
 
 def test_configure_pp_store_splits_budget_per_stage():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2, world_size=8, tp_size=4, posix_gb=1024)
     config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
 
@@ -304,11 +294,11 @@ def test_configure_pp_store_splits_budget_per_stage():
     # Disk capacity is split across all PP stages, not just the local ones.
     assert config["posix_capacity_gb"] == 512
     assert config["storage_backends"] == [f"{BACKEND}/pp_1_l4-4"]
-    assert config["local_rank_size"] == 1
+    assert config["local_rank_size"] == 4
 
 
 def test_configure_pp_store_namespaces_cache_id_by_layer_allocation():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls)
     before = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
     after = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
@@ -321,7 +311,7 @@ def test_configure_pp_store_namespaces_cache_id_by_layer_allocation():
 
 
 def test_configure_pp_store_rejects_zero_buffer_capacity():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2, world_size=8, tp_size=4, buffer_gb=1)
     config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
 
@@ -330,7 +320,7 @@ def test_configure_pp_store_rejects_zero_buffer_capacity():
 
 
 def test_configure_pp_store_rejects_zero_posix_capacity():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=4, posix_gb=3)
     config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
 
@@ -339,7 +329,7 @@ def test_configure_pp_store_rejects_zero_posix_capacity():
 
 
 def test_configure_pp_store_requires_storage_backends():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, storage_backends=None)
     config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
 
@@ -347,15 +337,15 @@ def test_configure_pp_store_requires_storage_backends():
         conn._configure_pp_store(config, 0, 0, 4)
 
 
-def test_configure_pp_store_skips_buffer_split_without_shared_buffer():
-    cls, _, _ = _load_connector_class(Caps())
+def test_configure_pp_store_splits_domain_budget_with_legacy_share_flag_disabled():
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, buffer_gb=8)
     config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
     config["share_buffer_enable"] = False
 
     conn._configure_pp_store(config, 0, 0, 4)
 
-    assert config["cache_buffer_capacity_gb"] == 8
+    assert config["cache_buffer_capacity_gb"] == 4
 
 
 # --------------------------------------------------------------------------
@@ -364,7 +354,7 @@ def test_configure_pp_store_skips_buffer_split_without_shared_buffer():
 
 
 def test_get_handshake_metadata_is_none_without_pp():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=1)
     conn._is_pp = False
 
@@ -372,7 +362,7 @@ def test_get_handshake_metadata_is_none_without_pp():
 
 
 def test_get_handshake_metadata_publishes_geometry_and_allocation():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls)
     conn._is_pp = True
     conn._pp_store_sizes = {
@@ -396,7 +386,7 @@ def test_get_handshake_metadata_publishes_geometry_and_allocation():
 
 
 def test_handshake_creates_one_store_per_stage():
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2)
     conn._is_pp = True
 
@@ -408,7 +398,7 @@ def test_handshake_creates_one_store_per_stage():
 
 
 def test_handshake_is_idempotent():
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2)
     conn._is_pp = True
     metadata = _metadata([(0, 4), (4, 4)])
@@ -423,7 +413,7 @@ def test_handshake_is_idempotent():
 
 
 def test_handshake_uses_configured_connector_and_module_path():
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(
         cls, pp_size=1, store_name="CustomStore", module_path="custom.store"
     )
@@ -437,7 +427,7 @@ def test_handshake_uses_configured_connector_and_module_path():
 
 
 def test_handshake_reports_missing_stage_metadata():
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2)
     conn._is_pp = True
 
@@ -448,7 +438,7 @@ def test_handshake_reports_missing_stage_metadata():
 
 def test_handshake_requires_layer_allocation():
     """Without the allocation the scheduler cannot name the stage directory."""
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=1)
     conn._is_pp = True
     metadata = {(0, 0): {"block_size": 12288, "shard_size": 4096}}
@@ -461,7 +451,7 @@ def test_handshake_requires_layer_allocation():
 
 def test_handshake_keeps_layer_allocation_out_of_store_config():
     """layer_start/layer_count are scheduler inputs, not store options."""
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=1)
     conn._is_pp = True
 
@@ -473,7 +463,7 @@ def test_handshake_keeps_layer_allocation_out_of_store_config():
 
 
 def test_handshake_only_pp0_keeps_cache_pipeline():
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=2)
     conn._is_pp = True
 
@@ -493,7 +483,7 @@ def test_handshake_only_pp0_keeps_cache_pipeline():
 
 
 def test_handshake_is_noop_without_pp():
-    cls, factory, _ = _load_connector_class(Caps())
+    cls, factory, _ = _load_connector_class()
     conn = _make_connector(cls, pp_size=1)
     conn._is_pp = False
 
@@ -513,7 +503,7 @@ def _store_with_hit(hit: int):
 
 def _lookup_connector(hits: list[int]):
     """Build a layer-wise connector whose stage stores report the hit indices."""
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     connector = cls.__new__(cls)
     stores = [_store_with_hit(hit) for hit in hits]
     connector.store = stores[0]
@@ -589,7 +579,7 @@ def test_lookup_stops_early_only_on_a_full_miss():
 
         return SimpleNamespace(lookup_on_prefix=lookup)
 
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     connector = cls.__new__(cls)
     connector._lookup_one_stage = lambda store, block_ids: store.lookup_on_prefix(
         block_ids
@@ -628,7 +618,7 @@ def test_lookup_propagates_store_errors():
     def boom(block_ids):
         raise OSError("posix lookup failed")
 
-    cls, _, _ = _load_connector_class(Caps())
+    cls, _, _ = _load_connector_class()
     connector = cls.__new__(cls)
     connector._lookup_one_stage = lambda store, block_ids: store.lookup_on_prefix(
         block_ids

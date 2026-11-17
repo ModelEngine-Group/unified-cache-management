@@ -3,7 +3,6 @@ import glob
 import math
 import os
 import re
-import shutil
 import time
 import uuid
 from collections import defaultdict
@@ -73,7 +72,6 @@ from ucm.metrics_config import (
 from ucm.metrics_dispatcher import get_metrics_dispatcher
 from ucm.observability import PrometheusStatsLogger
 from ucm.shared.metrics import ucmmetrics
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -94,6 +92,43 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+
+def _has_layer_component(layer_name: str, components: set[str]) -> bool:
+    """Match complete path components, ignoring case and avoiding substrings."""
+    return not components.isdisjoint(layer_name.lower().split("."))
+
+
+def _apply_cuda_indexer_io_config(
+    launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
+) -> None:
+    """Resolve IO mode before connector selection and cache layout creation."""
+    if not current_platform.is_cuda() or kv_cache_config is None:
+        return
+    for group in kv_cache_config.kv_cache_groups:
+        layer_names = (
+            getattr(group, "layer_names", None)
+            or getattr(group, "kv_cache_specs", None)
+            or {}
+        )
+        for name in layer_names:
+            if not _has_layer_component(name, {"indexer", "index_cache"}):
+                continue
+            if pipeline_parallel_size > 1:
+                raise RuntimeError(
+                    "UCM does not support CUDA indexer models with pipeline "
+                    "parallelism: whole-block loading requires "
+                    "pipeline_parallel_size=1. Set pipeline_parallel_size=1 "
+                    "to use this configuration."
+                )
+            launch_config["use_layerwise"] = False
+            launch_config["use_request_async_load"] = True
+            logger.warning(
+                "CUDA indexer KV cache requires whole-block loading; "
+                "disabling use_layerwise and enabling use_request_async_load "
+                "where supported by the connector."
+            )
+            return
 
 
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
@@ -220,32 +255,6 @@ def _get_store_gc_block_size(
 
 
 _SHM_DIR = "/dev/shm"
-
-
-def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
-    """Early-validate that /dev/shm can hold the shared-buffer store.
-
-    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
-    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
-    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
-    the C++ store; raise here instead with an actionable message.
-    """
-    if uses_partitioned_cache() or cache_buffer_capacity_gb <= 0:
-        return
-    try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
-    except OSError:
-        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
-        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
-        return
-    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
-        raise RuntimeError(
-            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
-            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
-            f"larger size= option) or decrease cache_buffer_capacity_gb."
-        )
 
 
 def _drop_null_vllm_blocks(
@@ -1342,8 +1351,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     def _is_indexer(layer_name: str) -> bool:
         # Match a complete path component instead of a substring so an unrelated
         # module whose name merely contains "index_cache" cannot be misclassified.
-        components = layer_name.lower().split(".")
-        return "index_cache" in components
+        return _has_layer_component(layer_name, {"index_cache"})
 
     def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
         # All supported M3 tensors are block-first. Dimension zero is therefore
@@ -1691,23 +1699,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
-        if not uses_partitioned_cache():
-            self.engine_id = self.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        share_buffer_enable = (
-            self.connector_configs[0]
-            .get("ucm_connector_config", {})
-            .get("share_buffer_enable", self.is_mla)
-        )
-        if share_buffer_enable and not uses_partitioned_cache():
-            if role == KVConnectorRole.WORKER:
-                self.unique_id = _worker_generate_unique_id()
-            else:
-                self.unique_id = _scheduler_read_unique_id()
-        else:
-            self.unique_id = self.engine_id
+        self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
@@ -1828,22 +1828,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
-        if uses_partitioned_cache() or cache_core_version() == 1:
-            configure_cache_capacity(config, self._vllm_config.parallel_config)
-            if not uses_partitioned_cache() and config.get(
-                "share_buffer_enable", False
-            ):
-                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
-            return
-        if not bool(config.get("share_buffer_enable", False)):
-            return
-        if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
-            logger.info(
-                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
-            )
-        # Only legacy cache/cc is constrained by the /dev/shm mount size.
-        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
+        configure_cache_capacity(config, self._vllm_config.parallel_config)
 
     def _get_world_size(self) -> int:
         return cache_rank_count(self._vllm_config.parallel_config)
@@ -1899,9 +1884,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
@@ -1936,8 +1920,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"logical_block_size={logical_block_size}, "
                     f"store_block_size={store_block_size}."
                 )
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()
@@ -2960,22 +2942,18 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # Same signature in the Cache id, so a re-partition cannot reuse the
         # host buffers of the previous layer set.
         config["unique_id"] = f"{self.unique_id}_{stage_name}"
-        if uses_partitioned_cache():
-            config["local_rank_size"] = min(self.tp_size, local_ranks)
-        else:
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
+        config["local_rank_size"] = min(self.tp_size, local_ranks)
         # Split the node budget across the PP stages sharing this node.
-        if uses_partitioned_cache() or config.get("share_buffer_enable", False):
-            local_stages = max(1, math.ceil(local_ranks / self.tp_size))
-            capacity = int(config["cache_buffer_capacity_gb"]) // local_stages
-            if capacity < 1:
-                raise ValueError(
-                    f"cache_buffer_capacity_gb="
-                    f"{config['cache_buffer_capacity_gb']} is too small for "
-                    f"{local_stages} PP stage(s) on this node; set at least "
-                    f"{local_stages}GB."
-                )
-            config["cache_buffer_capacity_gb"] = capacity
+        local_stages = max(1, math.ceil(local_ranks / self.tp_size))
+        capacity = int(config["cache_buffer_capacity_gb"]) // local_stages
+        if capacity < 1:
+            raise ValueError(
+                f"cache_buffer_capacity_gb="
+                f"{config['cache_buffer_capacity_gb']} is too small for "
+                f"{local_stages} PP stage(s) on this node; set at least "
+                f"{local_stages}GB."
+            )
+        config["cache_buffer_capacity_gb"] = capacity
         if config.get("posix_capacity_gb", 0):
             capacity = int(config["posix_capacity_gb"]) // pp_size
             if capacity < 1:
@@ -3775,6 +3753,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER

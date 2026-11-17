@@ -95,8 +95,6 @@ def _load_hma_methods(names):
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
         "Optional": Optional,
-        "uses_partitioned_cache": lambda: False,
-        "cache_core_version": lambda: 0,
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
@@ -877,6 +875,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 {"tensor_size": 584},
             ),
             _set_default_shm_buffer_capacity=lambda _config: None,
+            _get_world_size=lambda: 1,
+            _configure_numa_placement=lambda _config: None,
             _summarize_store_config=lambda config: config,
             _publish_block_size=lambda size, store_suffix: published_sizes.append(
                 (size, store_suffix)
@@ -899,20 +899,14 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             create_connector=lambda _name, config, _path: config
         )
         cases = (
-            ("FA", 2, None, None),
-            ("WA", 2, None, 512),
-            ("WA", 0, None, None),
-            ("WA", 2, 256, 256),
-            ("WA", 2, 2048, 2048),
-            ("FA", 2, 256, 256),
-            ("FA", 1, None, None),
-            ("WA", 1, None, 512),
-            ("WA", 1, 2048, 2048),
+            ("FA", None, None),
+            ("WA", None, 512),
+            ("WA", 256, 256),
+            ("WA", 2048, 2048),
+            ("FA", 256, 256),
         )
-        for label, version, explicit, expected in cases:
-            with self.subTest(label=label, version=version, explicit=explicit):
-                method.__globals__["uses_partitioned_cache"] = lambda: version == 2
-                method.__globals__["cache_core_version"] = lambda: version
+        for label, explicit, expected in cases:
+            with self.subTest(label=label, explicit=explicit):
                 supplied = {
                     "cache_buffer_capacity_gb": 10,
                     "io_direct": False,

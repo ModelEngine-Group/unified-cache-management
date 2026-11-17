@@ -29,7 +29,6 @@ from ucm.integration.vllm.ucm_connector import (
     KVConnectorTransferResults,
     UCMDirectConnector,
     UCMLiteConnector,
-    _check_shm_capacity,
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
@@ -38,7 +37,6 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -1593,7 +1591,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
-        # This selects shared MLA keys versus rank-specific GQA keys in Cache2.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
             config["storage_backends"] = [
@@ -1610,33 +1607,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return name, module_path, config
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
-        if uses_partitioned_cache() or cache_core_version() == 1:
-            configure_cache_capacity(
-                config, self._vllm_config.parallel_config, stores_per_dp=2
-            )
-            if not uses_partitioned_cache() and config.get(
-                "share_buffer_enable", False
-            ):
-                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]) * 2)
-            return
-        if not bool(config.get("share_buffer_enable", False)):
-            return
-
-        # HMA creates two shared-buffer stores, FA and WA, so split the
-        # shared-buffer capacity evenly between them, whether user-set or the
-        # 128GB direct-connector default.
-        if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
-        capacity = int(config["cache_buffer_capacity_gb"])
-        config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
-        logger.info(
-            f"Set FAWA cache_buffer_capacity_gb to "
-            f"{config['cache_buffer_capacity_gb']}GB by splitting the "
-            f"{capacity}GB shared-buffer capacity across FA/WA stores."
+        configure_cache_capacity(
+            config, self._vllm_config.parallel_config, stores_per_dp=2
         )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold the FA+WA total.
-        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
@@ -1669,10 +1642,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
-        if label == "WA" and (uses_partitioned_cache() or cache_core_version() == 1):
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
+        if label == "WA":
             # WA loads one boundary snapshot per request.
             config.setdefault("cache_load_exclusive_buffer_number", 512)
         self._set_default_shm_buffer_capacity(config)
@@ -1714,9 +1686,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # Count load/save metrics with the same per-record size as GC.
             self.file_size[label] = gc_size
             self._publish_block_size(gc_size, store_suffix=store_suffix)
-            # MLA stores aggregate TP shards under one logical rank group.
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
