@@ -87,7 +87,34 @@ public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enabled"); }
+        if (task.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+            for (const auto& shard : task) {
+                if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) {
+                    return Status::InvalidParam("ddr load shard({}) requires one host address",
+                                                shard.index);
+                }
+            }
+        }
         return transMgr_.Submit({Task::Type::LOAD, std::move(task)});
+    }
+    Expected<Detail::TaskHandle> LoadOnToken(
+        Detail::TaskDesc task, const std::vector<Detail::TokenFilter>& filter) override
+    {
+        if (!transEnable_) { return Status::Error("transfer is not enabled"); }
+        if (task.memoryType != Detail::TaskDesc::MemoryType::DDR) {
+            return Status::InvalidParam("LoadOnToken currently supports memoryType=DDR only");
+        }
+        if (filter.size() != task.size()) {
+            return Status::InvalidParam("LoadOnToken filter size({}) != shards({})", filter.size(),
+                                        task.size());
+        }
+        for (const auto& shard : task) {
+            if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) {
+                return Status::InvalidParam("ddr LoadOnToken shard({}) requires one host address",
+                                            shard.index);
+            }
+        }
+        return transMgr_.Submit({Task::Type::LOAD_ON_TOKEN, std::move(task), filter});
     }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
