@@ -32,6 +32,7 @@
 #include <vector>
 #include "cache/cache_config.h"
 #include "cache/shm_layout.h"
+#include "cache/token_codec.h"
 #include "fixtures/stub_lower_store.h"
 #include "status/status.h"
 #include "type/block.h"

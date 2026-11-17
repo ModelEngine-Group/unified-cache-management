@@ -30,7 +30,7 @@
 #include <vector>
 #include "cache/cache_buffer.h"
 #include "cache/policy/replacement_policy_registry.h"
-#include "cache/shm_layout.h"
+#include "cache/token_codec.h"
 #include "status/status.h"
 #include "type/block.h"
 

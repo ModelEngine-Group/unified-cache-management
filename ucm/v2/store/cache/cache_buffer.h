@@ -34,9 +34,9 @@
 #include <unordered_set>
 #include <vector>
 #include "policy/replacement_policy.h"
-#include "shm_layout.h"
 #include "status/status.h"
 #include "store.h"
+#include "token_codec.h"
 #include "type/block.h"
 #include "type/token.h"
 

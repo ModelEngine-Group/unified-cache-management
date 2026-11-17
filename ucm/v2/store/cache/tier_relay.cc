@@ -24,6 +24,7 @@
 #include "tier_relay.h"
 #include <algorithm>
 #include <utility>
+#include "token_codec.h"
 
 namespace UC::Store {
 

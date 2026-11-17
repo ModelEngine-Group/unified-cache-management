@@ -75,7 +75,7 @@ struct ControlRequest {
  * failure) carries none. A successful Pin/Alloc additionally attaches the
  * minted AddressedToken payload (self-addressing envelope) as opaque bytes,
  * and a successful PrepareOffload its plan payload (see PlanPayload) -- the
- * token tail's internal encoding belongs to shm_layout.
+ * token tail's internal encoding belongs to the token codec.
  *
  * Handshake replies reuse this frame: seq stays 0. A
  * successful Hello answers ok=1 with no result body, the shared memfd riding
