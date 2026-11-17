@@ -23,6 +23,8 @@
  * */
 #pragma once
 
+#include <memory>
+#include "view/m800_view_common.h"
 #include "view/view_server.h"
 #include "view/view_universe.h"
 
@@ -37,5 +39,8 @@ public:
 
     virtual void Stop() = 0;
 };
+
+std::shared_ptr<M800ViewSlaveServer> CreateM800ViewSlaveServer(
+    const M800ViewServerConfig& config);
 
 }  // namespace kv

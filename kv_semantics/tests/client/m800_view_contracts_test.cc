@@ -51,7 +51,7 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_EQ(config.role, M800ViewRole::MASTER);
     EXPECT_EQ(config.listenAddr, "0.0.0.0:9100");
     EXPECT_EQ(config.agentFetchTimeoutMs, std::uint64_t{10000});
-    EXPECT_EQ(config.httpTimeoutMs, std::uint64_t{10000});
+    EXPECT_EQ(config.httpTimeoutMs, std::uint64_t{2000});
     EXPECT_EQ(config.refreshIntervalMs, std::uint64_t{30000});
 
     EXPECT_STREQ(M800ViewHTTPContract::kViewsPath, "/v1/views");

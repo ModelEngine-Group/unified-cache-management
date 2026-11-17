@@ -48,6 +48,7 @@ add_library(kv_agent_objects OBJECT
   src/KVAgent.cc
   src/AgentLogger.cc
   src/KVClientAgent.cc
+  src/KVClientAgentABI.cc
   src/KVOSDClientAgent.cc
   src/KVOSDAgent.cc)
 set_target_properties(kv_agent_objects PROPERTIES

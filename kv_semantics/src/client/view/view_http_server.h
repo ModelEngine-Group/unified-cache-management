@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include "kv_types.h"
 
@@ -59,5 +60,7 @@ public:
     virtual Status Start(const std::string& listenAddr, const ViewHttpHandler& handler) = 0;
     virtual void Stop() = 0;
 };
+
+std::unique_ptr<ViewHttpServer> CreateViewHttpServer(std::uint64_t timeoutMs = 2000);
 
 }  // namespace kv
