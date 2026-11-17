@@ -38,6 +38,7 @@
 <tr><th scope="row">GLM-5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">GLM-5.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 <tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td></tr>
+<tr><th scope="row">GLM-5.3</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">待验证</span></td></tr>
 <tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">支持</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">不支持</span></td></tr>
 </tbody>
 <tbody>
