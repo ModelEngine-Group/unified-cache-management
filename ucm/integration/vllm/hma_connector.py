@@ -23,6 +23,7 @@ except ImportError:  # Older vLLM versions do not expose this helper.
 
 from ucm.integration.vllm.cache_config import configure_cache_capacity
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.kv_nan_check import KVCheckSelection, KVNaNChecker
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVConnectorTransferResults,
@@ -272,6 +273,15 @@ class KVCacheGroupLayout:
         self.tensor_token_strides: np.ndarray
         self.tensor_sizes_per_token: np.ndarray
         self.tensor_block_sizes: np.ndarray
+        # Transferable block views, kept for the optional non-finite probe in
+        # ucm.integration.vllm.kv_nan_check. Entries are
+        # (layer_name, tensor, token_axis, axis_size, whole_only):
+        # axis_size is this view's own token-axis block size (may differ from
+        # the group's token block size, e.g. compressed states), and
+        # whole_only marks views whose memory cannot be sliced along the
+        # token axis (whole-page layouts; mixed value/scale byte planes).
+        # Order matches the flattened pointer rows built below.
+        self.block_views: list[tuple] = []
         self._build_layout()
 
     @staticmethod
@@ -341,6 +351,7 @@ class KVCacheGroupLayout:
                     tensor_block_size,
                 )
             )
+            self.block_views.append((layer_name, t, 1, tensor_block_size, False))
 
         def handle_kv_layer_tensor(tensor: torch.Tensor, layer_name: str) -> None:
             if self.is_ascend_layout and self.whole_page_sizes_by_layer:
@@ -370,6 +381,7 @@ class KVCacheGroupLayout:
                         1,
                     )
                 )
+                self.block_views.append((layer_name, tensor, 1, 1, True))
                 return
             if tensor.dim() == 5:
                 # [2, num_blocks, block_size, num_head, head_dim]
@@ -419,6 +431,11 @@ class KVCacheGroupLayout:
                     page_stride = tensor.stride(0) * tensor.element_size()
                     physical_layout = self.physical_layout_by_layer.get(layer_name)
                     whole_page_size = self.whole_page_sizes_by_layer.get(layer_name)
+                    # Whole pages and mixed value/scale planes cannot be
+                    # sliced along the token axis for the non-finite probe.
+                    whole_only = whole_page_size is not None or (
+                        physical_layout is not None
+                    )
                     if whole_page_size is not None:
                         if whole_page_size % physical_states:
                             raise ValueError("Whole KV page size must divide by N.")
@@ -472,6 +489,9 @@ class KVCacheGroupLayout:
                             f"payload for {layer_name}: stride={page_stride}, "
                             f"payload={page_payload}."
                         )
+                    if page_stride > page_payload:
+                        # Interleaved pages may carry padding between rows.
+                        whole_only = True
                     for base_offset, token_stride, bytes_per_state in descriptors:
                         ptrs.append(tensor[0].data_ptr() + base_offset)
                         strides.append(page_stride)
@@ -487,6 +507,9 @@ class KVCacheGroupLayout:
                                 physical_states,
                             )
                         )
+                    self.block_views.append(
+                        (layer_name, tensor, 2, physical_states, whole_only)
+                    )
                     return
                 if self._is_combined_kv_4d(tensor.shape, layer_name):
                     # GPU kernels may register [num_blocks, 2, block_size, ...];
@@ -774,6 +797,8 @@ class FAWALoadTask:
     task: Task
     key_count: int
     wait_future: Optional[Future] = None
+    # Blocks this task wrote into HBM, for the optional non-finite probe.
+    selections: list = field(default_factory=list)
 
 
 @dataclass
@@ -854,6 +879,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         super().__init__(vllm_config, role, kv_cache_config)
         self.hash_block_size = self.DEFAULT_HASH_BLOCK_SIZE
         self.group_layouts: dict[int, KVCacheGroupLayout] = {}
+        # Optional NaN/Inf probe (UCM_KV_NAN_CHECK, default off). Load-side
+        # probing forces synchronous loads: see update_state_after_alloc.
+        self._kv_nan_check = KVNaNChecker.from_env(
+            logger=logger, metrics=ucmmetrics.update_stats
+        )
+        if self._kv_nan_check.enabled:
+            logger.info(
+                "UCM FAWA KV non-finite probe enabled (%s).",
+                self._kv_nan_check.describe(),
+            )
+            if self._kv_nan_check.phase_enabled("load"):
+                logger.info(
+                    "UCM FAWA KV non-finite probe: load phase forces "
+                    "synchronous loads on this instance."
+                )
         if self._kv_cache_config is None:
             raise RuntimeError("FAWA connector requires kv_cache_config.")
 
@@ -1991,7 +2031,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
         return external_hit_tokens, (
-            self.use_request_async_load and external_hit_tokens > 0
+            self.use_request_async_load
+            and not self._kv_nan_check.phase_enabled("load")
+            and external_hit_tokens > 0
         )
 
     def update_state_after_alloc(
@@ -2249,6 +2291,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         keys: list[bytes],
         ptrs: np.ndarray,
         event_handle: int = 0,
+        selections: Optional[list] = None,
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -2268,6 +2311,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             store=store,
             task=task,
             key_count=len(keys),
+            selections=list(selections) if selections else [],
         )
 
     def _handle_load_err(self, request_id: str):
@@ -2304,6 +2348,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             )
             self._handle_load_err(load_task.request_id)
             return False
+        if load_task.selections and self._kv_nan_check.phase_enabled("load"):
+            # Probing here means the H2D DMA has completed on the store's
+            # event; one extra device synchronize guarantees cross-stream
+            # visibility before the reads below (probe-only cost).
+            try:
+                self.device.synchronize()
+            except Exception as e:  # pragma: no cover - probe must not break
+                logger.warning(f"KV non-finite probe sync failed: {e}")
+            self._kv_nan_check.run(
+                load_task.selections, self.group_layouts, "load"
+            )
         return True
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -2347,6 +2402,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         candidate_vllm_ids,
         *,
         hash_positions=None,
+        selections=None,
     ):
         """Build store pointer rows for full-attention cache segments."""
 
@@ -2362,6 +2418,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # block, so the row starts at a token offset inside the block.
             if self.hash_block_size == meta.token_block_size:
                 group_ptrs = layout.extract_addrs(block_ids)
+                token_offsets = np.zeros_like(block_ids)
             else:
                 positions = (
                     np.arange(hash_start, hash_end)
@@ -2373,11 +2430,25 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 group_ptrs = layout.extract_addrs_with_offsets(
                     block_ids, meta.token_block_size, token_offsets
                 )
+            if selections is not None:
+                selections.append(
+                    KVCheckSelection(
+                        group_id=group_id,
+                        label="FA",
+                        keys=store_keys,
+                        block_ids=block_ids,
+                        token_offsets=token_offsets,
+                        token_counts=np.full_like(
+                            block_ids, self.hash_block_size, dtype=np.int64
+                        ),
+                        token_block_size=meta.token_block_size,
+                    )
+                )
             all_ptrs.append(group_ptrs)
 
         return np.concatenate(all_ptrs, axis=1)
 
-    def _extract_wa_ptr(self, store_keys, vllm_ids):
+    def _extract_wa_ptr(self, store_keys, vllm_ids, *, selections=None):
         """Build store pointer rows for window-attention tail segments."""
 
         all_ptrs = []
@@ -2399,13 +2470,35 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 group_ptrs = layout.extract_addrs_with_offsets(
                     block_ids, meta.token_block_size, token_offsets
                 )
+                row_token_counts = np.full_like(
+                    block_ids, meta.tail_tokens, dtype=np.int64
+                )
             else:
                 token_offsets = np.zeros_like(block_ids)
                 group_ptrs = layout.extract_addrs(block_ids)
                 # Multi-block WA tails are flattened into one store row per
                 # canonical boundary key.
                 group_ptrs = group_ptrs.reshape(len(store_keys), -1)
-
+                # Every transferred physical block carries a leading
+                # segment of the tail (short-snapshot duplicate rows repeat
+                # the same source bytes; count stays segment-sized).
+                row_token_counts = np.full_like(
+                    block_ids,
+                    meta.tail_tokens // meta.tail_blocks,
+                    dtype=np.int64,
+                )
+            if selections is not None:
+                selections.append(
+                    KVCheckSelection(
+                        group_id=group_id,
+                        label="WA",
+                        keys=store_keys,
+                        block_ids=block_ids,
+                        token_offsets=token_offsets,
+                        token_counts=row_token_counts,
+                        token_block_size=meta.token_block_size,
+                    )
+                )
             all_ptrs.append(group_ptrs)
 
         return np.concatenate(all_ptrs, axis=1)
@@ -2468,11 +2561,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     submit_handle = pending.event_handle
 
                 # FA groups are loaded for every external-hit canonical block.
+                fa_selections: list = []
                 fa_ptrs = self._extract_fa_ptr(
                     request.load_keys,
                     request.load_hash_start,
                     request.load_hash_end,
                     request.load_vllm_block_ids,
+                    selections=fa_selections,
                 )
                 fa_task = self._submit_load_task(
                     request_id,
@@ -2481,6 +2576,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     request.load_keys,
                     fa_ptrs,
                     event_handle=submit_handle,
+                    selections=fa_selections,
                 )
                 tasks.append(fa_task)
                 pending.tasks.append(fa_task)
@@ -2491,9 +2587,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     continue
                 # WA groups only need the final matched boundary.
                 window_keys = request.load_keys[-1:]
+                wa_selections: list = []
                 window_ptrs = self._extract_wa_ptr(
                     window_keys,
                     request.load_vllm_block_ids,
+                    selections=wa_selections,
                 )
                 wa_task = self._submit_load_task(
                     request_id,
@@ -2502,6 +2600,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     window_keys,
                     window_ptrs,
                     event_handle=submit_handle,
+                    selections=wa_selections,
                 )
                 tasks.append(wa_task)
                 pending.tasks.append(wa_task)
@@ -2627,6 +2726,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_dump_keys: list[bytes] = []
         fa_ptr_rows: list[np.ndarray] = []
         wa_ptr_rows: list[np.ndarray] = []
+        fa_dump_selections: list = []
+        wa_dump_selections: list = []
         dump_request_ids: tuple[str] = ()
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
@@ -2665,6 +2766,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             hash_positions=np.arange(
                                 request.dump_hash_start, request.dump_hash_end
                             )[key_slice],
+                            selections=fa_dump_selections,
                         )
                     )
                 if not self.window_group_ids:
@@ -2692,6 +2794,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                             self._extract_wa_ptr(
                                 tp_dump_keys,
                                 wa_dump_vllm_block_ids,
+                                selections=wa_dump_selections,
                             )
                         )
                 elif wa_dump_ring_idx % self.dump_owner_size == self.dump_owner_rank:
@@ -2702,6 +2805,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._extract_wa_ptr(
                             request_wa_dump_keys,
                             request.dump_vllm_block_ids,
+                            selections=wa_dump_selections,
                         )
                     )
                 wa_dump_ring_idx += 1
@@ -2718,6 +2822,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         request.dump_hash_start,
                         request.dump_hash_end,
                         request.dump_vllm_block_ids,
+                        selections=fa_dump_selections,
                     )
                 )
                 if not self.window_group_ids:
@@ -2729,6 +2834,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._extract_wa_ptr(
                             request.dump_keys,
                             request.dump_vllm_block_ids,
+                            selections=wa_dump_selections,
                         )
                     )
                 else:
@@ -2739,8 +2845,18 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._extract_wa_ptr(
                             request_wa_dump_keys,
                             request.dump_vllm_block_ids,
+                            selections=wa_dump_selections,
                         )
                     )
+
+        # Probe dump candidates before any bytes leave HBM: a hit here means
+        # the producer side already wrote non-finite KV (see issue #1676); a
+        # clean dump followed by a dirty load would instead implicate the
+        # transfer/store path.
+        if fa_dump_selections:
+            self._kv_nan_check.run(fa_dump_selections, self.group_layouts, "dump")
+        if wa_dump_selections:
+            self._kv_nan_check.run(wa_dump_selections, self.group_layouts, "dump")
 
         if fa_dump_keys:
             event_handle = self._get_event_handle()
