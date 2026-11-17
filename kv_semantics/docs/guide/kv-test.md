@@ -534,19 +534,28 @@ rkey from the local record. `UnregisterMemory` forwards only records created by
 `RegisterMemory`, passing the stored `HccpKvRoceMemoryInfo`, and always drops
 bind-only records locally.
 
-Connections are QPC based. `CreateConnection` requires `qpNum > 0` and hands the
-library one provider-owned `HccpKvRoceQpc` per QP through the in/out
-`connectionHandles` array; the library fills the QPC in place and reports the
-created count through `connectionHandleNum`, which must not exceed `qpNum`. The
-provider then copies each QPC into its HBM connection slot and passes that slot
-address (`HccpKvRoceSendIoBatch::slotAddress`) to `Send`. `DeleteConnections`
-passes the same QPC addresses back to the library.
+Connections are QPC based and managed per IP pair. `CreateConnection` requires
+`qpNum > 0` and hands the library one provider-owned `HccpKvRoceQpc` per QP
+through the in/out `connectionHandles` array; the library fills the QPC in place,
+reports the created count through `connectionHandleNum` (it must not exceed
+`qpNum`) and returns one manager for the whole IP pair through
+`connectionManager`. A success without a manager is treated as a failed
+creation. The provider then copies each QPC into its HBM connection slot and
+passes that slot address (`HccpKvRoceSendIoBatch::slotAddress`) to `Send`. The
+provider still returns one handle per QP to the transport.
+
+`DeleteConnections` is manager based: the provider groups the requested QP
+handles by their IP pair and calls the library once with the manager array. A
+record is only deleted when the caller passes every QP of that record; a partial
+handle set is rejected with `INVALID_ARGUMENT` and nothing of that record is
+deleted. `GetServerCapabilities` queries the manager of the IP pair that owns the
+handle.
 
 The provider allocates one contiguous HBM region of
-`hccp_kv_roce_max_connections` slots, each 4096 bytes. Every live connection
-owns exactly one slot; the provider records its `slotid`, copies the QPC into it,
-and clears/recycles the slot when the connection is deleted. The external
-library never sees the HBM region itself, only the slot address used by `Send`.
+`hccp_kv_roce_max_connections` slots, each 4096 bytes. Every live QP owns
+exactly one slot; the provider records its `slotid`, copies the QPC into it, and
+clears/recycles the slot when the IP pair is deleted. The external library never
+sees the HBM region itself, only the slot address used by `Send`.
 
 ## Command behavior
 

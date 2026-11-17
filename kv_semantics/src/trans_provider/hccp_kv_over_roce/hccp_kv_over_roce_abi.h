@@ -37,9 +37,12 @@
  *
  * Connection creation is QPC based: the provider allocates one HccpKvRoceQpc per
  * QP, hands its address to the library through connectionHandles and the
- * library fills the QPC in place. The provider then copies the QPC into its HBM
- * connection slot and passes that slot address back during Send, so the library
- * reads the QPC from the slot instead of keeping a host-side handle.
+ * library fills the QPC in place. The library also returns one manager for the
+ * whole IP pair; the provider keeps that manager in its connection record and
+ * uses it for DeleteConnections and GetServerCapabilities. After creation the
+ * provider copies each QPC into its HBM connection slot and passes that slot
+ * address back during Send, so the library reads the QPC from the slot instead
+ * of keeping a host-side handle.
  *
  * Every function returns 0 on success and a non-zero HccpKvRoceReturnCode (or an
  * implementation-defined positive value) on failure. Strings are passed as
@@ -125,11 +128,18 @@ typedef struct HccpKvRoceServerCapabilities {
  * entries with provider-owned HccpKvRoceQpc addresses; the library fills the
  * QPC payloads and leaves the pointers valid. connectionHandleNum reports how
  * many connections were actually created and must never exceed qpNum.
+ * connectionManager receives the library-owned manager for this IP pair. One
+ * manager owns every QP created by this call and is the only handle accepted by
+ * DeleteConnections and GetServerCapabilities.
  * RegisterMemory must fill descNum writable memoryInfos entries. */
 int32_t CreateConnection(const char* localIp, const char* remoteIp, uint32_t port, uint32_t qpNum,
-                         uint32_t timeout, void** connectionHandles,
-                         uint32_t* connectionHandleNum);
-int32_t DeleteConnections(void* const* connectionHandles, uint32_t handleNum);
+                         uint32_t timeout, void** connectionHandles, uint32_t* connectionHandleNum,
+                         void** connectionManager);
+
+/* Deletes whole IP-pair connection sets. connectionManagers holds managers
+ * returned by CreateConnection; the library releases every QP owned by each
+ * manager, so callers must delete a manager as a unit. */
+int32_t DeleteConnections(void* const* connectionManagers, uint32_t managerNum);
 int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uint32_t descNum,
                        HccpKvRoceMemoryInfo* memoryInfos);
 
@@ -143,7 +153,7 @@ uint32_t GetAbiVersion(void);
 int32_t UnregisterMemory(const HccpKvRoceMemoryInfo* memoryInfos, uint32_t infoNum);
 int32_t Send(const HccpKvRoceSendIoBatch* batches, uint32_t batchNum, uint32_t kernelCount,
              uint32_t quietCount, int32_t* statuses);
-int32_t GetServerCapabilities(void* connectionHandle, HccpKvRoceServerCapabilities* capabilities);
+int32_t GetServerCapabilities(void* connectionManager, HccpKvRoceServerCapabilities* capabilities);
 
 #ifdef __cplusplus
 }  // extern "C"

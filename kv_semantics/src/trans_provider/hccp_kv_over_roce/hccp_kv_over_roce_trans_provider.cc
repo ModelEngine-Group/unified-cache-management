@@ -227,12 +227,23 @@ void ReleaseSlots(HbmSlotAllocator& allocator, const std::vector<std::uint32_t>&
 }  // namespace
 
 struct HccpKvOverRoceTransProvider::Impl {
-    struct ConnectionRecord {
-        void* externalHandle{nullptr};
+    // One QP of an IP-pair connection. Its address is the ConnectionHandle the
+    // provider returns to the transport, and its QPC is copied into the HBM slot
+    // used by Send.
+    struct QpRecord {
         std::uint32_t slotId{0};
-        // Provider-owned QPC storage. Its address is handed to the library as
-        // the connection handle and the payload is copied into the HBM slot.
+        // Position inside ConnectionRecord::qps. DeleteConnections uses it to
+        // prove that the caller passed the complete QP set of an IP pair.
+        std::uint32_t index{0};
         HccpKvRoceQpc qpc{};
+    };
+
+    // One CreateConnection call. The external library returns a single manager
+    // that owns every QP created for this IP pair, so the provider keeps one
+    // record per manager instead of one record per QP.
+    struct ConnectionRecord {
+        void* manager{nullptr};
+        std::vector<std::unique_ptr<QpRecord>> qps;
     };
 
     using ConnectionMap = std::unordered_map<ConnectionHandle, std::shared_ptr<ConnectionRecord>>;
@@ -401,8 +412,14 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
                                  std::to_string(impl_->slotCapacity));
     }
 
+    // One record per IP pair: it keeps the library manager plus every QP created
+    // by this call. The QP addresses are stable for the record lifetime and are
+    // the handles returned to the transport.
+    auto record = std::make_shared<Impl::ConnectionRecord>();
+    record->qps.reserve(qpNum);
     std::vector<std::uint32_t> slots;
     slots.reserve(qpNum);
+    std::vector<void*> abiHandles(qpNum, nullptr);
     for (std::uint32_t index = 0; index < qpNum; ++index) {
         std::uint32_t slotId = 0;
         const auto status = impl_->allocator->Acquire(slotId);
@@ -414,31 +431,36 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
                                      status.message);
         }
         slots.push_back(slotId);
+
+        auto qp = std::make_unique<Impl::QpRecord>();
+        qp->slotId = slotId;
+        qp->index = index;
+        abiHandles[index] = &qp->qpc;
+        record->qps.push_back(std::move(qp));
     }
 
-    // The library fills one provider-owned QPC per connection. The addresses are
-    // stable for the connection lifetime and are also the handles passed to
-    // DeleteConnections.
-    std::vector<std::shared_ptr<Impl::ConnectionRecord>> records;
-    records.reserve(qpNum);
-    std::vector<void*> abiHandles(qpNum, nullptr);
-    for (std::uint32_t index = 0; index < qpNum; ++index) {
-        auto record = std::make_shared<Impl::ConnectionRecord>();
-        record->slotId = slots[index];
-        abiHandles[index] = &record->qpc;
-        records.push_back(std::move(record));
-    }
+    std::uint32_t createdNum = 0;
 
-    auto deleteAbiHandles = [&](std::uint32_t handleNum) {
-        const auto limit = std::min<std::size_t>(handleNum, abiHandles.size());
-        std::vector<void*> created;
-        created.reserve(limit);
-        for (std::size_t index = 0; index < limit; ++index) {
-            if (abiHandles[index] != nullptr) { created.push_back(abiHandles[index]); }
+    // The operator releases a whole IP pair through its manager, so every error
+    // path after creation goes through this helper.
+    auto deleteCreatedManager = [&](const char* stage) {
+        if (record->manager == nullptr) {
+            if (createdNum != 0) {
+                KV_WARN(
+                    "HccpKvOverRoceTransProvider: {} cannot release operator connections "
+                    "created={} because the library returned no manager",
+                    stage, createdNum);
+            }
+            return;
         }
-        if (created.empty()) { return; }
-        (void)impl_->api.deleteConnections(created.data(),
-                                           static_cast<std::uint32_t>(created.size()));
+        void* manager = record->manager;
+        const auto deleteRet = impl_->api.deleteConnections(&manager, 1);
+        if (deleteRet != 0) {
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: {} failed to release operator connections code={}",
+                stage, deleteRet);
+        }
+        record->manager = nullptr;
     };
 
     KV_INFO(
@@ -446,17 +468,17 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         "remote_port={} qp_num={} timeout_ms={}",
         localIp, remoteIp, port, qpNum, timeout);
 
-    std::uint32_t createdNum = 0;
     const auto ret = impl_->api.createConnection(localIp.c_str(), remoteIp.c_str(), port, qpNum,
-                                                 timeout, abiHandles.data(), &createdNum);
+                                                 timeout, abiHandles.data(), &createdNum,
+                                                 &record->manager);
     if (ret != 0) {
-        deleteAbiHandles(createdNum);
+        deleteCreatedManager("CreateConnection");
         ReleaseSlots(*impl_->allocator, slots);
         return AbiError("CreateConnection", ret, StatusCode::CONNECTION_ERROR);
     }
     if (createdNum > qpNum) {
         // Never trust the array beyond qpNum even if the library reports more.
-        deleteAbiHandles(qpNum);
+        deleteCreatedManager("CreateConnection");
         ReleaseSlots(*impl_->allocator, slots);
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "HccpKvOverRoceTransProvider: CreateConnection reported " +
@@ -464,7 +486,7 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
                                  std::to_string(qpNum));
     }
     if (createdNum != qpNum) {
-        deleteAbiHandles(createdNum);
+        deleteCreatedManager("CreateConnection");
         ReleaseSlots(*impl_->allocator, slots);
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "HccpKvOverRoceTransProvider: CreateConnection created " +
@@ -474,7 +496,7 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
 
     for (std::uint32_t index = 0; index < qpNum; ++index) {
         if (abiHandles[index] == nullptr) {
-            deleteAbiHandles(qpNum);
+            deleteCreatedManager("CreateConnection");
             ReleaseSlots(*impl_->allocator, slots);
             return Status::Error(StatusCode::INTERNAL_ERROR,
                                  "HccpKvOverRoceTransProvider: CreateConnection returned a null "
@@ -482,24 +504,33 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         }
     }
 
+    // The manager is the only way to release this IP pair later, so a success
+    // without one is treated as a failed creation.
+    if (record->manager == nullptr) {
+        deleteCreatedManager("CreateConnection");
+        ReleaseSlots(*impl_->allocator, slots);
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "HccpKvOverRoceTransProvider: CreateConnection returned no "
+                             "connection manager");
+    }
+
     for (std::uint32_t index = 0; index < qpNum; ++index) {
-        const auto status = impl_->allocator->Write(records[index]->slotId, abiHandles[index],
+        const auto status = impl_->allocator->Write(record->qps[index]->slotId, abiHandles[index],
                                                     sizeof(HccpKvRoceQpc));
         if (!status.ok()) {
-            deleteAbiHandles(qpNum);
+            deleteCreatedManager("CreateConnection");
             for (std::uint32_t written = 0; written <= index; ++written) {
-                (void)impl_->allocator->Clear(records[written]->slotId);
+                (void)impl_->allocator->Clear(record->qps[written]->slotId);
             }
             ReleaseSlots(*impl_->allocator, slots);
             return status;
         }
-        records[index]->externalHandle = abiHandles[index];
     }
 
     {
         std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
-        for (const auto& record : records) {
-            ConnectionHandle handle = record.get();
+        for (const auto& qp : record->qps) {
+            ConnectionHandle handle = qp.get();
             impl_->connections.emplace(handle, record);
             connectionHandles.push_back(handle);
         }
@@ -507,8 +538,8 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
 
     KV_INFO(
         "HccpKvOverRoceTransProvider: CreateConnection complete remote_addr={} remote_port={} "
-        "handles={}",
-        remoteIp, port, connectionHandles.size());
+        "qp_num={} handles={}",
+        remoteIp, port, qpNum, connectionHandles.size());
     return Status::OK();
 }
 
@@ -530,76 +561,126 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
         return results;
     }
 
-    std::vector<std::shared_ptr<Impl::ConnectionRecord>> removed(connectionHandles.size());
-    std::vector<void*> externalHandles;
-    std::vector<std::size_t> externalIndex;
-    externalHandles.reserve(connectionHandles.size());
-    externalIndex.reserve(connectionHandles.size());
+    // Group the requested QP handles by their IP-pair record. A record may only
+    // be deleted when the caller passes every QP of that record, because the
+    // operator releases the whole set through one manager.
+    struct RecordRequest {
+        std::shared_ptr<Impl::ConnectionRecord> record;
+        std::vector<std::size_t> indices;
+        std::vector<bool> seen;
+        bool invalid{false};
+        bool complete{false};
+    };
 
-    for (std::size_t index = 0; index < connectionHandles.size(); ++index) {
-        auto* record = static_cast<Impl::ConnectionRecord*>(connectionHandles[index]);
-        if (record == nullptr) {
-            results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
-                                           "HccpKvOverRoceTransProvider: invalid connection "
-                                           "handle");
-            continue;
-        }
+    std::unordered_map<Impl::ConnectionRecord*, RecordRequest> requests;
+    std::unordered_set<ConnectionHandle> seenHandles;
+    std::vector<void*> managers;
 
-        std::shared_ptr<Impl::ConnectionRecord> owner;
-        {
-            std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
-            const auto iter = impl_->connections.find(record);
+    {
+        std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
+        for (std::size_t index = 0; index < connectionHandles.size(); ++index) {
+            auto* qp = static_cast<Impl::QpRecord*>(connectionHandles[index]);
+            if (qp == nullptr) {
+                results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
+                                               "HccpKvOverRoceTransProvider: invalid connection "
+                                               "handle");
+                continue;
+            }
+            const auto iter = impl_->connections.find(qp);
             if (iter == impl_->connections.end()) {
                 results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
                                                "HccpKvOverRoceTransProvider: invalid connection "
                                                "handle");
                 continue;
             }
-            owner = std::move(iter->second);
-            impl_->connections.erase(iter);
+
+            auto& request = requests[iter->second.get()];
+            request.record = iter->second;
+            if (request.seen.empty()) {
+                request.seen.assign(iter->second->qps.size(), false);
+            }
+            if (!seenHandles.insert(qp).second) {
+                request.invalid = true;
+                results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
+                                               "HccpKvOverRoceTransProvider: duplicate connection "
+                                               "handle");
+                continue;
+            }
+            request.indices.push_back(index);
+            request.seen[qp->index] = true;
         }
-        externalHandles.push_back(owner->externalHandle);
-        externalIndex.push_back(index);
-        removed[index] = std::move(owner);
+
+        for (auto& item : requests) {
+            auto& request = item.second;
+            request.complete =
+                !request.invalid &&
+                std::all_of(request.seen.begin(), request.seen.end(),
+                            [](bool value) { return value; });
+            if (!request.complete) {
+                const auto error = Status::Error(
+                    StatusCode::INVALID_ARGUMENT,
+                    "HccpKvOverRoceTransProvider: incomplete connection set; every QP of an IP "
+                    "pair must be deleted together");
+                for (const auto index : request.indices) { results[index] = error; }
+                continue;
+            }
+
+            for (const auto& qp : request.record->qps) {
+                impl_->connections.erase(qp.get());
+            }
+            managers.push_back(request.record->manager);
+        }
     }
 
-    if (externalHandles.empty()) { return results; }
-
-    const auto ret = impl_->api.deleteConnections(
-        externalHandles.data(), static_cast<std::uint32_t>(externalHandles.size()));
-    if (ret != 0) {
-        const auto error = AbiError("DeleteConnections", ret, StatusCode::CONNECTION_ERROR);
-        std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
-        for (const auto index : externalIndex) {
-            // Read the key before moving the owner: argument evaluation order is
-            // unspecified, and a moved-from shared_ptr is null.
-            auto record = std::move(removed[index]);
-            auto* handle = record.get();
-            impl_->connections.emplace(handle, std::move(record));
-        }
-        for (const auto index : externalIndex) { results[index] = error; }
+    if (managers.empty()) {
+        KV_INFO(
+            "HccpKvOverRoceTransProvider: DeleteConnections complete requested={} deleted=0",
+            connectionHandles.size());
         return results;
     }
 
-    for (const auto index : externalIndex) {
-        const auto& record = removed[index];
-        const auto clearStatus = impl_->allocator->Clear(record->slotId);
-        if (!clearStatus.ok()) {
-            KV_WARN(
-                "HccpKvOverRoceTransProvider: failed to clear HBM slot_id={} message={}",
-                record->slotId, clearStatus.message);
+    const auto ret = impl_->api.deleteConnections(
+        managers.data(), static_cast<std::uint32_t>(managers.size()));
+    if (ret != 0) {
+        const auto error = AbiError("DeleteConnections", ret, StatusCode::CONNECTION_ERROR);
+        std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
+        for (auto& item : requests) {
+            auto& request = item.second;
+            if (!request.complete) { continue; }
+            for (const auto& qp : request.record->qps) {
+                impl_->connections.emplace(qp.get(), request.record);
+            }
         }
-        const auto releaseStatus = impl_->allocator->Release(record->slotId);
-        if (!releaseStatus.ok()) {
-            KV_WARN(
-                "HccpKvOverRoceTransProvider: failed to release HBM slot_id={} message={}",
-                record->slotId, releaseStatus.message);
+        for (auto& item : requests) {
+            auto& request = item.second;
+            if (!request.complete) { continue; }
+            for (const auto index : request.indices) { results[index] = error; }
         }
-        results[index] = Status::OK();
+        return results;
     }
 
-    KV_INFO("HccpKvOverRoceTransProvider: DeleteConnections complete requested={} deleted={}",
-            connectionHandles.size(), externalHandles.size());
+    for (auto& item : requests) {
+        auto& request = item.second;
+        if (!request.complete) { continue; }
+        for (const auto& qp : request.record->qps) {
+            const auto clearStatus = impl_->allocator->Clear(qp->slotId);
+            if (!clearStatus.ok()) {
+                KV_WARN(
+                    "HccpKvOverRoceTransProvider: failed to clear HBM slot_id={} message={}",
+                    qp->slotId, clearStatus.message);
+            }
+            const auto releaseStatus = impl_->allocator->Release(qp->slotId);
+            if (!releaseStatus.ok()) {
+                KV_WARN(
+                    "HccpKvOverRoceTransProvider: failed to release HBM slot_id={} message={}",
+                    qp->slotId, releaseStatus.message);
+            }
+        }
+    }
+
+    KV_INFO(
+        "HccpKvOverRoceTransProvider: DeleteConnections complete requested={} ip_pairs={}",
+        connectionHandles.size(), managers.size());
     return results;
 }
 
@@ -635,7 +716,7 @@ Status HccpKvOverRoceTransProvider::GetServerCapabilities(
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "HccpKvOverRoceTransProvider: invalid connection handle");
         }
-        ret = impl_->api.getServerCapabilities(iter->second->externalHandle, &abiCapabilities);
+        ret = impl_->api.getServerCapabilities(iter->second->manager, &abiCapabilities);
     }
     if (ret != 0) { return AbiError("GetServerCapabilities", ret, StatusCode::INTERNAL_ERROR); }
 
@@ -691,15 +772,14 @@ std::vector<Status> HccpKvOverRoceTransProvider::Send(
         // DeleteConnections cannot recycle a connection slot while Send uses it.
         std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
         for (std::size_t index = 0; index < ioBatches.size(); ++index) {
-            auto* record =
-                static_cast<Impl::ConnectionRecord*>(ioBatches[index].connectionHandle);
-            if (record == nullptr) {
+            auto* qp = static_cast<Impl::QpRecord*>(ioBatches[index].connectionHandle);
+            if (qp == nullptr) {
                 results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
                                                "HccpKvOverRoceTransProvider: invalid connection "
                                                "handle");
                 continue;
             }
-            const auto iter = impl_->connections.find(record);
+            const auto iter = impl_->connections.find(qp);
             if (iter == impl_->connections.end()) {
                 results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
                                                "HccpKvOverRoceTransProvider: invalid connection "
@@ -707,8 +787,8 @@ std::vector<Status> HccpKvOverRoceTransProvider::Send(
                 continue;
             }
             // The operator reads the QPC out of the HBM slot, so the batch carries
-            // the slot address instead of a host-side handle.
-            auto* slotAddress = impl_->allocator->SlotAddress(iter->second->slotId);
+            // this QP's slot address instead of a host-side handle.
+            auto* slotAddress = impl_->allocator->SlotAddress(qp->slotId);
             if (slotAddress == nullptr) {
                 results[index] = Status::Error(StatusCode::INTERNAL_ERROR,
                                                "HccpKvOverRoceTransProvider: connection slot is "
