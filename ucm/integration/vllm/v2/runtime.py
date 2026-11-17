@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -22,6 +22,7 @@ from ucm.utils import Config
 from .kv_cache_spec import (
     RestorePolicy,
     UCMKVCacheSpec,
+    _member_specs,
     parse_kv_cache_config,
 )
 
@@ -160,6 +161,50 @@ def _dump_raw_kv_cache_config(kv_cache_config: KVCacheConfig, rank: int | None) 
     )
 
 
+def _resolve_state_shard_ranks(
+    vllm_config: VllmConfig,
+    kv_cache_config: KVCacheConfig,
+    spec: UCMKVCacheSpec,
+    topology: ParallelTopology,
+) -> dict[int, tuple[int, ...]]:
+    """Read the model's State shard rank for each PCP/TP position."""
+    from vllm.model_executor.model_loader.utils import get_model_cls
+
+    model_cls = get_model_cls(vllm_config.model_config)
+    get_sharding = getattr(model_cls, "get_mamba_state_sharding", None)
+    if get_sharding is None:
+        return {}
+
+    declarations = tuple(
+        get_sharding(vllm_config.parallel_config, tp_rank, pcp_rank)
+        for pcp_rank in range(topology.pcp_size)
+        for tp_rank in range(topology.tp_size)
+    )
+    state_shard_ranks = {}
+    for group in spec.groups:
+        if not group.is_state_snapshot:
+            continue
+        native_spec = kv_cache_config.kv_cache_groups[group.group_id].kv_cache_spec
+        mamba_types = {member.mamba_type for member in _member_specs(native_spec)}
+        shardings = {
+            tuple(declaration.get(mamba_type) for declaration in declarations)
+            for mamba_type in mamba_types
+        }
+        if len(shardings) != 1:
+            raise ValueError(
+                f"Mamba cache group {group.group_id} has inconsistent state sharding"
+            )
+        (shards,) = shardings
+        if all(shard is None for shard in shards):
+            continue
+        if any(shard is None for shard in shards):
+            raise ValueError(
+                f"Mamba cache group {group.group_id} has incomplete state sharding"
+            )
+        state_shard_ranks[group.group_id] = tuple(shard.shard_rank for shard in shards)
+    return state_shard_ranks
+
+
 @dataclass(frozen=True)
 class UCMRuntimeContext:
     """Stable configuration, process identity and logical KV contract.
@@ -178,6 +223,7 @@ class UCMRuntimeContext:
     use_layerwise: bool
     spec: UCMKVCacheSpec
     fingerprint: str
+    state_shard_ranks: dict[int, tuple[int, ...]] = field(default_factory=dict)
 
     def store_runtime(self, block_size: int, *, device_id: int = 0) -> dict[str, Any]:
         # Cache rejects domain ids above 88 bytes: its rendezvous paths are
@@ -243,6 +289,16 @@ class UCMRuntimeContext:
                 else 1
             ),
         )
+        state_shard_ranks = {}
+        if (
+            role == KVConnectorRole.WORKER
+            and device_type == "npu"
+            and parallel_topology.pcp_size > 1
+            and any(group.is_state_snapshot for group in spec.groups)
+        ):
+            state_shard_ranks = _resolve_state_shard_ranks(
+                vllm_config, kv_cache_config, spec, parallel_topology
+            )
         model_dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         speculative_config = vllm_config.speculative_config
         additional_config = vllm_config.additional_config or {}
@@ -321,4 +377,5 @@ class UCMRuntimeContext:
             use_layerwise=use_layerwise,
             spec=spec,
             fingerprint=fingerprint,
+            state_shard_ranks=state_shard_ranks,
         )

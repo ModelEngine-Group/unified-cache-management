@@ -149,6 +149,7 @@ class UCMConnectorWorker:
             chunk_size=(
                 int(requested_chunk_size) if requested_chunk_size is not None else None
             ),
+            state_shard_ranks=self.context.state_shard_ranks,
         )
         self.spec = self.layout.spec
         if self._store_worker is None:

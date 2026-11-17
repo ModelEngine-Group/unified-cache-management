@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class UCMShard(NamedTuple):
-    tp_shard: int
+    head_shard: int
     dcp_shard: int
     pp_rank: int
 
@@ -26,8 +26,10 @@ def shard_replicas(
     pp_rank: int,
     tp_shards: int,
     dcp_sharded: bool,
+    *,
+    state_shard_ranks: tuple[int, ...] | None = None,
 ) -> dict[UCMShard, tuple[ParallelRank, ...]]:
-    """Enumerate effective pairs, never the TP x DCP Cartesian product."""
+    """Group workers holding the same head and token partitions."""
     from .runtime import ParallelRank
 
     owners: dict[UCMShard, list[ParallelRank]] = {}
@@ -41,9 +43,10 @@ def shard_replicas(
                     dcp_shard = pcp_rank
                 else:
                     dcp_shard = tp_rank * topology.pcp_size + pcp_rank
-            shard = UCMShard(
-                tp_rank * tp_shards // topology.tp_size, dcp_shard, pp_rank
-            )
+            head_shard = tp_rank * tp_shards // topology.tp_size
+            if state_shard_ranks is not None:
+                head_shard = state_shard_ranks[pcp_rank * topology.tp_size + tp_rank]
+            shard = UCMShard(head_shard, dcp_shard, pp_rank)
             owners.setdefault(shard, []).append(
                 ParallelRank(tp_rank, pp_rank, pcp_rank)
             )
@@ -97,7 +100,11 @@ class GroupStoreLayout:
             shard: replicas
             for pp_rank, metadata in metadata_by_stage.items()
             for shard, replicas in shard_replicas(
-                parallel_topology, pp_rank, metadata.tp_shards, group_spec.dcp_sharded
+                parallel_topology,
+                pp_rank,
+                metadata.tp_shards,
+                group_spec.dcp_sharded,
+                state_shard_ranks=metadata.state_shard_ranks,
             ).items()
         }
         for ucm_shard, replica_ranks in sorted(owners.items()):

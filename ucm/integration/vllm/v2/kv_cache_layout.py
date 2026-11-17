@@ -89,11 +89,16 @@ class UCMKVCacheLayout:
         rank: ParallelRank,
         *,
         chunk_size: int | None = None,
+        state_shard_ranks: Mapping[int, tuple[int, ...]] | None = None,
     ) -> None:
+        state_shard_ranks = state_shard_ranks or {}
         local_report = {
             group_id: (
                 self.spec.groups[group_id],
-                layout.export_metadata(topology.tp_size),
+                layout.export_metadata(
+                    topology.tp_size,
+                    state_shard_ranks=state_shard_ranks.get(group_id),
+                ),
             )
             for group_id, layout in self.group_layouts.items()
             if self.spec.groups[group_id].restore_policy is not None

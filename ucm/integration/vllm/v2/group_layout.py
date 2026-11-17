@@ -31,6 +31,8 @@ class GroupLayoutMetadata:
     states_per_block: tuple[int, ...]
     supports_partial_tokens: bool
     tp_shards: int
+    # Model-declared State partitions in PCP-major, TP-minor rank order.
+    state_shard_ranks: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +128,9 @@ class KVCacheGroupLayout:
         )
         self.block_first = self._block_first_span() if block_first_layout else None
 
-    def export_metadata(self, tp_size: int) -> GroupLayoutMetadata:
+    def export_metadata(
+        self, tp_size: int, *, state_shard_ranks: tuple[int, ...] | None = None
+    ) -> GroupLayoutMetadata:
         """Export this stage's segment geometry for the shared Store layout."""
         from .kv_cache_spec import _spec_tp_shards
 
@@ -141,6 +145,7 @@ class KVCacheGroupLayout:
             states_per_block=tuple(map(int, self.states_per_block)),
             supports_partial_tokens=self.supports_partial_tokens,
             tp_shards=tp_shards,
+            state_shard_ranks=state_shard_ranks,
         )
 
     def _block_first_span(self) -> BlockFirstView | None:
