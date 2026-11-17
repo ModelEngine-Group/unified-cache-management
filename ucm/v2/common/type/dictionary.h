@@ -199,6 +199,20 @@ public:
         target = static_cast<T>(value);
     }
 
+    /** Read an optional non-negative integer of integral type T. */
+    template <typename T>
+    void OptionalNonNegative(const char* key, T& target)
+    {
+        if (status_.Failure()) { return; }
+        if (!dict_.Contains(key)) { return; }
+        std::int64_t value = 0;
+        if (!dict_.GetInt64(key, value) || value < 0 || !FitsIn<T>(value)) {
+            Fail("'{}' must be a non-negative integer", key);
+            return;
+        }
+        target = static_cast<T>(value);
+    }
+
     /** Read an optional value of any type; absent keeps the target,
      *  present must be of the right type. */
     template <typename T>

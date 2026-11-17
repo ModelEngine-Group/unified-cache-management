@@ -157,6 +157,34 @@ TEST(CacheConfigTest, FromRejectsNonPositiveWorkerNumber)
     ASSERT_FALSE(CacheConfig::From(dict).HasValue());
 }
 
+TEST(CacheConfigTest, FromReadsTheWorkerIndex)
+{
+    /* Absent: the first worker is the default. */
+    auto absent = CacheConfig::From(MakeDict());
+    ASSERT_TRUE(absent.HasValue());
+    EXPECT_EQ(absent.Value().workerIndex, std::size_t{0});
+
+    /* Zero is a legal index; any other non-negative value reads as is. */
+    Dictionary dict = MakeDict();
+    dict.SetInt64("worker_index", 0);
+    auto zero = CacheConfig::From(dict);
+    ASSERT_TRUE(zero.HasValue());
+    EXPECT_EQ(zero.Value().workerIndex, std::size_t{0});
+
+    dict.SetInt64("worker_index", 3);
+    auto read = CacheConfig::From(dict);
+    ASSERT_TRUE(read.HasValue());
+    EXPECT_EQ(read.Value().workerIndex, std::size_t{3});
+
+    /* Negative is refused. */
+    dict.SetInt64("worker_index", -1);
+    EXPECT_FALSE(CacheConfig::From(dict).HasValue());
+
+    /* A value of the wrong type is refused. */
+    dict.Set("worker_index", std::string("1"));
+    EXPECT_FALSE(CacheConfig::From(dict).HasValue());
+}
+
 TEST(CacheConfigTest, FromRejectsDeviceIdOutOfInt32Range)
 {
     Dictionary dict = MakeDict();

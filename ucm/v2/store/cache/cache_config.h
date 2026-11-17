@@ -37,11 +37,12 @@ struct CacheConfig {
     Store* lowerStore{nullptr}; /* the pipe's next tier down. */
 
     /** Common configuration */
-    std::string uniqueId;  /* Unique identifier of the current shared domain. */
-    std::string llmRole;   /* Role of the LLM inference process. */
-    std::size_t nWorker;   /* Number of worker processes in the current shared domain. */
-    int32_t deviceId;      /* ID of the device this process is affined to. */
-    std::size_t blockSize; /* Size of a fixed-length block, in bytes. */
+    std::string uniqueId;       /* Unique identifier of the current shared domain. */
+    std::string llmRole;        /* Role of the LLM inference process. */
+    std::size_t nWorker;        /* Number of worker processes in the current shared domain. */
+    std::size_t workerIndex{0}; /* Index of this process among the domain's workers. */
+    int32_t deviceId;           /* ID of the device this process is affined to. */
+    std::size_t blockSize;      /* Size of a fixed-length block, in bytes. */
 
     /** Cache-specific configuration */
     std::int64_t capacityGb{128};           /* Total size of the shared pool, in GB. */
@@ -62,6 +63,7 @@ struct CacheConfig {
         reader.RequiredEnum("llm_role", cfg.llmRole, {"scheduler", "worker", "both"});
         reader.RequiredPositive("worker_number", cfg.nWorker);
         reader.RequiredInt32("device_id", cfg.deviceId);
+        reader.OptionalNonNegative("worker_index", cfg.workerIndex);
         reader.RequiredPositive("block_size", cfg.blockSize);
         reader.OptionalPositive("cache_buffer_capacity_gb", cfg.capacityGb);
         reader.OptionalNonEmpty("cache_replacement_policy", cfg.replacementPolicy);
