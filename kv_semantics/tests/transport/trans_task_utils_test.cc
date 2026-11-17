@@ -43,6 +43,15 @@ TEST(TransTaskUtilsTest, CacheKeyViewPreservesBinaryBytes)
     EXPECT_EQ(view.data(), reinterpret_cast<const char*>(key.TryGetBinaryKey()->data()));
 }
 
+TEST(TransTaskUtilsTest, ResolvedKeyRoutingViewExcludesNamespace)
+{
+    const BinaryKey bytes{std::byte{1}, std::byte{2}};
+    const ResolvedCacheKey first{bytes, 1};
+    const ResolvedCacheKey second{bytes, 2};
+    EXPECT_EQ(CacheKeyView(first), CacheKeyView(second));
+    EXPECT_EQ(CacheKeyView(first), CacheKeyView(CacheKey::FromBytes(bytes)));
+}
+
 TEST(TransTaskUtilsTest, CacheKeyViewPreservesStringBytes)
 {
     const CacheKey key = CacheKey::FromEngineKey(std::string("a\0b", 3));

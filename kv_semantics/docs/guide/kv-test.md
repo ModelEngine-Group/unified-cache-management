@@ -257,49 +257,32 @@ standalone file keys. Compatibility aliases are omitted.
 | `transport.flag_buffer_slot_size` | Bytes per response/flag-buffer slot. |
 | `transport.flag_buffer_slot_num` | Number of response/flag-buffer slots. |
 | `asu_info.<id>` | Endpoint configuration for one ASU; multiple endpoints are separated by semicolons. |
-| `inference.engine` | Key resolution rules; defaults to `generic`. Recognized values are `generic`, `vllm_ascend`, and `sglang` (case-sensitive). Other values log a warning and use generic handling without layer aggregation. |
-| `aggregation.layer_count` | Number of layer slots per aggregated object; non-negative integer, defaults to `0`. Must be positive when resolving a vLLM-Ascend layerwise string key; the layer index must be smaller than this value. |
-| `aggregation.layer_slot_bytes` | Bytes reserved per layer slot, based on the engine's actual layout; non-negative integer, defaults to `0`. Layerwise aggregation requires a positive, 512-byte-aligned slot size. See the layout constraints below. |
+| `inference.engine` | Key and namespace resolution rules; defaults to `generic`. Recognized values are `generic`, `vllm_ascend`, and `sglang` (case-sensitive). Other values log a warning and use generic handling. |
 
-`inference.engine` and the `aggregation.*` fields configure logical string keys
-supplied to KVClient through `CacheKey::FromEngineKey`. Keys supplied through
-`CacheKey::FromBytes` are already encoded and bypass string-key resolution,
-including layer aggregation. The binary keys generated or padded by kv-test do
-not exercise this aggregation path.
+`inference.engine` selects how `CacheKey::FromEngineKey` inputs are normalized
+before routing. `CacheKey::FromBytes` preserves the eight encoded bytes and
+uses `IoOptions::kvns` as its namespace without engine-specific parsing.
 
-- `generic` and `sglang` hash the complete string key without adding a layer
-  offset. Nonzero aggregation settings are ignored for these engines, with a
-  warning during initialization.
-- `vllm_ascend` recognizes a layerwise suffix of `@<chunk_hash>@<layer>`, where
-  the hash is a nonempty unnamed field and the layer is an unsigned decimal
-  index. It removes only the final `@<layer>` from the object identity and adds
-  `layer * aggregation.layer_slot_bytes` to each entry's original offset.
-  Other fields remain part of the object identity. Non-layerwise keys retain
-  their full identity and do not receive a layer offset.
-- Both aggregation values may remain at their default `0` when no layerwise
-  key is used. When a layerwise key is resolved, both must be positive, the
-  layer index must be in `[0, layer_count)`, and the slot size must be a multiple
-  of 512 bytes. A layout that does not meet the alignment requirement is not
-  supported; the SDK does not pad or copy payloads to make it aligned.
-- `layer_count * layer_slot_bytes` must not exceed `2^32` bytes. After adding the
-  layer base, each entry's offset must fit in `uint32_t`. Every layerwise read
-  or write must also remain inside its layer slot: the original entry offset
-  must not exceed the slot size, and its length must not exceed the remaining
-  bytes in that slot. This also applies to layer zero.
+- `generic` hashes the complete string key and uses the supplied namespace.
+- `vllm_ascend` extracts named `@group:<id>` and `@pp_rank:<id>` fields. For
+  example, base namespace `tenant` and `model@group:2@pp_rank:1@hash` resolve
+  to namespace `tenant_group2_pp1` and key identity `model@hash`. Other fields,
+  including a layer suffix, remain in the identity; no layer offset is added.
+- `sglang` recognizes the direct-linker suffix `_cp<id>_pp<id>_<pool>`.
+  For example, `model_hash_cp0_pp1_indexer_scale` selects namespace
+  `tenant_indexer_scale_pp1` and identity `model_hash_cp0`. The full pool name
+  is retained in the namespace, and CP remains in the key identity. Keys
+  without this suffix are hashed unchanged using the supplied namespace.
 
-For example, a model with 28 layers and 524288 bytes reserved per layer uses:
+Only present fields are appended, including an explicitly supplied PP zero.
+String identities use XXH64, encoded as eight little-endian bytes. Namespaces
+use XXH32 to produce GNSIDs. Both hashes use seed 5381. Load/Store offsets
+are passed through unchanged; layer-slot configuration is no longer used.
 
-```ini
-inference.engine=vllm_ascend
-aggregation.layer_count=28
-aggregation.layer_slot_bytes=524288
-```
-
-The slot size must describe the engine's actual layout; it is not an arbitrary
-value to round up merely to satisfy alignment. Aggregation layout checks run
-when a layerwise key is resolved, rather than rejecting unused settings during
-initialization. Configuration values must still be valid non-negative integers
-when the file is parsed.
+Normalized keys carry per-item GNSIDs internally; public `CacheKey` and
+`KVBuffer` types do not expose this metadata. Namespace grouping, local-ID
+view lookup and namespace-specific protocol dispatch are not implemented
+here. Protocol requests still use the configured `transport.kv_ns_id`.
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
 `KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`

@@ -27,7 +27,6 @@
 #include <exception>
 #include <functional>
 #include <iterator>
-#include <limits>
 #include <thread>
 #include <utility>
 #include "device.h"
@@ -118,13 +117,6 @@ Status KvClientImpl::Init(const KvClientConfig& config)
         return Status::Error(StatusCode::INVALID_ARGUMENT, "sharedProviderMode must be 0 or 1");
     }
 
-    if (config.keyResolution.engine != InferenceEngine::VLLM_ASCEND &&
-        (config.keyResolution.layerCount != 0 || config.keyResolution.layerSlotBytes != 0)) {
-        KV_WARN(
-            "{} keys do not require layer aggregation; aggregation.layer_count and "
-            "aggregation.layer_slot_bytes are ignored and can be omitted",
-            config.keyResolution.engine == InferenceEngine::SGLANG ? "SGLang" : "Generic");
-    }
     config_ = config;
     keyResolver_ = CreateDefaultKeyResolver(config.keyResolution);
     viewServer_ = viewServerFactory_(config);
@@ -177,8 +169,7 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     const char* engine = resolution.engine == InferenceEngine::VLLM_ASCEND ? "vllm_ascend"
                          : resolution.engine == InferenceEngine::SGLANG    ? "sglang"
                                                                            : "generic";
-    KV_INFO("KVClient initialized: engine={}, layer_count={}, layer_slot_bytes={}", engine,
-            resolution.layerCount, resolution.layerSlotBytes);
+    KV_INFO("KVClient initialized: engine={}", engine);
     return Status::OK();
 }
 
@@ -431,31 +422,17 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     ctx->opType = opType;
     ctx->prerequisite = options.prerequisite;
     ctx->viewSnapshot = snapshot;
-    ctx->gnsid = ResolveNamespace(options.kvns);
-    ctx->entries = entries;
-    for (auto& entry : ctx->entries) {
-        ResolvedKey resolved;
-        auto status = keyResolver_->Resolve(entry.key, resolved);
+    ctx->entries.reserve(entries.size());
+    for (const auto& entry : entries) {
+        ResolvedKVBuffer resolved;
+        auto status = keyResolver_->Resolve(entry.key, options.kvns, resolved.key);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
         }
-        if (resolved.layerSlotBytes &&
-            (entry.offset > *resolved.layerSlotBytes ||
-             entry.buffer.region.size > *resolved.layerSlotBytes - entry.offset)) {
-            taskId = kInvalidTaskId;
-            return Status::Error(
-                StatusCode::INVALID_ARGUMENT,
-                "layerwise IO exceeds layer slot bounds: offset=" + std::to_string(entry.offset) +
-                    ", length=" + std::to_string(entry.buffer.region.size) +
-                    ", slot_bytes=" + std::to_string(*resolved.layerSlotBytes));
-        }
-        if (resolved.baseOffset > std::numeric_limits<std::uint32_t>::max() - entry.offset) {
-            taskId = kInvalidTaskId;
-            return Status::Error(StatusCode::INVALID_ARGUMENT, "object offset exceeds uint32");
-        }
-        entry.key = CacheKey::FromBytes(resolved.key);
-        entry.offset += static_cast<std::uint32_t>(resolved.baseOffset);
+        resolved.buffer = entry.buffer;
+        resolved.offset = entry.offset;
+        ctx->entries.push_back(std::move(resolved));
     }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
@@ -519,17 +496,16 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
-    ctx->gnsid = ResolveNamespace(options.kvns);
     ctx->prerequisite = options.prerequisite;
-    ctx->keys = keys;
-    for (auto& key : ctx->keys) {
-        ResolvedKey resolved;
-        auto status = keyResolver_->Resolve(key, resolved);
+    ctx->keys.reserve(keys.size());
+    for (const auto& key : keys) {
+        ResolvedCacheKey resolved;
+        auto status = keyResolver_->Resolve(key, options.kvns, resolved);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
         }
-        key = CacheKey::FromBytes(resolved.key);
+        ctx->keys.push_back(std::move(resolved));
     }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);

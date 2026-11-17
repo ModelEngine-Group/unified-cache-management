@@ -64,7 +64,7 @@ public:
 
     Status CheckHealth() override { return Status::OK(); }
 
-    Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
+    Status RunQuery(BatchView<ResolvedCacheKey> keys, QueryResult& result)
     {
         result.exists.assign(keys.size, true);
         result.prefixHitKeys = 0;

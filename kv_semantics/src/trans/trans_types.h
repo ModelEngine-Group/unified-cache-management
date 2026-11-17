@@ -30,6 +30,7 @@
 #include <string_view>
 #include <vector>
 #include "kv_types.h"
+#include "resolved_key.h"
 
 namespace kv {
 
@@ -39,6 +40,11 @@ inline std::string_view CacheKeyView(const CacheKey& key)
         return {reinterpret_cast<const char*>(binary->data()), binary->size()};
     }
     return *key.TryGetEngineKey();
+}
+
+inline std::string_view CacheKeyView(const ResolvedCacheKey& key)
+{
+    return {reinterpret_cast<const char*>(key.key.data()), key.key.size()};
 }
 
 inline std::string CacheKeyToHex(const CacheKey& key)

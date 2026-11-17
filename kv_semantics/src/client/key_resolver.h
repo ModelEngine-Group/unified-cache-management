@@ -25,24 +25,28 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
-#include "kv_types.h"
+#include "resolved_key.h"
 
 namespace kv {
 
-struct ResolvedKey {
-    BinaryKey key{};
-    std::uint64_t baseOffset{0};
-    // Present only for layerwise keys, including layer zero.
-    std::optional<std::uint64_t> layerSlotBytes;
-};
-
-// Resolves object identity and an offset increment before routing. Implementations must be
-// deterministic and safe for concurrent calls, and preserve FromBytes inputs unchanged.
+// Resolves namespace and storage identity before routing. Input buffers and offsets
+// remain unchanged. Implementations must be deterministic and thread-safe.
 class KeyResolver {
 public:
     virtual ~KeyResolver() = default;
-    virtual Status Resolve(const CacheKey& input, ResolvedKey& result) const = 0;
+    Status Resolve(const CacheKey& input, std::string_view baseKvns,
+                   ResolvedCacheKey& result) const;
+
+protected:
+    struct ParsedKey {
+        std::string identity;
+        std::optional<std::string> component;
+        std::optional<std::uint32_t> ppRank;
+    };
+
+    virtual Status ParseEngineKey(std::string_view input, ParsedKey& result) const = 0;
 };
 
 std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config);

@@ -34,6 +34,7 @@
 #include <vector>
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
+#include "resolved_key.h"
 #include "trans_types.h"
 
 namespace kv {
@@ -90,11 +91,9 @@ struct TransportTask {
     NodeId nodeId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
-    // Global namespace ID; view lookup must resolve a local ID before protocol encoding.
-    std::uint32_t gnsid{0};
     std::weak_ptr<AsuTransport> transport;
-    std::vector<CacheKey> keys;
-    std::vector<KVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -127,12 +126,10 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::LOAD};
-    // Global namespace ID; view lookup must resolve a local ID before protocol encoding.
-    std::uint32_t gnsid{0};
     std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
-    std::vector<KVBuffer> entries;
-    std::vector<CacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;

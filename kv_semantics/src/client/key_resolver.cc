@@ -22,94 +22,152 @@
  * SOFTWARE.
  * */
 #include "key_resolver.h"
-#define XXH_INLINE_ALL
 #include <charconv>
-#include <string_view>
-#include "utils/config_utils.h"
+#define XXH_INLINE_ALL
 #include "xxhash.h"
 
 #define HASH_SEED_VALUE (5381)
 
 namespace kv {
+namespace {
+
+Status ParseRank(std::string_view value, std::uint32_t& rank)
+{
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), rank);
+    if (error != std::errc{} || end != value.data() + value.size()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "invalid namespace rank: " + std::string(value));
+    }
+    return Status::OK();
+}
+
+class VllmKeyResolver final : public KeyResolver {
+private:
+    Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
+    {
+        // Only named group/PP fields select the namespace; preserve all other fields.
+        constexpr std::string_view groupPrefix = "group:";
+        constexpr std::string_view ppPrefix = "pp_rank:";
+        std::size_t begin = 0;
+        bool first = true;
+        while (true) {
+            const auto end = input.find('@', begin);
+            const auto field = input.substr(
+                begin, end == std::string_view::npos ? input.size() - begin : end - begin);
+            const bool group = !first && field.substr(0, groupPrefix.size()) == groupPrefix;
+            const bool pp = !first && field.substr(0, ppPrefix.size()) == ppPrefix;
+            if (group || pp) {
+                if ((group && result.component) || (pp && result.ppRank)) {
+                    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                         "duplicate namespace field in key: " + std::string(input));
+                }
+                std::uint32_t rank = 0;
+                auto status =
+                    ParseRank(field.substr(group ? groupPrefix.size() : ppPrefix.size()), rank);
+                if (!status.ok()) { return status; }
+                if (group) {
+                    result.component = "group" + std::to_string(rank);
+                } else {
+                    result.ppRank = rank;
+                }
+            } else {
+                if (!first) { result.identity.push_back('@'); }
+                result.identity.append(field);
+            }
+            first = false;
+            if (end == std::string_view::npos) { break; }
+            begin = end + 1;
+        }
+        return Status::OK();
+    }
+};
+
+class SglangKeyResolver final : public KeyResolver {
+private:
+    Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
+    {
+        result.identity = input;
+        // Direct-linker suffix: _cp<rank>_pp<rank>_<pool>. Pool names may contain '_'.
+        constexpr std::string_view cpPrefix = "_cp";
+        constexpr std::string_view ppPrefix = "_pp";
+        std::size_t pp = std::string_view::npos;
+        for (auto cp = input.find(cpPrefix); cp != std::string_view::npos;
+             cp = input.find(cpPrefix, cp + cpPrefix.size())) {
+            const auto end = input.find('_', cp + cpPrefix.size());
+            if (end == std::string_view::npos || input.substr(end, ppPrefix.size()) != ppPrefix) {
+                continue;
+            }
+            std::uint32_t cpRank = 0;
+            if (ParseRank(input.substr(cp + cpPrefix.size(), end - cp - cpPrefix.size()), cpRank)
+                    .ok()) {
+                pp = end;
+                break;
+            }
+        }
+        if (pp == std::string_view::npos) { return Status::OK(); }
+        const auto rankBegin = pp + ppPrefix.size();
+        const auto pool = input.find('_', rankBegin);
+        if (pool == std::string_view::npos || pool + 1 == input.size()) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "missing pool in direct-linker key: " + std::string(input));
+        }
+        std::uint32_t ppRank = 0;
+        auto status = ParseRank(input.substr(rankBegin, pool - rankBegin), ppRank);
+        if (!status.ok()) { return status; }
+        result.ppRank = ppRank;
+        result.component = std::string(input.substr(pool + 1));
+        result.identity = input.substr(0, pp);
+        return Status::OK();
+    }
+};
+
+class GenericKeyResolver final : public KeyResolver {
+private:
+    Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
+    {
+        result.identity = input;
+        return Status::OK();
+    }
+};
+
+}  // namespace
 
 std::uint32_t ResolveNamespace(std::string_view kvns)
 {
     return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
 }
 
-namespace {
-
-class DefaultKeyResolver final : public KeyResolver {
-public:
-    explicit DefaultKeyResolver(KeyResolutionConfig config) : config_(config) {}
-
-    Status Resolve(const CacheKey& input, ResolvedKey& result) const override
-    {
-        result = {};
-        if (const auto* bytes = input.TryGetBinaryKey()) {
-            result.key = *bytes;
-            return Status::OK();
-        }
-        const auto& text = *input.TryGetEngineKey();
-        std::string_view identity = text;
-        if (config_.engine == InferenceEngine::VLLM_ASCEND) {
-            auto status = ResolveVllmLayerKey(text, identity, result);
-            if (!status.ok()) { return status; }
-        }
-        auto hash = XXH64(identity.data(), identity.size(), HASH_SEED_VALUE);
-        for (auto& byte : result.key) {
+Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
+                            ResolvedCacheKey& result) const
+{
+    ResolvedCacheKey resolved;
+    std::string kvns(baseKvns);
+    if (const auto* bytes = input.TryGetBinaryKey()) {
+        resolved.key = *bytes;
+    } else {
+        ParsedKey parsed;
+        auto status = ParseEngineKey(*input.TryGetEngineKey(), parsed);
+        if (!status.ok()) { return status; }
+        if (parsed.component) { kvns += "_" + *parsed.component; }
+        if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }
+        auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), HASH_SEED_VALUE);
+        for (auto& byte : resolved.key) {
             byte = static_cast<std::byte>(hash & 0xff);
             hash >>= 8;
         }
-        return Status::OK();
     }
-
-private:
-    Status ResolveVllmLayerKey(std::string_view key, std::string_view& identity,
-                               ResolvedKey& result) const;
-    KeyResolutionConfig config_;
-};
-
-Status DefaultKeyResolver::ResolveVllmLayerKey(std::string_view key, std::string_view& identity,
-                                               ResolvedKey& result) const
-{
-    identity = key;
-    result.baseOffset = 0;
-    // LayerPoolKey ends with @chunk_hash@layer. Preserve every other field.
-    const auto layerSeparator = key.rfind('@');
-    const auto hashSeparator = layerSeparator != std::string_view::npos && layerSeparator != 0
-                                   ? key.rfind('@', layerSeparator - 1)
-                                   : std::string_view::npos;
-    if (hashSeparator != std::string_view::npos && hashSeparator != 0) {
-        const auto hash = key.substr(hashSeparator + 1, layerSeparator - hashSeparator - 1);
-        const auto layerText = key.substr(layerSeparator + 1);
-        if (!hash.empty() && hash.find(':') == std::string_view::npos) {
-            std::uint64_t layer = 0;
-            const auto [end, error] =
-                std::from_chars(layerText.data(), layerText.data() + layerText.size(), layer);
-            if (error != std::errc{} || end != layerText.data() + layerText.size()) {
-                return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                     "invalid layer in key: " + std::string(key));
-            }
-            auto status = ValidateKeyResolutionConfig(config_);
-            if (!status.ok()) { return status; }
-            if (layer >= config_.layerCount) {
-                return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                     "invalid layer in key: " + std::string(key));
-            }
-            identity = key.substr(0, layerSeparator);
-            result.baseOffset = layer * config_.layerSlotBytes;
-            result.layerSlotBytes = config_.layerSlotBytes;
-        }
-    }
+    resolved.gnsid = ResolveNamespace(kvns);
+    result = resolved;
     return Status::OK();
 }
 
-}  // namespace
-
 std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config)
 {
-    return std::make_unique<DefaultKeyResolver>(config);
+    switch (config.engine) {
+        case InferenceEngine::VLLM_ASCEND: return std::make_unique<VllmKeyResolver>();
+        case InferenceEngine::SGLANG: return std::make_unique<SglangKeyResolver>();
+        default: return std::make_unique<GenericKeyResolver>();
+    }
 }
 
 }  // namespace kv
