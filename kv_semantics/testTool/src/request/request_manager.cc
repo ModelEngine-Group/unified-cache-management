@@ -3,13 +3,11 @@
  */
 
 #include "request/request_manager.h"
-
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <vector>
-
 #include "log/logger_manager.h"
 #include "utils/file_util.h"
 
@@ -18,31 +16,24 @@ namespace {
 /** 十进制字符串解析为无符号 64 位整数；含非数字字符或溢出时返回 false */
 bool ParseUint64(const std::string &text, std::uint64_t &value)
 {
-    if (text.empty() || text.size() > 20) {
-        return false;
-    }
+    if (text.empty() || text.size() > 20) { return false; }
     for (char c : text) {
-        if (c < '0' || c > '9') {
-            return false;
-        }
+        if (c < '0' || c > '9') { return false; }
     }
     errno = 0;
     char *end = nullptr;
     const unsigned long long parsed = std::strtoull(text.c_str(), &end, 10);
-    if (errno != 0 || end != text.c_str() + text.size()) {
-        return false;
-    }
+    if (errno != 0 || end != text.c_str() + text.size()) { return false; }
     value = static_cast<std::uint64_t>(parsed);
     return true;
 }
 
-/** 十进制字符串解析为无符号 32 位整数（0 合法，offset 等字段可为 0）；含非数字字符或越界时返回 false */
+/** 十进制字符串解析为无符号 32 位整数（0 合法，offset 等字段可为 0）；含非数字字符或越界时返回
+ * false */
 bool ParseUint32(const std::string &text, std::uint32_t &value)
 {
     std::uint64_t parsed = 0;
-    if (!ParseUint64(text, parsed) || parsed > 0xFFFFFFFFULL) {
-        return false;
-    }
+    if (!ParseUint64(text, parsed) || parsed > 0xFFFFFFFFULL) { return false; }
     value = static_cast<std::uint32_t>(parsed);
     return true;
 }
@@ -53,19 +44,13 @@ bool ParseUint32(const std::string &text, std::uint32_t &value)
  */
 bool ParseKey128(const std::string &text, unsigned __int128 &value)
 {
-    if (text.empty() || text.size() > 39) {
-        return false;
-    }
+    if (text.empty() || text.size() > 39) { return false; }
     unsigned __int128 result = 0;
     for (char c : text) {
-        if (c < '0' || c > '9') {
-            return false;
-        }
+        if (c < '0' || c > '9') { return false; }
         const unsigned digit = static_cast<unsigned>(c - '0');
         // 溢出判定：result * 10 + digit 会超出 128 位上限
-        if (result > (~static_cast<unsigned __int128>(0) - digit) / 10) {
-            return false;
-        }
+        if (result > (~static_cast<unsigned __int128>(0) - digit) / 10) { return false; }
         result = result * 10 + digit;
     }
     value = result;
@@ -93,9 +78,7 @@ bool ParseOrcOp(const std::string &text, OrcOp &op)
 std::string TrimLine(const std::string &line)
 {
     const std::size_t begin = line.find_first_not_of(" \t");
-    if (begin == std::string::npos) {
-        return std::string();
-    }
+    if (begin == std::string::npos) { return std::string(); }
     const std::size_t end = line.find_last_not_of(" \t");
     return line.substr(begin, end - begin + 1);
 }
@@ -107,9 +90,7 @@ std::vector<std::string> Tokenize(const std::string &line)
     std::size_t pos = 0;
     while (pos < line.size()) {
         const std::size_t start = line.find_first_not_of(" \t", pos);
-        if (start == std::string::npos) {
-            break;
-        }
+        if (start == std::string::npos) { break; }
         const std::size_t stop = line.find_first_of(" \t", start);
         if (stop == std::string::npos) {
             tokens.emplace_back(line.substr(start));
@@ -130,13 +111,9 @@ std::string TextAfterTokens(const std::string &text, std::size_t tokenCount)
     std::size_t pos = 0;
     for (std::size_t i = 0; i < tokenCount; ++i) {
         const std::size_t start = text.find_first_not_of(" \t", pos);
-        if (start == std::string::npos) {
-            return std::string();
-        }
+        if (start == std::string::npos) { return std::string(); }
         const std::size_t stop = text.find_first_of(" \t", start);
-        if (stop == std::string::npos) {
-            return std::string();
-        }
+        if (stop == std::string::npos) { return std::string(); }
         pos = stop;
     }
     const std::size_t rest = text.find_first_not_of(" \t", pos);
@@ -144,10 +121,7 @@ std::string TextAfterTokens(const std::string &text, std::size_t tokenCount)
 }
 
 /** key 128 位整数的低 64 位分量 */
-std::uint64_t KeyLow(const unsigned __int128 key)
-{
-    return static_cast<std::uint64_t>(key);
-}
+std::uint64_t KeyLow(const unsigned __int128 key) { return static_cast<std::uint64_t>(key); }
 
 /** key 128 位整数右移 64 位后的低 16 位分量（bit64-79；testmode=1 的 value 生成规则使用） */
 std::uint16_t KeyHigh16(const unsigned __int128 key)
@@ -162,7 +136,7 @@ std::uint16_t KeyHigh16(const unsigned __int128 key)
  * length 允许为 0（0 长度读写）；失败返回 false
  */
 bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
-                     RequestOrc &out)
+                      RequestOrc &out)
 {
     if (fields.size() >= 4) {
         std::uint64_t nsid = 0;
@@ -177,9 +151,7 @@ bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string 
             out.offset = offset;
             out.length = length;
             out.rawKey = fields[1];
-            if (fields.size() > 4) {
-                out.value = TextAfterTokens(textAfterOp, 4);
-            }
+            if (fields.size() > 4) { out.value = TextAfterTokens(textAfterOp, 4); }
             return true;
         }
     }
@@ -195,9 +167,7 @@ bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string 
             out.offset = offset;
             out.length = length;
             out.rawKey = fields[0];
-            if (fields.size() > 3) {
-                out.value = TextAfterTokens(textAfterOp, 3);
-            }
+            if (fields.size() > 3) { out.value = TextAfterTokens(textAfterOp, 3); }
             return true;
         }
     }
@@ -217,9 +187,7 @@ bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsi
     if (fields.size() == 2 && fields[1].rfind("nsid=", 0) == 0) {
         return ParseUint64(fields[1].substr(5), nsid);
     }
-    if (fields.size() == 3 && fields[1] == "nsid") {
-        return ParseUint64(fields[2], nsid);
-    }
+    if (fields.size() == 3 && fields[1] == "nsid") { return ParseUint64(fields[2], nsid); }
     return false;
 }
 
@@ -231,9 +199,7 @@ bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsi
 bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
                      RequestOrc &out)
 {
-    if (fields.size() < 3) {
-        return false;
-    }
+    if (fields.size() < 3) { return false; }
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
     unsigned __int128 key = 0;
@@ -246,13 +212,11 @@ bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &
     out.offset = offset;
     out.length = length;
     out.rawKey = fields[0];
-    if (fields.size() > 3) {
-        out.value = TextAfterTokens(line, 3);
-    }
+    if (fields.size() > 3) { out.value = TextAfterTokens(line, 3); }
     return true;
 }
 
-} // namespace
+}  // namespace
 
 bool RequestManager::Load(const std::string &inputPath, std::string &err)
 {
@@ -268,9 +232,7 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
 
     for (std::size_t lineNo = 1; lineNo <= lines.size(); ++lineNo) {
         const std::string line = TrimLine(lines[lineNo - 1]);
-        if (line.empty()) {
-            continue;
-        }
+        if (line.empty()) { continue; }
         const std::vector<std::string> tokens = Tokenize(line);
 
         // batch 内：/batch 闭合，其余为批内行
@@ -364,12 +326,6 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
     return true;
 }
 
-std::size_t RequestManager::StepCount() const
-{
-    return steps_.size();
-}
+std::size_t RequestManager::StepCount() const { return steps_.size(); }
 
-const FlowStep &RequestManager::GetStep(std::size_t index) const
-{
-    return steps_[index];
-}
+const FlowStep &RequestManager::GetStep(std::size_t index) const { return steps_[index]; }

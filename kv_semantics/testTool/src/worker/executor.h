@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-
 #include "kv_client.h"
 
 class KvClientUtil;
@@ -37,13 +36,15 @@ struct ExecutorMetrics {
     std::uint64_t notFoundCount = 0;
     /** 回读比对不一致计数（get 读回数据与基准不符） */
     std::uint64_t mismatchCount = 0;
-    /** 写入 + 读取的 value 流量字节数（成功 entry 的口径：失败/未命中 entry 计 0；查询/删除无载荷不计） */
+    /** 写入 + 读取的 value 流量字节数（成功 entry 的口径：失败/未命中 entry 计
+     * 0；查询/删除无载荷不计） */
     std::uint64_t ioBytes = 0;
     /** 完成等待的任务数（TTFT 样本数，每任务一个样本） */
     std::uint64_t taskCount = 0;
     /** 任务提交→完成时延累计（纳秒） */
     std::uint64_t latencyNsTotal = 0;
-    /** 分接口操作数（下标为 OpType 枚举值；全量口径），支持 get/put/delete/exist 各自的 iops 统计 */
+    /** 分接口操作数（下标为 OpType 枚举值；全量口径），支持 get/put/delete/exist 各自的 iops 统计
+     */
     std::uint64_t opCountByOp[kOpTypeCount] = {0};
     /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径），exist/delete 恒为 0 */
     std::uint64_t ioBytesByOp[kOpTypeCount] = {0};
@@ -84,36 +85,44 @@ private:
     /** 提交写入并等待，entry 失败计 errorCount；返回 false 仅当提交/等待失败 */
     bool StoreAndRecord(const Request &request, std::string &err);
 
-    /** 提交读取并等待：NOT_FOUND 计 notFoundCount、有基准逐项 memcmp 不一致计 mismatchCount、其他失败计 errorCount */
+    /** 提交读取并等待：NOT_FOUND 计 notFoundCount、有基准逐项 memcmp 不一致计
+     * mismatchCount、其他失败计 errorCount */
     bool LoadAndRecord(const Request &request, std::string &err);
 
-    /** 把 put / get 任务响应明细写入请求明细日志（每 entry 一行：batchCode + entryCode + 原文 key + key_low/key_high 分开 + offset + len + 读回 value/tail，opcode 区分；读回失败视为工具链失败；perf=off 全量、perf=on 仅错误行） */
+    /** 把 put / get 任务响应明细写入请求明细日志（每 entry 一行：batchCode + entryCode + 原文 key +
+     * key_low/key_high 分开 + offset + len + 读回 value/tail，opcode
+     * 区分；读回失败视为工具链失败；perf=off 全量、perf=on 仅错误行） */
     bool WritePutGetLog(const Request &request, const kv::TaskResult &result, const char *opcode,
                         std::string &err);
 
-    /** 把 exist 任务响应明细写入请求明细日志（每 key 一行：batchCode + 原文 key + key_low/key_high + exists + prefix_hit_len，无 entryCode）；调用侧已保证 queryResult 有值且尺寸匹配 */
+    /** 把 exist 任务响应明细写入请求明细日志（每 key 一行：batchCode + 原文 key + key_low/key_high
+     * + exists + prefix_hit_len，无 entryCode）；调用侧已保证 queryResult 有值且尺寸匹配 */
     void WriteExistLog(const Request &request, const kv::TaskResult &result);
 
-    /** 把 delete 任务响应明细写入请求明细日志（每 key 一行：batchCode + entryCode + 原文 key + key_low/key_high；delete 无 value 载荷） */
+    /** 把 delete 任务响应明细写入请求明细日志（每 key 一行：batchCode + entryCode + 原文 key +
+     * key_low/key_high；delete 无 value 载荷） */
     void WriteDeleteLog(const Request &request, const kv::TaskResult &result);
 
     /** 提交删除并等待：NOT_FOUND 计 notFoundCount、其他失败计 errorCount */
     bool DeleteAndRecord(const Request &request, std::string &err);
 
-    /** 埋点一次任务的操作数与流量（op 用于分接口桶；bytes 为成功 entry 口径，失败/未命中计 0）；taskCompleted 为 true 时 latencyNs 计入 TTFT 样本 */
+    /** 埋点一次任务的操作数与流量（op 用于分接口桶；bytes 为成功 entry 口径，失败/未命中计
+     * 0）；taskCompleted 为 true 时 latencyNs 计入 TTFT 样本 */
     void RecordTask(OpType op, std::size_t entryCount, std::uint64_t bytes, bool taskCompleted,
                     std::int64_t latencyNs);
 
     /** 判定状态是否为“目标 key 无数据”观察（get/delete 不存在 key 的正常观察结果，非工具失败） */
     static bool IsNotFound(const kv::Status &status);
 
-    /** 统计任务结果中的失败 entry 数：任务级失败按全部 entry 计，entryStatus 缺失的差额也按失败计 */
+    /** 统计任务结果中的失败 entry 数：任务级失败按全部 entry 计，entryStatus 缺失的差额也按失败计
+     */
     static std::size_t CountFailed(const kv::TaskResult &result, std::size_t entryCount);
 
     /** 汇总请求项的 value 流量字节数（各 entry 的 region 大小求和） */
     static std::uint64_t SumBytes(const std::vector<kv::KVBuffer> &entries);
 
-    /** 成功 entry 的流量字节和（entryStatus[i].ok() 口径；entryStatus 缺失时按任务级状态归类全部） */
+    /** 成功 entry 的流量字节和（entryStatus[i].ok() 口径；entryStatus 缺失时按任务级状态归类全部）
+     */
     static std::uint64_t SumOkBytes(const kv::TaskResult &result,
                                     const std::vector<kv::KVBuffer> &entries);
 

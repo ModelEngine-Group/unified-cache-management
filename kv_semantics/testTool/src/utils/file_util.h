@@ -27,5 +27,5 @@ public:
     /** 确保目录存在（不存在则递归创建；已存在且为目录则直接成功） */
     static bool EnsureDir(const std::string &dirPath, std::string &err);
 
-    FileUtil() = delete; // 静态工具类，禁止实例化
+    FileUtil() = delete;  // 静态工具类，禁止实例化
 };

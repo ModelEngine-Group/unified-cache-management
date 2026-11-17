@@ -3,13 +3,11 @@
  */
 
 #include "utils/file_util.h"
-
 #include <filesystem>
 #include <fstream>
 #include <system_error>
 
-bool FileUtil::ReadLines(const std::string &path, std::vector<std::string> &lines,
-                         std::string &err)
+bool FileUtil::ReadLines(const std::string &path, std::vector<std::string> &lines, std::string &err)
 {
     std::ifstream fin(path);
     if (!fin.is_open()) {
@@ -19,9 +17,7 @@ bool FileUtil::ReadLines(const std::string &path, std::vector<std::string> &line
     lines.clear();
     std::string line;
     while (std::getline(fin, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
+        if (!line.empty() && line.back() == '\r') { line.pop_back(); }
         lines.emplace_back(line);
     }
     if (fin.bad()) {
@@ -38,9 +34,7 @@ bool FileUtil::ListFiles(const std::string &dirPath,
     files.clear();
     try {
         for (const auto &entry : std::filesystem::directory_iterator(dirPath)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
+            if (!entry.is_regular_file()) { continue; }
             files.emplace_back(entry.path().filename().string(),
                                static_cast<std::uint64_t>(entry.file_size()));
         }

@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-
 #include "kv_client.h"
 
 /**
@@ -51,10 +50,7 @@ public:
     bool Wait(kv::TaskId taskId, std::uint64_t timeoutMs, kv::TaskResult &result, std::string &err);
 
     /** 底层 kv client 访问入口；未初始化时为 nullptr */
-    kv::KvClient *Get() const
-    {
-        return client_.get();
-    }
+    kv::KvClient *Get() const { return client_.get(); }
 
 private:
     /** kv client 底层实现 */

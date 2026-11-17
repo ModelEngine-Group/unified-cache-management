@@ -3,18 +3,15 @@
  */
 
 #include "log/logger_manager.h"
-
 #include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
-#include <sstream>
-#include <vector>
-
 #include <spdlog/details/thread_pool.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
-
+#include <sstream>
+#include <vector>
 #include "utils/config_util.h"
 #include "utils/file_util.h"
 
@@ -27,9 +24,7 @@ constexpr char kReqLogFileNameTpl[] = "req_%Y%m%d_%H.log";
 std::string ExpandFileName(const std::string &tpl, std::time_t t)
 {
     const std::tm *tmNow = std::localtime(&t);
-    if (tmNow == nullptr) {
-        return tpl;
-    }
+    if (tmNow == nullptr) { return tpl; }
     std::ostringstream oss;
     oss << std::put_time(tmNow, tpl.c_str());
     return oss.str();
@@ -40,13 +35,9 @@ std::string ExpandFileName(const std::string &tpl, std::time_t t)
 bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
 {
     // 重复初始化时先释放旧资源
-    if (logger_ != nullptr) {
-        Shutdown();
-    }
+    if (logger_ != nullptr) { Shutdown(); }
 
-    if (!FileUtil::EnsureDir(config.GetLogDir(), err)) {
-        return false;
-    }
+    if (!FileUtil::EnsureDir(config.GetLogDir(), err)) { return false; }
     const std::filesystem::path dirPath(config.GetLogDir());
 
     // 线程池 / sink / logger 的构造与注册可能因日志目录不可写、磁盘满等环境问题抛异常，
@@ -74,9 +65,8 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
         sinks.push_back(errorSink);
 
         // register_logger 会按 registry 默认值覆盖格式与级别，自定义设置须放在注册之后
-        logger_ = std::make_shared<spdlog::async_logger>("main", sinks.begin(), sinks.end(),
-                                                        threadPool_,
-                                                        spdlog::async_overflow_policy::block);
+        logger_ = std::make_shared<spdlog::async_logger>(
+            "main", sinks.begin(), sinks.end(), threadPool_, spdlog::async_overflow_policy::block);
         spdlog::register_logger(logger_);
 
         // 请求明细日志：put / get / exist / delete 任务的明细行共用一个追加文件；
@@ -110,9 +100,7 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
     // 请求明细 logger 两模式均创建，直接用配置值
     try {
         logger_->set_pattern(config.GetLogPattern());
-        if (reqLogger_ != nullptr) {
-            reqLogger_->set_pattern(config.GetLogPattern());
-        }
+        if (reqLogger_ != nullptr) { reqLogger_->set_pattern(config.GetLogPattern()); }
     } catch (const std::exception &e) {
         err = "invalid log.pattern: ";
         err += e.what();
@@ -121,22 +109,16 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
     }
 
     logger_->set_level(config.GetPerf() ? spdlog::level::warn : config.GetLogLevel());
-    if (reqLogger_ != nullptr) {
-        reqLogger_->set_level(config.GetLogLevel());
-    }
-    logger_->flush_on(spdlog::level::err); // error 及以上立即落盘
+    if (reqLogger_ != nullptr) { reqLogger_->set_level(config.GetLogLevel()); }
+    logger_->flush_on(spdlog::level::err);  // error 及以上立即落盘
     spdlog::flush_every(std::chrono::milliseconds(config.GetLogAsyncFlushIntervalMs()));
     return true;
 }
 
 void LoggerManager::Shutdown()
 {
-    if (logger_ != nullptr) {
-        logger_->flush();
-    }
-    if (reqLogger_ != nullptr) {
-        reqLogger_->flush();
-    }
+    if (logger_ != nullptr) { logger_->flush(); }
+    if (reqLogger_ != nullptr) { reqLogger_->flush(); }
 
     spdlog::shutdown();
     // 必须先停线程池再销毁 logger：worker 处理队列尾部消息时还要通过 weak_ptr 取到 logger
@@ -145,20 +127,11 @@ void LoggerManager::Shutdown()
     reqLogger_.reset();
 }
 
-std::shared_ptr<spdlog::logger> LoggerManager::GetLogger()
-{
-    return logger_;
-}
+std::shared_ptr<spdlog::logger> LoggerManager::GetLogger() { return logger_; }
 
-std::shared_ptr<spdlog::logger> LoggerManager::GetReqLogger()
-{
-    return reqLogger_;
-}
+std::shared_ptr<spdlog::logger> LoggerManager::GetReqLogger() { return reqLogger_; }
 
-bool LoggerManager::IsReqLogErrorOnly()
-{
-    return reqErrorOnly_;
-}
+bool LoggerManager::IsReqLogErrorOnly() { return reqErrorOnly_; }
 
 // 请求明细日志的写入经 LOG_INFO_REQ 宏直接走 GetReqLogger（与 LOG_xxx 走 GetLogger 完全
 // 对称），不再需要单独的写入接口；async_logger 入队线程安全，单写线程保证明细文件内行完整有序

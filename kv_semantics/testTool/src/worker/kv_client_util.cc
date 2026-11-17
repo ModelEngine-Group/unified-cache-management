@@ -3,7 +3,6 @@
  */
 
 #include "worker/kv_client_util.h"
-
 #include "log/logger_manager.h"
 
 bool KvClientUtil::Init(const std::string &confPath, std::string &err)
@@ -28,28 +27,21 @@ bool KvClientUtil::Init(const std::string &confPath, std::string &err)
 
 void KvClientUtil::Shutdown()
 {
-    if (client_ == nullptr) {
-        return;
-    }
+    if (client_ == nullptr) { return; }
     kv::Status status = client_->Shutdown();
-    if (!status.ok()) {
-        LOG_WARN("kv client shutdown error: {}", status.message);
-    }
+    if (!status.ok()) { LOG_WARN("kv client shutdown error: {}", status.message); }
     client_.reset();
     initialized_ = false;
 }
 
 bool KvClientUtil::RegisterRegions(const std::vector<kv::MemoryRegion> &regions,
-                                   std::vector<kv::RegisteredMemory> &registered,
-                                   std::string &err)
+                                   std::vector<kv::RegisteredMemory> &registered, std::string &err)
 {
     if (!initialized_) {
         err = "kv client not initialized";
         return false;
     }
-    if (regions.empty()) {
-        return true;
-    }
+    if (regions.empty()) { return true; }
     kv::Status status = client_->RegisterRegions(regions, registered);
     if (!status.ok()) {
         err = "register memory regions failed: " + status.message;
@@ -60,9 +52,7 @@ bool KvClientUtil::RegisterRegions(const std::vector<kv::MemoryRegion> &regions,
 
 bool KvClientUtil::UnregisterRegions(const std::vector<kv::MRHandle> &handles, std::string &err)
 {
-    if (handles.empty()) {
-        return true;
-    }
+    if (handles.empty()) { return true; }
     if (!initialized_) {
         err = "kv client not initialized";
         return false;

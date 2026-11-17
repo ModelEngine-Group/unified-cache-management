@@ -8,7 +8,6 @@
 #include <string>
 #include <variant>
 #include <vector>
-
 #include "request/request_orc.h"
 
 /** 一个 kv 执行任务：input.txt 的单 key 行（1 条）或一个 batch（多行聚合为一次 kv 任务） */
@@ -42,7 +41,8 @@ using FlowStep = std::variant<OrcTask, SleepStep>;
  */
 class RequestManager {
 public:
-    /** 解析 input 文件全部指令到缓存；文件读取失败返回 false，行级解析失败仅警告跳过，全文件无可执行步骤返回 false */
+    /** 解析 input 文件全部指令到缓存；文件读取失败返回
+     * false，行级解析失败仅警告跳过，全文件无可执行步骤返回 false */
     bool Load(const std::string &inputPath, std::string &err);
 
     /** 缓存的步骤数（单 key 行、batch、sleep 各计一步） */

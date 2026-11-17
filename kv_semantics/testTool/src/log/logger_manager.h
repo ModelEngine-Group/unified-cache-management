@@ -5,10 +5,9 @@
 #pragma once
 
 #include <memory>
-#include <string>
-
 #include <spdlog/async_logger.h>
 #include <spdlog/spdlog.h>
+#include <string>
 
 class ConfigUtil;
 
@@ -36,7 +35,7 @@ public:
     /** 请求明细日志是否仅记录错误行（perf=on 时为 true：只有错误码的请求才写明细） */
     static bool IsReqLogErrorOnly();
 
-    LoggerManager() = delete; // 静态工具类，禁止实例化
+    LoggerManager() = delete;  // 静态工具类，禁止实例化
 
 private:
     /** 异步日志线程池（单写线程保证各文件内写入顺序） */
@@ -52,12 +51,10 @@ private:
 // ============================================================================
 // 日志输出宏：统一出口；未初始化或已关闭时安全跳过。格式语法同 fmt。
 // ============================================================================
-#define LOG_IMPL(LEVEL, ...)                                                                       \
-    do {                                                                                           \
-        std::shared_ptr<spdlog::logger> logLg_ = ::LoggerManager::GetLogger();                     \
-        if (logLg_ != nullptr) {                                                                   \
-            logLg_->log(LEVEL, __VA_ARGS__);                                                       \
-        }                                                                                          \
+#define LOG_IMPL(LEVEL, ...)                                                   \
+    do {                                                                       \
+        std::shared_ptr<spdlog::logger> logLg_ = ::LoggerManager::GetLogger(); \
+        if (logLg_ != nullptr) { logLg_->log(LEVEL, __VA_ARGS__); }            \
     } while (0)
 
 /** 输出 debug 级别日志（fmt 格式） */
@@ -70,10 +67,8 @@ private:
 #define LOG_ERROR(...) LOG_IMPL(spdlog::level::err, __VA_ARGS__)
 
 /** 输出一行请求明细日志（fmt 格式，落 readlogdir 独立目录；未启用或已关闭时安全跳过） */
-#define LOG_INFO_REQ(...)                                                                           \
-    do {                                                                                            \
-        std::shared_ptr<spdlog::logger> reqLg_ = ::LoggerManager::GetReqLogger();                   \
-        if (reqLg_ != nullptr) {                                                                    \
-            reqLg_->info(__VA_ARGS__);                                                              \
-        }                                                                                           \
+#define LOG_INFO_REQ(...)                                                         \
+    do {                                                                          \
+        std::shared_ptr<spdlog::logger> reqLg_ = ::LoggerManager::GetReqLogger(); \
+        if (reqLg_ != nullptr) { reqLg_->info(__VA_ARGS__); }                     \
     } while (0)

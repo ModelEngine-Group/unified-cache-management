@@ -8,7 +8,6 @@
 #include <ctime>
 #include <string>
 #include <vector>
-
 #include "kv_client.h"
 #include "request/request_orc.h"
 

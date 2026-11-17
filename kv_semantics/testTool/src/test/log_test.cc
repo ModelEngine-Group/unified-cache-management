@@ -3,14 +3,12 @@
  */
 
 #include "test/log_test.h"
-
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
-
 #include "log/logger_manager.h"
 #include "utils/config_util.h"
 #include "utils/file_util.h"
@@ -22,9 +20,7 @@ bool CheckFileLevels(const std::string &path, const std::vector<std::string> &al
                      size_t &lineCount, std::string &err)
 {
     std::vector<std::string> lines;
-    if (!FileUtil::ReadLines(path, lines, err)) {
-        return false;
-    }
+    if (!FileUtil::ReadLines(path, lines, err)) { return false; }
 
     lineCount = 0;
     for (const std::string &line : lines) {
@@ -67,7 +63,7 @@ bool VerifyLogFile(const std::string &path, const std::vector<std::string> &allo
     return true;
 }
 
-} // namespace
+}  // namespace
 
 bool RunLogTest(const ConfigUtil &config)
 {
@@ -118,26 +114,23 @@ bool RunLogTest(const ConfigUtil &config)
                 return std::isdigit(static_cast<unsigned char>(c)) != 0;
             });
         }
-        if (isFullLog) {
-            fullLogFiles.push_back((dirPath / name).string());
-        }
+        if (isFullLog) { fullLogFiles.push_back((dirPath / name).string()); }
     }
 
     // 专用文件级别校验（阈值语义）
-    allPassed = VerifyLogFile((dirPath / config.GetLogWarnFileName()).string(),
-                              {"warning", "error"}, false,
-                              "warn log contains only warn and above") &&
-                allPassed;
-    allPassed = VerifyLogFile((dirPath / config.GetLogErrorFileName()).string(),
-                              {"error"}, false,
+    allPassed =
+        VerifyLogFile((dirPath / config.GetLogWarnFileName()).string(), {"warning", "error"}, false,
+                      "warn log contains only warn and above") &&
+        allPassed;
+    allPassed = VerifyLogFile((dirPath / config.GetLogErrorFileName()).string(), {"error"}, false,
                               "error log contains only error level") &&
                 allPassed;
 
     // 全量文件级别过滤校验（trace / debug 不应出现）
     for (const std::string &file : fullLogFiles) {
-        allPassed = VerifyLogFile(file, {"info", "warning", "error"}, false,
-                                  "full log level filter") &&
-                    allPassed;
+        allPassed =
+            VerifyLogFile(file, {"info", "warning", "error"}, false, "full log level filter") &&
+            allPassed;
     }
 
     // 文件数量校验：滚动文件上限 + 1 个活跃文件
@@ -147,8 +140,8 @@ bool RunLogTest(const ConfigUtil &config)
                   << fileLimit << std::endl;
         allPassed = false;
     } else {
-        std::cout << "[PASS] full log file count " << fullLogFiles.size() << " (limit "
-                  << fileLimit << ")" << std::endl;
+        std::cout << "[PASS] full log file count " << fullLogFiles.size() << " (limit " << fileLimit
+                  << ")" << std::endl;
     }
 
     std::cout << (allPassed ? "---- log test passed ----" : "---- log test failed ----")

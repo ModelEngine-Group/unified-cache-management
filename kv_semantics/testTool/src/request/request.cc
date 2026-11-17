@@ -3,7 +3,6 @@
  */
 
 #include "request/request.h"
-
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -30,9 +29,9 @@ std::vector<std::uint8_t> BuildValueBlock(const RequestOrc &entry, int testmode,
     if (tmNow != nullptr) {
         std::strftime(timeBuf.data(), timeBuf.size(), "%Y-%m-%d %H:%M:%S", tmNow);
     }
-    const std::string seed =
-        std::to_string(entry.keyLow64) + " " + std::to_string(entry.keyHigh16) + " " +
-        std::to_string(entry.offset) + " " + std::to_string(entry.length) + " " + timeBuf.data();
+    const std::string seed = std::to_string(entry.keyLow64) + " " +
+                             std::to_string(entry.keyHigh16) + " " + std::to_string(entry.offset) +
+                             " " + std::to_string(entry.length) + " " + timeBuf.data();
     const std::size_t prefix = std::min(seed.size(), static_cast<std::size_t>(entry.length));
     return std::vector<std::uint8_t>(seed.begin(), seed.begin() + prefix);
 }

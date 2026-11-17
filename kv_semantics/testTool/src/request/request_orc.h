@@ -9,10 +9,10 @@
 
 /** 原始输入操作类型（input.txt 词汇表，均为 kv 操作；到执行侧 OpType 的映射由 Scheduler 完成） */
 enum class OrcOp {
-    GET,     // 读取（get）
-    PUT,     // 写入（put）
-    EXIST,   // 存在性查询（exist）
-    DELETE   // 删除（delete）
+    GET,    // 读取（get）
+    PUT,    // 写入（put）
+    EXIST,  // 存在性查询（exist）
+    DELETE  // 删除（delete）
 };
 
 /**
@@ -29,7 +29,8 @@ struct RequestOrc {
     std::uint64_t keyLow64{0};
     /** key 128 位整数右移 64 位后的低 16 位（bit64-79；testmode=1 的 value 生成规则使用） */
     std::uint16_t keyHigh16{0};
-    /** input 原文 key token（请求明细日志显示原始 key 用；与 keyLow64/keyHigh16 数值分量分开透传） */
+    /** input 原文 key token（请求明细日志显示原始 key 用；与 keyLow64/keyHigh16 数值分量分开透传）
+     */
     std::string rawKey;
     /** 块内偏移（入 KVBuffer.offset） */
     std::uint32_t offset{0};

@@ -2,16 +2,14 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  */
 
-#include <pthread.h>
-
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <pthread.h>
 #include <string>
 #include <thread>
-
 #include "log/logger_manager.h"
 #include "request/request_manager.h"
 #include "scheduler.h"
@@ -22,10 +20,7 @@
 static std::atomic<bool> gInterrupted{false};
 
 /** SIGINT 处理器：仅置标志位，不做任何非 async-signal-safe 操作 */
-static void OnSigint(int)
-{
-    gInterrupted.store(true);
-}
+static void OnSigint(int) { gInterrupted.store(true); }
 
 /**
  * 统一收尾：按初始化逆序回收各组件，main 的全部退出路径（正常、各失败分支与异常兜底）
@@ -93,7 +88,8 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // ---- 只建链模式：建链与 region 注册验证完成后挂起等待 Ctrl+C（不解析 input、不直接退出）----
+        // ---- 只建链模式：建链与 region 注册验证完成后挂起等待 Ctrl+C（不解析
+        // input、不直接退出）----
         if (config.GetOnlyConnect()) {
             LOG_INFO("onlyconnect=on: connection established, waiting for Ctrl+C to exit...");
             std::signal(SIGINT, OnSigint);
@@ -132,18 +128,15 @@ int main(int argc, char *argv[])
         // 按任务流执行（重复执行语义，false 仅当工具链失败）
         const bool runOk =
             scheduler.Run(requestManager, testmode, config.GetRuntime(), config.GetLoop(), err);
-        if (!runOk) {
-            LOG_ERROR("test flow failed: {}", err);
-        }
+        if (!runOk) { LOG_ERROR("test flow failed: {}", err); }
 
         // 完成标记行（仅成功时输出；与启动标记对称）：warn 级别保证 perf=on 时同样可见
-        if (runOk) {
-            LOG_WARN("======Test Completed Successfully=======");
-        }
+        if (runOk) { LOG_WARN("======Test Completed Successfully======="); }
 
-        // 临时：日志模块功能自测，全部正式功能开发完成后随 src/test/ 目录整体移除本段（仅正式流程成功时运行）
-        // ——暂时停用（2026-11-17 指令：暂时注释 log 模块的验证），恢复时取消下行注释并删除占位行
-        // const bool logTestOk = runOk ? RunLogTest(config) : true;
+        // 临时：日志模块功能自测，全部正式功能开发完成后随 src/test/
+        // 目录整体移除本段（仅正式流程成功时运行） ——暂时停用（2026-11-17 指令：暂时注释 log
+        // 模块的验证），恢复时取消下行注释并删除占位行 const bool logTestOk = runOk ?
+        // RunLogTest(config) : true;
         const bool logTestOk = true;  // 日志自测停用期间的占位恒真值
 
         // ---- 统一收尾：回收调度器（注销 region、关闭 kv client）与全部日志资源 ----

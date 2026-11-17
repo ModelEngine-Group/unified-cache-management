@@ -3,14 +3,12 @@
  */
 
 #include "worker/executor.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
-
 #include "log/logger_manager.h"
 #include "request/request.h"
 #include "worker/device_allocator.h"
@@ -41,7 +39,7 @@ void LogTaskResult(const kv::TaskResult &result, const char *opName)
     }
 }
 
-} // namespace
+}  // namespace
 
 Executor::Executor()
 {
@@ -52,15 +50,9 @@ Executor::Executor()
     }
 }
 
-void Executor::SetClient(KvClientUtil *client)
-{
-    client_ = client;
-}
+void Executor::SetClient(KvClientUtil *client) { client_ = client; }
 
-void Executor::SetAllocator(DeviceAllocator *allocator)
-{
-    allocator_ = allocator;
-}
+void Executor::SetAllocator(DeviceAllocator *allocator) { allocator_ = allocator; }
 
 bool Executor::Execute(OpType op, const Request &request, std::string &err)
 {
@@ -69,14 +61,10 @@ bool Executor::Execute(OpType op, const Request &request, std::string &err)
         return false;
     }
     switch (op) {
-        case OpType::QUERY:
-            return QueryAndRecord(request, err);
-        case OpType::STORE:
-            return StoreAndRecord(request, err);
-        case OpType::LOAD:
-            return LoadAndRecord(request, err);
-        case OpType::DELETE:
-            return DeleteAndRecord(request, err);
+        case OpType::QUERY: return QueryAndRecord(request, err);
+        case OpType::STORE: return StoreAndRecord(request, err);
+        case OpType::LOAD: return LoadAndRecord(request, err);
+        case OpType::DELETE: return DeleteAndRecord(request, err);
     }
     err = "unknown op type";
     return false;
@@ -129,9 +117,7 @@ bool Executor::QueryAndRecord(const Request &request, std::string &err)
     // 逐 entry 记录 found / not found 分布（观察结果，不断言）
     std::uint64_t found = 0;
     for (std::size_t i = 0; i < keys.size(); ++i) {
-        if (result.queryResult->exists[i] != 0) {
-            ++found;
-        }
+        if (result.queryResult->exists[i] != 0) { ++found; }
     }
     notFoundCount_.fetch_add(keys.size() - found, std::memory_order_relaxed);
 
@@ -163,17 +149,13 @@ bool Executor::StoreAndRecord(const Request &request, std::string &err)
     const std::size_t failed = CountFailed(result, entries.size());
     const std::uint64_t successBytes = SumOkBytes(result, entries);
     RecordTask(OpType::STORE, entries.size(), successBytes, true, NowNs() - beginNs);
-    if (failed != 0) {
-        LogTaskResult(result, "store");
-    }
+    if (failed != 0) { LogTaskResult(result, "store"); }
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
 
     // 输出 put 任务明细日志（写入后读回缓冲实际内容，顺带验证 H2D 写入生效；
     // perf=off 全量、perf=on 仅错误行）；读回失败属工具链异常（内存访问链路不可用），
     // 与 get 明细日志同一语义
-    if (!WritePutGetLog(request, result, "put", err)) {
-        return false;
-    }
+    if (!WritePutGetLog(request, result, "put", err)) { return false; }
     LOG_INFO("Executor: stored {} entries, {} failed", entries.size(), failed);
     return true;
 }
@@ -256,15 +238,11 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
     notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
     mismatchCount_.fetch_add(mismatch, std::memory_order_relaxed);
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
-    if (failed != 0) {
-        LogTaskResult(result, "load");
-    }
+    if (failed != 0) { LogTaskResult(result, "load"); }
 
     // 输出 get 任务明细日志（读回缓冲实际内容，供人工校验一致性；perf=off 全量、
     // perf=on 仅错误行）；读回失败属工具链异常（内存访问链路不可用），与比对路径同一语义
-    if (!WritePutGetLog(request, result, "get", err)) {
-        return false;
-    }
+    if (!WritePutGetLog(request, result, "get", err)) { return false; }
 
     LOG_INFO("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
              notFound, mismatch, failed);
@@ -275,9 +253,7 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
                               const char *opcode, std::string &err)
 {
     // 请求明细日志未初始化（异常场景）：不组装内容，直接返回
-    if (LoggerManager::GetReqLogger() == nullptr) {
-        return true;
-    }
+    if (LoggerManager::GetReqLogger() == nullptr) { return true; }
     // perf=on 仅记录错误行（entryCode 非 0 的 entry），全量明细留给 perf=off
     const bool errorOnly = LoggerManager::IsReqLogErrorOnly();
     // batchCode：任务级返回码（任务整体一个值，每行重复保持行自包含）
@@ -296,9 +272,7 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
         const int entryCode = (i < result.entryStatus.size())
                                   ? static_cast<int>(result.entryStatus[i].code)
                                   : batchCode;
-        if (errorOnly && entryCode == 0) {
-            continue;
-        }
+        if (errorOnly && entryCode == 0) { continue; }
 
         // key 分量显示：input 原文 key 与 key_low / key_high 十进制分开
         std::uint64_t keyLow = 0;
@@ -349,23 +323,18 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
                 err = "req log entry " + std::to_string(i) + " tail read failed: " + readErr;
                 return false;
             }
-            if (headLen != 0) {
-                value.assign(head.begin(), head.end());
-            }
-            if (tailLen != 0) {
-                tail.assign(tailBuf.begin(), tailBuf.end());
-            }
+            if (headLen != 0) { value.assign(head.begin(), head.end()); }
+            if (tailLen != 0) { tail.assign(tailBuf.begin(), tailBuf.end()); }
         }
 
         // 内容作为 fmt 参数而非格式串（"{}" 显式转义）：value/tail 为二进制转字符串，
         // 可能含 '{' '}' 字节，作为格式串会被 fmt 误解析
-        const std::string line = "opcode(" + std::string(opcode) + ") nsid(" +
-                                 std::to_string(request.nsid) + ") batchCode(" +
-                                 std::to_string(batchCode) + ") entryCode(" +
-                                 std::to_string(entryCode) + ") key(" + rawKey + ") key_low(" +
-                                 keyLowStr + ") key_high(" + keyHighStr + ") offset(" + offsetStr +
-                                 ") len(" + std::to_string(len) + ") value(" + value + ") tail(" +
-                                 tail + ")";
+        const std::string line =
+            "opcode(" + std::string(opcode) + ") nsid(" + std::to_string(request.nsid) +
+            ") batchCode(" + std::to_string(batchCode) + ") entryCode(" +
+            std::to_string(entryCode) + ") key(" + rawKey + ") key_low(" + keyLowStr +
+            ") key_high(" + keyHighStr + ") offset(" + offsetStr + ") len(" + std::to_string(len) +
+            ") value(" + value + ") tail(" + tail + ")";
         LOG_INFO_REQ("{}", line);
     }
     return true;
@@ -374,15 +343,11 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
 void Executor::WriteExistLog(const Request &request, const kv::TaskResult &result)
 {
     // 请求明细日志未初始化（异常场景）：不组装内容，直接返回
-    if (LoggerManager::GetReqLogger() == nullptr) {
-        return;
-    }
+    if (LoggerManager::GetReqLogger() == nullptr) { return; }
     // perf=on 仅记录错误行（exist 无逐 entry 状态，按任务级返回码过滤），全量明细留给 perf=off
     const bool errorOnly = LoggerManager::IsReqLogErrorOnly();
     const int batchCode = static_cast<int>(result.status.code);
-    if (errorOnly && batchCode == 0) {
-        return;
-    }
+    if (errorOnly && batchCode == 0) { return; }
 
     // 每 key 一行，字段名(值) 形式标注：opcode(exist) nsid(x) batchCode(b) key(k) key_low(l)
     // key_high(h) exists(e) prefix_hit_len(n)——batchCode 为任务级返回码（exist 无逐
@@ -396,15 +361,14 @@ void Executor::WriteExistLog(const Request &request, const kv::TaskResult &resul
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");
-        const std::uint8_t exists = (i < result.queryResult->exists.size())
-                                        ? result.queryResult->exists[i]
-                                        : 0;
-        const std::string line =
-            "opcode(exist) nsid(" + std::to_string(request.nsid) + ") batchCode(" +
-            std::to_string(batchCode) + ") key(" + rawKey + ") key_low(" +
-            std::to_string(keyLow) + ") key_high(" + std::to_string(keyHigh) + ") exists(" +
-            std::to_string(static_cast<int>(exists)) + ") prefix_hit_len(" +
-            std::to_string(result.queryResult->prefixHitKeys) + ")";
+        const std::uint8_t exists =
+            (i < result.queryResult->exists.size()) ? result.queryResult->exists[i] : 0;
+        const std::string line = "opcode(exist) nsid(" + std::to_string(request.nsid) +
+                                 ") batchCode(" + std::to_string(batchCode) + ") key(" + rawKey +
+                                 ") key_low(" + std::to_string(keyLow) + ") key_high(" +
+                                 std::to_string(keyHigh) + ") exists(" +
+                                 std::to_string(static_cast<int>(exists)) + ") prefix_hit_len(" +
+                                 std::to_string(result.queryResult->prefixHitKeys) + ")";
         LOG_INFO_REQ("{}", line);
     }
 }
@@ -412,9 +376,7 @@ void Executor::WriteExistLog(const Request &request, const kv::TaskResult &resul
 void Executor::WriteDeleteLog(const Request &request, const kv::TaskResult &result)
 {
     // 请求明细日志未初始化（异常场景）：不组装内容，直接返回
-    if (LoggerManager::GetReqLogger() == nullptr) {
-        return;
-    }
+    if (LoggerManager::GetReqLogger() == nullptr) { return; }
     // perf=on 仅记录错误行（entryCode 非 0 的 key），全量明细留给 perf=off
     const bool errorOnly = LoggerManager::IsReqLogErrorOnly();
     const int batchCode = static_cast<int>(result.status.code);
@@ -426,9 +388,7 @@ void Executor::WriteDeleteLog(const Request &request, const kv::TaskResult &resu
         const int entryCode = (i < result.entryStatus.size())
                                   ? static_cast<int>(result.entryStatus[i].code)
                                   : batchCode;
-        if (errorOnly && entryCode == 0) {
-            continue;
-        }
+        if (errorOnly && entryCode == 0) { continue; }
         std::uint64_t keyLow = 0;
         std::memcpy(&keyLow, request.keys[i].data(), sizeof(keyLow));
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
@@ -437,8 +397,8 @@ void Executor::WriteDeleteLog(const Request &request, const kv::TaskResult &resu
         const std::string line = "opcode(delete) nsid(" + std::to_string(request.nsid) +
                                  ") batchCode(" + std::to_string(batchCode) + ") entryCode(" +
                                  std::to_string(entryCode) + ") key(" + rawKey + ") key_low(" +
-                                 std::to_string(keyLow) + ") key_high(" +
-                                 std::to_string(keyHigh) + ")";
+                                 std::to_string(keyLow) + ") key_high(" + std::to_string(keyHigh) +
+                                 ")";
         LOG_INFO_REQ("{}", line);
     }
 }
@@ -485,9 +445,7 @@ bool Executor::DeleteAndRecord(const Request &request, std::string &err)
     }
     notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
-    if (failed != 0) {
-        LogTaskResult(result, "delete");
-    }
+    if (failed != 0) { LogTaskResult(result, "delete"); }
 
     // 请求明细日志（delete 无 value 载荷，每 key 一行返回码；perf=on 仅错误行）
     WriteDeleteLog(request, result);
@@ -520,23 +478,17 @@ bool Executor::IsNotFound(const kv::Status &status)
         case kv::StatusCode::ENTRY_KEY_NOT_FOUND:
         case kv::StatusCode::ENTRY_DATA_NOT_EXIST:
         case kv::StatusCode::ENTRY_KEY_NOT_EXIST:
-        case kv::StatusCode::CQE_KEY_NOT_EXIST:
-            return true;
-        default:
-            return false;
+        case kv::StatusCode::CQE_KEY_NOT_EXIST: return true;
+        default: return false;
     }
 }
 
 std::size_t Executor::CountFailed(const kv::TaskResult &result, std::size_t entryCount)
 {
-    if (!result.status.ok()) {
-        return entryCount;
-    }
+    if (!result.status.ok()) { return entryCount; }
     std::size_t failed = 0;
     for (const auto &status : result.entryStatus) {
-        if (!status.ok()) {
-            ++failed;
-        }
+        if (!status.ok()) { ++failed; }
     }
     if (result.entryStatus.size() < entryCount) {
         failed += entryCount - result.entryStatus.size();
@@ -547,25 +499,19 @@ std::size_t Executor::CountFailed(const kv::TaskResult &result, std::size_t entr
 std::uint64_t Executor::SumBytes(const std::vector<kv::KVBuffer> &entries)
 {
     std::uint64_t bytes = 0;
-    for (const auto &entry : entries) {
-        bytes += entry.buffer.region.size;
-    }
+    for (const auto &entry : entries) { bytes += entry.buffer.region.size; }
     return bytes;
 }
 
 std::uint64_t Executor::SumOkBytes(const kv::TaskResult &result,
-                                  const std::vector<kv::KVBuffer> &entries)
+                                   const std::vector<kv::KVBuffer> &entries)
 {
     // entryStatus 缺失：任务级成功视为全部 entry 成功，失败视为全部 0 字节
-    if (result.entryStatus.empty()) {
-        return result.status.ok() ? SumBytes(entries) : 0;
-    }
+    if (result.entryStatus.empty()) { return result.status.ok() ? SumBytes(entries) : 0; }
     std::uint64_t bytes = 0;
     const std::size_t count = std::min(result.entryStatus.size(), entries.size());
     for (std::size_t i = 0; i < count; ++i) {
-        if (result.entryStatus[i].ok()) {
-            bytes += entries[i].buffer.region.size;
-        }
+        if (result.entryStatus[i].ok()) { bytes += entries[i].buffer.region.size; }
     }
     return bytes;
 }

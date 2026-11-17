@@ -3,10 +3,8 @@
  */
 
 #include "worker/device_allocator.h"
-
 #include <cstdlib>
 #include <cstring>
-
 #include "kv_client.h"
 #include "log/logger_manager.h"
 
@@ -45,9 +43,7 @@ bool HostAllocator::Allocate(std::size_t size, std::uint64_t &addr, std::string 
 
 void HostAllocator::Deallocate(std::uint64_t addr)
 {
-    if (addr == 0) {
-        return;
-    }
+    if (addr == 0) { return; }
     std::free(reinterpret_cast<void *>(static_cast<std::uintptr_t>(addr)));
 }
 
@@ -77,17 +73,12 @@ bool HostAllocator::Read(void *hostData, std::uint64_t addr, std::size_t size, s
     return true;
 }
 
-bool HostAllocator::IsDeviceMemory() const
-{
-    return deviceSemantics_;
-}
+bool HostAllocator::IsDeviceMemory() const { return deviceSemantics_; }
 
 std::unique_ptr<DeviceAllocator> CreateDeviceAllocator(const std::string &bufferType,
                                                        std::int32_t deviceId, std::string &err)
 {
-    if (bufferType == "host") {
-        return std::make_unique<HostAllocator>(false);
-    }
+    if (bufferType == "host") { return std::make_unique<HostAllocator>(false); }
     if (bufferType == "device") {
         if (deviceId < 0) {
             err = "deviceid must be >= 0 when buffertype=device";
@@ -96,8 +87,9 @@ std::unique_ptr<DeviceAllocator> CreateDeviceAllocator(const std::string &buffer
         // 真设备实现挂点：编入 TESTTOOL_ENABLE_ASCEND 后经 ACL 分配设备内存
         // （aclrtMalloc/aclrtMemcpy/aclrtFree）；未编入时回退主机内存模拟 device 语义，
         // memoryType 仍按 DEVICE 注册走完整链路，便于无设备环境先行验证
-        LOG_WARN("DeviceAllocator: no device SDK compiled in, buffertype=device falls back to "
-                 "host memory simulating device semantics");
+        LOG_WARN(
+            "DeviceAllocator: no device SDK compiled in, buffertype=device falls back to "
+            "host memory simulating device semantics");
         return std::make_unique<HostAllocator>(true);
     }
     err = "invalid buffertype '" + bufferType + "', expect host or device";

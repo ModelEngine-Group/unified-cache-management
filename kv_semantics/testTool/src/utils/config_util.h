@@ -5,15 +5,14 @@
 #pragma once
 
 #include <cstdint>
+#include <spdlog/common.h>
 #include <string>
 #include <unordered_map>
 
-#include <spdlog/common.h>
-
 /**
  * 全局配置中心（单例）：加载配置文件，原始键值以 string 存入缓存，getter 按需解析为目标类型；
- * 数值项按实际值域选型：计数/模式/ID 等小值域用 int，字节量（buffersize、log.max_file_size）用 int64；
- * getter 采用安全访问 + 抛异常：key 缺失或数值解析失败抛 std::runtime_error（信息含 key 与
+ * 数值项按实际值域选型：计数/模式/ID 等小值域用 int，字节量（buffersize、log.max_file_size）用
+ * int64； getter 采用安全访问 + 抛异常：key 缺失或数值解析失败抛 std::runtime_error（信息含 key 与
  * 原始值），由 main 统一 catch 报错退出；Load/Check 保持 bool + err 契约（内部自行兜异常），
  * Check 校验级别名合法、runtime=0 时 loop>0 与值缓冲池参数为正。
  * 需要读配置的组件在初始化入口显式传入实例引用，不在内部直接访问单例。
@@ -23,7 +22,8 @@ public:
     /** 获取全局单例引用（C++11 局部静态变量，首次调用时初始化且线程安全） */
     static ConfigUtil &GetInstance();
 
-    /** 加载配置（解析 key=value、剥离行内注释、Check 校验、展开文件名时间标记）；任一环节失败则整体失败 */
+    /** 加载配置（解析 key=value、剥离行内注释、Check
+     * 校验、展开文件名时间标记）；任一环节失败则整体失败 */
     bool Load(const std::string &path, std::string &err);
 
     // ---- 测试通用参数 ----
@@ -78,21 +78,24 @@ public:
     void Print() const;
 
     ConfigUtil(const ConfigUtil &) = delete;             // 单例：禁止拷贝
-    ConfigUtil &operator=(const ConfigUtil &) = delete; // 单例：禁止赋值
+    ConfigUtil &operator=(const ConfigUtil &) = delete;  // 单例：禁止赋值
 
 private:
-    ConfigUtil() = default; // 单例：私有默认构造，仅 GetInstance 内部创建
+    ConfigUtil() = default;  // 单例：私有默认构造，仅 GetInstance 内部创建
 
     /** 取 key 对应原始字符串值；key 缺失时抛 std::runtime_error（信息含 key 名） */
     std::string RequireValue(const std::string &key) const;
 
-    /** 取 key 对应 int 值（stoi 解析）；key 缺失或解析失败抛 std::runtime_error（信息含 key 与原始值） */
+    /** 取 key 对应 int 值（stoi 解析）；key 缺失或解析失败抛 std::runtime_error（信息含 key
+     * 与原始值） */
     int RequireInt(const std::string &key) const;
 
-    /** 取 key 对应 int64 值（stoll 解析）；key 缺失或解析失败抛 std::runtime_error（信息含 key 与原始值） */
+    /** 取 key 对应 int64 值（stoll 解析）；key 缺失或解析失败抛 std::runtime_error（信息含 key
+     * 与原始值） */
     std::int64_t RequireInt64(const std::string &key) const;
 
-    /** 配置检查：级别名合法、runtime=0 时 loop 须大于 0、值缓冲池参数（buffersize/buffercount）须为正；发现问题填 err 并返回 false */
+    /** 配置检查：级别名合法、runtime=0 时 loop 须大于
+     * 0、值缓冲池参数（buffersize/buffercount）须为正；发现问题填 err 并返回 false */
     bool Check(std::string &err);
 
     /** 原始键值缓存（全 string；文件名值为加载时刻展开后的实际文件名） */
