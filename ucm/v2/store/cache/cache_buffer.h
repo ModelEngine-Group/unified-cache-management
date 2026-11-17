@@ -34,16 +34,19 @@
 #include <unordered_set>
 #include <vector>
 #include "policy/replacement_policy.h"
+#include "shm_layout.h"
 #include "status/status.h"
 #include "store.h"
 #include "type/block.h"
+#include "type/token.h"
 
 namespace UC::Store {
 
 /**
  * @brief Block-level business layer over a ReplacementPolicy: owns the
- *        block-to-slot mapping, the two-phase admission visibility and
- *        the per-block TTL bookkeeping.
+ *        block-to-slot mapping, the two-phase admission visibility, the
+ *        per-block TTL bookkeeping, and the cascaded-offload plan
+ *        minting.
  *
  * The buffer maps the Store admission protocol onto the slot-level
  * engine: Reserve() backs Alloc(), Commit() concludes reservations,
@@ -67,6 +70,18 @@ namespace UC::Store {
  * the eviction discipline is consulted once the pool is full -- and
  * deferred while the block is pinned.
  *
+ * Offload: when a lower tier is wired, every admission that
+ * concludes fully successfully enters the offload pending set
+ * exactly once; an unwired buffer keeps none. PrepareOffload()
+ * drains the set into the next plan, pinning each source slot
+ * until the plan's receipt, and CompleteOffload() releases the
+ * pins. A block that leaves the buffer before its mint is simply
+ * not covered -- the caller's drain cadence bounds that loss
+ * window -- and a block re-admitted after its eviction is
+ * offloaded again by the next mint. While a plan is in flight its
+ * blocks are refused re-admission, so in-flight plans have
+ * disjoint keys.
+ *
  * @note Not thread-safe: callers must serialize access.
  */
 class CacheBuffer {
@@ -78,6 +93,7 @@ public:
      * @param capacity         Slot count of the fixed pool; must be > 0.
      * @param replacementPolicy Registry-created policy instance; must not
      *                         be null.
+     * @param lowerTierWired  Whether a lower tier is wired.
      *
      * @return Status::Ok() on success; InvalidParam on bad arguments,
      *         otherwise the policy's Setup() result. On error the buffer
@@ -85,7 +101,8 @@ public:
      *
      * @note May be called again to reset the buffer.
      */
-    Status Setup(std::size_t capacity, std::unique_ptr<ReplacementPolicy> replacementPolicy)
+    Status Setup(std::size_t capacity, std::unique_ptr<ReplacementPolicy> replacementPolicy,
+                 bool lowerTierWired)
     {
         if (capacity == 0) { return Status::InvalidParam("capacity must be > 0"); }
         if (replacementPolicy == nullptr) {
@@ -101,6 +118,12 @@ public:
         reservedSlots_ = 0;
         expiryHeap_.clear();
         deferredExpiry_.clear();
+        offloadQueue_.clear();
+        offloadQueued_.clear();
+        offloadInFlight_.clear();
+        offloadInFlightKeys_.clear();
+        nextOffloadBatch_ = 1;
+        lowerTierWired_ = lowerTierWired;
         return Status::Ok();
     }
     /**
@@ -152,11 +175,18 @@ public:
      *         cannot host the batch -- the batch is then rolled back
      *         completely (reservations cancelled, evicted blocks
      *         restored to their slots); only the release of expired
-     *         blocks persists.
+     *         blocks persists. NotFound when any block is pinned by an
+     *         in-flight offload plan: that re-admission is refused
+     *         whole and nothing is settled.
      */
     Expected<std::vector<std::size_t>> Reserve(const std::vector<BlockId>& blockIds,
                                                const RequestContext& context)
     {
+        const auto refused = FindOffloadPinned(blockIds);
+        if (refused) {
+            return Status::NotFound("blockIds[{}] is pinned by an in-flight offload plan",
+                                    *refused);
+        }
         const std::size_t newcomers = CountNewcomers(blockIds);
         if (newcomers > capacity_) {
             return Status::NoSpace("admission of {} new blocks exceeds the capacity of {}",
@@ -195,7 +225,9 @@ public:
      * meantime with the fresh deadline and refresh the slot's
      * hotness. A failed re-admission leaves the block exactly as it
      * was (no revival, no hotness refresh). Blocks without a live
-     * reservation are skipped.
+     * reservation are skipped. Fully successful conclusions also
+     * enter the offload pending set -- any failed sharer keeps
+     * a block out of it.
      */
     void Commit(const std::vector<BlockId>& blockIds, bool success)
     {
@@ -217,6 +249,7 @@ public:
                     }
                     policy_->Touch(entry.slot);
                 }
+                if (!entry.anyFailed) { QueueForOffload(blockId); }
                 policy_->Unpin(entry.slot);
                 continue;
             }
@@ -230,6 +263,7 @@ public:
             committed_[blockId] = CommittedEntry{entry.slot, deadline};
             occupants_[entry.slot] = blockId;
             if (deadline) { PushExpiry({*deadline, blockId}); }
+            QueueForOffload(blockId);
         }
         if (expiryHeap_.size() > 2 * committed_.size() + 16) { CompactExpiry(); }
     }
@@ -313,6 +347,82 @@ public:
         if (expiryHeap_.size() > 2 * committed_.size() + 16) { CompactExpiry(); }
     }
 
+    /*== Cascaded offload engine half ==*/
+    /**
+     * @brief Mints the next offload plan: drains every admission that
+     *        concluded fully successfully since the last mint into one
+     *        self-addressed plan token, pinning each source slot until
+     *        the plan's receipt -- backs the engine half of the
+     *        Offloadable facet.
+     *
+     * A queued member is dropped when it has left the buffer -- a
+     * block evicted or expired away before its mint is simply not
+     * covered -- and held back when an in-flight re-admission is
+     * rewriting it (the next mint picks it up). Everything else is
+     * pinned and planned: the pins defer eviction and expiry, so a
+     * planned block stays resident exactly as committed until its
+     * receipt.
+     *
+     * @return The plan token: keys of the planned blocks in conclusion
+     *         order, payload the PlanPayload envelope -- the receipt
+     *         handle plus one source slot per key. An empty token when
+     *         nothing is mintable, and no handle is consumed then.
+     */
+    AddressedToken PrepareOffload()
+    {
+        AddressedToken plan;
+        if (policy_ == nullptr || offloadQueue_.empty()) { return plan; }
+        OffloadPlan minted;
+        std::vector<BlockId> held;
+        for (const BlockId& blockId : offloadQueue_) {
+            auto committed = committed_.find(blockId);
+            if (committed == committed_.end()) {
+                offloadQueued_.erase(blockId);  // left before its mint: never covered
+                continue;
+            }
+            if (pending_.count(blockId) != 0) {
+                held.push_back(blockId);  // an in-flight re-admission rewrites it
+                continue;
+            }
+            offloadQueued_.erase(blockId);
+            policy_->Pin(committed->second.slot);
+            minted.keys.push_back(blockId);
+            minted.slots.push_back(committed->second.slot);
+        }
+        offloadQueue_ = std::move(held);
+        if (minted.keys.empty()) { return plan; }
+
+        const std::uint64_t batchId = nextOffloadBatch_++;
+        PlanPayload payload;
+        payload.batchId = batchId;
+        payload.slots.reserve(minted.slots.size());
+        for (const std::size_t slot : minted.slots) {
+            payload.slots.push_back(static_cast<std::uint32_t>(slot));
+        }
+        plan.keys = minted.keys;
+        plan.payload = EncodePlanPayload(payload);
+        offloadInFlightKeys_.insert(minted.keys.begin(), minted.keys.end());
+        offloadInFlight_.emplace(batchId, std::move(minted));
+        return plan;
+    }
+    /**
+     * @brief Receipt of a concluded plan: releases its source pins,
+     *        so eviction and expiry resume for its blocks.
+     *
+     * The receipt handle alone identifies the plan: an unknown or
+     * already-received handle is a no-op.
+     *
+     * @param batchId Receipt handle of the concluded plan.
+     */
+    void CompleteOffload(std::uint64_t batchId)
+    {
+        auto plan = offloadInFlight_.find(batchId);
+        if (plan == offloadInFlight_.end()) { return; }
+        for (const std::size_t slot : plan->second.slots) { policy_->Unpin(slot); }
+        for (const BlockId& key : plan->second.keys) { offloadInFlightKeys_.erase(key); }
+        offloadInFlight_.erase(plan);
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -361,6 +471,13 @@ private:
         std::vector<std::size_t> slots;
         /** Input positions of the blocks still needing a slot. */
         std::vector<std::size_t> newcomerIndices;
+    };
+    /** One plan minted but not receipted: the pins its receipt must release. */
+    struct OffloadPlan {
+        /** Planned blocks, in plan order. */
+        std::vector<BlockId> keys;
+        /** Source slots of the planned blocks, parallel to keys. */
+        std::vector<std::size_t> slots;
     };
 
     static std::optional<TimePoint> DeadlineFrom(
@@ -528,6 +645,28 @@ private:
         }
     }
 
+    /** @brief One fully successful admission conclusion: enters the pending
+     *         set once, when a lower tier is wired. */
+    void QueueForOffload(const BlockId& blockId)
+    {
+        if (!lowerTierWired_) { return; }
+        if (offloadQueued_.insert(blockId).second) { offloadQueue_.push_back(blockId); }
+    }
+
+    /**
+     * @brief First input position of a block pinned by an in-flight
+     *        offload plan, none when the batch is clean. The
+     *        emptiness guard keeps the common case free of lookups.
+     */
+    std::optional<std::size_t> FindOffloadPinned(const std::vector<BlockId>& blockIds) const
+    {
+        if (offloadInFlightKeys_.empty()) { return std::nullopt; }
+        for (std::size_t i = 0; i < blockIds.size(); i++) {
+            if (offloadInFlightKeys_.count(blockIds[i]) != 0) { return i; }
+        }
+        return std::nullopt;
+    }
+
     std::size_t capacity_{0};
     std::unique_ptr<ReplacementPolicy> policy_;
     std::unordered_map<BlockId, CommittedEntry> committed_;
@@ -543,6 +682,20 @@ private:
     std::vector<DeadlineEntry> expiryHeap_;
     /** Expired-but-pinned entries parked off the heap; requeued on each sweep. */
     std::vector<DeadlineEntry> deferredExpiry_;
+
+    /*== Offload bookkeeping ==*/
+    /** Admissions concluded successfully since the last mint, in conclusion order. */
+    std::vector<BlockId> offloadQueue_;
+    /** Dedup guard of offloadQueue_: a key enters the pending set once per admission. */
+    std::unordered_set<BlockId> offloadQueued_;
+    /** Plans minted but not receipted: receipt handle -> pinned sources. */
+    std::unordered_map<std::uint64_t, OffloadPlan> offloadInFlight_;
+    /** Keys of the in-flight plans. */
+    std::unordered_set<BlockId> offloadInFlightKeys_;
+    /** Next plan receipt handle; minted from 1, 0 is reserved and never minted. */
+    std::uint64_t nextOffloadBatch_{1};
+    /** Whether a lower tier is wired. */
+    bool lowerTierWired_{false};
 };
 
 }  // namespace UC::Store

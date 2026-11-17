@@ -36,8 +36,10 @@
 #include "control_codec.h"
 #include "data_plane.h"
 #include "ipc/uds.h"
+#include "offloadable.h"
 #include "policy/replacement_policy.h"
 #include "store.h"
+#include "tier_relay.h"
 #include "type/block.h"
 #include "type/request.h"
 #include "type/token.h"
@@ -66,6 +68,13 @@ namespace UC::Store {
  * led pool; the pump never touches it, so the Store contract's serialized
  * caller is the engine's only thread.
  *
+ * The Offloadable facet joins the two planes: its engine half rides the
+ * pump like every other engine call, while its executor half runs on
+ * the caller's thread through a tier relay over the led pool -- the
+ * pump never touches the relay, and the relay's outer jobs share the
+ * store's completion stream and wait with the plane's jobs. The facet
+ * is served only when the configuration wires a lower tier.
+ *
  * I/O model: blocking frame I/O -- every connection is a strict
  * request-response exchange between trusted peers; a peer dying mid-frame
  * is an external failure the pump does not defend against. A malformed
@@ -75,7 +84,7 @@ namespace UC::Store {
  * @note Non-movable: the pump thread captures this. The factory places the
  *       instance behind a unique_ptr, where it stays for its lifetime.
  */
-class CacheStorePrimary final : public Store {
+class CacheStorePrimary final : public Store, public Offloadable {
 public:
     /**
      * @brief Brings the domain up and starts the pump.
@@ -123,6 +132,16 @@ public:
     std::vector<std::pair<std::size_t, bool>> GetFinished() override;
 
     Status Wait(std::size_t jobId) override;
+
+    /*== The Offloadable facet ==*/
+
+    AddressedToken PrepareOffload() override;
+
+    void CompleteOffload(const AddressedToken& plan) override;
+
+    Status Offload(std::size_t jobId, AddressedToken plan) override;
+
+    Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
 
     Prefetchable* AsPrefetchable() override { return nullptr; }
 
@@ -173,6 +192,10 @@ private:
     /* The transfers: declared after the leader so in-flight jobs drain
      * while the led pool mapping is still valid. */
     std::unique_ptr<DataPlane> dataPlane_;
+    /* The tier relay of the offload executor half: caller-thread state,
+     * declared after the leader so its jobs drain while the led pool
+     * mapping is still valid. */
+    std::unique_ptr<TierRelay> relay_;
     int epollFd_{-1};
     /** eventfd: wakes the pump for a pending local call. */
     int queueFd_{-1};

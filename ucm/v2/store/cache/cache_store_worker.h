@@ -31,8 +31,10 @@
 #include "bootstrap.h"
 #include "cache_config.h"
 #include "data_plane.h"
+#include "offloadable.h"
 #include "shm_layout.h"
 #include "store.h"
+#include "tier_relay.h"
 #include "type/block.h"
 #include "type/request.h"
 #include "type/token.h"
@@ -63,6 +65,13 @@ namespace UC::Store {
  * completions are reported exactly once through GetFinished()/Wait();
  * the Store contract's single-consumer rule serializes them.
  *
+ * Offload: the facet's executor half drives the wired lower tier through
+ * a tier relay over the held pool, and the relay's outer jobs share the
+ * completion stream and the wait with the data plane's jobs. The local
+ * engine half is structural idle: no engine lives here, so plans mint
+ * empty and receipts no-op. The facet is served only when the
+ * configuration wires a lower tier.
+ *
  * I/O model of the accept loop: blocking frame I/O between trusted peers; a
  * joiner dying mid-handshake is an external failure the loop does not defend
  * against, and a transport failure on one join leaves it in service.
@@ -70,7 +79,7 @@ namespace UC::Store {
  * @note Non-movable: the accept thread captures this. The factory places
  *       the instance behind a unique_ptr, where it stays for its lifetime.
  */
-class CacheStoreWorker final : public Store {
+class CacheStoreWorker final : public Store, public Offloadable {
 public:
     /**
      * @brief Installs the worker: the winner leads the domain, every loser
@@ -120,6 +129,20 @@ public:
 
     Status Wait(std::size_t jobId) override;
 
+    /*== The Offloadable facet ==*/
+
+    /** @brief Structural idle: the mint is always the idle plan. */
+    AddressedToken PrepareOffload() override { return {}; }
+
+    /** @brief Structural no-op: the receipt changes nothing here. */
+    void CompleteOffload(const AddressedToken& /*plan*/) override {}
+
+    /** @brief Submits the plan to the tier relay as an asynchronous job. */
+    Status Offload(std::size_t jobId, AddressedToken plan) override;
+
+    /** @brief The facet, served only when this store wired a lower tier. */
+    Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
+
     Prefetchable* AsPrefetchable() override { return nullptr; }
 
 private:
@@ -145,6 +168,11 @@ private:
     /* The transfers: declared after the mapping holders so in-flight jobs
      * drain while the pool mapping is still valid. */
     std::unique_ptr<DataPlane> dataPlane_;
+
+    /* The tier relay of the offload executor half, declared after the
+     * mapping holders so its jobs drain while the pool mapping is still
+     * valid. */
+    std::unique_ptr<TierRelay> relay_;
 
     /** eventfd: wakes the accept loop for shutdown; leader branch only. */
     int stopFd_{-1};

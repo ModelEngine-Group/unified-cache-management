@@ -37,9 +37,12 @@
 #include <vector>
 #include "cache/cache_store.h"
 #include "cache/shm_layout.h"
+#include "fixtures/stub_lower_store.h"
+#include "offloadable.h"
 #include "status/status.h"
 #include "type/block.h"
 #include "type/dictionary.h"
+#include "type/token.h"
 
 namespace UC::Store {
 
@@ -75,6 +78,8 @@ struct Cmd {
     std::int32_t ttlMs{0};
     /** Commit's success flag; 0 = false. */
     std::int32_t success{0};
+    /** Handle of the offload plan this command carries; 0 = no plan. */
+    std::uint64_t planId{0};
     /** Data-plane job id, and the token's slot numbers in block order. */
     std::uint32_t jobId{0};
     std::uint32_t slots[kMaxBatch]{};
@@ -89,6 +94,8 @@ struct Result {
     std::int32_t n{0};
     std::int32_t hits[kMaxBatch]{};
     std::uint32_t slots[kMaxBatch]{};
+    /** Handle of the minted offload plan; 0 = no plan was minted. */
+    std::uint64_t planId{0};
 };
 
 static_assert(std::is_trivially_copyable_v<Cmd> && std::is_trivially_copyable_v<Result>);
@@ -108,6 +115,11 @@ enum : std::int32_t {
     kOpWait,
     kOpGetFinished,
     kOpVerify,
+    kOpAsOffloadable,
+    kOpPrepareOffload,
+    kOpOffload,
+    kOpCompleteOffload,
+    kOpLowerProbe,
 };
 
 /** What a forked child tells its parent: 3 = ready, 4 = self-check failed,
@@ -168,6 +180,23 @@ Cmd MakeTransferCmd(std::int32_t op, std::uint32_t jobId, std::initializer_list<
     for (const std::uint64_t tag : tags) { cmd.ids[i++] = MakeBlock(tag); }
     i = 0;
     for (const std::uint32_t slot : slots) { cmd.slots[i++] = slot; }
+    return cmd;
+}
+
+/** A plan command: the minted handle plus the blocks and source slots it
+ *  covers, in the minter's order. */
+Cmd MakePlanCmd(std::int32_t op, std::uint32_t jobId, std::initializer_list<std::uint64_t> tags,
+                std::initializer_list<std::uint32_t> slots, std::uint64_t planId)
+{
+    Cmd cmd;
+    cmd.op = op;
+    cmd.jobId = jobId;
+    cmd.n = static_cast<std::int32_t>(tags.size());
+    std::size_t i = 0;
+    for (const std::uint64_t tag : tags) { cmd.ids[i++] = MakeBlock(tag); }
+    i = 0;
+    for (const std::uint32_t slot : slots) { cmd.slots[i++] = slot; }
+    cmd.planId = planId;
     return cmd;
 }
 
@@ -254,7 +283,7 @@ void InstallWatchdog()
  *  persists across commands -- the store's transfers are asynchronous, so
  *  pattern verification belongs to kOpVerify, after the completion. */
 Result RunOne(CacheStore& store, const Cmd& cmd, std::size_t blockSize,
-              std::vector<std::byte>& buffer)
+              std::vector<std::byte>& buffer, StubLowerStore* lower)
 {
     Result result{};
     std::size_t count = 0;
@@ -374,6 +403,92 @@ Result RunOne(CacheStore& store, const Cmd& cmd, std::size_t blockSize,
             ::nanosleep(&pause, nullptr);
             return result;
         }
+        case kOpAsOffloadable: {
+            result.n = store.AsOffloadable() != nullptr ? 1 : 0;
+            return result;
+        }
+        case kOpPrepareOffload: {
+            Offloadable* facet = store.AsOffloadable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            AddressedToken plan = facet->PrepareOffload();
+            /* The mint must cover the commanded keys, in order -- the
+             * parent's positional slot checks below lean on this. */
+            bool covered = plan.keys.size() == count;
+            for (std::size_t i = 0; covered && i < count; i++) { covered = plan.keys[i] == ids[i]; }
+            if (!covered) {
+                result.code = Status::General("the minted plan does not cover the commanded keys")
+                                  .Underlying();
+                return result;
+            }
+            const PlanPayload payload = DecodePlanPayload(plan.payload);
+            result.n = static_cast<std::int32_t>(payload.slots.size());
+            for (std::size_t i = 0; i < payload.slots.size() && i < kMaxBatch; i++) {
+                result.slots[i] = payload.slots[i];
+            }
+            result.planId = payload.batchId;
+            return result;
+        }
+        case kOpOffload: {
+            Offloadable* facet = store.AsOffloadable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            /* The minted plan rebuilt from the command: keys, source
+             * slots, and handle -- the parent's pipes stand in for the
+             * deployment's plan broadcast. */
+            AddressedToken plan;
+            plan.keys = ids;
+            PlanPayload payload;
+            payload.batchId = cmd.planId;
+            payload.slots.assign(cmd.slots, cmd.slots + count);
+            plan.payload = EncodePlanPayload(payload);
+            const Status st = facet->Offload(cmd.jobId, std::move(plan));
+            result.code = st.Underlying();
+            if (st.Failure()) { return result; }
+            result.n = static_cast<std::int32_t>(count);
+            return result;
+        }
+        case kOpCompleteOffload: {
+            Offloadable* facet = store.AsOffloadable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            AddressedToken plan;
+            plan.keys = ids;
+            PlanPayload payload;
+            payload.batchId = cmd.planId;
+            payload.slots.assign(cmd.slots, cmd.slots + count);
+            plan.payload = EncodePlanPayload(payload);
+            facet->CompleteOffload(plan);
+            return result;
+        }
+        case kOpLowerProbe: {
+            /* The inherited stub's books, packed for the parent: the
+             * reservation, dump, and commit counts, the last commit's
+             * verdict (-1 when none), and whether the dumps covered the
+             * commanded keys in order. */
+            if (lower == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            result.n = static_cast<std::int32_t>(lower->allocs.size());
+            result.hits[0] = static_cast<std::int32_t>(lower->dumps.size());
+            result.hits[1] = static_cast<std::int32_t>(lower->commits.size());
+            result.hits[2] = lower->commits.empty() ? -1 : (lower->commits.back().second ? 1 : 0);
+            const bool shape = lower->dumps.size() == (count == 0 ? 0 : 1) &&
+                               (count == 0 || lower->dumps[0].keys.size() == count);
+            bool covered = shape;
+            for (std::size_t i = 0; covered && i < count; i++) {
+                covered = lower->dumps[0].keys[i] == ids[i];
+            }
+            result.slots[0] = covered ? 1 : 0;
+            return result;
+        }
         default: {
             result.code = Status::InvalidParam().Underlying();
             return result;
@@ -433,13 +548,19 @@ void ServeStoreChild(const Dictionary& dict, int cmdFd, int resultFd, int report
     }
     (void)WriteReport(reportFd, {3, 0});
 
+    /* The wired stub, inherited through the dictionary: the same address
+     * in this forked copy, so the parent's pointer resolves here. */
+    Store* wired = nullptr;
+    (void)dict.Get("__ucm_lower_store__", wired);
+    StubLowerStore* lower = static_cast<StubLowerStore*>(wired);
+
     std::vector<std::byte> transferBuffer;
     for (;;) {
         ::alarm(30);
         Cmd cmd;
         if (!ReadAll(cmdFd, &cmd, sizeof(cmd))) { break; }
         const Result result =
-            RunOne(store, cmd, static_cast<std::size_t>(blockSize), transferBuffer);
+            RunOne(store, cmd, static_cast<std::size_t>(blockSize), transferBuffer, lower);
         if (!WriteAll(resultFd, &result, sizeof(result))) { break; }
     }
 }
@@ -508,7 +629,8 @@ protected:
     }
 
     Dictionary MakeDict(const std::string& uniqueId, const std::string& role, std::size_t blockSize,
-                        std::int64_t workerNumber = 2, const std::string& dmaEngine = {})
+                        std::int64_t workerNumber = 2, const std::string& dmaEngine = {},
+                        Store* lower = nullptr)
     {
         Dictionary dict;
         dict.Set("unique_id", uniqueId);
@@ -520,6 +642,12 @@ protected:
         dict.Set("cache_replacement_policy", std::string{"fifo"});
         dict.Set("cache_force_huge_page", false);
         if (!dmaEngine.empty()) { dict.Set("cache_dma_engine", dmaEngine); }
+        if (lower != nullptr) {
+            /* The lower tier travels as a bare Store* inside the
+             * dictionary: the forked child inherits the pointee's page,
+             * so the pointer stays valid in the child. */
+            dict.Set("__ucm_lower_store__", lower);
+        }
         return dict;
     }
 
@@ -1226,6 +1354,236 @@ TEST_F(MultiprocessTest, WrongRoleJoinIsRejectedEndToEnd)
     ASSERT_NO_FATAL_FAILURE(ExpectSetupFailure(worker));
     ASSERT_NO_FATAL_FAILURE(ReleaseFailedChild(worker));
 
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));
+}
+
+/*== J: the offload loop over the worker domain's process split ==*/
+
+TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
+{
+    const std::string id = MakeUniqueId("offload");
+    /* One lower tier rides the fork to every child; only the leaf's copy
+     * is ever driven. */
+    StubLowerStore lower;
+    lower.SettleOnWait(true);
+    Child leader;
+    Child leaf;
+    Child scheduler;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
+
+    /* The wiring gate: every process of the wired domain exposes the
+     * facet. */
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
+    EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
+
+    /* No engine lives in a worker: the mint is structural idle. */
+    const Result idle = Drive(leaf, MakeJobCmd(kOpPrepareOffload, 0));
+    EXPECT_EQ(idle.n, 0);
+    EXPECT_EQ(idle.planId, 0U);
+
+    /* The engine fills its pending set: four blocks fill the pool. */
+    const Result alloc = Drive(scheduler, MakeCmd(kOpAlloc, {1, 2, 3, 4}));
+    ASSERT_EQ(alloc.code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpCommit, {1, 2, 3, 4}, 0, 1)).code, 0);
+
+    /* The mint covers the concluded blocks, in conclusion order, with
+     * one source slot per key. */
+    const Result mint = Drive(scheduler, MakeCmd(kOpPrepareOffload, {1, 2, 3, 4}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 4);
+    EXPECT_NE(mint.planId, 0U);
+    for (std::size_t i = 0; i < 4; i++) { EXPECT_EQ(mint.slots[i], alloc.slots[i]); }
+
+    /* The mint pins its four sources: nothing is evictable, so a fifth
+     * admission finds no ground until the plan's receipt. */
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, Status::NoSpace().Underlying());
+
+    /* The same plan reaches the executors over the parent's pipes,
+     * standing in for the deployment's broadcast. The minting scheduler
+     * is not an executor: no data plane runs there. */
+    const Cmd plan =
+        MakePlanCmd(kOpOffload, 9, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(scheduler, plan).code, Status::Unsupported().Underlying());
+
+    /* The leaf executes: its wired tier sees the whole admission
+     * protocol, and the verdict surfaces once through its own stream. */
+    EXPECT_EQ(Drive(leaf, plan).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    const Result leafBooks = Drive(leaf, MakeCmd(kOpLowerProbe, {1, 2, 3, 4}));
+    ASSERT_EQ(leafBooks.code, 0);
+    EXPECT_EQ(leafBooks.n, 1);         /* one reservation */
+    EXPECT_EQ(leafBooks.hits[0], 1);   /* one dump */
+    EXPECT_EQ(leafBooks.hits[1], 1);   /* one commit */
+    EXPECT_EQ(leafBooks.hits[2], 1);   /* concluded with success */
+    EXPECT_EQ(leafBooks.slots[0], 1U); /* the dump covered the plan's keys */
+
+    /* The minter never drives its own tier: the scheduler's copy of the
+     * books is untouched. */
+    const Result schedulerBooks = Drive(scheduler, MakeJobCmd(kOpLowerProbe, 0));
+    ASSERT_EQ(schedulerBooks.code, 0);
+    EXPECT_EQ(schedulerBooks.n, 0);
+    EXPECT_EQ(schedulerBooks.hits[0], 0);
+    EXPECT_EQ(schedulerBooks.hits[1], 0);
+    EXPECT_EQ(schedulerBooks.hits[2], -1);
+    EXPECT_EQ(schedulerBooks.slots[0], 1U); /* nothing dumped, nothing commanded */
+
+    /* The receipt travels back to the minting engine: the pins release,
+     * the pending set stays empty, and the ground reopens. */
+    const Cmd receipt =
+        MakePlanCmd(kOpCompleteOffload, 0, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(scheduler, receipt).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    /* Teardown order: joiners first, the leader last. */
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(scheduler));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leaf));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leader));
+}
+
+/*== K: the offload loop over the both-domain's control plane ==*/
+
+TEST_F(MultiprocessTest, OffloadLoopClosesOverTheBothDomainControlPlane)
+{
+    const std::string id = MakeUniqueId("bothoff");
+    /* One lower tier rides the fork to both children; only the replica's
+     * copy is ever driven. */
+    StubLowerStore lower;
+    lower.SettleOnWait(true);
+    Child primary;
+    Child replica;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
+
+    /* Both processes of the wired domain expose the facet. */
+    EXPECT_EQ(Drive(primary, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
+
+    /* The replica's admission lands in the primary's engine over the
+     * control connection. */
+    const Result alloc = Drive(replica, MakeCmd(kOpAlloc, {1, 2, 3, 4}));
+    ASSERT_EQ(alloc.code, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {1, 2, 3, 4}, 0, 1)).code, 0);
+
+    /* The mint rides the control connection too: the primary's engine
+     * mints, and the replica reconstructs the plan token. */
+    const Result mint = Drive(replica, MakeCmd(kOpPrepareOffload, {1, 2, 3, 4}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 4);
+    EXPECT_NE(mint.planId, 0U);
+    for (std::size_t i = 0; i < 4; i++) { EXPECT_EQ(mint.slots[i], alloc.slots[i]); }
+
+    /* The replica executes the plan on its own wired tier, and the
+     * verdict surfaces once through its own stream. */
+    const Cmd plan =
+        MakePlanCmd(kOpOffload, 5, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(replica, plan).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 5)).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 5)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    const Result books = Drive(replica, MakeCmd(kOpLowerProbe, {1, 2, 3, 4}));
+    ASSERT_EQ(books.code, 0);
+    EXPECT_EQ(books.n, 1);         /* one reservation */
+    EXPECT_EQ(books.hits[0], 1);   /* one dump */
+    EXPECT_EQ(books.hits[1], 1);   /* one commit */
+    EXPECT_EQ(books.hits[2], 1);   /* concluded with success */
+    EXPECT_EQ(books.slots[0], 1U); /* the dump covered the plan's keys */
+
+    /* The receipt rides the control connection back to the primary's
+     * engine: the pending set drains and the ground reopens. */
+    const Cmd receipt =
+        MakePlanCmd(kOpCompleteOffload, 0, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(replica, receipt).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {5})).code, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(replica));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));
+}
+
+/*== L: a failed offload still concludes and receipts ==*/
+
+TEST_F(MultiprocessTest, FailedOffloadStillConcludesAndReceipts)
+{
+    const std::string id = MakeUniqueId("offfail");
+    /* One lower tier rides the fork to both children, refusing its first
+     * dump: the plan's only sub-batch is lost in flight. */
+    StubLowerStore lower;
+    lower.FailDumpNth(1, Status::General("scripted lower-tier dump failure"));
+    Child primary;
+    Child replica;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
+
+    const Result alloc = Drive(replica, MakeCmd(kOpAlloc, {1, 2, 3, 4}));
+    ASSERT_EQ(alloc.code, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {1, 2, 3, 4}, 0, 1)).code, 0);
+
+    const Result mint = Drive(replica, MakeCmd(kOpPrepareOffload, {1, 2, 3, 4}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 4);
+    EXPECT_NE(mint.planId, 0U);
+
+    /* The submission is accepted; the loss plays out in the lower tier,
+     * and the failure surfaces as one completion event. */
+    const Cmd plan =
+        MakePlanCmd(kOpOffload, 9, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(replica, plan).code, 0);
+    const auto settled = PollFinished(replica, 9);
+    ASSERT_TRUE(settled.has_value());
+    EXPECT_FALSE(settled->second);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The lower tier saw the whole protocol: the refused flight released
+     * its reservation with a failed commit. */
+    const Result books = Drive(replica, MakeCmd(kOpLowerProbe, {1, 2, 3, 4}));
+    ASSERT_EQ(books.code, 0);
+    EXPECT_EQ(books.n, 1);
+    EXPECT_EQ(books.hits[0], 1);
+    EXPECT_EQ(books.hits[1], 1);
+    EXPECT_EQ(books.hits[2], 0); /* concluded with failure */
+    EXPECT_EQ(books.slots[0], 1U);
+
+    /* The verdict does not stall the receipt: the minting engine
+     * releases the plan's pins anyway, and the ground reopens. */
+    const Cmd receipt =
+        MakePlanCmd(kOpCompleteOffload, 0, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(replica, receipt).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {5})).code, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(replica));
     ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));
 }
 

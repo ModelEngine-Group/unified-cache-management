@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include "control_ops.h"
 #include "policy/replacement_policy_registry.h"
+#include "shm_layout.h"
 
 namespace UC::Store {
 namespace {
@@ -69,6 +70,13 @@ Expected<std::unique_ptr<CacheStorePrimary>> CacheStorePrimary::Create(const Cac
     auto plane = DataPlane::Create(config, primary->leader_.Mapping());
     if (!plane.HasValue()) { return plane.Error(); }
     primary->dataPlane_ = std::move(plane.Value());
+    /* The relay lands only when a lower tier is wired: the executor half
+     * needs one. */
+    if (config.lowerStore != nullptr) {
+        auto relay = TierRelay::Create(config, primary->leader_.Mapping());
+        if (!relay.HasValue()) { return relay.Error(); }
+        primary->relay_ = std::move(relay.Value());
+    }
     return primary;
 }
 
@@ -87,7 +95,8 @@ CacheStorePrimary::~CacheStorePrimary()
 
 Status CacheStorePrimary::Init() noexcept
 {
-    if (Status st = buffer_.Setup(config_.blockTotalNumber, std::move(replacementPolicy_));
+    if (Status st = buffer_.Setup(config_.blockTotalNumber, std::move(replacementPolicy_),
+                                  config_.lowerStore != nullptr);
         st.Failure()) {
         return st;
     }
@@ -304,11 +313,39 @@ Status CacheStorePrimary::Dump(std::size_t jobId, JobDescriptor job, AddressedTo
     return dataPlane_->Dump(jobId, job, token);
 }
 
-std::vector<std::pair<std::size_t, bool>> CacheStorePrimary::GetFinished()
+AddressedToken CacheStorePrimary::PrepareOffload()
 {
-    return dataPlane_->GetFinished();
+    auto response = CallPump(MakeRequest(ControlOp::PrepareOffload, {}, RequestContext{}));
+    auto plan = PlanOutcomeFrom(std::move(response));
+    return plan.HasValue() ? std::move(plan.Value()) : AddressedToken{};
 }
 
-Status CacheStorePrimary::Wait(std::size_t jobId) { return dataPlane_->Wait(jobId); }
+void CacheStorePrimary::CompleteOffload(const AddressedToken& plan)
+{
+    ControlRequest request = MakeRequest(ControlOp::CompleteOffload, {}, RequestContext{});
+    request.planId = DecodePlanPayload(plan.payload).batchId;
+    (void)CallPump(std::move(request));
+}
+
+Status CacheStorePrimary::Offload(std::size_t jobId, AddressedToken plan)
+{
+    return relay_->Offload(jobId, std::move(plan));
+}
+
+std::vector<std::pair<std::size_t, bool>> CacheStorePrimary::GetFinished()
+{
+    auto finished = dataPlane_->GetFinished();
+    if (relay_ != nullptr) {
+        std::vector<std::pair<std::size_t, bool>> offloaded = relay_->GetFinished();
+        finished.insert(finished.end(), offloaded.begin(), offloaded.end());
+    }
+    return finished;
+}
+
+Status CacheStorePrimary::Wait(std::size_t jobId)
+{
+    if (relay_ != nullptr && relay_->Owns(jobId)) { return relay_->Wait(jobId); }
+    return dataPlane_->Wait(jobId);
+}
 
 }  // namespace UC::Store

@@ -67,6 +67,43 @@ namespace UC::Store {
 [[nodiscard]] std::vector<std::uint32_t> DecodeTokenPayload(const std::vector<std::byte>& data);
 
 /**
+ * @brief Body of one lower-tier transfer plan: the receipt handle minted
+ *        with the plan, plus the slots the plan covers. The slots are
+ *        shared-pool slots -- offload sources or prefetch destinations;
+ *        which of the two the plan is belongs to the control message
+ *        carrying it, not to the payload.
+ */
+struct PlanPayload {
+    /**
+     * @brief Receipt handle correlating the plan across its process round
+     *        trip -- minted where the plan is minted, echoed by whoever
+     *        reports on the plan. 0 is reserved and never minted: a payload
+     *        carrying it is the explicit no-plan sentinel.
+     */
+    std::uint64_t batchId{0};
+    /** @brief One slot per planned key, in the order the keys ride. */
+    std::vector<std::uint32_t> slots;
+};
+
+/**
+ * @brief Encodes a plan payload: little-endian u64 batchId, then one
+ *        little-endian u32 per slot. Pure translation with no policy --
+ *        slot validity is the minter's contract (see SlotAddress's
+ *        precondition).
+ */
+[[nodiscard]] std::vector<std::byte> EncodePlanPayload(const PlanPayload& plan);
+
+/**
+ * @brief Decodes a plan payload: fewer than eight bytes decode to the
+ *        no-plan payload (batchId 0, no slots); past the batchId, the slot
+ *        count is the remaining byte length divided by four, rounded down,
+ *        so one to three trailing bytes are ignored. No semantic checks --
+ *        a payload that did not come from EncodePlanPayload is out of
+ *        contract.
+ */
+[[nodiscard]] PlanPayload DecodePlanPayload(const std::vector<std::byte>& data);
+
+/**
  * @brief Owns one mmap over a shared memory object. Move-only; destruction
  *        munmaps. The descriptor used for attaching is not kept: a mapping
  *        stays valid after its fd is closed.

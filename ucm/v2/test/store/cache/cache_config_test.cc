@@ -22,11 +22,15 @@
  * SOFTWARE.
  * */
 #include "cache/cache_config.h"
+#include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 #include "status/status.h"
+#include "store.h"
 #include "type/dictionary.h"
 
 namespace UC::Store {
@@ -50,6 +54,7 @@ Dictionary MakeDict(const std::string& omitted = {})
     }
     if (omitted != "cache_force_huge_page") { dict.Set("cache_force_huge_page", true); }
     if (omitted != "cache_dma_stream_number") { dict.SetInt64("cache_dma_stream_number", 8); }
+    if (omitted != "cache_tier_batch_size") { dict.SetInt64("cache_tier_batch_size", 512); }
     return dict;
 }
 
@@ -79,6 +84,7 @@ TEST(CacheConfigTest, FromAcceptsFullConfig)
     EXPECT_EQ(cfg.replacementPolicy, "lru");
     EXPECT_TRUE(cfg.forceHugePage);
     EXPECT_EQ(cfg.nDmaStream, std::size_t{8});
+    EXPECT_EQ(cfg.tierBatchSize, std::size_t{512});
 }
 
 TEST(CacheConfigTest, FromAcceptsAllRoles)
@@ -111,6 +117,7 @@ TEST(CacheConfigTest, FromAppliesDefaultsWhenOptionalKeysAbsent)
     EXPECT_EQ(cfg.replacementPolicy, "clock");
     EXPECT_FALSE(cfg.forceHugePage);
     EXPECT_EQ(cfg.nDmaStream, std::size_t{16});
+    EXPECT_EQ(cfg.tierBatchSize, std::size_t{1024});
     EXPECT_EQ(cfg.blockTotalNumber, (std::size_t{128} << 30) / std::size_t{kMb});
 }
 
@@ -230,6 +237,70 @@ TEST(CacheConfigTest, FromRejectsDmaStreamNumberOfWrongType)
 {
     Dictionary dict = MakeDict();
     dict.Set("cache_dma_stream_number", std::string("16"));
+    auto res = CacheConfig::From(dict);
+    ASSERT_FALSE(res.HasValue());
+    EXPECT_EQ(res.Error(), Status::InvalidParam());
+}
+
+TEST(CacheConfigTest, FromRejectsBadTierBatchSize)
+{
+    Dictionary dict = MakeDict();
+    dict.SetInt64("cache_tier_batch_size", 0);
+    ASSERT_FALSE(CacheConfig::From(dict).HasValue());
+    dict.SetInt64("cache_tier_batch_size", -4);
+    ASSERT_FALSE(CacheConfig::From(dict).HasValue());
+    dict.Set("cache_tier_batch_size", std::string("1024"));
+    auto res = CacheConfig::From(dict);
+    ASSERT_FALSE(res.HasValue());
+    EXPECT_EQ(res.Error(), Status::InvalidParam());
+}
+
+/*== Assembler-injected lower-tier wiring ==*/
+
+/** A minimal live Store: the lower-tier extraction needs a real Store
+ *  pointer to carry, not just the type name. */
+class NullStore final : public Store {
+public:
+    Status Setup(const Dictionary&) override { return Status::Ok(); }
+    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>&) override
+    {
+        return Status::Unsupported();
+    }
+    Status Load(std::size_t, JobDescriptor, AddressedToken) override
+    {
+        return Status::Unsupported();
+    }
+    Status Dump(std::size_t, JobDescriptor, AddressedToken) override
+    {
+        return Status::Unsupported();
+    }
+    std::vector<std::pair<std::size_t, bool>> GetFinished() override { return {}; }
+    Status Wait(std::size_t) override { return Status::InvalidParam(); }
+};
+
+TEST(CacheConfigTest, FromCarriesTheWiredLowerStore)
+{
+    NullStore store;
+    Dictionary dict = MakeDict();
+    Store* wired = &store; /* The assembler stores a Store*, never the derived pointer. */
+    dict.Set("__ucm_lower_store__", wired);
+    auto res = CacheConfig::From(dict);
+    ASSERT_TRUE(res.HasValue());
+    EXPECT_EQ(res.Value().lowerStore, wired);
+}
+
+TEST(CacheConfigTest, FromLeavesLowerStoreNullWhenNotWired)
+{
+    /* Absent wiring: nothing carried. */
+    auto res = CacheConfig::From(MakeDict());
+    ASSERT_TRUE(res.HasValue());
+    EXPECT_EQ(res.Value().lowerStore, nullptr);
+}
+
+TEST(CacheConfigTest, FromRejectsAnIllTypedLowerStore)
+{
+    Dictionary dict = MakeDict();
+    dict.Set("__ucm_lower_store__", std::string("not a store"));
     auto res = CacheConfig::From(dict);
     ASSERT_FALSE(res.HasValue());
     EXPECT_EQ(res.Error(), Status::InvalidParam());

@@ -95,9 +95,22 @@ ControlResponse ExecuteControl(CacheBuffer& buffer, const ControlRequest& reques
             response.ok = true;
             return response;
         }
+        case ControlOp::PrepareOffload: {
+            AddressedToken plan = buffer.PrepareOffload();
+            response.keys = std::move(plan.keys);
+            response.tokenPayload = std::move(plan.payload);
+            response.ok = true;
+            return response;
+        }
+        case ControlOp::CompleteOffload: {
+            buffer.CompleteOffload(request.planId);
+            response.ok = true;
+            return response;
+        }
         default: {
-            FailWith(response, Status::InvalidParam("control op {} is not a data-plane operation",
-                                                    static_cast<unsigned>(request.op)));
+            FailWith(response,
+                     Status::InvalidParam("control op {} is not a control-plane operation",
+                                          static_cast<unsigned>(request.op)));
             return response;
         }
     }
@@ -118,6 +131,25 @@ Expected<AddressedToken> TokenOutcomeFrom(ControlResponse&& response,
     }
     AddressedToken token;
     token.keys = blockIds;
+    token.payload = std::move(response.tokenPayload);
+    return token;
+}
+
+Expected<AddressedToken> PlanOutcomeFrom(ControlResponse&& response)
+{
+    if (!response.ok) { return StatusFromResponse(response); }
+    const PlanPayload plan = DecodePlanPayload(response.tokenPayload);
+    if (response.keys.empty()) {
+        if (plan.batchId != 0 || !plan.slots.empty()) {
+            return Status::General("plan payload disagrees with the idle plan");
+        }
+        return AddressedToken{};
+    }
+    if (plan.batchId == 0 || plan.slots.size() != response.keys.size()) {
+        return Status::General("plan payload disagrees with the planned keys");
+    }
+    AddressedToken token;
+    token.keys = std::move(response.keys);
     token.payload = std::move(response.tokenPayload);
     return token;
 }

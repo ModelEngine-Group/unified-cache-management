@@ -30,7 +30,12 @@
 
 namespace UC::Store {
 
+class Store;
+
 struct CacheConfig {
+    /** Private configuration */
+    Store* lowerStore{nullptr}; /* the pipe's next tier down. */
+
     /** Common configuration */
     std::string uniqueId;  /* Unique identifier of the current shared domain. */
     std::string llmRole;   /* Role of the LLM inference process. */
@@ -43,14 +48,16 @@ struct CacheConfig {
     std::size_t blockTotalNumber;           /* Total number of blocks in the shared cache. */
     std::string replacementPolicy{"clock"}; /* Policy for slot replacement and reuse. */
     bool forceHugePage{false};              /* Whether to force-enable huge pages. */
-    std::string dmaEngine{};    /* DMA engine kind name; empty selects the build's default. */
-    std::size_t nDmaStream{16}; /* Number of concurrent DMA streams. */
+    std::string dmaEngine{};         /* DMA engine kind name; empty selects the build's default. */
+    std::size_t nDmaStream{16};      /* Number of concurrent DMA streams. */
+    std::size_t tierBatchSize{1024}; /* Blocks per lower-tier transfer sub-batch. */
 
     static Expected<CacheConfig> From(const Dictionary& dict)
     {
         CacheConfig cfg;
         DictionaryReader reader{dict, "cache_config"};
 
+        reader.Optional("__ucm_lower_store__", cfg.lowerStore);
         reader.RequiredNonEmpty("unique_id", cfg.uniqueId);
         reader.RequiredEnum("llm_role", cfg.llmRole, {"scheduler", "worker", "both"});
         reader.RequiredPositive("worker_number", cfg.nWorker);
@@ -61,6 +68,7 @@ struct CacheConfig {
         reader.OptionalBool("cache_force_huge_page", cfg.forceHugePage);
         reader.OptionalNonEmpty("cache_dma_engine", cfg.dmaEngine);
         reader.OptionalPositive("cache_dma_stream_number", cfg.nDmaStream);
+        reader.OptionalPositive("cache_tier_batch_size", cfg.tierBatchSize);
 
         if (reader.Result().Failure()) { return reader.Result(); }
         cfg.blockTotalNumber = (static_cast<std::size_t>(cfg.capacityGb) << 30) / cfg.blockSize;

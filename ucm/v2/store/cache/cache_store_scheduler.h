@@ -28,6 +28,7 @@
 #include "cache_buffer.h"
 #include "cache_config.h"
 #include "control_codec.h"
+#include "offloadable.h"
 #include "store.h"
 #include "type/block.h"
 #include "type/request.h"
@@ -53,10 +54,17 @@ namespace UC::Store {
  * shared memory outlives Create -- the data plane runs entirely in the
  * workers, and this store holds neither.
  *
+ * The Offloadable facet serves the engine half: plans mint and receipt
+ * through the local engine, while the executor half is refused -- no
+ * data plane runs here, so no lower tier is ever driven. The facet is
+ * served only when the configuration wires a lower tier: without an
+ * executor the minted plans would never conclude and their pins would
+ * never release.
+ *
  * @note Threading contract: one calling thread or external serialization;
  *       the engine keeps exactly one serialized caller.
  */
-class CacheStoreScheduler final : public Store {
+class CacheStoreScheduler final : public Store, public Offloadable {
 public:
     /**
      * @brief Joins the caller's cache domain and builds the engine.
@@ -95,6 +103,16 @@ public:
     std::vector<std::pair<std::size_t, bool>> GetFinished() override;
 
     Status Wait(std::size_t jobId) override;
+
+    /*== The Offloadable facet ==*/
+
+    AddressedToken PrepareOffload() override;
+
+    void CompleteOffload(const AddressedToken& plan) override;
+
+    Status Offload(std::size_t jobId, AddressedToken plan) override;
+
+    Offloadable* AsOffloadable() override { return config_.lowerStore != nullptr ? this : nullptr; }
 
     Prefetchable* AsPrefetchable() override { return nullptr; }
 
