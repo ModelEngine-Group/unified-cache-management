@@ -64,11 +64,16 @@ These fields apply to pipelines containing Cache. Cache2 capacity is planned per
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | Optional | int | Default: `160` | Cache2 capacity in GiB per cache domain for native callers. vLLM treats it as a node budget, divides it across local DP domains and FA/WA stores, and further partitions PP stage stores. External-DP services supply their per-instance budget. Cache2 divides each domain across its local workers. vLLM rejects per-store capacity splits below 1 GiB. |
 | `cache_sdma_direct` | Optional | bool | Depends on build env: `true` when `PLATFORM=ascend-a3`, `false` otherwise | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
-| `cache_load_backend_only` | Optional | bool | Default: `false` | Test mode: query the backend and reload unused Cache2 slots in place. As in legacy Cache, referenced Ready slots and in-flight fills may be shared. Requires a backend store; configure it on every worker. |
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
 | `share_buffer_enable` | Optional | bool | Legacy compatibility | Cache2 always uses a shared control plane and per-worker memfd data segments within each cache domain. |
 
-Runtime Cache2 reset clears DRAM entries and keeps backend files. Quiesce Cache traffic before resetting. Single-host TP and the existing LayerWise PP path are supported; PP waits for the worker Cache domains of every stage. Cross-host TP reset is unsupported: without PP, only the scheduler-host Cache domain is cleared. Cross-host PP requires reachable worker reset endpoints and remains pending target-platform validation. Each DP engine resets its own Cache domains; reaching every DP engine depends on vLLM request routing.
+Cache2 runtime reset supports only single-host `mp`/`uni` deployments without PP. Ray and external-launcher topology are not inferred and reset is rejected. PP (including single-host PP) and cross-host TP reset are unsupported; the vLLM connector returns false without clearing its local Cache in these cases. Reset only invalidates local DRAM entries, keeps backend files, and requires quiescent Cache traffic. No reset communication between scheduler and workers is added. Each DP engine clears its own local Cache; reaching every DP engine depends on vLLM request routing.
+
+For Posix-hit benchmarks with PP or cross-host TP, start the service with `cache_load_backend_only: true` in every worker's `ucm_connector_config`, using a Posix backend. Benchmark in this mode instead of calling UCM reset. This flag controls the UCM Cache tier; vLLM HBM prefix-cache reuse is configured separately.
+
+| Parameter | Required | Type | Value Range | Description |
+| --- | --- | --- | --- | --- |
+| `cache_load_backend_only` | Optional | bool | Default: `false` | Test mode: query the backend and reload unused Cache2 slots in place. As in legacy Cache, referenced Ready slots and in-flight fills may be shared. Requires a backend store; configure it on every worker. |
 
 ## Posix capacity reclamation
 

@@ -64,11 +64,16 @@ enable_metrics: true
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | 选填 | int | 默认 `160` | 原生调用方按 Cache 域配置容量，单位 GiB。vLLM 按节点预算分配给本机 DP 域和 FA/WA store，PP stage store 进一步分摊。外部 DP 服务配置每个实例的预算。Cache2 将每个域的容量均分给域内本机 worker。vLLM 对每个 store 分摊的容量低于 1 GiB 时启动报错。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
-| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 测试模式：查询 backend，对无人引用的 Cache2 slot 原地重新加载。与旧 Cache 一致，正在被引用的 Ready slot 和进行中的加载可以共用。必须配置 backend，并在所有 worker 上启用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | 兼容旧配置 | Cache2 在每个 Cache 域内统一使用共享控制面和每个 worker 独立的 memfd 数据段。 |
 
-Cache2 运行时 reset 清理 DRAM 条目，保留 backend 文件。调用前需停止 Cache 流量。支持单机 TP 和现有 LayerWise PP 路径，PP 会等待各 stage 的 worker Cache 清理完成。不支持跨机 TP 清理：不开 PP 时只能清理 scheduler 所在主机的 Cache 域。跨机 PP 需要 scheduler 能访问 worker 的 reset 地址，仍待目标平台验证。各 DP engine 只清理自己的 Cache 域，能否覆盖全部 DP 取决于 vLLM 的请求分发。
+Cache2 运行时 reset 仅支持不开 PP 的单机 `mp`/`uni` 场景。Ray 和 external launcher 不做拓扑推断，直接拒绝 reset。不支持 PP（包括单机 PP）和跨机 TP 清理；这些场景下 vLLM connector 直接返回 false，不执行局部清理。reset 只使本机 DRAM 缓存失效，保留 backend 文件，调用前需停止 Cache 流量。不新增 scheduler 与 worker 之间的清理通信。各 DP engine 清理各自的本机 Cache，能否覆盖全部 DP 取决于 vLLM 的请求分发。
+
+PP 或跨机 TP 场景需要测试 Posix 命中时，请在启动服务时，为所有 worker 的 `ucm_connector_config` 配置 `cache_load_backend_only: true`，并使用 Posix backend。直接以此模式测试，不调用 UCM reset。该参数只控制 UCM Cache 层，vLLM HBM prefix cache 的复用需单独配置。
+
+| 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
+| --- | --- | --- | --- | --- |
+| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 测试模式：查询 backend，对无人引用的 Cache2 slot 原地重新加载。与旧 Cache 一致，正在被引用的 Ready slot 和进行中的加载可以共用。必须配置 backend，并在所有 worker 上启用。 |
 
 ## Posix 容量回收
 
