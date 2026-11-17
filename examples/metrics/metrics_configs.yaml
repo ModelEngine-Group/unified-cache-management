@@ -601,9 +601,6 @@ histogram:
   - name: "save_completion_wait_duration"
     documentation: "Time spent blocked while confirming async UCM connector dump completion (ms)"
     buckets: [0, 1, 2, 5, 10, 20, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
-  - name: "interval_lookup_hit_rates"
-    documentation: "Hit rates of ucm lookup requests"
-    buckets: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
   # =========================================================================
   # Pipeline Store — per-stage metrics

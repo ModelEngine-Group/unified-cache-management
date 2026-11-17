@@ -891,11 +891,6 @@ _HISTOGRAM_METRICS = [
         [0, 1, 2, 5, 10, 20, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000],
     ),
     (
-        "interval_lookup_hit_rates",
-        "Hit rates of ucm lookup requests",
-        [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-    ),
-    (
         "cache_lookup_duration_ms",
         "Cache buffer lookup wall-clock time per `Lookup` / `LookupOnPrefix` call (ms)",
         [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100],

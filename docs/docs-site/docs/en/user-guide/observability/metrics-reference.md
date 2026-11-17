@@ -56,7 +56,6 @@ No Connector-specific Gauges are exported by default.
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `ucm:save_duration` | Time from entering `wait_for_save` until asynchronous Dump completion, in ms; use it to track overall save duration |
 | `ucm:save_completion_wait_duration` | Time actually blocked while confirming asynchronous Dump completion, in ms; use it to track the remaining wait imposed on the caller |
-| `ucm:interval_lookup_hit_rates`                         | Per-request UCM Lookup hit-rate distribution[^export-scope] |
 | `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface `get_block_size`                          |
 | `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface `get_kv_connector_stats`                  |
 | `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface `get_num_new_matched_tokens`              |
@@ -474,6 +473,5 @@ ucm:posix_store_health{job="vllm"}
 
 ## 3. Runtime interpretation notes
 
-[^export-scope]: The current `vllm_connector` consumer excludes `interval_lookup_hit_rates` in `ucm/metrics_config.py`. The native metric remains in this catalog; do not expect it on the default vLLM endpoint.
 [^cache-source]: `cache_posix_load_success_shards_total` follows the Cache buffer's not-ready state at dispatch. The lower Store need not be Posix. For Cache/Posix, source-share formulas estimate tier contribution; correlate backend activity and completed transfers rather than treating a wait as a physical disk read.
 [^posix-bytes]: Current Posix counters accumulate nominal task bytes at completion, including error or aborted paths. Check errors alongside byte rates; physical storage throughput requires filesystem or device observations.

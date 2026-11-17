@@ -3,7 +3,7 @@
 
 ## 1. Metrics Exported by Default
 
-KVClient and transport metrics use the `kv:` prefix; other metrics in the tables below use `ucm:` by default. The default configuration contains 172 Counters, 37 Gauges, and 141 Histograms.
+KVClient and transport metrics use the `kv:` prefix; other metrics in the tables below use `ucm:` by default. The default configuration contains 172 Counters, 37 Gauges, and 140 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
@@ -31,7 +31,6 @@ No Connector-specific Gauges are exported by default.
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `ucm:save_duration`                                     | Duration from entering `wait_for_save` until asynchronous Dump completion |
 | `ucm:save_completion_wait_duration`                     | Time actually blocked while confirming asynchronous Dump completion        |
-| `ucm:interval_lookup_hit_rates`                         | Per-request UCM Lookup hit-rate distribution                               |
 | `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface `get_block_size`                          |
 | `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface `get_kv_connector_stats`                  |
 | `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface `get_num_new_matched_tokens`              |

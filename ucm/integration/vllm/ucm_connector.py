@@ -2214,14 +2214,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
 
-        ucmmetrics.update_stats(
-            {
-                "interval_lookup_hit_rates": external_hit_blocks
-                * self.cp_world_size
-                / len(ucm_block_ids)
-            },
-        )
-
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
         external_hit_tokens = external_hit_blocks * self.block_size

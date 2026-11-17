@@ -567,11 +567,6 @@ def _metrics_config(consumers=None):
                 "documentation": "Cache load duration in ms.",
                 "buckets": [1, 5],
             },
-            {
-                "name": "interval_lookup_hit_rates",
-                "documentation": "Prefer vLLM external prefix cache metrics.",
-                "buckets": [0.1, 0.5, 1.0],
-            },
         ],
     }
 
@@ -628,7 +623,6 @@ def test_config_definitions_register_enable_list_and_metric_names():
         "test_health",
         "load_duration",
         "cache_load_duration_ms",
-        "interval_lookup_hit_rates",
     ]
     assert by_name["load_duration"].vllm_connector_name == "ucm:load_duration"
     assert by_name["load_duration"].vllm_connector_buckets == (50, 100)
@@ -637,14 +631,12 @@ def test_config_definitions_register_enable_list_and_metric_names():
         by_name["cache_load_duration_ms"].vllm_connector_name
         == "ucm:cache_load_duration_ms"
     )
-    assert by_name["interval_lookup_hit_rates"].vllm_connector_enabled is False
     assert by_name["test_health"].multiprocess_mode == ""
     assert fake_ucmmetrics.created == [
         ("load_bytes_total", "counter", ()),
         ("test_health", "gauge", ()),
         ("load_duration", "histogram", (50, 100)),
         ("cache_load_duration_ms", "histogram", (1, 5)),
-        ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
     ]
 
 
@@ -953,7 +945,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
         {"test_health": 0.5},
         {
             "load_duration": ([0, 1, 0], 75.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
     )
     dispatcher = get_metrics_dispatcher(config)
@@ -966,7 +957,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
     assert multiproc_stats[0] == {"load_bytes_total": 4096.0}
     assert multiproc_stats[1] == {"test_health": 0.5}
     assert multiproc_stats[2]["load_duration"] == ([0, 1, 0], 75.0)
-    assert multiproc_stats[2]["interval_lookup_hit_rates"] == ([1, 0, 0, 0], 0.1)
     assert vllm_stats[0] == {"load_bytes_total": 4096.0}
     assert vllm_stats[1] == {"test_health": 0.5}
     assert vllm_stats[2] == {"load_duration": ([0, 1, 0], 75.0)}
@@ -1066,7 +1056,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         gauge_stats={"test_health": 0.75},
         histogram_stats={
             "load_duration": ([1, 2, 0], 150.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
         worker_rank=7,
         metric_definitions=definitions,
@@ -1080,7 +1069,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         "sum": 150.0,
     }
     assert "not_configured" not in stats.data["counters_by_rank"]["7"]
-    assert "interval_lookup_hit_rates" not in stats.data["histograms_by_rank"]["7"]
 
 
 def test_stats_record_aggregate_clone_and_reset_preserve_worker_rank():
@@ -2084,11 +2072,7 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
     configured_names = set(
         re.findall(r'^\s*-\s+name:\s+"([^"]+)"', metrics_text, re.MULTILINE)
     )
-    expected_vllm_names = set()
-    for name in configured_names:
-        if name == "interval_lookup_hit_rates":
-            continue
-        expected_vllm_names.add(f"ucm:{name}")
+    expected_vllm_names = {f"ucm:{name}" for name in configured_names}
 
     for filename in GRAFANA_UCM_DASHBOARDS:
         dashboard_text = (REPO_ROOT / "examples" / "metrics" / filename).read_text(

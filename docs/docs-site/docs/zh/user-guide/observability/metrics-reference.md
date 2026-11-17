@@ -56,7 +56,6 @@ Connector 连接推理引擎与 UCM，适合先判断**前缀能复用多少，�
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `ucm:save_duration` | 从进入 wait_for_save 到异步 Dump 完成的时长，单位 ms；观察保存的整体耗时 |
 | `ucm:save_completion_wait_duration` | 确认异步 Dump 完成时实际阻塞等待的时长，单位 ms；观察保存留给调用方的等待开销 |
-| `ucm:interval_lookup_hit_rates` | 每个请求的 UCM Lookup 命中率分布[^export-scope] |
 | `ucm:connector_get_block_size_duration_ms` | Connector 接口 `get_block_size` 的耗时 |
 | `ucm:connector_get_kv_connector_stats_duration_ms` | Connector 接口 `get_kv_connector_stats` 的耗时 |
 | `ucm:connector_get_num_new_matched_tokens_duration_ms` | Connector 接口 `get_num_new_matched_tokens` 的耗时 |
@@ -474,6 +473,5 @@ ucm:posix_store_health{job="vllm"}
 
 ## 3. 运行口径注记
 
-[^export-scope]: 当前 `ucm/metrics_config.py` 中的 `vllm_connector` consumer 排除了 `interval_lookup_hit_rates`。本目录保留原生指标条目，但默认 vLLM 端点不会导出它。
 [^cache-source]: `cache_posix_load_success_shards_total` 按分派时 Cache 缓冲尚未就绪的状态分类，下层 Store 不一定是 Posix。Cache/Posix 的来源比例用于估算各层贡献，应结合后端活动和已完成传输，不将等待直接解释为物理磁盘读取。
 [^posix-bytes]: 当前 Posix 字节计数在任务完成时累计名义任务字节数，包含错误和中止路径。查看字节速率时同时检查错误；物理存储吞吐需要结合文件系统或设备观测。
