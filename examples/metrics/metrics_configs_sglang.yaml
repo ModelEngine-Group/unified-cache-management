@@ -1017,6 +1017,24 @@ histogram:
   - name: "drampool_lookup_batch_total_duration_ms"
     documentation: "End-to-end LOOKUP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: sglang_linker_load_layer_duration_ms
+    documentation: Per physical load task submission-to-wait completion duration by
+      logical layer, including failures (ms)
+    dynamic_labels:
+    - layer
+    buckets:
+    - 0.01
+    - 0.1
+    - 0.5
+    - 1
+    - 5
+    - 10
+    - 50
+    - 100
+    - 500
+    - 1000
+    - 5000
+    - 10000
   # Direct linker: per-worker counters and asynchronous operation timing.
   - name: sglang_linker_lookup_duration_ms
     documentation: 'SGLang linker: Owner adapter lookup duration including failed attempts (ms)'

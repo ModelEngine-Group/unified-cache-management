@@ -116,7 +116,8 @@ def update(values):
     with lock:
         observations.append(dict(values))
         for name, v in values.items():
-            typ, definition = defs[name]
+            base = name.rsplit("_", 1)[0]
+            typ, definition = defs[name] if name in defs else defs[base]
             if typ == "counter":
                 snapshot[0][name] = snapshot[0].get(name, 0) + v
             elif typ == "histogram":

@@ -160,6 +160,15 @@ def get_default_sglang_metrics_config() -> dict:
             "buckets": [0.1, 0.5, 1, 5, 10, 20, 50, 100],
         },
     ] + config["histogram"]
+    for name, documentation in (
+        ("load_layer_duration_ms", "Per physical load task submission-to-wait completion duration by logical layer, including failures (ms)"),
+    ):
+        config["histogram"].append({
+            "name": f"sglang_linker_{name}",
+            "documentation": documentation,
+            "dynamic_labels": ["layer"],
+            "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
+        })
     for kind, definitions in get_linker_metric_definitions().items():
         config[kind].extend(definitions)
     return config

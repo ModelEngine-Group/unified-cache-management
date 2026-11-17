@@ -872,6 +872,7 @@ class UcmDirectStoreAdapter:
                         is_offload,
                         len(transfer.page_keys),
                         transfer.shard_size,
+                        layers=(logical_layer,),
                     )
                     try:
                         task = operation(*args, **transfer_options)

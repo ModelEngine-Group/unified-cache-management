@@ -51,6 +51,20 @@ class LinkerMetricsTest(unittest.TestCase):
         )
         self.adapter._ensure_store_schema = lambda *a, **kw: self.store
 
+    def test_layer_timing_and_dump_has_no_layer_samples(self):
+        load = metrics_module.AsyncIoObservation.begin(True, False, 2, 8, layers=(3,))
+        self.now = 12.0
+        load.submitted = True
+        load.finish()
+        self.assertEqual(self.total("sglang_linker_load_layer_duration_ms_3"), 2000)
+        dump = metrics_module.AsyncIoObservation.begin(True, True, 4, 8, layers=(1, 3, 3))
+        self.now = 15.0
+        dump.finish(failed=True)
+        dump.finish(failed=True)
+        self.assertFalse(any(
+            "dump_layer" in key for sample in self.samples for key in sample
+        ))
+
     def total(self, name):
         return sum(sample.get(name, 0) for sample in self.samples)
 

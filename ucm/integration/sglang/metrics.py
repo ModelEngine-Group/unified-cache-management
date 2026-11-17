@@ -97,16 +97,17 @@ class AsyncIoObservation:
     pages: int
     byte_count: int
     started: float
+    layers: tuple[int, ...] = ()
     submitted: bool = False
     failed: bool = False
     check_failed: bool = False
     finished: bool = False
 
     @classmethod
-    def begin(cls, enabled, is_set, pages, shard_size):
+    def begin(cls, enabled, is_set, pages, shard_size, layers=()):
         if not enabled or pages == 0:
             return None
-        return cls(is_set, pages, pages * shard_size, time.perf_counter())
+        return cls(is_set, pages, pages * shard_size, time.perf_counter(), tuple(dict.fromkeys(layers)))
 
     def fail_check(self):
         self.failed = True
@@ -125,6 +126,9 @@ class AsyncIoObservation:
             f"{prefix}_requests_total": 1,
             f"{prefix}_duration_ms": elapsed * 1000,
         }
+        if not self.is_set:
+            for layer in self.layers:
+                values[f"sglang_linker_load_layer_duration_ms_{layer}"] = elapsed * 1000
         # Attribute submit/wait errors only to the call that actually failed.
         if failed:
             phase = "wait" if self.submitted else "submit"
