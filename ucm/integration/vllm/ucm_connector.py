@@ -99,38 +99,6 @@ def _has_layer_component(layer_name: str, components: set[str]) -> bool:
     return not components.isdisjoint(layer_name.lower().split("."))
 
 
-def _apply_cuda_indexer_io_config(
-    launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
-) -> None:
-    """Resolve IO mode before connector selection and cache layout creation."""
-    if not current_platform.is_cuda() or kv_cache_config is None:
-        return
-    for group in kv_cache_config.kv_cache_groups:
-        layer_names = (
-            getattr(group, "layer_names", None)
-            or getattr(group, "kv_cache_specs", None)
-            or {}
-        )
-        for name in layer_names:
-            if not _has_layer_component(name, {"indexer", "index_cache"}):
-                continue
-            if pipeline_parallel_size > 1:
-                raise RuntimeError(
-                    "UCM does not support CUDA indexer models with pipeline "
-                    "parallelism: whole-block loading requires "
-                    "pipeline_parallel_size=1. Set pipeline_parallel_size=1 "
-                    "to use this configuration."
-                )
-            launch_config["use_layerwise"] = False
-            launch_config["use_request_async_load"] = True
-            logger.warning(
-                "CUDA indexer KV cache requires whole-block loading; "
-                "disabling use_layerwise and enabling use_request_async_load "
-                "where supported by the connector."
-            )
-            return
-
-
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
     """Resolve cache quantization independently of weight quantization.
 
@@ -1700,11 +1668,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(
-            self.launch_config,
-            kv_cache_config,
-            vllm_config.parallel_config.pipeline_parallel_size,
-        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         self.unique_id = self.engine_id
@@ -3219,14 +3182,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 metadata,
                 first_layer_load_start,
             )
+            if current_platform.is_cuda():
+                # CUDA indexers run before their attention load hooks.
+                self._wait_layer_and_prefetch_next(self.first_layer_id)
 
-    def wait_for_layer_load(self, layer_name: str) -> None:
+    def _wait_layer_and_prefetch_next(self, current_layer_id: int) -> None:
         if not self._connector_metadata:
             return
         if not self.need_load:
             return
         metadata = self._get_connector_metadata()
-        current_layer_id = self.layer_name_to_id[layer_name]
 
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
@@ -3239,7 +3204,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._rank_consistency.wait_load(task)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} wait {layer_name} load failed. "
+                    f"request {request_id} wait layer {current_layer_id} load failed. "
                     f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
@@ -3277,6 +3242,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
             self._layerwise_layer_load_duration_sum_ms = 0.0
             self._layerwise_load_bytes = 0
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        if not self._connector_metadata or not self.need_load:
+            return
+
+        current_layer_id = self.layer_name_to_id[layer_name]
+        self._wait_layer_and_prefetch_next(current_layer_id)
+
+        # Keep non-CUDA platforms on the original current-layer wait schedule.
+        if current_platform.is_cuda():
+            next_layer_id = current_layer_id + 1
+            if next_layer_id in self.layer_ids:
+                self._wait_layer_and_prefetch_next(next_layer_id)
 
     def save_kv_layer(
         self,
@@ -3753,11 +3731,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(
-            self.launch_config,
-            kv_cache_config,
-            vllm_config.parallel_config.pipeline_parallel_size,
-        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
