@@ -49,7 +49,6 @@ from ucm.integration.vllm.cache_config import (
     configure_cache_capacity,
     configure_cache_numa,
 )
-from ucm.integration.vllm.cache_reset import CacheResetServer, reset_cache_endpoints
 from ucm.integration.vllm.device import (
     create_device,
     get_current_device_id,
@@ -2855,11 +2854,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return finished_recving
 
     def reset_cache(self) -> bool:
-        """Synchronously invalidate the Cache tier visible to this participant."""
-        store = getattr(self, "store", None)
-        if store is None:
-            return False
-        reset = getattr(store, "reset_cache", None)
+        """Invalidate this participant's local Cache tier only."""
+        reset = getattr(getattr(self, "store", None), "reset_cache", None)
         return bool(reset()) if callable(reset) else False
 
     def get_finished(
@@ -2996,24 +2992,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def get_handshake_metadata(self) -> Optional[dict]:
         if self._is_pp:
-            sizes = getattr(self, "_pp_store_sizes", None)
-            if sizes is None:
-                return None
-            server = getattr(self, "_cache_reset_server", None)
-            if server is None:
-                store = getattr(self, "store", None)
-                if store is None:
-                    return None
-                reset = getattr(store, "reset_cache", None)
-                try:
-                    server = CacheResetServer(
-                        lambda: bool(reset()) if callable(reset) else False
-                    )
-                except Exception as exc:
-                    logger.warning("PP Cache reset endpoint unavailable: %s", exc)
-                    return dict(sizes)
-                self._cache_reset_server = server
-            return {**sizes, "cache_reset_endpoint": server.endpoint}
+            return getattr(self, "_pp_store_sizes", None)
         return None
 
     def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
@@ -3039,7 +3018,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     f"received keys: {list(metadata)}."
                 )
             stage_meta = dict(stage_meta)
-            stage_meta.pop("cache_reset_endpoint", None)
             layer_start = stage_meta.pop("layer_start", None)
             layer_count = stage_meta.pop("layer_count", None)
             if layer_start is None or layer_count is None:
@@ -3065,35 +3043,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         self._pp_stores = stores
         self.store = stores[0]
-        # Every worker must advertise reset support. One worker per host and
-        # stage suffices because its Cache2 control region is shared locally.
-        expected = (
-            (pp_rank, tp_rank)
-            for pp_rank in range(
-                self._vllm_config.parallel_config.pipeline_parallel_size
-            )
-            for tp_rank in range(self.tp_size)
-        )
-        if all(
-            metadata.get(rank, {}).get("cache_reset_endpoint") for rank in expected
-        ) and all(
-            stage_meta.get("cache_reset_endpoint") for stage_meta in metadata.values()
-        ):
-            endpoints = {}
-            for (pp_rank, _), stage_meta in metadata.items():
-                endpoint = stage_meta.get("cache_reset_endpoint")
-                if endpoint:
-                    endpoints.setdefault((pp_rank, endpoint["host"]), endpoint)
-            self._pp_reset_endpoints = list(endpoints.values())
-
-    def reset_cache(self) -> bool:
-        if not self._is_pp or self._role == KVConnectorRole.WORKER:
-            return super().reset_cache()
-        endpoints = getattr(self, "_pp_reset_endpoints", None)
-        if not endpoints:
-            logger.warning("PP Cache reset requires reset endpoints from every worker")
-            return False
-        return reset_cache_endpoints(endpoints)
 
     def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
         """Return the last prefix hit every PP stage can serve (-1 = none).
@@ -3134,10 +3083,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def shutdown(self) -> None:
         """Release the lookup pool so process exit cannot block on it."""
-        server = getattr(self, "_cache_reset_server", None)
-        if server is not None:
-            server.close()
-            self._cache_reset_server = None
         pool = getattr(self, "_lookup_pool", None)
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -4184,8 +4129,20 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector.bind_connector_metadata(connector_metadata)
 
     def reset_cache(self) -> bool:
-        """Synchronously invalidate the scheduler-visible Cache tier."""
+        """Reset only a single-host, non-PP deployment's local Cache tier."""
         try:
+            parallel = self._vllm_config.parallel_config
+            if (
+                parallel.pipeline_parallel_size != 1
+                or parallel.world_size > parallel.local_world_size
+                or parallel.distributed_executor_backend not in ("mp", "uni")
+            ):
+                logger.warning(
+                    "UCM Cache reset supports only single-host mp/uni without PP. "
+                    "For Posix-hit benchmarks, start all workers with "
+                    "cache_load_backend_only=true instead of calling reset."
+                )
+                return False
             return bool(self.connector.reset_cache())
         except Exception as e:
             logger.warning(f"UCM cache reset failed: {type(e).__name__}: {e}")

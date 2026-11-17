@@ -1353,15 +1353,46 @@ def test_ucm_connector_uses_fawa_lite_when_lite_and_fawa_are_both_enabled(monkey
     assert type(connector.connector) is FakeFawaLiteConnector
 
 
+def _local_cache_reset_connector(inner, **parallel_overrides):
+    parallel = dict(
+        pipeline_parallel_size=1,
+        world_size=8,
+        local_world_size=8,
+        distributed_executor_backend="mp",
+    )
+    parallel.update(parallel_overrides)
+    outer = object.__new__(UCMConnector)
+    outer._role = KVConnectorRole.SCHEDULER
+    outer._vllm_config = SimpleNamespace(parallel_config=SimpleNamespace(**parallel))
+    outer.connector = inner
+    return outer
+
+
+@pytest.mark.parametrize(
+    "parallel",
+    [
+        {"pipeline_parallel_size": 2},
+        {"world_size": 16},
+        {"local_world_size": None},
+        {"distributed_executor_backend": "ray"},
+        {"distributed_executor_backend": "external_launcher"},
+    ],
+    ids=["pp", "cross-node-tp", "unknown-local-geometry", "ray", "external-launcher"],
+)
+def test_cache_reset_rejects_unsupported_topology_before_clearing(parallel):
+    inner = SimpleNamespace(reset_cache=Mock(return_value=True))
+    outer = _local_cache_reset_connector(inner, **parallel)
+    assert outer.reset_cache() is False
+    inner.reset_cache.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "result,expected", [(True, True), (False, False), (None, False)]
 )
 def test_scheduler_cache_reset_returns_completed_store_result(result, expected):
     inner = object.__new__(UCMDirectConnector)
     inner.store = SimpleNamespace(reset_cache=Mock(return_value=result))
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is expected
     inner.store.reset_cache.assert_called_once_with()
@@ -1372,9 +1403,7 @@ def test_scheduler_cache_reset_reports_store_errors():
     inner.store = SimpleNamespace(
         reset_cache=Mock(side_effect=RuntimeError("reset failed"))
     )
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is False
     inner.store.reset_cache.assert_called_once_with()
@@ -1413,9 +1442,7 @@ def test_fawa_scheduler_resets_both_stores_before_reporting_success(
     inner.fa_store = SimpleNamespace(reset_cache=Mock(return_value=fa_result))
     inner.wa_store = SimpleNamespace(reset_cache=Mock(return_value=wa_result))
     inner.window_group_ids = [1]
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is (fa_result and wa_result)
     inner.fa_store.reset_cache.assert_called_once_with()
@@ -1429,9 +1456,7 @@ def test_fawa_scheduler_resets_fa_only_layout_without_a_window_store():
     inner.fa_store = SimpleNamespace(reset_cache=Mock(return_value=True))
     inner.wa_store = None
     inner.window_group_ids = []
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is True
     inner.fa_store.reset_cache.assert_called_once_with()
@@ -1446,9 +1471,7 @@ def test_fawa_scheduler_reports_missing_required_store(missing_store):
     inner.wa_store = SimpleNamespace(reset_cache=Mock(return_value=True))
     inner.window_group_ids = [1]
     setattr(inner, missing_store, None)
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is False
 
@@ -1462,9 +1485,7 @@ def test_fawa_scheduler_reports_store_reset_errors(failed_store):
     inner.wa_store = SimpleNamespace(reset_cache=Mock(return_value=True))
     inner.window_group_ids = [1]
     getattr(inner, failed_store).reset_cache.side_effect = RuntimeError("reset failed")
-    outer = object.__new__(UCMConnector)
-    outer._role = KVConnectorRole.SCHEDULER
-    outer.connector = inner
+    outer = _local_cache_reset_connector(inner)
 
     assert outer.reset_cache() is False
 
