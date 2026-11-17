@@ -156,6 +156,7 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
         "version",
         "target_platform",
         "excluded_patterns",
+        "host_driver_libraries",
     }:
         raise ValueError(f"{context} has an invalid repair contract")
     if repair.get("tool") != "auditwheel" or not isinstance(repair.get("version"), str):
@@ -171,6 +172,13 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
         or any(not isinstance(value, str) or not value for value in excluded)
     ):
         raise ValueError(f"{context} has invalid external exclude patterns")
+    host_drivers = repair.get("host_driver_libraries")
+    if (
+        not isinstance(host_drivers, list)
+        or host_drivers != sorted(set(host_drivers))
+        or any(not isinstance(value, str) or not value for value in host_drivers)
+    ):
+        raise ValueError(f"{context} has invalid host driver libraries")
 
     report = _mapping(result.get("auditwheel_report"), f"{context} auditwheel report")
     report_name = report.get("filename")
@@ -196,9 +204,7 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
     closure = wheel_audit.validate_external_library_closure(
         report_text,
         expected_patterns=excluded,
-        deferred_sonames=wheel_audit.deferred_policy_for_distribution(
-            str(result.get("distribution", ""))
-        ),
+        host_driver_sonames=host_drivers,
     )
     if external_roots != closure["external_library_roots"]:
         raise ValueError(f"{context} external roots do not match auditwheel")
@@ -308,6 +314,7 @@ def build_release_state(
             "version": task["repair"]["version"],
             "target_platform": task["target_platform_tag"],
             "excluded_patterns": task["external_runtime_exclude_patterns"],
+            "host_driver_libraries": task["host_driver_libraries"],
         }
         if result.get("repair") != expected_repair:
             raise ValueError(f"Wheel result {task_id!r} repair does not match its plan")

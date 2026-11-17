@@ -81,7 +81,7 @@ def test_native_build_selects_cache_core_and_matching_tests(
     source = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
     marker = "set(UCM_RUNTIME_ASCEND_FAMILY OFF)"
     selection = marker + source.split(marker, 1)[1].split("if(BUILD_UNIT_TESTS)", 1)[0]
-    core = "cc" if platform == "ascend-a5" else "v2"
+    core = "v2"
     test_source = (ROOT / "ucm/store/test/CMakeLists.txt").read_text(encoding="utf-8")
     marker = "    get_target_property(CACHE_CORE cachestore UCM_CACHE_CORE)"
     filters = (

@@ -1,8 +1,4 @@
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend-a5")
-    set(CACHE_CORE cc)
-else()
-    set(CACHE_CORE v2)
-endif()
+set(CACHE_CORE v2)
 file(GLOB_RECURSE UCM_CACHE_STORE_SOURCES "./${CACHE_CORE}/*.cc")
 add_library(cachestore SHARED ${UCM_CACHE_STORE_SOURCES})
 target_compile_definitions(cachestore PRIVATE

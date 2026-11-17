@@ -42,15 +42,20 @@ backends:
     # CANN libraries are supplied by the target Runtime. auditwheel discovers
     # the concrete direct roots and their version-specific transitive closure.
     external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
+    # Supplied by the NPU driver on the target host, not by CANN. Builder and
+    # Runtime images lack them or only carry stubs, so they are always deferred.
+    host_driver_libraries: [libascend_hal.so]
 
   cann-a3:
     status: supported
     platform: ascend-a3
     distribution_template: uc-manager-{runtime_variant}
     external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
+    host_driver_libraries: [libascend_hal.so]
 
   cann-a5:
     status: supported
     platform: ascend-a5
     distribution_template: uc-manager-{runtime_variant}
     external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
+    host_driver_libraries: [libascend_hal.so]
