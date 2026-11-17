@@ -95,7 +95,8 @@ CacheStorePrimary::~CacheStorePrimary()
 
 Status CacheStorePrimary::Init() noexcept
 {
-    if (Status st = buffer_.Setup(config_.blockTotalNumber, std::move(replacementPolicy_));
+    if (Status st = buffer_.Setup(config_.blockTotalNumber, std::move(replacementPolicy_),
+                                  config_.lowerStore != nullptr);
         st.Failure()) {
         return st;
     }

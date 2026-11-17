@@ -70,15 +70,17 @@ namespace UC::Store {
  * the eviction discipline is consulted once the pool is full -- and
  * deferred while the block is pinned.
  *
- * Offload: every admission that concludes fully successfully enters
- * the offload pending set exactly once; PrepareOffload() drains it
- * into the next plan, pinning each source slot until the plan's
- * receipt, and CompleteOffload() releases the pins. A block that
- * leaves the buffer before its mint is simply not covered -- the
- * caller's drain cadence bounds that loss window -- and a block
- * re-admitted after its eviction is offloaded again by the next
- * mint. While a plan is in flight its blocks are refused
- * re-admission, so in-flight plans have disjoint keys.
+ * Offload: when a lower tier is wired, every admission that
+ * concludes fully successfully enters the offload pending set
+ * exactly once; an unwired buffer keeps none. PrepareOffload()
+ * drains the set into the next plan, pinning each source slot
+ * until the plan's receipt, and CompleteOffload() releases the
+ * pins. A block that leaves the buffer before its mint is simply
+ * not covered -- the caller's drain cadence bounds that loss
+ * window -- and a block re-admitted after its eviction is
+ * offloaded again by the next mint. While a plan is in flight its
+ * blocks are refused re-admission, so in-flight plans have
+ * disjoint keys.
  *
  * @note Not thread-safe: callers must serialize access.
  */
@@ -91,6 +93,7 @@ public:
      * @param capacity         Slot count of the fixed pool; must be > 0.
      * @param replacementPolicy Registry-created policy instance; must not
      *                         be null.
+     * @param lowerTierWired  Whether a lower tier is wired.
      *
      * @return Status::Ok() on success; InvalidParam on bad arguments,
      *         otherwise the policy's Setup() result. On error the buffer
@@ -98,7 +101,8 @@ public:
      *
      * @note May be called again to reset the buffer.
      */
-    Status Setup(std::size_t capacity, std::unique_ptr<ReplacementPolicy> replacementPolicy)
+    Status Setup(std::size_t capacity, std::unique_ptr<ReplacementPolicy> replacementPolicy,
+                 bool lowerTierWired)
     {
         if (capacity == 0) { return Status::InvalidParam("capacity must be > 0"); }
         if (replacementPolicy == nullptr) {
@@ -119,6 +123,7 @@ public:
         offloadInFlight_.clear();
         offloadInFlightKeys_.clear();
         nextOffloadBatch_ = 1;
+        lowerTierWired_ = lowerTierWired;
         return Status::Ok();
     }
     /**
@@ -640,9 +645,11 @@ private:
         }
     }
 
-    /** @brief One fully successful admission conclusion: enters the pending set once. */
+    /** @brief One fully successful admission conclusion: enters the pending
+     *         set once, when a lower tier is wired. */
     void QueueForOffload(const BlockId& blockId)
     {
+        if (!lowerTierWired_) { return; }
         if (offloadQueued_.insert(blockId).second) { offloadQueue_.push_back(blockId); }
     }
 
@@ -687,6 +694,8 @@ private:
     std::unordered_set<BlockId> offloadInFlightKeys_;
     /** Next plan receipt handle; minted from 1, 0 is reserved and never minted. */
     std::uint64_t nextOffloadBatch_{1};
+    /** Whether a lower tier is wired. */
+    bool lowerTierWired_{false};
 };
 
 }  // namespace UC::Store

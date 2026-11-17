@@ -199,13 +199,14 @@ public:
         target = static_cast<T>(value);
     }
 
-    /** Read an optional value of any type: absent or ill-typed keeps the
-     *  target, and this read never fails. */
+    /** Read an optional value of any type; absent keeps the target,
+     *  present must be of the right type. */
     template <typename T>
     void Optional(const char* key, T& target)
     {
         if (status_.Failure()) { return; }
-        (void)dict_.Get<T>(key, target);
+        if (!dict_.Contains(key)) { return; }
+        if (!dict_.Get(key, target)) { Fail("'{}' must be of the right type when set", key); }
     }
 
     /** Read a required integer that must fit the int32 range (negatives allowed). */

@@ -190,6 +190,34 @@ TEST(DictionaryReaderTest, OptionalBoolRejectsNonBoolWhenSet)
     EXPECT_EQ(reader.Result(), Status::InvalidParam());
 }
 
+TEST(DictionaryReaderTest, OptionalRejectsWrongTypeWhenSet)
+{
+    /* Absent: the target keeps its value and the read stays clean. */
+    Dictionary absent;
+    int* pointer = nullptr;
+    DictionaryReader absentReader{absent};
+    absentReader.Optional("ptr", pointer);
+    EXPECT_TRUE(absentReader.Result().Success());
+    EXPECT_EQ(pointer, nullptr);
+
+    /* Well-typed: the stored pointer reads back. */
+    int dummy = 0;
+    Dictionary typed;
+    typed.Set("ptr", &dummy);
+    DictionaryReader typedReader{typed};
+    typedReader.Optional("ptr", pointer);
+    EXPECT_TRUE(typedReader.Result().Success());
+    EXPECT_EQ(pointer, &dummy);
+
+    /* Ill-typed: the read fails and the target keeps its value. */
+    Dictionary illTyped;
+    illTyped.Set("ptr", std::string("not a pointer"));
+    DictionaryReader illTypedReader{illTyped};
+    illTypedReader.Optional("ptr", pointer);
+    EXPECT_EQ(illTypedReader.Result(), Status::InvalidParam());
+    EXPECT_EQ(pointer, &dummy);
+}
+
 TEST(DictionaryReaderTest, FirstFailureWins)
 {
     Dictionary dict;

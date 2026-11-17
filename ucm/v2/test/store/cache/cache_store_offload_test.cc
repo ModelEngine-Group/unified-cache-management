@@ -145,11 +145,11 @@ TEST_F(CacheStoreOffloadTest, WorkerExposesTheExecutorHalfWhenWired)
     Offloadable* facet = leader->AsOffloadable();
     ASSERT_NE(facet, nullptr);
 
-    /* A leaf of the same domain, unwired: its facet stays hidden. */
+    /* A leaf of the same domain, identically wired: its facet appears too. */
     const std::string id = usedIds_.back();
-    std::unique_ptr<CacheStore> leaf = MakeStore(id, "worker", nullptr);
+    std::unique_ptr<CacheStore> leaf = MakeStore(id, "worker", &lower);
     ASSERT_NE(leaf, nullptr);
-    EXPECT_EQ(leaf->AsOffloadable(), nullptr);
+    EXPECT_NE(leaf->AsOffloadable(), nullptr);
 
     /* The engine half is structural idle: no engine lives in a worker. */
     EXPECT_TRUE(facet->PrepareOffload().keys.empty());
@@ -174,8 +174,8 @@ TEST_F(CacheStoreOffloadTest, WorkerExposesTheExecutorHalfWhenWired)
 
 TEST_F(CacheStoreOffloadTest, SchedulerServesTheEngineHalfLocally)
 {
-    StubLowerStore lower; /* Wired only to expose the facet; never driven. */
-    std::unique_ptr<CacheStore> worker = MakeStore(FreshId(), "worker", nullptr);
+    StubLowerStore lower; /* Never driven here. */
+    std::unique_ptr<CacheStore> worker = MakeStore(FreshId(), "worker", &lower);
     ASSERT_NE(worker, nullptr);
 
     const std::string id = usedIds_.back();
@@ -245,9 +245,8 @@ TEST_F(CacheStoreOffloadTest, PrimaryClosesTheLoopInternally)
 TEST_F(CacheStoreOffloadTest, ReplicaDrivesTheDomainEngineAndItsOwnRelay)
 {
     StubLowerStore lower;
-    std::unique_ptr<CacheStore> primary = MakeStore(FreshId(), "both", nullptr);
+    std::unique_ptr<CacheStore> primary = MakeStore(FreshId(), "both", &lower);
     ASSERT_NE(primary, nullptr);
-    EXPECT_EQ(primary->AsOffloadable(), nullptr); /* Unwired: no facet. */
 
     const std::string id = usedIds_.back();
     std::unique_ptr<CacheStore> replica = MakeStore(id, "both", &lower);

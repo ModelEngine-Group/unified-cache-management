@@ -65,9 +65,9 @@ protected:
 
 TEST_F(CacheBufferTest, SetupRejectsInvalidArguments)
 {
-    EXPECT_FALSE(buffer_.Setup(0, MakePolicy()).Success());
-    EXPECT_FALSE(buffer_.Setup(1, nullptr).Success());
-    EXPECT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    EXPECT_FALSE(buffer_.Setup(0, MakePolicy(), true).Success());
+    EXPECT_FALSE(buffer_.Setup(1, nullptr, true).Success());
+    EXPECT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
 }
 
 TEST_F(CacheBufferTest, OperationsBeforeSetupAreInert)
@@ -87,7 +87,7 @@ TEST_F(CacheBufferTest, OperationsBeforeSetupAreInert)
 
 TEST_F(CacheBufferTest, ReservationsAreInvisibleUntilCommit)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     auto reserved = buffer_.Reserve(blocks, RequestContext{});
     ASSERT_TRUE(reserved);
@@ -101,7 +101,7 @@ TEST_F(CacheBufferTest, ReservationsAreInvisibleUntilCommit)
 
 TEST_F(CacheBufferTest, CommitFalseReleasesReservation)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
@@ -113,7 +113,7 @@ TEST_F(CacheBufferTest, CommitFalseReleasesReservation)
 
 TEST_F(CacheBufferTest, ReserveAndPinResolveConsistentSlots)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     auto reserved = buffer_.Reserve(blocks, RequestContext{});
     ASSERT_TRUE(reserved);
@@ -129,7 +129,7 @@ TEST_F(CacheBufferTest, ReserveAndPinResolveConsistentSlots)
 
 TEST_F(CacheBufferTest, EvictionRemovesDisplacedBlock)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
@@ -143,7 +143,7 @@ TEST_F(CacheBufferTest, EvictionRemovesDisplacedBlock)
 
 TEST_F(CacheBufferTest, ReadmissionKeepsSlotWithoutExtendingDeadline)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId readmitted = MakeBlock(1);
     const BlockId permanent = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({readmitted}, Ctx(30ms)));
@@ -161,7 +161,7 @@ TEST_F(CacheBufferTest, ReadmissionKeepsSlotWithoutExtendingDeadline)
 
 TEST_F(CacheBufferTest, ReadmissionPinsSlotUntilConcluded)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId resident = MakeBlock(1);
     const BlockId newcomer = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({resident}, RequestContext{}));
@@ -180,7 +180,7 @@ TEST_F(CacheBufferTest, ReadmissionPinsSlotUntilConcluded)
 
 TEST_F(CacheBufferTest, FailedBatchRollsBackCompletely)
 {
-    ASSERT_TRUE(buffer_.Setup(3, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(3, MakePolicy(), true).Success());
     const BlockId a = MakeBlock(1);
     const BlockId b = MakeBlock(2);
     const BlockId c = MakeBlock(3);
@@ -211,7 +211,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackCompletely)
 
 TEST_F(CacheBufferTest, FastFailLeavesEvictionOrderUntouched)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId a = MakeBlock(1);
     const BlockId b = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({a, b}, RequestContext{}));
@@ -229,7 +229,7 @@ TEST_F(CacheBufferTest, FastFailLeavesEvictionOrderUntouched)
 
 TEST_F(CacheBufferTest, PinIsAtomicOnMissingBlocks)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId resident = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({resident}, RequestContext{}));
     buffer_.Commit({resident}, true);
@@ -245,7 +245,7 @@ TEST_F(CacheBufferTest, PinIsAtomicOnMissingBlocks)
 
 TEST_F(CacheBufferTest, ExpiryDeferredWhilePinned)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, Ctx(30ms)));
     buffer_.Commit(blocks, true);
@@ -266,7 +266,7 @@ TEST_F(CacheBufferTest, ExpiryDeferredWhilePinned)
 
 TEST_F(CacheBufferTest, PressureReleasesExpiredBeforeDiscipline)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId good = MakeBlock(1);      // oldest, never expires
     const BlockId expiring = MakeBlock(2);  // newer, but expires
     ASSERT_TRUE(buffer_.Reserve({good}, RequestContext{}));
@@ -287,13 +287,13 @@ TEST_F(CacheBufferTest, PressureReleasesExpiredBeforeDiscipline)
 
 TEST_F(CacheBufferTest, SetupResetsState)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
     buffer_.Commit(blocks, true);
     auto pinned = buffer_.Pin(blocks);
     ASSERT_TRUE(pinned);
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     EXPECT_EQ(buffer_.Lookup(blocks), (std::vector<std::uint8_t>{0, 0}));
     auto reserved = buffer_.Reserve(blocks, RequestContext{});
     ASSERT_TRUE(reserved);  // no stale reservations or pins
@@ -303,7 +303,7 @@ TEST_F(CacheBufferTest, SetupResetsState)
 
 TEST_F(CacheBufferTest, TouchExtendsDeadlineWithTheLargerTtl)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId shortLived = MakeBlock(1);
     const BlockId longLived = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({shortLived}, Ctx(40ms)));
@@ -321,7 +321,7 @@ TEST_F(CacheBufferTest, TouchExtendsDeadlineWithTheLargerTtl)
 
 TEST_F(CacheBufferTest, TouchWithoutTtlFactKeepsDeadline)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, Ctx(40ms)));
     buffer_.Commit({block}, true);
@@ -332,7 +332,7 @@ TEST_F(CacheBufferTest, TouchWithoutTtlFactKeepsDeadline)
 
 TEST_F(CacheBufferTest, TouchKeepsNeverExpiringDeadline)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);
@@ -343,7 +343,7 @@ TEST_F(CacheBufferTest, TouchKeepsNeverExpiringDeadline)
 
 TEST_F(CacheBufferTest, ExpiredBlockIsRevivedByReadmission)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId revived = MakeBlock(1);
     const BlockId expired = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({revived, expired}, Ctx(30ms)));
@@ -358,7 +358,7 @@ TEST_F(CacheBufferTest, ExpiredBlockIsRevivedByReadmission)
 
 TEST_F(CacheBufferTest, MidFlightExpiryIsRevivedAtCommit)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(50ms)));
     buffer_.Commit({x}, true);
@@ -373,7 +373,7 @@ TEST_F(CacheBufferTest, MidFlightExpiryIsRevivedAtCommit)
 
 TEST_F(CacheBufferTest, CommitFalseOnReadmissionDoesNotRevive)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(30ms)));
     buffer_.Commit({x}, true);
@@ -393,7 +393,7 @@ TEST_F(CacheBufferTest, CommitFalseOnReadmissionDoesNotRevive)
 
 TEST_F(CacheBufferTest, FailedBatchRollsBackUnderClockPolicy)
 {
-    ASSERT_TRUE(buffer_.Setup(3, MakePolicy("clock")).Success());
+    ASSERT_TRUE(buffer_.Setup(3, MakePolicy("clock"), true).Success());
     const BlockId a = MakeBlock(1);
     const BlockId b = MakeBlock(2);
     const BlockId c = MakeBlock(3);
@@ -422,7 +422,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackUnderClockPolicy)
 
 TEST_F(CacheBufferTest, BatchOrderDoesNotEvictCommittedMembers)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId a = MakeBlock(1);
     const BlockId c = MakeBlock(2);
     const BlockId b = MakeBlock(3);
@@ -440,7 +440,7 @@ TEST_F(CacheBufferTest, BatchOrderDoesNotEvictCommittedMembers)
     EXPECT_EQ((*pinned)[0], 0U);
     buffer_.Unpin({a});
     // The mirrored order resolves the same per-block slots.
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     ASSERT_TRUE(buffer_.Reserve({a, c}, RequestContext{}));
     buffer_.Commit({a, c}, true);
     auto mirrored = buffer_.Reserve({a, b}, RequestContext{});
@@ -453,7 +453,7 @@ TEST_F(CacheBufferTest, BatchOrderDoesNotEvictCommittedMembers)
 
 TEST_F(CacheBufferTest, DuplicateBlocksInBatchShareOneSlot)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId b = MakeBlock(1);
     auto reserved = buffer_.Reserve({b, b}, RequestContext{});  // one slot suffices
     ASSERT_TRUE(reserved);
@@ -465,7 +465,7 @@ TEST_F(CacheBufferTest, DuplicateBlocksInBatchShareOneSlot)
 
 TEST_F(CacheBufferTest, SharedReservationOutlivesAFailedConclusion)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
@@ -485,7 +485,7 @@ TEST_F(CacheBufferTest, SharedReservationOutlivesAFailedConclusion)
 
 TEST_F(CacheBufferTest, SharedReservationReleasesDespiteOneSuccess)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
@@ -500,7 +500,7 @@ TEST_F(CacheBufferTest, SharedReservationReleasesDespiteOneSuccess)
 
 TEST_F(CacheBufferTest, SharedReservationConcludesOnAllSuccess)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     const auto first = buffer_.Reserve({x}, RequestContext{});
@@ -518,7 +518,7 @@ TEST_F(CacheBufferTest, SharedReservationConcludesOnAllSuccess)
 
 TEST_F(CacheBufferTest, DuplicatePendingBlocksGainOneRefPerOccurrence)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));     // the original reference
@@ -533,7 +533,7 @@ TEST_F(CacheBufferTest, DuplicatePendingBlocksGainOneRefPerOccurrence)
 
 TEST_F(CacheBufferTest, FailedReserveReturnsItsSharedRef)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
@@ -552,7 +552,7 @@ TEST_F(CacheBufferTest, FailedReserveReturnsItsSharedRef)
 
 TEST_F(CacheBufferTest, SweepHonorsRefreshedDeadlineOverStaleIndexEntry)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId z = MakeBlock(1);  // oldest, never expires
     const BlockId x = MakeBlock(2);  // expires, then revived
     ASSERT_TRUE(buffer_.Reserve({z}, RequestContext{}));
@@ -570,7 +570,7 @@ TEST_F(CacheBufferTest, SweepHonorsRefreshedDeadlineOverStaleIndexEntry)
 
 TEST_F(CacheBufferTest, UnpinWithoutMatchingPinIsNoOp)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
@@ -598,7 +598,7 @@ TEST_F(CacheBufferTest, OffloadIsIdleWithoutConcludedAdmissions)
     EXPECT_TRUE(unset.keys.empty());
     EXPECT_TRUE(unset.payload.empty());
 
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const AddressedToken plan = buffer_.PrepareOffload();
     EXPECT_TRUE(plan.keys.empty());
     EXPECT_TRUE(plan.payload.empty());
@@ -607,7 +607,7 @@ TEST_F(CacheBufferTest, OffloadIsIdleWithoutConcludedAdmissions)
 
 TEST_F(CacheBufferTest, OffloadPlanCoversConcludedAdmissionsInOrder)
 {
-    ASSERT_TRUE(buffer_.Setup(3, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(3, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
     buffer_.Commit(blocks, true);
@@ -626,7 +626,7 @@ TEST_F(CacheBufferTest, OffloadPlanCoversConcludedAdmissionsInOrder)
 
 TEST_F(CacheBufferTest, OffloadSkipsFailedConclusions)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId good = MakeBlock(1);
     const BlockId bad = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({good}, RequestContext{}));
@@ -641,7 +641,7 @@ TEST_F(CacheBufferTest, OffloadSkipsFailedConclusions)
 
 TEST_F(CacheBufferTest, OffloadPinsDeferEviction)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
@@ -662,7 +662,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferEviction)
 
 TEST_F(CacheBufferTest, OffloadPinsDeferExpiry)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, Ctx(30ms)));
     buffer_.Commit({block}, true);
@@ -684,7 +684,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferExpiry)
 
 TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);
@@ -704,7 +704,7 @@ TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
 
 TEST_F(CacheBufferTest, OffloadQueueDropsBlocksEvictedBeforeMint)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
@@ -722,7 +722,7 @@ TEST_F(CacheBufferTest, OffloadQueueDropsBlocksEvictedBeforeMint)
 
 TEST_F(CacheBufferTest, OffloadReceiptIsIdempotent)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
     buffer_.Commit(blocks, true);
@@ -738,7 +738,7 @@ TEST_F(CacheBufferTest, OffloadReceiptIsIdempotent)
 
 TEST_F(CacheBufferTest, EvictedBlockOffloadsAgainAfterReadmission)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
@@ -762,7 +762,7 @@ TEST_F(CacheBufferTest, EvictedBlockOffloadsAgainAfterReadmission)
 
 TEST_F(CacheBufferTest, OffloadPinsAreInvisibleToUnpin)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);
@@ -781,7 +781,7 @@ TEST_F(CacheBufferTest, OffloadPinsAreInvisibleToUnpin)
 
 TEST_F(CacheBufferTest, ReadmissionOfInFlightOffloadKeyIsRefused)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     const BlockId other = MakeBlock(3);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
@@ -805,7 +805,7 @@ TEST_F(CacheBufferTest, ReadmissionOfInFlightOffloadKeyIsRefused)
 
 TEST_F(CacheBufferTest, SuccessfulReadmissionRequeuesOffload)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);
@@ -821,7 +821,7 @@ TEST_F(CacheBufferTest, SuccessfulReadmissionRequeuesOffload)
 
 TEST_F(CacheBufferTest, SetupResetsOffloadState)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);
@@ -829,7 +829,7 @@ TEST_F(CacheBufferTest, SetupResetsOffloadState)
 
     // A fresh Setup drops the queue, the in-flight plans and the handle
     // counter; a receipt for the dead plan is a no-op.
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     buffer_.CompleteOffload(1);
     const AddressedToken idle = buffer_.PrepareOffload();
     EXPECT_TRUE(idle.keys.empty());
@@ -839,6 +839,25 @@ TEST_F(CacheBufferTest, SetupResetsOffloadState)
     ASSERT_TRUE(buffer_.Reserve({fresh}, RequestContext{}));
     buffer_.Commit({fresh}, true);
     EXPECT_EQ(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, UnwiredLowerTierKeepsNoPendingSet)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), false).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+    ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
+    buffer_.Commit(blocks, true);
+
+    // Conclusions queue for no one; the mint stays idle, now and after
+    // another conclusion.
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+    ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
+    buffer_.Commit(blocks, true);
+    const AddressedToken again = buffer_.PrepareOffload();
+    EXPECT_TRUE(again.keys.empty());
+    EXPECT_TRUE(again.payload.empty());
 }
 
 }  // namespace

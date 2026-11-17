@@ -295,14 +295,15 @@ TEST(CacheConfigTest, FromLeavesLowerStoreNullWhenNotWired)
     auto res = CacheConfig::From(MakeDict());
     ASSERT_TRUE(res.HasValue());
     EXPECT_EQ(res.Value().lowerStore, nullptr);
+}
 
-    /* Ill-typed wiring: the key belongs to the assembler, so a wrong
-     * payload is ignored rather than diagnosed. */
+TEST(CacheConfigTest, FromRejectsAnIllTypedLowerStore)
+{
     Dictionary dict = MakeDict();
     dict.Set("__ucm_lower_store__", std::string("not a store"));
-    auto res2 = CacheConfig::From(dict);
-    ASSERT_TRUE(res2.HasValue());
-    EXPECT_EQ(res2.Value().lowerStore, nullptr);
+    auto res = CacheConfig::From(dict);
+    ASSERT_FALSE(res.HasValue());
+    EXPECT_EQ(res.Error(), Status::InvalidParam());
 }
 
 }  // namespace

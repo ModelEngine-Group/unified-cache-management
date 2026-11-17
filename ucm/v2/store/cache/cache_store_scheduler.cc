@@ -47,7 +47,8 @@ Expected<std::unique_ptr<CacheStoreScheduler>> CacheStoreScheduler::Create(
     std::unique_ptr<ReplacementPolicy> replacementPolicy{policy.Value()};
 
     std::unique_ptr<CacheStoreScheduler> scheduler{new CacheStoreScheduler{config}};
-    if (Status st = scheduler->buffer_.Setup(config.blockTotalNumber, std::move(replacementPolicy));
+    if (Status st = scheduler->buffer_.Setup(config.blockTotalNumber, std::move(replacementPolicy),
+                                             config.lowerStore != nullptr);
         st.Failure()) {
         return st;
     }

@@ -65,7 +65,7 @@ protected:
 
 TEST_F(ControlOpsTest, PrepareOffloadAnswersWithPlanBody)
 {
-    ASSERT_TRUE(buffer_.Setup(2, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
     buffer_.Commit(blocks, true);
@@ -84,7 +84,7 @@ TEST_F(ControlOpsTest, PrepareOffloadAnswersWithPlanBody)
 
 TEST_F(ControlOpsTest, PrepareOffloadIdleAnswersWithNoBody)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const ControlResponse response =
         ExecuteControl(buffer_, MakeRequest(ControlOp::PrepareOffload));
     EXPECT_TRUE(response.ok);  // idle is a success without a plan
@@ -96,7 +96,7 @@ TEST_F(ControlOpsTest, PrepareOffloadIdleAnswersWithNoBody)
 
 TEST_F(ControlOpsTest, CompleteOffloadReleasesPinsByHandle)
 {
-    ASSERT_TRUE(buffer_.Setup(1, MakePolicy()).Success());
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
     buffer_.Commit({block}, true);

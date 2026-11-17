@@ -1362,34 +1362,30 @@ TEST_F(MultiprocessTest, WrongRoleJoinIsRejectedEndToEnd)
 TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
 {
     const std::string id = MakeUniqueId("offload");
-    /* The lower tiers ride the fork: the leaf's inherited copy settles
-     * its one sub-batch on the first wait; the scheduler's copy is wired
-     * only to expose its facet. */
-    StubLowerStore leafLower;
-    leafLower.SettleOnWait(true);
-    StubLowerStore schedulerLower;
+    /* One lower tier rides the fork to every child; only the leaf's copy
+     * is ever driven. */
+    StubLowerStore lower;
+    lower.SettleOnWait(true);
     Child leader;
     Child leaf;
     Child scheduler;
-    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize)));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &leafLower)));
+        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
-    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(
-        scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 2, {}, &schedulerLower)));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
 
-    /* The wiring gate, per process: the unwired leader hides the facet,
-     * the wired leaf and scheduler expose it. */
-    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpAsOffloadable, 0)).n, 0);
+    /* The wiring gate: every process of the wired domain exposes the
+     * facet. */
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
     EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
     EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
 
-    /* No engine lives in a worker: the leaf's facet answers idle, and
-     * the unwired leader refuses the mint outright. */
-    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpPrepareOffload, 0)).code,
-              Status::Unsupported().Underlying());
+    /* No engine lives in a worker: the mint is structural idle. */
     const Result idle = Drive(leaf, MakeJobCmd(kOpPrepareOffload, 0));
     EXPECT_EQ(idle.n, 0);
     EXPECT_EQ(idle.planId, 0U);
@@ -1465,24 +1461,22 @@ TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
 TEST_F(MultiprocessTest, OffloadLoopClosesOverTheBothDomainControlPlane)
 {
     const std::string id = MakeUniqueId("bothoff");
-    /* The replica's inherited lower tier settles its one sub-batch on the
-     * first wait; the primary wires none. */
-    StubLowerStore replicaLower;
-    replicaLower.SettleOnWait(true);
+    /* One lower tier rides the fork to both children; only the replica's
+     * copy is ever driven. */
+    StubLowerStore lower;
+    lower.SettleOnWait(true);
     Child primary;
     Child replica;
-    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize)));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &replicaLower)));
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
 
-    /* Asymmetric wiring is legal: the primary holds the domain's engine
-     * yet exposes no facet, while its wired replica does. */
-    EXPECT_EQ(Drive(primary, MakeJobCmd(kOpAsOffloadable, 0)).n, 0);
+    /* Both processes of the wired domain expose the facet. */
+    EXPECT_EQ(Drive(primary, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
     EXPECT_EQ(Drive(replica, MakeJobCmd(kOpAsOffloadable, 0)).n, 1);
-    EXPECT_EQ(Drive(primary, MakeJobCmd(kOpPrepareOffload, 0)).code,
-              Status::Unsupported().Underlying());
 
     /* The replica's admission lands in the primary's engine over the
      * control connection. */
@@ -1535,16 +1529,17 @@ TEST_F(MultiprocessTest, OffloadLoopClosesOverTheBothDomainControlPlane)
 TEST_F(MultiprocessTest, FailedOffloadStillConcludesAndReceipts)
 {
     const std::string id = MakeUniqueId("offfail");
-    /* The inherited lower tier refuses its first dump: the plan's only
-     * sub-batch is lost in flight. */
-    StubLowerStore replicaLower;
-    replicaLower.FailDumpNth(1, Status::General("scripted lower-tier dump failure"));
+    /* One lower tier rides the fork to both children, refusing its first
+     * dump: the plan's only sub-batch is lost in flight. */
+    StubLowerStore lower;
+    lower.FailDumpNth(1, Status::General("scripted lower-tier dump failure"));
     Child primary;
     Child replica;
-    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize)));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &replicaLower)));
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
 
     const Result alloc = Drive(replica, MakeCmd(kOpAlloc, {1, 2, 3, 4}));
