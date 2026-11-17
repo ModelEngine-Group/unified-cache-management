@@ -622,10 +622,10 @@ histogram:
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "cache_load_bandwidth_gbps"
     documentation: "Cache stage effective load bandwidth (GB/s)"
-    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+    buckets: [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
   - name: "cache_dump_bandwidth_gbps"
     documentation: "Cache stage effective dump bandwidth (GB/s)"
-    buckets: [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256]
+    buckets: [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
   - name: "cache_load_queue_wait_duration_ms"
     documentation: "Time a Cache load task spent queued before dispatch worker pickup (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
@@ -685,22 +685,14 @@ histogram:
   - name: "posix_dump_task_duration_ms"
     documentation: "End-to-end Posix dump task duration (ms): submit to last shard finished, task-level (compare with cache_dump_duration_ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
-  # Bucket layout: typical Posix throughput sits in 1-12 GB/s, so this range
-  # is sampled densely (0.5 GB/s steps for 1-4, 1 GB/s steps for 5-12) so
-  # that p50/p90/p99 bandwidth is meaningfully resolved. Sub-1 GB/s coverage
-  # is kept for detecting degraded paths; >12 GB/s is sparse for headroom.
+  # Bucket layout: 1-2-5 steps from 0.01 to 1000 GB/s, shared by all Cache and
+  # Posix bandwidth histograms.
   - name: "posix_s2h_bandwidth_gbps"
     documentation: "Posix stage read bandwidth per task (GB/s) = totalBytes / task_wallclock"
-    buckets: [0.05, 0.1, 0.2, 0.5,
-              1, 1.5, 2, 2.5, 3, 3.5, 4,
-              5, 6, 7, 8, 9, 10, 11, 12,
-              14, 16, 20, 24, 32]
+    buckets: [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
   - name: "posix_h2s_bandwidth_gbps"
     documentation: "Posix stage write bandwidth per task (GB/s) = totalBytes / task_wallclock"
-    buckets: [0.05, 0.1, 0.2, 0.5,
-              1, 1.5, 2, 2.5, 3, 3.5, 4,
-              5, 6, 7, 8, 9, 10, 11, 12,
-              14, 16, 20, 24, 32]
+    buckets: [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
   - name: "posix_load_queue_wait_duration_ms"
     documentation: "Time a Posix load task spent queued before first worker pickup (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]

@@ -861,6 +861,10 @@ _DURATION_MS_BUCKETS = [
     0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50,
     100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000,
 ]
+# Shared bucket layout for the Cache and Posix GB/s bandwidth histograms.
+_BANDWIDTH_GBPS_BUCKETS = [
+    0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000,
+]
 _HISTOGRAM_METRICS = [
     ("asu_lookup_duration_ms", "AsuStore lookup call duration including key conversion, query wait and result processing (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
     ("asu_load_submit_duration_ms", "AsuStore Load submission duration including buffer conversion and failed submissions (ms)", [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 30000, 60000]),
@@ -918,12 +922,12 @@ _HISTOGRAM_METRICS = [
     (
         "cache_load_bandwidth_gbps",
         "Cache stage effective load bandwidth (GB/s)",
-        [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256],
+        _BANDWIDTH_GBPS_BUCKETS,
     ),
     (
         "cache_dump_bandwidth_gbps",
         "Cache stage effective dump bandwidth (GB/s)",
-        [0.5, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256],
+        _BANDWIDTH_GBPS_BUCKETS,
     ),
     (
         "cache_load_queue_wait_duration_ms",
@@ -1081,12 +1085,12 @@ _HISTOGRAM_METRICS = [
     (
         "posix_s2h_bandwidth_gbps",
         "Posix stage read bandwidth per task (GB/s) = totalBytes / task_wallclock",
-        [0.05, 0.1, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 20, 24, 32],
+        _BANDWIDTH_GBPS_BUCKETS,
     ),
     (
         "posix_h2s_bandwidth_gbps",
         "Posix stage write bandwidth per task (GB/s) = totalBytes / task_wallclock",
-        [0.05, 0.1, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 20, 24, 32],
+        _BANDWIDTH_GBPS_BUCKETS,
     ),
     (
         "posix_load_queue_wait_duration_ms",
