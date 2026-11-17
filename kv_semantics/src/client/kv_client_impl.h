@@ -103,8 +103,6 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    static std::uint32_t ResolveNamespace(const std::string& kvns);
-
     struct ProviderMemoryState {
         std::shared_ptr<TransProvider> provider;
         std::unordered_map<MRHandle, MRHandle> regionHandles;

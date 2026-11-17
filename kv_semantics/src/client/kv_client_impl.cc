@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "kv_client_impl.h"
-#define XXH_INLINE_ALL
 #include <algorithm>
 #include <chrono>
 #include <exception>
@@ -39,7 +38,6 @@
 #include "router/router.h"
 #include "trans_types.h"
 #include "utils/config_utils.h"
-#include "xxhash.h"
 
 namespace kv {
 
@@ -280,11 +278,6 @@ Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& task
     auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId, options);
     RecordSubmit(AsuOpType::DELETE, keys.size(), status);
     return status;
-}
-
-std::uint32_t KvClientImpl::ResolveNamespace(const std::string& kvns)
-{
-    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
 }
 
 bool KvClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }

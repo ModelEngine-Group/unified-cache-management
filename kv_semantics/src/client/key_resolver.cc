@@ -28,7 +28,15 @@
 #include "utils/config_utils.h"
 #include "xxhash.h"
 
+#define HASH_SEED_VALUE (5381)
+
 namespace kv {
+
+std::uint32_t ResolveNamespace(std::string_view kvns)
+{
+    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
+}
+
 namespace {
 
 class DefaultKeyResolver final : public KeyResolver {

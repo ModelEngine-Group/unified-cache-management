@@ -25,9 +25,8 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include "kv_types.h"
-
-#define HASH_SEED_VALUE (5381)
 
 namespace kv {
 
@@ -47,5 +46,7 @@ public:
 };
 
 std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config);
+
+std::uint32_t ResolveNamespace(std::string_view kvns);
 
 }  // namespace kv
