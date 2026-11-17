@@ -102,7 +102,20 @@ docker build --build-arg INSTALL_MODE=package \
 
 ### Feature : Prefix Caching
 
-UCM configuration is passed to SGLang via `--hicache-storage-backend-extra-config` in JSON format:
+Create `/path/to/ucm_config.yaml` with exactly one Store entry, using the same
+`ucm_connectors` YAML format as the vLLM connector and UCM direct linker:
+
+```yaml
+ucm_connectors:
+  - ucm_connector_name: UcmPipelineStore
+    ucm_connector_config:
+      store_pipeline: Posix
+      storage_backends: /mnt/test
+      posix_io_engine: psync
+```
+
+Replace `/mnt/test` with your actual storage directory. Pass the YAML path through
+`kv_connector_extra_config.UCM_CONFIG_FILE`, using the same field name as the linker:
 
 ```bash
 HICACHE_CONFIG='{
@@ -111,15 +124,17 @@ HICACHE_CONFIG='{
   "class_name":"UnifiedCacheStore",
   "interface_v1":1,
   "kv_connector_extra_config":{
-    "ucm_connector_name":"UcmPipelineStore",
-    "ucm_connector_config":{
-      "storage_backends":"/mnt/test"
-    }
+    "UCM_CONFIG_FILE":"/path/to/ucm_config.yaml"
   }
 }'
 ```
 
-Note: Replace `/mnt/test` with your actual storage directory.
+Pass this value through `--hicache-storage-backend-extra-config "$HICACHE_CONFIG"`
+with the launch flags below.
+
+HiCache defaults to `Posix` when `store_pipeline` is omitted. Other configured
+pipelines are passed to the Store unchanged, with a warning that incompatibility
+may cause startup to fail. The adapter derives block sizes from the host pool.
 
 ## Step 3: Launching Inference
 
@@ -129,19 +144,7 @@ Note: Replace `/mnt/test` with your actual storage directory.
 SGLang already provides an offline batch inference example. No UCM-specific code changes are required; just pass the same hierarchical cache flags as the server.
 
 ```bash
-# Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{
-  "backend_name":"unifiedcache",
-  "module_path":"ucm.integration.sglang.unifiedcache_store",
-  "class_name":"UnifiedCacheStore",
-  "interface_v1":1,
-  "kv_connector_extra_config":{
-    "ucm_connector_name":"UcmPipelineStore",
-    "ucm_connector_config":{
-      "storage_backends":"/mnt/test"
-    }
-  }
-}'
+# Reuse the YAML-backed HICACHE_CONFIG from Step 2.
 
 python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
   --model-path Qwen/Qwen2.5-14B-Instruct \
@@ -158,7 +161,7 @@ python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
 
 **⚠️ Make sure to replace `Qwen/Qwen2.5-14B-Instruct` with your actual model path or HF repo ID.**
 
-**⚠️ Make sure to replace `/mnt/test` (inside `HICACHE_CONFIG`) with your actual storage directory.**
+**⚠️ Replace `/mnt/test` in the YAML with your actual storage directory.**
 
 </details>
 
@@ -168,19 +171,7 @@ python3 /path/to/sglang/examples/runtime/engine/offline_batch_inference.py \
 To start the SGLang server with the Qwen/Qwen2.5-14B-Instruct model, run:
 
 ```bash
-# Prefix cache config (reuse from Step 2)
-HICACHE_CONFIG='{
-  "backend_name":"unifiedcache",
-  "module_path":"ucm.integration.sglang.unifiedcache_store",
-  "class_name":"UnifiedCacheStore",
-  "interface_v1":1,
-  "kv_connector_extra_config":{
-    "ucm_connector_name":"UcmPipelineStore",
-    "ucm_connector_config":{
-      "storage_backends":"/mnt/test"
-    }
-  }
-}'
+# Reuse the YAML-backed HICACHE_CONFIG from Step 2.
 
 python3 -m sglang.launch_server \
   --model-path Qwen/Qwen2.5-14B-Instruct \
@@ -198,7 +189,7 @@ python3 -m sglang.launch_server \
 
 **⚠️ Make sure to replace `Qwen/Qwen2.5-14B-Instruct` with your actual model path or HF repo ID.**
 
-**⚠️ Make sure to replace `/mnt/test` (inside `HICACHE_CONFIG`) with your actual storage directory.**
+**⚠️ Replace `/mnt/test` in the YAML with your actual storage directory.**
 
 If you see logs like:
 

@@ -23,6 +23,7 @@
  * */
 #include "metrics.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace UC::Metrics {
@@ -98,6 +99,60 @@ void Metrics::UpdateStats(const std::unordered_map<std::string, double>& values)
     if (!isInited_.load(std::memory_order_acquire) || values.empty()) { return; }
 
     for (const auto& pair : values) { UpdateStats(ResolveMetricId(pair.first), pair.second); }
+}
+
+void Metrics::MergeHistogramStats(const HistogramStatsMap& values)
+{
+    if (!isInited_.load(std::memory_order_acquire) || values.empty()) { return; }
+    RegisterCurrentThread();
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    MetricBuffer::WriteGuard guard{*threadBuffer_};
+    auto& destination = threadBuffer_->GetWriteBuffer(guard.Index()).histogramStats_;
+    // The importer is a low-frequency path. Stage before publishing so allocation,
+    // schema and overflow failures cannot leave a partially merged batch.
+    auto staged = destination;
+    for (const auto& [name, histogram] : values) {
+        const auto id = ResolveMetricId(name);
+        if (id == INVALID_METRIC_ID) { continue; }
+        if (metrics_[id].type != MetricType::HISTOGRAM ||
+            histogram.bucketCounts.size() != metrics_[id].buckets.size() ||
+            !std::isfinite(histogram.sum) || histogram.sum < 0) {
+            throw std::invalid_argument("Invalid histogram import: " + name);
+        }
+        uint64_t count = 0;
+        for (const auto value : histogram.bucketCounts) {
+            if (value > std::numeric_limits<uint64_t>::max() - count) {
+                throw std::overflow_error("Histogram count overflow: " + name);
+            }
+            count += value;
+        }
+        if (count == 0 && histogram.sum != 0) {
+            throw std::invalid_argument("Nonzero sum for empty histogram: " + name);
+        }
+        auto& target = staged[id];
+        if (target.bucketCounts.empty()) {
+            target.bucketCounts.resize(histogram.bucketCounts.size());
+        }
+        for (size_t i = 0; i < histogram.bucketCounts.size(); ++i) {
+            if (histogram.bucketCounts[i] >
+                std::numeric_limits<uint64_t>::max() - target.bucketCounts[i]) {
+                throw std::overflow_error("Histogram bucket overflow: " + name);
+            }
+            target.bucketCounts[i] += histogram.bucketCounts[i];
+        }
+        uint64_t mergedCount = 0;
+        for (const auto value : target.bucketCounts) {
+            if (value > std::numeric_limits<uint64_t>::max() - mergedCount) {
+                throw std::overflow_error("Merged histogram count overflow: " + name);
+            }
+            mergedCount += value;
+        }
+        target.sum += histogram.sum;
+        if (!std::isfinite(target.sum)) {
+            throw std::overflow_error("Histogram sum overflow: " + name);
+        }
+    }
+    destination.swap(staged);
 }
 
 MetricId Metrics::ResolveMetricId(const std::string& name) const

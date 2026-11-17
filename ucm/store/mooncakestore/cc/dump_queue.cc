@@ -129,6 +129,7 @@ Status DumpQueue::PrepareBackendDump(CopyStream& stream, TaskPtr task, DumpCtx& 
                                      Detail::TaskDesc& backendTaskDesc)
 {
     backendTaskDesc.brief = "HostBuf2Backend";
+    backendTaskDesc.memoryType = Detail::TaskDesc::MemoryType::DDR;
     dumpCtx.taskHandle = task->id;
     for (auto& shard : task->shards) {
         auto buf = bufPool_->AcquireWithTimeout(std::chrono::milliseconds(3000));
@@ -249,7 +250,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     DumpCtx dumpCtx;
     if (backend_) {
         if (task->prerequisiteHandle != 0) {
-            auto s = stream.WaitEvent(reinterpret_cast<void*>(task->prerequisiteHandle));
+            auto s = stream.WaitEvent(Trans::Event{task->prerequisiteHandle});
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to set stream wait event for task({}).", s, task->id);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_errors_total"), 1.0);
@@ -303,19 +304,11 @@ void DumpQueue::BackendDumpStage()
 Status DumpQueue::DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
                                           void* host)
 {
-    const auto number = tensorSizes_.size();
-    for (size_t i = 0, offset = 0; i < number; i++) {
-        auto pDevice = device[i];
-        auto pHost = (void*)(((int8_t*)host) + offset);
-        auto size = tensorSizes_[i];
-        auto s = stream->DeviceToHostAsync(pDevice, pHost, size);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do D2H({}) batch({}/{}) async.", s, size, i, number);
-            return s;
-        }
-        offset += size;
+    auto s = stream->DeviceToHostAsync(device, host, tensorSizes_);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to do D2H gather async for {} tensors.", s, tensorSizes_.size());
     }
-    return Status::OK();
+    return s;
 }
 
 size_t DumpQueue::BlockBytes() const

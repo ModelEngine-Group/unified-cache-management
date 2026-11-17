@@ -13,7 +13,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.platforms import current_platform
@@ -37,6 +37,16 @@ class Device(ABC):
         pass
 
     @abstractmethod
+    def record_timing_event(self) -> Any:
+        """Record a timing-enabled event on the current device stream."""
+        pass
+
+    @abstractmethod
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        """Return elapsed device time between two timing events in milliseconds."""
+        pass
+
+    @abstractmethod
     def destroy_event_handles(self):
         pass
 
@@ -50,6 +60,10 @@ class Device(ABC):
         Return CPU affinity as a cpulist string, e.g. "0-43,88-131".
         """
         pass
+
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """Return real device affinity, or None; never guess from rank/CPU ids."""
+        return None
 
     def split_cores(self, local_rank: int) -> Tuple[List[int], List[int]]:
         """
@@ -117,11 +131,43 @@ class CudaDevice(Device):
     def synchronize(self):
         torch.cuda.current_stream().synchronize()
 
+    def record_timing_event(self) -> Any:
+        event = torch.cuda.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
+
     def destroy_event_handles(self):
         self.events.clear()
 
     def destroy_event_handle(self, event_handle: int):
         self.events.pop(event_handle, None)
+
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """
+        CUDA path: GPU -> PCI -> NUMA node. Returns None when sysfs does not
+        expose an affinity, which is not the same as node 0.
+        """
+        try:
+            prop = torch.cuda.get_device_properties(device_ordinal)
+            pci_bus_id = (
+                f"{prop.pci_domain_id:04x}:"
+                f"{prop.pci_bus_id:02x}:"
+                f"{prop.pci_device_id:02x}.0"
+            )
+            numa_path = f"/sys/bus/pci/devices/{pci_bus_id}/numa_node"
+            if not os.path.exists(numa_path):
+                return None
+            with open(numa_path) as f:
+                numa_id = int(f.read().strip())
+            return numa_id if numa_id >= 0 else None
+        except Exception as e:
+            logger.warning(
+                f"[NUMA] failed to read CUDA NUMA node for device {device_ordinal}: {e}"
+            )
+            return None
 
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
@@ -249,7 +295,15 @@ class NpuDevice(Device):
             return 0
 
     def synchronize(self):
-        torch.npu.current_stream().synchronize()
+        torch.npu.synchronize()
+
+    def record_timing_event(self) -> Any:
+        event = torch.npu.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
 
     def destroy_event_handles(self):
         import acl
@@ -582,6 +636,32 @@ class NpuDevice(Device):
         parts = [p.strip() for p in cpulist_parts if p and p.strip()]
         return ",".join(parts) if parts else None
 
+    def get_numa_node(self, device_ordinal: int) -> Optional[int]:
+        """
+        NPU path: NPU -> PCIe -> NUMA node.
+
+        Only a real sysfs/lspci mapping counts. `_get_numa_info_v2` spreads
+        nodes evenly by device index, which is a synthetic mapping and must not
+        be reported as device affinity.
+        """
+        try:
+            device_map_info = self._get_device_map_info()
+            if not device_map_info:
+                return None
+            self._get_pcie_info(device_map_info)
+            self._get_numa_info(device_map_info)
+            # The map is keyed by the logic device id, so a process-local ordinal
+            # has to go through the visible-device list first.
+            topo = device_map_info.get(self._get_device_id(device_ordinal))
+            if topo is None or topo.numa_id is None:
+                return None
+            return topo.numa_id
+        except Exception as e:
+            logger.warning(
+                f"[NUMA] failed to read NPU NUMA node for device {device_ordinal}: {e}"
+            )
+            return None
+
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
         NPU path:
@@ -678,3 +758,35 @@ def create_device() -> Optional[Device]:
         return NpuDevice()
 
     return None
+
+
+def get_current_device_id() -> int:
+    """Return the current process-visible accelerator device ordinal."""
+    if current_platform.is_cuda_alike():
+        return int(torch.cuda.current_device())
+
+    if current_platform.device_type == "npu":
+        return int(torch.npu.current_device())
+
+    raise RuntimeError("Unsupported device platform for UCM connector.")
+
+
+def get_ucm_worker_torch_device(local_rank: int) -> torch.device:
+    """Return the accelerator device used for worker-side UCM tensors.
+
+    UCM's KV and encoder-cache connectors both need to allocate or address
+    tensors on the worker's local accelerator. Keep the platform-specific
+    CUDA/NPU selection in one place so the two connectors cannot drift.
+    """
+    if local_rank < 0:
+        raise ValueError(f"local_rank must be non-negative, got {local_rank}.")
+
+    if current_platform.is_cuda_alike():
+        logger.info("CUDA device is available.")
+        return torch.device(f"cuda:{local_rank}")
+
+    if current_platform.device_type == "npu":
+        logger.info("NPU device is available.")
+        return torch.device(f"npu:{local_rank}")
+
+    raise RuntimeError("Unsupported device platform for UCM connector.")

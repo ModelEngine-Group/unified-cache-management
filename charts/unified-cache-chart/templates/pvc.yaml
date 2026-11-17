@@ -1,0 +1,73 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $storage := default (dict) $modelSpec.storage -}}
+{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- $extraStorage := default (list) $storage.extraStorage -}}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" -}}
+{{- include "chart.validateStorageConfig" (list $modelSpec $) -}}
+{{- with $ -}}
+{{- $allStorage := $extraStorage -}}
+{{- if $ucmConfigEnabled -}}
+{{- $allStorage = concat $unifiedStorage $extraStorage -}}
+{{- end -}}
+{{- $first := true -}}
+{{- range $storage := $allStorage -}}
+{{- if or (hasKey $storage "dynamicPVC") (hasKey $storage "staticPVC") -}}
+{{- if not $first }}
+---
+{{- end }}
+{{- $first = false }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  {{- if hasKey $storage "staticPVC" }}
+  name: {{ include "chart.storageStaticPvcClaimName" (list $ $modelSpec $storage) | quote }}
+  {{- else }}
+  name: {{ include "chart.storageDynamicPvcClaimName" (list $ $modelSpec $storage) | quote }}
+  {{- end }}
+  namespace: {{ $.Release.Namespace }}
+  {{- if hasKey $storage "dynamicPVC" }}
+  {{- if not (empty $storage.dynamicPVC.pvcLabels) }}
+  labels:
+    {{- toYaml $storage.dynamicPVC.pvcLabels | nindent 4 }}
+  {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- if hasKey $storage "staticPVC" }}
+    {{- if $storage.staticPVC.pvcAccessMode }}
+    {{- toYaml $storage.staticPVC.pvcAccessMode | nindent 4 }}
+    {{- else }}
+    - ReadWriteOnce
+    {{- end }}
+    {{- else }}
+    {{- if $storage.dynamicPVC.pvcAccessMode }}
+    {{- toYaml $storage.dynamicPVC.pvcAccessMode | nindent 4 }}
+    {{- else }}
+    - ReadWriteOnce
+    {{- end }}
+    {{- end }}
+  resources:
+    requests:
+      {{- if hasKey $storage "staticPVC" }}
+      storage: {{ $storage.staticPVC.pvcStorage | default "20Gi" }}
+      {{- else }}
+      storage: {{ $storage.dynamicPVC.pvcStorage | default "20Gi" }}
+      {{- end }}
+  {{- if hasKey $storage "staticPVC" }}
+  volumeName: {{ include "chart.storageStaticPvName" (list $ $modelSpec $storage) | quote }}
+  storageClassName: "{{ $storage.staticPVC.storageClass | default "" }}"
+  {{- else }}
+  {{- if hasKey $storage.dynamicPVC "storageClass" }}
+  storageClassName: "{{ $storage.dynamicPVC.storageClass }}"
+  {{- end }}
+  {{- if not (empty $storage.dynamicPVC.pvcMatchLabels) }}
+  selector:
+    matchLabels:
+      {{- toYaml $storage.dynamicPVC.pvcMatchLabels | nindent 6 }}
+  {{- end }}
+  {{- end }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

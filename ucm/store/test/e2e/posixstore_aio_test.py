@@ -37,6 +37,9 @@ block_number = 64
 dump_epoch_number = 32
 load_epoch_number = 32
 storage_backends = ["./build/data"]
+posix_data_trans_concurrency = 32
+posix_io_engine = "aio"
+io_direct = True
 
 
 def parse_args(argv=None):
@@ -47,6 +50,24 @@ def parse_args(argv=None):
     parser.add_argument("--block-number", type=int, default=block_number)
     parser.add_argument("--dump-epoch-number", type=int, default=dump_epoch_number)
     parser.add_argument("--load-epoch-number", type=int, default=load_epoch_number)
+    parser.add_argument(
+        "--posix-data-trans-concurrency",
+        type=int,
+        default=posix_data_trans_concurrency,
+        help="posix data transfer concurrency (psync worker count).",
+    )
+    parser.add_argument(
+        "--posix-io-engine",
+        choices=["psync", "aio"],
+        default=posix_io_engine,
+        help="posix io engine.",
+    )
+    parser.add_argument(
+        "--io-direct",
+        action=argparse.BooleanOptionalAction,
+        default=io_direct,
+        help="use O_DIRECT for aligned file I/O (use --no-io-direct to disable).",
+    )
     parser.add_argument(
         "--storage-backend",
         action="append",
@@ -64,6 +85,9 @@ def apply_args(args):
     global dump_epoch_number
     global load_epoch_number
     global storage_backends
+    global posix_data_trans_concurrency
+    global posix_io_engine
+    global io_direct
 
     worker_number = args.worker_number
     shard_size = args.shard_size
@@ -73,6 +97,9 @@ def apply_args(args):
     load_epoch_number = args.load_epoch_number
     if args.storage_backend is not None:
         storage_backends = args.storage_backend
+    posix_data_trans_concurrency = args.posix_data_trans_concurrency
+    posix_io_engine = args.posix_io_engine
+    io_direct = args.io_direct
 
 
 def create_worker(device_id: int) -> UcmKVStoreBaseV1:
@@ -80,7 +107,9 @@ def create_worker(device_id: int) -> UcmKVStoreBaseV1:
     class_name = "UcmPipelineStore"
     config = {}
     config["store_pipeline"] = "Posix"
-    config["posix_io_engine"] = "aio"
+    config["posix_io_engine"] = posix_io_engine
+    config["io_direct"] = io_direct
+    config["posix_data_trans_concurrency"] = posix_data_trans_concurrency
     config["storage_backends"] = storage_backends
     config["tensor_size"] = shard_size
     config["shard_size"] = shard_size

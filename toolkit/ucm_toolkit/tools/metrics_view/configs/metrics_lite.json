@@ -13,11 +13,7 @@
       "source": "vllm:e2e_request_latency_seconds",
       "type": "histogram",
       "avg": true,
-      "quantiles": [
-        0.5,
-        0.9,
-        0.99
-      ],
+      "quantiles": [0.5, 0.9, 0.99],
       "unit": "s",
       "aggregate": "avg"
     },
@@ -26,11 +22,7 @@
       "source": "vllm:time_to_first_token_seconds",
       "type": "histogram",
       "avg": true,
-      "quantiles": [
-        0.5,
-        0.9,
-        0.99
-      ],
+      "quantiles": [0.5, 0.9, 0.99],
       "unit": "s",
       "aggregate": "avg"
     },
@@ -39,48 +31,119 @@
       "source": "vllm:request_time_per_output_token_seconds",
       "type": "histogram",
       "avg": true,
-      "quantiles": [
-        0.5,
-        0.9,
-        0.99
-      ],
+      "quantiles": [0.5, 0.9, 0.99],
       "unit": "s",
       "aggregate": "avg"
     },
     {
-      "name": "prefix_cache_hit_rate",
+      "name": "hbm_hit_rate",
       "type": "promql",
-      "expr": "sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval]))",
+      "expr": "(sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"
     },
     {
-      "name": "external_prefix_cache_hit_rate",
+      "name": "yuanrong_dram_hit_rate",
       "type": "promql",
-      "expr": "sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval]))",
+      "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)), 0)) * (sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval])), 1e-9)) * ((sum by () (rate(ucm:yuanrong_local_dram_load_hits_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_remote_load_hits_total[$__rate_interval]))) / clamp_min(sum by () (rate(ucm:yuanrong_local_dram_load_hits_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_remote_load_hits_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_local_ssd_load_hits_total[$__rate_interval])), 1e-9))",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"
     },
     {
-      "name": "cache_backend_load_ratio",
+      "name": "yuanrong_ssd_hit_rate",
       "type": "promql",
-      "expr": "sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])) / (sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])))",
-      "value": "ratio",
+      "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)), 0)) * (sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval])), 1e-9)) * (sum by () (rate(ucm:yuanrong_local_ssd_load_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:yuanrong_local_dram_load_hits_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_remote_load_hits_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_local_ssd_load_hits_total[$__rate_interval])), 1e-9))",
+      "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"
     },
     {
-      "name": "layerwise_wait_blocking_ms",
-      "source": "ucm:layerwise_wait_blocking_ms",
+      "name": "cache_hit_rate",
+      "type": "promql",
+      "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])) - sum by () (rate(ucm:cache_load_wait_shards_total[$__rate_interval])), 0) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9))",
+      "value": "hit_rate",
+      "unit": "ratio",
+      "aggregate": "avg"
+    },
+    {
+      "name": "posix_hit_rate",
+      "type": "promql",
+      "expr": "((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * ((sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval]))) / clamp_min(sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval])), 1e-9))) or 0) + ((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (sum by () (rate(ucm:cache_load_wait_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9))) or 0)",
+      "value": "hit_rate",
+      "unit": "ratio",
+      "aggregate": "avg"
+    },
+    {
+      "name": "yuanrong_dram_used_bytes",
+      "source": "ucm:yuanrong_dram_used_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "max"
+    },
+    {
+      "name": "yuanrong_dram_capacity_bytes",
+      "source": "ucm:yuanrong_dram_capacity_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "max"
+    },
+    {
+      "name": "yuanrong_dram_usage_ratio",
+      "source": "ucm:yuanrong_dram_usage_ratio",
+      "type": "gauge",
+      "unit": "ratio",
+      "aggregate": "max"
+    },
+    {
+      "name": "yuanrong_ssd_used_bytes",
+      "source": "ucm:yuanrong_ssd_used_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "max"
+    },
+    {
+      "name": "yuanrong_ssd_capacity_bytes",
+      "source": "ucm:yuanrong_ssd_capacity_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "max"
+    },
+    {
+      "name": "yuanrong_ssd_usage_ratio",
+      "source": "ucm:yuanrong_ssd_usage_ratio",
+      "type": "gauge",
+      "unit": "ratio",
+      "aggregate": "max"
+    },
+    {
+      "name": "posix_store_used_bytes",
+      "source": "ucm:posix_store_used_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "avg"
+    },
+    {
+      "name": "posix_store_capacity_bytes",
+      "source": "ucm:posix_store_capacity_bytes",
+      "type": "gauge",
+      "unit": "bytes",
+      "aggregate": "avg"
+    },
+    {
+      "name": "posix_store_usage_ratio",
+      "source": "ucm:posix_store_usage_ratio",
+      "type": "gauge",
+      "unit": "ratio",
+      "aggregate": "avg"
+    },
+    {
+      "name": "layerwise_batch_load_duration_sum_ms",
+      "source": "ucm:layerwise_batch_load_duration_sum_ms",
       "type": "histogram",
       "avg": true,
-      "quantiles": [
-        0.5,
-        0.9,
-        0.99
-      ],
+      "quantiles": [0.5, 0.9, 0.99],
       "unit": "ms",
       "aggregate": "avg"
     },

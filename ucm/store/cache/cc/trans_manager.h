@@ -49,6 +49,7 @@ public:
     }
 
 protected:
+    Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
         const auto id = t->id;
@@ -56,7 +57,8 @@ protected:
         const auto num = t->desc.size();
         const auto size = shardSize_ * num;
         const auto tp = w->startTp;
-        const auto isLoad = t->type == TransTask::Type::LOAD;
+        const auto isLoad =
+            t->type == TransTask::Type::LOAD || t->type == TransTask::Type::LOAD_ON_TOKEN;
         UC_DEBUG("Cache task({},{},{},{}) dispatching.", id, brief, num, size);
         w->SetEpilog([id, brief = std::move(brief), num, size, tp, isLoad] {
             auto cost = NowTime::Now() - tp;
@@ -67,20 +69,18 @@ protected:
             if (isLoad) {
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_duration_ms"), costMs);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_blocks_total"),
-                                         static_cast<double>(num));
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bytes_total"),
                                          static_cast<double>(size));
             } else {
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_duration_ms"), costMs);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bandwidth_gbps"), bwGbps);
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_blocks_total"),
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
                                          static_cast<double>(num));
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bytes_total"),
                                          static_cast<double>(size));
             }
         });
-        if (t->type == TransTask::Type::LOAD) {
+        if (isLoad) {
             loadQ_.Submit(t, w);
         } else {
             dumpQ_.Submit(t, w);

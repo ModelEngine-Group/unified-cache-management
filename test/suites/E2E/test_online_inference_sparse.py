@@ -84,7 +84,6 @@ class TestBasicOnlineInference:
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
                         "cache_buffer_capacity_gb": 32,
                     },
                 }

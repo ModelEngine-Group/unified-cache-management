@@ -92,6 +92,28 @@ public:
     virtual Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Check whether the given blocks exist in storage (reverse scan).
+     *
+     * Scans blocks from the last index (num-1) down to 0 and stops at the
+     * first block that *exists* in storage (reverse semantics).  This is the
+     * dual of LookupOnPrefix: prefix scanning stops at the first *missing*
+     * block, whereas reverse scanning stops at the first *present* block.
+     *
+     * Typical use case: hybrid (full-attention + Mamba) models.  Full
+     * attention blocks are looked up with LookupOnPrefix (front-to-back,
+     * stop at first miss).  Mamba blocks are looked up with LookupOnReverse
+     * (back-to-front, stop at first hit) to maximise the reuse window.
+     *
+     * @param blocks Array of block identifiers to test.
+     * @param num Number of block identifiers to test.
+     * @return Expected<ssize_t>
+     *   - On success: the index of the rightmost block present in storage.
+     *     Returns -1 if none of the blocks are found.
+     *   - On failure: appropriate Status code.
+     * */
+    virtual Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) = 0;
+
+    /**
      * @brief Hint the store to prefetch given blocks into high-speed cache.
      *
      * This call is **non-blocking** and **fire-and-forget**; it returns
@@ -108,6 +130,13 @@ public:
     virtual void Prefetch(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Check whether this store's own read/write path is healthy.
+     *
+     * Overrides must use bounded I/O and clean up any temporary data they create.
+     */
+    virtual Status CheckHealth() { return Status::OK(); }
+
+    /**
      * @brief Start an asynchronous load (storage → device) transfer.
      *
      * @param task Description of shards to be loaded.
@@ -116,6 +145,25 @@ public:
      *   - On failure: relevant Status code.
      */
     virtual Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) = 0;
+
+    /**
+     * @brief Load shards into cache slots, then apply per-tensor token filters.
+     *
+     * Default: unsupported. CacheStore implements DDR-only for now: ensure each
+     * shard resides in a cache slot and obtain the slot pointer; splicing selected
+     * ranges into the caller buffer is left for a later revision.
+     *
+     * @param task Description of shards (DDR: one host address per shard).
+     * @param filter Per-shard filters; filter.size() must equal task.size().
+     * @return Expected<TaskHandle> on success, or Unsupported / InvalidParam / etc.
+     */
+    virtual Expected<Detail::TaskHandle> LoadOnToken(Detail::TaskDesc task,
+                                                     const std::vector<Detail::TokenFilter>& filter)
+    {
+        (void)task;
+        (void)filter;
+        return Status::Unsupported();
+    }
 
     /**
      * @brief Start an asynchronous dump (device → storage) transfer.

@@ -26,12 +26,15 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
 #include <vector>
+#include "gc_lease.h"
 #include "global_config.h"
 #include "space_layout.h"
 #include "status/status.h"
@@ -40,13 +43,25 @@
 
 namespace UC::PosixStore {
 
+// Result of one GC shard task. The task owns it, so a worker that returns after its task timed
+// out writes here instead of into the GC round, which may already have ended.
+struct ShardTaskResult {
+    std::atomic<bool> finished{false};
+    bool scanned{false};
+    size_t files{0};
+    bool limited{false};
+    std::vector<FileInfo> candidates;
+    std::mutex attemptMutex;
+    std::optional<BackendManager::BackendAttempt> attempt;
+};
+
 struct ShardTaskContext {
-    enum class Type { GC, SAMPLE };
+    enum class Type { GC, SAMPLE, COLLECT, DELETE };
     Type type;
     std::string shard;
     std::shared_ptr<Latch> waiter;
-    std::atomic<size_t>* sampledFiles{nullptr};
-    std::atomic<bool>* gcLimited{nullptr};
+    std::shared_ptr<ShardTaskResult> result;
+    std::shared_ptr<const std::vector<Detail::BlockId>> victims;
 };
 
 class ShardGarbageCollector {
@@ -55,23 +70,34 @@ public:
     ShardGarbageCollector(const ShardGarbageCollector&) = delete;
     ShardGarbageCollector& operator=(const ShardGarbageCollector&) = delete;
     ~ShardGarbageCollector();
-    Status Setup(const SpaceLayout* layout, const Config& config);
+    Status Setup(const SpaceLayout* layout, const BackendManager* backendMgr, const Config& config);
 
 private:
     Status ValidateAndInitCapacity();
     bool Execute();
+    bool ExecutePrecise();
     std::tuple<bool, size_t, size_t> ShouldTrigger();
+    void RunGcCycle();
+    std::vector<std::shared_ptr<ShardTaskResult>> RunShardTasks(
+        std::vector<ShardTaskContext> tasks);
     void ProcessTask(ShardTaskContext& ctx);
+    void RemoveFiles(const std::vector<Detail::BlockId>& blocks, const std::string& backend,
+                     const ShardTaskResult& result);
+    void OnTaskTimeout(const ShardTaskContext& ctx, ssize_t tid);
     void GCCheckLoop();
     void StopBackgroundCheck();
     const SpaceLayout* layout_{nullptr};
+    const BackendManager* backendMgr_{nullptr};
     Config config_;
     size_t maxFileCount_{0};
+    size_t capacityBytes_{0};
     ThreadPool<ShardTaskContext> gcPool_;
     std::thread gcCheckWorker_;
     std::mutex gcCheckMtx_;
     std::condition_variable gcCheckCv_;
     std::atomic<bool> stop_{false};
+    GcLease lease_;
+    bool leaseEnable_{false};
 };
 
 }  // namespace UC::PosixStore

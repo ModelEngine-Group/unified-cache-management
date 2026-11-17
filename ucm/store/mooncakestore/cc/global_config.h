@@ -57,7 +57,7 @@ struct Config {
     size_t streamNumber{4};
     std::vector<ssize_t> cpuAffinityCores{};
 
-    bool ioDirect{false};
+    bool ioDirect{true};
 
     size_t localRankSize{1};
     std::string uniqueId{};

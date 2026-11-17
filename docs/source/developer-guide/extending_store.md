@@ -22,7 +22,7 @@ Beyond built-in Stores, UCM supports three extension patterns:
 |        Method         | Implementation |  Performance  |                   Use Case                    |    Rating     |   Reference Implementation   |
 | --------------------- | -------------- | ------------- | --------------------------------------------- | ------------- | ---------------------------- |
 | **Pure Python**       | Python only    | ⭐⭐⭐☆☆   | Prototyping, algorithm validation             | ⭐⭐         | `UcmMooncakeStore`           |
-| **Python/C++ Hybrid** | Python + C++   | ⭐⭐⭐⭐☆  | Complex logic with performance-critical paths | ⭐⭐⭐       | `UcmPCStore`                 |
+| **Python/C++ Hybrid** | Python + C++   | ⭐⭐⭐⭐☆  | Complex logic with performance-critical paths | ⭐⭐⭐       | `UcmPipelineStore`           |
 | **Pure C++**          | C++ only       | ⭐⭐⭐⭐⭐ | Production, high-performance scenarios        | ⭐⭐⭐⭐⭐ | `UC::CacheStore::CacheStore` |
 
 ---
@@ -51,6 +51,15 @@ For rapid prototyping and algorithm validation where development speed outweighs
     @abstractmethod
     def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
         """Check presence of blocks in external storage."""
+        pass
+    @abstractmethod
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage (reverse scan).
+
+        Scans from the last block down to the first, stopping at the first
+        block that exists. Returns the index of the rightmost present block,
+        or -1 if none are found.
+        """
         pass
     @abstractmethod
     def prefetch(self, block_ids: List[bytes]) -> None:
@@ -133,6 +142,7 @@ Best for balancing productivity with performance—implement hot paths in C++, o
        // Core operations
        Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
        Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
+       Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
        void Prefetch(const Detail::BlockId* blocks, size_t num) override;
        Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
        Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
@@ -204,6 +214,7 @@ Production-ready implementation with maximum performance and resource control.
        // Required interfaces
        Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
        Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
+       Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
        void Prefetch(const Detail::BlockId* blocks, size_t num) override;
        Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
        Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;

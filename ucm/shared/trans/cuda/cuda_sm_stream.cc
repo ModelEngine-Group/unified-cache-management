@@ -54,4 +54,4 @@ Status CudaSmStream::HostToDeviceAsync(void* host, void* device[], size_t size, 
     return Status::OK();
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

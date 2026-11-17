@@ -26,6 +26,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -91,6 +92,31 @@ static inline int32_t AioSetup(int32_t nEvents, aio_context_t* pCtx)
 {
     return syscall(SYS_io_setup, nEvents, pCtx);
 }
+
+static std::string AioSetupErrorMessage(int32_t eno, size_t requestedEvents)
+{
+    auto message = fmt::format("UCM Posix AIO: io_setup({}) failed with errno={} ({}).",
+                               requestedEvents, eno, strerror(eno));
+    if (eno == EAGAIN) {
+        auto readLimit = [](const char* path) -> std::string {
+            std::ifstream input(path);
+            uint64_t value;
+            if (input >> value) { return std::to_string(value); }
+            return "unavailable";
+        };
+        const auto aioNr = readLimit("/proc/sys/fs/aio-nr");
+        const auto aioMaxNr = readLimit("/proc/sys/fs/aio-max-nr");
+        message += fmt::format(
+            " Possible AIO quota exhaustion: fs.aio-nr={}, fs.aio-max-nr={} (snapshot). "
+            "Increase the host limit, e.g. 'sudo sysctl -w fs.aio-max-nr=1048576' "
+            "(choose a value above the current limit), or run fewer AIO instances.",
+            aioNr, aioMaxNr);
+    } else if (eno == ENOMEM) {
+        message += " Insufficient kernel resources; check available memory and resource limits.";
+    }
+    return message;
+}
+
 static inline int32_t AioGetEvents(aio_context_t ctx, int64_t minNr, int64_t maxNr,
                                    io_event* events, timespec* timeout)
 {
@@ -160,16 +186,21 @@ AioImpl::~AioImpl()
     if (eventFd_ >= 0) { close(eventFd_); }
     if (ctx_) { AioDestroy(ctx_); }
     std::lock_guard<std::mutex> lk(tableMutex_);
-    if (!iocbToTag_.empty()) {
-        UC_WARN("AIO teardown: {} in-flight IO(s) abandoned (never completed; not reclaimed).",
-                iocbToTag_.size());
+    // The completion thread has stopped; callbacks no longer consume this request state.
+    for (const auto& entry : iocbToTag_) {
+        auto* cb = entry.first;
+        // Load callbacks release BorrowedFd; only Dump owns a raw descriptor.
+        if (cb->aio_lio_opcode == IOCB_CMD_PWRITE) { ::close(cb->aio_fildes); }
+        delete reinterpret_cast<Callback*>(cb->aio_data);
+        delete cb;
     }
 }
 
-Status AioImpl::Setup(size_t timeoutMs)
+Status AioImpl::Setup(size_t timeoutMs, size_t queueDepth)
 {
     constexpr size_t defaultSweepIntervalMs = 100;
     constexpr size_t defaultEpollTimeoutMs = 10;
+    queueDepth_ = queueDepth;
     sweepIntervalMs_ = defaultSweepIntervalMs;
     epollTimeoutMs_ = defaultEpollTimeoutMs;
     submitTimeoutMs_ = timeoutMs;
@@ -180,8 +211,9 @@ Status AioImpl::Setup(size_t timeoutMs)
     auto ret = AioSetup(queueDepth_, &ctx_);
     auto eno = errno;
     if (ret != 0) {
-        UC_ERROR("Failed(ret={}, errno={}, message={}) to call AioSetup.", ret, eno, strerror(eno));
-        return Status{eno, std::string(strerror(eno))};
+        auto message = AioSetupErrorMessage(eno, queueDepth_);
+        UC_ERROR("Failed(ret={}) to call AioSetup: {}", ret, message);
+        return Status{eno, std::move(message)};
     }
     eventFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     eno = errno;
@@ -280,7 +312,11 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 {
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
-        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
+        // if the number of events is exactly batchSize,
+        // another call to AioGetEvents will block until next event complete,
+        // set zero here will let AioGetEvents return immediately if no events
+        timespec zero{0, 0};
+        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), &zero);
         for (auto i = 0; i < num; i++) {
             auto* iocbPtr = reinterpret_cast<struct iocb*>(events[i].obj);
             auto cb = (Callback*)(void*)events[i].data;
@@ -384,7 +420,7 @@ Status AioImpl::SubmitIo(iocb* cb)
             std::this_thread::sleep_for(std::chrono::microseconds(200));
             continue;
         }
-        return Status::Error(std::string(strerror(eno)));
+        return Status::OsApiError(std::string(strerror(eno)));
     }
 }
 

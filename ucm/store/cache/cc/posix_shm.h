@@ -68,13 +68,14 @@ public:
         if (ret == 0) { return Status::OK(); }
         return Status{eno, std::to_string(eno)};
     }
-    Status MMap(void*& addr, size_t size, bool write, bool read, bool shared)
+    Status MMap(void*& addr, size_t size, bool write, bool read, bool shared, bool populate = false)
     {
         auto prot = PROT_NONE;
         if (write) { prot |= PROT_WRITE; }
         if (read) { prot |= PROT_READ; }
         auto flags = 0;
         if (shared) { flags |= MAP_SHARED; }
+        if (populate) { flags |= MAP_POPULATE; }
         addr = mmap(nullptr, size, prot, flags, handle_, 0);
         auto eno = errno;
         if (addr != MAP_FAILED) { return Status::OK(); }

@@ -48,6 +48,12 @@ class MetricDefinition:
     vllm_connector_buckets: tuple[float, ...] = ()
     vllm_connector_value_scale: float = 1.0
     vllm_connector_enabled: bool = True
+    multiprocess_mode: str = ""
+    # Names carried as a wire-name suffix instead of a static label value, e.g.
+    # ["slot_size"] makes "drampool_buffer_pool_usage_ratio_4096" export as
+    # drampool_buffer_pool_usage_ratio{slot_size="4096"}. At most one label is
+    # supported today; the suffix must be all digits.
+    dynamic_labels: tuple[str, ...] = ()
 
 
 def load_metrics_config(config_path: str) -> dict[str, Any]:
@@ -140,6 +146,12 @@ def get_metric_definitions(config: dict[str, Any] | None) -> list[MetricDefiniti
                     vllm_connector_buckets=tuple(vllm_connector_buckets),
                     vllm_connector_value_scale=vllm_connector_scale,
                     vllm_connector_enabled=vllm_connector_enabled,
+                    multiprocess_mode=(
+                        str(item.get("multiprocess_mode", ""))
+                        if metric_type == "gauge"
+                        else ""
+                    ),
+                    dynamic_labels=tuple(item.get("dynamic_labels", []) or []),
                 )
             )
     return definitions
@@ -153,6 +165,36 @@ def get_vllm_connector_metric_definitions(
         for definition in get_metric_definitions(config)
         if definition.vllm_connector_enabled
     ]
+
+
+def dynamic_label_bases(
+    definitions: list[MetricDefinition],
+) -> list[tuple[str, MetricDefinition]]:
+    """Base names that carry one dynamic label as a wire-name suffix."""
+    return [
+        (definition.name, definition)
+        for definition in definitions
+        if len(definition.dynamic_labels) == 1
+    ]
+
+
+def split_dynamic_metric_name(
+    metric_name: str, bases: list[tuple[str, MetricDefinition]]
+) -> tuple[MetricDefinition, str, str] | None:
+    """Resolve a suffixed wire name to (definition, label_name, label_value).
+
+    "drampool_buffer_pool_usage_ratio_4096" with base
+    "drampool_buffer_pool_usage_ratio" declaring dynamic_labels=["slot_size"]
+    resolves to (definition, "slot_size", "4096"). Returns None when the name
+    is not a dynamic-label variant, so callers fall back to exact matching.
+    """
+    for base_name, definition in bases:
+        prefix = base_name + "_"
+        if metric_name.startswith(prefix):
+            value = metric_name[len(prefix) :]
+            if value.isdigit():
+                return definition, definition.dynamic_labels[0], value
+    return None
 
 
 def setup_ucm_metrics(config: dict[str, Any] | None) -> list[MetricDefinition]:
@@ -184,7 +226,7 @@ def setup_ucm_metrics(config: dict[str, Any] | None) -> list[MetricDefinition]:
 def multiproc_metric_name(
     config: dict[str, Any] | None, metric_name: str, default_prefix: str = "ucm:"
 ) -> str:
-    return f"{multiproc_prefix(config, default_prefix)}{metric_name}"
+    return _ensure_prefix(metric_name, multiproc_prefix(config, default_prefix))
 
 
 def multiproc_prefix(
@@ -234,15 +276,14 @@ def _vllm_connector_value_scale(name: str, item: dict[str, Any]) -> float:
 
 
 def _vllm_connector_metric_name(name: str, item: dict[str, Any], prefix: str) -> str:
-    configured = item.get("vllm_connector_name")
+    configured = item.get("vllm_connector_name") or item.get("prometheus_name")
     if configured:
         return _ensure_prefix(str(configured), prefix)
-    return f"{prefix}{name}"
+    return _ensure_prefix(name, prefix)
 
 
 def _ensure_prefix(name: str, prefix: str) -> str:
-    if name.startswith(prefix):
-        return name
+    """Explicit namespaces take precedence over a consumer's default prefix."""
     if ":" in name:
-        name = name.split(":", 1)[1]
+        return name
     return f"{prefix}{name}"

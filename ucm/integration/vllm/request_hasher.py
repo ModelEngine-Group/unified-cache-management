@@ -1,0 +1,167 @@
+import ast
+import hashlib
+import inspect
+import pickle
+import textwrap
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from vllm.v1.request import Request
+
+try:
+    from vllm.v1.core.kv_cache_utils import generate_block_hash_extra_keys
+except ImportError:  # pragma: no cover - depends on the installed vLLM version
+    generate_block_hash_extra_keys = None
+
+
+class RequestHashError(RuntimeError):
+    """Raised when UCM cannot safely hash all KV-affecting request semantics."""
+
+
+def _request_has_extra_hash_semantics(request: "Request") -> bool:
+    return bool(
+        getattr(request, "mm_features", None)
+        or getattr(request, "lora_request", None) is not None
+        or getattr(request, "cache_salt", None)
+        or getattr(request, "prompt_embeds", None) is not None
+    )
+
+
+def _validate_request_hash_semantics(request: "Request") -> None:
+    if generate_block_hash_extra_keys is None and _request_has_extra_hash_semantics(
+        request
+    ):
+        raise RequestHashError(
+            "The installed vLLM does not expose "
+            "generate_block_hash_extra_keys(), but this request contains "
+            "KV-affecting semantics beyond token IDs."
+        )
+
+
+def _generate_extra_keys(
+    request: "Request",
+    start_token_idx: int,
+    end_token_idx: int,
+    start_mm_idx: int,
+) -> tuple[tuple[Any, ...] | None, int]:
+    if generate_block_hash_extra_keys is None:
+        return None, start_mm_idx
+
+    try:
+        return generate_block_hash_extra_keys(
+            request,
+            start_token_idx,
+            end_token_idx,
+            start_mm_idx,
+        )
+    except Exception as exc:
+        raise RequestHashError(
+            "Failed to generate vLLM block hash extra keys for UCM: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _collect_layout_classes() -> list[type]:
+    """KVCacheLayout subclasses (recursive) plus the standalone HMA layout.
+    The explicit imports pin the class set so scheduler and worker compute
+    an identical digest.
+    """
+    import ucm.integration.vllm.hla_connector
+    import ucm.integration.vllm.hma_connector as hma_module
+    import ucm.integration.vllm.ucm_connector as ucm_module
+
+    classes: set[type] = set()
+
+    def walk(cls: type) -> None:
+        classes.add(cls)
+        for subclass in cls.__subclasses__():
+            walk(subclass)
+
+    walk(ucm_module.KVCacheLayout)
+    classes.add(hma_module.KVCacheGroupLayout)
+    return sorted(classes, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
+
+
+def _layout_source_digest() -> str:
+    """Digest of the normalized source of all layout classes; any
+    behavior-relevant layout change re-keys every block hash. Falls back
+    to the installed package version when sources are unavailable."""
+    try:
+        digest = hashlib.sha256()
+        for cls in _collect_layout_classes():
+            source = inspect.getsource(cls)
+            tree = ast.parse(textwrap.dedent(source))
+            digest.update(f"{cls.__module__}.{cls.__qualname__}:".encode("utf-8"))
+            digest.update(ast.dump(tree, include_attributes=False).encode("utf-8"))
+        return digest.hexdigest()[:16]
+    except OSError:
+        # Sourceless deployment: fall back to per-version isolation.
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("uc-manager")
+        except PackageNotFoundError:
+            return "unknown"
+
+
+class RequestHasher:
+    """Generate stable identifiers using caller-provided namespace metadata."""
+
+    def __init__(self, meta: str):
+        self.meta_bytes = meta.encode("utf-8")
+        self.seed = self("UCM_HASH_SEED")
+
+    def __call__(self, input_data) -> bytes:
+        if isinstance(input_data, bytes):
+            input_bytes = input_data
+        else:
+            input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
+
+        h = hashlib.md5(self.meta_bytes + input_bytes)
+        return h.digest()
+
+    def make_request_block_hasher(
+        self,
+        block_size: int,
+        initial_hash: bytes | None = None,
+    ) -> Callable[["Request"], list[bytes]]:
+        """Bind a reusable request hasher to one block size and chain root."""
+        if block_size <= 0:
+            raise ValueError(f"block_size must be positive, got {block_size}.")
+
+        root = self.seed if initial_hash is None else initial_hash
+
+        def hash_request(request: "Request") -> list[bytes]:
+            _validate_request_hash_semantics(request)
+            token_ids = request.all_token_ids
+            parent = root
+            curr_mm_idx = 0
+            block_hashes: list[bytes] = []
+
+            for start in range(0, len(token_ids), block_size):
+                end = start + block_size
+                if end > len(token_ids):
+                    break
+
+                extra_keys, curr_mm_idx = _generate_extra_keys(
+                    request,
+                    start,
+                    end,
+                    curr_mm_idx,
+                )
+                parent = self(
+                    (
+                        parent,
+                        tuple(token_ids[start:end]),
+                        extra_keys,
+                    )
+                )
+                block_hashes.append(parent)
+
+            return block_hashes
+
+        return hash_request
+
+
+__all__ = ["RequestHashError", "RequestHasher"]

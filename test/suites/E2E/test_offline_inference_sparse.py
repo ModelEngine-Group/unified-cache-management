@@ -107,10 +107,11 @@ class TestBasicOfflineInferenceSparse:
         ucm_config = {
             "ucm_connectors": [
                 {
-                    "ucm_connector_name": "UcmNfsStore",
+                    "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
                         "storage_backends": ucm_storage_dir,
-                        "use_direct": False,
+                        "store_pipeline": "Cache|Posix",
+                        "io_direct": False,
                     },
                 }
             ],

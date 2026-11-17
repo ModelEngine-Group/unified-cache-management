@@ -37,6 +37,7 @@ public:
         return OnLookup(num);
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) { return -1; }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) { return -1; }
     void Prefetch(const Detail::BlockId* blocks, size_t num) {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) { return NextId(); }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) { return NextId(); }

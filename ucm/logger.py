@@ -167,6 +167,10 @@ def _warning_limit(logger: logging.Logger, msg: str, *args) -> None:
     logger.warning(msg, *args, stacklevel=3, extra=_RATE_LIMIT_EXTRA)
 
 
+def _error_limit(logger: logging.Logger, msg: str, *args) -> None:
+    logger.error(msg, *args, stacklevel=3, extra=_RATE_LIMIT_EXTRA)
+
+
 def _get_log_config():
     """Read log file configuration from environment variables."""
     log_path = os.getenv("UCM_LOG_PATH", "log")
@@ -210,6 +214,7 @@ def _bind_convenience_methods(logger: logging.Logger) -> logging.Logger:
     logger.debug_limit = MethodType(_debug_limit, logger)
     logger.info_limit = MethodType(_info_limit, logger)
     logger.warning_limit = MethodType(_warning_limit, logger)
+    logger.error_limit = MethodType(_error_limit, logger)
     logger._ucm_methods_bound = True
     return logger
 

@@ -5,3 +5,11 @@ self-hosted-runner:
     - a2
     - gpu
     - npu
+
+paths:
+  .github/workflows/{cleanup-ucm-release,nightly-cleanup,release-nightly,release-tag,release-ucm,sync-builders}.yml:
+    # actionlint v1.7.7 does not recognize concurrency.queue (rhysd/actionlint#654).
+    # Release workflow contract tests check queue values and cancellation policy.
+    # Remove this ignore when upgrading to a version with native queue support.
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

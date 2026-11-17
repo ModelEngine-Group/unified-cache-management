@@ -38,6 +38,8 @@ void UpdateStats(CachedMetric& metric, double value);
 
 void UpdateStats(const std::unordered_map<std::string, double>& values);
 
+void MergeHistogramStats(const HistogramStatsMap& values);
+
 std::tuple<std::unordered_map<std::string, double>, std::unordered_map<std::string, double>,
            HistogramStatsMap>
 GetAllStatsAndClear();

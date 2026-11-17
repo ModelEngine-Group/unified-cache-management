@@ -1,0 +1,226 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#ifndef UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
+#define UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include "buffer.h"
+#include "core/transport.h"
+#include "logger/logger.h"
+#include "pool/buffer_pool.h"
+#include "status/status.h"
+
+namespace UC::DramPool {
+
+/**
+ * @brief Owns a set of BufferPool instances keyed by size.
+ *
+ * For each (slotSize, slotNum) pair, a BufferPool is constructed and initialized
+ * with MemoryType::Host. The pool name is derived from the size as
+ * "buffer_pool_<size>".
+ */
+class BufferManager {
+public:
+    explicit BufferManager(const std::vector<std::pair<std::size_t, std::size_t>>& slots)
+    {
+        memoryRegions_.reserve(slots.size());
+        for (auto [slotSize, slotNum] : slots) {
+            if (pools_.find(slotSize) != pools_.end()) { continue; }
+            auto pool = std::make_unique<BufferPool>();
+            auto st = pool->Init("buffer_pool_" + std::to_string(slotSize),
+                                 BufferPool::MemoryType::Host, slotSize, slotNum);
+            if (!st.Success()) {
+                UC_ERROR("BufferManager: Init pool for size {} failed, status {}.", slotSize,
+                         st.ToString());
+                throw std::runtime_error("BufferPool Init failed for size " +
+                                         std::to_string(slotSize));
+            }
+            transport::MemoryRegion region;
+            region.addr = pool->GetLocalAddr();
+            region.length = pool->GetTotalSize();
+            region.type = transport::MemoryType::Host;
+            memoryRegions_.push_back(region);
+            pools_.emplace(slotSize, std::move(pool));
+            revealed_.emplace(slotSize, false);
+            usedBySize_.emplace(slotSize, 0);
+            UC_DEBUG(
+                "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
+                slotSize, slotNum, region.length);
+        }
+        UC_DEBUG("BufferManager initialized BufferPools, pool_count={}", pools_.size());
+    }
+
+    ~BufferManager() { Reset(); }
+
+    BufferManager(const BufferManager&) = delete;
+    BufferManager& operator=(const BufferManager&) = delete;
+
+    /**
+     * @brief Release every underlying BufferPool and clear cached memory regions.
+     */
+    void Reset() noexcept
+    {
+        for (auto& [_, pool] : pools_) {
+            if (pool != nullptr) { pool->Reset(); }
+        }
+        pools_.clear();
+        revealed_.clear();
+        usedBySize_.clear();
+        memoryRegions_.clear();
+    }
+
+    /**
+     * @brief Look up the BufferPool registered for the given size.
+     * @return Pointer to the BufferPool, or nullptr if the size was not
+     *         registered at construction.
+     */
+    BufferPool* GetPool(std::size_t size)
+    {
+        auto it = pools_.find(size);
+        return it == pools_.end() ? nullptr : it->second.get();
+    }
+
+    /**
+     * @brief Memory regions registered for each pool.
+     */
+    const std::vector<transport::MemoryRegion>& MemoryRegions() const noexcept
+    {
+        return memoryRegions_;
+    }
+
+    /**
+     * @brief Allocate a slot from the pool matching the requested size.
+     * @param size [in] Requested buffer size, selects the pool.
+     * @param buf [out] On success, buf is filled from the allocated slot.
+     * @return Status::OK() on success; Status::NotFound() if no pool is
+     *         registered for the requested size; otherwise the status
+     *         returned by BufferPool::Allocate.
+     */
+    Status Allocate(std::size_t size, Buffer& buf)
+    {
+        auto* pool = GetPool(size);
+        if (pool == nullptr) {
+            UC_ERROR("BufferManager::Allocate: no pool registered for size {}.", size);
+            return Status::NotFound();
+        }
+        BufferPool::Slot slot;
+        auto st = pool->Allocate(slot);
+        if (!st.Success()) { return st; }
+        MarkRevealed(size);
+        AdjustUsed(size, 1);
+        buf.length = slot.length;
+        buf.slot = slot.slotIndex;
+        buf.addr = slot.localAddr;
+        return Status::OK();
+    }
+
+    /**
+     * @brief Free a previously allocated slot from the pool matching the
+     *        given size.
+     * @param size [in] Buffer size, selects the pool.
+     * @param slot [in] Slot index returned by Allocate.
+     * @return Status::OK() on success; Status::NotFound() if no pool is
+     *         registered for the requested size; otherwise the status
+     *         returned by BufferPool::Free.
+     */
+    Status Free(std::size_t size, std::uint32_t slot)
+    {
+        auto* pool = GetPool(size);
+        if (pool == nullptr) {
+            UC_ERROR("BufferManager::Free: no pool registered for size {}.", size);
+            return Status::NotFound();
+        }
+        // The used-slot counter lives here (per size), not in BufferPool: only
+        // DramPool reports it, so shared BufferPool users should not pay for it.
+        // Callers must Free with the same size used at Allocate, or the counter
+        // for the mismatched size drifts.
+        auto st = pool->Free(slot);
+        if (st.Success()) { AdjustUsed(size, -1); }
+        return st;
+    }
+
+    /**
+     * @brief Ratio of currently used slots to total slots for the given size.
+     * @return used / slot_count; 0.0 if the size was not registered or the
+     *         pool has no slots.
+     */
+    double GetUsedSlotRatio(std::size_t size) const
+    {
+        const auto it = pools_.find(size);
+        if (it == pools_.end() || it->second == nullptr || it->second->GetSlotCount() == 0) {
+            return 0.0;
+        }
+        const auto usedIt = usedBySize_.find(size);
+        if (usedIt == usedBySize_.end()) { return 0.0; }
+        return static_cast<double>(usedIt->second.load(std::memory_order_relaxed)) /
+               static_cast<double>(it->second->GetSlotCount());
+    }
+
+    /**
+     * @brief Whether the pool for the given size has ever served a successful
+     *        allocation. Sticky: stays true after the pool drains back to
+     *        zero used slots.
+     * @return false if the size was not registered at construction.
+     */
+    bool IsRevealed(std::size_t size) const
+    {
+        const auto it = revealed_.find(size);
+        return it != revealed_.end() && it->second.load(std::memory_order_acquire);
+    }
+
+private:
+    void MarkRevealed(std::size_t size)
+    {
+        const auto it = revealed_.find(size);
+        if (it != revealed_.end()) { it->second.store(true, std::memory_order_release); }
+    }
+
+    void AdjustUsed(std::size_t size, std::int64_t delta)
+    {
+        const auto it = usedBySize_.find(size);
+        if (it == usedBySize_.end()) { return; }
+        if (delta > 0) {
+            it->second.fetch_add(static_cast<std::uint64_t>(delta), std::memory_order_relaxed);
+        } else if (delta < 0) {
+            it->second.fetch_sub(static_cast<std::uint64_t>(-delta), std::memory_order_relaxed);
+        }
+    }
+
+    std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
+    std::unordered_map<std::size_t, std::atomic_bool> revealed_;
+    std::unordered_map<std::size_t, std::atomic<std::uint64_t>> usedBySize_;
+    std::vector<transport::MemoryRegion> memoryRegions_;
+};
+
+}  // namespace UC::DramPool
+
+#endif

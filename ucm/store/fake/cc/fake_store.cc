@@ -70,6 +70,19 @@ public:
         UC_DEBUG("Fake Lookup({}/{}) costs {:.3f}ms.", index, num, sw.Elapsed().count() * 1e3);
         return index;
     }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        StopWatch sw;
+        for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+            if (metaMgr_.Exist(blocks[i])) {
+                UC_DEBUG("Fake reverse lookup({}/{}) costs {:.3f}ms.", i, num,
+                         sw.Elapsed().count() * 1e3);
+                return i;
+            }
+        }
+        UC_DEBUG("Fake reverse lookup(-1/{}) costs {:.3f}ms.", num, sw.Elapsed().count() * 1e3);
+        return static_cast<ssize_t>(-1);
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override { return NextId(); }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override

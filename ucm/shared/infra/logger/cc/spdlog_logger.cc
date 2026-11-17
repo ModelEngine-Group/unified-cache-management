@@ -259,7 +259,7 @@ void Logger::LoadRateLimitConfig()
         try {
             rate_limit_window_ms_ = std::stoull(window_str);
         } catch (...) {
-            rate_limit_window_ms_ = 60000;
+            rate_limit_window_ms_ = kDefaultRateLimitWindowMs;
         }
     }
 

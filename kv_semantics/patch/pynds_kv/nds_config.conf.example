@@ -1,0 +1,19 @@
+# NDS v1.6 cluster configuration example.
+# Copy to nds_config.conf and replace all placeholders before use.
+local_ip_config = <LOCAL_IP>, 33050, 3, 1
+
+start_core = 2
+log_level = 1
+qp_slot_num = 8
+use_qp_num = 8
+max_batch_num = 32
+ip_num = 100
+priority = 4
+tos = 128
+core_num = 1
+kato = 10
+heartbeat_interval = 1
+timer_switch = on
+reconnection_interval = 5, 7, 8, 10
+busy_duration = 1000
+sceneMode = 1

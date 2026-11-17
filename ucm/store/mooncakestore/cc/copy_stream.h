@@ -64,7 +64,7 @@ public:
         return stream;
     }
 
-    Status WaitEvent(void* event) noexcept
+    Status WaitEvent(const Trans::Event& event) noexcept
     {
         auto status = Status::OK();
         for (auto& stream : streams_) {

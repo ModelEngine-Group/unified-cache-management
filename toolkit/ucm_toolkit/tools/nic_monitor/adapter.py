@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 
-from ... import registry
 from ...errors import CommandNotFoundError, ScriptNotFoundError
 from ...registry import ToolAdapter
+from ...resources import resource_path
 from ...runner import command_exists, run_command
 
 
@@ -17,7 +17,7 @@ class NicMonitorTool(ToolAdapter):
     aliases = ("nic_monitor",)
     description = "Run passive NIC load monitoring."
     buildable = False
-    script_path = "toolkit/src/nic_monitor/nic_monitor_pro.sh"
+    script_path = "nic_monitor_pro.sh"
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register NIC load run arguments."""
@@ -31,7 +31,7 @@ class NicMonitorTool(ToolAdapter):
         if not tool_args or tool_args[0] in ("-h", "--help"):
             self._print_run_help()
             return 0
-        script = registry.resolve_repo_path(self.script_path or "")
+        script = resource_path(self.script_path or "")
         if not script.exists():
             raise ScriptNotFoundError(str(script))
         if not command_exists("bash"):
@@ -40,7 +40,7 @@ class NicMonitorTool(ToolAdapter):
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect NIC monitor availability."""
-        script = registry.resolve_repo_path(self.script_path or "")
+        script = resource_path(self.script_path or "")
         script_ok = script.exists()
         bash_ok = command_exists("bash")
         ethtool_ok = command_exists("ethtool")

@@ -21,6 +21,8 @@ UCM uses the following error codes in its underlying C++ stores. These codes app
 | **-50008** | `Unsupported` | Unsupported operation | Feature or operation not supported in current context |
 | **-50009** | `NoSpace` | No space | Storage space (disk/cache) is full |
 | **-50010** | `Timeout` | Timeout | Operation timed out |
+| **-50011** | `StoreUnhealthy` | Store unhealthy | The store is tripped by the health breaker; requests are rejected until it recovers |
+| **-50012** | `TimeoutInQueue` | Timed out in queue | The request waited in a queue past its deadline before any I/O started; not counted as a backend failure |
 
 ## Common Issues
 
@@ -77,7 +79,7 @@ invalid param ... InvalidParam(...)
 
 **Solution**:
 1. Check YAML syntax: validate with `python -c "import yaml; yaml.safe_load(open('your_config.yaml'))"`
-2. Verify parameter names match the [Pipeline Store](../user-guide/prefix-cache/pipeline_store.md) or [NFS Store](../user-guide/prefix-cache/nfs_store.md) documentation
+2. Verify parameter names match the [Pipeline Store](../user-guide/prefix-cache/pipeline_store.md) documentation
 3. Ensure `storage_backends` path is a valid string, not empty
 
 #### `UCM_CONFIG_FILE` not found
@@ -100,7 +102,7 @@ Unsupported connector type: <name>
 
 **Cause**: The `ucm_connector_name` in the config is not a registered connector.
 
-**Solution**: Use one of the supported connector names: `UcmPipelineStore` or `UcmNfsStore`.
+**Solution**: Use the supported connector name: `UcmPipelineStore`.
 
 #### Unknown store pipeline
 

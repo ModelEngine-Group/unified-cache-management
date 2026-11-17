@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ucm-toolkit"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Unified CLI for UCM toolkit utilities."
+readme = "README.md"
 requires-python = ">=3.9"
 
 [project.scripts]
@@ -17,3 +18,4 @@ include = ["ucm_toolkit*"]
 
 [tool.setuptools.package-data]
 "ucm_toolkit.tools.metrics_view" = ["configs/*.json"]
+"ucm_toolkit.tools.precheck" = ["*.json"]

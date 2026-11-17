@@ -72,6 +72,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Mooncake|Posix"
+      store_health:
+        enabled: true
       local_hostname: "127.0.0.1"
       master_server_address: "127.0.0.1:50088"
       metadata_server: "P2PHANDSHAKE"
@@ -94,6 +96,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Mooncake"
+      store_health:
+        enabled: true
       local_hostname: "127.0.0.1"
       master_server_address: "127.0.0.1:50088"
       metadata_server: "P2PHANDSHAKE"

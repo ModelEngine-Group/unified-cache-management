@@ -25,6 +25,7 @@
 import array
 import copy
 import ctypes
+import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,6 @@ from typing import Callable, Dict, List
 import numpy as np
 import torch
 
-from ucm.store.pipeline import ucmpipelinestore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 _preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
@@ -53,6 +53,12 @@ def _preload_library(path: Path) -> None:
 
 def _preload_metrics(store_dir: Path) -> None:
     _preload_library(store_dir.parent / "shared/metrics/libmetrics.so")
+
+
+_preload_metrics(Path(__file__).resolve().parent.parent)
+ucmpipelinestore = importlib.import_module("ucm.store.pipeline.ucmpipelinestore")
+StoreNotFoundError = ucmpipelinestore.StoreNotFoundError
+StoreUnhealthyError = ucmpipelinestore.StoreUnhealthyError
 
 
 class UcmPipelineStoreBuilder:
@@ -83,6 +89,11 @@ class UcmPipelineStoreTransTask(Task):
 
 
 class UcmPipelineStore(UcmKVStoreBaseV1):
+    @property
+    def supports_distributed_backend_load(self) -> bool:
+        """Custom load overrides keep their original submission interface."""
+        return getattr(self.load_data, "__func__", None) is UcmPipelineStore.load_data
+
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self.store_ = ucmpipelinestore.PipelineStore()
@@ -103,6 +114,10 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         return self.store_.LookupOnPrefix(flat)
 
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        return self.store_.LookupOnReverse(flat)
+
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         self.store_.Prefetch(flat)
@@ -121,11 +136,13 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_tensor: List[List[torch.Tensor]],
+        *,
+        distribute_backend_load: bool = False,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
         addrs = self._tensor_normalize(dst_tensor)
-        task_id = self.store_.Load(ids, indexes, addrs)
+        task_id = self.store_.Load(ids, indexes, addrs, 0, distribute_backend_load)
         return UcmPipelineStoreTransTask(task_id)
 
     def dump(
@@ -145,6 +162,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         block_ids: List[bytes],
         shard_index: List[int],
         dst_addr: List[List[int]] | np.ndarray,
+        prerequisite_handle: int = 0,
+        *,
+        distribute_backend_load: bool = False,
     ) -> Task:
         ids = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         indexes = array.array("Q", shard_index)
@@ -152,7 +172,9 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             addrs = dst_addr
         else:
             addrs = np.array(dst_addr, dtype=np.uint64)
-        task_id = self.store_.Load(ids, indexes, addrs)
+        task_id = self.store_.Load(
+            ids, indexes, addrs, prerequisite_handle, distribute_backend_load
+        )
         return UcmPipelineStoreTransTask(task_id)
 
     def dump_data(
@@ -186,6 +208,14 @@ def _cache_ds3fs_pipeline_builder(
     if config.get("device_id", -1) >= 0:
         ds3fs_config |= {"tensor_size": config["shard_size"]}
     pipeline.Stack("Ds3fs", str(store_dir / "ds3fs/libds3fsstore.so"), ds3fs_config)
+    _preload_metrics(store_dir)
+    pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
+
+
+def _cache_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
     _preload_metrics(store_dir)
     pipeline.Stack("Cache", str(store_dir / "cache/libcachestore.so"), config)
 
@@ -263,6 +293,13 @@ def _posix_pipeline_builder(
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), config)
 
 
+def _asu_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack("Asu", str(store_dir / "asu/libasustore.so"), config)
+
+
 def _cache_fake_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
@@ -297,15 +334,97 @@ def _mooncake_posix_pipeline_builder(
     )
 
 
+def _delegator_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "Delegator",
+        str(store_dir / "delegator/libdelegator_store.so"),
+        config,
+    )
+
+
+def _yuanrong_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    _stack_yuanrong_store(config, pipeline)
+
+
+def _stack_yuanrong_store(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+) -> None:
+    from ucm.store.yuanrongstore.resource_reporter import (
+        start_yuanrong_resource_reporter,
+    )
+
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "YuanRong",
+        str(store_dir / "yuanrongstore/libyuanrongstore.so"),
+        config,
+    )
+    start_yuanrong_resource_reporter(config)
+
+
+def _yuanrong_posix_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    io_engine = config.get("posix_io_engine", "psync")
+    if io_engine not in ("psync", "aio"):
+        raise ValueError(f"invalid posix_io_engine={io_engine} for YuanRong|Posix")
+    if io_engine == "aio" and not config.get("io_direct", False):
+        raise ValueError("YuanRong|Posix posix_io_engine=aio requires io_direct=true")
+    store_dir = Path(__file__).resolve().parent.parent
+    posix_config = copy.deepcopy(config)
+    tensor_sizes = config.get("tensor_size_list")
+    if config.get("device_id", -1) >= 0:
+        if not tensor_sizes:
+            raise ValueError("tensor_size_list is required for YuanRong|Posix")
+        shard_size = int(config["shard_size"])
+        block_size = int(config["block_size"])
+        if shard_size <= 0 or block_size % shard_size != 0:
+            raise ValueError("invalid shard_size/block_size for YuanRong|Posix")
+        object_size = sum(int(size) for size in tensor_sizes)
+        if config.get("io_direct", False):
+            if object_size % 4096:
+                raise ValueError(
+                    "YuanRong object size must be aligned to 4096 bytes for "
+                    "io_direct"
+                )
+        shards_per_block = block_size // shard_size
+        posix_config["tensor_size"] = object_size
+        posix_config["shard_size"] = object_size
+        posix_config["block_size"] = object_size * shards_per_block
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    _stack_yuanrong_store(config, pipeline)
+
+
+def _dram_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    from ucm.store.dram.resource_reporter import start_drampool_resource_reporter
+
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack("Dram", str(store_dir / "dram/libdramstore.so"), config)
+    start_drampool_resource_reporter(config)
+
+
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
+UcmPipelineStoreBuilder.register("Cache", _cache_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("ASU", _asu_pipeline_builder)
 UcmPipelineStoreBuilder.register(
     "Cache|Compress|Posix", _build_cache_compress_posix_pipeline
 )
 UcmPipelineStoreBuilder.register("Cache|Fake", _cache_fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake", _mooncake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake|Posix", _mooncake_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Delegator", _delegator_pipeline_builder)
+UcmPipelineStoreBuilder.register("YuanRong", _yuanrong_pipeline_builder)
+UcmPipelineStoreBuilder.register("YuanRong|Posix", _yuanrong_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Dram", _dram_pipeline_builder)

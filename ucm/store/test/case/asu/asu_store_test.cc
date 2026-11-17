@@ -1,0 +1,1848 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#include "asu/cc/asu_store.cc"
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <functional>
+#include <gtest/gtest.h>
+#include <limits>
+#include <memory>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include "detail/types_helper.h"
+#include "metrics_api.h"
+
+namespace {
+
+struct CacheKeyHasher {
+    std::size_t operator()(const kv::CacheKey& key) const
+    {
+        return std::hash<std::string_view>{}(
+            std::string_view(reinterpret_cast<const char*>(key.data()), key.size()));
+    }
+};
+
+kv::MRHandle MakeTestMrHandle(std::uintptr_t value)
+{
+    return reinterpret_cast<kv::MRHandle>(value);
+}
+
+struct FakeKvClientState {
+    std::vector<UC::AsuStore::Config> initConfigs;
+    std::vector<kv::KVBuffer> lastLoadEntries;
+    std::vector<kv::KVBuffer> lastStoreEntries;
+    std::vector<kv::MemoryRegion> registeredRegions;
+    std::size_t registrationCalls{0};
+    std::size_t shutdownCalls{0};
+    std::function<kv::Status()> lastStoreWait;
+    bool failRegistration{false};
+    bool failInit{false};
+    bool omitRegisteredHandle{false};
+    kv::Status queryStatus{kv::Status::OK()};
+    kv::Status submitStatus{kv::Status::OK()};
+    kv::Status waitStatus{kv::Status::OK()};
+    kv::Status taskStatus{kv::Status::OK()};
+    std::optional<kv::QueryResult> queryResult;
+    std::chrono::milliseconds queryDelay{0};
+};
+
+class FakeKvClient final : public kv::KvClient {
+public:
+    explicit FakeKvClient(std::shared_ptr<FakeKvClientState> state) : state_(std::move(state)) {}
+
+    kv::Status Init(const kv::KvClientConfig& config) override
+    {
+        (void)config;
+        if (state_->failInit) { return NotInitialized(); }
+        initialized_ = true;
+        return kv::Status::OK();
+    }
+
+    kv::Status Shutdown() override
+    {
+        ++state_->shutdownCalls;
+        initialized_ = false;
+        return kv::Status::OK();
+    }
+
+    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    {
+        if (!initialized_) { return NotInitialized(); }
+        if (!state_->queryStatus.ok()) { return state_->queryStatus; }
+        if (state_->queryDelay.count() != 0) { std::this_thread::sleep_for(state_->queryDelay); }
+
+        kv::TaskResult taskResult;
+        taskResult.status = kv::Status::OK();
+        taskResult.entryStatus.assign(keys.size(), kv::Status::OK());
+        kv::QueryResult result;
+        result.exists.clear();
+        result.exists.reserve(keys.size());
+        for (const auto& key : keys) { result.exists.emplace_back(storedKeys_.count(key) != 0); }
+        result.prefixHitKeys = 0;
+        for (auto exists : result.exists) {
+            if (exists == 0) { break; }
+            ++result.prefixHitKeys;
+        }
+        taskResult.queryResult = state_->queryResult ? *state_->queryResult : std::move(result);
+        taskId = nextTaskId_++;
+        taskResults_.emplace(taskId, std::move(taskResult));
+        return kv::Status::OK();
+    }
+
+    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
+    {
+        state_->lastLoadEntries = entries;
+        return Submit(entries, taskId);
+    }
+
+    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
+                          std::function<kv::Status()> prerequisite) override
+    {
+        state_->lastStoreWait = std::move(prerequisite);
+        state_->lastStoreEntries = entries;
+        for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
+        return Submit(entries, taskId);
+    }
+
+    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    {
+        for (const auto& key : keys) { storedKeys_.erase(key); }
+        return Submit(keys.size(), taskId);
+    }
+
+    bool Check(kv::TaskId taskId) override
+    {
+        if (!initialized_) { return true; }
+        auto iter = taskResults_.find(taskId);
+        return iter == taskResults_.end() ||
+               iter->second.status.code != kv::StatusCode::IN_PROGRESS;
+    }
+
+    kv::Status Wait(kv::TaskId taskId, std::uint64_t timeoutMs, kv::TaskResult& result) override
+    {
+        (void)timeoutMs;
+        if (!initialized_) { return NotInitialized(); }
+        if (!state_->waitStatus.ok()) { return state_->waitStatus; }
+
+        auto iter = taskResults_.find(taskId);
+        if (iter == taskResults_.end()) {
+            return kv::Status::Error(kv::StatusCode::TASK_NOT_FOUND, "fake task not found");
+        }
+
+        result = iter->second;
+        result.status = state_->taskStatus;
+        taskResults_.erase(iter);
+        return kv::Status::OK();
+    }
+
+    kv::Status RegisterRegions(const std::vector<kv::MemoryRegion>& regions,
+                               std::vector<kv::RegisteredMemory>& registeredRegions) override
+    {
+        if (!initialized_) { return NotInitialized(); }
+        ++state_->registrationCalls;
+        if (state_->failRegistration) {
+            return kv::Status::Error(kv::StatusCode::NOT_INITIALIZED,
+                                     "injected registration failure");
+        }
+        registeredRegions.clear();
+        registeredRegions.reserve(regions.size());
+        state_->registeredRegions.insert(state_->registeredRegions.end(), regions.begin(),
+                                         regions.end());
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            registeredRegions.emplace_back(
+                kv::RegisteredMemory{regions[index], MakeTestMrHandle(nextMrHandle_++)});
+        }
+        if (state_->omitRegisteredHandle) { registeredRegions.clear(); }
+        return kv::Status::OK();
+    }
+
+    kv::Status UnregisterRegions(const std::vector<kv::MRHandle>& handles) override
+    {
+        (void)handles;
+        return kv::Status::OK();
+    }
+
+private:
+    kv::Status Submit(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId)
+    {
+        return Submit(entries.size(), taskId);
+    }
+
+    kv::Status Submit(std::size_t entryCount, kv::TaskId& taskId)
+    {
+        if (!initialized_) { return NotInitialized(); }
+        if (!state_->submitStatus.ok()) { return state_->submitStatus; }
+
+        taskId = nextTaskId_++;
+        kv::TaskResult result;
+        result.status = kv::Status::OK();
+        result.entryStatus.assign(entryCount, kv::Status::OK());
+        taskResults_.emplace(taskId, std::move(result));
+        return kv::Status::OK();
+    }
+
+    static kv::Status NotInitialized()
+    {
+        return kv::Status::Error(kv::StatusCode::NOT_INITIALIZED,
+                                 "fake ASU client is not initialized");
+    }
+
+    std::shared_ptr<FakeKvClientState> state_;
+    bool initialized_{false};
+    kv::TaskId nextTaskId_{1};
+    std::uintptr_t nextMrHandle_{1};
+    std::unordered_set<kv::CacheKey, CacheKeyHasher> storedKeys_;
+    std::unordered_map<kv::TaskId, kv::TaskResult> taskResults_;
+};
+
+std::shared_ptr<FakeKvClientState> UseFakeClient(UC::AsuStore::AsuStore& store)
+{
+    auto state = std::make_shared<FakeKvClientState>();
+    store.SetClientFactory([state](const UC::AsuStore::Config& config) {
+        state->initConfigs.emplace_back(config);
+        return std::make_unique<FakeKvClient>(state);
+    });
+    return state;
+}
+
+UC::Detail::Dictionary MakeBaseConfig()
+{
+    UC::Detail::Dictionary config;
+    config.Set("asu_client_id", std::string{"asu-store-test"});
+    config.Set("asu_name_prefix", std::string{"asu-store-test"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345});
+    config.SetNumber("device_id", 0);
+    config.SetNumber("tensor_size", std::size_t{64});
+    config.SetNumber("shard_size", std::size_t{64});
+    config.SetNumber("block_size", std::size_t{64});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{1000});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{500});
+    config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{16});
+    config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{16});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{100});
+    return config;
+}
+
+UC::Detail::TaskDesc MakeTask(const UC::Detail::BlockId& block, void* addr)
+{
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{block, 0, {addr}});
+    return task;
+}
+
+void RegisterPersistentRanges(UC::Detail::Dictionary& config,
+                              const std::vector<std::pair<void*, std::size_t>>& ranges)
+{
+    ASSERT_FALSE(ranges.empty());
+    std::vector<ssize_t> addrs;
+    std::vector<ssize_t> sizes;
+    for (const auto& [addr, size] : ranges) {
+        addrs.push_back(static_cast<ssize_t>(reinterpret_cast<std::uintptr_t>(addr)));
+        sizes.push_back(static_cast<ssize_t>(size));
+    }
+    config.SetNumber("device_id", 0);
+    config.Set("gpu_kv_buffer_addrs", addrs);
+    config.Set("gpu_kv_buffer_sizes", sizes);
+}
+
+void ExpectLookupMiss(UC::StoreV1& store, const UC::Detail::BlockId& block)
+{
+    auto lookup = store.Lookup(&block, 1);
+    ASSERT_TRUE(lookup.HasValue()) << lookup.Error().ToString();
+    const std::vector<std::uint8_t> expected{0};
+    ASSERT_EQ(lookup.Value(), expected);
+
+    auto prefix = store.LookupOnPrefix(&block, 1);
+    ASSERT_TRUE(prefix.HasValue()) << prefix.Error().ToString();
+    ASSERT_EQ(prefix.Value(), -1);
+}
+
+void ExpectLoadDumpSmoke(UC::StoreV1& store, const UC::Detail::BlockId& block, void* buffer)
+{
+    auto dump = store.Dump(MakeTask(block, buffer));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+
+    auto load = store.Load(MakeTask(block, buffer));
+    ASSERT_TRUE(load.HasValue()) << load.Error().ToString();
+    ASSERT_TRUE(store.Wait(load.Value()).Success());
+}
+
+class AsuStoreMetricsTest : public testing::Test {
+protected:
+    void SetUp() override
+    {
+        UC::Metrics::SetUp();
+        for (const auto* name :
+             {"asu_lookup_requests_total", "asu_lookup_errors_total",
+              "asu_lookup_query_blocks_total", "asu_lookup_hit_blocks_total",
+              "asu_lookup_prefix_query_blocks_total", "asu_lookup_prefix_hit_blocks_total",
+              "asu_lookup_timeout_fallback_total", "asu_load_requests_total",
+              "asu_load_submit_errors_total", "asu_load_submitted_bytes_total",
+              "asu_dump_requests_total", "asu_dump_submit_errors_total",
+              "asu_dump_submitted_bytes_total", "asu_wait_requests_total", "asu_wait_errors_total",
+              "asu_wait_timeouts_total"}) {
+            UC::Metrics::CreateStats(name, "counter");
+        }
+        for (const auto* name : {"asu_lookup_duration_ms", "asu_load_submit_duration_ms",
+                                 "asu_dump_submit_duration_ms", "asu_wait_duration_ms"}) {
+            UC::Metrics::CreateStats(name, "histogram", {1, 10, 100, 1000, 10000});
+        }
+        state = UseFakeClient(store);
+        config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        RegisterPersistentRanges(config, {
+                                             {buffer.data(), buffer.size()}
+        });
+        ASSERT_TRUE(store.Setup(config).Success());
+        UC::Metrics::GetAllStatsAndClear();
+    }
+
+    void Read()
+    {
+        auto stats = UC::Metrics::GetAllStatsAndClear();
+        counters = std::move(std::get<0>(stats));
+        histograms = std::move(std::get<2>(stats));
+    }
+
+    double Count(const std::string& name) const
+    {
+        const auto it = counters.find(name);
+        return it == counters.end() ? 0 : it->second;
+    }
+
+    std::uint64_t Samples(const std::string& name) const
+    {
+        const auto& buckets = histograms.at(name).bucketCounts;
+        return std::accumulate(buckets.begin(), buckets.end(), std::uint64_t{0});
+    }
+
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    UC::AsuStore::AsuStore store;
+    std::shared_ptr<FakeKvClientState> state;
+    UC::Detail::Dictionary config;
+    std::array<UC::Detail::BlockId, 3> blocks{
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ac"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ad")};
+    std::unordered_map<std::string, double> counters;
+    UC::Metrics::HistogramStatsMap histograms;
+};
+
+}  // namespace
+
+TEST_F(AsuStoreMetricsTest, LookupCountsReturnedHitsAndPrefixSeparately)
+{
+    kv::QueryResult query;
+    query.exists = {1, 0, 1};
+    query.prefixHitKeys = 1;
+    state->queryResult = query;
+    state->queryDelay = std::chrono::milliseconds(6);
+    auto lookup = store.Lookup(blocks.data(), blocks.size());
+    ASSERT_TRUE(lookup.HasValue());
+    EXPECT_EQ(lookup.Value(), query.exists);
+    auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(prefix.HasValue());
+    EXPECT_EQ(prefix.Value(), 0);
+    auto reverse = store.LookupOnReverse(blocks.data(), blocks.size());
+    ASSERT_TRUE(reverse.HasValue());
+    EXPECT_EQ(reverse.Value(), 2);
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 2);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 1);
+    EXPECT_EQ(Count("asu_wait_requests_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 3U);
+    EXPECT_GE(histograms.at("asu_lookup_duration_ms").sum, 15.0);
+}
+
+TEST_F(AsuStoreMetricsTest, EmptyLookupsCountCallsWithoutInventingBlocks)
+{
+    ASSERT_TRUE(store.Lookup(nullptr, 0).HasValue());
+    ASSERT_TRUE(store.LookupOnPrefix(nullptr, 0).HasValue());
+    ASSERT_TRUE(store.LookupOnReverse(nullptr, 0).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 3);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 3U);
+}
+
+TEST_F(AsuStoreMetricsTest, QuerySubmissionAndWaitTimeoutsCountReturnedMisses)
+{
+    for (bool timeoutAtSubmission : {true, false}) {
+        state->queryStatus = timeoutAtSubmission
+                                 ? kv::Status::Error(kv::StatusCode::TIMEOUT, "query timeout")
+                                 : kv::Status::OK();
+        state->waitStatus = timeoutAtSubmission
+                                ? kv::Status::OK()
+                                : kv::Status::Error(kv::StatusCode::TIMEOUT, "wait timeout");
+        auto lookup = store.Lookup(blocks.data(), blocks.size());
+        ASSERT_TRUE(lookup.HasValue());
+        EXPECT_EQ(lookup.Value(), (std::vector<std::uint8_t>{0, 0, 0}));
+        auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
+        ASSERT_TRUE(prefix.HasValue());
+        EXPECT_EQ(prefix.Value(), -1);
+        auto reverse = store.LookupOnReverse(blocks.data(), blocks.size());
+        ASSERT_TRUE(reverse.HasValue());
+        EXPECT_EQ(reverse.Value(), -1);
+    }
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_timeout_fallback_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_wait_timeouts_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 6U);
+}
+
+TEST_F(AsuStoreMetricsTest, QueryErrorsAndMalformedResultsDoNotCountNormalMisses)
+{
+    state->queryStatus = kv::Status::Error(kv::StatusCode::NOT_INITIALIZED, "query failed");
+    EXPECT_FALSE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    state->queryStatus = kv::Status::OK();
+    kv::QueryResult malformed;
+    malformed.exists = {1};
+    malformed.prefixHitKeys = 4;
+    state->queryResult = malformed;
+    EXPECT_FALSE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    EXPECT_FALSE(store.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_errors_total"), 6);
+    EXPECT_EQ(Count("asu_lookup_timeout_fallback_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_query_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_hit_blocks_total"), 0);
+    EXPECT_EQ(Count("asu_lookup_prefix_hit_blocks_total"), 0);
+    EXPECT_EQ(Samples("asu_lookup_duration_ms"), 6U);
+}
+
+TEST_F(AsuStoreMetricsTest, SubmissionsCountAllErrorsButOnlyAcceptedBytes)
+{
+    auto task = MakeTask(blocks[0], buffer.data());
+    task.push_back(UC::Detail::Shard{blocks[1], 0, {buffer.data()}});
+    ASSERT_TRUE(store.Load(task).HasValue());
+    ASSERT_TRUE(store.Dump(task).HasValue());
+    EXPECT_FALSE(store.Load(MakeTask(blocks[0], nullptr)).HasValue());
+    EXPECT_FALSE(store.Dump(MakeTask(blocks[0], nullptr)).HasValue());
+    state->submitStatus = kv::Status::Error(kv::StatusCode::RESOURCE_BUSY, "queue full");
+    EXPECT_FALSE(store.Load(task).HasValue());
+    EXPECT_FALSE(store.Dump(task).HasValue());
+    Read();
+    for (const auto* operation : {"load", "dump"}) {
+        const auto prefix = std::string("asu_") + operation;
+        EXPECT_EQ(Count(prefix + "_requests_total"), 3);
+        EXPECT_EQ(Count(prefix + "_submit_errors_total"), 2);
+        EXPECT_EQ(Count(prefix + "_submitted_bytes_total"), 2 * kv::kAlignmentBytes);
+        EXPECT_EQ(Samples(prefix + "_submit_duration_ms"), 3U);
+    }
+    EXPECT_EQ(Count("asu_wait_requests_total"), 0);
+}
+
+TEST_F(AsuStoreMetricsTest, WaitCountsCallsTimeoutsAndTaskResultErrors)
+{
+    auto load = store.Load(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(load.HasValue());
+    state->waitStatus = kv::Status::Error(kv::StatusCode::TIMEOUT, "wait timeout");
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::Timeout());
+    state->waitStatus = kv::Status::OK();
+    EXPECT_TRUE(store.Wait(load.Value()).Success());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
+    auto dump = store.Dump(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(dump.HasValue());
+    state->taskStatus = kv::Status::Error(kv::StatusCode::PARTIAL_FAILED, "partial failure");
+    EXPECT_TRUE(store.Wait(dump.Value()).Failure());
+    Read();
+    EXPECT_EQ(Count("asu_wait_requests_total"), 4);
+    EXPECT_EQ(Count("asu_wait_errors_total"), 3);
+    EXPECT_EQ(Count("asu_wait_timeouts_total"), 1);
+    EXPECT_EQ(Samples("asu_wait_duration_ms"), 4U);
+    EXPECT_EQ(Count("asu_load_submit_errors_total"), 0);
+    EXPECT_EQ(Count("asu_dump_submit_errors_total"), 0);
+    EXPECT_EQ(Count("asu_load_submitted_bytes_total"), kv::kAlignmentBytes);
+    EXPECT_EQ(Count("asu_dump_submitted_bytes_total"), kv::kAlignmentBytes);
+}
+
+TEST_F(AsuStoreMetricsTest, DisabledStoreDoesNotEmitNativeSamplesWithActiveCollector)
+{
+    UC::AsuStore::AsuStore disabled;
+    auto disabledState = UseFakeClient(disabled);
+    config.Set("enable_metrics", false);
+    ASSERT_TRUE(disabled.Setup(config).Success());
+    disabledState->queryStatus = kv::Status::Error(kv::StatusCode::TIMEOUT, "query timeout");
+    ASSERT_TRUE(disabled.Lookup(blocks.data(), blocks.size()).HasValue());
+    ASSERT_TRUE(disabled.LookupOnPrefix(blocks.data(), blocks.size()).HasValue());
+    ASSERT_TRUE(disabled.LookupOnReverse(blocks.data(), blocks.size()).HasValue());
+    auto load = disabled.Load(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(load.HasValue());
+    ASSERT_TRUE(disabled.Wait(load.Value()).Success());
+    EXPECT_FALSE(disabled.Dump(MakeTask(blocks[0], nullptr)).HasValue());
+    Read();
+    for (const auto& [name, value] : counters) { EXPECT_NE(name.find("asu_"), 0U) << name; }
+    for (const auto& [name, value] : histograms) { EXPECT_NE(name.find("asu_"), 0U) << name; }
+    // A different enabled instance still publishes through the same collector.
+    ASSERT_TRUE(store.Lookup(blocks.data(), blocks.size()).HasValue());
+    Read();
+    EXPECT_EQ(Count("asu_lookup_requests_total"), 1);
+}
+
+TEST(UCAsuStoreTest, DumpWrapsPrerequisiteEventInWaitCallback)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a2b2c3d4e5f6789012345678901234ab");
+    auto task = MakeTask(block, buffer.data());
+    task.prerequisiteHandle = 123;
+    auto dump = store.Dump(std::move(task));
+    ASSERT_TRUE(dump.HasValue());
+    EXPECT_TRUE(store.Wait(dump.Value()).Success());
+    EXPECT_TRUE(static_cast<bool>(state->lastStoreWait));
+}
+
+TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Failure());
+}
+
+TEST(UCAsuStoreTest, ParsesKvNamespaces)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        EXPECT_EQ(state->initConfigs.back().kvNsIds, std::vector<std::uint32_t>{100U});
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), "100");
+    }
+
+    const std::vector<std::pair<std::string, std::uint32_t>> cases{
+        {"fa", 100U},
+        {"wa", 101U}
+    };
+    for (const auto& [suffix, expected] : cases) {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("unique_id", std::string{"engine_fawa_"} + suffix);
+        config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        EXPECT_EQ(state->initConfigs.back().kvNsIds, (std::vector<std::uint32_t>{100U, 101U}));
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), std::to_string(expected));
+    }
+}
+
+TEST(UCAsuStoreTest, PropagatesWaitTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{321});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().waitTimeoutMs, 321);
+
+    auto asuClientConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuClientConfig.defaultWaitTimeoutMs, 321);
+    EXPECT_EQ(asuClientConfig.timeoutMs, 321);
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.timeoutMs, 321);
+}
+
+TEST(UCAsuStoreTest, RejectsZeroWaitTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{0});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, ParsesQueryTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{321});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().queryTimeoutMs, 321);
+}
+
+TEST(UCAsuStoreTest, RejectsZeroQueryTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{0});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_max_error_count", std::uint64_t{7});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().maxErrorCount, std::uint64_t{7});
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.maxErrorCount, std::uint32_t{7});
+}
+
+TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{17});
+    config.Set("asu_use_batch_io_for_single_key", false);
+    config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{23});
+    config.SetNumber("asu_completion_poll_spin_limit", std::uint64_t{19});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
+    EXPECT_FALSE(asuConfig.useBatchIoForSingleKey);
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
+    EXPECT_EQ(asuConfig.transportConfigs.front().completionPollSpinLimit, std::size_t{19});
+}
+
+TEST(UCAsuStoreTest, FakeProviderPreservesConfiguredSc)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_sc", false);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("sc"), "false");
+}
+
+TEST(UCAsuStoreTest, PropagatesFakeBackendWorkerThreads)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.SetNumber("asu_fake_backend_worker_threads", std::uint64_t{8});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.worker_threads"), "8");
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "false");
+}
+
+TEST(UCAsuStoreTest, ConvertsFakeBackendLatencyToMicroseconds)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.SetNumber("asu_fake_backend_latency_ms", std::uint64_t{2});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.latency_us"), "2000");
+}
+
+TEST(UCAsuStoreTest, PropagatesFakeBackendCompleteImmediately)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_fake_backend_complete_immediately", true);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "true");
+}
+
+TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsUnexpectedKvNamespaceCount)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuIds)
+{
+    for (const auto& asuIds : std::vector<std::vector<ssize_t>>{
+             {-1},
+             {1001, 1001}
+    }) {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", asuIds);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuPorts)
+{
+    for (auto port : {ssize_t{-1}, ssize_t{0}, ssize_t{65536}}) {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+        config.Set("asu_ports", std::vector<ssize_t>{port});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsMismatchedAsuPorts)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, ParsesSharedProviderMode)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
+    config.SetNumber("asu_shared_provider", 1);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().sharedProviderMode, 1);
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuConfig.sharedProviderMode, kv::SharedProviderMode::SHARED);
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{2});
+    EXPECT_EQ(asuConfig.transportConfigs[0].nodeId, kv::NodeId{1001});
+    EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].ip, "127.0.0.1");
+    EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].port, std::uint16_t{12345});
+    EXPECT_EQ(asuConfig.transportConfigs[1].nodeId, kv::NodeId{1002});
+    EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].ip, "127.0.0.2");
+    EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].port, std::uint16_t{12346});
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidSharedProviderMode)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_shared_provider", 2);
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsAsuIntegerOverflow)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count", std::uint64_t{0});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_client_max_inflight_tasks",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_transport_max_inflight_tasks",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("block_size",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, SchedulerTransportsUseDeviceZero)
+{
+    const std::vector<std::string> backends{"aicpu", "aiv", "fake"};
+    for (const auto& backend : backends) {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", backend);
+        config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+        config.Set("asu_aicpu_hcomm_protocol", std::string{"ubg"});
+        config.Set("asu_aicpu_local_addrs", std::vector<std::string>{"127.0.0.2"});
+        config.SetNumber("device_id", -1);
+
+        ASSERT_TRUE(store.Setup(config).Success());
+        ASSERT_FALSE(state->initConfigs.empty());
+        EXPECT_EQ(state->initConfigs.back().deviceId, -1);
+        const auto transportConfig =
+            UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+        EXPECT_EQ(transportConfig.deviceId, 0);
+    }
+}
+
+TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
+{
+    UC::AsuStore::Config config;
+    config.asuIds = {1001, 1002};
+    config.kvNsIds = {100};
+    config.deviceId = 3;
+    config.localIp = "192.168.0.3";
+    config.transProviderType = kv::TransProviderType::FAKE;
+
+    for (std::size_t index = 0; index < config.asuIds.size(); ++index) {
+        auto transportConfig = UC::AsuStore::BuildTransportConfig(config, index);
+        EXPECT_EQ(transportConfig.deviceId, 3);
+        EXPECT_EQ(transportConfig.attrs.at("localIp"), "192.168.0.3");
+        auto iter = transportConfig.attrs.find("kv_ns_id");
+        ASSERT_NE(iter, transportConfig.attrs.end());
+        EXPECT_EQ(iter->second, "100");
+    }
+}
+
+TEST(UCAsuStoreTest, SchedulerUsesNegativeDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", -1);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, -1);
+}
+
+TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 2);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, 2);
+    EXPECT_EQ(state->registrationCalls, std::size_t{0});
+}
+
+TEST(UCAsuStoreTest, TransportModeSmoke)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+    ExpectLoadDumpSmoke(store, block, buffer.data());
+}
+
+TEST(UCAsuStoreTest, ClientModeSmoke)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("b1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+    ExpectLoadDumpSmoke(store, block, buffer.data());
+}
+
+TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", -1);
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+}
+
+TEST(UCAsuStoreTest, SchedulerSkipsTransferLayoutValidation)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", -1);
+    config.Set("tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{16});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, -1);
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0], std::size_t{16});
+}
+
+TEST(UCAsuStoreTest, WorkerRequiresTensorSizes)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 0);
+    config.SetNumber("tensor_size", std::size_t{0});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Failure());
+}
+TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a2b2c3d4e5f6789012345678901234ab");
+    auto dump = store.Dump(MakeTask(block, buffer.data()));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+
+    ASSERT_EQ(state->lastStoreEntries.size(), std::size_t{1});
+    ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
+    EXPECT_NE(state->lastStoreEntries[0].buffer.handle, kv::kInvalidMRHandle);
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+}
+
+TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTask)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
+    config.SetNumber("shard_size", std::size_t{128});
+    config.SetNumber("block_size", std::size_t{128});
+    std::array<std::byte, kv::kAlignmentBytes * 2> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
+
+    UC::Detail::TaskDesc task;
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c2b2c3d4e5f6789012345678901234ab");
+    task.push_back(UC::Detail::Shard{
+        block, 0, {buffer.data(), buffer.data() + kv::kAlignmentBytes}
+    });
+
+    auto dump = store.Dump(std::move(task));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
+    ASSERT_EQ(state->lastStoreEntries.size(), std::size_t{2});
+    const auto sharedHandle = state->lastStoreEntries[0].buffer.handle;
+    EXPECT_NE(sharedHandle, kv::kInvalidMRHandle);
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.handle, sharedHandle);
+
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+}
+
+TEST(UCAsuStoreTest, ResolvesEachEntryToItsContainingPersistentRegion)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
+    config.SetNumber("shard_size", std::size_t{128});
+    config.SetNumber("block_size", std::size_t{128});
+    std::array<std::byte, kv::kAlignmentBytes> firstBuffer{};
+    std::array<std::byte, kv::kAlignmentBytes> secondBuffer{};
+    RegisterPersistentRanges(config, {
+                                         {firstBuffer.data(),  firstBuffer.size() },
+                                         {secondBuffer.data(), secondBuffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+
+    UC::Detail::TaskDesc task;
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("d2b2c3d4e5f6789012345678901234ab");
+    task.push_back(UC::Detail::Shard{
+        block, 0, {firstBuffer.data(), secondBuffer.data()}
+    });
+
+    auto dump = store.Dump(std::move(task));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->registeredRegions.size(), std::size_t{2});
+    ASSERT_EQ(state->lastStoreEntries.size(), std::size_t{2});
+    EXPECT_NE(state->lastStoreEntries[0].buffer.handle, state->lastStoreEntries[1].buffer.handle);
+}
+
+TEST(UCAsuStoreTest, LookupOnPrefixReturnsLastContiguousHit)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    std::vector<UC::Detail::BlockId> blocks{
+        UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("f1b2c3d4e5f6789012345678901234ab"),
+    };
+    auto dump = store.Dump(MakeTask(blocks[0], buffer.data()));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+
+    auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(prefix.HasValue()) << prefix.Error().ToString();
+    ASSERT_EQ(prefix.Value(), 0);
+}
+
+TEST(UCAsuStoreTest, LookupOnReverseReturnsRightmostHit)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    std::vector<UC::Detail::BlockId> blocks{
+        UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("f1b2c3d4e5f6789012345678901234ab"),
+        UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab"),
+    };
+    auto dump = store.Dump(MakeTask(blocks[1], buffer.data()));
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_TRUE(store.Wait(dump.Value()).Success());
+
+    auto reverse = store.LookupOnReverse(blocks.data(), blocks.size());
+    ASSERT_TRUE(reverse.HasValue()) << reverse.Error().ToString();
+    ASSERT_EQ(reverse.Value(), 1);
+}
+
+TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
+{
+    constexpr const char* kConfigPath = "asu_store_client_config_path_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "clientId=asu-store-test\n";
+        configFile << "transport.asuIds=1001,1002\n";
+        configFile << "wait_timeout_ms=1000\n";
+    }
+
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_trans_provider_backend", std::string{"aicpu"});
+    config.Set("asu_config_path", std::string{kConfigPath});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    auto setupStatus = store.Setup(config);
+    std::remove(kConfigPath);
+    ASSERT_TRUE(setupStatus.Success()) << setupStatus.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+    ExpectLoadDumpSmoke(store, block, buffer.data());
+}
+
+TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
+{
+    constexpr const char* kConfigPath = "asu_store_transport_config_path_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "nodeId=1001\n";
+        configFile << "nodeName=asu-store-test\n";
+        configFile << "endpoint=127.0.0.1:12345:tcp\n";
+        configFile << "maxInflightTasks=16\n";
+    }
+
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_trans_provider_backend", std::string{"aicpu"});
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_config_path", std::string{kConfigPath});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    auto setupStatus = store.Setup(config);
+    std::remove(kConfigPath);
+    ASSERT_TRUE(setupStatus.Success()) << setupStatus.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("d1b2c3d4e5f6789012345678901234ab");
+    ExpectLookupMiss(store, block);
+    ExpectLoadDumpSmoke(store, block, buffer.data());
+}
+
+TEST(UCAsuStoreTest, RejectsOddMultiTensorLayout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{16, 16, 16});
+    config.SetNumber("shard_size", std::size_t{48});
+    config.SetNumber("block_size", std::size_t{48});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Failure());
+}
+
+TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 120, 140});
+    config.SetNumber("shard_size", std::size_t{360});
+    config.SetNumber("block_size", std::size_t{360});
+
+    std::array<std::byte, kv::kAlignmentBytes> first{};
+    std::array<std::byte, kv::kAlignmentBytes> second{};
+    std::array<std::byte, kv::kAlignmentBytes> third{};
+    RegisterPersistentRanges(config, {
+                                         {first.data(),  first.size() },
+                                         {second.data(), second.size()},
+                                         {third.data(),  third.size() }
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{3});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0], std::size_t{512});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[1], std::size_t{512});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[2], std::size_t{512});
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("d1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 0, {first.data(), second.data(), third.data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 3);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{0});
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[1].offset, std::uint32_t{512});
+    EXPECT_EQ(state->lastStoreEntries[2].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[2].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, UsesHmaTensorOffsetsInConnectorOrder)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"hma"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 300});
+    config.SetNumber("shard_size", std::size_t{600});
+    config.SetNumber("block_size", std::size_t{600});
+
+    std::array<std::array<std::byte, 512>, 3> buffers{};
+    RegisterPersistentRanges(config, {
+                                         {buffers[0].data(), buffers[0].size()},
+                                         {buffers[1].data(), buffers[1].size()},
+                                         {buffers[2].data(), buffers[2].size()}
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("f1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 0, {buffers[0].data(), buffers[1].data(), buffers[2].data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 3);
+    const std::array<std::uint32_t, 3> expectedOffsets{0, 512, 1024};
+    for (std::size_t index = 0; index < expectedOffsets.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index].data()));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, std::size_t{512});
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
+}
+
+TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{128});
+    config.SetNumber("shard_size", std::size_t{128});
+    config.SetNumber("block_size", std::size_t{384});
+
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{block, 2, {buffer.data()}});
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 1);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(buffer.data()));
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
+{
+    constexpr std::size_t shardIndex = 2;
+    constexpr std::size_t alignment = kv::kAlignmentBytes;
+    constexpr std::size_t alignedShardSize = alignment * 2;
+
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{128, 64});
+    config.SetNumber("shard_size", std::size_t{192});
+    config.SetNumber("block_size", std::size_t{576});
+
+    std::array<std::byte, alignment> mainCache{};
+    std::array<std::byte, alignment> ropeCache{};
+    const std::array<void*, 2> buffers{mainCache.data(), ropeCache.data()};
+    RegisterPersistentRanges(
+        config, {
+                    {mainCache.data(), mainCache.size()},
+                    {ropeCache.data(), ropeCache.size()}
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, shardIndex, {buffers[0], buffers[1]}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), buffers.size());
+
+    const std::array<std::uint32_t, 2> expectedOffsets{
+        shardIndex * alignedShardSize,
+        shardIndex * alignedShardSize + alignment,
+    };
+    for (std::size_t index = 0; index < buffers.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index]));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, alignment);
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
+}
+
+TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("tensor_size", std::size_t{100});
+    config.SetNumber("shard_size", std::size_t{100});
+    config.SetNumber("block_size", std::size_t{300});
+
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    ASSERT_FALSE(state->initConfigs.empty());
+    ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.back().tensorSizes[0],
+              static_cast<std::size_t>(kv::kAlignmentBytes));
+    EXPECT_EQ(state->initConfigs.back().shardSize, static_cast<std::size_t>(kv::kAlignmentBytes));
+    EXPECT_EQ(state->initConfigs.back().blockSize,
+              static_cast<std::size_t>(kv::kAlignmentBytes) * 3);
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("abb2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{block, 2, {buffer.data()}});
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_FALSE(state->lastStoreEntries.empty());
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size,
+              static_cast<std::size_t>(kv::kAlignmentBytes));
+    EXPECT_EQ(state->lastStoreEntries[0].offset, kv::kAlignmentBytes * 2);
+}
+
+TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("block_size", std::size_t{128});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+}
+
+TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200});
+    config.SetNumber("shard_size", std::size_t{300});
+    config.SetNumber("block_size", std::size_t{900});
+
+    std::array<std::byte, kv::kAlignmentBytes> key{};
+    std::array<std::byte, kv::kAlignmentBytes> value{};
+    RegisterPersistentRanges(config, {
+                                         {key.data(),   key.size()  },
+                                         {value.data(), value.size()}
+    });
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("b1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, 2, {key.data(), value.data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 2);
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(key.data()));
+    EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{1024});
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.addr,
+              reinterpret_cast<std::uint64_t>(value.data()));
+    EXPECT_EQ(state->lastStoreEntries[1].buffer.region.size, std::size_t{512});
+    EXPECT_EQ(state->lastStoreEntries[1].offset, std::uint32_t{2560});
+}
+
+TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"gqa"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{100, 200, 100, 200, 100, 200});
+    config.SetNumber("shard_size", std::size_t{900});
+    config.SetNumber("block_size", std::size_t{900});
+
+    std::array<std::array<std::byte, kv::kAlignmentBytes>, 6> buffers{};
+    std::vector<std::pair<void*, std::size_t>> ranges;
+    for (auto& buffer : buffers) { ranges.emplace_back(buffer.data(), buffer.size()); }
+    RegisterPersistentRanges(config, ranges);
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block,
+        0,
+        {buffers[0].data(), buffers[1].data(), buffers[2].data(), buffers[3].data(),
+          buffers[4].data(), buffers[5].data()}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), 6);
+    const std::array<std::uint32_t, 6> expectedOffsets{0, 1536, 512, 2048, 1024, 2560};
+    for (std::size_t index = 0; index < expectedOffsets.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index].data()));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, std::size_t{512});
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
+}
+
+TEST(UCAsuStoreTest, RegistersKvCacheRegions)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 0);
+    config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+    config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+    ASSERT_TRUE(store.Setup(config).Success());
+    EXPECT_EQ(state->registrationCalls, std::size_t{1});
+    ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
+    EXPECT_EQ(state->registeredRegions[0].addr, std::uint64_t{0x1000});
+    EXPECT_EQ(state->registeredRegions[0].size, std::uint64_t{1024});
+}
+
+TEST(UCAsuStoreTest, SchedulerSkipsKvCacheRegistration)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", -1);
+    config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+    config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+    ASSERT_TRUE(store.Setup(config).Success());
+    EXPECT_EQ(state->registrationCalls, std::size_t{0});
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidKvCacheConfigBeforeClientInit)
+{
+    const std::vector<std::pair<std::vector<ssize_t>, std::vector<ssize_t>>> invalid{
+        {{0x1000}, {}    },
+        {{},       {1024}},
+        {{0},      {1024}},
+        {{0x1000}, {0}   },
+        {{-1},     {1024}},
+        {{0x1000}, {-1}  }
+    };
+    for (const auto& [addrs, sizes] : invalid) {
+        UC::AsuStore::AsuStore store;
+        auto state = UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("device_id", 0);
+        config.Set("gpu_kv_buffer_addrs", addrs);
+        config.Set("gpu_kv_buffer_sizes", sizes);
+        EXPECT_TRUE(store.Setup(config).Failure());
+        EXPECT_TRUE(state->initConfigs.empty());
+        EXPECT_EQ(state->registrationCalls, std::size_t{0});
+    }
+}
+
+namespace {
+
+// Re-exec each lifecycle scenario to isolate process-wide backend ownership.
+// This also permits shuffled/repeated runs.
+class UCAsuMetricsDeathTest : public testing::Test {
+protected:
+    void SetUp() override { GTEST_FLAG_SET(death_test_style, "threadsafe"); }
+};
+
+void RunMetricsChild(const std::function<void()>& scenario)
+{
+    EXPECT_FALSE(kv::metrics::IsEnabled());
+    UC::Metrics::SetUp();
+    scenario();
+    _exit(testing::Test::HasFailure() ? 1 : 0);
+}
+
+UC::Detail::Dictionary MakeMetricsConfig()
+{
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    return config;
+}
+
+void ExpectMetricsRoute(double value)
+{
+    UC::Metrics::CreateStats("asu_lifecycle_counter", "counter");
+    kv::metrics::CachedMetric metric{"asu_lifecycle_counter"};
+    kv::metrics::UpdateStats(metric, value);
+    const auto counters = std::get<0>(UC::Metrics::GetAllStatsAndClear());
+    ASSERT_EQ(counters.count(metric.Name()), 1U);
+    EXPECT_DOUBLE_EQ(counters.at(metric.Name()), value);
+}
+
+class RecordingMetricsBackend final : public kv::metrics::KvMetricsBackend {
+public:
+    void UpdateStats(kv::metrics::CachedMetric&, double value) noexcept override { total += value; }
+    void UpdateStats(const kv::metrics::MetricUpdate*, std::size_t) noexcept override {}
+    double total{0.0};
+};
+
+}  // namespace
+
+TEST_F(UCAsuMetricsDeathTest, DisabledStoreDoesNotInstallBackend)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    UC::AsuStore::AsuStore store;
+                    UseFakeClient(store);
+                    auto config = MakeMetricsConfig();
+                    config.Set("enable_metrics", false);
+                    ASSERT_TRUE(store.Setup(config).Success());
+                    EXPECT_FALSE(kv::metrics::IsEnabled());
+                    UC::Metrics::CreateStats("disabled_counter", "counter");
+                    kv::metrics::CachedMetric metric{"disabled_counter"};
+                    kv::metrics::UpdateStats(metric, 1.0);
+                    EXPECT_EQ(std::get<0>(UC::Metrics::GetAllStatsAndClear()).count(metric.Name()),
+                              0U);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, DefaultEnablementSurvivesMultipleStoresAndRecreation)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto config = MakeMetricsConfig();
+                    {
+                        UC::AsuStore::AsuStore first;
+                        UseFakeClient(first);
+                        ASSERT_TRUE(first.Setup(config).Success());
+                        ASSERT_TRUE(kv::metrics::IsEnabled());
+                        {
+                            UC::AsuStore::AsuStore second;
+                            UseFakeClient(second);
+                            ASSERT_TRUE(second.Setup(config).Success());
+                        }
+                        ExpectMetricsRoute(2.0);
+                    }
+                    EXPECT_TRUE(kv::metrics::IsEnabled());
+                    UC::AsuStore::AsuStore recreated;
+                    UseFakeClient(recreated);
+                    ASSERT_TRUE(recreated.Setup(config).Success());
+                    ExpectMetricsRoute(3.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, ExplicitEnablementInstallsBeforeClientCreation)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    UC::AsuStore::AsuStore store;
+                    auto state = std::make_shared<FakeKvClientState>();
+                    store.SetClientFactory([state](const UC::AsuStore::Config&) {
+                        EXPECT_TRUE(kv::metrics::IsEnabled());
+                        return std::make_unique<FakeKvClient>(state);
+                    });
+                    auto config = MakeMetricsConfig();
+                    config.Set("enable_metrics", true);
+                    ASSERT_TRUE(store.Setup(config).Success());
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
+                    ExpectMetricsRoute(4.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, DisabledStorePreservesExistingBackend)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto backend = std::make_shared<RecordingMetricsBackend>();
+                    ASSERT_TRUE(kv::metrics::InstallBackend(backend));
+                    {
+                        UC::AsuStore::AsuStore store;
+                        UseFakeClient(store);
+                        auto config = MakeMetricsConfig();
+                        config.Set("enable_metrics", false);
+                        ASSERT_TRUE(store.Setup(config).Success());
+                    }
+                    kv::metrics::CachedMetric metric{"existing_backend"};
+                    kv::metrics::UpdateStats(metric, 7.0);
+                    EXPECT_DOUBLE_EQ(backend->total, 7.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, FailedClientSetupRetainsBackendForLaterStore)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    for (const bool failInit : {true, false}) {
+                        UC::AsuStore::AsuStore store;
+                        auto state = UseFakeClient(store);
+                        state->failInit = failInit;
+                        state->failRegistration = !failInit;
+                        auto config = MakeMetricsConfig();
+                        config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+                        config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+                        ASSERT_TRUE(store.Setup(config).Failure());
+                        EXPECT_TRUE(kv::metrics::IsEnabled());
+                    }
+                    UC::AsuStore::AsuStore later;
+                    UseFakeClient(later);
+                    ASSERT_TRUE(later.Setup(MakeMetricsConfig()).Success());
+                    ExpectMetricsRoute(5.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, BackendConflictDoesNotBlockStoreAndLaterSetupRetries)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    auto backend = std::make_shared<RecordingMetricsBackend>();
+                    ASSERT_TRUE(kv::metrics::InstallBackend(backend));
+                    {
+                        UC::AsuStore::AsuStore store;
+                        const auto state = UseFakeClient(store);
+                        ASSERT_TRUE(store.Setup(MakeMetricsConfig()).Success());
+                        ASSERT_EQ(state->initConfigs.size(), 1U);
+                        const auto block = UC::Test::Detail::TypesHelper::MakeBlockId(
+                            "a2b2c3d4e5f6789012345678901234ab");
+                        ExpectLookupMiss(store, block);
+                    }
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
+                    kv::metrics::CachedMetric metric{"existing_backend"};
+                    kv::metrics::UpdateStats(metric, 9.0);
+                    EXPECT_DOUBLE_EQ(backend->total, 9.0);
+                    // The conflicting backend has stopped all its writers.
+                    kv::metrics::Shutdown();
+                    UC::AsuStore::AsuStore recovered;
+                    UseFakeClient(recovered);
+                    ASSERT_TRUE(recovered.Setup(MakeMetricsConfig()).Success());
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
+                    ExpectMetricsRoute(6.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST_F(UCAsuMetricsDeathTest, StoreRecreationRestoresMetricsAfterQuiescentShutdown)
+{
+    ASSERT_EXIT(RunMetricsChild([] {
+                    {
+                        UC::AsuStore::AsuStore first;
+                        UseFakeClient(first);
+                        ASSERT_TRUE(first.Setup(MakeMetricsConfig()).Success());
+                    }
+                    UC::Metrics::CreateStats("reused_binding", "counter");
+                    kv::metrics::CachedMetric metric{"reused_binding"};
+                    kv::metrics::UpdateStats(metric, 2.0);
+                    kv::metrics::Shutdown();
+                    EXPECT_FALSE(kv::metrics::IsEnabled());
+                    UC::AsuStore::AsuStore recreated;
+                    UseFakeClient(recreated);
+                    ASSERT_TRUE(recreated.Setup(MakeMetricsConfig()).Success());
+                    kv::metrics::EnsureUcmKvMetricsInstalled();
+                    kv::metrics::UpdateStats(metric, 3.0);
+                    EXPECT_DOUBLE_EQ(
+                        std::get<0>(UC::Metrics::GetAllStatsAndClear()).at("reused_binding"), 5.0);
+                }),
+                testing::ExitedWithCode(0), "");
+}
+
+TEST(UCAsuStoreTest, RegistrationFailureShutsDownClient)
+{
+    for (const bool missingHandle : {false, true}) {
+        auto state = std::make_shared<FakeKvClientState>();
+        {
+            UC::AsuStore::AsuStore store;
+            state = UseFakeClient(store);
+            state->failRegistration = !missingHandle;
+            state->omitRegisteredHandle = missingHandle;
+            auto config = MakeBaseConfig();
+            config.Set("asu_ids", std::vector<ssize_t>{1001});
+            config.SetNumber("device_id", 0);
+            config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+            config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+            EXPECT_TRUE(store.Setup(config).Failure());
+            EXPECT_EQ(state->registrationCalls, std::size_t{1});
+            EXPECT_EQ(state->shutdownCalls, std::size_t{1});
+        }
+        EXPECT_EQ(state->shutdownCalls, std::size_t{1});
+    }
+}

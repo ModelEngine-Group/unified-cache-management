@@ -1,0 +1,393 @@
+"""Single-image PR resolution through Registry mirror Builders."""
+
+from __future__ import annotations
+
+import copy
+import importlib
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+RELEASE_ROOT = ROOT / ".github" / "release"
+TAG_FIXTURE = RELEASE_ROOT / "tests" / "fixtures" / "catalog-registry.json"
+sys.path.insert(0, str(RELEASE_ROOT))
+
+builders = importlib.import_module("ucm_release.builders")
+planner = importlib.import_module("ucm_release.plan")
+serialization = importlib.import_module("ucm_release.serialization")
+policy = importlib.import_module("ucm_release.policy")
+pr = importlib.import_module("ucm_release.pr")
+upstream = importlib.import_module("ucm_release.upstream")
+
+
+def _fixture_policy():
+    resolved = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override="0.7.60rc1",
+    )
+    selectors = {
+        "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
+    }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
+    resolved["runtime_selectors"] = copy.deepcopy(selectors)
+    for product in resolved["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
+    return resolved
+
+
+def _inputs():
+    formal = _fixture_policy()
+    fixture = serialization.load_json(TAG_FIXTURE)
+    selection = upstream.resolve_upstreams(
+        formal,
+        candidates=upstream.resolve_runtime_candidates(formal, tag_fixture=fixture),
+        runtime_probe=fixture["runtime_probe"],
+        tag_fixture=fixture,
+    )
+    catalog = builders.catalog_from_builds(
+        selection["wheel_builds"], owner="release-org", formal_policy=formal
+    )
+    return formal, fixture, selection, catalog
+
+
+def _cuda_probe(*, dual_arch: bool = False) -> dict[str, object]:
+    probes = [
+        item
+        for item in _inputs()[1]["runtime_probe"]["probes"]
+        if item["product_id"] == "vllm"
+    ]
+    return {
+        "kind": "ucm-runtime-probe",
+        "schema_version": 2,
+        "probes": probes if dual_arch else probes[:1],
+    }
+
+
+def _ascend_probe() -> dict[str, object]:
+    probe = next(
+        item
+        for item in _inputs()[1]["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    return {
+        "kind": "ucm-runtime-probe",
+        "schema_version": 2,
+        "probes": [probe],
+    }
+
+
+def _inventory(catalog: dict[str, object], ids: set[str]) -> dict[str, object]:
+    return {
+        "kind": "ucm-builder-registry",
+        "schema_version": 1,
+        "builders": [
+            {
+                **item,
+                "created": "2026-08-24T00:00:00Z",
+                "checked": True,
+            }
+            for item in catalog["builders"]
+            if item["id"] in ids
+        ],
+    }
+
+
+def _finalized_catalog(catalog: dict[str, object]) -> dict[str, object]:
+    observations = {
+        item["id"]: {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": builders.builder_labels(item)},
+            },
+        }
+        for index, item in enumerate(catalog["builders"])
+    }
+    return builders.finalize_catalog(catalog, observations)
+
+
+def _all_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in _all_keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _all_keys(item)}
+    return set()
+
+
+def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
+    formal, _fixture, _selection, catalog = _inputs()
+    result = pr.resolve_pr_request(
+        formal,
+        _cuda_probe(),
+        _inventory(catalog, {"cu129-cp312-amd64"}),
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=100,
+        raw_build_resolver=lambda _probes: pytest.fail(
+            "CUDA checked Builder reuse must not resolve raw sources"
+        ),
+    )
+
+    assert result["ok"] is True
+    build = result["selection"]["wheel_builds"][0]
+    assert build["sync_mode"] == "mirror"
+    assert result["selection"]["runtimes"][0]["channel"] == "pinned"
+    assert result["selection"]["runtimes"][0]["target_tag"].startswith(
+        "release-org-pr-30-supermarioyl-run-100-"
+    )
+    assert not {
+        "source_repository",
+        "source_ref",
+        "source_commit",
+        "mooncake_version",
+    } & _all_keys(result)
+
+
+@pytest.mark.parametrize(
+    "stale_field",
+    [
+        None,
+        "source_image",
+        "source_image_digest",
+        "recipe_revision",
+        "accelerator_runtime",
+    ],
+)
+def test_ascend_cache_requires_current_source_and_runtime(
+    stale_field: str | None,
+) -> None:
+    formal, fixture, selection, _catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+    catalog = builders.catalog_from_builds(
+        [raw], owner="release-org", formal_policy=formal
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    if stale_field is not None:
+        stale_values = {
+            "source_image": raw["source_image"].replace("beta.2", "beta.1"),
+            "source_image_digest": "sha256:" + "f" * 64,
+            "recipe_revision": "ffffffffffff",
+            "accelerator_runtime": "cann-9.0.2",
+        }
+        inventory["builders"][0][stale_field] = stale_values[stale_field]
+    probe = next(
+        item
+        for item in fixture["runtime_probe"]["probes"]
+        if item["backend"] == "cann-a2"
+    )
+    calls = []
+
+    def raw_resolver(probes):
+        calls.append(probes)
+        return [raw]
+
+    result = pr.resolve_pr_request(
+        formal,
+        {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": [probe]},
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=106,
+        raw_build_resolver=raw_resolver,
+    )
+
+    assert result["ok"] is True
+    assert calls == [[probe]]
+    assert result["selection"]["wheel_builds"] == [raw]
+    match = result["builder_matches"]["matches"][0]
+    assert ("builder_record" in match) == (stale_field is None)
+
+
+def test_ascend_stale_checked_builder_does_not_mask_newer_suffix_source() -> None:
+    formal, _fixture, selection, catalog = _inputs()
+    raw = copy.deepcopy(
+        next(item for item in selection["wheel_builds"] if item["backend"] == "cann-a2")
+    )
+    inventory = _inventory(catalog, {raw["id"]})
+    inventory["builders"][0][
+        "source_image"
+    ] = "quay.io/ascend/manylinux:9.0.1-beta.1-910b-manylinux_2_34-py3.12"
+    raw["source_image"] = (
+        "quay.io/ascend/manylinux:9.0.1-beta.2-910b-manylinux_2_34-py3.12"
+    )
+
+    result = pr.resolve_pr_request(
+        formal,
+        _ascend_probe(),
+        inventory,
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=108,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert "builder_record" not in result["builder_matches"]["matches"][0]
+
+
+def test_missing_registry_builder_resolves_one_raw_mirror_for_sync() -> None:
+    formal, _fixture, selection, _catalog = _inputs()
+    raw = next(
+        item for item in selection["wheel_builds"] if item["id"] == "cu129-cp312-amd64"
+    )
+    result = pr.resolve_pr_request(
+        formal,
+        _cuda_probe(),
+        {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=101,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    assert result["selection"]["wheel_builds"] == [raw]
+    assert result["builder_catalog"]["builders"][0]["sync_mode"] == "mirror"
+    sync = builders.compute_sync_plan(result["builder_catalog"], {})
+    assert len(sync["builders"]) == 1
+
+
+def test_dual_arch_tag_expands_both_members_and_one_index() -> None:
+    formal, _fixture, _selection, catalog = _inputs()
+    result = pr.resolve_pr_request(
+        formal,
+        _cuda_probe(dual_arch=True),
+        _inventory(
+            catalog,
+            {"cu129-cp312-amd64", "cu129-cp312-arm64"},
+        ),
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=102,
+    )
+
+    assert result["ok"] is True
+    assert len(result["publication"]["member_matrix"]["include"]) == 2
+    assert len(result["publication"]["index_matrix"]["include"]) == 1
+    assert set(result["selection"]["runtimes"][0]["wheel_build_ids"]) == {
+        "amd64",
+        "arm64",
+    }
+
+
+def test_single_arch_publication_and_compact_plan_share_the_bare_tag() -> None:
+    formal, _fixture, _selection, catalog = _inputs()
+    result = pr.resolve_pr_request(
+        formal,
+        _cuda_probe(),
+        _inventory(catalog, {"cu129-cp312-amd64"}),
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=105,
+    )
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=result["selection"],
+        builder_catalog=_finalized_catalog(result["builder_catalog"]),
+        route="pr",
+    )
+
+    expected = plan["families"][0]["published_reference"]
+    assert result["publication"]["families"][0]["final_refs"] == [expected]
+    assert result["publication"]["member_matrix"]["include"][0]["target_ref"] == (
+        expected
+    )
+
+
+def test_explicit_sglang_main_image_uses_pinned_channel() -> None:
+    formal, _fixture, selection, _catalog = _inputs()
+    raw = next(
+        item for item in selection["wheel_builds"] if item["backend"] == "cann-a2"
+    )
+    probe_document = _ascend_probe()
+    probe = probe_document["probes"][0]
+    repository = "docker.io/lmsysorg/sglang"
+    tag = "main-cann9.0.1-910b"
+    probe.update(
+        product_id="sglang",
+        repository=repository,
+        tag=tag,
+        runtime_ref=f"{repository}:{tag}",
+        target_repository="ghcr.io/release-org/sglang",
+        image_reference=f"{repository}@{probe['image_reference'].split('@', 1)[1]}",
+    )
+    result = pr.resolve_pr_request(
+        formal,
+        probe_document,
+        {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=109,
+        raw_build_resolver=lambda _probes: [raw],
+    )
+
+    assert result["ok"] is True
+    runtime = result["selection"]["runtimes"][0]
+    assert runtime["channel"] == "pinned"
+    assert runtime["runtime_tag"] == tag
+    assert runtime["member_references"][probe["cpu_arch"]] == probe["image_reference"]
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=result["selection"],
+        builder_catalog=_finalized_catalog(result["builder_catalog"]),
+        route="pr",
+    )
+    assert plan["families"][0]["published_reference"].startswith(
+        "ghcr.io/release-org/sglang:release-org-pr-30-supermarioyl-run-109-"
+    )
+
+
+def test_blocked_backend_stops_before_raw_builder_resolution(runtime_probe) -> None:
+    formal = _fixture_policy()
+    formal["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
+    )
+
+    def raw_resolver(_probes):
+        pytest.fail("Blocked backends must not resolve Builders")
+
+    result = pr.resolve_pr_request(
+        formal,
+        {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": [runtime_probe]},
+        {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
+        pr_number=30,
+        author="SuperMarioYL",
+        run_id=103,
+        raw_build_resolver=raw_resolver,
+    )
+
+    assert result["ok"] is False
+    assert result["problems"][0]["reason"] == "blocked-backend"
+    assert result["problems"][0]["detail"] == "Disabled by platform policy"
+
+
+def test_image_command_rejects_multiple_runtime_requests() -> None:
+    formal, fixture, _selection, _catalog = _inputs()
+    probes = (
+        fixture["runtime_probe"]["probes"][:1] + fixture["runtime_probe"]["probes"][2:3]
+    )
+
+    with pytest.raises(ValueError, match="exactly one Runtime image"):
+        pr.resolve_pr_request(
+            formal,
+            {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": probes},
+            {
+                "kind": "ucm-builder-registry",
+                "schema_version": 1,
+                "builders": [],
+            },
+            pr_number=30,
+            author="SuperMarioYL",
+            run_id=104,
+        )

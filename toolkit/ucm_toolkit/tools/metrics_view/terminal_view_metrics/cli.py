@@ -13,6 +13,7 @@ if __package__ in {None, ""}:
 
 from terminal_view_metrics.collector import collect_loop, scrape_urls
 from terminal_view_metrics.config import (
+    apply_config_param_overrides,
     list_preset_configs,
     load_config,
     parse_duration_seconds,
@@ -105,6 +106,7 @@ def _add_check_args(parser: argparse.ArgumentParser) -> None:
         help="Prometheus /metrics URL; can be repeated",
     )
     parser.add_argument("--config", default="metrics_lite")
+    _add_config_param_args(parser)
     parser.add_argument("--timeout", default="5s")
     parser.add_argument(
         "--tag",
@@ -120,6 +122,7 @@ def _add_check_args(parser: argparse.ArgumentParser) -> None:
 def _add_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=DEFAULT_DB)
     parser.add_argument("--config", default="metrics_lite")
+    _add_config_param_args(parser)
     parser.add_argument("--window", default="5m")
     parser.add_argument(
         "--aggr-by",
@@ -141,6 +144,16 @@ def _add_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=None)
 
 
+def _add_config_param_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config-param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a parameter declared by the selected config; can be repeated",
+    )
+
+
 def _build_worker_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     _add_collect_args(parser)
@@ -160,7 +173,10 @@ def _cmd_collect_worker(args: argparse.Namespace) -> int:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    config = load_config(resolve_config_path(args.config))
+    config = apply_config_param_overrides(
+        load_config(resolve_config_path(args.config)),
+        args.config_param,
+    )
     samples, failures = scrape_urls(args.url, parse_duration_seconds(args.timeout))
     if failures:
         for url, exc in failures:
@@ -277,7 +293,10 @@ def _cmd_list_configs(_args: argparse.Namespace) -> int:
 
 
 def _query_rows(args: argparse.Namespace):
-    config = load_config(resolve_config_path(args.config))
+    config = apply_config_param_overrides(
+        load_config(resolve_config_path(args.config)),
+        args.config_param,
+    )
     store = MetricsStore(args.db)
     try:
         return QueryEngine(store).query_config(

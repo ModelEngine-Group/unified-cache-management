@@ -21,9 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
+#include <cstdint>
 #include <fmt/ranges.h>
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "posix_file.h"
 #include "space_manager.h"
 #include "trans_manager.h"
 #include "ucmstore_v1.h"
@@ -48,10 +51,13 @@ public:
         if (s.Failure()) [[unlikely]] { return s; }
         transEnable_ = config.deviceId >= 0;
         if (transEnable_) {
-            s = transMgr_.Setup(config, spaceMgr_.GetLayout());
+            s = transMgr_.Setup(config, spaceMgr_.GetLayout(), spaceMgr_.GetBackendManager());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
+        UC_INFO("Set PosixStore::BackendIoTimeout to {}ms across {} backends.",
+                spaceMgr_.GetBackendManager()->IoTimeoutMs(),
+                spaceMgr_.GetBackendManager()->BackendCount());
         return Status::OK();
     }
     std::string Readme() const override { return "PosixStore"; }
@@ -79,14 +85,26 @@ public:
         RecordLookupHits(static_cast<size_t>(res.Value() + 1));
         return res;
     }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        RecordLookupQueries(num);
+        auto res = spaceMgr_.LookupOnReverse(blocks, num);
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num);
+            return res;
+        }
+        RecordLookupHits(res.Value() >= 0 ? 1 : 0);
+        return res;
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         spaceMgr_.Prefetch(blocks, num);
     }
+    Status CheckHealth() override { return spaceMgr_.GetBackendManager()->CheckHealth(); }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
+        auto res = transMgr_.Submit({TransTask::Type::LOAD, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
         }
@@ -95,7 +113,7 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
+        auto res = transMgr_.Submit({TransTask::Type::DUMP, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
         }
@@ -103,14 +121,16 @@ public:
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        auto res = transMgr_.GetIoEngine()->Check(taskId);
+        auto res = transMgr_.Check(taskId);
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
         return res;
     }
     Status Wait(Detail::TaskHandle taskId) override
     {
-        auto s = transMgr_.GetIoEngine()->Wait(taskId);
-        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        auto s = transMgr_.Wait(taskId);
+        if (s.Failure() && s != Status::StoreUnhealthy()) [[unlikely]] {
+            UC_ERROR("Failed({}) to wait task({}).", s, taskId);
+        }
         return s;
     }
 
@@ -131,12 +151,15 @@ private:
     {
         Config config;
         inConfig.Get("storage_backends", config.storageBackends);
+        inConfig.Get("store_health", config.backendHealth);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.GetNumber("tensor_size", config.tensorSize);
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.Get("posix_io_engine", config.ioEngine);
         inConfig.Get("io_direct", config.ioDirect);
+        inConfig.GetNumber("posix_aio_queue_depth", config.aioQueueDepth);
+        inConfig.GetNumber("posix_load_handle_cache_size", config.loadHandleCacheSize);
         inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
@@ -144,8 +167,11 @@ private:
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
         inConfig.GetNumber("timeout_ms", config.timeoutMs);
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
+        inConfig.Get("posix_hotness_enable", config.posixHotnessEnable);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
+        inConfig.Get("posix_gc_precise_mode", config.posixGcPreciseMode);
+        inConfig.Get("posix_gc_candidate_extra_percent", config.posixGcCandidateExtraPercent);
         inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);
         inConfig.GetNumber("posix_gc_check_interval_sec", config.posixGcCheckIntervalSec);
         inConfig.GetNumber("posix_capacity_gb", config.posixCapacityGb);
@@ -153,7 +179,23 @@ private:
         inConfig.GetNumber("posix_gc_max_recycle_count_per_shard",
                            config.posixGcMaxRecycleCountPerShard);
         inConfig.Get("posix_gc_shard_sample_ratio", config.posixGcShardSampleRatio);
+        inConfig.GetNumber("posix_gc_task_timeout_ms", config.posixGcTaskTimeoutMs);
+        inConfig.Get("posix_gc_cross_instance_lock", config.posixGcCrossInstanceLock);
+        inConfig.GetNumber("posix_gc_heartbeat_interval_sec", config.posixGcHeartbeatIntervalSec);
+        inConfig.GetNumber("posix_gc_stale_threshold_sec", config.posixGcStaleThresholdSec);
+        DeriveGcLeaseTimings(config);
         return config;
+    }
+    static void DeriveGcLeaseTimings(Config& config)
+    {
+        constexpr size_t kMinStaleSec = 60;
+        const auto interval = config.posixGcCheckIntervalSec;
+        if (config.posixGcHeartbeatIntervalSec == 0) {
+            config.posixGcHeartbeatIntervalSec = std::max<size_t>(1, interval / 4);
+        }
+        if (config.posixGcStaleThresholdSec == 0) {
+            config.posixGcStaleThresholdSec = std::max(interval * 2, kMinStaleSec);
+        }
     }
     Status CheckConfig(const Config& config)
     {
@@ -174,30 +216,23 @@ private:
                 return Status::InvalidParam("invalid cpu core({})", core);
             }
         }
-        if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
-        }
-        if (config.ioEngine == "aio") {
-            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
-                return Status::InvalidParam("invalid aio concurrency({},{})",
-                                            config.openConcurrency, config.commitConcurrency);
-            }
-        } else if (config.ioEngine == "psync") {
-            if (config.dataTransConcurrency == 0) {
-                return Status::InvalidParam("invalid psync concurrency({})",
-                                            config.dataTransConcurrency);
-            }
-        } else {
-            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
-        }
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             if (config.posixGcRecyclePercent <= 0 || config.posixGcRecyclePercent > 1.0) {
                 return Status::InvalidParam("invalid gc recycle percent({})",
                                             config.posixGcRecyclePercent);
+            }
+            if (config.posixGcPreciseMode) {
+                if (config.posixGcCandidateExtraPercent <= 0 ||
+                    config.posixGcCandidateExtraPercent >= 1.0) {
+                    return Status::InvalidParam("invalid gc candidate extra percent({})",
+                                                config.posixGcCandidateExtraPercent);
+                }
+                if (config.posixGcRecyclePercent + config.posixGcCandidateExtraPercent > 1.0) {
+                    return Status::InvalidParam(
+                        "gc recycle percent({}) plus candidate extra percent({}) must not exceed "
+                        "1.0",
+                        config.posixGcRecyclePercent, config.posixGcCandidateExtraPercent);
+                }
             }
             if (config.posixGcConcurrency == 0) {
                 return Status::InvalidParam("invalid gc concurrency({})",
@@ -220,6 +255,40 @@ private:
                 return Status::InvalidParam("invalid gc shard sample ratio({})",
                                             config.posixGcShardSampleRatio);
             }
+            constexpr size_t kMinGcTaskTimeoutMs = 1000;
+            if (config.posixGcTaskTimeoutMs != 0 &&
+                config.posixGcTaskTimeoutMs < kMinGcTaskTimeoutMs) {
+                return Status::InvalidParam(
+                    "invalid gc task timeout({}ms), use 0 to disable or at least {}ms",
+                    config.posixGcTaskTimeoutMs, kMinGcTaskTimeoutMs);
+            }
+            if (config.posixGcCrossInstanceLock) {
+                if (config.posixGcStaleThresholdSec <= config.posixGcHeartbeatIntervalSec) {
+                    return Status::InvalidParam(
+                        "gc stale threshold({}s) must exceed heartbeat interval({}s)",
+                        config.posixGcStaleThresholdSec, config.posixGcHeartbeatIntervalSec);
+                }
+            }
+        }
+        if (config.deviceId == -1) { return Status::OK(); }
+        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
+            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
+            config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
+                                        config.shardSize, config.blockSize);
+        }
+        if (config.ioEngine == "aio") {
+            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
+                return Status::InvalidParam("invalid aio concurrency({},{})",
+                                            config.openConcurrency, config.commitConcurrency);
+            }
+        } else if (config.ioEngine == "psync") {
+            if (config.dataTransConcurrency == 0) {
+                return Status::InvalidParam("invalid psync concurrency({})",
+                                            config.dataTransConcurrency);
+            }
+        } else {
+            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
         }
         return Status::OK();
     }
@@ -230,6 +299,10 @@ private:
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
+        UC_INFO("Set {}::BackendHealth to interval={}ms, timeout={}ms, window={}, threshold={}.",
+                ns, config.backendHealth.healthCheckInterval.count(),
+                config.backendHealth.healthCheckTimeout.count(),
+                config.backendHealth.healthWindowSize, config.backendHealth.failureThreshold);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
@@ -243,10 +316,22 @@ private:
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
+        UC_INFO("Set {}::HotnessTrackerEnable to {}.", ns,
+                config.deviceId == -1 || config.posixHotnessEnable);
+        if (config.posixGcEnable) {
+            UC_INFO("Set {}::PosixGcHeartbeatIntervalSec to {}.", ns,
+                    config.posixGcHeartbeatIntervalSec);
+            UC_INFO("Set {}::PosixGcStaleThresholdSec to {}.", ns, config.posixGcStaleThresholdSec);
+        }
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
             UC_INFO("Set {}::PosixCapacityGb to {}.", ns, config.posixCapacityGb);
             UC_INFO("Set {}::PosixGcRecyclePercent to {}.", ns, config.posixGcRecyclePercent);
+            UC_INFO("Set {}::PosixGcPreciseMode to {}.", ns, config.posixGcPreciseMode);
+            if (config.posixGcPreciseMode) {
+                UC_INFO("Set {}::PosixGcCandidateExtraPercent to {}.", ns,
+                        config.posixGcCandidateExtraPercent);
+            }
             UC_INFO("Set {}::PosixGcConcurrency to {}.", ns, config.posixGcConcurrency);
             UC_INFO("Set {}::PosixGcCheckIntervalSec to {}.", ns, config.posixGcCheckIntervalSec);
             UC_INFO("Set {}::PosixGcTriggerThresholdRatio to {}.", ns,
@@ -254,6 +339,8 @@ private:
             UC_INFO("Set {}::PosixGcMaxRecycleCountPerShard to {}.", ns,
                     config.posixGcMaxRecycleCountPerShard);
             UC_INFO("Set {}::PosixGcShardSampleRatio to {}.", ns, config.posixGcShardSampleRatio);
+            UC_INFO("Set {}::PosixGcTaskTimeoutMs to {}.", ns, config.posixGcTaskTimeoutMs);
+            UC_INFO("Set {}::PosixGcCrossInstanceLock to {}.", ns, config.posixGcCrossInstanceLock);
         }
     }
 };

@@ -53,11 +53,6 @@ def patch_core_sched_scheduler(mod):
         "_mamba_block_aligned_split",
         scheduler.Scheduler._mamba_block_aligned_split,
     )
-    patch_or_inject(
-        mod.Scheduler,
-        "_update_requests_with_invalid_blocks",
-        scheduler.Scheduler._update_requests_with_invalid_blocks,
-    )
 
 
 @when_imported("vllm.v1.worker.gpu_model_runner")

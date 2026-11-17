@@ -49,6 +49,7 @@ protected:
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
     virtual void Cancel(TaskPtr t) {}
     virtual bool IsAio() const { return false; }
+    virtual Status FailureStatus(const TaskPtr&) const { return Status::Error(); }
 
 public:
     Expected<TaskHandle> Submit(Task task)
@@ -105,7 +106,7 @@ public:
         auto failure = failureSet_.Contains(taskId);
         if (failure) [[unlikely]] {
             if (!IsAio()) { failureSet_.Remove(taskId); }
-            return Status::Error();
+            return FailureStatus(t);
         }
         return Status::OK();
     }

@@ -58,6 +58,7 @@ private:
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;

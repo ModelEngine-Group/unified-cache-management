@@ -1,0 +1,9 @@
+# Release planning, package construction, publication and readback.
+# Shared build tools use the repository's locked versions.
+-c ../../requirements-build.txt
+build
+packaging
+PyYAML
+setuptools
+wheel
+twine==6.1.0

@@ -25,6 +25,8 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_TASK_H
 
 #include <atomic>
+#include <functional>
+#include "status/status.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -35,9 +37,36 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    size_t backendIndex{0};
+    std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    // Set when a worker starts on the task. A timeout before that is queueing, not a backend
+    // failure.
+    std::atomic<bool> started{false};
+    // When set, the engine reclaims the handle before invoking this callback.
+    std::function<void(Status)> onComplete;
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
+    TransTask(TransTask&& other) noexcept
+        : id{other.id},
+          type{other.type},
+          desc{std::move(other.desc)},
+          backendIndex{other.backendIndex},
+          failureStatus{other.failureStatus.load()},
+          started{other.started.load()},
+          onComplete{std::move(other.onComplete)}
+    {
+    }
+    void Fail(const Status& status)
+    {
+        auto expected = Status::OK().Underlying();
+        failureStatus.compare_exchange_strong(expected, status.Underlying());
+    }
+    Status FailureStatus() const
+    {
+        const auto status = failureStatus.load();
+        return status == Status::OK().Underlying() ? Status::Error() : Status{status, {}};
+    }
 
 private:
     static size_t NextId() noexcept
