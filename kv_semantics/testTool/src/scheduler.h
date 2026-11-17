@@ -47,7 +47,7 @@ public:
      * 复用缓冲）；重复执行语义，false 仅当工具链失败（err 说明首次失败）
      * @param requestManager 已解析的任务流
      * @param testmode 值生成模式（1 系统生成，2 行尾 value 字段）
-     * @param runtime 运行时长分钟；>0 限时模式，跑满即停（时间到不开新圈，当前圈跑完）；
+     * @param runtime 运行时长秒；>0 限时模式，跑满即停（时间到不开新圈，当前圈跑完）；
      *               =0 圈数模式（以 loop 为准）
      * @param loop 循环执行圈数（整个任务流重复 loop 遍），仅 runtime=0 时生效（Check 已保证 >0）
      */

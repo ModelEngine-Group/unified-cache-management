@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -26,6 +27,9 @@ namespace {
 constexpr int kMetricsIntervalMs = 1000;
 /** 指标线程睡眠分片（毫秒），保证停止请求在分片时间内响应 */
 constexpr int kMetricsSleepSliceMs = 50;
+
+/** OpType 枚举值对应的接口名（指标分接口输出用；下标即枚举值，与 kOpTypeCount 对齐） */
+const char *const kOpNames[kOpTypeCount] = {"exist", "put", "get", "delete"};
 
 /** 字节数转人类可读单位（B/KB/MB/GB，保留 1 位小数） */
 std::string FormatBytes(double bytes)
@@ -95,12 +99,14 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
 
     // 值缓冲池一次性分配（bufferCount 块 × bufferSize 字节；尺寸来自 conf，与 input 无关，
     // 参考 kv_test：region 注册仅发生在建链阶段，执行期只按 entry 序号复用），
-    // 每块即组装一个 MemoryRegion（memoryType/deviceId 按 buffertype 填充）一并注册；
+    // 每块分配后整块写 'A' 作为底色（value 只写前缀不补齐，前缀之后的读回内容为底色或
+    // 上次写入的残留），并组装 MemoryRegion（memoryType/deviceId 按 buffertype 填充）一并注册；
     // 任一失败走统一清理，不留半成品
     const std::size_t count = static_cast<std::size_t>(bufferCount);
     std::vector<kv::MemoryRegion> regions;
     regions.reserve(count);
     bool ok = true;
+    std::vector<std::uint8_t> initBlock(bufferSize_, 0x41); // 'A' 底色块，循环外构造一次
     for (std::size_t i = 0; i < count; ++i) {
         std::uint64_t addr = 0;
         if (!allocator_->Allocate(bufferSize_, addr, err)) {
@@ -109,6 +115,11 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
             break;
         }
         bufferAddrs_.emplace_back(addr);
+        if (!allocator_->Write(addr, initBlock.data(), initBlock.size(), err)) {
+            err = "value buffer " + std::to_string(i) + " init 'A' failed: " + err;
+            ok = false;
+            break;
+        }
         kv::MemoryRegion region;
         region.memoryType =
             allocator_->IsDeviceMemory() ? kv::MemoryType::DEVICE : kv::MemoryType::HOST;
@@ -161,7 +172,7 @@ bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runt
 
     // 按行序执行任务流：sleep 步骤原地暂停；kv 任务组装后逐个执行。
     // 持续执行语义：单任务工具链失败记录后继续执行后续任务，err 保留首次失败描述。
-    // 圈数/时长控制（conf 语义）：runtime>0 限时模式，跑满 runtime 分钟即停（时间到不开
+    // 圈数/时长控制（conf 语义）：runtime>0 限时模式，跑满 runtime 秒即停（时间到不开
     // 新圈，当前圈跑完）；runtime=0 圈数模式，整个任务流重复 loop 遍（Check 已保证 loop>0）
     bool toolChainOk = true;
     Executor *executor = executors_[0].get();
@@ -195,7 +206,7 @@ bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runt
         }
         ++round;
         if (runtime > 0) {
-            if (std::chrono::steady_clock::now() - startTime >= std::chrono::minutes(runtime)) {
+            if (std::chrono::steady_clock::now() - startTime >= std::chrono::seconds(runtime)) {
                 break;
             }
         } else if (round >= loop) {
@@ -266,8 +277,13 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode, Request &req
     request.nsid = task.nsid;
     request.keys.reserve(task.entries.size());
     request.keyHighs.reserve(task.entries.size());
+    request.rawKeys.reserve(task.entries.size());
+    request.prefixLens.reserve(task.entries.size());
     request.entries.reserve(task.entries.size());
     request.expected.reserve(task.entries.size());
+
+    // mode1 种子串时间戳在 for 外生成一次：同一任务（batch）内全部 entry 共用
+    const std::time_t seedTime = std::time(nullptr);
 
     for (std::size_t index = 0; index < task.entries.size(); ++index) {
         const RequestOrc &orc = task.entries[index];
@@ -276,28 +292,33 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode, Request &req
         kv::CacheKey key{};
         std::memcpy(key.data(), &orc.keyLow64, sizeof(orc.keyLow64));
 
-        // value 块生成并写入第 index 块复用缓冲的起始段（device 语义经分配器 H2D 拷贝）
-        const std::vector<std::uint8_t> block = BuildValueBlock(orc, testmode);
-        if (block.size() > bufferSize_) {
-            err = "entry length " + std::to_string(block.size()) + " exceeds value buffer size " +
+        // 生成 value 前缀（只写前缀不补齐，尺寸 ≤ orc.length），写入第 index 块复用缓冲的
+        // 起始段（device 语义经分配器 H2D 拷贝）；前缀之后的缓冲内容保持启动 memset 的
+        // 'A' 底色或上次写入的残留
+        const std::vector<std::uint8_t> block = BuildValueBlock(orc, testmode, seedTime);
+        if (orc.length > bufferSize_) {
+            err = "entry length " + std::to_string(orc.length) + " exceeds value buffer size " +
                   std::to_string(bufferSize_);
             return false;
         }
-        if (!allocator_->Write(bufferAddrs_[index], block.data(), block.size(), err)) {
+        // 空前缀不写缓冲（保持底色/残留原样），非空前缀才落缓冲
+        if (!block.empty() && !allocator_->Write(bufferAddrs_[index], block.data(), block.size(), err)) {
             err = "value block write failed: " + err;
             return false;
         }
 
-        // 组装请求项：绑定注册凭证；region.addr 为块起始、region.size 为本次 IO 长度（kv client 语义）、
-        // offset 为 KV 块内偏移（存储侧，须 512 对齐，由 kv client 校验）
+        // 组装请求项：绑定注册凭证；region.addr 为块起始、region.size 为本次 IO 长度
+        // （= orc.length，即前缀 + 前缀之后的缓冲现状；kv client 语义）、offset 为 KV 块内
+        // 偏移（存储侧，须 512 对齐，由 kv client 校验）
         kv::KVBuffer entry;
         entry.key = key;
         entry.buffer.region = registered_[index].region;
-        entry.buffer.region.size = block.size();
+        entry.buffer.region.size = orc.length;
         entry.buffer.handle = registered_[index].handle;
         entry.offset = orc.offset;
 
-        // 基准表：PUT 记录本块为最近写入基准；GET 查基准（命中才有比对依据）；其他操作无基准
+        // 基准表（基准 = 本次写入的前缀，get 只比前缀长度，前缀之后的底色/残留不比对）：
+        // PUT 记录前缀为最近写入基准；GET 查基准（命中才有比对依据）；其他操作无基准
         if (task.op == OrcOp::PUT) {
             keyBaseline_[orc.keyLow64] = block;
             request.expected.emplace_back();
@@ -311,6 +332,11 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode, Request &req
 
         request.keys.emplace_back(key);
         request.keyHighs.emplace_back(orc.keyHigh16);
+        request.rawKeys.emplace_back(orc.rawKey);
+        // 请求明细日志 value 读回长度（与 len 显示字段解耦）：mode1 为本次生成前缀的实际
+        // 长度（种子串有效部分），mode2 为完整块长度（orc.length）
+        request.prefixLens.emplace_back(testmode == 2 ? static_cast<std::size_t>(orc.length)
+                                                      : block.size());
         request.entries.emplace_back(entry);
     }
     return true;
@@ -366,7 +392,7 @@ std::vector<ExecutorMetrics> Scheduler::SnapshotExecutors() const
 void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
                                     const std::vector<ExecutorMetrics> &current) const
 {
-    // 汇总全部执行器的窗口增量（两序列长度一致时逐项求差累加）
+    // 汇总全部执行器的窗口增量（两序列长度一致时逐项求差累加）；分接口桶同步累加
     std::uint64_t ops = 0;
     std::uint64_t errors = 0;
     std::uint64_t notFound = 0;
@@ -374,6 +400,8 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
     std::uint64_t bytes = 0;
     std::uint64_t tasks = 0;
     std::uint64_t latencyNs = 0;
+    std::uint64_t opsByOp[kOpTypeCount] = {0};
+    std::uint64_t bytesByOp[kOpTypeCount] = {0};
     const std::size_t count = std::min(last.size(), current.size());
     for (std::size_t i = 0; i < count; ++i) {
         ops += current[i].opCount - last[i].opCount;
@@ -383,6 +411,10 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
         bytes += current[i].ioBytes - last[i].ioBytes;
         tasks += current[i].taskCount - last[i].taskCount;
         latencyNs += current[i].latencyNsTotal - last[i].latencyNsTotal;
+        for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+            opsByOp[op] += current[i].opCountByOp[op] - last[i].opCountByOp[op];
+            bytesByOp[op] += current[i].ioBytesByOp[op] - last[i].ioBytesByOp[op];
+        }
     }
 
     // 窗口速率：IOPS 与流量按名义周期秒折算；TTFT 与错误率按窗口内样本计算，无样本时占位 "-"
@@ -396,11 +428,20 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
     LOG_INFO("Scheduler metrics [{}s]: IOPS={:.0f} traffic={}/s TTFT={} error rate={} notfound={} mismatch={}",
              kMetricsIntervalMs / 1000, static_cast<double>(ops) / seconds,
              FormatBytes(static_cast<double>(bytes) / seconds), ttft, errorRate, notFound, mismatch);
+    // 分接口行（窗口内有增量的接口才输出；exist/delete 无载荷仅 IOPS 有意义，流量恒 0）
+    for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+        if (opsByOp[op] == 0) {
+            continue;
+        }
+        LOG_INFO("Scheduler metrics [{}s]: {} IOPS={:.0f} traffic={}/s", kMetricsIntervalMs / 1000,
+                 kOpNames[op], static_cast<double>(opsByOp[op]) / seconds,
+                 FormatBytes(static_cast<double>(bytesByOp[op]) / seconds));
+    }
 }
 
 void Scheduler::OutputMetricsTotal() const
 {
-    // 汇总全部执行器的累计指标，作为本轮运行的总计输出
+    // 汇总全部执行器的累计指标，作为本轮运行的总计输出；分接口桶同步累加
     std::uint64_t ops = 0;
     std::uint64_t errors = 0;
     std::uint64_t notFound = 0;
@@ -408,6 +449,8 @@ void Scheduler::OutputMetricsTotal() const
     std::uint64_t bytes = 0;
     std::uint64_t tasks = 0;
     std::uint64_t latencyNs = 0;
+    std::uint64_t opsByOp[kOpTypeCount] = {0};
+    std::uint64_t bytesByOp[kOpTypeCount] = {0};
     for (const auto &executor : executors_) {
         const ExecutorMetrics metrics = executor->GetMetrics();
         ops += metrics.opCount;
@@ -417,6 +460,10 @@ void Scheduler::OutputMetricsTotal() const
         bytes += metrics.ioBytes;
         tasks += metrics.taskCount;
         latencyNs += metrics.latencyNsTotal;
+        for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+            opsByOp[op] += metrics.opCountByOp[op];
+            bytesByOp[op] += metrics.ioBytesByOp[op];
+        }
     }
 
     const std::string ttft = (tasks > 0)
@@ -427,4 +474,12 @@ void Scheduler::OutputMetricsTotal() const
         : std::string("-");
     LOG_INFO("Scheduler metrics total: ops={} traffic={} tasks={} avg TTFT={} error rate={} notfound={} mismatch={}",
              ops, FormatBytes(static_cast<double>(bytes)), tasks, ttft, errorRate, notFound, mismatch);
+    // 分接口行（全程有操作的接口才输出；exist/delete 无载荷，流量恒 0）
+    for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+        if (opsByOp[op] == 0) {
+            continue;
+        }
+        LOG_INFO("Scheduler metrics total: {} ops={} traffic={}", kOpNames[op], opsByOp[op],
+                 FormatBytes(static_cast<double>(bytesByOp[op])));
+    }
 }

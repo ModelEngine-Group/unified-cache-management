@@ -4,15 +4,28 @@
 
 #include <pthread.h>
 
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "log/logger_manager.h"
 #include "request/request_manager.h"
 #include "scheduler.h"
 // #include "test/log_test.h"  // 日志模块自测暂时停用，恢复时随下方调用段一并取消注释
 #include "utils/config_util.h"
+
+/** SIGINT 到达标志（信号处理器与主线程共享；lock-free 原子 store 为 async-signal-safe） */
+static std::atomic<bool> gInterrupted{false};
+
+/** SIGINT 处理器：仅置标志位，不做任何非 async-signal-safe 操作 */
+static void OnSigint(int)
+{
+    gInterrupted.store(true);
+}
 
 /**
  * 统一收尾：按初始化逆序回收各组件，main 的全部退出路径（正常、各失败分支与异常兜底）
@@ -26,12 +39,12 @@ static void CloseAll(Scheduler &scheduler)
 }
 
 /**
- * 程序入口：加载配置、初始化日志（全量日志 + 非性能模式的 get 读回日志），先完成调度器
+ * 程序入口：加载配置、初始化日志（全量日志 + 请求明细日志），先完成调度器
  * 初始化（kv client 建链 + 值缓冲池一次性分配注册，与 input 无关，参考 kv_test：region
- * 注册仅此一次），之后按 onlyconnect 分流——on 建链验证完成后即退出（不解析 input）；
- * off 为执行模式，按顺序平铺：解析 input 流量文件驱动测试（圈数/时长由 runtime/loop 控制）、
- * 输出指标；配置 getter 抛出的异常（缺 key/坏值）统一 catch 报错退出；全部路径经
- * CloseAll 统一收尾
+ * 注册仅此一次），之后按 onlyconnect 分流——on 建链验证完成后挂起等待 Ctrl+C 再退出
+ * （不解析 input）；off 为执行模式，按顺序平铺：解析 input 流量文件驱动测试（圈数/时长由
+ * runtime/loop 控制）、输出指标与完成标记；配置 getter 抛出的异常（缺 key/坏值）统一
+ * catch 报错退出；全部路径经 CloseAll 统一收尾
  * @param argv[1] 测试配置文件路径（test_config.conf）
  * @param argv[2] kv client 配置文件路径（kv_client.conf）
  * @param argv[3] 流量模型输入文件路径（input.txt；仅执行模式必传，建链模式可省略）
@@ -65,6 +78,9 @@ int main(int argc, char *argv[])
             std::cerr << "[FAIL] logger init failed: " << err << std::endl;
             return 1;
         }
+        // 启动标记行（与完成标记对称）：用 warn 级别保证 perf=on（主日志级别强制 warn、
+        // warn 及 error 均输出）时同样可见
+        LOG_WARN("======Test Starting=======");
         LOG_INFO("testTool v{} starting, test config: {}, kv client config: {}, input: {}", "0.1.0",
                  configPath, kvClientConfPath, inputPath.empty() ? std::string("-") : inputPath);
         config.Print();
@@ -77,9 +93,15 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // ---- 只建链模式：建链与 region 注册验证完成后即退出，不解析 input ----
+        // ---- 只建链模式：建链与 region 注册验证完成后挂起等待 Ctrl+C（不解析 input、不直接退出）----
         if (config.GetOnlyConnect()) {
-            LOG_INFO("onlyconnect=on: connection established, exit in connect-only mode, IO test skipped");
+            LOG_INFO("onlyconnect=on: connection established, waiting for Ctrl+C to exit...");
+            std::signal(SIGINT, OnSigint);
+            // 100ms 轮询等待 SIGINT（信号处理器仅置原子标志，无锁无系统调用，async-signal-safe）
+            while (!gInterrupted.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            LOG_INFO("onlyconnect=on: Ctrl+C received, exiting");
             CloseAll(scheduler);
             return 0;
         }
@@ -112,6 +134,11 @@ int main(int argc, char *argv[])
             scheduler.Run(requestManager, testmode, config.GetRuntime(), config.GetLoop(), err);
         if (!runOk) {
             LOG_ERROR("test flow failed: {}", err);
+        }
+
+        // 完成标记行（仅成功时输出；与启动标记对称）：warn 级别保证 perf=on 时同样可见
+        if (runOk) {
+            LOG_WARN("======Test Completed Successfully=======");
         }
 
         // 临时：日志模块功能自测，全部正式功能开发完成后随 src/test/ 目录整体移除本段（仅正式流程成功时运行）

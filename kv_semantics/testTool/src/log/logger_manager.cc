@@ -20,8 +20,8 @@
 
 namespace {
 
-/** get 读回日志文件名模板（strftime 标记按初始化时刻展开，与全量日志命名风格一致） */
-constexpr char kGetLogFileNameTpl[] = "get_%Y%m%d_%H.log";
+/** 请求明细日志文件名模板（strftime 标记按初始化时刻展开，与全量日志命名风格一致） */
+constexpr char kReqLogFileNameTpl[] = "req_%Y%m%d_%H.log";
 
 /** 按给定时刻展开文件名模板中的 strftime 时间标记 */
 std::string ExpandFileName(const std::string &tpl, std::time_t t)
@@ -79,22 +79,24 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
                                                         spdlog::async_overflow_policy::block);
         spdlog::register_logger(logger_);
 
-        // get 读回日志（perf=off 启用）：与全量日志完全同款配置（pattern / 级别沿用
-        // log.pattern / log.level，不单独定制），仅 sink 换为 readlogdir 下的追加文件；
-        // 与全量日志共用线程池；perf=on 不创建，写入口安全跳过
-        if (!config.GetPerf()) {
-            if (!FileUtil::EnsureDir(config.GetReadLogDir(), err)) {
-                Shutdown();
-                return false;
-            }
-            const std::filesystem::path getDirPath(config.GetReadLogDir());
-            const std::string getPath =
-                (getDirPath / ExpandFileName(kGetLogFileNameTpl, std::time(nullptr))).string();
+        // 请求明细日志：put / get / exist / delete 任务的明细行共用一个追加文件；
+        // perf=off 全量记录，perf=on 仅记录错误行（IsReqLogErrorOnly），两种模式均创建；
+        // 与全量日志完全同款配置（pattern / 级别沿用 log.pattern / log.level，不单独定制），
+        // 仅 sink 换为 readlogdir 下的追加文件；与全量日志共用线程池
+        reqErrorOnly_ = config.GetPerf();
+        if (!FileUtil::EnsureDir(config.GetReadLogDir(), err)) {
+            Shutdown();
+            return false;
+        }
+        {
+            const std::filesystem::path reqDirPath(config.GetReadLogDir());
+            const std::string reqPath =
+                (reqDirPath / ExpandFileName(kReqLogFileNameTpl, std::time(nullptr))).string();
             // 第二参数 truncate=false：多轮运行追加同一文件（与原语义一致），不截断
-            auto getSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(getPath, false);
-            getLogger_ = std::make_shared<spdlog::async_logger>(
-                "get", getSink, threadPool_, spdlog::async_overflow_policy::block);
-            spdlog::register_logger(getLogger_);
+            auto reqSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(reqPath, false);
+            reqLogger_ = std::make_shared<spdlog::async_logger>(
+                "req", reqSink, threadPool_, spdlog::async_overflow_policy::block);
+            spdlog::register_logger(reqLogger_);
         }
     } catch (const std::exception &e) {
         err = e.what();
@@ -103,12 +105,13 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
     }
 
     // pattern / 级别为 logger 默认配置（conf 的 log.pattern / log.level），主 logger 与
-    // get logger 同款应用；perf=on 时全量日志级别强制 warn：不输出 info（压测降日志开销），
-    // 配置的 log.level 仅 perf=off 时生效（get logger 仅 perf=off 存在，直接用配置值）
+    // 请求明细 logger 同款应用；perf=on 时全量日志级别强制 warn：warn 及 error 均照常
+    // 输出、仅不输出 info（压测降日志开销），配置的 log.level 仅 perf=off 时生效；
+    // 请求明细 logger 两模式均创建，直接用配置值
     try {
         logger_->set_pattern(config.GetLogPattern());
-        if (getLogger_ != nullptr) {
-            getLogger_->set_pattern(config.GetLogPattern());
+        if (reqLogger_ != nullptr) {
+            reqLogger_->set_pattern(config.GetLogPattern());
         }
     } catch (const std::exception &e) {
         err = "invalid log.pattern: ";
@@ -118,8 +121,8 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
     }
 
     logger_->set_level(config.GetPerf() ? spdlog::level::warn : config.GetLogLevel());
-    if (getLogger_ != nullptr) {
-        getLogger_->set_level(config.GetLogLevel());
+    if (reqLogger_ != nullptr) {
+        reqLogger_->set_level(config.GetLogLevel());
     }
     logger_->flush_on(spdlog::level::err); // error 及以上立即落盘
     spdlog::flush_every(std::chrono::milliseconds(config.GetLogAsyncFlushIntervalMs()));
@@ -131,15 +134,15 @@ void LoggerManager::Shutdown()
     if (logger_ != nullptr) {
         logger_->flush();
     }
-    if (getLogger_ != nullptr) {
-        getLogger_->flush();
+    if (reqLogger_ != nullptr) {
+        reqLogger_->flush();
     }
 
     spdlog::shutdown();
     // 必须先停线程池再销毁 logger：worker 处理队列尾部消息时还要通过 weak_ptr 取到 logger
     threadPool_.reset();
     logger_.reset();
-    getLogger_.reset();
+    reqLogger_.reset();
 }
 
 std::shared_ptr<spdlog::logger> LoggerManager::GetLogger()
@@ -147,10 +150,15 @@ std::shared_ptr<spdlog::logger> LoggerManager::GetLogger()
     return logger_;
 }
 
-std::shared_ptr<spdlog::logger> LoggerManager::GetGetLogger()
+std::shared_ptr<spdlog::logger> LoggerManager::GetReqLogger()
 {
-    return getLogger_;
+    return reqLogger_;
 }
 
-// get 读回日志的写入经 LOG_INFO_GET 宏直接走 GetGetLogger（与 LOG_xxx 走 GetLogger 完全
-// 对称），不再需要单独的写入接口；async_logger 入队线程安全，单写线程保证 get 文件内行完整有序
+bool LoggerManager::IsReqLogErrorOnly()
+{
+    return reqErrorOnly_;
+}
+
+// 请求明细日志的写入经 LOG_INFO_REQ 宏直接走 GetReqLogger（与 LOG_xxx 走 GetLogger 完全
+// 对称），不再需要单独的写入接口；async_logger 入队线程安全，单写线程保证明细文件内行完整有序

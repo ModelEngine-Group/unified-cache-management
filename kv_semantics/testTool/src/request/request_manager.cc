@@ -121,6 +121,28 @@ std::vector<std::string> Tokenize(const std::string &line)
     return tokens;
 }
 
+/**
+ * 跳过 text 行首 tokenCount 个空白分隔 token，返回剩余原文（左侧空白已去）；
+ * token 不足时返回空串。用于取"固定字段后的全部剩余内容"型字段（value 允许含空格）
+ */
+std::string TextAfterTokens(const std::string &text, std::size_t tokenCount)
+{
+    std::size_t pos = 0;
+    for (std::size_t i = 0; i < tokenCount; ++i) {
+        const std::size_t start = text.find_first_not_of(" \t", pos);
+        if (start == std::string::npos) {
+            return std::string();
+        }
+        const std::size_t stop = text.find_first_of(" \t", start);
+        if (stop == std::string::npos) {
+            return std::string();
+        }
+        pos = stop;
+    }
+    const std::size_t rest = text.find_first_not_of(" \t", pos);
+    return (rest == std::string::npos) ? std::string() : text.substr(rest);
+}
+
 /** key 128 位整数的低 64 位分量 */
 std::uint64_t KeyLow(const unsigned __int128 key)
 {
@@ -134,43 +156,47 @@ std::uint16_t KeyHigh16(const unsigned __int128 key)
 }
 
 /**
- * 解析单 key 行（op 已识别，fields 为 op 之后的全部字段）：
- * 先试四整数（nsid key offset length [value]），再试三整数（key offset length [value]，nsid 缺省 0）；
- * length 须为正；失败返回 false
+ * 解析单 key 行（op 已识别，fields 为 op 之后的全部 token，textAfterOp 为 op 之后的原文）：
+ * 先试四整数（nsid key offset length [value...]），再试三整数（key offset length [value...]，
+ * nsid 缺省 0）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
+ * length 允许为 0（0 长度读写）；失败返回 false
  */
-bool ParseSingleEntry(const std::vector<std::string> &fields, RequestOrc &out)
+bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
+                     RequestOrc &out)
 {
-    if (fields.size() >= 4 && fields.size() <= 5) {
+    if (fields.size() >= 4) {
         std::uint64_t nsid = 0;
         std::uint32_t offset = 0;
         std::uint32_t length = 0;
         unsigned __int128 key = 0;
         if (ParseUint64(fields[0], nsid) && ParseKey128(fields[1], key) &&
-            ParseUint32(fields[2], offset) && ParseUint32(fields[3], length) && length != 0) {
+            ParseUint32(fields[2], offset) && ParseUint32(fields[3], length)) {
             out.nsid = nsid;
             out.keyLow64 = KeyLow(key);
             out.keyHigh16 = KeyHigh16(key);
             out.offset = offset;
             out.length = length;
-            if (fields.size() == 5) {
-                out.value = fields[4];
+            out.rawKey = fields[1];
+            if (fields.size() > 4) {
+                out.value = TextAfterTokens(textAfterOp, 4);
             }
             return true;
         }
     }
-    if (fields.size() >= 3 && fields.size() <= 4) {
+    if (fields.size() >= 3) {
         std::uint32_t offset = 0;
         std::uint32_t length = 0;
         unsigned __int128 key = 0;
         if (ParseKey128(fields[0], key) && ParseUint32(fields[1], offset) &&
-            ParseUint32(fields[2], length) && length != 0) {
+            ParseUint32(fields[2], length)) {
             out.nsid = 0;
             out.keyLow64 = KeyLow(key);
             out.keyHigh16 = KeyHigh16(key);
             out.offset = offset;
             out.length = length;
-            if (fields.size() == 4) {
-                out.value = fields[3];
+            out.rawKey = fields[0];
+            if (fields.size() > 3) {
+                out.value = TextAfterTokens(textAfterOp, 3);
             }
             return true;
         }
@@ -197,25 +223,31 @@ bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsi
     return false;
 }
 
-/** 解析 batch 内行：key offset length [value]（nsid 与 op 由批头继承）；length 须为正；失败返回 false */
-bool ParseBatchEntry(const std::vector<std::string> &fields, RequestOrc &out)
+/**
+ * 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]
+ * （nsid 与 op 由批头继承）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
+ * length 允许为 0（0 长度读写）；失败返回 false
+ */
+bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
+                     RequestOrc &out)
 {
-    if (fields.size() < 3 || fields.size() > 4) {
+    if (fields.size() < 3) {
         return false;
     }
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
     unsigned __int128 key = 0;
     if (!ParseKey128(fields[0], key) || !ParseUint32(fields[1], offset) ||
-        !ParseUint32(fields[2], length) || length == 0) {
+        !ParseUint32(fields[2], length)) {
         return false;
     }
     out.keyLow64 = KeyLow(key);
     out.keyHigh16 = KeyHigh16(key);
     out.offset = offset;
     out.length = length;
-    if (fields.size() == 4) {
-        out.value = fields[3];
+    out.rawKey = fields[0];
+    if (fields.size() > 3) {
+        out.value = TextAfterTokens(line, 3);
     }
     return true;
 }
@@ -244,19 +276,21 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         // batch 内：/batch 闭合，其余为批内行
         if (inBatch) {
             if (line == "/batch") {
+                // 空批：显式闭合但无内容，警告忽略（无数据可执行，不属数据错误）
                 if (!batchTask.entries.empty()) {
                     steps_.emplace_back(std::move(batchTask));
                 } else {
-                    LOG_WARN("RequestManager: empty batch at line {} ignored", lineNo);
+                    LOG_WARN("RequestManager: empty batch closed at line {} ignored", lineNo);
                 }
                 batchTask = OrcTask{};
                 inBatch = false;
                 continue;
             }
             RequestOrc entry;
-            if (!ParseBatchEntry(tokens, entry)) {
-                LOG_WARN("RequestManager: skip invalid batch entry at line {}: {}", lineNo, line);
-                continue;
+            if (!ParseBatchEntry(tokens, line, entry)) {
+                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
+                err = "input line " + std::to_string(lineNo) + " invalid batch entry: " + line;
+                return false;
             }
             entry.op = batchTask.op;
             entry.nsid = batchTask.nsid;
@@ -268,8 +302,9 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         if (tokens[0] == "sleep") {
             std::uint32_t seconds = 0;
             if (tokens.size() != 2 || !ParseUint32(tokens[1], seconds)) {
-                LOG_WARN("RequestManager: skip invalid sleep at line {}: {}", lineNo, line);
-                continue;
+                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
+                err = "input line " + std::to_string(lineNo) + " invalid sleep: " + line;
+                return false;
             }
             steps_.emplace_back(SleepStep{seconds});
             continue;
@@ -278,8 +313,9 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         // 行首操作符识别
         OrcOp op;
         if (!ParseOrcOp(tokens[0], op)) {
-            LOG_WARN("RequestManager: skip unknown op at line {}: {}", lineNo, line);
-            continue;
+            // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
+            err = "input line " + std::to_string(lineNo) + " unknown op: " + line;
+            return false;
         }
 
         // batch 头（op 后接 batch）：开始聚合
@@ -287,8 +323,9 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         if (!fields.empty() && fields[0] == "batch") {
             std::uint64_t nsid = 0;
             if (!ParseBatchHeader(fields, nsid)) {
-                LOG_WARN("RequestManager: skip invalid batch header at line {}: {}", lineNo, line);
-                continue;
+                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
+                err = "input line " + std::to_string(lineNo) + " invalid batch header: " + line;
+                return false;
             }
             batchTask = OrcTask{};
             batchTask.op = op;
@@ -297,12 +334,13 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
             continue;
         }
 
-        // 单 key 行：一个独立任务
+        // 单 key 行：一个独立任务（op 之后的原文传入供 value 取固定字段后的剩余内容）
         RequestOrc entry;
         entry.op = op;
-        if (!ParseSingleEntry(fields, entry)) {
-            LOG_WARN("RequestManager: skip invalid single entry at line {}: {}", lineNo, line);
-            continue;
+        if (!ParseSingleEntry(fields, TextAfterTokens(line, 1), entry)) {
+            // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
+            err = "input line " + std::to_string(lineNo) + " invalid single entry: " + line;
+            return false;
         }
         OrcTask task;
         task.op = op;
@@ -311,13 +349,11 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         steps_.emplace_back(task);
     }
 
-    // 文件结束时批未闭合：警告并将已有内容保留执行
+    // 文件结束批未闭合（缺 /batch）：批结构不完整属非法输入，报错退出提示管理员补全
     if (inBatch) {
-        LOG_WARN("RequestManager: batch not closed at end of file, {} entries kept",
-                 batchTask.entries.size());
-        if (!batchTask.entries.empty()) {
-            steps_.emplace_back(std::move(batchTask));
-        }
+        err = "input batch not closed: missing /batch before end of file, " +
+              std::to_string(batchTask.entries.size()) + " entries pending";
+        return false;
     }
 
     if (steps_.empty()) {

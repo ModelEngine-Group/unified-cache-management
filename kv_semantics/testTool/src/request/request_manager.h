@@ -36,8 +36,9 @@ using FlowStep = std::variant<OrcTask, SleepStep>;
 /**
  * 输入管理器：解析 input.txt 全部指令并缓存为步骤序列，供执行侧按序取用。
  * 解析规则（见 input/readme.md）：行首尾 trim（空格与 \t）、空行跳过、sleep 行解析为独立暂停步骤、
- * batch 头（可带 nsid=x / nsid x，缺省 0）开始至 /batch 结束聚合、单行先试四整数再试三整数、
- * 解析失败的行警告并跳过（不影响其余输入）。
+ * batch 头（可带 nsid=x / nsid x，缺省 0）开始至 /batch 结束聚合（文件结束时未闭合的 batch
+ * 属非法输入，报错退出）、单行先试四整数再试三整数（length 允许为 0）；
+ * 任何非法输入数据（未知 op、字段解析失败等）不跳过不静默继续，直接返回启动错误提示管理员修正。
  */
 class RequestManager {
 public:

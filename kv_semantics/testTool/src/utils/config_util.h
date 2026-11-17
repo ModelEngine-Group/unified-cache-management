@@ -29,7 +29,7 @@ public:
     // ---- 测试通用参数 ----
     /** 输入文件类型（testmode）：1=不带 value，2=带 value */
     int GetTestMode() const;
-    /** 运行时长分钟（runtime）；0 为循环模式，以 loop 为准 */
+    /** 运行时长秒（runtime）；0 为循环模式，以 loop 为准 */
     int GetRuntime() const;
     /** 请求循环执行次数（loop），runtime=0 时生效 */
     int GetLoop() const;
