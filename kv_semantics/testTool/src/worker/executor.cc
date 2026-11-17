@@ -17,7 +17,7 @@
 namespace {
 
 /** 当前时刻的纳秒数（steady_clock 单调时钟，埋点时延用） */
-std::int64_t NowNs()
+std::int64_t CurrentNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -91,7 +91,7 @@ bool Executor::QueryAndRecord(const Request &request, std::string &err)
 {
     const std::vector<kv::CacheKey> &keys = request.keys;
     kv::TaskId taskId = kv::kInvalidTaskId;
-    const std::int64_t beginNs = NowNs();
+    const std::int64_t startNs = CurrentNs();
     if (!client_->QueryAsync(keys, taskId, err)) {
         LOG_ERROR("Executor: query submit failed: {}", err);
         RecordTask(OpType::QUERY, keys.size(), 0, false, 0);
@@ -103,7 +103,7 @@ bool Executor::QueryAndRecord(const Request &request, std::string &err)
         RecordTask(OpType::QUERY, keys.size(), 0, false, 0);
         return false;
     }
-    RecordTask(OpType::QUERY, keys.size(), 0, true, NowNs() - beginNs);
+    RecordTask(OpType::QUERY, keys.size(), 0, true, CurrentNs() - startNs);
 
     // 任务级失败或结果缺失：观察记录（errorCount），不算工具链失败（无可信逐 key 数据，不写明细）
     if (!result.status.ok() || !result.queryResult.has_value() ||
@@ -132,7 +132,7 @@ bool Executor::StoreAndRecord(const Request &request, std::string &err)
 {
     const std::vector<kv::KVBuffer> &entries = request.entries;
     kv::TaskId taskId = kv::kInvalidTaskId;
-    const std::int64_t beginNs = NowNs();
+    const std::int64_t startNs = CurrentNs();
     if (!client_->StoreAsync(entries, taskId, err)) {
         LOG_ERROR("Executor: store submit failed: {}", err);
         RecordTask(OpType::STORE, entries.size(), 0, false, 0);
@@ -148,7 +148,7 @@ bool Executor::StoreAndRecord(const Request &request, std::string &err)
     // entry 级失败计数（观察）；流量为成功 entry 口径（失败 entry 计 0 字节）
     const std::size_t failed = CountFailed(result, entries.size());
     const std::uint64_t successBytes = SumOkBytes(result, entries);
-    RecordTask(OpType::STORE, entries.size(), successBytes, true, NowNs() - beginNs);
+    RecordTask(OpType::STORE, entries.size(), successBytes, true, CurrentNs() - startNs);
     if (failed != 0) { LogTaskResult(result, "store"); }
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
 
@@ -164,7 +164,7 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
 {
     const std::vector<kv::KVBuffer> &entries = request.entries;
     kv::TaskId taskId = kv::kInvalidTaskId;
-    const std::int64_t beginNs = NowNs();
+    const std::int64_t startNs = CurrentNs();
     if (!client_->LoadAsync(entries, taskId, err)) {
         LOG_ERROR("Executor: load submit failed: {}", err);
         RecordTask(OpType::LOAD, entries.size(), 0, false, 0);
@@ -234,7 +234,7 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
         // entryStatus 为空且任务级成功：全部 entry 视为成功
         successBytes = SumBytes(entries);
     }
-    RecordTask(OpType::LOAD, entries.size(), successBytes, true, NowNs() - beginNs);
+    RecordTask(OpType::LOAD, entries.size(), successBytes, true, CurrentNs() - startNs);
     notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
     mismatchCount_.fetch_add(mismatch, std::memory_order_relaxed);
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
@@ -407,7 +407,7 @@ bool Executor::DeleteAndRecord(const Request &request, std::string &err)
 {
     const std::vector<kv::CacheKey> &keys = request.keys;
     kv::TaskId taskId = kv::kInvalidTaskId;
-    const std::int64_t beginNs = NowNs();
+    const std::int64_t startNs = CurrentNs();
     if (!client_->DeleteAsync(keys, taskId, err)) {
         LOG_ERROR("Executor: delete submit failed: {}", err);
         RecordTask(OpType::DELETE, keys.size(), 0, false, 0);
@@ -419,7 +419,7 @@ bool Executor::DeleteAndRecord(const Request &request, std::string &err)
         RecordTask(OpType::DELETE, keys.size(), 0, false, 0);
         return false;
     }
-    RecordTask(OpType::DELETE, keys.size(), 0, true, NowNs() - beginNs);
+    RecordTask(OpType::DELETE, keys.size(), 0, true, CurrentNs() - startNs);
 
     // entry 级分类优先：未命中系计 notFound，其他计 error；entryStatus 为空时按任务级整体归类
     std::uint64_t notFound = 0;
