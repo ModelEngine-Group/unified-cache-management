@@ -19,6 +19,8 @@ enable_metrics: true
 
 以下字段写在 YAML 根级，模型或引擎特定限制在说明中标出。
 
+在 CUDA 环境下，带有 indexer 缓存的模型自动使用整存整取模式（`use_layerwise=false`），并在 Connector 支持时启用请求级异步加载。该组合要求 vLLM 设置 `pipeline_parallel_size=1`；启用流水线并行时初始化会报错。设置 `use_layerwise=true` 不能绕过此限制。
+
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
 | `use_layerwise` | 选填 | bool | 默认 `true` | 是否启用分层（逐层）加载和保存模式。推荐设置为 `true`，DeepSeek v4 系列模型推荐设置为 `false`。 |

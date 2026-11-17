@@ -96,6 +96,43 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _has_layer_component(layer_name: str, components: set[str]) -> bool:
+    """Match complete path components, ignoring case and avoiding substrings."""
+    return not components.isdisjoint(layer_name.lower().split("."))
+
+
+def _apply_cuda_indexer_io_config(
+    launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
+) -> None:
+    """Resolve IO mode before connector selection and cache layout creation."""
+    if not current_platform.is_cuda() or kv_cache_config is None:
+        return
+    for group in kv_cache_config.kv_cache_groups:
+        layer_names = (
+            getattr(group, "layer_names", None)
+            or getattr(group, "kv_cache_specs", None)
+            or {}
+        )
+        for name in layer_names:
+            if not _has_layer_component(name, {"indexer", "index_cache"}):
+                continue
+            if pipeline_parallel_size > 1:
+                raise RuntimeError(
+                    "UCM does not support CUDA indexer models with pipeline "
+                    "parallelism: whole-block loading requires "
+                    "pipeline_parallel_size=1. Set pipeline_parallel_size=1 "
+                    "to use this configuration."
+                )
+            launch_config["use_layerwise"] = False
+            launch_config["use_request_async_load"] = True
+            logger.warning(
+                "CUDA indexer KV cache requires whole-block loading; "
+                "disabling use_layerwise and enabling use_request_async_load "
+                "where supported by the connector."
+            )
+            return
+
+
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
     """Resolve cache quantization independently of weight quantization.
 
@@ -1342,8 +1379,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     def _is_indexer(layer_name: str) -> bool:
         # Match a complete path component instead of a substring so an unrelated
         # module whose name merely contains "index_cache" cannot be misclassified.
-        components = layer_name.lower().split(".")
-        return "index_cache" in components
+        return _has_layer_component(layer_name, {"index_cache"})
 
     def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
         # All supported M3 tensors are block-first. Dimension zero is therefore
@@ -1694,6 +1730,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not uses_partitioned_cache():
             self.engine_id = self.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         share_buffer_enable = (
@@ -3775,6 +3816,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
