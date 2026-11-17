@@ -1203,11 +1203,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(parallel, name, 1) != 1
                 for name in (
                     "pipeline_parallel_size",
-                    "prefill_context_parallel_size",
                     "decode_context_parallel_size",
                 )
             ):
-                raise ValueError("Ascend V4.1 UCM currently requires PP=PCP=DCP=1.")
+                # PCP>1 is allowed here: after the step's PCP gather every PCP
+                # peer holds a full KV replica and FAWA dump ownership already
+                # spans TP*PCP (see dump_owner_size), so each block is stored
+                # once. DCP shards the KV cache, so DCP>1 stays rejected.
+                raise ValueError("Ascend V4.1 UCM currently requires PP=DCP=1.")
             self.whole_page_sizes = _ascend_v41_whole_page_sizes(self._kv_cache_config)
             # Ascend already expresses block_size in original tokens. Use a
             # complete logical page, even when the engine hashes finer chunks.
