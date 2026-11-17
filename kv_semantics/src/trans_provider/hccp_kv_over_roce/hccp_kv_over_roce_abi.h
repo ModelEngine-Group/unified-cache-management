@@ -136,13 +136,13 @@ int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uint32_t descN
 /* Optional symbols.
  * UnregisterMemory deregisters MRs identified by the memory info reported by
  * RegisterMemory; the provider owns no cross-ABI handles.
- * Send and FreeThread fill one statuses entry per input batch/thread. */
+ * Send fills one statuses entry per input batch. Thread bookkeeping is not part
+ * of this ABI: the operator owns no per-thread resources, so the provider
+ * always reports success without calling the library. */
 uint32_t GetAbiVersion(void);
 int32_t UnregisterMemory(const HccpKvRoceMemoryInfo* memoryInfos, uint32_t infoNum);
 int32_t Send(const HccpKvRoceSendIoBatch* batches, uint32_t batchNum, uint32_t kernelCount,
              uint32_t quietCount, int32_t* statuses);
-int32_t AllocThread(uint32_t threadNum, const uint32_t* notifyNumPerThread, void** threads);
-int32_t FreeThread(void* const* threads, uint32_t threadNum, int32_t* statuses);
 int32_t GetServerCapabilities(void* connectionHandle, HccpKvRoceServerCapabilities* capabilities);
 
 #ifdef __cplusplus

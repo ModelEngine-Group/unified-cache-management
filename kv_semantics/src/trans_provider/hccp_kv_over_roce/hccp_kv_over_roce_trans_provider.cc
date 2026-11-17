@@ -63,8 +63,6 @@ using RegisterMemoryFn = decltype(&::RegisterMemory);
 using GetAbiVersionFn = decltype(&::GetAbiVersion);
 using UnregisterMemoryFn = decltype(&::UnregisterMemory);
 using SendFn = decltype(&::Send);
-using AllocThreadFn = decltype(&::AllocThread);
-using FreeThreadFn = decltype(&::FreeThread);
 using GetServerCapabilitiesFn = decltype(&::GetServerCapabilities);
 
 StatusCode MapAbiStatusCode(std::int32_t code)
@@ -136,8 +134,6 @@ struct AbiApi {
     RegisterMemoryFn registerMemory{nullptr};
     UnregisterMemoryFn unregisterMemory{nullptr};
     SendFn send{nullptr};
-    AllocThreadFn allocThread{nullptr};
-    FreeThreadFn freeThread{nullptr};
     GetServerCapabilitiesFn getServerCapabilities{nullptr};
 
     AbiApi() = default;
@@ -191,8 +187,6 @@ struct AbiApi {
         // Optional symbols: a missing entry keeps the provider fallback.
         unregisterMemory = reinterpret_cast<UnregisterMemoryFn>(resolve("UnregisterMemory"));
         send = reinterpret_cast<SendFn>(resolve("Send"));
-        allocThread = reinterpret_cast<AllocThreadFn>(resolve("AllocThread"));
-        freeThread = reinterpret_cast<FreeThreadFn>(resolve("FreeThread"));
         getServerCapabilities =
             reinterpret_cast<GetServerCapabilitiesFn>(resolve("GetServerCapabilities"));
 
@@ -212,9 +206,8 @@ struct AbiApi {
         handle = library;
         KV_INFO(
             "HccpKvOverRoceTransProvider: external library loaded path={} optional_symbols="
-            "unregister={} send={} alloc_thread={} free_thread={} capabilities={}",
+            "unregister={} send={} capabilities={}",
             libraryPath, unregisterMemory != nullptr ? 1 : 0, send != nullptr ? 1 : 0,
-            allocThread != nullptr ? 1 : 0, freeThread != nullptr ? 1 : 0,
             getServerCapabilities != nullptr ? 1 : 0);
         return Status::OK();
     }
@@ -988,66 +981,20 @@ Status HccpKvOverRoceTransProvider::AllocThread(
     std::uint32_t threadNum, const std::vector<std::uint32_t>& notifyNumPerThread,
     std::vector<ThreadHandle>& threads)
 {
-    if (!impl_) {
-        return Status::Error(StatusCode::NOT_INITIALIZED,
-                             "HccpKvOverRoceTransProvider is not initialized");
-    }
+    // The external operator owns no per-thread resources, so the provider never
+    // forwards this call and the transport can proceed without thread handles.
+    (void)threadNum;
+    (void)notifyNumPerThread;
     threads.clear();
-    if (impl_->api.allocThread == nullptr) {
-        // Matches the AICPU provider: the transport owns no per-thread resources.
-        return Status::OK();
-    }
-    if (threadNum == 0) { return Status::OK(); }
-    if (notifyNumPerThread.size() != threadNum) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "HccpKvOverRoceTransProvider: notify count does not match thread "
-                             "count");
-    }
-
-    ScopedHccpAclContext aclScope("AllocThread", impl_->binding);
-    if (!aclScope.status().ok()) { return aclScope.status(); }
-
-    threads.assign(threadNum, nullptr);
-    const auto ret =
-        impl_->api.allocThread(threadNum, notifyNumPerThread.data(), threads.data());
-    if (ret != 0) {
-        threads.clear();
-        return AbiError("AllocThread", ret, StatusCode::INTERNAL_ERROR);
-    }
     return Status::OK();
 }
 
 std::vector<Status> HccpKvOverRoceTransProvider::FreeThread(
     const std::vector<ThreadHandle>& threads)
 {
-    std::vector<Status> results(threads.size(), Status::OK());
-    if (!impl_) {
-        std::fill(results.begin(), results.end(),
-                  Status::Error(StatusCode::NOT_INITIALIZED,
-                                "HccpKvOverRoceTransProvider is not initialized"));
-        return results;
-    }
-    if (threads.empty() || impl_->api.freeThread == nullptr) { return results; }
-
-    ScopedHccpAclContext aclScope("FreeThread", impl_->binding);
-    if (!aclScope.status().ok()) {
-        std::fill(results.begin(), results.end(), aclScope.status());
-        return results;
-    }
-
-    std::vector<std::int32_t> statuses(threads.size(), 0);
-    const auto ret = impl_->api.freeThread(
-        threads.data(), static_cast<std::uint32_t>(threads.size()), statuses.data());
-    if (ret != 0) {
-        const auto error = AbiError("FreeThread", ret, StatusCode::INTERNAL_ERROR);
-        for (auto& result : results) { result = error; }
-        return results;
-    }
-    for (std::size_t index = 0; index < statuses.size(); ++index) {
-        if (statuses[index] == 0) { continue; }
-        results[index] = AbiError("FreeThread", statuses[index], StatusCode::INTERNAL_ERROR);
-    }
-    return results;
+    // Matching no-op for AllocThread: nothing was allocated, so every requested
+    // thread is released successfully.
+    return std::vector<Status>(threads.size(), Status::OK());
 }
 
 Status HccpKvOverRoceTransProvider::GetMemTokenId(MRHandle mrHandle, std::uint32_t& tokenId)

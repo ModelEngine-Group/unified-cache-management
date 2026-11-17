@@ -512,11 +512,12 @@ environment variable; otherwise the provider tries
 `src/trans_provider/hccp_kv_over_roce/hccp_kv_over_roce_abi.h`. The provider is
 bound to `transport.device_id` (falling back to the current ACL device, then
 device 0) and binds that device/context around every library call. Other symbols
-(`UnregisterMemory`, `Send`, `AllocThread`, `FreeThread`, `GetServerCapabilities`,
-`GetAbiVersion`) are optional: when a symbol is missing, the matching operation
-uses its documented fallback (`UNSUPPORTED` for `Send` and
-`GetServerCapabilities`, success for thread bookkeeping, and local bookkeeping
-only for `UnregisterMemory`).
+(`UnregisterMemory`, `Send`, `GetServerCapabilities`, `GetAbiVersion`) are
+optional: when a symbol is missing, the matching operation uses its documented
+fallback (`UNSUPPORTED` for `Send` and `GetServerCapabilities`, and local
+bookkeeping only for `UnregisterMemory`). Thread bookkeeping is not part of the
+ABI: the operator owns no per-thread resources, so `AllocThread` returns success
+with no handles and `FreeThread` succeeds without calling the library.
 
 `RegisterMemory` only registers the MRs and reports one
 `HccpKvRoceMemoryInfo` (address, size, access and rkey) per descriptor; the
