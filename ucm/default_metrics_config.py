@@ -101,8 +101,56 @@ _COUNTER_METRICS = [
         "Number of Cache load submissions rejected because the waiting queue was full",
     ),
     (
+        "cache_load_waiting_enqueue_total",
+        "Load tasks accepted into the Cache load waiting queue",
+    ),
+    (
+        "cache_load_waiting_dequeue_total",
+        "Load tasks popped from the Cache load waiting queue for dispatch",
+    ),
+    (
+        "cache_load_waiting_bytes_total",
+        (
+            "Bytes of Cache load tasks accepted into the waiting queue (shard size × "
+            "shards), counted at submission. Compare its rate with cache_load_bytes_total "
+            "to see offered load versus completed load."
+        ),
+    ),
+    (
+        "cache_load_running_enqueue_total",
+        "Load shards pushed into the Cache load running queue",
+    ),
+    (
+        "cache_load_running_dequeue_total",
+        "Load shards popped from the Cache load running queue for H2D transfer",
+    ),
+    (
         "cache_dump_queue_full_total",
         "Number of Cache dump submissions rejected because the waiting queue was full",
+    ),
+    (
+        "cache_dump_waiting_enqueue_total",
+        "Dump tasks accepted into the Cache dump waiting queue",
+    ),
+    (
+        "cache_dump_waiting_dequeue_total",
+        "Dump tasks popped from the Cache dump waiting queue for D2H dispatch",
+    ),
+    (
+        "cache_dump_waiting_bytes_total",
+        (
+            "Bytes of Cache dump tasks accepted into the waiting queue (shard size × "
+            "shards), counted at submission. Compare its rate with cache_dump_bytes_total "
+            "to see offered load versus completed load."
+        ),
+    ),
+    (
+        "cache_dump_backend_wait_enqueue_total",
+        "Dump tasks pushed onto the Cache dump backend-wait queue",
+    ),
+    (
+        "cache_dump_backend_wait_dequeue_total",
+        "Dump tasks popped from the Cache dump backend-wait queue to wait for the backend write",
     ),
     (
         "cache_backend_load_submit_errors_total",
@@ -899,12 +947,64 @@ _HISTOGRAM_METRICS = [
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
     ),
     (
+        "cache_load_prealloc_duration_ms",
+        (
+            "Cache load time spent preallocating the next shard slot of each loaded "
+            "block during dispatch (ms). CPU-side buffer work; excludes the backend "
+            "submit and the shard transfers."
+        ),
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
+    ),
+    (
+        "cache_shard_running_queue_wait_ms",
+        (
+            "Cache load per-shard time from enqueue into the running queue until the "
+            "H2D thread pops it (ms). Includes dispatch-side backpressure when the "
+            "queue is full; large values mean the H2D thread cannot keep up."
+        ),
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
         "cache_shard_backend_wait_ms",
         (
-            "Cache load per-shard time spent in WaitBackendTaskReady before H2D submit "
+            "Cache load per-shard time spent in WaitShardReady before H2D submit "
             "(ms). This is not a task-level duration."
         ),
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "cache_shard_ready_wait_ms",
+        (
+            "Cache load per-shard time spent polling the cache slot until it becomes "
+            "ready or fails (ms). Covers shards whose slot is filled by another "
+            "in-flight task; backend-owned slots are reported by "
+            "cache_shard_backend_wait_ms instead."
+        ),
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "cache_task_total_backend_wait_ms",
+        (
+            "Per-task sum over the task's shards of cache_shard_backend_wait_ms (ms), "
+            "reported once per completed Cache load task."
+        ),
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "cache_task_total_ready_wait_ms",
+        (
+            "Per-task sum over the task's shards of cache_shard_ready_wait_ms (ms), "
+            "reported once per completed Cache load task."
+        ),
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "cache_task_total_h2d_submit_ms",
+        (
+            "Per-task sum over the task's shards of cache_h2d_submit_ms (ms), reported "
+            "once per completed Cache load task."
+        ),
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
         "cache_h2d_submit_ms",

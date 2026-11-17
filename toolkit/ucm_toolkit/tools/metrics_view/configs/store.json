@@ -376,7 +376,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Load H2D Duration: p50",
+      "name": "Cache Load H2D Sync Duration: p50",
       "type": "promql",
       "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -387,7 +387,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Load H2D Duration: p90",
+      "name": "Cache Load H2D Sync Duration: p90",
       "type": "promql",
       "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -398,7 +398,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Load H2D Duration: p99",
+      "name": "Cache Load H2D Sync Duration: p99",
       "type": "promql",
       "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:cache_h2d_sync_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -409,7 +409,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Load H2D Duration: avg",
+      "name": "Cache Load H2D Sync Duration: avg",
       "type": "promql",
       "expr": "sum by (model_name) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
       "value": "value",
@@ -420,7 +420,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Dump D2H Duration (include wait compute): p50",
+      "name": "Cache Dump D2H Sync Duration: p50",
       "type": "promql",
       "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -431,7 +431,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Dump D2H Duration (include wait compute): p90",
+      "name": "Cache Dump D2H Sync Duration: p90",
       "type": "promql",
       "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -442,7 +442,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Dump D2H Duration (include wait compute): p99",
+      "name": "Cache Dump D2H Sync Duration: p99",
       "type": "promql",
       "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:cache_d2h_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
@@ -453,7 +453,7 @@
       "unit": "ms"
     },
     {
-      "name": "Cache Dump D2H Duration (include wait compute): avg",
+      "name": "Cache Dump D2H Sync Duration: avg",
       "type": "promql",
       "expr": "sum by (model_name) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
       "value": "value",

@@ -130,8 +130,28 @@ counter:
     documentation: "Shards actually pushed to backend on dump (excludes !handle.Owner() skips in shared-buffer scenario)"
   - name: "cache_load_queue_full_total"
     documentation: "Number of Cache load submissions rejected because the waiting queue was full"
+  - name: "cache_load_waiting_enqueue_total"
+    documentation: "Load tasks accepted into the Cache load waiting queue"
+  - name: "cache_load_waiting_dequeue_total"
+    documentation: "Load tasks popped from the Cache load waiting queue for dispatch"
+  - name: "cache_load_waiting_bytes_total"
+    documentation: "Bytes of Cache load tasks accepted into the waiting queue (shard size × shards), counted at submission. Compare its rate with cache_load_bytes_total to see offered load versus completed load."
+  - name: "cache_load_running_enqueue_total"
+    documentation: "Load shards pushed into the Cache load running queue"
+  - name: "cache_load_running_dequeue_total"
+    documentation: "Load shards popped from the Cache load running queue for H2D transfer"
   - name: "cache_dump_queue_full_total"
     documentation: "Number of Cache dump submissions rejected because the waiting queue was full"
+  - name: "cache_dump_waiting_enqueue_total"
+    documentation: "Dump tasks accepted into the Cache dump waiting queue"
+  - name: "cache_dump_waiting_dequeue_total"
+    documentation: "Dump tasks popped from the Cache dump waiting queue for D2H dispatch"
+  - name: "cache_dump_waiting_bytes_total"
+    documentation: "Bytes of Cache dump tasks accepted into the waiting queue (shard size × shards), counted at submission. Compare its rate with cache_dump_bytes_total to see offered load versus completed load."
+  - name: "cache_dump_backend_wait_enqueue_total"
+    documentation: "Dump tasks pushed onto the Cache dump backend-wait queue"
+  - name: "cache_dump_backend_wait_dequeue_total"
+    documentation: "Dump tasks popped from the Cache dump backend-wait queue to wait for the backend write"
   - name: "cache_backend_load_submit_errors_total"
     documentation: "Number of Cache load backend submit failures"
   - name: "cache_backend_load_wait_errors_total"
@@ -618,9 +638,27 @@ histogram:
   - name: "cache_load_backend_submit_duration_ms"
     documentation: "Cache load backend submit duration: buffer allocation plus synchronous backend load submission (ms)."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
-  - name: "cache_shard_backend_wait_ms"
-    documentation: "Cache load per-shard time spent in WaitBackendTaskReady before H2D submit (ms). This is not a task-level duration."
+  - name: "cache_load_prealloc_duration_ms"
+    documentation: "Cache load time spent preallocating the next shard slot of each loaded block during dispatch (ms). CPU-side buffer work; excludes the backend submit and the shard transfers."
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
+  - name: "cache_shard_running_queue_wait_ms"
+    documentation: "Cache load per-shard time from enqueue into the running queue until the H2D thread pops it (ms). Includes dispatch-side backpressure when the queue is full; large values mean the H2D thread cannot keep up."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_shard_backend_wait_ms"
+    documentation: "Cache load per-shard time spent in WaitShardReady before H2D submit (ms). This is not a task-level duration."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_shard_ready_wait_ms"
+    documentation: "Cache load per-shard time spent polling the cache slot until it becomes ready or fails (ms). Covers shards whose slot is filled by another in-flight task; backend-owned slots are reported by cache_shard_backend_wait_ms instead."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "cache_task_total_backend_wait_ms"
+    documentation: "Per-task sum over the task's shards of cache_shard_backend_wait_ms (ms), reported once per completed Cache load task."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "cache_task_total_ready_wait_ms"
+    documentation: "Per-task sum over the task's shards of cache_shard_ready_wait_ms (ms), reported once per completed Cache load task."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "cache_task_total_h2d_submit_ms"
+    documentation: "Per-task sum over the task's shards of cache_h2d_submit_ms (ms), reported once per completed Cache load task."
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "cache_h2d_submit_ms"
     documentation: "Cache load per-shard H2D async submit CPU cost after backend wait (ms). Submission only; NOT the actual transfer time (see cache_h2d_sync_ms)."
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]

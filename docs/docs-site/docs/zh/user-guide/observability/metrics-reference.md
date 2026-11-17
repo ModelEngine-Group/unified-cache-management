@@ -98,6 +98,16 @@ Cache Store 利用主机缓冲衔接设备与下层存储，适合判断**加载
 | `ucm:cache_posix_load_success_shards_total` | 等待 Posix 填充 Cache 后成功加载到设备的分片数[^cache-source] |
 | `ucm:cache_dump_shards_total` | Cache Dump 处理的分片描述符总数，包括失败任务 |
 | `ucm:cache_dump_backend_shards_total` | 实际写入后端的 owner 分片数 |
+| `ucm:cache_dump_waiting_enqueue_total` | 进入 Dump waiting 队列的任务数（任务粒度） |
+| `ucm:cache_dump_waiting_dequeue_total` | 从 Dump waiting 队列取出并做 D2H 分发的任务数（任务粒度） |
+| `ucm:cache_load_waiting_bytes_total` | 进入 Load waiting 队列的任务数据量（分片大小 × 分片数） |
+| `ucm:cache_dump_waiting_bytes_total` | 进入 Dump waiting 队列的任务数据量（分片大小 × 分片数） |
+| `ucm:cache_dump_backend_wait_enqueue_total` | 进入 Dump backend 等待队列的任务数（任务粒度） |
+| `ucm:cache_dump_backend_wait_dequeue_total` | 从 Dump backend 等待队列取出、开始等待后端写入的任务数（任务粒度） |
+| `ucm:cache_load_waiting_enqueue_total` | 进入 Load waiting 队列的任务数（任务粒度） |
+| `ucm:cache_load_waiting_dequeue_total` | 从 Load waiting 队列取出并分发的任务数（任务粒度） |
+| `ucm:cache_load_running_enqueue_total` | 进入 Load running 队列的分片数（分片粒度） |
+| `ucm:cache_load_running_dequeue_total` | 从 Load running 队列取出并做 H2D 的分片数（分片粒度） |
 | `ucm:cache_load_bytes_total` | 经 Cache 阶段加载的累计字节数 |
 | `ucm:cache_dump_bytes_total` | 经 Cache 阶段保存的累计字节数 |
 
@@ -120,7 +130,13 @@ Cache Store 利用主机缓冲衔接设备与下层存储，适合判断**加载
 | `ucm:cache_load_queue_wait_duration_ms` | Cache Load 任务被分发线程取出前的排队时长 |
 | `ucm:cache_dump_queue_wait_duration_ms` | Cache Dump 任务被分发线程取出前的排队时长 |
 | `ucm:cache_load_backend_submit_duration_ms` | 分配 Cache 缓冲并同步提交后端 Load 的时长 |
+| `ucm:cache_load_prealloc_duration_ms` | 分发阶段为每个已加载块预分配下一个分片槽位的时长 |
+| `ucm:cache_shard_running_queue_wait_ms` | 单个分片从进入 running 队列到被 H2D 线程取出的时长 |
 | `ucm:cache_shard_backend_wait_ms` | 单个分片在提交 H2D 前等待后端就绪的时长 |
+| `ucm:cache_shard_ready_wait_ms` | 单个分片轮询等待 Cache 槽位就绪的时长（槽位由其它在飞任务填充）；后端持有的槽位由 `cache_shard_backend_wait_ms` 统计 |
+| `ucm:cache_task_total_backend_wait_ms` | 任务级汇总：该任务所有分片的 `cache_shard_backend_wait_ms` 之和 |
+| `ucm:cache_task_total_ready_wait_ms` | 任务级汇总：该任务所有分片的 `cache_shard_ready_wait_ms` 之和 |
+| `ucm:cache_task_total_h2d_submit_ms` | 任务级汇总：该任务所有分片的 `cache_h2d_submit_ms` 之和 |
 | `ucm:cache_h2d_submit_ms` | 异步提交一个分片 H2D 的 CPU 开销，不含传输时间 |
 | `ucm:cache_h2d_sync_ms` | 最后一个分片提交后，等待 H2D 流排空的剩余时长 |
 | `ucm:cache_dump_mkbuf_duration_ms` | Cache Dump 分配或复用缓冲并异步提交 D2H 的时长 |

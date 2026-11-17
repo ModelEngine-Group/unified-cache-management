@@ -3483,26 +3483,40 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     )
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert "Cache Load H2D Bandwidth (per task)" not in panels
-    assert "Cache Dump D2H Bandwidth (per task)" not in panels
-    assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Load Queue Status"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 49,
+        "y": 25,
     }
+    assert panels["Cache Dump Queue Status"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25,
+    }
+    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert "Cache Load H2D Bandwidth (per task)" not in panels
+    assert "Cache Dump D2H Bandwidth (per task)" not in panels
+    assert panels["Cache Load Shard Metrics"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57,
+    }
+    assert "Cache Load H2D Submit Cost" not in panels
+    assert "Cache Load Backend Wait Duration" not in panels
     assert panels["Cache Dump Wait Compute Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 49,
+        "y": 57,
     }
-    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
-    assert "Cache Dump D2H Duration (include wait compute)" in panels
+    assert panels["Cache Load H2D Sync Duration"]["gridPos"]["y"] == 65
+    assert "Cache Dump D2H Sync Duration" in panels
     assert "Cache Dump D2H Duration" not in panels
     assert panels["Cache Lookup Duration"]["gridPos"] == {
         "h": 8,
@@ -3510,11 +3524,17 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
         "x": 0,
         "y": 81,
     }
-    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Dump Backend Submit Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
         "y": 81,
+    }
+    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89,
     }
     assert panels["Cache Lookup Backend Duration"]["gridPos"] == {
         "h": 8,
@@ -3540,34 +3560,49 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     }
 
     assert set(targets) == {
-        "queue wait",
+        "H2D sync",
+        "waiting queue wait",
         "backend submit",
         "backend wait",
-        "H2D sync",
-        "h2d submit & other",
+        "cache ready wait",
+        "running queue wait & other",
     }
+    assert "cache_h2d_sync_ms" in targets["H2D sync"]["expr"]
+    assert "cache_load_queue_wait_duration_ms" in targets["waiting queue wait"]["expr"]
     assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
-    assert "cache_shard_backend_wait_ms" in targets["backend wait"]["expr"]
-    residual = targets["h2d submit & other"]["expr"]
+    assert "cache_task_total_backend_wait_ms" in targets["backend wait"]["expr"]
+    assert "cache_task_total_ready_wait_ms" in targets["cache ready wait"]["expr"]
+    residual = targets["running queue wait & other"]["expr"]
     for metric in (
         "cache_load_duration_ms",
+        "cache_h2d_sync_ms",
         "cache_load_queue_wait_duration_ms",
         "cache_load_backend_submit_duration_ms",
-        "cache_shard_backend_wait_ms",
-        "cache_h2d_sync_ms",
+        "cache_task_total_backend_wait_ms",
+        "cache_task_total_ready_wait_ms",
     ):
         assert metric in residual
+    assert "cache_shard_running_queue_wait_ms" not in residual
     description = panel["description"]
-    assert "`queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；" in description
+    assert "本面板所有曲线均为**任务级**指标" in description
+    assert (
+        "`waiting queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；"
+        in description
+    )
     assert (
         "`backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；"
         in description
     )
-    assert "`backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；" in description
+    assert (
+        "`backend wait`：指标 `ucm:cache_task_total_backend_wait_ms`；" in description
+    )
+    assert (
+        "`cache ready wait`：指标 `ucm:cache_task_total_ready_wait_ms`；" in description
+    )
     assert "`H2D sync`：指标 `ucm:cache_h2d_sync_ms`；" in description
     assert (
-        "`h2d submit & other`：计算方法 `Load 总耗时 - queue wait - "
-        "backend submit - backend wait - H2D sync`；" in description
+        "`running queue wait & other`：计算方式 `ucm:cache_load_duration_ms` "
+        "减去上面五段的平均耗时" in description
     )
 
 
