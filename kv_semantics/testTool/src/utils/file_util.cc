@@ -13,7 +13,7 @@ bool FileUtil::ReadLines(const std::string &path, std::vector<std::string> &line
 {
     std::ifstream fin(path);
     if (!fin.is_open()) {
-        err = "无法打开文件: " + path;
+        err = "cannot open file: " + path;
         return false;
     }
     lines.clear();
@@ -25,7 +25,7 @@ bool FileUtil::ReadLines(const std::string &path, std::vector<std::string> &line
         lines.emplace_back(line);
     }
     if (fin.bad()) {
-        err = "读取文件发生 IO 错误: " + path;
+        err = "IO error while reading file: " + path;
         return false;
     }
     return true;
@@ -45,7 +45,7 @@ bool FileUtil::ListFiles(const std::string &dirPath,
                                static_cast<std::uint64_t>(entry.file_size()));
         }
     } catch (const std::filesystem::filesystem_error &e) {
-        err = "遍历目录失败: " + dirPath + " (" + e.what() + ")";
+        err = "failed to list directory: " + dirPath + " (" + e.what() + ")";
         return false;
     }
     return true;
@@ -57,7 +57,7 @@ bool FileUtil::EnsureDir(const std::string &dirPath, std::string &err)
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (!std::filesystem::is_directory(dir, ec)) {
-        err = "目录创建失败: " + dirPath;
+        err = "failed to create directory: " + dirPath;
         return false;
     }
     return true;

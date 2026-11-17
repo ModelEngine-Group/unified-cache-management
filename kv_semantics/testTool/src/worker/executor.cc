@@ -12,13 +12,11 @@
 #include <vector>
 
 #include "log/logger_manager.h"
-#include "worker/client.h"
-#include "worker/request.h"
+#include "request/request.h"
+#include "worker/device_allocator.h"
+#include "worker/kv_client_util.h"
 
 namespace {
-
-/** 读取前回读 buffer 的填充值：读回后若仍是该值说明数据未真正回填 */
-constexpr std::uint8_t kLoadFillByte = 0xA5;
 
 /** 当前时刻的纳秒数（steady_clock 单调时钟，埋点时延用） */
 std::int64_t NowNs()
@@ -32,12 +30,12 @@ std::int64_t NowNs()
 void LogTaskResult(const kv::TaskResult &result, const char *opName)
 {
     if (!result.status.ok()) {
-        LOG_WARN("Executor：{} 任务级状态异常: code={} message={}", opName,
+        LOG_WARN("Executor: {} task status error: code={} message={}", opName,
                  static_cast<int>(result.status.code), result.status.message);
     }
     for (std::size_t i = 0; i < result.entryStatus.size(); ++i) {
         if (!result.entryStatus[i].ok()) {
-            LOG_WARN("Executor：{} entry {} 状态异常: code={} message={}", opName, i,
+            LOG_WARN("Executor: {} entry {} status error: code={} message={}", opName, i,
                      static_cast<int>(result.entryStatus[i].code), result.entryStatus[i].message);
         }
     }
@@ -45,88 +43,34 @@ void LogTaskResult(const kv::TaskResult &result, const char *opName)
 
 } // namespace
 
-void Executor::SetClient(Client *client)
+void Executor::SetClient(KvClientUtil *client)
 {
     client_ = client;
 }
 
-bool Executor::Run(Request &request, std::string &err)
+void Executor::SetAllocator(DeviceAllocator *allocator)
+{
+    allocator_ = allocator;
+}
+
+bool Executor::Execute(OpType op, const Request &request, std::string &err)
 {
     if (client_ == nullptr) {
-        err = "Executor 未绑定 kv client";
+        err = "executor has no kv client bound";
         return false;
     }
-
-    // 期望副本须在读写前留存（回读比对基准）
-    const std::vector<std::vector<std::uint8_t>> expected = request.valueBuffers;
-
-    bool allPassed = true;
-
-    // 1. 写入前查询：新 key 应全部不存在
-    if (!CheckExists(request.keys, false, "写入前")) {
-        err = "写入前查询验证失败";
-        allPassed = false;
+    switch (op) {
+        case OpType::QUERY:
+            return QueryAndRecord(request.keys, err);
+        case OpType::STORE:
+            return StoreAndRecord(request.entries, err);
+        case OpType::LOAD:
+            return LoadAndRecord(request, err);
+        case OpType::DELETE:
+            return DeleteAndRecord(request.keys, err);
     }
-
-    // 2. 异步写入并等待完成
-    if (allPassed) {
-        if (StoreAndWait(request.entries)) {
-            LOG_INFO("Executor：写入 {} 条数据完成", request.entries.size());
-        } else {
-            err = "写入验证失败";
-            allPassed = false;
-        }
-    }
-
-    // 3. 写入后查询：应全部存在
-    if (allPassed) {
-        if (!CheckExists(request.keys, true, "写入后")) {
-            err = "写入后查询验证失败";
-            allPassed = false;
-        }
-    }
-
-    // 4. 回读比对：先填 0xA5 再读回，逐字节与写入 pattern 比对
-    if (allPassed) {
-        for (auto &buffer : request.valueBuffers) {
-            std::fill(buffer.begin(), buffer.end(), kLoadFillByte);
-        }
-        bool loadPassed = LoadAndWait(request.entries);
-        for (std::size_t i = 0; i < request.valueBuffers.size(); ++i) {
-            if (std::memcmp(request.valueBuffers[i].data(), expected[i].data(),
-                            request.valueBuffers[i].size()) != 0) {
-                LOG_ERROR("Executor：entry {} 回读数据与写入不一致", i);
-                loadPassed = false;
-            }
-        }
-        if (loadPassed) {
-            LOG_INFO("Executor：回读比对通过，{} 条数据逐字节一致", request.valueBuffers.size());
-        } else {
-            err = "回读比对验证失败";
-        }
-        allPassed = loadPassed && allPassed;
-    }
-
-    // 5. 异步删除并等待完成
-    if (allPassed) {
-        if (DeleteAndWait(request.keys)) {
-            LOG_INFO("Executor：删除 {} 条数据完成", request.keys.size());
-        } else {
-            err = "删除验证失败";
-            allPassed = false;
-        }
-    }
-
-    // 6. 删除后查询：应全部不存在
-    if (allPassed) {
-        if (!CheckExists(request.keys, false, "删除后")) {
-            err = "删除后查询验证失败";
-            allPassed = false;
-        }
-    }
-
-    LOG_INFO("Executor：查询/写入/回读比对/删除全链路{}", allPassed ? "验证通过" : "验证失败");
-    return allPassed;
+    err = "unknown op type";
+    return false;
 }
 
 ExecutorMetrics Executor::GetMetrics() const
@@ -134,148 +78,318 @@ ExecutorMetrics Executor::GetMetrics() const
     ExecutorMetrics metrics;
     metrics.opCount = opCount_.load(std::memory_order_relaxed);
     metrics.errorCount = errorCount_.load(std::memory_order_relaxed);
+    metrics.notFoundCount = notFoundCount_.load(std::memory_order_relaxed);
+    metrics.mismatchCount = mismatchCount_.load(std::memory_order_relaxed);
     metrics.ioBytes = ioBytes_.load(std::memory_order_relaxed);
     metrics.taskCount = taskCount_.load(std::memory_order_relaxed);
     metrics.latencyNsTotal = latencyNsTotal_.load(std::memory_order_relaxed);
     return metrics;
 }
 
-bool Executor::CheckExists(const std::vector<kv::CacheKey> &keys, bool expect, const char *stage)
+bool Executor::QueryAndRecord(const std::vector<kv::CacheKey> &keys, std::string &err)
 {
     kv::TaskId taskId = kv::kInvalidTaskId;
-    std::string err;
     const std::int64_t beginNs = NowNs();
     if (!client_->QueryAsync(keys, taskId, err)) {
-        LOG_ERROR("Executor：{}查询提交失败: {}", stage, err);
-        RecordTask(keys.size(), keys.size(), 0, false, 0);
+        LOG_ERROR("Executor: query submit failed: {}", err);
+        RecordTask(keys.size(), 0, false, 0);
         return false;
     }
     kv::TaskResult result;
     if (!client_->Wait(taskId, 0, result, err)) {
-        LOG_ERROR("Executor：{}查询等待失败: {}", stage, err);
-        RecordTask(keys.size(), keys.size(), 0, false, 0);
+        LOG_ERROR("Executor: query wait failed: {}", err);
+        RecordTask(keys.size(), 0, false, 0);
         return false;
     }
-    const std::int64_t latencyNs = NowNs() - beginNs;
+    RecordTask(keys.size(), 0, true, NowNs() - beginNs);
 
-    // entryStatus 中的 KEY_NOT_EXIST/KEY_EXIST 是存在性回答的编码（不算异常），只校验任务级状态
-    std::size_t mismatch = 0;
-    if (!result.status.ok()) {
-        LOG_ERROR("Executor：{}查询任务级状态异常: code={} message={}", stage,
-                  static_cast<int>(result.status.code), result.status.message);
-        mismatch = keys.size();
-    } else if (!result.queryResult.has_value() ||
-               result.queryResult->exists.size() != keys.size()) {
-        LOG_ERROR("Executor：{}查询结果数量异常", stage);
-        mismatch = keys.size();
-    } else {
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            if (result.queryResult->exists[i] != static_cast<std::uint8_t>(expect ? 1 : 0)) {
-                LOG_ERROR("Executor：{}查询 entry {} 存在性异常: exists={} 期望={}", stage, i,
-                          static_cast<int>(result.queryResult->exists[i]),
-                          static_cast<int>(expect ? 1 : 0));
-                ++mismatch;
-            }
+    // 任务级失败或结果缺失：观察记录（errorCount），不算工具链失败
+    if (!result.status.ok() || !result.queryResult.has_value() ||
+        result.queryResult->exists.size() != keys.size()) {
+        LOG_ERROR("Executor: query result invalid, task status code={}",
+                  static_cast<int>(result.status.code));
+        errorCount_.fetch_add(keys.size(), std::memory_order_relaxed);
+        return true;
+    }
+
+    // 逐 entry 记录 found / not found 分布（观察结果，不断言）
+    std::uint64_t found = 0;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (result.queryResult->exists[i] != 0) {
+            ++found;
         }
     }
-    RecordTask(keys.size(), mismatch, 0, true, latencyNs);
-
-    if (mismatch != 0) {
-        return false;
-    }
-    LOG_INFO("Executor：{}查询通过，{} 个 key 存在性均为 {}", stage, keys.size(),
-             expect ? "存在" : "不存在");
+    notFoundCount_.fetch_add(keys.size() - found, std::memory_order_relaxed);
+    LOG_INFO("Executor: query {} keys, {} found, {} not found", keys.size(), found,
+             keys.size() - found);
     return true;
 }
 
-bool Executor::StoreAndWait(const std::vector<kv::KVBuffer> &entries)
+bool Executor::StoreAndRecord(const std::vector<kv::KVBuffer> &entries, std::string &err)
 {
     kv::TaskId taskId = kv::kInvalidTaskId;
-    std::string err;
     const std::int64_t beginNs = NowNs();
     if (!client_->StoreAsync(entries, taskId, err)) {
-        LOG_ERROR("Executor：写入任务提交失败: {}", err);
-        RecordTask(entries.size(), entries.size(), 0, false, 0);
+        LOG_ERROR("Executor: store submit failed: {}", err);
+        RecordTask(entries.size(), 0, false, 0);
         return false;
     }
     kv::TaskResult result;
     if (!client_->Wait(taskId, 0, result, err)) {
-        LOG_ERROR("Executor：写入任务等待失败: {}", err);
-        RecordTask(entries.size(), entries.size(), 0, false, 0);
+        LOG_ERROR("Executor: store wait failed: {}", err);
+        RecordTask(entries.size(), 0, false, 0);
         return false;
     }
-    const std::int64_t latencyNs = NowNs() - beginNs;
+    RecordTask(entries.size(), SumBytes(entries), true, NowNs() - beginNs);
 
+    // entry 级失败计数（观察）
     const std::size_t failed = CountFailed(result, entries.size());
-    RecordTask(entries.size(), failed, SumBytes(entries), true, latencyNs);
     if (failed != 0) {
-        LogTaskResult(result, "写入");
+        LogTaskResult(result, "store");
     }
-    return failed == 0;
+    errorCount_.fetch_add(failed, std::memory_order_relaxed);
+    LOG_INFO("Executor: stored {} entries, {} failed", entries.size(), failed);
+    return true;
 }
 
-bool Executor::LoadAndWait(const std::vector<kv::KVBuffer> &entries)
+bool Executor::LoadAndRecord(const Request &request, std::string &err)
 {
+    const std::vector<kv::KVBuffer> &entries = request.entries;
     kv::TaskId taskId = kv::kInvalidTaskId;
-    std::string err;
     const std::int64_t beginNs = NowNs();
     if (!client_->LoadAsync(entries, taskId, err)) {
-        LOG_ERROR("Executor：读取任务提交失败: {}", err);
-        RecordTask(entries.size(), entries.size(), 0, false, 0);
+        LOG_ERROR("Executor: load submit failed: {}", err);
+        RecordTask(entries.size(), 0, false, 0);
         return false;
     }
     kv::TaskResult result;
     if (!client_->Wait(taskId, 0, result, err)) {
-        LOG_ERROR("Executor：读取任务等待失败: {}", err);
-        RecordTask(entries.size(), entries.size(), 0, false, 0);
+        LOG_ERROR("Executor: load wait failed: {}", err);
+        RecordTask(entries.size(), 0, false, 0);
         return false;
     }
-    const std::int64_t latencyNs = NowNs() - beginNs;
+    RecordTask(entries.size(), SumBytes(entries), true, NowNs() - beginNs);
 
-    const std::size_t failed = CountFailed(result, entries.size());
-    RecordTask(entries.size(), failed, SumBytes(entries), true, latencyNs);
-    if (failed != 0) {
-        LogTaskResult(result, "读取");
+    // entry 级分类优先（任务级 PARTIAL_FAILED 时 entryStatus 仍带逐项详情）：
+    // 未命中系计 notFound、有基准逐字节比对不一致计 mismatch、其他计 error
+    std::uint64_t notFound = 0;
+    std::uint64_t mismatch = 0;
+    std::uint64_t failed = 0;
+    if (!result.entryStatus.empty()) {
+        const std::size_t count = std::min(result.entryStatus.size(), entries.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            if (result.entryStatus[i].ok()) {
+                // 读回数据与基准逐字节比对（基准尺寸即块尺寸；有基准才比）；
+                // device 语义值缓冲不能直接解引用，经分配器 D2H 读回 host 再比对
+                if (i < request.expected.size() && !request.expected[i].empty()) {
+                    if (allocator_ == nullptr) {
+                        err = "load readback requires a device allocator bound";
+                        return false;
+                    }
+                    std::vector<std::uint8_t> readback(request.expected[i].size());
+                    std::string readErr;
+                    if (!allocator_->Read(readback.data(), entries[i].buffer.region.addr,
+                                          readback.size(), readErr)) {
+                        // 读回失败属工具链异常（内存访问链路不可用），后续观察不可信
+                        err = "load entry " + std::to_string(i) + " readback failed: " + readErr;
+                        return false;
+                    }
+                    if (std::memcmp(readback.data(), request.expected[i].data(),
+                                    request.expected[i].size()) != 0) {
+                        ++mismatch;
+                        LOG_ERROR("Executor: load entry {} data mismatch with baseline", i);
+                    }
+                }
+                continue;
+            }
+            if (IsNotFound(result.entryStatus[i])) {
+                ++notFound;
+            } else {
+                ++failed;
+            }
+        }
+        // entryStatus 数量不足的异常场景，缺失部分按失败计
+        if (result.entryStatus.size() < entries.size()) {
+            failed += entries.size() - result.entryStatus.size();
+        }
+    } else if (!result.status.ok()) {
+        // entryStatus 为空（任务未到 entry 层）：按任务级状态整体归类
+        if (IsNotFound(result.status)) {
+            notFound = entries.size();
+        } else {
+            failed = entries.size();
+            LogTaskResult(result, "load");
+        }
     }
-    return failed == 0;
+    notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
+    mismatchCount_.fetch_add(mismatch, std::memory_order_relaxed);
+    errorCount_.fetch_add(failed, std::memory_order_relaxed);
+    if (failed != 0) {
+        LogTaskResult(result, "load");
+    }
+
+    // 非性能模式输出 get 读回明细日志（key/offset/读回首段/尾部），供人工校验一致性；
+    // 读回失败属工具链异常（内存访问链路不可用），与比对路径同一语义
+    if (!WriteGetLog(request, result, err)) {
+        return false;
+    }
+
+    LOG_INFO("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
+             notFound, mismatch, failed);
+    return true;
 }
 
-bool Executor::DeleteAndWait(const std::vector<kv::CacheKey> &keys)
+bool Executor::WriteGetLog(const Request &request, const kv::TaskResult &result, std::string &err)
+{
+    // 性能模式未启用 get 读回日志：不组装内容，直接返回（零开销）
+    if (!LoggerManager::IsGetLogEnabled()) {
+        return true;
+    }
+
+    const std::vector<kv::KVBuffer> &entries = request.entries;
+
+    // 批量返回码：优先逐 entry 状态码逗号拼接（wait 拿到的信息），entryStatus 缺失时退化为任务级状态码
+    std::string codes;
+    if (!result.entryStatus.empty()) {
+        codes = std::to_string(static_cast<int>(result.entryStatus[0].code));
+        for (std::size_t i = 1; i < result.entryStatus.size(); ++i) {
+            codes += "," + std::to_string(static_cast<int>(result.entryStatus[i].code));
+        }
+    } else {
+        codes = std::to_string(static_cast<int>(result.status.code));
+    }
+
+    // 每任务一行：get + 批量返回码 + 逐 entry 的 key/offset/value 首段/len/tail 组
+    std::string line = "get " + codes;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        // key 字段：key 低 64 位与高 16 位十进制字符串直接拼接；value 生成种子串以
+        // "低64 高16 offset" 开头，len + 2 恰好覆盖该前缀（两个分隔空格），供逐字段比对
+        std::uint64_t keyLow = 0;
+        if (i < request.keys.size()) {
+            std::memcpy(&keyLow, request.keys[i].data(), sizeof(keyLow));
+        }
+        const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
+        const std::string keyStr = std::to_string(keyLow) + std::to_string(keyHigh);
+        const std::string offsetStr = std::to_string(entries[i].offset);
+        const std::size_t len = keyStr.size() + offsetStr.size();
+
+        // entry 完成状态：entryStatus 缺失时以任务级状态代表全部 entry
+        const bool entryOk =
+            (i < result.entryStatus.size()) ? result.entryStatus[i].ok() : result.status.ok();
+
+        // 命中才读回数据：首段取 len + 2 字节、尾部固定 8 字节（均不超过块实际大小，
+        // 经分配器 D2H 读回，device 语义缓冲不能直接解引用）；未命中或空块以 "-" 占位
+        std::string value = "-";
+        std::string tail = "-";
+        if (entryOk) {
+            const kv::MemoryRegion &region = entries[i].buffer.region;
+            const std::size_t blockLen = static_cast<std::size_t>(region.size);
+            const std::size_t headLen = std::min(len + 2, blockLen);
+            const std::size_t tailLen = std::min<std::size_t>(8, blockLen);
+            if (headLen != 0 || tailLen != 0) {
+                if (allocator_ == nullptr) {
+                    err = "get log readback requires a device allocator bound";
+                    return false;
+                }
+            }
+            std::string readErr;
+            std::vector<std::uint8_t> head(headLen);
+            if (headLen != 0 && !allocator_->Read(head.data(), region.addr, headLen, readErr)) {
+                err = "get log entry " + std::to_string(i) + " head read failed: " + readErr;
+                return false;
+            }
+            std::vector<std::uint8_t> tailBuf(tailLen);
+            if (tailLen != 0 && !allocator_->Read(tailBuf.data(), region.addr + blockLen - tailLen,
+                                                  tailLen, readErr)) {
+                err = "get log entry " + std::to_string(i) + " tail read failed: " + readErr;
+                return false;
+            }
+            if (headLen != 0) {
+                value.assign(head.begin(), head.end());
+            }
+            if (tailLen != 0) {
+                tail.assign(tailBuf.begin(), tailBuf.end());
+            }
+        }
+
+        line += " " + keyStr + " " + offsetStr + " " + value + " " + std::to_string(len) + " " +
+                tail;
+    }
+    LoggerManager::WriteGetLog(line);
+    return true;
+}
+
+bool Executor::DeleteAndRecord(const std::vector<kv::CacheKey> &keys, std::string &err)
 {
     kv::TaskId taskId = kv::kInvalidTaskId;
-    std::string err;
     const std::int64_t beginNs = NowNs();
     if (!client_->DeleteAsync(keys, taskId, err)) {
-        LOG_ERROR("Executor：删除任务提交失败: {}", err);
-        RecordTask(keys.size(), keys.size(), 0, false, 0);
+        LOG_ERROR("Executor: delete submit failed: {}", err);
+        RecordTask(keys.size(), 0, false, 0);
         return false;
     }
     kv::TaskResult result;
     if (!client_->Wait(taskId, 0, result, err)) {
-        LOG_ERROR("Executor：删除任务等待失败: {}", err);
-        RecordTask(keys.size(), keys.size(), 0, false, 0);
+        LOG_ERROR("Executor: delete wait failed: {}", err);
+        RecordTask(keys.size(), 0, false, 0);
         return false;
     }
-    const std::int64_t latencyNs = NowNs() - beginNs;
+    RecordTask(keys.size(), 0, true, NowNs() - beginNs);
 
-    const std::size_t failed = CountFailed(result, keys.size());
-    RecordTask(keys.size(), failed, 0, true, latencyNs);
-    if (failed != 0) {
-        LogTaskResult(result, "删除");
+    // entry 级分类优先：未命中系计 notFound，其他计 error；entryStatus 为空时按任务级整体归类
+    std::uint64_t notFound = 0;
+    std::uint64_t failed = 0;
+    if (!result.entryStatus.empty()) {
+        const std::size_t count = std::min(result.entryStatus.size(), keys.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            if (IsNotFound(result.entryStatus[i])) {
+                ++notFound;
+            } else if (!result.entryStatus[i].ok()) {
+                ++failed;
+            }
+        }
+        if (result.entryStatus.size() < keys.size()) {
+            failed += keys.size() - result.entryStatus.size();
+        }
+    } else if (!result.status.ok()) {
+        if (IsNotFound(result.status)) {
+            notFound = keys.size();
+        } else {
+            failed = keys.size();
+        }
     }
-    return failed == 0;
+    notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
+    errorCount_.fetch_add(failed, std::memory_order_relaxed);
+    if (failed != 0) {
+        LogTaskResult(result, "delete");
+    }
+    LOG_INFO("Executor: delete {} keys, {} not found, {} failed", keys.size(), notFound, failed);
+    return true;
 }
 
-void Executor::RecordTask(std::size_t entryCount, std::size_t failedCount, std::uint64_t bytes,
-                          bool taskCompleted, std::int64_t latencyNs)
+void Executor::RecordTask(std::size_t entryCount, std::uint64_t bytes, bool taskCompleted,
+                          std::int64_t latencyNs)
 {
     opCount_.fetch_add(entryCount, std::memory_order_relaxed);
-    errorCount_.fetch_add(failedCount, std::memory_order_relaxed);
     ioBytes_.fetch_add(bytes, std::memory_order_relaxed);
     if (taskCompleted) {
         taskCount_.fetch_add(1, std::memory_order_relaxed);
-        latencyNsTotal_.fetch_add(static_cast<std::uint64_t>(latencyNs),
-                                  std::memory_order_relaxed);
+        latencyNsTotal_.fetch_add(static_cast<std::uint64_t>(latencyNs), std::memory_order_relaxed);
+    }
+}
+
+bool Executor::IsNotFound(const kv::Status &status)
+{
+    // 全部“目标 key 无数据”语义的状态码：任务级 NOT_FOUND 与 entry 级各变体统一归未命中观察
+    switch (status.code) {
+        case kv::StatusCode::NOT_FOUND:
+        case kv::StatusCode::ENTRY_KEY_NOT_FOUND:
+        case kv::StatusCode::ENTRY_DATA_NOT_EXIST:
+        case kv::StatusCode::ENTRY_KEY_NOT_EXIST:
+        case kv::StatusCode::CQE_KEY_NOT_EXIST:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -290,7 +404,9 @@ std::size_t Executor::CountFailed(const kv::TaskResult &result, std::size_t entr
             ++failed;
         }
     }
-    // 防御 entryStatus 与 entries 数量不一致的异常场景，失败数不超过 entry 总数
+    if (result.entryStatus.size() < entryCount) {
+        failed += entryCount - result.entryStatus.size();
+    }
     return std::min(failed, entryCount);
 }
 

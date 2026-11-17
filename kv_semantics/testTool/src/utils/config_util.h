@@ -11,63 +11,80 @@
 #include <spdlog/common.h>
 
 /**
- * 全局配置中心：加载 conf/test_config.conf，原始键值以 string 存入缓存，
- * key 齐全性与取值边界在 Load 时经 Check 校验，getter 按需解析为目标类型。
+ * 全局配置中心（单例）：加载配置文件，原始键值以 string 存入缓存，getter 按需解析为目标类型；
+ * 数值项按实际值域选型：计数/模式/ID 等小值域用 int，字节量（buffersize、log.max_file_size）用 int64；
+ * key 齐全性与取值格式由配置书写者负责，Check 仅校验级别名合法、runtime=0 时 loop>0
+ * 与值缓冲池参数为正。
+ * 需要读配置的组件在初始化入口显式传入实例引用，不在内部直接访问单例。
  */
 class ConfigUtil {
 public:
-    /** 加载并校验全部配置（解析 key=value、剥离行内注释、Check 校验、展开文件名时间标记）；任一环节失败则整体失败 */
-    static bool Load(const std::string &path, std::string &err);
+    /** 获取全局单例引用（C++11 局部静态变量，首次调用时初始化且线程安全） */
+    static ConfigUtil &GetInstance();
+
+    /** 加载配置（解析 key=value、剥离行内注释、Check 校验、展开文件名时间标记）；任一环节失败则整体失败 */
+    bool Load(const std::string &path, std::string &err);
 
     // ---- 测试通用参数 ----
     /** 输入文件类型（testmode）：1=不带 value，2=带 value */
-    static int64_t GetTestMode();
+    int GetTestMode() const;
     /** 运行时长分钟（runtime）；0 为循环模式，以 loop 为准 */
-    static int64_t GetRuntime();
+    int GetRuntime() const;
     /** 请求循环执行次数（loop），runtime=0 时生效 */
-    static int64_t GetLoop();
+    int GetLoop() const;
     /** 性能模式（perf）：true=无日志测性能 */
-    static bool GetPerf();
+    bool GetPerf() const;
     /** 只建链不下 IO（onlyconnect） */
-    static bool GetOnlyConnect();
+    bool GetOnlyConnect() const;
     /** 绑核起始 ID（startcoreid） */
-    static int64_t GetStartCoreId();
+    int GetStartCoreId() const;
     /** 发送线程数量（numjobs） */
-    static int64_t GetNumJobs();
+    int GetNumJobs() const;
+    /** 值缓冲单块容量字节（buffersize），建链时分配注册一次；字节量可能超 int 值域，留 int64 */
+    int64_t GetBufferSize() const;
+    /** 值缓冲块数（buffercount），建链时分配注册一次 */
+    int GetBufferCount() const;
+    /** 值缓冲内存类型（buffertype）：host 主机内存 / device 设备内存 */
+    std::string GetBufferType() const;
+    /** 设备 ID（deviceid），buffertype=device 时使用 */
+    int GetDeviceId() const;
     /** 读 log 的位置（readlogdir） */
-    static std::string GetReadLogDir();
+    std::string GetReadLogDir() const;
     /** 日志输出目录（logdir） */
-    static std::string GetLogDir();
+    std::string GetLogDir() const;
 
     // ---- log 模块参数 ----
     /** 全量日志最低级别（log.level） */
-    static spdlog::level::level_enum GetLogLevel();
+    spdlog::level::level_enum GetLogLevel() const;
     /** 日志输出格式（log.pattern），语法同 spdlog pattern，值不能含 '#' */
-    static std::string GetLogPattern();
+    std::string GetLogPattern() const;
     /** 全量日志实际文件名（log.file_name 的 %Y%m%d_%H 等时间标记已按加载时刻展开） */
-    static std::string GetLogFileName();
+    std::string GetLogFileName() const;
     /** warn 专用实际文件名（log.warn_file_name，时间标记已展开），记录 warn 及以上 */
-    static std::string GetLogWarnFileName();
-    /** error 专用实际文件名（log.error_file_name，时间标记已展开），记录 error 及以上 */
-    static std::string GetLogErrorFileName();
-    /** 单文件大小上限字节（log.max_file_size） */
-    static int64_t GetLogMaxFileSize();
+    std::string GetLogWarnFileName() const;
+    /** error 专用实际文件名（log.error_file_name，时间标记已展开） */
+    std::string GetLogErrorFileName() const;
+    /** 单文件大小上限字节（log.max_file_size）；字节量可能超 int 值域，留 int64 */
+    int64_t GetLogMaxFileSize() const;
     /** 滚动文件保留个数，不含活跃文件（log.max_files），0 表示不清理 */
-    static int64_t GetLogMaxFiles();
+    int GetLogMaxFiles() const;
     /** 异步队列长度（log.async_queue_size） */
-    static int64_t GetLogAsyncQueueSize();
+    int GetLogAsyncQueueSize() const;
     /** 周期刷盘间隔毫秒（log.async_flush_interval_ms） */
-    static int64_t GetLogAsyncFlushIntervalMs();
+    int GetLogAsyncFlushIntervalMs() const;
 
     /** 将全部配置项经 getter 读出并以 info 级别输出到日志；须在 Load 与日志初始化成功后调用 */
-    static void Print();
+    void Print() const;
 
-    ConfigUtil() = delete; // 静态工具类，禁止实例化
+    ConfigUtil(const ConfigUtil &) = delete;             // 单例：禁止拷贝
+    ConfigUtil &operator=(const ConfigUtil &) = delete; // 单例：禁止赋值
 
 private:
-    /** 配置检查：级别名合法、runtime=0 时 loop 须大于 0；发现问题填 err 并返回 false */
-    static bool Check(std::string &err);
+    ConfigUtil() = default; // 单例：私有默认构造，仅 GetInstance 内部创建
+
+    /** 配置检查：级别名合法、runtime=0 时 loop 须大于 0、值缓冲池参数（buffersize/buffercount）须为正；发现问题填 err 并返回 false */
+    bool Check(std::string &err);
 
     /** 原始键值缓存（全 string；文件名值为加载时刻展开后的实际文件名） */
-    inline static std::unordered_map<std::string, std::string> values_;
+    std::unordered_map<std::string, std::string> values_;
 };

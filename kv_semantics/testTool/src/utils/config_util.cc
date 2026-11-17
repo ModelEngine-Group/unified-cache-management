@@ -54,6 +54,12 @@ std::string ExpandFileNameTpl(const std::string &tpl, std::time_t t)
 
 } // namespace
 
+ConfigUtil &ConfigUtil::GetInstance()
+{
+    static ConfigUtil instance;
+    return instance;
+}
+
 bool ConfigUtil::Load(const std::string &path, std::string &err)
 {
     std::vector<std::string> lines;
@@ -70,7 +76,7 @@ bool ConfigUtil::Load(const std::string &path, std::string &err)
         }
         size_t sep = trimmed.find('=');
         if (sep == std::string::npos) {
-            err = "配置第 " + std::to_string(lineNo) + " 行缺少 '=': " + trimmed;
+            err = "config line " + std::to_string(lineNo) + " missing '=': " + trimmed;
             return false;
         }
         std::string key = Trim(trimmed.substr(0, sep));
@@ -80,11 +86,11 @@ bool ConfigUtil::Load(const std::string &path, std::string &err)
             value = Trim(value.substr(0, hash));
         }
         if (key.empty()) {
-            err = "配置第 " + std::to_string(lineNo) + " 行 key 为空";
+            err = "config line " + std::to_string(lineNo) + " has empty key";
             return false;
         }
         if (!items.emplace(key, value).second) {
-            err = "配置第 " + std::to_string(lineNo) + " 行 key 重复: " + key;
+            err = "config line " + std::to_string(lineNo) + " has duplicate key: " + key;
             return false;
         }
     }
@@ -100,7 +106,7 @@ bool ConfigUtil::Load(const std::string &path, std::string &err)
     std::string warnName = ExpandFileNameTpl(values_.at("log.warn_file_name"), now);
     std::string errorName = ExpandFileNameTpl(values_.at("log.error_file_name"), now);
     if (fullName == warnName || fullName == errorName || warnName == errorName) {
-        err = "log.file_name / log.warn_file_name / log.error_file_name 展开后文件名重复";
+        err = "expanded file names of log.file_name / log.warn_file_name / log.error_file_name conflict";
         return false;
     }
     values_["log.file_name"] = std::move(fullName);
@@ -114,114 +120,144 @@ bool ConfigUtil::Check(std::string &err)
     // 级别名合法
     spdlog::level::level_enum level;
     if (!StringToLevel(values_.at("log.level"), level)) {
-        err = "log.level 非法: " + values_.at("log.level") +
-              "（可选 trace/debug/info/warn/error/critical）";
+        err = "invalid log.level: " + values_.at("log.level") +
+              " (expected trace/debug/info/warn/error/critical)";
         return false;
     }
 
     // runtime=0（循环模式）时 loop 必须大于 0
-    int64_t rt = std::stoll(values_.at("runtime"));
-    int64_t lp = std::stoll(values_.at("loop"));
+    int rt = std::stoi(values_.at("runtime"));
+    int lp = std::stoi(values_.at("loop"));
     if (rt == 0 && lp == 0) {
-        err = "runtime=0（循环模式）时 loop 必须大于 0";
+        err = "loop must be > 0 when runtime=0 (loop mode)";
+        return false;
+    }
+
+    // 值缓冲池参数必须为正：非正值会在后续分配/注册中产生空区域
+    // （buffersize 为字节量留 int64，buffercount 为块数用 int，与 getter 值域一致）
+    int64_t bufferSize = std::stoll(values_.at("buffersize"));
+    int bufferCount = std::stoi(values_.at("buffercount"));
+    if (bufferSize <= 0 || bufferCount <= 0) {
+        err = "invalid value buffer pool config: buffersize=" + std::to_string(bufferSize) +
+              " buffercount=" + std::to_string(bufferCount);
         return false;
     }
     return true;
 }
 
-int64_t ConfigUtil::GetTestMode()
+int ConfigUtil::GetTestMode() const
 {
-    return std::stoll(values_.at("testmode"));
+    return std::stoi(values_.at("testmode"));
 }
 
-int64_t ConfigUtil::GetRuntime()
+int ConfigUtil::GetRuntime() const
 {
-    return std::stoll(values_.at("runtime"));
+    return std::stoi(values_.at("runtime"));
 }
 
-int64_t ConfigUtil::GetLoop()
+int ConfigUtil::GetLoop() const
 {
-    return std::stoll(values_.at("loop"));
+    return std::stoi(values_.at("loop"));
 }
 
-bool ConfigUtil::GetPerf()
+bool ConfigUtil::GetPerf() const
 {
     return values_.at("perf") == "on";
 }
 
-bool ConfigUtil::GetOnlyConnect()
+bool ConfigUtil::GetOnlyConnect() const
 {
     return values_.at("onlyconnect") == "on";
 }
 
-int64_t ConfigUtil::GetStartCoreId()
+int ConfigUtil::GetStartCoreId() const
 {
-    return std::stoll(values_.at("startcoreid"));
+    return std::stoi(values_.at("startcoreid"));
 }
 
-int64_t ConfigUtil::GetNumJobs()
+int ConfigUtil::GetNumJobs() const
 {
-    return std::stoll(values_.at("numjobs"));
+    return std::stoi(values_.at("numjobs"));
 }
 
-std::string ConfigUtil::GetReadLogDir()
+int64_t ConfigUtil::GetBufferSize() const
+{
+    return std::stoll(values_.at("buffersize"));
+}
+
+int ConfigUtil::GetBufferCount() const
+{
+    return std::stoi(values_.at("buffercount"));
+}
+
+std::string ConfigUtil::GetBufferType() const
+{
+    return values_.at("buffertype");
+}
+
+int ConfigUtil::GetDeviceId() const
+{
+    return std::stoi(values_.at("deviceid"));
+}
+
+std::string ConfigUtil::GetReadLogDir() const
 {
     return values_.at("readlogdir");
 }
 
-std::string ConfigUtil::GetLogDir()
+std::string ConfigUtil::GetLogDir() const
 {
     return values_.at("logdir");
 }
 
-spdlog::level::level_enum ConfigUtil::GetLogLevel()
+spdlog::level::level_enum ConfigUtil::GetLogLevel() const
 {
     spdlog::level::level_enum level = spdlog::level::info;
     (void)StringToLevel(values_.at("log.level"), level);
     return level;
 }
 
-std::string ConfigUtil::GetLogPattern()
+std::string ConfigUtil::GetLogPattern() const
 {
     return values_.at("log.pattern");
 }
 
-std::string ConfigUtil::GetLogFileName()
+std::string ConfigUtil::GetLogFileName() const
 {
     return values_.at("log.file_name");
 }
 
-std::string ConfigUtil::GetLogWarnFileName()
+std::string ConfigUtil::GetLogWarnFileName() const
 {
     return values_.at("log.warn_file_name");
 }
 
-std::string ConfigUtil::GetLogErrorFileName()
+std::string ConfigUtil::GetLogErrorFileName() const
 {
     return values_.at("log.error_file_name");
 }
 
-int64_t ConfigUtil::GetLogMaxFileSize()
+int64_t ConfigUtil::GetLogMaxFileSize() const
 {
     return std::stoll(values_.at("log.max_file_size"));
 }
 
-int64_t ConfigUtil::GetLogMaxFiles()
+int ConfigUtil::GetLogMaxFiles() const
 {
-    return std::stoll(values_.at("log.max_files"));
+    return std::stoi(values_.at("log.max_files"));
 }
 
-int64_t ConfigUtil::GetLogAsyncQueueSize()
+int ConfigUtil::GetLogAsyncQueueSize() const
 {
-    return std::stoll(values_.at("log.async_queue_size"));
+    return std::stoi(values_.at("log.async_queue_size"));
 }
 
-int64_t ConfigUtil::GetLogAsyncFlushIntervalMs()
+int ConfigUtil::GetLogAsyncFlushIntervalMs() const
 {
-    return std::stoll(values_.at("log.async_flush_interval_ms"));
+    return std::stoi(values_.at("log.async_flush_interval_ms"));
 }
 
-void ConfigUtil::Print()
+void ConfigUtil::Print() const
 {
     LOG_INFO("testmode={}", GetTestMode());
     LOG_INFO("runtime={}", GetRuntime());
@@ -230,6 +266,10 @@ void ConfigUtil::Print()
     LOG_INFO("onlyconnect={}", GetOnlyConnect());
     LOG_INFO("startcoreid={}", GetStartCoreId());
     LOG_INFO("numjobs={}", GetNumJobs());
+    LOG_INFO("buffersize={}", GetBufferSize());
+    LOG_INFO("buffercount={}", GetBufferCount());
+    LOG_INFO("buffertype={}", GetBufferType());
+    LOG_INFO("deviceid={}", GetDeviceId());
     LOG_INFO("readlogdir={}", GetReadLogDir());
     LOG_INFO("logdir={}", GetLogDir());
 
