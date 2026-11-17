@@ -109,9 +109,7 @@ def _parse_tokens(raw: Optional[str]) -> Optional[frozenset]:
 
     if raw is None:
         return None
-    return frozenset(
-        token.strip().lower() for token in raw.split(",") if token.strip()
-    )
+    return frozenset(token.strip().lower() for token in raw.split(",") if token.strip())
 
 
 def _parse_int(raw: Optional[str], default: int, minimum: int) -> int:
@@ -156,9 +154,7 @@ class KVNaNCheckConfig:
     stride: int = 1
 
     @classmethod
-    def from_env(
-        cls, env: Optional[Dict[str, str]] = None
-    ) -> "KVNaNCheckConfig":
+    def from_env(cls, env: Optional[Dict[str, str]] = None) -> "KVNaNCheckConfig":
         source = os.environ if env is None else env
         raw = str(source.get("UCM_KV_NAN_CHECK", "")).strip().lower()
         if raw in _OFF_TOKENS:
@@ -178,9 +174,7 @@ class KVNaNCheckConfig:
         return cls(
             phases=phases,
             groups=groups,
-            max_blocks=_parse_int(
-                source.get("UCM_KV_NAN_CHECK_MAX_BLOCKS"), 64, 1
-            ),
+            max_blocks=_parse_int(source.get("UCM_KV_NAN_CHECK_MAX_BLOCKS"), 64, 1),
             stride=_parse_int(source.get("UCM_KV_NAN_CHECK_STRIDE"), 1, 1),
         )
 
@@ -321,8 +315,7 @@ def _covers_whole(offsets: list, counts: list, group_block: int) -> bool:
     """True when the sampled rows transfer their whole tensor block."""
 
     return all(
-        offset == 0 and count >= group_block
-        for offset, count in zip(offsets, counts)
+        offset == 0 and count >= group_block for offset, count in zip(offsets, counts)
     )
 
 
@@ -352,9 +345,7 @@ def _nonfinite_mask(
 
     if offsets is not None and spec is not None and group_block:
         axis = spec.axis_size
-        view_off = [
-            offset * axis // group_block for offset in offsets
-        ]
+        view_off = [offset * axis // group_block for offset in offsets]
         view_cnt = [
             max(0, min(count * axis // group_block, axis - off)) if off < axis else 0
             for off, count in zip(view_off, counts)
@@ -530,9 +521,7 @@ class KVNaNChecker:
                         sampled=sampled,
                         ids_tensor=ids_tensor,
                         ranges=(
-                            None
-                            if offsets is None
-                            else (offsets, counts, group_block)
+                            None if offsets is None else (offsets, counts, group_block)
                         ),
                         any_bad=mask.any(),
                         bad_count=mask.sum(),
@@ -581,7 +570,9 @@ class KVNaNChecker:
         clamped = []
         for offset, count in zip(full_off, full_cnt):
             offset = max(0, offset)
-            count = max(0, min(count, group_block - offset)) if offset < group_block else 0
+            count = (
+                max(0, min(count, group_block - offset)) if offset < group_block else 0
+            )
             clamped.append((offset, count))
         offsets = [clamped[index][0] for index in sampled]
         counts = [clamped[index][1] for index in sampled]

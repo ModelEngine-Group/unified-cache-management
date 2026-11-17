@@ -101,9 +101,7 @@ class SampleTests(unittest.TestCase):
 
 class CheckerGatingTests(unittest.TestCase):
     def test_stride_counts_per_phase(self):
-        checker = KVNaNChecker(
-            KVNaNCheckConfig(phases=frozenset({"dump"}), stride=2)
-        )
+        checker = KVNaNChecker(KVNaNCheckConfig(phases=frozenset({"dump"}), stride=2))
         self.assertEqual(
             [checker.should_run("dump") for _ in range(4)], [True, False, True, False]
         )
@@ -134,8 +132,10 @@ class BitPatternTests(unittest.TestCase):
 
     def _bf16(self, bits):
         # uint16 -> bit-identical int16 view -> bf16 view.
-        return torch.tensor([bits], dtype=torch.uint16).view(torch.int16).view(
-            torch.bfloat16
+        return (
+            torch.tensor([bits], dtype=torch.uint16)
+            .view(torch.int16)
+            .view(torch.bfloat16)
         )
 
     def test_bf16_nonfinite_patterns(self):
@@ -221,9 +221,7 @@ class BitPatternTests(unittest.TestCase):
         )
         errors = []
         checker = KVNaNChecker(
-            KVNaNCheckConfig(
-                phases=frozenset({"load"}), groups=frozenset({"fa"})
-            ),
+            KVNaNCheckConfig(phases=frozenset({"load"}), groups=frozenset({"fa"})),
             logger=NS(error=errors.append, warning=lambda *a: None),
         )
         checker.run([selection], {0: layout}, "load")
@@ -259,17 +257,13 @@ class BitPatternTests(unittest.TestCase):
         # Layout missing, layout without views, non-tensor views: all no-ops.
         checker.run([selection], {}, "load")
         checker.run([selection], {0: NS(block_views=[])}, "load")
-        checker.run(
-            [selection], {0: NS(block_views=[("l", object())])}, "load"
-        )
+        checker.run([selection], {0: NS(block_views=[("l", object())])}, "load")
         self.assertEqual(warnings, [])
 
     def _checker(self, errors):
         return KVNaNChecker(
             KVNaNCheckConfig(phases=frozenset({"dump"}), max_blocks=64),
-            logger=NS(
-                error=errors.append, warning=lambda *a, **k: None
-            ),
+            logger=NS(error=errors.append, warning=lambda *a, **k: None),
         )
 
     def test_partial_ranges_exclude_invalid_regions(self):
@@ -368,7 +362,7 @@ class BitPatternTests(unittest.TestCase):
             label="FA",
             keys=[b"k" * 16] * 4,
             block_ids=list(range(4)),
-            token_offsets=[8] * 4,   # tokens 8..64 => states 1..8
+            token_offsets=[8] * 4,  # tokens 8..64 => states 1..8
             token_counts=[56] * 4,
             token_block_size=64,
         )
@@ -381,7 +375,7 @@ class BitPatternTests(unittest.TestCase):
             label="FA",
             keys=[b"k" * 16] * 4,
             block_ids=list(range(4)),
-            token_offsets=[0] * 4,   # tokens 0..8 => state 0 only
+            token_offsets=[0] * 4,  # tokens 0..8 => state 0 only
             token_counts=[8] * 4,
             token_block_size=64,
         )

@@ -2356,9 +2356,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.device.synchronize()
             except Exception as e:  # pragma: no cover - probe must not break
                 logger.warning(f"KV non-finite probe sync failed: {e}")
-            self._kv_nan_check.run(
-                load_task.selections, self.group_layouts, "load"
-            )
+            self._kv_nan_check.run(load_task.selections, self.group_layouts, "load")
         return True
 
     def get_block_ids_with_load_errors(self) -> set[int]:
