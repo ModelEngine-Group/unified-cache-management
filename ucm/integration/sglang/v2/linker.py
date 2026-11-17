@@ -32,7 +32,6 @@ from ucm.logger import init_logger
 from .device_layout import DeviceLayout, fingerprint
 from .runtime import Runtime, proxy
 
-
 logger = init_logger(__name__)
 
 
@@ -204,7 +203,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         with self._scheduler_lock:
             self._associate_pages(rid, page_keys)
             for section, section_transfers in expanded:
-                keys = b"".join(section.block_ids(page_keys[:candidates[-1]]))
+                keys = b"".join(section.block_ids(page_keys[: candidates[-1]]))
                 hits, _prefetchable = self.runtime.lookup(rid, keys)
                 transfer = section_transfers[0]
                 if transfer.hit_policy == "trailing_pages":
@@ -227,11 +226,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     break
         logger.info(
             "SGLang UCM V2 lookup: rid=%s requested_pages=%d "
-            "restorable_prefix_pages=%d restorable_boundaries=%d",
+            "restorable_prefix_pages=%d candidates=%s",
             rid,
             len(page_keys),
             candidates[-1] if candidates else 0,
-            len(candidates),
+            candidates,
         )
         return candidates
 
@@ -477,8 +476,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
             (t[0] for s, t in sections if s.name == "FA" and t and t[0].keys),
             None,
         )
-        key_transfer = fa if fa is not None else next(
-            (t[0] for _, t in sections if t and t[0].keys), None
+        key_transfer = (
+            fa
+            if fa is not None
+            else next((t[0] for _, t in sections if t and t[0].keys), None)
         )
         if key_transfer is None:
             return 0
@@ -583,7 +584,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     token = self.runtime.prepare_put(rid, b"".join(block_ids))
                 try:
                     if tuple(key.to_bytes() for key in token.keys) != block_ids:
-                        raise RuntimeError("Store Put token does not match the node pages")
+                        raise RuntimeError(
+                            "Store Put token does not match the node pages"
+                        )
                     completion = Future()
                     completion.add_done_callback(
                         lambda done: self._control_executor.submit(

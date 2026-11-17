@@ -24,7 +24,6 @@ from ucm.logger import init_logger
 
 from .runtime import proxy
 
-
 logger = init_logger(__name__)
 
 
@@ -90,25 +89,43 @@ class DeviceLayout:
         )
 
     def expand(self, transfers, **kwargs):
-        by_name = {transfer.name: transfer for transfer in self.group.resolve_transfers(
-            transfers, **kwargs
-        )}
+        by_name = {
+            transfer.name: transfer
+            for transfer in self.group.resolve_transfers(transfers, **kwargs)
+        }
         sections = []
         for section in self.sections.values():
-            selected = tuple(by_name[entry.name] for entry in section.entries
-                             if entry.name in by_name)
+            selected = tuple(
+                by_name[entry.name]
+                for entry in section.entries
+                if entry.name in by_name
+            )
             if not selected:
                 continue
             keys = selected[0].keys
-            if len(selected) != len(section.entries) or any(t.keys != keys for t in selected):
-                raise ValueError(f"Pools in section {section.name} must share logical pages")
+            if len(selected) != len(section.entries) or any(
+                t.keys != keys for t in selected
+            ):
+                raise ValueError(
+                    f"Pools in section {section.name} must share logical pages"
+                )
             sections.append((section, selected))
         return sections
 
 
 class SectionLayout:
-    def __init__(self, name, entries, num_layers, page_size, namespace, model_identity,
-                 *, sharded=False, tp_group=None):
+    def __init__(
+        self,
+        name,
+        entries,
+        num_layers,
+        page_size,
+        namespace,
+        model_identity,
+        *,
+        sharded=False,
+        tp_group=None,
+    ):
         self.name = name
         self.entries = entries
         self.layers = []
@@ -136,7 +153,9 @@ class SectionLayout:
                         buffer = entry.components[component_id][index]
                         devices.add(buffer.device)
                         if not buffer.is_contiguous():
-                            raise ValueError("Store v2 requires contiguous physical buffers")
+                            raise ValueError(
+                                "Store v2 requires contiguous physical buffers"
+                            )
                         items.append((int(base), int(stride)))
                         sizes.append(int(size))
                         offsets.append(offset)
@@ -176,15 +195,16 @@ class SectionLayout:
                 tp_group, facts, namespace, model_identity, page_size
             )
         pool_bytes = {
-            str(entry.name): {"local": 0, "object": 0} for entry in self.entries
+            str(entry.name): {"local_rank_bytes": 0, "stored_object_bytes": 0}
+            for entry in self.entries
         }
         for local, stored in zip(facts, object_facts):
             sizes = pool_bytes[local[1]]
-            sizes["local"] += local[5]
-            sizes["object"] += stored[5]
+            sizes["local_rank_bytes"] += local[5]
+            sizes["stored_object_bytes"] += stored[5]
         logger.info(
-            "SGLang UCM V2 device layout: section=%s device=%s object_bytes=%d "
-            "shared_shards=%s pool_bytes=%s",
+            "SGLang UCM V2 device layout: section=%s device=%s "
+            "section_object_bytes=%d shared_shards=%s pools=%s",
             self.name,
             self.device,
             self.total_size,
@@ -232,7 +252,9 @@ class SectionLayout:
         local_offsets = [global_base[i] + rank_prefix[i] for i in range(len(facts))]
         global_facts = [structure[i] + (global_sizes[i],) for i in range(len(facts))]
         self.total_size = offset
-        self.identity = fingerprint((namespace, model_identity, page_size, global_facts))
+        self.identity = fingerprint(
+            (namespace, model_identity, page_size, global_facts)
+        )
         rebuilt = []
         cursor = 0
         for layout in self.layers:
@@ -241,7 +263,7 @@ class SectionLayout:
                 LayerLayout(
                     layout.pools,
                     layout.sizes,
-                    tuple(local_offsets[cursor:cursor + count]),
+                    tuple(local_offsets[cursor : cursor + count]),
                 )
             )
             cursor += count

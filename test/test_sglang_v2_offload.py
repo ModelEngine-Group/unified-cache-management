@@ -3,13 +3,13 @@
 import hashlib
 import importlib.util
 import logging
-from io import StringIO
 import sys
 import types
 import unittest
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
@@ -49,7 +49,10 @@ def load_linker(*, mamba=False):
         dp_rank=None, attn_dp_rank=0
     )
     layout = Mock(
-        num_layers=1, identity="test-layout", section_sizes={"FA": 8192}, device_id=3,
+        num_layers=1,
+        identity="test-layout",
+        section_sizes={"FA": 8192},
+        device_id=3,
         has_shared_shards=False,
     )
     modules[names[-1]].PoolName = types.SimpleNamespace(MAMBA="mamba")
@@ -61,12 +64,16 @@ def load_linker(*, mamba=False):
     layout.prepare.return_value = types.SimpleNamespace(
         keys=("page",), payloads=lambda: [object()]
     )
-    modules["v2_offload_test.device_layout"].DeviceLayout = lambda *args, **kwargs: layout
+    modules["v2_offload_test.device_layout"].DeviceLayout = (
+        lambda *args, **kwargs: layout
+    )
     modules["v2_offload_test.device_layout"].fingerprint = lambda _: "a" * 64
     modules["ucm.integration.sglang.patch.request_hooks"] = types.SimpleNamespace(
         install_request_hooks=lambda linker_type, **kwargs: None
     )
-    modules["v2_offload_test.runtime"].Runtime = lambda config, **kwargs: config["runtime"]
+    modules["v2_offload_test.runtime"].Runtime = lambda config, **kwargs: config[
+        "runtime"
+    ]
     modules["v2_offload_test.runtime"].proxy = lambda: types.SimpleNamespace(
         RequestContext=types.SimpleNamespace,
         IoContext=lambda: types.SimpleNamespace(prerequisite_handle=0),
@@ -239,7 +246,9 @@ class OffloadTest(unittest.TestCase):
             patch.object(
                 self.module,
                 "fingerprint",
-                side_effect=lambda value: hashlib.sha256(repr(value).encode()).hexdigest(),
+                side_effect=lambda value: hashlib.sha256(
+                    repr(value).encode()
+                ).hexdigest(),
             ),
             patch.object(self.module, "get_parallel") as get_parallel,
         ):
@@ -304,9 +313,7 @@ class OffloadTest(unittest.TestCase):
         return job_id, plan
 
     def put(self):
-        self.assertTrue(
-            self.linker.offload((types.SimpleNamespace(keys=("page",)),))
-        )
+        self.assertTrue(self.linker.offload((types.SimpleNamespace(keys=("page",)),)))
         job_id, _ = self.next_job("put")
         node = self.linker._offload_results[-1]
         return job_id, node
@@ -315,11 +322,15 @@ class OffloadTest(unittest.TestCase):
         self.linker._coordinated_puts = True
         for group_success in (True, False):
             job_id, node = self.put()
-            self.store.completions.put(types.SimpleNamespace(job_id=job_id, success=True))
+            self.store.completions.put(
+                types.SimpleNamespace(job_id=job_id, success=True)
+            )
             self.assertTrue(node.result(timeout=2))
             self.assertTrue(self.linker.pop_completed_offload())
             self.assertEqual(len(self.store.commits), int(not group_success))
-            self.assertEqual(self.linker.commit_completed_puts([group_success]), [group_success])
+            self.assertEqual(
+                self.linker.commit_completed_puts([group_success]), [group_success]
+            )
             self.assertEqual(self.store.commits[-1][1], group_success)
 
     def test_sharded_put_reset_aborts_without_group_verdict(self):

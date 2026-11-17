@@ -35,7 +35,11 @@ class RuntimeTest(unittest.TestCase):
                     "pipe": [
                         {
                             "store": "test",
-                            "config": {"unique_id": "old", "block_size": 1, "device_id": 0},
+                            "config": {
+                                "unique_id": "old",
+                                "block_size": 1,
+                                "device_id": 0,
+                            },
                         },
                         {"store": "test", "config": {"llm_role": "worker"}},
                     ]

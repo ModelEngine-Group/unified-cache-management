@@ -5,16 +5,17 @@ from functools import wraps
 
 
 def install_request_hooks(linker_type, *, coordinated_puts=False):
-    from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
     from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
         UnifiedCacheLinkerWrapper,
     )
+    from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
     from sglang.srt.mem_cache.utils import get_storage_hash_str
 
     commit = getattr(UnifiedCacheLinkerWrapper, "commit_completed_offloads", None)
     if coordinated_puts and commit is None:
         raise ValueError("Sharded Store V2 Put requires SGLang's group offload verdict")
     if commit is not None and not getattr(commit, "_ucm_v2_hook", False):
+
         @wraps(commit)
         def commit_offloads(wrapper, successes):
             linker = wrapper.cache_linker
@@ -91,6 +92,7 @@ def install_request_hooks(linker_type, *, coordinated_puts=False):
 
     abandon = getattr(UnifiedRadixCache, "_abandon_attempt", None)
     if abandon is not None:
+
         @wraps(abandon)
         def abandon_request(cache, request):
             try:
