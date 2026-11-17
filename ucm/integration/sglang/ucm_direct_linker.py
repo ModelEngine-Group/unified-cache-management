@@ -93,6 +93,13 @@ class _PendingOffload:
     result: bool | None = None
 
 
+@dataclass
+class _PrefetchLoad:
+    transfers: list[PoolTransfer]
+    ready_events: list[object]
+    future: Future[bool]
+
+
 class UcmDirectLinker(UnifiedCacheLinker):
     """Link SGLang's L1 cache pools to a UCM Store adapter.
 
@@ -131,7 +138,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], list[object]] | None
+            tuple[int, dict[str, list[PoolTransfer]], list[object]]
+            | _PrefetchLoad
+            | None
         ] = Queue()
         self._completed_loads: Queue[list[str]] = Queue()
         self._requires_load_finish = hasattr(
@@ -700,6 +709,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._pending_loads[rid] = expanded
         return True
 
+    def prefetch(self, transfers: list[PoolTransfer]) -> Future[bool] | None:
+        """Queue all-layer restoration; completion means device writes stopped."""
+        if self._closed or not self._load_thread.is_alive():
+            return None
+        expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
+        if not expanded:
+            return None
+        self._freeze_gc_once()
+        ready_events = self._record_transfer_events()
+        future: Future[bool] = Future()
+        self._load_queue.put(_PrefetchLoad(expanded, ready_events, future))
+        return future
+
     def cancel_queued_load(self, rid: str) -> bool:
         return self._pending_loads.pop(rid, None) is not None
 
@@ -772,7 +794,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 if task is None:
                     return
-                counter_index, pending, ready_events = task
+                prefetch = isinstance(task, _PrefetchLoad)
+                if prefetch:
+                    if not task.future.set_running_or_notify_cancel():
+                        continue
+                    counter_index = -1
+                    pending = {"prefetch": task.transfers}
+                    ready_events = task.ready_events
+                else:
+                    counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
                 try:
@@ -804,17 +834,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 if not all(self.adapter.check(t) for t in tasks):
                                     break
                                 self.adapter.wait(in_flight.pop(next_complete))
-                                self.layer_done_counter.complete(
-                                    counter_index, next_complete
-                                )
+                                if not prefetch:
+                                    self.layer_done_counter.complete(
+                                        counter_index, next_complete
+                                    )
                                 next_complete += 1
 
                         while next_complete < self.num_layers:
                             active_layer = next_complete
                             self.adapter.wait(in_flight.pop(next_complete))
-                            self.layer_done_counter.complete(
-                                counter_index, next_complete
-                            )
+                            if not prefetch:
+                                self.layer_done_counter.complete(
+                                    counter_index, next_complete
+                                )
                             next_complete += 1
                     finally:
                         # A failed submit or wait must not leave prefetched
@@ -836,7 +868,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 )
                 except BaseException as error:
                     landed = False
-                    self.layer_done_counter.fail(counter_index, error)
+                    if not prefetch:
+                        self.layer_done_counter.fail(counter_index, error)
                     logger.exception(
                         "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
                         "[CacheLoad] load_failed load_batch_id=%d "
@@ -850,7 +883,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         list(pending),
                     )
                 finally:
-                    if self._requires_load_finish:
+                    if prefetch:
+                        task.future.set_result(landed)
+                    elif self._requires_load_finish:
                         self._load_results[counter_index].set_result(landed)
                     else:
                         self._completed_loads.put(list(pending))
@@ -1077,8 +1112,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def close(self) -> None:
         if self._closed:
             return
-        self.reset()
         self._closed = True
+        self.reset()
         self._load_queue.put(None)
         self._offload_queue.put(None)
         self._load_thread.join()
