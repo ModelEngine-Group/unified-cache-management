@@ -128,6 +128,7 @@ def _load_layout_symbols():
     source = CONNECTOR_PATH.read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     selected_names = {
+        "_has_layer_component",
         "_get_sparse_c8_flags",
         "_get_store_gc_block_size",
         "_get_store_io_sizes",
@@ -853,6 +854,13 @@ class KVCacheLayoutTest(unittest.TestCase):
             supports_globals["current_platform"] = original_platform
 
         self.assertTrue(supported)
+
+    def test_minimax_indexer_component_scope(self):
+        self.assertTrue(MiniMaxM3KVCacheLayout._is_indexer("model.attn.INDEX_CACHE"))
+        self.assertFalse(MiniMaxM3KVCacheLayout._is_indexer("model.indexer.k_cache"))
+        self.assertFalse(
+            MiniMaxM3KVCacheLayout._is_indexer("model.attn.INDEX_CACHE_AUX")
+        )
 
     def test_tensor_role_mapping(self):
         self.assertEqual(
