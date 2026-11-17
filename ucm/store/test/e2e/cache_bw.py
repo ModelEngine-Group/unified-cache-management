@@ -80,12 +80,6 @@ class Workload:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mode", choices=("cache-hit", "posix-hit"), required=True)
-    parser.add_argument(
-        "--cache-core",
-        choices=("v2", "legacy"),
-        default="v2",
-        help="v2 for Cache2; legacy for develop or A5 cache/cc builds",
-    )
     parser.add_argument("--model", choices=MODEL_PROFILES, default="glm-5.1")
     parser.add_argument("--device", choices=("npu", "cuda"), default="npu")
     parser.add_argument("--workers", type=positive_int)
@@ -114,7 +108,7 @@ def parse_args(argv=None):
         "--cache-capacity-gb",
         type=positive_int,
         default=32,
-        help="total Cache capacity across workers in GiB, for either cache core",
+        help="total Cache capacity across workers in GiB",
     )
     parser.add_argument(
         "--cache-copy", choices=("auto", "plain", "aggregation", "sdma"), default="auto"
@@ -210,16 +204,6 @@ def validate(args, workload):
         raise ValueError(
             "cache NUMA nodes must contain one non-negative node per worker"
         )
-    if args.cache_core == "legacy":
-        if args.cache_numa_nodes is not None:
-            raise ValueError("legacy Cache does not support --cache-numa-nodes")
-        if not workload.shared and args.cache_capacity_gb % args.workers:
-            raise ValueError(
-                "legacy GQA requires --cache-capacity-gb divisible by --workers "
-                "to configure equal whole-GiB private buffers"
-            )
-        if args.cache_copy == "sdma" and args.cache_streams not in (None, 1):
-            raise ValueError("legacy Cache SDMA uses one stream; use --cache-streams 1")
     slots = (args.cache_capacity_gb << 30) // workload.shard_size
     reserved = reserved_slots(args)
     per_rank = slots // args.workers
@@ -228,8 +212,6 @@ def validate(args, workload):
     )
     if slots < 2 * reserved:
         raise ValueError("cache capacity is too small for Cache's reserved slots")
-    if args.cache_core == "legacy" and not workload.shared and per_rank < 1024:
-        raise ValueError("legacy Cache requires at least 1024 slots per private buffer")
     if args.mode == "posix-hit" and per_rank < owned_blocks:
         raise ValueError(
             "cache capacity cannot hold one load task; increase --cache-capacity-gb"
@@ -275,17 +257,14 @@ def sample_byte(block_id, shard):
 
 
 def store_config(args, workload, run_id, rank, *, seed=False):
-    legacy = args.cache_core == "legacy"
+    if seed:
+        pipeline = "Posix"
+    elif args.mode == "cache-hit":
+        pipeline = "Cache"
+    else:
+        pipeline = "Cache|Posix"
     config = {
-        "store_pipeline": (
-            "Posix"
-            if seed
-            else (
-                ("Cache|Empty" if legacy else "Cache")
-                if args.mode == "cache-hit"
-                else "Cache|Posix"
-            )
-        ),
+        "store_pipeline": pipeline,
         "unique_id": run_id + ("_seed" if seed else "_load"),
         "device_id": rank,
         "io_direct": args.direct_io,
@@ -310,20 +289,11 @@ def store_config(args, workload, run_id, rank, *, seed=False):
         share_buffer_enable=workload.shared,
         cache_buffer_capacity_gb=args.cache_capacity_gb,
         cache_load_exclusive_buffer_number=reserved_slots(args),
+        cache_fallback_numa_rank=rank,
+        cache_fallback_numa_rank_count=args.workers,
     )
-    if legacy:
-        if not workload.shared:
-            # Legacy GQA has an independent buffer and dispatch domain per rank.
-            config["local_rank_size"] = 1
-            config["cache_buffer_capacity_gb"] //= args.workers
-            config["cache_load_exclusive_buffer_number"] //= args.workers
-    else:
-        config.update(
-            cache_fallback_numa_rank=rank,
-            cache_fallback_numa_rank_count=args.workers,
-        )
-        if args.cache_numa_nodes is not None:
-            config["cache_detected_numa_node"] = args.cache_numa_nodes[rank]
+    if args.cache_numa_nodes is not None:
+        config["cache_detected_numa_node"] = args.cache_numa_nodes[rank]
     if args.cache_copy != "auto":
         config["cache_sdma_direct"] = args.cache_copy == "sdma"
         config["cache_io_aggregation"] = args.cache_copy == "aggregation"
@@ -809,7 +779,6 @@ def describe(args, workload):
     config = store_config(args, workload, "preview", 0)
     return {
         "mode": args.mode,
-        "cache_core": args.cache_core,
         "model": args.model,
         "scope": "FA-only (WA excluded)" if args.model == "dsv4" else "KV",
         "device": args.device,
@@ -831,11 +800,7 @@ def describe(args, workload):
         "cache_local_rank_size": config["local_rank_size"],
         "cache_copy": args.cache_copy,
         "cache_streams": args.cache_streams,
-        "numa_nodes": (
-            "legacy runtime allocation; no NUMA override or CPU affinity"
-            if args.cache_core == "legacy"
-            else args.cache_numa_nodes or "rank-slice; no CPU affinity"
-        ),
+        "numa_nodes": args.cache_numa_nodes or "rank-slice; no CPU affinity",
         "warmup_requests": args.warmup,
         "measured_requests": args.epochs,
         "epoch_interval_ms": args.epoch_interval_ms,

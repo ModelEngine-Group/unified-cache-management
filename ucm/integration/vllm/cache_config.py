@@ -3,7 +3,6 @@
 from typing import Any
 
 from ucm.logger import init_logger
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 
 logger = init_logger(__name__)
 
@@ -16,9 +15,6 @@ def configure_cache_capacity(
     Pure external LB exposes one DP per service, not the physical node's DP
     count. Keep its per-DP capacity and ask the deployer to divide the budget.
     """
-    partitioned = uses_partitioned_cache()
-    if not partitioned and cache_core_version() != 1:
-        return
     capacity = config.get("cache_buffer_capacity_gb")
     if capacity is None:
         capacity = 160
@@ -35,18 +31,13 @@ def configure_cache_capacity(
             f"Invalid Cache capacity partition: local_dp_size={local_dp_size}, "
             f"stores_per_dp={stores_per_dp}."
         )
-    private_ranks = (
-        cache_rank_count(parallel)
-        if not partitioned and not config.get("share_buffer_enable", False)
-        else 1
-    )
-    divisor = local_dp_size * stores_per_dp * private_ranks
+    divisor = local_dp_size * stores_per_dp
     per_store = capacity // divisor
     if per_store < 1:
         raise ValueError(
             f"cache_buffer_capacity_gb={capacity} is too small for "
             f"local_dp_size={local_dp_size}, stores_per_dp={stores_per_dp}, "
-            f"private_ranks={private_ranks}; set at least {divisor}GB."
+            f"set at least {divisor}GB."
         )
     if external_lb:
         logger.warning_once(
@@ -61,11 +52,10 @@ def configure_cache_capacity(
     config["cache_buffer_capacity_gb"] = per_store
     logger.info(
         "Cache capacity: configured=%sGB, local_dp_size=%s, stores_per_dp=%s, "
-        "private_ranks=%s, per_store=%sGB, external_lb=%s.",
+        "per_store=%sGB, external_lb=%s.",
         capacity,
         local_dp_size,
         stores_per_dp,
-        private_ranks,
         per_store,
         external_lb,
     )
@@ -90,8 +80,6 @@ def configure_cache_numa(
     nodes. Do not synthesize affinity from CPU numbers or use the Cache-domain
     rank as the fallback rank when local DP metadata is available.
     """
-    if not uses_partitioned_cache():
-        return
     node = device.get_numa_node(device_id)
     if node is not None:
         config["cache_detected_numa_node"] = node

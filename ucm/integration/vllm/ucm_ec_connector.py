@@ -45,14 +45,12 @@ from ucm.integration.vllm.device import (
 )
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
-    _check_shm_capacity,
     _get_store_gc_block_size,
     _get_store_io_sizes,
     _scheduler_read_unique_id,
     _worker_generate_unique_id,
 )
 from ucm.logger import init_logger
-from ucm.store.cache.capabilities import uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -246,9 +244,6 @@ def create_ucm_ec_store(
 
     store_config["share_buffer_enable"] = True
     configure_cache_capacity(store_config, vllm_config.parallel_config)
-    # Unversioned wheels retain their original shared-buffer default.
-    store_config.setdefault("cache_buffer_capacity_gb", 128)
-    _check_shm_capacity(int(store_config["cache_buffer_capacity_gb"]))
 
     tensor_size_list = [layout.chunk_bytes]
     store_shard_size, store_block_size = _get_store_io_sizes(
@@ -282,30 +277,25 @@ def create_ucm_ec_store(
         unique_id = f"{unique_id}.ec.dp{dp_rank}"
 
     gc_owner = role == ECConnectorRole.SCHEDULER and dp_rank == 0
+    local_count = cache_rank_count(parallel_config)
 
     store_config.update(
         {
             "unique_id": unique_id,
             "device_id": device_id,
-            # TP size so ranks sharing one buffer get staggered traversal
-            # order; each rank still loads the full EC (single-writer stays).
-            "local_rank_size": parallel_config.tensor_parallel_size,
+            "local_rank_size": local_count,
             "use_gdr": False,
             "posix_gc_enable": gc_owner,
         }
     )
-    if uses_partitioned_cache():
-        local_count = cache_rank_count(parallel_config)
-        store_config["local_rank_size"] = local_count
     if role == ECConnectorRole.WORKER:
-        if uses_partitioned_cache():
-            configure_cache_numa(
-                store_config,
-                create_device(),
-                device_id,
-                parallel_config,
-                device_id % local_count,
-            )
+        configure_cache_numa(
+            store_config,
+            create_device(),
+            device_id,
+            parallel_config,
+            device_id % local_count,
+        )
         store_config.update(
             {
                 "tensor_size_list": tensor_size_list,

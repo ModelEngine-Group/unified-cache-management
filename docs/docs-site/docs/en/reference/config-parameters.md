@@ -58,16 +58,14 @@ These options configure Posix in a Pipeline. Provide `storage_backends` when Pos
 
 ## Cache host-buffer stage
 
-These fields apply to pipelines containing Cache. Budget shared buffers per sharing scope and private buffers across all workers on the host.
+These fields apply to pipelines containing Cache. Cache2 capacity is planned per cache domain and partitioned across its local workers.
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
-| `cache_buffer_capacity_gb` | Optional | int | See description | Native Cache Store defaults to 256 GiB with shared buffers, or 32 GiB per worker when `share_buffer_enable` is false. The vLLM connector supplies 128 GiB when shared buffers are enabled and capacity is omitted. Shared buffers default on for MLA. A positive explicit capacity overrides the native defaults; budget all unshared workers on the host. With pipeline parallelism, the configured capacity is further divided by the number of PP stages sharing the node, and a split that would round down to 0 is rejected at startup. |
-| `use_dpc` | Optional | bool | Default: `false` | Host buffer allocation in non-shared-buffer mode. Defaults to huge pages (legacy DirectIO path); set `true` to use the driver memory API (DPC path). |
+| `cache_buffer_capacity_gb` | Optional | int | Default: `160` | Cache2 capacity in GiB per cache domain for native callers. vLLM treats it as a node budget, divides it across local DP domains and FA/WA stores, and further partitions PP stage stores. External-DP services supply their per-instance budget. Cache2 divides each domain across its local workers. vLLM rejects per-store capacity splits below 1 GiB. |
 | `cache_sdma_direct` | Optional | bool | Depends on build env: `true` when `PLATFORM=ascend-a3`, `false` otherwise | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
-| `cache_load_backend_only` | Optional | bool | Default: `false` | Force load from SSD even on cache hit. Test only. |
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
-| `share_buffer_enable` | Optional | bool | MLA: default enabled; GQA: default disabled | Enable shared memory. MLA without shm or GQA with shm causes performance degradation. |
+| `share_buffer_enable` | Optional | bool | Legacy compatibility | Cache2 always uses a shared control plane and per-worker memfd data segments within each cache domain. |
 
 ## Posix capacity reclamation
 
