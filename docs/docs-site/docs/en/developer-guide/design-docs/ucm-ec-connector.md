@@ -63,7 +63,7 @@ Section 5.1 covers the ordinary EC sequence; Section 5.4 describes EPD.
 | --- | --- | --- | --- | --- |
 | `EncoderCacheLayout` | `frozen dataclass: width:int, dtype:torch.dtype, rows_per_chunk:int, chunk_bytes:int` | Both sides | Process lifetime, immutable | The physical interpretation of an EC item; `chunk_bytes = rows_per_chunk × width × element_size` |
 | `IdentifierState` | `dataclass: num_embeds:int, chunk_ids:tuple[bytes,...], request_ref_count:int=0` | Scheduler | While referenced by at least one active request | All chunk keys of one EC item; `num_chunks = len(chunk_ids)`; derivable fields are not stored redundantly |
-| `RequestState` | `dataclass: processed_feature_count:int=0, identifier_states:dict[str,IdentifierState], hit_identifiers:set[str], store_visible_identifiers:set[str], store_wait_started_at:float\|None=None, next_lookup_at:float=0` | Scheduler | Request lifetime (deleted on finish/abort/cancel) | Registration and references; EPD stores request-local complete hits, the first miss time, and the next lookup time |
+| `RequestState` | `dataclass: processed_feature_count:int=0, identifier_states:dict[str,IdentifierState], hit_identifiers:set[str], store_visible_identifiers:set[str], local_fallback_inputs:dict[str,tuple[int,...]], store_wait_started_at:float\|None=None, next_lookup_at:float=0` | Scheduler | Request lifetime (deleted on finish/abort/cancel) | Registration and references; EPD stores request-local complete hits, the first miss time, and the next lookup time |
 | `ECLoadSpec` | `frozen dataclass: num_embeds:int, chunk_ids:tuple[bytes,...]` | Scheduler→Worker | A single scheduling step | The complete description of one external load |
 | `UCMECConnectorMetadata` | `dataclass(ECConnectorMetadata): loads:dict[str,ECLoadSpec], save_identifiers:tuple[str,...]=()` | Scheduler→Worker | A single model execution step | Final external loads and EPD producer save candidates, carried by `SchedulerOutput.ec_connector_metadata` |
 | `PendingECSave` | `dataclass: identifier:str, task:Task, tensor:Tensor, tail:Tensor\|None, event_handle:int` | Worker | From submission until drained by `_wait_pending_saves` | Holds the source tensor and tail references to prevent release; `event_handle` pending destruction |
@@ -100,7 +100,7 @@ Section 5.1 covers the ordinary EC sequence; Section 5.4 describes EPD.
 | --- | --- | --- | --- |
 | `__init__(vllm_config, role)` | Both sides | Engine constructs the connector | fail-fast validation → parse layout → build hasher → build Store |
 | `ensure_cache_available(request, num_computed_tokens)` | Scheduler | When waiting/running requests enter scheduling | Incremental registration; EPD skips full KV coverage, local EC records, and request-local Store hits; returns False while remaining items are unavailable |
-| `has_cache_item(identifier)` | Scheduler | While scanning encoder inputs | Ordinary EC checks all chunks; EPD selects external loading for registered items; records the selection in the step set |
+| `has_cache_item(identifier)` | Scheduler | While scanning encoder inputs | Ordinary EC checks all chunks; EPD follows the current request's visibility and local-fallback choices; records external selections in the step set |
 | `update_state_after_alloc(request, index)` | Scheduler | After local encoder cache `allocate()` succeeds | Hit items written into `pending_loads` and per-request hit accounting |
 | `build_connector_meta(scheduler_output)` | Scheduler | When constructing `SchedulerOutput` | Filter final loads, update EPD local records, generate E save candidates, and clear step state |
 | `request_finished(request)` | Scheduler | On finish/abort/cancel release | Release references and log the summary; EPD producer returns native media metadata |
@@ -169,7 +169,7 @@ ucm_ec_connector:
     posix_capacity_gb: 10240
     posix_io_engine: "psync"
     posix_data_trans_concurrency: 128
-    cache_buffer_capacity_gb: 32                 # Default 128; /dev/shm capacity checked before creation
+    cache_buffer_capacity_gb: 32                 # Default node budget 160GB; partitioned across local DP/Store domains
   encoder_cache_config:                          # Required
     chunk_size: 128                              # Required, number of rows R per chunk
     enable_epd_disaggregate: false               # Enable on both E and PD for EPD
@@ -187,8 +187,8 @@ ucm_ec_connector:
 | `encoder_cache_config.encoder_cache_hidden_dim` | No | Inferred from the model structure | An explicit value must be positive |
 | `encoder_cache_config.cache_namespace` | No | Constructed from the model identity tuple | An explicit namespace still gets the deepstack layer-index salt |
 | `encoder_cache_config.store_unique_id` | No | `{handshake uuid}.ec.dp{dp_rank}` (same cross-process handshake as KV) | Local Cache domain identity; EPD engines keep independent domains |
-| `encoder_cache_config.enable_epd_disaggregate` | No | false | Basic EPD with E=ec_producer and PD=ec_consumer |
-| `encoder_cache_config.epd_timeout_ms` | No | 30000 | Scheduler visibility deadline from the first miss; Store I/O uses its own timeout |
+| `encoder_cache_config.enable_epd_disaggregate` | No | false | Boolean; basic EPD with E=ec_producer and PD=ec_consumer |
+| `encoder_cache_config.epd_timeout_ms` | No | 30000 | Positive integer; scheduler visibility deadline from the first miss; Store I/O uses its own timeout |
 
 ### 3.4 Chunk key encoding format
 
@@ -298,7 +298,7 @@ chunk_bytes = R × D × element_size
                 │            ├─ normal pipeline: gc_block = store_block_size
                 │            └─ YuanRong|Posix: gc_block = Σtensor_size × shard_count (actual persisted object size)
                 ▼
-store_config injection: unique_id / device_id / local_rank_size=TP / use_gdr=False
+store_config injection: unique_id / device_id / local_rank_size=cache_rank_count / use_gdr=False
                    / share_buffer_enable=True / posix_gc_enable=gc_owner
                    + Worker: tensor_size_list=[chunk_bytes], shard_size, block_size
                    + gc_owner Scheduler: block_size=gc_block_size
@@ -307,8 +307,8 @@ store_config injection: unique_id / device_id / local_rank_size=TP / use_gdr=Fal
 ```
 
 - The default `unique_id` is generated via the same cross-process handshake as the KV connector (Worker rank0 generates a uuid and broadcasts it over the world group, writing `/dev/shm/ucm_ec_uniqueid_{ppid}`; the Scheduler reads it back; `ucm_connector.py: _worker_generate_unique_id / _scheduler_read_unique_id` with `prefix="ucm_ec"`), plus a `.ec.dp{dp_rank}` suffix: the Scheduler and this DP domain's Workers align to the same shared-memory domain, isolated across DP domains. EC and KV use separate file slots with their own prefixes (KV keeps `ucm_`), so a dual-connector engine does not overwrite each other; `instance_id` is a timestamp value from each VllmConfig construction and is not guaranteed consistent across processes, so it is no longer used for alignment; the Posix tier is shared through backend paths and compatible chunk keys; EPD engines use independent Cache domains.
-- `local_rank_size = TP size`: with the shared buffer, ranks traverse chunks in staggered order to improve hot-tier hit distribution; each rank still loads the full EC (single writer unchanged).
-- `cache_buffer_capacity_gb` defaults to 128; `_check_shm_capacity` validates `/dev/shm` capacity before creation and startup fails if insufficient.
+- `local_rank_size = cache_rank_count(parallel_config)`, the number of local workers in the current DP domain: with the shared buffer, ranks traverse chunks in staggered order to improve hot-tier hit distribution; each rank still loads the full EC (single writer unchanged).
+- `cache_buffer_capacity_gb` defaults to 160GB and is divided across local DP domains and their Stores. Cache2 uses a memfd hot tier; EPD validation explicitly uses 4GB per engine domain.
 - The Store config is injected after a shallow copy; the user YAML is never modified.
 
 ---
@@ -395,7 +395,7 @@ Key sequencing constraints:
 - Input: `identifier: str`
 - Output: `bool` (ordinary full-chunk hit, or EPD external load selection)
 - Dependencies: `self.identifier_to_blocks`, `self.store.lookup_on_prefix`, `self.step_verified_hits`
-- Behavior: non-consumer or missing state is an immediate miss; with state, batch lookup returns `== len(chunk_ids)-1` as hit, recorded into this step. A closed Store raises `RuntimeError`. EPD consumers select external loading for registered media; the ensure hook checks complete visibility.
+- Behavior: non-consumer or missing state is an immediate miss; with state, batch lookup returns `== len(chunk_ids)-1` as hit, recorded into this step. A closed Store raises `RuntimeError`. EPD consumers read the current scheduling request's choice: local-fallback items return False; other items admitted by the visibility gate select external loading.
 
 **Load planning `update_state_after_alloc`**
 
@@ -492,6 +492,10 @@ PD's `update_state_after_alloc()` builds `pending_loads`. After final scheduling
 4. Return False at the first miss, allowing the scheduler to process other requests. Lookups use a 10ms request-level backoff; each lookup runs synchronously.
 5. Start `epd_timeout_ms` at the first miss and retain that deadline across retries. When no pending items remain, clear the previous wait before returning True.
 
+On a visibility timeout or lookup exception, check every relevant occurrence of each pending identifier. After excluding model-declared placeholder fields, actual media, embeddings, or SHM data restorable by the worker permit local computation; inputs containing only metadata such as grids retain the existing exception behavior. The request's `local_fallback_inputs` records the choice and feature indices for subsequent scheduling. KV rollback or a streaming append exposing a metadata-only occurrence triggers another check.
+
+`has_cache_item()` reads the current scheduling request's fallback choices, and `update_state_after_alloc()` skips external-load registration for those items. Fallback items actually selected for local computation in the final `scheduled_encoder_inputs` enter `_local_encoder_ids` and are cleared through native physical-eviction notifications. Each scheduling attempt replaces the request context; metadata construction and request completion clear it.
+
 KV rollback exposes media previously skipped by coverage for checking again. The scope includes all media not fully covered by KV, including media consumed in future steps. Store-positive records are request-local; local EC records span requests and update during final metadata construction.
 
 After the gate passes, the native window, budgets, and encoder cache manager determine scheduling. The worker skips resident tensors, allocates padded storage for missing items, submits `load_data()` in batch, and publishes views after each `wait()` succeeds.
@@ -510,8 +514,11 @@ Store queries and request-positive records provide visibility snapshots. Data lo
 | 2026-11-12 | Keep E, delete shared files, restart PD | Cold PD timed out after about 30 seconds with HTTP 500 in the scheduler |
 | 2026-11-13 | E warm saves, PD local reuse, default regression | 84 passed and 3 model/diagnostic tests skipped by default; 2 separate TP2 DTs completed 4 successful requests |
 | 2026-11-13 | Graph and KV PC deployment configuration | Compilation configuration types and command syntax checked in the actual Ascend image |
+| 2026-11-16 | EPD option types, native raw-input fallback scheduling, request isolation, and existing behavior | 92 passed; 3 model/diagnostic tests skipped by default |
 
 The real model was Qwen3.8-27B-w8a8, with BF16 `[64,5120]` EC and 128 rows per chunk. In the warm deletion diagnostic, cumulative E dump submissions increased from 2 to 4, PD loads remained at 2 (two TP ranks), and the file remained absent. Functional DT used eager mode with KV prefix caching disabled; model validation of the graph-plus-PC combination is a separate run.
+
+EPD handoff validation requires `UCM_EPD_LOG_DIR` and inspects log deltas per request. Three requests verify the initial handoff, EC reuse with a changed prefix before the image, and EC or KV reuse for an exact repeat.
 
 DEBUG log `EC cached saves` reports E candidates and submissions; `EC local cache reuse` reports PD reuse; `selected_total` counts external load selections for the request. The validation archive is `epd-hooks-verification-20261113.tar.gz`; test entry points remain in `test/test_ucm_ec_config.py`.
 
@@ -524,7 +531,7 @@ DEBUG log `EC cached saves` reports E candidates and submissions; `EC local cach
 | Chunk granularity trade-off | Too small an R: more blocks/lookups/descriptors, heavy Posix small-I/O pressure; too large an R: tail padding waste, coarser eviction granularity, higher single-transfer latency. Tune based on measured results with the model width and dtype (example uses 128 rows) |
 | Batch pipelining | Loads are all submitted before waiting, hiding the serial overhead of per-item submission; saves are submitted asynchronously so the model proceeds immediately, with draining concentrated at the end of the step |
 | Single writer | Only `is_save_rank` dumps within a DP domain; every participating TP/PCP rank loads the full EC itself |
-| Shared-memory hot tier | `share_buffer_enable` forced on; capacity defaults to 128 GB with a `/dev/shm` precheck; `local_rank_size=TP` staggers traversal order across ranks |
+| Shared-memory hot tier | Cache2 memfd; default node budget 160GB, divided across local DP/Store domains; `local_rank_size` counts local workers in the domain |
 | GC consistency | The unique GC owner (DP0 Scheduler) uses a `gc_block_size` matching the actual persisted object size, keeping capacity accounting and eviction accurate |
 | Device memory | Loads use padded storage + view publication; each item costs less than 1 extra chunk; capacity planning in the 4.2 formula |
 | Lookup cost | Item registration is O(M) first time, O(ΔM) on appends, O(1) with no appends; chunk keys are generated once per identifier globally; the main cost is the Store lookup |
@@ -541,7 +548,6 @@ DEBUG log `EC cached saves` reports E candidates and submissions; `EC local cach
 | Startup | YAML missing/empty/invalid section | `ValueError` | Raised at `Config.load_ec_config` boundary | Startup failure |
 | Startup | `chunk_size` not a positive integer (bool included) / non-positive width | `EncoderCacheLayoutError` | Refuse initialization | Startup failure |
 | Startup | Producer configured with a Store/pipeline that does not support event waiting | `ValueError` | Refuse before opening the Store | Startup failure |
-| Startup | Insufficient `/dev/shm` capacity | `RuntimeError` | `_check_shm_capacity` reports actionable info | Startup failure |
 | Startup | Platform not CUDA-alike/NPU | `RuntimeError` | Device helper raises | Startup failure |
 | Scheduler | `mm_features` shortened | `EncoderCacheLayoutError` | Raised (append-only contract broken) | Engine-level |
 | Scheduler | Identifier row-count conflict (within request / across requests) | `EncoderCacheLayoutError` | Raised; whole batch validated first, no partial commit | Engine-level |
@@ -574,7 +580,6 @@ Layered strategy:
 Testability design (seams built into the code):
 
 - The Store is created via the `UcmConnectorFactoryV1.create_connector` factory → patching the factory captures all injected parameters (unique_id/device_id/size derivation/GC config, etc.);
-- `_check_shm_capacity` is a module-level function → independently patchable;
 - `ECConnectorRole` and vLLM config objects can be faked with `SimpleNamespace`, no real engine needed;
 - load/dump use raw-address interfaces → tests provide `cpu_chunk(address, layout)` to read memory back by pointer, completing bit-exact dump→load round trips with CPU tensors;
 - Tensor lifetimes asserted with `weakref` (holding a reference after save completion should be released);

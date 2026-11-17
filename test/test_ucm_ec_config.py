@@ -13,6 +13,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -219,6 +220,35 @@ class ECConfigTest(unittest.TestCase):
         self.assertFalse(explicit.enable_epd_disaggregate)
         self.assertEqual(self.chunk_keys(implicit), self.chunk_keys(explicit))
 
+    def test_epd_options_validate_types_before_opening_store(self):
+        transfer = self.vllm_config.ec_transfer_config
+        transfer.is_ec_producer = False
+        transfer.is_ec_consumer = True
+        for name, values in (
+            ("epd_timeout_ms", (0, -1, True, False, 1.5, "30000", None)),
+            ("enable_epd_disaggregate", ("false", "true", 0, 1, None, [])),
+        ):
+            for value in values:
+                config = copy.deepcopy(self.config)
+                config["encoder_cache_config"][name] = value
+                with (
+                    self.subTest(name=name, value=value),
+                    patch.object(Config, "load_ec_config", return_value=config),
+                    patch.object(ec, "create_ucm_ec_store") as create_store,
+                    self.assertRaisesRegex(ValueError, name),
+                ):
+                    ec.UCMECConnector(self.vllm_config, ec.ECConnectorRole.SCHEDULER)
+                create_store.assert_not_called()
+        for enabled in (True, False):
+            connector = self.hash_connector(
+                encoder_config={
+                    "enable_epd_disaggregate": enabled,
+                    "epd_timeout_ms": 50,
+                }
+            )
+            self.assertEqual(connector.enable_epd_disaggregate, enabled)
+            self.assertEqual(connector.epd_timeout_ms, 50)
+
     def test_pruning_is_rejected_without_an_enable_switch(self):
         self.vllm_config.model_config.multimodal_config = SimpleNamespace(
             is_multimodal_pruning_enabled=lambda: True,
@@ -230,6 +260,29 @@ class ECConfigTest(unittest.TestCase):
         ):
             ec.UCMECConnector(self.vllm_config, ec.ECConnectorRole.SCHEDULER)
         create_store.assert_not_called()
+
+    def test_epd_keeps_existing_role_and_pipeline_acceptance(self):
+        self.config["ucm_connector_name"] = "UcmPipelineStore"
+        self.config["encoder_cache_config"]["enable_epd_disaggregate"] = True
+        for producer, consumer in ((True, False), (False, True), (True, True)):
+            self.vllm_config.ec_transfer_config.is_ec_producer = producer
+            self.vllm_config.ec_transfer_config.is_ec_consumer = consumer
+            for pipeline in ("Cache", "Cache|Empty", "Cache|Posix"):
+                self.config["ucm_connector_config"]["store_pipeline"] = pipeline
+                with (
+                    self.subTest(
+                        producer=producer, consumer=consumer, pipeline=pipeline
+                    ),
+                    patch.object(Config, "load_ec_config", return_value=self.config),
+                    patch.object(ec, "create_ucm_ec_store") as create_store,
+                ):
+                    connector = ec.UCMECConnector(
+                        self.vllm_config, ec.ECConnectorRole.SCHEDULER
+                    )
+                self.assertEqual(
+                    (connector.is_producer, connector.is_consumer), (producer, consumer)
+                )
+                create_store.assert_called_once()
 
     def test_ec_meta_preserves_model_identity(self):
         model = self.vllm_config.model_config
@@ -578,6 +631,8 @@ class FakeRequest:
                 SimpleNamespace(
                     identifier=identifier,
                     rows=rows,
+                    data=None,
+                    modality="image",
                     mm_position=PlaceholderRange(offset=offset, length=rows),
                 )
             )
@@ -1230,6 +1285,9 @@ class ECConnectorStateTest(unittest.TestCase):
         self.connector._step_saved_ids = set()
         self.connector._is_consumer = True
         self.connector._connector_metadata = None
+        self.connector._epd_scheduling_state = None
+        self.connector._metadata_resolver = Mock()
+        self.connector._metadata_resolver.fields_for.return_value = {"image_grid_thw"}
         self.connector.layout = ec.EncoderCacheLayout(
             width=2, dtype=torch.float32, rows_per_chunk=3, chunk_bytes=24
         )
@@ -1247,11 +1305,12 @@ class ECConnectorStateTest(unittest.TestCase):
         self.assertTrue(self.connector.has_cache_item(identifier))
         self.connector.update_state_after_alloc(request, index)
 
-    def metadata(self, *, freed_mm_hashes=(), **scheduled_tokens):
+    def metadata(self, *, freed_mm_hashes=(), encoder_inputs=None, **scheduled_tokens):
         return self.connector.build_connector_meta(
             SimpleNamespace(
                 num_scheduled_tokens=scheduled_tokens,
                 free_encoder_mm_hashes=list(freed_mm_hashes),
+                scheduled_encoder_inputs=encoder_inputs or {},
             )
         )
 
@@ -1817,6 +1876,145 @@ class ECConnectorStateTest(unittest.TestCase):
         self.connector.request_finished(request)
         self.assertNotIn(request.request_id, self.connector.req_to_state)
 
+    def test_epd_raw_input_timeout_uses_native_encoder_scheduling(self):
+        from vllm.v1.core.sched.scheduler import Scheduler
+
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        request = FakeRequest("raw", ("X", 4))
+        request.has_encoder_inputs = True
+        request.ec_transfer_params = {"X": {"metadata": {}}}
+        request.mm_features[0].data = {
+            "pixel_values": SimpleNamespace(data=torch.ones(2))
+        }
+        self.connector.store.lookup_on_prefix.side_effect = lambda ids: -1
+        with patch.object(ec.time, "monotonic", return_value=10.0) as now:
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+            now.return_value = 10.101
+            self.assertTrue(self.connector.ensure_cache_available(request, 0))
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.is_encoder_decoder = False
+        scheduler.scheduler_config = SimpleNamespace(disable_chunked_mm_input=False)
+        scheduler.encoder_cache_manager = EncoderCacheManager(16)
+        scheduler.ec_connector = self.connector
+        compute, tokens, budget, external, *duplicates = (
+            scheduler._try_schedule_encoder_inputs(request, 0, 4, 16)
+        )
+        self.assertEqual((compute, tokens, budget, external), ([0], 4, 12, []))
+        # v0.30 builds may additionally report duplicate feature indices.
+        self.assertIn(duplicates, ([], [[]]))
+        self.connector.update_state_after_alloc(request, 0)
+        self.assertFalse(self.connector.pending_loads)
+        self.assertFalse(self.metadata(raw=4, encoder_inputs={"raw": [0]}).loads)
+        self.assertIn("X", self.connector._local_encoder_ids)
+        self.connector.request_finished(request)
+        self.connector.store.lookup_on_prefix.reset_mock()
+        self.ensure(FakeRequest("reuse", ("X", 4)))
+        self.connector.store.lookup_on_prefix.assert_not_called()
+        self.metadata(freed_mm_hashes=("X",))
+        self.assertFalse(self.connector._local_encoder_ids)
+
+    def test_epd_metadata_fields_and_missing_payload_cannot_fallback(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        for data in (
+            None,
+            {},
+            {"image_grid_thw": SimpleNamespace(data=torch.ones(3))},
+            {"pixel_values": SimpleNamespace(data=None)},
+        ):
+            request = FakeRequest(str(id(data)), ("X", 4))
+            request.mm_features[0].data = data
+            self.connector.store.lookup_on_prefix.side_effect = lambda ids: -1
+            with patch.object(ec.time, "monotonic", return_value=10.0) as now:
+                self.assertFalse(self.connector.ensure_cache_available(request, 0))
+                now.return_value = 10.101
+                with self.assertRaises(TimeoutError):
+                    self.connector.ensure_cache_available(request, 0)
+            self.assertFalse(
+                self.connector.req_to_state[request.request_id].local_fallback_inputs
+            )
+            self.connector.request_finished(request)
+
+    def test_epd_raw_input_uses_store_when_visible_before_deadline(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        request = FakeRequest("raw", ("X", 4))
+        request.mm_features[0].data = {
+            "pixel_values": SimpleNamespace(data=torch.ones(2))
+        }
+        lookup = self.connector.store.lookup_on_prefix
+        lookup.side_effect = lambda ids: -1
+        with patch.object(ec.time, "monotonic", return_value=10.0) as now:
+            self.assertFalse(self.connector.ensure_cache_available(request, 0))
+            now.return_value = 10.02
+            lookup.side_effect = lambda ids: len(ids) - 1
+            self.ensure(request)
+        self.select_load(request)
+        self.assertFalse(self.connector.req_to_state["raw"].local_fallback_inputs)
+        self.assertEqual(set(self.metadata(raw=4).loads), {"X"})
+
+    def test_epd_lookup_error_falls_back_only_with_local_input(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        request = FakeRequest("mixed", ("raw", 4), ("stored", 4))
+        request.mm_features[0].data = {
+            "image_embeds": SimpleNamespace(data=torch.ones(4, 2))
+        }
+        self.connector._register_encoder_inputs(request)
+        raw_ids = list(self.connector.identifier_to_blocks["raw"].chunk_ids)
+
+        def lookup(ids):
+            if ids == raw_ids:
+                raise OSError("injected lookup failure")
+            return len(ids) - 1
+
+        self.connector.store.lookup_on_prefix.side_effect = lookup
+        self.ensure(request)
+        self.assertFalse(self.connector.has_cache_item("raw"))
+        self.select_load(request, 1)
+        self.assertEqual(set(self.metadata(mixed=8).loads), {"stored"})
+        self.assertNotIn("raw", self.connector._local_encoder_ids)
+        self.ensure(request)
+        self.assertFalse(self.connector.has_cache_item("raw"))
+        self.connector.store.lookup_on_prefix.side_effect = OSError(
+            "injected lookup failure"
+        )
+        with self.assertRaises(OSError):
+            self.connector.ensure_cache_available(FakeRequest("metadata", ("X", 4)), 0)
+
+    def test_epd_fallback_is_request_local_and_keeps_allocation_separate(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        raw = FakeRequest("raw", ("X", 4))
+        raw.mm_features[0].data = {"pixel_values": SimpleNamespace(data=torch.ones(2))}
+        metadata = FakeRequest("metadata", ("X", 4))
+        self.connector.store.lookup_on_prefix.side_effect = OSError("unavailable")
+        self.ensure(raw)
+        self.assertFalse(self.connector.has_cache_item("X"))
+        self.connector.store.lookup_on_prefix.side_effect = lambda ids: len(ids) - 1
+        self.ensure(metadata)
+        self.select_load(metadata)
+        self.ensure(raw)
+        self.assertFalse(self.connector.has_cache_item("X"))
+        self.connector.update_state_after_alloc(raw, 0)
+        self.assertFalse(self.connector.req_to_state["raw"].hit_identifiers)
+        self.assertEqual(set(self.metadata(metadata=4, raw=4).loads), {"X"})
+
+    def test_epd_fallback_rechecks_uncovered_metadata_occurrences(self):
+        self.connector.enable_epd_disaggregate = True
+        self.connector.epd_timeout_ms = 100
+        request = FakeRequest("rollback", ("X", 4), ("X", 4))
+        request.mm_features[1].data = {
+            "pixel_values": SimpleNamespace(data=torch.ones(2))
+        }
+        self.connector.store.lookup_on_prefix.side_effect = OSError("unavailable")
+        self.assertTrue(self.connector.ensure_cache_available(request, 4))
+        self.assertFalse(self.connector.has_cache_item("X"))
+        with self.assertRaises(OSError):
+            self.connector.ensure_cache_available(request, 0)
+        self.assertFalse(self.connector.req_to_state["rollback"].local_fallback_inputs)
+
     def test_epd_producer_returns_native_metadata_without_consumer_state(self):
         self.connector.enable_epd_disaggregate = True
         self.connector._is_producer = True
@@ -1918,8 +2116,29 @@ class EPDEndToEndTest(unittest.TestCase):
     def test_image_request_and_reuse(self):
         from PIL import Image
 
+        self.assertTrue(
+            os.getenv("UCM_EPD_LOG_DIR"),
+            "Set UCM_EPD_LOG_DIR with encoder.log, prefill-decode.log and proxy.log.",
+        )
+        logs = Path(os.environ["UCM_EPD_LOG_DIR"])
+        paths = {
+            name: logs / filename
+            for name, filename in (
+                ("encoder", "encoder.log"),
+                ("decoder", "prefill-decode.log"),
+                ("proxy", "proxy.log"),
+            )
+        }
+        for path in paths.values():
+            self.assertTrue(path.is_file(), f"Capture the service log at {path}.")
+        run_id = uuid.uuid4().hex
+        pixels = Image.new("RGB", (224, 224), color=(220, 30, 20))
+        for index, value in enumerate(bytes.fromhex(run_id)):
+            pixels.paste(
+                (value, 255 - value, index * 15), (index * 14, 0, (index + 1) * 14, 14)
+            )
         image = io.BytesIO()
-        Image.new("RGB", (224, 224), color=(220, 30, 20)).save(image, format="PNG")
+        pixels.save(image, format="PNG")
         image_url = (
             "data:image/png;base64," + base64.b64encode(image.getvalue()).decode()
         )
@@ -1929,6 +2148,7 @@ class EPDEndToEndTest(unittest.TestCase):
                 {
                     "role": "user",
                     "content": [
+                        {"type": "text", "text": f"Validation {run_id}, prefix 0."},
                         {"type": "image_url", "image_url": {"url": image_url}},
                         {"type": "text", "text": "Describe the image in one sentence."},
                     ],
@@ -1939,8 +2159,15 @@ class EPDEndToEndTest(unittest.TestCase):
             "stream": False,
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        for attempt in range(2):
+        transferred = set()
+        for attempt in range(3):
             with self.subTest(attempt=attempt):
+                # A different prefix before the same image forces the second
+                # request to exercise EC reuse even with KV prefix caching.
+                payload["messages"][0]["content"][0][
+                    "text"
+                ] = f"Validation {run_id}, prefix {min(attempt, 1)}."
+                offsets = {name: path.stat().st_size for name, path in paths.items()}
                 request = urllib.request.Request(
                     os.environ["UCM_EPD_PROXY_URL"].rstrip("/")
                     + "/v1/chat/completions",
@@ -1951,22 +2178,66 @@ class EPDEndToEndTest(unittest.TestCase):
                     result = json.load(response)
                 self.assertTrue(result["choices"][0]["message"]["content"])
                 self.assertGreater(result["usage"]["prompt_tokens"], 0)
-
-        if log_dir := os.getenv("UCM_EPD_LOG_DIR"):
-            logs = Path(log_dir)
-            encoder = (logs / "encoder.log").read_text()
-            decoder = (logs / "prefill-decode.log").read_text()
-            proxy = (logs / "proxy.log").read_text()
-            self.assertIn("as metadata references", proxy)
-            saved = set(re.findall(r"EC dump item ([^: ]+):", encoder))
-            loaded = set(re.findall(r"EC load item ([^: ]+):", decoder))
-            self.assertTrue(
-                saved & loaded, "E and PD must transfer the same identifier."
-            )
-            self.assertRegex(
-                encoder, r"EC cached saves: candidates=\d+, submitted=[1-9]"
-            )
-            self.assertIn("EC local cache reuse:", decoder)
+                deadline = time.monotonic() + 5
+                while True:
+                    delta = {}
+                    for name, path in paths.items():
+                        self.assertGreaterEqual(
+                            path.stat().st_size,
+                            offsets[name],
+                            "Log rotated during validation.",
+                        )
+                        with path.open("rb") as stream:
+                            stream.seek(offsets[name])
+                            delta[name] = stream.read().decode(
+                                "utf-8", errors="replace"
+                            )
+                    saved = set(re.findall(r"EC dump item ([^: ]+):", delta["encoder"]))
+                    loaded = set(
+                        re.findall(r"EC load item ([^: ]+):", delta["decoder"])
+                    )
+                    ready = "as metadata references" in delta["proxy"]
+                    if attempt == 0:
+                        ready = ready and bool(saved & loaded)
+                    else:
+                        ready = (
+                            ready
+                            and bool(saved & transferred)
+                            and bool(
+                                re.search(
+                                    r"EC cached saves: candidates=\d+, submitted=[1-9]",
+                                    delta["encoder"],
+                                )
+                            )
+                        )
+                        if attempt == 1:
+                            ready = (
+                                ready and "EC local cache reuse:" in delta["decoder"]
+                            )
+                    if ready or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                self.assertIn("as metadata references", delta["proxy"])
+                if attempt == 0:
+                    transferred = saved & loaded
+                    self.assertTrue(
+                        transferred,
+                        "This request must dump and load the same identifier.",
+                    )
+                else:
+                    self.assertTrue(
+                        saved & transferred, "Warm E must save this image again."
+                    )
+                    self.assertRegex(
+                        delta["encoder"],
+                        r"EC cached saves: candidates=\d+, submitted=[1-9]",
+                    )
+                    self.assertFalse(
+                        loaded & transferred,
+                        "Warm PD must reuse EC or KV without reloading this item.",
+                    )
+                    if attempt == 1:
+                        self.assertIn("EC local cache reuse:", delta["decoder"])
 
 
 @unittest.skipUnless(

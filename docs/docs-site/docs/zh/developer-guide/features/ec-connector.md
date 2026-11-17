@@ -165,10 +165,11 @@ EPD 将媒体编码放在 E 节点，prefill 和 decode 放在 PD 节点。E 通
 - 两侧均可访问共享目录 `/mnt/ucm-ec-shared`，使用相同 YAML。每个引擎使用自动生成的独立 Cache UUID。
 - 示例 UCM 源码路径为 `/workspace/unified-cache-management`，vLLM 源码路径为 `/vllm-workspace/vllm`；按实际安装位置替换。
 
-共享目录完成挂载后，在 E、PD 的运行环境创建根目录：
+共享目录完成挂载后，创建数据目录和本轮验收日志目录。示例使用 `run-001`，每轮验收换用新目录名，三个服务和测试进程使用同一目录。跨容器运行时将日志目录挂载到测试进程可读的位置。验收命令启用 DEBUG 日志，并将三个服务的输出分别保存：
 
 ```bash
 mkdir -p /mnt/ucm-ec-shared
+mkdir -p /workspace/ucm-epd-logs/run-001
 ```
 
 ### 2. 配置 UCM
@@ -191,8 +192,8 @@ ucm_ec_connector:
 
 | 配置 | 作用 |
 | --- | --- |
-| `enable_epd_disaggregate: true` | 开启 EPD，两端一致 |
-| `epd_timeout_ms` | PD 从首次 Store miss 开始计算可见性等待期限 |
+| `enable_epd_disaggregate: true` | 开启 EPD，两端一致；配置值为布尔类型 |
+| `epd_timeout_ms` | 正整数；PD 从首次 Store miss 开始计算可见性等待期限 |
 | `storage_backends` | E/PD 交接 EC 的共享目录 |
 | `chunk_size` | 每个 chunk 的 embedding 行数，两端一致 |
 
@@ -200,16 +201,18 @@ ucm_ec_connector:
 
 ### 3. 启动 E
 
-E 使用 `ec_producer`，通过 `cudagraph_mm_encoder` 开启 ViT 图模式。已有 HBM 输出和本次新编码输出都会经过 UCM 保存入口。E 运行 encoder-only，原生自动关闭 KV prefix caching。
+E 使用 `ec_producer`，通过 `cudagraph_mm_encoder` 开启 ViT 图模式。已有 HBM 输出和本次新编码输出都会经过 UCM 保存入口。E 运行 encoder-only，KV prefix caching 关闭；对该 hybrid 模型显式设置 `--no-enable-prefix-caching`，使初始化时的 Mamba 配置与此一致。encoder HBM cache 继续保留。
 
 ```bash
 export ENABLE_UCM_PATCH=1
+export UCM_LOG_LEVEL=debug
 
 ASCEND_RT_VISIBLE_DEVICES=0,1 vllm serve /data/model/Qwen3.8-27B-w8a8 \
   --host 0.0.0.0 --port 19634 \
   --served-model-name qwen3.8 \
   --tensor-parallel-size 2 \
   --quantization ascend \
+  --no-enable-prefix-caching \
   --compilation-config '{"cudagraph_mm_encoder":true}' \
   --max-model-len 1024 --max-num-seqs 2 \
   --gpu-memory-utilization 0.3 \
@@ -221,15 +224,16 @@ ASCEND_RT_VISIBLE_DEVICES=0,1 vllm serve /data/model/Qwen3.8-27B-w8a8 \
     "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
     "ec_role":"ec_producer",
     "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
-  }'
+  }' 2>&1 | tee /workspace/ucm-epd-logs/run-001/encoder.log
 ```
 
 ### 4. 启动 PD
 
-PD 使用 `ec_consumer`，开启 decode 图模式和 HBM 中的 KV prefix caching。命中本地 EC 时直接复用；其余媒体等待 Store 可见后加载。
+PD 使用 `ec_consumer`，开启 decode 图模式和 HBM 中的 KV prefix caching。命中本地 EC 时直接复用；其余媒体等待 Store 可见后加载。等待超时或查询失败时，携带实际媒体或 embeddings 的条目可回退本地计算；metadata-only 条目沿用可见性超时和查询异常处理。
 
 ```bash
 export ENABLE_UCM_PATCH=1
+export UCM_LOG_LEVEL=debug
 
 ASCEND_RT_VISIBLE_DEVICES=6,7 vllm serve /data/model/Qwen3.8-27B-w8a8 \
   --host 0.0.0.0 --port 19635 \
@@ -249,7 +253,7 @@ ASCEND_RT_VISIBLE_DEVICES=6,7 vllm serve /data/model/Qwen3.8-27B-w8a8 \
     "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
     "ec_role":"ec_consumer",
     "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
-  }'
+  }' 2>&1 | tee /workspace/ucm-epd-logs/run-001/prefill-decode.log
 ```
 
 ### 5. 启动 Proxy
@@ -262,19 +266,20 @@ python /vllm-workspace/vllm/examples/disaggregated/disaggregated_encoder/disagg_
   --encode-servers-urls http://127.0.0.1:19634 \
   --prefill-servers-urls disable \
   --decode-servers-urls http://127.0.0.1:19635 \
-  --decode-retries 0
+  --decode-retries 0 2>&1 | tee /workspace/ucm-epd-logs/run-001/proxy.log
 ```
 
 客户端向 `http://127.0.0.1:11001/v1/chat/completions` 发送图片请求，模型名为 `qwen3.8`。每个服务终端可通过 Ctrl+C 停止对应进程。
 
 ### 6. 验证交接与热缓存
 
-在部署容器中启用现有 EC 测试文件的模型用例，连续发送两次相同图片请求：
+在部署容器中启用现有 EC 测试文件的模型用例。`UCM_EPD_LOG_DIR` 为必填项，目录内包含正在写入的 `encoder.log`、`prefill-decode.log` 和 `proxy.log`。用例使用本轮独有的图片与文本，发送三次请求，并按每次请求前后的日志增量断言交接：首次要求 E dump 与 PD load 匹配同一个 identifier；第二次修改图片前的文本，验证 E 热保存与 PD 本地 EC 复用；第三次重复第二次请求，允许复用 KV prefix cache。
 
 ```bash
 cd /workspace/unified-cache-management
 export UCM_EPD_PROXY_URL=http://127.0.0.1:11001
 export UCM_EPD_MODEL=qwen3.8
+export UCM_EPD_LOG_DIR=/workspace/ucm-epd-logs/run-001
 python -m unittest discover -s test -p test_ucm_ec_config.py -v
 ```
 
@@ -286,7 +291,7 @@ python -m unittest discover -s test -p test_ucm_ec_config.py -v
 | PD：`EC load item` | 首次请求从 UCM 加载对应 identifier |
 | PD：`EC local cache reuse` | 重复请求直接复用本地 EC |
 
-首次请求观察 E 保存与 PD 加载；重复请求可命中 PD 的 KV prefix cache 或本地 EC。通过调度计数和逐 item 日志区分复用来源，参数与实现见[设计文档](../design-docs/ucm-ec-connector.md)。
+测试只检查本次请求新增的日志，避免历史记录满足交接断言。第二次和第三次请求要求该 identifier 的 PD load 增量为零。参数与实现见[设计文档](../design-docs/ucm-ec-connector.md)。
 
 当前 Cache2 对 DRAM READY 命中跳过后端写入。共享文件被删除后，冷 PD 可能在可见性等待处超时；热 PD 可继续复用本地 EC。
 

@@ -91,6 +91,8 @@ class RequestState:
     hit_identifiers: set[str] = field(default_factory=set)
     # Request-local positive lookup snapshots, not retained or loaded EC items.
     store_visible_identifiers: set[str] = field(default_factory=set)
+    # Local-compute choices and their feature indices, scoped to this request.
+    local_fallback_inputs: dict[str, tuple[int, ...]] = field(default_factory=dict)
     store_wait_started_at: float | None = None
     next_lookup_at: float = 0.0
 
@@ -400,9 +402,13 @@ class UCMECConnector(ECConnectorBase):
         self.enable_epd_disaggregate = encoder_config.get(
             "enable_epd_disaggregate", False
         )
-        self.epd_timeout_ms = encoder_config.get("epd_timeout_ms", 30000)
+        if not isinstance(self.enable_epd_disaggregate, bool):
+            raise ValueError("enable_epd_disaggregate must be a bool.")
+        self.epd_timeout_ms = _positive_int(
+            "epd_timeout_ms", encoder_config.get("epd_timeout_ms", 30000)
+        )
         self._metadata_resolver = None
-        if self.enable_epd_disaggregate and self.is_producer:
+        if self.enable_epd_disaggregate:
             from vllm.distributed.ec_transfer.ec_connector.utils import (
                 PlaceholderMetadataResolver,
             )
@@ -451,6 +457,9 @@ class UCMECConnector(ECConnectorBase):
         self.pending_loads: dict[str, ECLoadSpec] = {}
         # Finalized load submissions, not worker completion or a pinned HBM cache.
         self._local_encoder_ids: set[str] = set()
+        # Native scheduling calls ensure_cache_available before has_cache_item
+        # for each request. Replace the context on every scheduling attempt.
+        self._epd_scheduling_state: RequestState | None = None
         self._pending_saves: list[PendingECSave] = []
         self._step_saved_ids: set[str] = set()
         self._save_device = create_device() if role == ECConnectorRole.WORKER else None
@@ -483,6 +492,7 @@ class UCMECConnector(ECConnectorBase):
         request: Request,
         num_computed_tokens: int,
     ) -> bool:
+        self._epd_scheduling_state = None
         self._register_encoder_inputs(request)
         if not (self.enable_epd_disaggregate and self.is_consumer):
             return True
@@ -490,9 +500,9 @@ class UCMECConnector(ECConnectorBase):
             return True
 
         state = self.req_to_state[request.request_id]
-        pending_ids: dict[str, None] = {}
+        pending_ids: dict[str, list[int]] = {}
         local_occurrences = 0
-        for feature in request.mm_features:
+        for index, feature in enumerate(request.mm_features):
             if (
                 feature.mm_position.offset + feature.mm_position.length
                 <= num_computed_tokens
@@ -502,7 +512,18 @@ class UCMECConnector(ECConnectorBase):
             if identifier in self._local_encoder_ids:
                 local_occurrences += 1
             elif identifier not in state.store_visible_identifiers:
-                pending_ids[identifier] = None
+                pending_ids.setdefault(identifier, []).append(index)
+        for identifier, indices in list(pending_ids.items()):
+            if identifier in state.local_fallback_inputs:
+                if all(
+                    self._has_local_model_input(request.mm_features[i]) for i in indices
+                ):
+                    state.local_fallback_inputs[identifier] = tuple(indices)
+                    del pending_ids[identifier]
+                else:
+                    # A streaming append or prefix rollback can expose an
+                    # occurrence that has only placeholder metadata.
+                    del state.local_fallback_inputs[identifier]
         if local_occurrences:
             logger.debug(
                 "EC local cache reuse: request=%s, occurrences=%d",
@@ -515,16 +536,23 @@ class UCMECConnector(ECConnectorBase):
         if not pending_ids:
             state.store_wait_started_at = None
             state.next_lookup_at = 0.0
+            self._epd_scheduling_state = state
             return True
         now = time.monotonic()
         if (
             state.store_wait_started_at is not None
             and now - state.store_wait_started_at >= self.epd_timeout_ms / 1000
         ):
-            raise TimeoutError(
-                f"Timed out waiting for encoder cache visibility for "
-                f"request {request.request_id!r}."
-            )
+            for identifier, indices in pending_ids.items():
+                if not self._select_local_fallback(request, state, identifier, indices):
+                    raise TimeoutError(
+                        f"Timed out waiting for encoder cache visibility for "
+                        f"request {request.request_id!r}."
+                    )
+            state.store_wait_started_at = None
+            state.next_lookup_at = 0.0
+            self._epd_scheduling_state = state
+            return True
         if now < state.next_lookup_at:
             return False
         if self.store is None:
@@ -532,9 +560,14 @@ class UCMECConnector(ECConnectorBase):
 
         # A query snapshot only: actual reads still happen after native allocation.
         # Returning False lets the native scheduler try other requests.
-        for identifier in pending_ids:
+        for identifier, indices in pending_ids.items():
             item = state.identifier_states[identifier]
-            last = self.store.lookup_on_prefix(list(item.chunk_ids))
+            try:
+                last = self.store.lookup_on_prefix(list(item.chunk_ids))
+            except Exception:
+                if self._select_local_fallback(request, state, identifier, indices):
+                    continue
+                raise
             if last != len(item.chunk_ids) - 1:
                 if state.store_wait_started_at is None:
                     state.store_wait_started_at = now
@@ -543,6 +576,37 @@ class UCMECConnector(ECConnectorBase):
             state.store_visible_identifiers.add(identifier)
         state.store_wait_started_at = None
         state.next_lookup_at = 0.0
+        self._epd_scheduling_state = state
+        return True
+
+    def _has_local_model_input(self, feature: Any) -> bool:
+        data = feature.data
+        if not data:
+            return False
+        metadata_fields = self._metadata_resolver.fields_for(feature.modality)
+        return any(
+            value.data is not None
+            for key, value in data.items()
+            if key not in metadata_fields
+        )
+
+    def _select_local_fallback(
+        self,
+        request: Request,
+        state: RequestState,
+        identifier: str,
+        indices: list[int],
+    ) -> bool:
+        if not all(
+            self._has_local_model_input(request.mm_features[i]) for i in indices
+        ):
+            return False
+        state.local_fallback_inputs[identifier] = tuple(indices)
+        logger.warning(
+            "EC local input fallback: request=%s, identifier=%s",
+            request.request_id,
+            identifier,
+        )
         return True
 
     def _register_encoder_inputs(self, request: Request) -> bool:
@@ -616,10 +680,12 @@ class UCMECConnector(ECConnectorBase):
         if self.store is None:
             raise RuntimeError("UCM EC store is closed.")
 
-        # Ordinary mode requires a full Store hit; EPD is external-only.
+        # EPD choices come from this request's visibility gate.
         if self.enable_epd_disaggregate:
-            # EPD is external-only. Never fall back to encoding metadata-only input.
-            hit = True
+            context = self._epd_scheduling_state
+            if context is None or identifier not in context.identifier_states:
+                raise RuntimeError("EPD cache selection requires an admitted request.")
+            hit = identifier not in context.local_fallback_inputs
         else:
             last = self.store.lookup_on_prefix(list(state.chunk_ids))
             hit = last == len(state.chunk_ids) - 1
@@ -629,13 +695,19 @@ class UCMECConnector(ECConnectorBase):
 
     def update_state_after_alloc(self, request: Request, index: int) -> None:
         identifier = request.mm_features[index].identifier
+        request_state = self.req_to_state.get(request.request_id)
+        if (
+            self.enable_epd_disaggregate
+            and request_state is not None
+            and identifier in request_state.local_fallback_inputs
+        ):
+            return
         if not self.is_consumer or identifier not in self.step_verified_hits:
             return
         # Accumulate the hit here (O(1) per hit) for the request-finished
         # summary instead of scanning every scheduled request. This must
         # precede the pending-load dedup: a shared identifier counts for every
         # request that references it, not just the one that queued the load.
-        request_state = self.req_to_state.get(request.request_id)
         if request_state is not None:
             request_state.hit_identifiers.add(identifier)
         if identifier in self.pending_loads:
@@ -678,12 +750,28 @@ class UCMECConnector(ECConnectorBase):
                 # final loads; cancelled/filtered allocations never enter this set.
                 self._local_encoder_ids.difference_update(freed_identifiers)
                 self._local_encoder_ids.update(metadata.loads)
+                for (
+                    req_id,
+                    indices,
+                ) in scheduler_output.scheduled_encoder_inputs.items():
+                    state = self.req_to_state.get(req_id)
+                    if (
+                        state is not None
+                        and scheduler_output.num_scheduled_tokens.get(req_id, 0) > 0
+                    ):
+                        self._local_encoder_ids.update(
+                            identifier
+                            for identifier, fallback_indices in state.local_fallback_inputs.items()
+                            if identifier not in freed_identifiers
+                            and any(index in indices for index in fallback_indices)
+                        )
             if self.is_producer:
                 metadata.save_identifiers = tuple(
                     sorted(needed_identifiers - freed_identifiers)
                 )
         self.pending_loads = {}
         self.step_verified_hits.clear()
+        self._epd_scheduling_state = None
         return metadata
 
     def request_finished(
@@ -712,6 +800,8 @@ class UCMECConnector(ECConnectorBase):
             transfer_params = transfer_params or None
 
         request_state = self.req_to_state.pop(request.request_id, None)
+        if self._epd_scheduling_state is request_state:
+            self._epd_scheduling_state = None
         if request_state is None:
             return False, transfer_params
         if self.is_consumer:
@@ -1035,6 +1125,7 @@ class UCMECConnector(ECConnectorBase):
         self.pending_loads.clear()
         self.step_verified_hits.clear()
         self._local_encoder_ids.clear()
+        self._epd_scheduling_state = None
         self._step_saved_ids.clear()
         self.req_to_state.clear()
         self.identifier_to_blocks.clear()

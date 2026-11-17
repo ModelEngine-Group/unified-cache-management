@@ -165,10 +165,11 @@ This example uses vLLM Ascend v0.30.0, `Qwen3.8-27B-w8a8`, E=TP2, and PD=TP2. St
 - Both engines access `/mnt/ucm-ec-shared` and use the same YAML. Each engine uses an automatically generated, independent Cache UUID.
 - The example UCM source path is `/workspace/unified-cache-management`, and the vLLM source path is `/vllm-workspace/vllm`. Replace these paths for your installation.
 
-After mounting the shared storage, create its root directory in the E and PD environments:
+After mounting shared storage, create the data and validation log directories. The example uses `run-001`; choose a new directory name for each validation run and use it for all three services and the test process. Across containers, mount the log directory where the test process can read the live files. Validation commands enable DEBUG logs and capture each service separately:
 
 ```bash
 mkdir -p /mnt/ucm-ec-shared
+mkdir -p /workspace/ucm-epd-logs/run-001
 ```
 
 ### 2. Configure UCM
@@ -191,8 +192,8 @@ ucm_ec_connector:
 
 | Setting | Purpose |
 | --- | --- |
-| `enable_epd_disaggregate: true` | Enable EPD on both engines |
-| `epd_timeout_ms` | PD visibility deadline, starting at the first Store miss |
+| `enable_epd_disaggregate: true` | Enable EPD on both engines; the value must be a boolean |
+| `epd_timeout_ms` | Positive integer; PD visibility deadline, starting at the first Store miss |
 | `storage_backends` | Shared directory for EC handoff |
 | `chunk_size` | Embedding rows per chunk, identical on both engines |
 
@@ -200,16 +201,18 @@ The example uses `max_model_len=1024`, one image per request, and `max_pixels=26
 
 ### 3. Start E
 
-E uses `ec_producer` and enables ViT graphs through `cudagraph_mm_encoder`. Existing HBM outputs and newly encoded outputs both enter the UCM save path. E runs encoder-only, so native vLLM automatically disables KV prefix caching.
+E uses `ec_producer` and enables ViT graphs through `cudagraph_mm_encoder`. Existing HBM outputs and newly encoded outputs both enter the UCM save path. E runs encoder-only with KV prefix caching disabled. For this hybrid model, explicitly set `--no-enable-prefix-caching` so Mamba configuration agrees during initialization. The encoder HBM cache remains available.
 
 ```bash
 export ENABLE_UCM_PATCH=1
+export UCM_LOG_LEVEL=debug
 
 ASCEND_RT_VISIBLE_DEVICES=0,1 vllm serve /data/model/Qwen3.8-27B-w8a8 \
   --host 0.0.0.0 --port 19634 \
   --served-model-name qwen3.8 \
   --tensor-parallel-size 2 \
   --quantization ascend \
+  --no-enable-prefix-caching \
   --compilation-config '{"cudagraph_mm_encoder":true}' \
   --max-model-len 1024 --max-num-seqs 2 \
   --gpu-memory-utilization 0.3 \
@@ -221,15 +224,16 @@ ASCEND_RT_VISIBLE_DEVICES=0,1 vllm serve /data/model/Qwen3.8-27B-w8a8 \
     "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
     "ec_role":"ec_producer",
     "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
-  }'
+  }' 2>&1 | tee /workspace/ucm-epd-logs/run-001/encoder.log
 ```
 
 ### 4. Start PD
 
-PD uses `ec_consumer`, decode graphs, and KV prefix caching in HBM. It reuses local EC hits and waits for Store visibility before loading the remaining media.
+PD uses `ec_consumer`, decode graphs, and KV prefix caching in HBM. It reuses local EC hits and waits for Store visibility before loading the remaining media. On a visibility timeout or lookup error, items with actual media or embeddings can fall back to local computation; metadata-only items retain the existing timeout and lookup-error behavior.
 
 ```bash
 export ENABLE_UCM_PATCH=1
+export UCM_LOG_LEVEL=debug
 
 ASCEND_RT_VISIBLE_DEVICES=6,7 vllm serve /data/model/Qwen3.8-27B-w8a8 \
   --host 0.0.0.0 --port 19635 \
@@ -249,7 +253,7 @@ ASCEND_RT_VISIBLE_DEVICES=6,7 vllm serve /data/model/Qwen3.8-27B-w8a8 \
     "ec_connector_module_path":"ucm.integration.vllm.ucm_ec_connector",
     "ec_role":"ec_consumer",
     "ec_connector_extra_config":{"UCM_CONFIG_FILE":"/workspace/ucm_ec_epd.yaml"}
-  }'
+  }' 2>&1 | tee /workspace/ucm-epd-logs/run-001/prefill-decode.log
 ```
 
 ### 5. Start the Proxy
@@ -262,19 +266,20 @@ python /vllm-workspace/vllm/examples/disaggregated/disaggregated_encoder/disagg_
   --encode-servers-urls http://127.0.0.1:19634 \
   --prefill-servers-urls disable \
   --decode-servers-urls http://127.0.0.1:19635 \
-  --decode-retries 0
+  --decode-retries 0 2>&1 | tee /workspace/ucm-epd-logs/run-001/proxy.log
 ```
 
 Send image requests to `http://127.0.0.1:11001/v1/chat/completions` with model name `qwen3.8`. Use Ctrl+C in a service's terminal to stop that process.
 
 ### 6. Verify handoff and warm caches
 
-Enable the model test in the existing EC test file from the deployment container. It sends the same image request twice:
+Enable the model test in the existing EC test file from the deployment container. `UCM_EPD_LOG_DIR` is required and must contain the live `encoder.log`, `prefill-decode.log`, and `proxy.log` files. The test uses a unique image and text for the run and sends three requests, checking log deltas for each request. The first requires an E dump and PD load of the same identifier. The second changes text before the image to verify E warm saves and PD local EC reuse. The third repeats the second request and allows KV prefix cache reuse:
 
 ```bash
 cd /workspace/unified-cache-management
 export UCM_EPD_PROXY_URL=http://127.0.0.1:11001
 export UCM_EPD_MODEL=qwen3.8
+export UCM_EPD_LOG_DIR=/workspace/ucm-epd-logs/run-001
 python -m unittest discover -s test -p test_ucm_ec_config.py -v
 ```
 
@@ -286,7 +291,7 @@ python -m unittest discover -s test -p test_ucm_ec_config.py -v
 | PD: `EC load item` | First request loaded the identifier from UCM |
 | PD: `EC local cache reuse` | Repeated request reused local EC |
 
-Observe E saving and PD loading on the first request. Repeated requests can hit PD's KV prefix cache or local EC. Use scheduling counters and per-item logs to identify the reuse source; see the [design document](../design-docs/ucm-ec-connector.md) for the implementation.
+Assertions inspect only logs appended during each request, excluding historical matches. The second and third requests require zero new PD loads for the transferred identifier. See the [design document](../design-docs/ucm-ec-connector.md) for the implementation.
 
 Cache2 skips backend writes for DRAM READY hits. After a shared file is deleted, a cold PD can time out waiting for visibility, while a warm PD can continue using local EC.
 
