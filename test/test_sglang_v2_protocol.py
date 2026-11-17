@@ -1,6 +1,7 @@
 """Tests for the thin Store v2 assembler interface, without native dependencies."""
 
 import importlib.util
+import logging
 import sys
 import tempfile
 import types
@@ -13,7 +14,10 @@ import yaml
 path = Path(__file__).resolve().parents[1] / "ucm/integration/sglang/v2/runtime.py"
 spec = importlib.util.spec_from_file_location("sglang_v2_runtime_test", path)
 runtime = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runtime)
+with patch.dict(
+    sys.modules, {"ucm.logger": types.SimpleNamespace(init_logger=logging.getLogger)}
+):
+    spec.loader.exec_module(runtime)
 
 
 class RuntimeTest(unittest.TestCase):

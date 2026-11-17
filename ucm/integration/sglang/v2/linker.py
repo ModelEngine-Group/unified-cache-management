@@ -5,7 +5,6 @@ Supports replicated DSA and DeepSeek V4 device pools.
 """
 
 import hashlib
-import logging
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
@@ -28,12 +27,13 @@ from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import get_device_module
 
 from ucm.integration.sglang.patch.request_hooks import install_request_hooks
+from ucm.logger import init_logger
 
 from .device_layout import DeviceLayout, fingerprint
 from .runtime import Runtime, proxy
 
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class _OffloadResult(Future):
@@ -135,6 +135,22 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._control_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-v2-control"
         )
+        logger.info(
+            "SGLang UCM V2 linker initialized: store_id=%s dp_rank=%s attn_dp_rank=%s "
+            "tp_rank=%s pp_rank=%s attn_cp_rank=%s page_size=%s layers=%s "
+            "section_bytes=%s dump_partitions=%s coordinated_puts=%s",
+            unique_id,
+            getattr(parallel, "dp_rank", None) or 0,
+            getattr(parallel, "attn_dp_rank", None) or 0,
+            getattr(parallel, "tp_rank", None),
+            params.pp_rank,
+            params.attn_cp_rank,
+            self.page_size,
+            self.layout.num_layers,
+            self.layout.section_sizes,
+            self._dump_size,
+            self._coordinated_puts,
+        )
 
     @staticmethod
     def _require_single_host(params):
@@ -209,6 +225,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     candidates = [end for end in candidates if end <= prefix_pages]
                 if not candidates:
                     break
+        logger.info(
+            "SGLang UCM V2 lookup: rid=%s requested_pages=%d "
+            "restorable_prefix_pages=%d restorable_boundaries=%d",
+            rid,
+            len(page_keys),
+            candidates[-1] if candidates else 0,
+            len(candidates),
+        )
         return candidates
 
     def associate_pages(self, rid, keys):

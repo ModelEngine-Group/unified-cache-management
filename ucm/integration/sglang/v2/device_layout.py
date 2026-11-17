@@ -20,7 +20,12 @@ from dataclasses import dataclass
 import numpy as np
 import torch.distributed as dist
 
+from ucm.logger import init_logger
+
 from .runtime import proxy
+
+
+logger = init_logger(__name__)
 
 
 def fingerprint(value) -> str:
@@ -165,8 +170,27 @@ class SectionLayout:
             and dist.is_initialized()
             and dist.get_world_size(tp_group) > 1
         )
+        object_facts = facts
         if self.shared_shards:
-            self._globalize(tp_group, facts, namespace, model_identity, page_size)
+            object_facts = self._globalize(
+                tp_group, facts, namespace, model_identity, page_size
+            )
+        pool_bytes = {
+            str(entry.name): {"local": 0, "object": 0} for entry in self.entries
+        }
+        for local, stored in zip(facts, object_facts):
+            sizes = pool_bytes[local[1]]
+            sizes["local"] += local[5]
+            sizes["object"] += stored[5]
+        logger.info(
+            "SGLang UCM V2 device layout: section=%s device=%s object_bytes=%d "
+            "shared_shards=%s pool_bytes=%s",
+            self.name,
+            self.device,
+            self.total_size,
+            self.shared_shards,
+            pool_bytes,
+        )
 
     def _globalize(self, tp_group, facts, namespace, model_identity, page_size):
         """Derive one rank-independent block layout for a sharded section.
@@ -183,11 +207,7 @@ class SectionLayout:
         * each fragment's offset as its global base plus the preceding ranks'
           shard sizes, so a rank writes its shard at its canonical position.
         """
-        if tp_group is None or not dist.is_initialized():
-            return
         world = dist.get_world_size(tp_group)
-        if world <= 1:
-            return
         rank = dist.get_rank(tp_group)
         all_facts = [None] * world
         dist.all_gather_object(all_facts, facts, group=tp_group)
@@ -226,6 +246,7 @@ class SectionLayout:
             )
             cursor += count
         self.layers = rebuilt
+        return global_facts
 
     def block_ids(self, keys):
         prefix = (self.identity + ":" + self.name + ":").encode()

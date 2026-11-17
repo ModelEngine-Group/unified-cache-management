@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import logging
 from io import StringIO
 import sys
 import types
@@ -34,6 +35,7 @@ def load_linker(*, mamba=False):
         "sglang.srt.mem_cache.hicache_storage",
     ]
     modules = {name: types.ModuleType(name) for name in names}
+    modules["ucm.logger"] = types.SimpleNamespace(init_logger=logging.getLogger)
     modules["torch"].distributed = modules["torch.distributed"]
     modules["torch.distributed"].is_initialized = lambda: False
     device_module = Mock()

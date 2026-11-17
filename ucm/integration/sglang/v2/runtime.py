@@ -9,6 +9,11 @@ from pathlib import Path
 
 import yaml
 
+from ucm.logger import init_logger
+
+
+logger = init_logger(__name__)
+
 
 def proxy():
     return import_module("ucm_proxy")
@@ -84,6 +89,33 @@ class Runtime:
         )
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()
+        logger.info(
+            "SGLang UCM V2 Store initialized: config_file=%s store_id=%s "
+            "device_id=%s block_size_bytes=%s branches=%s",
+            config_file,
+            unique_id,
+            device_id,
+            block_size,
+            [
+                [
+                    {
+                        "store": tier["store"],
+                        "llm_role": tier.get("config", {}).get("llm_role", "both"),
+                        **(
+                            {
+                                "cache_buffer_capacity_gb": tier.get("config", {}).get(
+                                    "cache_buffer_capacity_gb", "default"
+                                )
+                            }
+                            if tier["store"] == "cache"
+                            else {}
+                        ),
+                    }
+                    for tier in branch["pipe"]
+                ]
+                for branch in branches
+            ],
+        )
 
     def on_new_request(self, context):
         return self.scheduler.on_new_request(context)
