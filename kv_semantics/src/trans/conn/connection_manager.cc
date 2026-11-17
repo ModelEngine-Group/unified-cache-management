@@ -26,12 +26,18 @@
 #include <cstdint>
 #include "connection_internal.h"
 #include "logger.h"
+#include "runtime/device.h"
 
 namespace kv {
 
 ConnectionManager::ConnectionManager(TransProvider& provider, const std::string& localIp,
-                                     std::uint32_t timeout, std::uint32_t maxErrorCount)
-    : provider_(provider), localIp_(localIp), timeout_(timeout), maxErrorCount_(maxErrorCount)
+                                     std::uint32_t timeout, std::uint32_t maxErrorCount,
+                                     std::int32_t deviceId)
+    : provider_(provider),
+      localIp_(localIp),
+      timeout_(timeout),
+      maxErrorCount_(maxErrorCount),
+      deviceId_(deviceId)
 {
 }
 
@@ -204,6 +210,24 @@ void ConnectionManager::StopRecoverLoop()
 
 void ConnectionManager::RecoverLoop()
 {
+    // Channel rebuilding runs on this thread and calls back into the provider,
+    // so bind the provider device before the first CreateConnection. Otherwise a
+    // provider whose API needs the caller's device/context fails here.
+    if (deviceId_ >= 0) {
+        runtime::Device device;
+        const auto setupStatus = device.Setup(deviceId_);
+        if (!setupStatus.ok()) {
+            KV_WARN(
+                "ConnectionManager::RecoverLoop device binding failed: device_id={} code={} "
+                "message={}",
+                deviceId_, static_cast<int>(setupStatus.code), setupStatus.message);
+        }
+    } else {
+        KV_DEBUG(
+            "ConnectionManager::RecoverLoop no device id configured; provider calls run on the "
+            "current ACL device");
+    }
+
     KV_DEBUG("ConnectionManager::RecoverLoop started");
     while (!stopRecover_.load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(kRecoverIntervalMs));

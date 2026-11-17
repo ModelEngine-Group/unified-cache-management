@@ -30,16 +30,16 @@
 
 namespace kv {
 
-// Fixed per-connection information size in HBM. Connection information is
-// temporarily described by a constant; the HBM region is carved into slots of
-// this size.
-constexpr std::size_t kHccpKvRoceConnInfoSlotBytes = 4096;
+// Fixed per-connection slot size in HBM. Each connection stores its operator QPC
+// in one slot; the HBM region is carved into slots of this size.
+constexpr std::size_t kHccpKvRoceConnSlotBytes = 4096;
 constexpr std::uint32_t kHccpKvRoceDefaultSlotCapacity = 256;
 
 // Owns one contiguous NPU/HBM region and hands out fixed-size slots. Each slot
 // is tracked with an IndexPool index (the "slotid" recorded by the provider).
 // The class is thread-safe: Acquire/Release are lock-free, and the slot base
-// address never changes after Init().
+// address never changes after Init(). Every ACL operation runs on the caller's
+// bound device/context; the provider owns that binding.
 class HbmSlotAllocator {
 public:
     HbmSlotAllocator(std::int32_t deviceId, std::size_t slotBytes, std::uint32_t capacity);
@@ -50,7 +50,7 @@ public:
     HbmSlotAllocator(HbmSlotAllocator&&) = delete;
     HbmSlotAllocator& operator=(HbmSlotAllocator&&) = delete;
 
-    // Allocates the HBM region on the configured (or current) ACL device.
+    // Allocates the HBM region on the caller-bound ACL device/context.
     Status Init();
 
     Status Acquire(std::uint32_t& slotId);
@@ -58,13 +58,16 @@ public:
     Status Write(std::uint32_t slotId, const void* data, std::size_t size);
     Status Clear(std::uint32_t slotId);
 
+    // Device address of one slot, or nullptr when the slot is out of range.
+    // The caller must have bound the provider ACL context first.
+    void* SlotAddress(std::uint32_t slotId) const noexcept;
+
     std::int32_t deviceId() const noexcept { return deviceId_; }
     std::size_t slotBytes() const noexcept { return slotBytes_; }
     std::uint32_t capacity() const noexcept { return capacity_; }
 
 private:
     bool ValidSlot(std::uint32_t slotId) const noexcept;
-    void* SlotAddress(std::uint32_t slotId) const noexcept;
 
     std::int32_t deviceId_;
     std::size_t slotBytes_;

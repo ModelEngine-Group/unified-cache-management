@@ -45,81 +45,9 @@ Status AclError(const std::string& operation, aclError ret)
     return Status::Error(StatusCode::INTERNAL_ERROR, std::move(message));
 }
 
-// Switches to the provider's ACL device for one HBM operation and restores the
-// caller's context (or device) on exit. Every allocation happens on one device,
-// but the caller may invoke the provider while another device is current.
-class ScopedAclDevice final {
-public:
-    explicit ScopedAclDevice(std::int32_t requestedDevice)
-    {
-        std::int32_t currentDevice = -1;
-        if (aclrtGetDevice(&currentDevice) == ACL_SUCCESS) { callerDevice_ = currentDevice; }
-
-        aclrtContext currentContext = nullptr;
-        if (aclrtGetCurrentContext(&currentContext) == ACL_SUCCESS && currentContext != nullptr) {
-            callerContext_ = currentContext;
-        }
-
-        targetDevice_ = requestedDevice >= 0
-                            ? requestedDevice
-                            : (callerDevice_ >= 0 ? callerDevice_ : kDefaultAclDevice);
-        if (callerDevice_ == targetDevice_) { return; }
-
-        const auto initRet = aclInit(nullptr);
-        if (initRet != ACL_SUCCESS && initRet != ACL_ERROR_REPEAT_INITIALIZE) {
-            status_ = AclError("aclInit", initRet);
-            return;
-        }
-
-        const auto setRet = aclrtSetDevice(targetDevice_);
-        if (setRet != ACL_SUCCESS) {
-            status_ = AclError("aclrtSetDevice device_id=" + std::to_string(targetDevice_), setRet);
-            return;
-        }
-        deviceChanged_ = true;
-    }
-
-    ~ScopedAclDevice()
-    {
-        if (!deviceChanged_) { return; }
-
-        // Prefer restoring the caller's exact context: aclrtSetDevice switches to
-        // the device's default context, which would silently replace a caller
-        // context created outside this provider.
-        if (callerContext_ != nullptr) {
-            const auto ret = aclrtSetCurrentContext(callerContext_);
-            if (ret != ACL_SUCCESS) {
-                KV_WARN("HbmSlotAllocator: failed to restore ACL context context={} ret={}",
-                        static_cast<const void*>(callerContext_), static_cast<int>(ret));
-            }
-            return;
-        }
-
-        if (callerDevice_ < 0) { return; }
-        const auto ret = aclrtSetDevice(callerDevice_);
-        if (ret != ACL_SUCCESS) {
-            KV_WARN("HbmSlotAllocator: failed to restore ACL device_id={} ret={}", callerDevice_,
-                    static_cast<int>(ret));
-        }
-    }
-
-    ScopedAclDevice(const ScopedAclDevice&) = delete;
-    ScopedAclDevice& operator=(const ScopedAclDevice&) = delete;
-    ScopedAclDevice(ScopedAclDevice&&) = delete;
-    ScopedAclDevice& operator=(ScopedAclDevice&&) = delete;
-
-    const Status& status() const { return status_; }
-    std::int32_t targetDevice() const { return targetDevice_; }
-
-private:
-    static constexpr std::int32_t kDefaultAclDevice = 0;
-
-    std::int32_t callerDevice_{-1};
-    aclrtContext callerContext_{nullptr};
-    std::int32_t targetDevice_{kDefaultAclDevice};
-    bool deviceChanged_{false};
-    Status status_;
-};
+// All HBM operations run on the ACL device/context bound by the caller (the
+// provider opens a ScopedHccpAclContext around every entry point), so this
+// allocator never switches devices itself.
 
 }  // namespace
 
@@ -133,11 +61,6 @@ HbmSlotAllocator::~HbmSlotAllocator()
 {
     if (base_ == nullptr) { return; }
 
-    ScopedAclDevice device(deviceId_);
-    if (!device.status().ok()) {
-        KV_WARN("HbmSlotAllocator: freeing HBM without device binding: {}",
-                device.status().message);
-    }
     (void)aclrtFree(base_);
     base_ = nullptr;
 }
@@ -154,9 +77,6 @@ Status HbmSlotAllocator::Init()
                              "HbmSlotAllocator: HBM region size overflows");
     }
 
-    ScopedAclDevice device(deviceId_);
-    if (!device.status().ok()) { return device.status(); }
-
     const auto bytes = slotBytes_ * capacity_;
     void* base = nullptr;
     const auto mallocRet = aclrtMalloc(&base, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
@@ -172,7 +92,6 @@ Status HbmSlotAllocator::Init()
     }
 
     base_ = base;
-    deviceId_ = device.targetDevice();
     indexPool_.Setup(capacity_);
     initialized_ = true;
     KV_INFO(
@@ -224,9 +143,6 @@ Status HbmSlotAllocator::Write(std::uint32_t slotId, const void* data, std::size
                                  " size=" + std::to_string(size));
     }
 
-    ScopedAclDevice device(deviceId_);
-    if (!device.status().ok()) { return device.status(); }
-
     const auto ret = aclrtMemcpy(SlotAddress(slotId), slotBytes_, data, size,
                                  ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
@@ -248,9 +164,6 @@ Status HbmSlotAllocator::Clear(std::uint32_t slotId)
                              "HbmSlotAllocator: invalid slot id " + std::to_string(slotId));
     }
 
-    ScopedAclDevice device(deviceId_);
-    if (!device.status().ok()) { return device.status(); }
-
     const auto ret = aclrtMemset(SlotAddress(slotId), slotBytes_, 0, slotBytes_);
     if (ret != ACL_SUCCESS) {
         return AclError("aclrtMemset slot_id=" + std::to_string(slotId), ret);
@@ -265,6 +178,7 @@ bool HbmSlotAllocator::ValidSlot(std::uint32_t slotId) const noexcept
 
 void* HbmSlotAllocator::SlotAddress(std::uint32_t slotId) const noexcept
 {
+    if (base_ == nullptr || !ValidSlot(slotId)) { return nullptr; }
     return static_cast<void*>(static_cast<std::uint8_t*>(base_) +
                               static_cast<std::size_t>(slotId) * slotBytes_);
 }

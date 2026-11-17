@@ -35,6 +35,12 @@
  * the MR handle space and keeps a one-to-one mapping between its own handle and
  * the reported memory info, so no handle ever crosses this ABI.
  *
+ * Connection creation is QPC based: the provider allocates one HccpKvRoceQpc per
+ * QP, hands its address to the library through connectionHandles and the
+ * library fills the QPC in place. The provider then copies the QPC into its HBM
+ * connection slot and passes that slot address back during Send, so the library
+ * reads the QPC from the slot instead of keeping a host-side handle.
+ *
  * Every function returns 0 on success and a non-zero HccpKvRoceReturnCode (or an
  * implementation-defined positive value) on failure. Strings are passed as
  * NUL-terminated const char* instead of C++ std::string to keep the ABI stable.
@@ -82,8 +88,18 @@ typedef struct HccpKvRoceMemoryInfo {
     uint32_t rkey;
 } HccpKvRoceMemoryInfo;
 
+/* Provider-owned QP context payload. The provider allocates one entry per
+ * connection and passes its address through connectionHandles; the library
+ * fills the struct in place. No allocation happens on the library side. */
+#define HCCP_KV_ROCE_QPC_BYTES 512u
+
+typedef struct HccpKvRoceQpc {
+    uint8_t data[HCCP_KV_ROCE_QPC_BYTES];
+} HccpKvRoceQpc;
+
 typedef struct HccpKvRoceSendIoBatch {
-    void* connectionHandle;
+    /* HBM slot that holds the QPC of this QP. */
+    void* slotAddress;
     void* sendBuffer;
     void* flagBuffer;
     uint64_t len;
@@ -104,10 +120,15 @@ typedef struct HccpKvRoceServerCapabilities {
     uint32_t kvCapabilities;
 } HccpKvRoceServerCapabilities;
 
-/* Required symbols. connectionHandles must point to qpNum writable slots;
+/* Required symbols.
+ * CreateConnection: connectionHandles is in/out. The caller pre-fills qpNum
+ * entries with provider-owned HccpKvRoceQpc addresses; the library fills the
+ * QPC payloads and leaves the pointers valid. connectionHandleNum reports how
+ * many connections were actually created and must never exceed qpNum.
  * RegisterMemory must fill descNum writable memoryInfos entries. */
 int32_t CreateConnection(const char* localIp, const char* remoteIp, uint32_t port, uint32_t qpNum,
-                         uint32_t timeout, void** connectionHandles);
+                         uint32_t timeout, void** connectionHandles,
+                         uint32_t* connectionHandleNum);
 int32_t DeleteConnections(void* const* connectionHandles, uint32_t handleNum);
 int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uint32_t descNum,
                        HccpKvRoceMemoryInfo* memoryInfos);

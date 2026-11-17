@@ -30,8 +30,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -42,6 +40,7 @@
 #include <utility>
 #include <vector>
 #include "hbm_slot_allocator.h"
+#include "hccp_acl_context.h"
 #include "hccp_kv_over_roce_abi.h"
 #include "logger.h"
 #include "parser_common.h"
@@ -52,27 +51,11 @@ namespace {
 constexpr const char* kProviderSignature = "UCM_ASU_HCCP_KV_OVER_ROCE_PROVIDER_ABI_V1";
 constexpr const char* kDefaultLibraryPath = "libhccp_kv_over_roce.so";
 constexpr const char* kLibraryPathEnv = "UCM_HCCP_KV_ROCE_LIB_PATH";
-constexpr std::uint64_t kConnInfoMagic = 0x484343504B565243ULL;  // "HCCPKVRC"
-constexpr std::uint32_t kConnInfoVersion = 1U;
-constexpr std::size_t kIpFieldBytes = 64;
 
-// Provider-owned description of one live connection. The slot is fixed-size
-// HBM; the concrete layout is intentionally local to this provider.
-struct ConnInfo {
-    std::uint64_t magic{0};
-    std::uint32_t version{0};
-    std::uint32_t slotId{0};
-    std::uint32_t qpNum{0};
-    std::uint32_t qpIndex{0};
-    std::uint32_t remotePort{0};
-    std::uint32_t reserved{0};
-    std::uint64_t externalHandle{0};
-    char localIp[kIpFieldBytes]{};
-    char remoteIp[kIpFieldBytes]{};
-};
-
-static_assert(sizeof(ConnInfo) <= kHccpKvRoceConnInfoSlotBytes,
-              "one connection info record must fit into one HBM slot");
+// Every connection owns one HBM slot. The slot receives the operator QPC and is
+// later handed to the operator IO path through Send.
+static_assert(sizeof(HccpKvRoceQpc) <= kHccpKvRoceConnSlotBytes,
+              "one connection QPC must fit into one HBM slot");
 
 using CreateConnectionFn = decltype(&::CreateConnection);
 using DeleteConnectionsFn = decltype(&::DeleteConnections);
@@ -136,28 +119,6 @@ std::uint32_t ResolveSlotCapacity(const TransportConfig& config)
         GetConfigAttr(config, {"hccp_kv_roce_max_connections", "hccp_max_connections"});
     if (configured.empty()) { return kHccpKvRoceDefaultSlotCapacity; }
     return ParseConfigUint32(configured, kHccpKvRoceDefaultSlotCapacity);
-}
-
-std::int32_t ResolveDeviceId(const TransportConfig& config)
-{
-    if (config.deviceId >= 0) { return config.deviceId; }
-
-    auto configured = GetConfigAttr(config, {"device_id", "deviceId", "logical_device_id"});
-    if (configured.empty()) { return -1; }
-    const auto parsed = ParseConfigUint32(configured, 0);
-    if (parsed > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
-        return -1;
-    }
-    return static_cast<std::int32_t>(parsed);
-}
-
-void CopyIp(char (&destination)[kIpFieldBytes], const std::string& ip)
-{
-    // Copy explicitly instead of snprintf so -Wformat-truncation never fires on
-    // the fixed-size slot layout under -Werror.
-    const auto bytes = std::min(ip.size(), kIpFieldBytes - 1);
-    std::memcpy(destination, ip.data(), bytes);
-    destination[bytes] = '\0';
 }
 
 int32_t ToAbiMemoryType(TransProvider::MemType memoryType)
@@ -276,11 +237,9 @@ struct HccpKvOverRoceTransProvider::Impl {
     struct ConnectionRecord {
         void* externalHandle{nullptr};
         std::uint32_t slotId{0};
-        std::uint32_t qpIndex{0};
-        std::uint32_t qpNum{0};
-        std::uint32_t remotePort{0};
-        std::string localIp;
-        std::string remoteIp;
+        // Provider-owned QPC storage. Its address is handed to the library as
+        // the connection handle and the payload is copied into the HBM slot.
+        HccpKvRoceQpc qpc{};
     };
 
     using ConnectionMap = std::unordered_map<ConnectionHandle, std::shared_ptr<ConnectionRecord>>;
@@ -312,36 +271,43 @@ struct HccpKvOverRoceTransProvider::Impl {
         const auto loadStatus = api.Load(libraryPath);
         if (!loadStatus.ok()) { throw std::runtime_error(loadStatus.message); }
 
+        const auto bindingStatus = ResolveHccpAclBinding(config, binding);
+        if (!bindingStatus.ok()) { throw std::runtime_error(bindingStatus.message); }
+
+        ScopedHccpAclContext aclScope("Init", binding);
+        if (!aclScope.status().ok()) { throw std::runtime_error(aclScope.status().message); }
+
         allocator = std::make_unique<HbmSlotAllocator>(
-            ResolveDeviceId(config), kHccpKvRoceConnInfoSlotBytes, slotCapacity);
+            binding.deviceId, kHccpKvRoceConnSlotBytes, slotCapacity);
         const auto initStatus = allocator->Init();
         if (!initStatus.ok()) { throw std::runtime_error(initStatus.message); }
 
         KV_INFO(
             "HCCP_KV_ROCE_TRANSPORT_PROVIDER_SIGNATURE={} pid={} node_id={} device_id={} "
-            "library={} slot_bytes={} slot_capacity={}",
-            kProviderSignature, static_cast<long>(::getpid()), config.nodeId,
-            allocator->deviceId(), libraryPath, allocator->slotBytes(), allocator->capacity());
+            "device_source={} provider_context={} library={} slot_bytes={} slot_capacity={}",
+            kProviderSignature, static_cast<long>(::getpid()), config.nodeId, binding.deviceId,
+            binding.source, static_cast<const void*>(binding.context), libraryPath,
+            allocator->slotBytes(), allocator->capacity());
     }
 
-    Status WriteConnInfo(const ConnectionRecord& record)
+    ~Impl()
     {
-        ConnInfo info{};
-        info.magic = kConnInfoMagic;
-        info.version = kConnInfoVersion;
-        info.slotId = record.slotId;
-        info.qpNum = record.qpNum;
-        info.qpIndex = record.qpIndex;
-        info.remotePort = record.remotePort;
-        info.externalHandle = reinterpret_cast<std::uintptr_t>(record.externalHandle);
-        CopyIp(info.localIp, record.localIp);
-        CopyIp(info.remoteIp, record.remoteIp);
-        return allocator->Write(record.slotId, &info, sizeof(info));
+        if (allocator == nullptr) { return; }
+
+        // Free the HBM region on the provider's own device/context.
+        ScopedHccpAclContext aclScope("Cleanup", binding);
+        if (!aclScope.status().ok()) {
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: freeing HBM without device binding: {}",
+                aclScope.status().message);
+        }
+        allocator.reset();
     }
 
     AbiApi api;
     std::string libraryPath;
     std::uint32_t slotCapacity{kHccpKvRoceDefaultSlotCapacity};
+    HccpAclBinding binding;
     std::unique_ptr<HbmSlotAllocator> allocator;
 
     mutable std::shared_mutex connectionMu;
@@ -370,6 +336,12 @@ HccpKvOverRoceTransProvider::HccpKvOverRoceTransProvider(const TransportConfig& 
 HccpKvOverRoceTransProvider::~HccpKvOverRoceTransProvider()
 {
     if (!impl_) { return; }
+
+    ScopedHccpAclContext aclScope("Destroy", impl_->binding);
+    if (!aclScope.status().ok()) {
+        KV_WARN("HccpKvOverRoceTransProvider: cleanup continues without ACL binding: {}",
+                aclScope.status().message);
+    }
 
     std::vector<ConnectionHandle> connectionHandles;
     {
@@ -418,7 +390,13 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HccpKvOverRoceTransProvider is not initialized");
     }
-    if (qpNum == 0) { return Status::OK(); }
+    ScopedHccpAclContext aclScope("CreateConnection", impl_->binding);
+    if (!aclScope.status().ok()) { return aclScope.status(); }
+
+    if (qpNum == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "HccpKvOverRoceTransProvider: qp_num must be greater than zero");
+    }
     if (remoteIp.empty()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "HccpKvOverRoceTransProvider: remote IP is required");
@@ -445,76 +423,84 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         slots.push_back(slotId);
     }
 
+    // The library fills one provider-owned QPC per connection. The addresses are
+    // stable for the connection lifetime and are also the handles passed to
+    // DeleteConnections.
+    std::vector<std::shared_ptr<Impl::ConnectionRecord>> records;
+    records.reserve(qpNum);
+    std::vector<void*> abiHandles(qpNum, nullptr);
+    for (std::uint32_t index = 0; index < qpNum; ++index) {
+        auto record = std::make_shared<Impl::ConnectionRecord>();
+        record->slotId = slots[index];
+        abiHandles[index] = &record->qpc;
+        records.push_back(std::move(record));
+    }
+
+    auto deleteAbiHandles = [&](std::uint32_t handleNum) {
+        const auto limit = std::min<std::size_t>(handleNum, abiHandles.size());
+        std::vector<void*> created;
+        created.reserve(limit);
+        for (std::size_t index = 0; index < limit; ++index) {
+            if (abiHandles[index] != nullptr) { created.push_back(abiHandles[index]); }
+        }
+        if (created.empty()) { return; }
+        (void)impl_->api.deleteConnections(created.data(),
+                                           static_cast<std::uint32_t>(created.size()));
+    };
+
     KV_INFO(
         "HccpKvOverRoceTransProvider: CreateConnection start local_addr={} remote_addr={} "
         "remote_port={} qp_num={} timeout_ms={}",
         localIp, remoteIp, port, qpNum, timeout);
 
-    std::vector<void*> externalHandles(qpNum, nullptr);
+    std::uint32_t createdNum = 0;
     const auto ret = impl_->api.createConnection(localIp.c_str(), remoteIp.c_str(), port, qpNum,
-                                                 timeout, externalHandles.data());
+                                                 timeout, abiHandles.data(), &createdNum);
     if (ret != 0) {
-        // Best effort: the library may have created some handles before it
-        // reported failure, so release anything non-null before freeing slots.
-        std::vector<void*> createdHandles;
-        createdHandles.reserve(externalHandles.size());
-        for (const auto& externalHandle : externalHandles) {
-            if (externalHandle != nullptr) { createdHandles.push_back(externalHandle); }
-        }
-        if (!createdHandles.empty()) {
-            (void)impl_->api.deleteConnections(
-                createdHandles.data(), static_cast<std::uint32_t>(createdHandles.size()));
-        }
+        deleteAbiHandles(createdNum);
         ReleaseSlots(*impl_->allocator, slots);
         return AbiError("CreateConnection", ret, StatusCode::CONNECTION_ERROR);
     }
-
-    bool hasNullHandle = false;
-    for (const auto& externalHandle : externalHandles) {
-        if (externalHandle == nullptr) {
-            hasNullHandle = true;
-            break;
-        }
-    }
-    if (hasNullHandle) {
-        std::vector<void*> validExternalHandles;
-        validExternalHandles.reserve(externalHandles.size());
-        for (const auto& externalHandle : externalHandles) {
-            if (externalHandle != nullptr) { validExternalHandles.push_back(externalHandle); }
-        }
-        if (!validExternalHandles.empty()) {
-            (void)impl_->api.deleteConnections(
-                validExternalHandles.data(),
-                static_cast<std::uint32_t>(validExternalHandles.size()));
-        }
+    if (createdNum > qpNum) {
+        // Never trust the array beyond qpNum even if the library reports more.
+        deleteAbiHandles(qpNum);
         ReleaseSlots(*impl_->allocator, slots);
         return Status::Error(StatusCode::INTERNAL_ERROR,
-                             "HccpKvOverRoceTransProvider: CreateConnection returned a null "
-                             "connection handle");
+                             "HccpKvOverRoceTransProvider: CreateConnection reported " +
+                                 std::to_string(createdNum) + " handles for qp_num " +
+                                 std::to_string(qpNum));
+    }
+    if (createdNum != qpNum) {
+        deleteAbiHandles(createdNum);
+        ReleaseSlots(*impl_->allocator, slots);
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "HccpKvOverRoceTransProvider: CreateConnection created " +
+                                 std::to_string(createdNum) + " of " + std::to_string(qpNum) +
+                                 " connections");
     }
 
-    std::vector<std::shared_ptr<Impl::ConnectionRecord>> records;
-    records.reserve(qpNum);
     for (std::uint32_t index = 0; index < qpNum; ++index) {
-        auto record = std::make_shared<Impl::ConnectionRecord>();
-        record->externalHandle = externalHandles[index];
-        record->slotId = slots[index];
-        record->qpIndex = index;
-        record->qpNum = qpNum;
-        record->remotePort = port;
-        record->localIp = localIp;
-        record->remoteIp = remoteIp;
+        if (abiHandles[index] == nullptr) {
+            deleteAbiHandles(qpNum);
+            ReleaseSlots(*impl_->allocator, slots);
+            return Status::Error(StatusCode::INTERNAL_ERROR,
+                                 "HccpKvOverRoceTransProvider: CreateConnection returned a null "
+                                 "connection handle");
+        }
+    }
 
-        const auto status = impl_->WriteConnInfo(*record);
+    for (std::uint32_t index = 0; index < qpNum; ++index) {
+        const auto status = impl_->allocator->Write(records[index]->slotId, abiHandles[index],
+                                                    sizeof(HccpKvRoceQpc));
         if (!status.ok()) {
-            (void)impl_->api.deleteConnections(externalHandles.data(), qpNum);
+            deleteAbiHandles(qpNum);
             for (std::uint32_t written = 0; written <= index; ++written) {
-                (void)impl_->allocator->Clear(slots[written]);
+                (void)impl_->allocator->Clear(records[written]->slotId);
             }
             ReleaseSlots(*impl_->allocator, slots);
             return status;
         }
-        records.push_back(std::move(record));
+        records[index]->externalHandle = abiHandles[index];
     }
 
     {
@@ -544,6 +530,12 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
         return results;
     }
     if (connectionHandles.empty()) { return results; }
+
+    ScopedHccpAclContext aclScope("DeleteConnections", impl_->binding);
+    if (!aclScope.status().ok()) {
+        std::fill(results.begin(), results.end(), aclScope.status());
+        return results;
+    }
 
     std::vector<std::shared_ptr<Impl::ConnectionRecord>> removed(connectionHandles.size());
     std::vector<void*> externalHandles;
@@ -586,7 +578,11 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
         const auto error = AbiError("DeleteConnections", ret, StatusCode::CONNECTION_ERROR);
         std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
         for (const auto index : externalIndex) {
-            impl_->connections.emplace(removed[index].get(), std::move(removed[index]));
+            // Read the key before moving the owner: argument evaluation order is
+            // unspecified, and a moved-from shared_ptr is null.
+            auto record = std::move(removed[index]);
+            auto* handle = record.get();
+            impl_->connections.emplace(handle, std::move(record));
         }
         for (const auto index : externalIndex) { results[index] = error; }
         return results;
@@ -627,6 +623,9 @@ Status HccpKvOverRoceTransProvider::GetServerCapabilities(
                              "HccpKvOverRoceTransProvider: GetServerCapabilities is not "
                              "exported by the external library");
     }
+
+    ScopedHccpAclContext aclScope("GetServerCapabilities", impl_->binding);
+    if (!aclScope.status().ok()) { return aclScope.status(); }
 
     HccpKvRoceServerCapabilities abiCapabilities{};
     std::int32_t ret = 0;
@@ -688,9 +687,15 @@ std::vector<Status> HccpKvOverRoceTransProvider::Send(
     abiIndex.reserve(ioBatches.size());
     std::int32_t ret = 0;
 
+    ScopedHccpAclContext aclScope("Send", impl_->binding);
+    if (!aclScope.status().ok()) {
+        std::fill(results.begin(), results.end(), aclScope.status());
+        return results;
+    }
+
     {
         // Keep the connection map locked for the whole ABI call so a concurrent
-        // DeleteConnections cannot recycle an external handle while Send uses it.
+        // DeleteConnections cannot recycle a connection slot while Send uses it.
         std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
         for (std::size_t index = 0; index < ioBatches.size(); ++index) {
             auto* record =
@@ -708,7 +713,16 @@ std::vector<Status> HccpKvOverRoceTransProvider::Send(
                                                "handle");
                 continue;
             }
-            abiBatches.push_back({iter->second->externalHandle, ioBatches[index].sendBuffer,
+            // The operator reads the QPC out of the HBM slot, so the batch carries
+            // the slot address instead of a host-side handle.
+            auto* slotAddress = impl_->allocator->SlotAddress(iter->second->slotId);
+            if (slotAddress == nullptr) {
+                results[index] = Status::Error(StatusCode::INTERNAL_ERROR,
+                                               "HccpKvOverRoceTransProvider: connection slot is "
+                                               "not initialized");
+                continue;
+            }
+            abiBatches.push_back({slotAddress, ioBatches[index].sendBuffer,
                                   ioBatches[index].flagBuffer, ioBatches[index].len});
             abiIndex.push_back(index);
         }
@@ -740,9 +754,20 @@ Status HccpKvOverRoceTransProvider::RegisterMemory(
     }
     if (memoryDescs.empty()) { return Status::OK(); }
 
+    ScopedHccpAclContext aclScope("RegisterMemory", impl_->binding);
+    if (!aclScope.status().ok()) { return aclScope.status(); }
+
     std::vector<HccpKvRoceRegisterMemoryDesc> abiDescs;
     abiDescs.reserve(memoryDescs.size());
     for (const auto& desc : memoryDescs) {
+        // The HCCP data path only handles device memory: host buffers cannot be
+        // addressed by the operator, so reject them instead of registering MRs
+        // that would never be usable.
+        if (desc.memoryType != TransProvider::MemType::MEM_DEVICE) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "HccpKvOverRoceTransProvider: RegisterMemory only accepts "
+                                 "device memory");
+        }
         if (desc.addr == 0 || desc.size == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "HccpKvOverRoceTransProvider: RegisterMemory requires a "
@@ -831,7 +856,15 @@ Status HccpKvOverRoceTransProvider::BindMemory(
     }
     if (memoryDescs.empty()) { return Status::OK(); }
 
+    ScopedHccpAclContext aclScope("BindMemory", impl_->binding);
+    if (!aclScope.status().ok()) { return aclScope.status(); }
+
     for (const auto& desc : memoryDescs) {
+        if (desc.memoryType != TransProvider::MemType::MEM_DEVICE) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "HccpKvOverRoceTransProvider: BindMemory only accepts device "
+                                 "memory");
+        }
         if (desc.addr == 0 || desc.size == 0 || desc.tokenId == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "HccpKvOverRoceTransProvider: BindMemory requires a non-zero "
@@ -883,6 +916,12 @@ std::vector<Status> HccpKvOverRoceTransProvider::UnregisterMemory(
     }
     if (memoryDescs.empty()) { return results; }
 
+    ScopedHccpAclContext aclScope("UnregisterMemory", impl_->binding);
+    if (!aclScope.status().ok()) {
+        std::fill(results.begin(), results.end(), aclScope.status());
+        return results;
+    }
+
     std::vector<std::shared_ptr<Impl::MemoryRecord>> removed(memoryDescs.size());
     std::vector<HccpKvRoceMemoryInfo> operatorInfos;
     std::vector<std::size_t> operatorIndices;
@@ -930,7 +969,9 @@ std::vector<Status> HccpKvOverRoceTransProvider::UnregisterMemory(
                 // Keep operator-owned records so a later call can retry; bind-only
                 // records are local and stay released.
                 for (const auto index : operatorIndices) {
-                    impl_->memories.emplace(removed[index]->handle, std::move(removed[index]));
+                    auto record = std::move(removed[index]);
+                    const auto handle = record->handle;
+                    impl_->memories.emplace(handle, std::move(record));
                 }
             }
         }
@@ -963,6 +1004,9 @@ Status HccpKvOverRoceTransProvider::AllocThread(
                              "count");
     }
 
+    ScopedHccpAclContext aclScope("AllocThread", impl_->binding);
+    if (!aclScope.status().ok()) { return aclScope.status(); }
+
     threads.assign(threadNum, nullptr);
     const auto ret =
         impl_->api.allocThread(threadNum, notifyNumPerThread.data(), threads.data());
@@ -984,6 +1028,12 @@ std::vector<Status> HccpKvOverRoceTransProvider::FreeThread(
         return results;
     }
     if (threads.empty() || impl_->api.freeThread == nullptr) { return results; }
+
+    ScopedHccpAclContext aclScope("FreeThread", impl_->binding);
+    if (!aclScope.status().ok()) {
+        std::fill(results.begin(), results.end(), aclScope.status());
+        return results;
+    }
 
     std::vector<std::int32_t> statuses(threads.size(), 0);
     const auto ret = impl_->api.freeThread(

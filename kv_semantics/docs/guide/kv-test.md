@@ -509,15 +509,21 @@ The library may also be selected with the `UCM_HCCP_KV_ROCE_LIB_PATH`
 environment variable; otherwise the provider tries
 `libhccp_kv_over_roce.so`. It must export `CreateConnection`,
 `DeleteConnections`, and `RegisterMemory` with the C ABI declared in
-`src/trans_provider/hccp_kv_over_roce/hccp_kv_over_roce_abi.h`. `RegisterMemory`
-only registers the MRs and reports one `HccpKvRoceMemoryInfo` (address, size,
-access and rkey) per descriptor; the provider allocates its own `MRHandle`
-values starting at 1 and keeps a one-to-one handle-to-info mapping. Other symbols
+`src/trans_provider/hccp_kv_over_roce/hccp_kv_over_roce_abi.h`. The provider is
+bound to `transport.device_id` (falling back to the current ACL device, then
+device 0) and binds that device/context around every library call. Other symbols
 (`UnregisterMemory`, `Send`, `AllocThread`, `FreeThread`, `GetServerCapabilities`,
 `GetAbiVersion`) are optional: when a symbol is missing, the matching operation
 uses its documented fallback (`UNSUPPORTED` for `Send` and
 `GetServerCapabilities`, success for thread bookkeeping, and local bookkeeping
 only for `UnregisterMemory`).
+
+`RegisterMemory` only registers the MRs and reports one
+`HccpKvRoceMemoryInfo` (address, size, access and rkey) per descriptor; the
+provider allocates its own `MRHandle` values starting at 1 and keeps a
+one-to-one handle-to-info mapping. Only device memory is accepted: HCCP cannot
+address host buffers, so `RegisterMemory` and `BindMemory` reject `MEM_HOST`
+descriptors with `INVALID_ARGUMENT`.
 
 Memory bookkeeping is provider-local. `RegisterMemory` treats a zero `rkey` as a
 failure and rolls the batch back through the optional `UnregisterMemory`.
@@ -527,11 +533,19 @@ rkey from the local record. `UnregisterMemory` forwards only records created by
 `RegisterMemory`, passing the stored `HccpKvRoceMemoryInfo`, and always drops
 bind-only records locally.
 
+Connections are QPC based. `CreateConnection` requires `qpNum > 0` and hands the
+library one provider-owned `HccpKvRoceQpc` per QP through the in/out
+`connectionHandles` array; the library fills the QPC in place and reports the
+created count through `connectionHandleNum`, which must not exceed `qpNum`. The
+provider then copies each QPC into its HBM connection slot and passes that slot
+address (`HccpKvRoceSendIoBatch::slotAddress`) to `Send`. `DeleteConnections`
+passes the same QPC addresses back to the library.
+
 The provider allocates one contiguous HBM region of
 `hccp_kv_roce_max_connections` slots, each 4096 bytes. Every live connection
-owns exactly one slot; the provider writes the connection information into that
-slot, records its `slotid`, and clears/recycles the slot when the connection is
-deleted. The external library never sees the HBM region.
+owns exactly one slot; the provider records its `slotid`, copies the QPC into it,
+and clears/recycles the slot when the connection is deleted. The external
+library never sees the HBM region itself, only the slot address used by `Send`.
 
 ## Command behavior
 

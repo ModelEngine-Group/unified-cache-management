@@ -32,10 +32,12 @@ namespace kv {
 
 // TransProvider backed by an external HCCP KV-over-RoCE library loaded with
 // dlopen. The library owns the actual connection/memory implementation; this
-// provider adds an HBM slot allocator so every live connection reserves a
-// fixed-size connection-information slot (tracked by slotid). It also owns the
-// MR handle space and keeps a provider-local handle-to-memory-info map for both
-// registered and bound regions.
+// provider adds an HBM slot allocator so every live connection reserves one
+// fixed-size slot. The slot holds the operator QPC: the provider hands a
+// provider-owned HccpKvRoceQpc to CreateConnection, copies the filled QPC into
+// the slot and passes the slot address to Send. It also owns the MR handle space
+// and keeps a provider-local handle-to-memory-info map for both registered and
+// bound regions. Only device memory is accepted.
 class HccpKvOverRoceTransProvider : public TransProvider {
 public:
     explicit HccpKvOverRoceTransProvider(const TransportConfig& config);
