@@ -39,6 +39,9 @@
 #define KV_CLIENT_AGENT_TIMEOUT 5
 #define KV_CLIENT_AGENT_INTERNAL_ERROR 6
 
+// ABI v1 is built as a Linux/POSIX shared library and loaded with dlopen.
+// Windows/MSVC consumers are outside the v1 contract; the fallback definition
+// only keeps this header parseable on other toolchains.
 #if defined(__GNUC__)
 #define KV_CLIENT_AGENT_EXPORT __attribute__((visibility("default")))
 #else
@@ -105,6 +108,9 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_get_view_by_ns(kv_client_agent_ha
 KV_CLIENT_AGENT_EXPORT void kv_client_agent_free_ns_names(kv_client_agent_handle* handle,
                                                           const char** ns_names, size_t ns_count);
 
+// views must be the value originally returned through the get_view_by_ns
+// output parameter (*views), not the address of that output parameter (&views).
+// view_count must be the count returned by get_view_by_ns.
 KV_CLIENT_AGENT_EXPORT void kv_client_agent_free_node_views(kv_client_agent_handle* handle,
                                                             kv_client_agent_node_view* views,
                                                             size_t view_count);

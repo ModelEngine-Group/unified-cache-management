@@ -32,10 +32,27 @@ namespace kv {
 // and exposes the decoded universe.
 class M800ViewSlaveServer : public ViewServer {
 public:
+    // Initializes the master HTTP client and performs the initial universe
+    // fetch. Start must fail if the initial fetch cannot complete; later
+    // refreshes are controlled by RefreshScheduler.
+    virtual Status Start() = 0;
+
+    // Stops fetch activity. Stop is idempotent and safe to call when Start
+    // failed.
+    virtual void Stop() = 0;
+
     // M800 slaves must decode the master's full universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
 
-    virtual void Stop() = 0;
+    // M800 serves multiple namespaces, so the legacy single-namespace entry
+    // point is intentionally unsupported. Use GetAllViews instead; this method
+    // must not modify view.
+    virtual Status GetGlobalView(GlobalView& view) override
+    {
+        (void)view;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "M800 view slave serves multiple namespaces; use GetAllViews");
+    }
 };
 
 }  // namespace kv

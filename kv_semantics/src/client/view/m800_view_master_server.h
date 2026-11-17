@@ -42,6 +42,16 @@ public:
     // idempotent and safe to call when Start failed.
     virtual void Stop() = 0;
 
+    // M800 serves multiple namespaces, so the legacy single-namespace entry
+    // point is intentionally unsupported. Use GetAllViews instead; this method
+    // must not modify view.
+    virtual Status GetGlobalView(GlobalView& view) override
+    {
+        (void)view;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "M800 view master serves multiple namespaces; use GetAllViews");
+    }
+
     // M800 masters must return a real multi-namespace universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
 };

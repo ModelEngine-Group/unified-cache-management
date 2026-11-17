@@ -37,6 +37,14 @@ public:
 
     // Starts one resident refresh worker. The implementation is delivered by
     // the RefreshScheduler shard.
+    //
+    // interval: the fixed timer period between refreshes. It must be greater
+    // than zero.
+    // callback: the refresh operation invoked serially by the resident worker
+    // for timer, IO-failure, and manual triggers. It must not be empty, and
+    // its Status is returned to synchronous RefreshNow callers. Stop waits for
+    // an in-progress callback to finish, so the callback must return within a
+    // bounded time.
     virtual Status Start(std::chrono::milliseconds interval, RefreshCallback callback) = 0;
     // Stops accepting triggers, wakes the worker, joins it, and waits for the
     // refresh in progress to finish.

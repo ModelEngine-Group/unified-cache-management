@@ -73,6 +73,19 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
 
 TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementation)
 {
+    class MinimalMaster final : public M800ViewMasterServer {
+    public:
+        Status Start() override { return Status::OK(); }
+        void Stop() override {}
+        Status GetAllViews(ViewUniverse&) override { return Status::OK(); }
+    };
+    class MinimalSlave final : public M800ViewSlaveServer {
+    public:
+        Status Start() override { return Status::OK(); }
+        void Stop() override {}
+        Status GetAllViews(ViewUniverse&) override { return Status::OK(); }
+    };
+
     static_assert(std::is_abstract<ViewUniverse>::value);
     static_assert(std::is_abstract<M800ViewMasterServer>::value);
     static_assert(std::is_abstract<M800ViewSlaveServer>::value);
@@ -91,6 +104,14 @@ TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementatio
                                Status (M800ViewMasterServer::*)(ViewUniverse&)>::value);
     static_assert(std::is_same<decltype(&M800ViewSlaveServer::GetAllViews),
                                Status (M800ViewSlaveServer::*)(ViewUniverse&)>::value);
+
+    GlobalView view;
+    const auto masterStatus = MinimalMaster{}.GetGlobalView(view);
+    EXPECT_EQ(masterStatus.code, StatusCode::UNSUPPORTED);
+    EXPECT_EQ(masterStatus.message, "M800 view master serves multiple namespaces; use GetAllViews");
+    const auto slaveStatus = MinimalSlave{}.GetGlobalView(view);
+    EXPECT_EQ(slaveStatus.code, StatusCode::UNSUPPORTED);
+    EXPECT_EQ(slaveStatus.message, "M800 view slave serves multiple namespaces; use GetAllViews");
 }
 
 TEST(M800ViewContractsTest, M800AgentAndHTTPContractDefaultsCompile)
