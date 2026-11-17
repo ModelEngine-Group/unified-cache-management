@@ -63,7 +63,7 @@ struct CacheConfig {
         reader.RequiredEnum("llm_role", cfg.llmRole, {"scheduler", "worker", "both"});
         reader.RequiredPositive("worker_number", cfg.nWorker);
         reader.RequiredInt32("device_id", cfg.deviceId);
-        reader.OptionalNonNegative("worker_index", cfg.workerIndex);
+        reader.RequiredNonNegative("worker_index", cfg.workerIndex);
         reader.RequiredPositive("block_size", cfg.blockSize);
         reader.OptionalPositive("cache_buffer_capacity_gb", cfg.capacityGb);
         reader.OptionalNonEmpty("cache_replacement_policy", cfg.replacementPolicy);

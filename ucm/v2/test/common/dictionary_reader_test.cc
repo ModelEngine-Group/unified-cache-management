@@ -146,14 +146,14 @@ TEST(DictionaryReaderTest, PositiveReadsRejectZeroNegativeAndWrongType)
     EXPECT_EQ(optional, std::size_t{3});
 }
 
-TEST(DictionaryReaderTest, OptionalNonNegativeAcceptsZeroAndRejectsNegative)
+TEST(DictionaryReaderTest, RequiredNonNegativeAcceptsZeroAndRejectsNegativeAndAbsence)
 {
     /* Zero is a legal value, unlike the positive reads. */
     Dictionary dict;
     dict.SetInt64("value", 0);
     std::size_t zero = 1;
     DictionaryReader zeroReader{dict};
-    zeroReader.OptionalNonNegative("value", zero);
+    zeroReader.RequiredNonNegative("value", zero);
     EXPECT_TRUE(zeroReader.Result().Success());
     EXPECT_EQ(zero, std::size_t{0});
 
@@ -161,16 +161,16 @@ TEST(DictionaryReaderTest, OptionalNonNegativeAcceptsZeroAndRejectsNegative)
     dict.SetInt64("value", -1);
     std::size_t negative = 1;
     DictionaryReader negativeReader{dict};
-    negativeReader.OptionalNonNegative("value", negative);
+    negativeReader.RequiredNonNegative("value", negative);
     EXPECT_EQ(negativeReader.Result(), Status::InvalidParam());
     EXPECT_EQ(negative, std::size_t{1});
 
-    /* Absent: the target keeps its value. */
+    /* Absent: refused, like every required read. */
     Dictionary empty;
     std::size_t absent = 7;
     DictionaryReader absentReader{empty};
-    absentReader.OptionalNonNegative("value", absent);
-    EXPECT_TRUE(absentReader.Result().Success());
+    absentReader.RequiredNonNegative("value", absent);
+    EXPECT_EQ(absentReader.Result(), Status::InvalidParam());
     EXPECT_EQ(absent, std::size_t{7});
 }
 

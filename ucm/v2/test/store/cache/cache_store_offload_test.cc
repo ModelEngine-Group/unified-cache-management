@@ -82,6 +82,7 @@ Dictionary MakeDomainDict(const std::string& uniqueId, const char* role, Store* 
     dict.Set("unique_id", uniqueId);
     dict.Set("llm_role", std::string(role));
     dict.SetInt64("worker_number", 1);
+    dict.SetInt64("worker_index", 0);
     dict.SetInt64("device_id", 0);
     dict.SetInt64("block_size", kBlockSize);
     dict.SetInt64("cache_buffer_capacity_gb", 1);

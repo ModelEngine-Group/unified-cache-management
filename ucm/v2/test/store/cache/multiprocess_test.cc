@@ -636,6 +636,7 @@ protected:
         dict.Set("unique_id", uniqueId);
         dict.Set("llm_role", role);
         dict.SetInt64("worker_number", workerNumber);
+        dict.SetInt64("worker_index", 0);
         dict.SetInt64("device_id", 0);
         dict.SetInt64("block_size", static_cast<std::int64_t>(blockSize));
         dict.SetInt64("cache_buffer_capacity_gb", 1);
