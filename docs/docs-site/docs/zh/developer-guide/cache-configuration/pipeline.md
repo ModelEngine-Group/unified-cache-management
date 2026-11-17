@@ -167,7 +167,7 @@ vllm bench serve \
 
 ## 验证写入与读取
 
-按[公共验证步骤](../../user-guide/observability/verify-cache.md)完成保存、重启和重放。文件系统路径还需确认 Posix 读取及相关错误；如果加载由主机缓存满足，可以在专用诊断运行中设置 `cache_load_backend_only: true`，检查后端加载路径。
+按[公共验证步骤](../../user-guide/observability/verify-cache.md)完成保存、重启和重放。文件系统路径还需确认 Posix 读取及相关错误。重启服务使主机缓存为空后，重放已保存的请求，检查后端读取路径。
 
 
 ## 测量存储收益 { #historical-performance-report }

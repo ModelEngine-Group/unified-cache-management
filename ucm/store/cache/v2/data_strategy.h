@@ -37,7 +37,6 @@
 #include <utility>
 #include "ctrl_layout.h"
 #include "data_backend.h"
-#include "data_backend_ascend.h"
 #include "data_backend_memfd.h"
 #include "logger/logger.h"
 #include "numa/numa_policy.h"
@@ -65,16 +64,10 @@ class DataStrategy {
     size_t nSlotsPerRank_{};
     std::unique_ptr<DataBackend> backend_;
 
-    /* Every host-memory platform uses memfd. The HAL branch remains available
-     * for an explicitly enabled experimental build. */
+    /* Every platform shares the memfd data plane. */
     static std::unique_ptr<DataBackend> MakeBackend(const std::string& uniqueId)
     {
-#if UCM_RUNTIME_ASCEND_HAL
-        (void)uniqueId;
-        return std::make_unique<AscendHalDataBackend>();
-#else
         return std::make_unique<MemfdDataBackend>(uniqueId);
-#endif
     }
 
     Status PublishLocal(CtrlLayout& ctrl, size_t myRank, DataBackend& backend)

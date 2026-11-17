@@ -217,7 +217,7 @@ vllm bench serve \
 
 ## Verify writes and reads
 
-Use the [shared verification procedure](../../user-guide/observability/verify-cache.md) to save, restart and replay. Check Posix reads and errors for filesystem access. If host cache satisfies the load, a dedicated diagnostic run can use `cache_load_backend_only: true` to inspect the backend path.
+Use the [shared verification procedure](../../user-guide/observability/verify-cache.md) to save, restart and replay. Check Posix reads and errors for filesystem access. Restart the service to obtain an empty host cache before replaying saved requests to inspect backend reads.
 
 
 ## Measure the storage benefit { #historical-performance-report }

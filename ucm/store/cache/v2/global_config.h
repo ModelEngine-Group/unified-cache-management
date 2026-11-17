@@ -74,7 +74,7 @@ struct Config {
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     std::vector<ssize_t> cpuAffinityCores{};
-    /* Keeps the cc core's single-stream aggregation instead of rotating copies. */
+    /* Aggregation uses one stream for its batched copies. */
     bool ioAggregation{false};
     size_t localRankSize{8};
     /* Connector-derived hints, never user configuration. deviceNumaNode is the
@@ -126,7 +126,7 @@ struct Config {
         dict.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         dict.Get("cpu_affinity_cores", config.cpuAffinityCores);
         dict.Get("cache_io_aggregation", config.ioAggregation);
-        // Match cc: HMA's FA default must not enable an unsupported copy path.
+        // HMA's FA default must respect the runtime's copy capabilities.
         config.ioAggregation = config.ioAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
         dict.GetNumber("local_rank_size", config.localRankSize);
         if (dict.Contains("cache_detected_numa_node")) {

@@ -63,7 +63,11 @@ class ECConfigTest(unittest.TestCase):
     def create_store(self, role=ec.ECConnectorRole.SCHEDULER):
         with (
             patch.object(ec.UcmConnectorFactoryV1, "create_connector") as factory,
-            patch.object(ec, "_check_shm_capacity") as check_shm,
+            patch.object(
+                ec,
+                "create_device",
+                return_value=SimpleNamespace(get_numa_node=lambda _: 0),
+            ),
             patch.object(ec, "_scheduler_read_unique_id", return_value="uid-scheduler"),
             patch.object(ec, "_worker_generate_unique_id", return_value="uid-worker"),
         ):
@@ -74,7 +78,6 @@ class ECConfigTest(unittest.TestCase):
                 ec_config=self.config,
                 device_id=-1 if role == ec.ECConnectorRole.SCHEDULER else 0,
             )
-        self.check_shm = check_shm
         self.assertIs(result, factory.return_value)
         name, config = factory.call_args.args
         self.assertEqual(name, "CustomRegisteredStore")
@@ -435,15 +438,13 @@ class ECConfigTest(unittest.TestCase):
         self.assertNotIn("gpu_kv_buffer_addrs", config)
         self.assertNotIn("gpu_kv_buffer_sizes", config)
 
-    def test_shared_buffer_capacity_defaults_and_is_checked(self):
+    def test_cache_domain_capacity_default_and_explicit_budget(self):
         config = self.create_store()
-        self.assertEqual(config["cache_buffer_capacity_gb"], 128)
-        self.check_shm.assert_called_once_with(128)
+        self.assertEqual(config["cache_buffer_capacity_gb"], 160)
 
         self.config["ucm_connector_config"]["cache_buffer_capacity_gb"] = 32
         config = self.create_store()
         self.assertEqual(config["cache_buffer_capacity_gb"], 32)
-        self.check_shm.assert_called_once_with(32)
 
     def test_gdr_is_disabled_and_warns_only_when_configured(self):
         with patch.object(ec.logger, "warning") as warning:
@@ -491,7 +492,11 @@ class ECConfigTest(unittest.TestCase):
                 ec_config["encoder_cache_config"]["store_unique_id"] = explicit_id
             with (
                 patch.object(ec.UcmConnectorFactoryV1, "create_connector") as factory,
-                patch.object(ec, "_check_shm_capacity"),
+                patch.object(
+                    ec,
+                    "create_device",
+                    return_value=SimpleNamespace(get_numa_node=lambda _: 0),
+                ),
                 patch.object(
                     ec, "_scheduler_read_unique_id", return_value="uid-scheduler"
                 ) as scheduler_uid,

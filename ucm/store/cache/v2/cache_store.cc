@@ -101,5 +101,4 @@ public:
 }  // namespace UC::Cache2
 
 /* Platforms using Cache2, including simu, share this entry point. */
-extern "C" uint32_t UcmCacheCoreVersion() { return 2; }
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::Cache2::Store(); }
