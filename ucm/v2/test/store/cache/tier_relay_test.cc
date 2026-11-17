@@ -317,11 +317,9 @@ TEST_F(TierRelayTest, SubmitValidationsRejectWithNothingStarted)
     auto relay = MakeRelay(2);
     const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2)};
 
-    /* An empty plan, a plan without a receipt handle, and a plan whose
-     * slot count disagrees with its keys are all refused before the
-     * lower tier is touched. */
-    EXPECT_EQ(relay->Offload(1, MakePlan({}, {}, 1)).Underlying(),
-              Status::InvalidParam().Underlying());
+    /* A plan without a receipt handle and a plan whose slot count
+     * disagrees with its keys are both refused before the lower tier is
+     * touched. */
     EXPECT_EQ(relay->Offload(2, MakePlan(ids, {0, 1}, 0)).Underlying(),
               Status::InvalidParam().Underlying());
     EXPECT_EQ(relay->Offload(3, MakePlan(ids, {0})).Underlying(),
@@ -337,6 +335,28 @@ TEST_F(TierRelayTest, SubmitValidationsRejectWithNothingStarted)
     ASSERT_EQ(relay->GetFinished().size(), 1U);
     EXPECT_EQ(relay->Offload(4, MakePlan(ids, {0, 1})).Underlying(), 0);
     EXPECT_EQ(lower_.dumps.size(), 2U);
+}
+
+/*== The empty claim: no keys, concluded at once ==*/
+
+TEST_F(TierRelayTest, EmptyClaimConcludesImmediately)
+{
+    auto relay = MakeRelay(2);
+
+    /* A claimed share with no keys concludes on submission, with nothing
+     * driven in the lower tier. */
+    EXPECT_EQ(relay->Offload(7, MakePlan({}, {}, 1)).Underlying(), 0);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, std::size_t{7});
+    EXPECT_TRUE(finished[0].second);
+    EXPECT_TRUE(lower_.allocs.empty());
+    EXPECT_TRUE(lower_.dumps.empty());
+    EXPECT_EQ(relay->Wait(7).Underlying(), Status::InvalidParam().Underlying());
+
+    /* The idle plan carries no receipt handle: still refused. */
+    EXPECT_EQ(relay->Offload(8, MakePlan({}, {}, 0)).Underlying(),
+              Status::InvalidParam().Underlying());
 }
 
 /*== Ownership: in flight and unconsumed verdicts ==*/

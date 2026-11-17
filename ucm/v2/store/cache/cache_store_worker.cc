@@ -27,6 +27,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include "token_codec.h"
 
 namespace UC::Store {
 namespace {
@@ -68,6 +69,11 @@ Status WatchFd(int epollFd, int fd) noexcept
 Expected<std::unique_ptr<CacheStoreWorker>> CacheStoreWorker::Create(const CacheConfig& config,
                                                                      LeadershipTicket ticket)
 {
+    if (config.workerIndex >= config.nWorker) {
+        return Status::InvalidParam(
+            "cache worker: worker index {} is outside the domain's {} workers", config.workerIndex,
+            config.nWorker);
+    }
     std::unique_ptr<CacheStoreWorker> worker{new CacheStoreWorker{config}};
     if (ticket.Won()) {
         auto leader = BootstrapLeader::Create(config, std::move(ticket));
@@ -200,6 +206,23 @@ Status CacheStoreWorker::Dump(std::size_t jobId, JobDescriptor job, AddressedTok
 
 Status CacheStoreWorker::Offload(std::size_t jobId, AddressedToken plan)
 {
+    /* The claim: only the keys whose plan position falls to this worker
+     * ride on; a shape-mismatched plan rides on whole for the relay to
+     * refuse. */
+    const PlanPayload payload = DecodePlanPayload(plan.payload);
+    if (payload.slots.size() == plan.keys.size()) {
+        AddressedToken claim;
+        PlanPayload claimed;
+        claimed.batchId = payload.batchId;
+        for (std::size_t i = 0; i < plan.keys.size(); ++i) {
+            if (i % config_.nWorker == config_.workerIndex) {
+                claim.keys.push_back(plan.keys[i]);
+                claimed.slots.push_back(payload.slots[i]);
+            }
+        }
+        claim.payload = EncodePlanPayload(claimed);
+        plan = std::move(claim);
+    }
     return relay_->Offload(jobId, std::move(plan));
 }
 

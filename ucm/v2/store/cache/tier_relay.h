@@ -107,7 +107,8 @@ public:
      * A sub-batch that fails to reserve or to submit is dropped and
      * counted while the remaining sub-batches proceed; a job whose every
      * sub-batch was dropped is already concluded when this method
-     * returns.
+     * returns -- an empty plan likewise concludes immediately, its
+     * verdict true.
      *
      * @param jobId Handle of the asynchronous job; must be unique among
      *              this relay's in-flight and unconsumed jobs.
@@ -115,9 +116,9 @@ public:
      *              configured instance; consumed verbatim.
      *
      * @return Status indicating acceptance only. InvalidParam when the
-     *         plan is malformed (no keys, no receipt handle, or a slot
-     *         count disagreeing with the keys) or the handle collides,
-     *         with nothing started.
+     *         plan is malformed (no receipt handle, or a slot count
+     *         disagreeing with the keys) or the handle collides, with
+     *         nothing started.
      */
     Status Offload(std::size_t jobId, AddressedToken plan);
 

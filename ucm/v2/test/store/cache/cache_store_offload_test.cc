@@ -170,6 +170,18 @@ TEST_F(CacheStoreOffloadTest, WorkerExposesTheExecutorHalfWhenWired)
     EXPECT_EQ(leader->Wait(9).Underlying(), Status::InvalidParam().Underlying());
 }
 
+/*== The worker index: an out-of-domain index is refused ==*/
+
+TEST_F(CacheStoreOffloadTest, WorkerRefusesAnIndexOutsideTheDomainWorkers)
+{
+    StubLowerStore lower;
+    /* The domain declares one worker: index 1 is outside it. */
+    Dictionary dict = MakeDomainDict(FreshId(), "worker", &lower);
+    dict.SetInt64("worker_index", 1);
+    CacheStore store;
+    EXPECT_EQ(store.Setup(dict).Underlying(), Status::InvalidParam().Underlying());
+}
+
 /*== The engine half, as served by the scheduler role ==*/
 
 TEST_F(CacheStoreOffloadTest, SchedulerServesTheEngineHalfLocally)

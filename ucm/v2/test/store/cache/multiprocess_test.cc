@@ -1370,13 +1370,13 @@ TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
     Child leaf;
     Child scheduler;
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 1, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
+        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 1, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
     ASSERT_NO_FATAL_FAILURE(
-        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 2, {}, &lower)));
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 1, {}, &lower)));
     ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
 
     /* The wiring gate: every process of the wired domain exposes the
@@ -1407,8 +1407,8 @@ TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
      * admission finds no ground until the plan's receipt. */
     EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, Status::NoSpace().Underlying());
 
-    /* The same plan reaches the executors over the parent's pipes,
-     * standing in for the deployment's broadcast. The minting scheduler
+    /* The same plan reaches the executor over the parent's pipes,
+     * standing in for the deployment's channel. The minting scheduler
      * is not an executor: no data plane runs there. */
     const Cmd plan =
         MakePlanCmd(kOpOffload, 9, {1, 2, 3, 4},
@@ -1449,6 +1449,136 @@ TEST_F(MultiprocessTest, OffloadMintAndExecutionSpanTheWorkerDomain)
     EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
     EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, 0);
     EXPECT_EQ(Drive(scheduler, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    /* Teardown order: joiners first, the leader last. */
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(scheduler));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leaf));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leader));
+}
+
+/*== J2: one broadcast plan divided across the domain's workers ==*/
+
+TEST_F(MultiprocessTest, OffloadPlanDividesAcrossTheDomainWorkers)
+{
+    const std::string id = MakeUniqueId("divide");
+    /* One lower tier rides the fork to every child, and each worker's
+     * index rides its dictionary: the leader holds 0, the leaf 1. */
+    StubLowerStore lower;
+    lower.SettleOnWait(true);
+    Child leader;
+    Child leaf;
+    Child scheduler;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
+    Dictionary leafDict = MakeDict(id, "worker", kSlots4BlockSize, 2, {}, &lower);
+    leafDict.SetInt64("worker_index", 1);
+    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(leaf, leafDict));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
+
+    /* The engine fills its pending set: four blocks fill the pool. */
+    const Result alloc = Drive(scheduler, MakeCmd(kOpAlloc, {1, 2, 3, 4}));
+    ASSERT_EQ(alloc.code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpCommit, {1, 2, 3, 4}, 0, 1)).code, 0);
+
+    /* The mint covers the concluded blocks, and its pins hold every
+     * slot of the ground. */
+    const Result mint = Drive(scheduler, MakeCmd(kOpPrepareOffload, {1, 2, 3, 4}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 4);
+    EXPECT_NE(mint.planId, 0U);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, Status::NoSpace().Underlying());
+
+    /* One broadcast of the whole plan to every worker: each executor
+     * claims the keys whose plan position falls to it -- the leader the
+     * even positions, the leaf the odd ones -- so no key rides twice. */
+    const Cmd plan =
+        MakePlanCmd(kOpOffload, 9, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(leader, plan).code, 0);
+    EXPECT_EQ(Drive(leaf, plan).code, 0);
+
+    /* Each claim concludes through its own stream: one wait, the second
+     * wait unknown, the log empty. */
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The books split along the claim: each copy saw one reservation,
+     * one dump, one commit, and the dump covered exactly its own half. */
+    const Result leaderBooks = Drive(leader, MakeCmd(kOpLowerProbe, {1, 3}));
+    ASSERT_EQ(leaderBooks.code, 0);
+    EXPECT_EQ(leaderBooks.n, 1);
+    EXPECT_EQ(leaderBooks.hits[0], 1);
+    EXPECT_EQ(leaderBooks.hits[1], 1);
+    EXPECT_EQ(leaderBooks.hits[2], 1);
+    EXPECT_EQ(leaderBooks.slots[0], 1U);
+
+    const Result leafBooks = Drive(leaf, MakeCmd(kOpLowerProbe, {2, 4}));
+    ASSERT_EQ(leafBooks.code, 0);
+    EXPECT_EQ(leafBooks.n, 1);
+    EXPECT_EQ(leafBooks.hits[0], 1);
+    EXPECT_EQ(leafBooks.hits[1], 1);
+    EXPECT_EQ(leafBooks.hits[2], 1);
+    EXPECT_EQ(leafBooks.slots[0], 1U);
+
+    /* The minter never drives its own tier. */
+    const Result schedulerBooks = Drive(scheduler, MakeJobCmd(kOpLowerProbe, 0));
+    ASSERT_EQ(schedulerBooks.code, 0);
+    EXPECT_EQ(schedulerBooks.n, 0);
+    EXPECT_EQ(schedulerBooks.hits[0], 0);
+    EXPECT_EQ(schedulerBooks.hits[1], 0);
+    EXPECT_EQ(schedulerBooks.hits[2], -1);
+    EXPECT_EQ(schedulerBooks.slots[0], 1U);
+
+    /* Both shares concluded, so one receipt releases the whole plan's
+     * pins and the ground reopens. */
+    const Cmd receipt =
+        MakePlanCmd(kOpCompleteOffload, 0, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(scheduler, receipt).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {5})).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    /* A one-key plan divides into one share and one empty claim: the
+     * leader executes the key, the leaf concludes having driven
+     * nothing, and one receipt still closes the plan. */
+    const Result mint2 = Drive(scheduler, MakeCmd(kOpPrepareOffload, {5}));
+    ASSERT_EQ(mint2.code, 0);
+    ASSERT_EQ(mint2.n, 1);
+    EXPECT_NE(mint2.planId, 0U);
+    const Cmd plan2 = MakePlanCmd(kOpOffload, 10, {5}, {mint2.slots[0]}, mint2.planId);
+    EXPECT_EQ(Drive(leader, plan2).code, 0);
+    EXPECT_EQ(Drive(leaf, plan2).code, 0);
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 10)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 10)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The leader's books grew by one execution; the leaf's did not. */
+    const Result leaderGrew = Drive(leader, MakeJobCmd(kOpLowerProbe, 0));
+    ASSERT_EQ(leaderGrew.code, 0);
+    EXPECT_EQ(leaderGrew.n, 2);
+    EXPECT_EQ(leaderGrew.hits[0], 2);
+    EXPECT_EQ(leaderGrew.hits[1], 2);
+    EXPECT_EQ(leaderGrew.hits[2], 1);
+
+    const Result leafSteady = Drive(leaf, MakeJobCmd(kOpLowerProbe, 0));
+    ASSERT_EQ(leafSteady.code, 0);
+    EXPECT_EQ(leafSteady.n, 1);
+    EXPECT_EQ(leafSteady.hits[0], 1);
+    EXPECT_EQ(leafSteady.hits[1], 1);
+    EXPECT_EQ(leafSteady.hits[2], 1);
+
+    const Cmd receipt2 = MakePlanCmd(kOpCompleteOffload, 0, {5}, {mint2.slots[0]}, mint2.planId);
+    EXPECT_EQ(Drive(scheduler, receipt2).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
 
     /* Teardown order: joiners first, the leader last. */
     ASSERT_NO_FATAL_FAILURE(ReleaseChild(scheduler));
