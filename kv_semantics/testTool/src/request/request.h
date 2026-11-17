@@ -16,6 +16,8 @@
  * （key 转换、value 块生成写 buffer、注册凭证绑定与 offset 组装由 Scheduler 完成）。
  */
 struct Request {
+    /** 任务级节点标识 nsid（batch 头或单 key 行的 nsid；get 读回日志输出用） */
+    std::uint64_t nsid{0};
     /** key 列表（key128 低 64 位） */
     std::vector<kv::CacheKey> keys;
     /** key 128 位整数的高 16 位列表（与 keys 逐项对应；get 读回日志拼接 key 字段用） */

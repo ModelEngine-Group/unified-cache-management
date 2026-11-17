@@ -13,9 +13,11 @@
 class ConfigUtil;
 
 /**
- * 日志管理器：异步日志的初始化 / 获取 / 写入 / 关闭入口；统一管理两类 logger——
- * 全量日志（滚动文件、带 pattern 前缀）与 get 读回日志（非性能模式下的读回校验
- * 明细，追加文件、纯内容行），共用同一异步线程池。
+ * 日志管理器：异步日志的初始化 / 获取 / 关闭入口；统一管理两类 logger——
+ * 全量日志（滚动文件，LOG_xxx 宏输出）与 get 读回日志（非性能模式下的读回校验
+ * 明细，LOG_INFO_GET 宏输出），两者配置完全同款（pattern / 级别沿用 log.pattern /
+ * log.level），仅 sink 不同（get 落 readlogdir 追加文件），共用同一异步线程池；
+ * 两类 logger 获取方式对称（GetLogger / GetGetLogger）。
  */
 class LoggerManager {
 public:
@@ -28,10 +30,8 @@ public:
     static void Shutdown();
     /** 获取全局 logger；未初始化或已关闭时返回 nullptr */
     static std::shared_ptr<spdlog::logger> GetLogger();
-    /** get 读回日志是否启用（perf=off 且初始化成功；已关闭后为 false） */
-    static bool IsGetLogEnabled();
-    /** 写一行 get 读回日志（内容原样落盘不带 pattern；未启用或已关闭时安全跳过） */
-    static void WriteGetLog(const std::string &line);
+    /** 获取 get 读回日志 logger；未启用（perf=on）、未初始化或已关闭时返回 nullptr */
+    static std::shared_ptr<spdlog::logger> GetGetLogger();
 
     LoggerManager() = delete; // 静态工具类，禁止实例化
 
@@ -63,3 +63,12 @@ private:
 #define LOG_WARN(...) LOG_IMPL(spdlog::level::warn, __VA_ARGS__)
 /** 输出 error 级别日志（fmt 格式） */
 #define LOG_ERROR(...) LOG_IMPL(spdlog::level::err, __VA_ARGS__)
+
+/** 输出一行 get 读回日志（fmt 格式，落 readlogdir 独立目录；未启用或已关闭时安全跳过） */
+#define LOG_INFO_GET(...)                                                                           \
+    do {                                                                                            \
+        std::shared_ptr<spdlog::logger> getLg_ = ::LoggerManager::GetGetLogger();                   \
+        if (getLg_ != nullptr) {                                                                    \
+            getLg_->info(__VA_ARGS__);                                                              \
+        }                                                                                           \
+    } while (0)

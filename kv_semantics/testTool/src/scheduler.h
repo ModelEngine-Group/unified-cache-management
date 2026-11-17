@@ -44,11 +44,15 @@ public:
 
     /**
      * 按行序执行 input 任务流（sleep 暂停、逐任务组装执行；组装时任务第 i 条 entry 绑定第 i 块
-     * 复用缓冲）；持续执行语义，false 仅当工具链失败（err 说明首次失败）
+     * 复用缓冲）；重复执行语义，false 仅当工具链失败（err 说明首次失败）
      * @param requestManager 已解析的任务流
      * @param testmode 值生成模式（1 系统生成，2 行尾 value 字段）
+     * @param runtime 运行时长分钟；>0 限时模式，跑满即停（时间到不开新圈，当前圈跑完）；
+     *               =0 圈数模式（以 loop 为准）
+     * @param loop 循环执行圈数（整个任务流重复 loop 遍），仅 runtime=0 时生效（Check 已保证 >0）
      */
-    bool Run(const RequestManager &requestManager, int testmode, std::string &err);
+    bool Run(const RequestManager &requestManager, int testmode, int runtime, int loop,
+             std::string &err);
 
     /** 停止指标线程、注销请求内存、释放值缓冲池、关闭 kv client 并释放执行器；可重复调用 */
     void Shutdown();

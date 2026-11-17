@@ -72,15 +72,15 @@ bool ParseKey128(const std::string &text, unsigned __int128 &value)
     return true;
 }
 
-/** optype 文本到枚举（大小写敏感，仅 get/put/exists/delete）；不识别返回 false */
+/** optype 文本到枚举（大小写敏感，get/put/exist/delete）；不识别返回 false */
 bool ParseOrcOp(const std::string &text, OrcOp &op)
 {
     if (text == "get") {
         op = OrcOp::GET;
     } else if (text == "put") {
         op = OrcOp::PUT;
-    } else if (text == "exists") {
-        op = OrcOp::EXISTS;
+    } else if (text == "exist") {
+        op = OrcOp::EXIST;
     } else if (text == "delete") {
         op = OrcOp::DELETE;
     } else {
@@ -127,10 +127,10 @@ std::uint64_t KeyLow(const unsigned __int128 key)
     return static_cast<std::uint64_t>(key);
 }
 
-/** key 128 位整数的高 16 位分量（testmode=1 的 value 生成规则使用） */
+/** key 128 位整数右移 64 位后的低 16 位分量（bit64-79；testmode=1 的 value 生成规则使用） */
 std::uint16_t KeyHigh16(const unsigned __int128 key)
 {
-    return static_cast<std::uint16_t>(key >> 112);
+    return static_cast<std::uint16_t>(key >> 64);
 }
 
 /**
@@ -178,9 +178,16 @@ bool ParseSingleEntry(const std::vector<std::string> &fields, RequestOrc &out)
     return false;
 }
 
-/** 解析 batch 头字段（op 已识别，fields[0] 为 "batch"）：batch nsid=x 或 batch nsid x 两种形态；失败返回 false */
+/**
+ * 解析 batch 头字段（op 已识别，fields[0] 为 "batch"）：batch、batch nsid=x、batch nsid x
+ * 三种形态；nsid 可省略，缺省 0；失败返回 false
+ */
 bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsid)
 {
+    if (fields.size() == 1) {
+        nsid = 0;
+        return true;
+    }
     if (fields.size() == 2 && fields[1].rfind("nsid=", 0) == 0) {
         return ParseUint64(fields[1].substr(5), nsid);
     }

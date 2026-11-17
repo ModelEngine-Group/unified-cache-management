@@ -8,6 +8,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include "log/logger_manager.h"
@@ -96,22 +97,28 @@ bool ConfigUtil::Load(const std::string &path, std::string &err)
     }
     values_ = std::move(items);
 
-    if (!Check(err)) {
-        return false;
-    }
+    // Check 与文件名展开走安全访问，缺失/坏值异常在此转为 err，保持 Load 的 bool 契约
+    try {
+        if (!Check(err)) {
+            return false;
+        }
 
-    // 文件名模板按加载时刻展开时间标记，并防止展开后重名
-    std::time_t now = std::time(nullptr);
-    std::string fullName = ExpandFileNameTpl(values_.at("log.file_name"), now);
-    std::string warnName = ExpandFileNameTpl(values_.at("log.warn_file_name"), now);
-    std::string errorName = ExpandFileNameTpl(values_.at("log.error_file_name"), now);
-    if (fullName == warnName || fullName == errorName || warnName == errorName) {
-        err = "expanded file names of log.file_name / log.warn_file_name / log.error_file_name conflict";
+        // 文件名模板按加载时刻展开时间标记，并防止展开后重名
+        std::time_t now = std::time(nullptr);
+        std::string fullName = ExpandFileNameTpl(RequireValue("log.file_name"), now);
+        std::string warnName = ExpandFileNameTpl(RequireValue("log.warn_file_name"), now);
+        std::string errorName = ExpandFileNameTpl(RequireValue("log.error_file_name"), now);
+        if (fullName == warnName || fullName == errorName || warnName == errorName) {
+            err = "expanded file names of log.file_name / log.warn_file_name / log.error_file_name conflict";
+            return false;
+        }
+        values_["log.file_name"] = std::move(fullName);
+        values_["log.warn_file_name"] = std::move(warnName);
+        values_["log.error_file_name"] = std::move(errorName);
+    } catch (const std::exception &e) {
+        err = e.what();
         return false;
     }
-    values_["log.file_name"] = std::move(fullName);
-    values_["log.warn_file_name"] = std::move(warnName);
-    values_["log.error_file_name"] = std::move(errorName);
     return true;
 }
 
@@ -119,15 +126,15 @@ bool ConfigUtil::Check(std::string &err)
 {
     // 级别名合法
     spdlog::level::level_enum level;
-    if (!StringToLevel(values_.at("log.level"), level)) {
-        err = "invalid log.level: " + values_.at("log.level") +
+    if (!StringToLevel(RequireValue("log.level"), level)) {
+        err = "invalid log.level: " + RequireValue("log.level") +
               " (expected trace/debug/info/warn/error/critical)";
         return false;
     }
 
     // runtime=0（循环模式）时 loop 必须大于 0
-    int rt = std::stoi(values_.at("runtime"));
-    int lp = std::stoi(values_.at("loop"));
+    const int rt = RequireInt("runtime");
+    const int lp = RequireInt("loop");
     if (rt == 0 && lp == 0) {
         err = "loop must be > 0 when runtime=0 (loop mode)";
         return false;
@@ -135,8 +142,8 @@ bool ConfigUtil::Check(std::string &err)
 
     // 值缓冲池参数必须为正：非正值会在后续分配/注册中产生空区域
     // （buffersize 为字节量留 int64，buffercount 为块数用 int，与 getter 值域一致）
-    int64_t bufferSize = std::stoll(values_.at("buffersize"));
-    int bufferCount = std::stoi(values_.at("buffercount"));
+    const int64_t bufferSize = RequireInt64("buffersize");
+    const int bufferCount = RequireInt("buffercount");
     if (bufferSize <= 0 || bufferCount <= 0) {
         err = "invalid value buffer pool config: buffersize=" + std::to_string(bufferSize) +
               " buffercount=" + std::to_string(bufferCount);
@@ -145,116 +152,145 @@ bool ConfigUtil::Check(std::string &err)
     return true;
 }
 
+std::string ConfigUtil::RequireValue(const std::string &key) const
+{
+    const auto it = values_.find(key);
+    if (it == values_.end()) {
+        throw std::runtime_error("config key missing: " + key);
+    }
+    return it->second;
+}
+
+int ConfigUtil::RequireInt(const std::string &key) const
+{
+    const std::string value = RequireValue(key);
+    try {
+        return std::stoi(value);
+    } catch (const std::exception &) {
+        throw std::runtime_error("config key '" + key + "' invalid int value: '" + value + "'");
+    }
+}
+
+std::int64_t ConfigUtil::RequireInt64(const std::string &key) const
+{
+    const std::string value = RequireValue(key);
+    try {
+        return std::stoll(value);
+    } catch (const std::exception &) {
+        throw std::runtime_error("config key '" + key + "' invalid int64 value: '" + value + "'");
+    }
+}
+
 int ConfigUtil::GetTestMode() const
 {
-    return std::stoi(values_.at("testmode"));
+    return RequireInt("testmode");
 }
 
 int ConfigUtil::GetRuntime() const
 {
-    return std::stoi(values_.at("runtime"));
+    return RequireInt("runtime");
 }
 
 int ConfigUtil::GetLoop() const
 {
-    return std::stoi(values_.at("loop"));
+    return RequireInt("loop");
 }
 
 bool ConfigUtil::GetPerf() const
 {
-    return values_.at("perf") == "on";
+    return RequireValue("perf") == "on";
 }
 
 bool ConfigUtil::GetOnlyConnect() const
 {
-    return values_.at("onlyconnect") == "on";
+    return RequireValue("onlyconnect") == "on";
 }
 
 int ConfigUtil::GetStartCoreId() const
 {
-    return std::stoi(values_.at("startcoreid"));
+    return RequireInt("startcoreid");
 }
 
 int ConfigUtil::GetNumJobs() const
 {
-    return std::stoi(values_.at("numjobs"));
+    return RequireInt("numjobs");
 }
 
 int64_t ConfigUtil::GetBufferSize() const
 {
-    return std::stoll(values_.at("buffersize"));
+    return RequireInt64("buffersize");
 }
 
 int ConfigUtil::GetBufferCount() const
 {
-    return std::stoi(values_.at("buffercount"));
+    return RequireInt("buffercount");
 }
 
 std::string ConfigUtil::GetBufferType() const
 {
-    return values_.at("buffertype");
+    return RequireValue("buffertype");
 }
 
 int ConfigUtil::GetDeviceId() const
 {
-    return std::stoi(values_.at("deviceid"));
+    return RequireInt("deviceid");
 }
 
 std::string ConfigUtil::GetReadLogDir() const
 {
-    return values_.at("readlogdir");
+    return RequireValue("readlogdir");
 }
 
 std::string ConfigUtil::GetLogDir() const
 {
-    return values_.at("logdir");
+    return RequireValue("logdir");
 }
 
 spdlog::level::level_enum ConfigUtil::GetLogLevel() const
 {
     spdlog::level::level_enum level = spdlog::level::info;
-    (void)StringToLevel(values_.at("log.level"), level);
+    (void)StringToLevel(RequireValue("log.level"), level);
     return level;
 }
 
 std::string ConfigUtil::GetLogPattern() const
 {
-    return values_.at("log.pattern");
+    return RequireValue("log.pattern");
 }
 
 std::string ConfigUtil::GetLogFileName() const
 {
-    return values_.at("log.file_name");
+    return RequireValue("log.file_name");
 }
 
 std::string ConfigUtil::GetLogWarnFileName() const
 {
-    return values_.at("log.warn_file_name");
+    return RequireValue("log.warn_file_name");
 }
 
 std::string ConfigUtil::GetLogErrorFileName() const
 {
-    return values_.at("log.error_file_name");
+    return RequireValue("log.error_file_name");
 }
 
 int64_t ConfigUtil::GetLogMaxFileSize() const
 {
-    return std::stoll(values_.at("log.max_file_size"));
+    return RequireInt64("log.max_file_size");
 }
 
 int ConfigUtil::GetLogMaxFiles() const
 {
-    return std::stoi(values_.at("log.max_files"));
+    return RequireInt("log.max_files");
 }
 
 int ConfigUtil::GetLogAsyncQueueSize() const
 {
-    return std::stoi(values_.at("log.async_queue_size"));
+    return RequireInt("log.async_queue_size");
 }
 
 int ConfigUtil::GetLogAsyncFlushIntervalMs() const
 {
-    return std::stoi(values_.at("log.async_flush_interval_ms"));
+    return RequireInt("log.async_flush_interval_ms");
 }
 
 void ConfigUtil::Print() const

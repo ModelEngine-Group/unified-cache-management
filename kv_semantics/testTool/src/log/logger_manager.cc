@@ -79,8 +79,9 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
                                                         spdlog::async_overflow_policy::block);
         spdlog::register_logger(logger_);
 
-        // get 读回日志（perf=off 启用）：readlogdir 下追加文件、纯内容行（%v 不带
-        // pattern 前缀），与全量日志共用线程池；perf=on 不创建，写入口安全跳过
+        // get 读回日志（perf=off 启用）：与全量日志完全同款配置（pattern / 级别沿用
+        // log.pattern / log.level，不单独定制），仅 sink 换为 readlogdir 下的追加文件；
+        // 与全量日志共用线程池；perf=on 不创建，写入口安全跳过
         if (!config.GetPerf()) {
             if (!FileUtil::EnsureDir(config.GetReadLogDir(), err)) {
                 Shutdown();
@@ -94,7 +95,6 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
             getLogger_ = std::make_shared<spdlog::async_logger>(
                 "get", getSink, threadPool_, spdlog::async_overflow_policy::block);
             spdlog::register_logger(getLogger_);
-            getLogger_->set_pattern("%v");
         }
     } catch (const std::exception &e) {
         err = e.what();
@@ -102,8 +102,14 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
         return false;
     }
 
+    // pattern / 级别为 logger 默认配置（conf 的 log.pattern / log.level），主 logger 与
+    // get logger 同款应用；perf=on 时全量日志级别强制 warn：不输出 info（压测降日志开销），
+    // 配置的 log.level 仅 perf=off 时生效（get logger 仅 perf=off 存在，直接用配置值）
     try {
         logger_->set_pattern(config.GetLogPattern());
+        if (getLogger_ != nullptr) {
+            getLogger_->set_pattern(config.GetLogPattern());
+        }
     } catch (const std::exception &e) {
         err = "invalid log.pattern: ";
         err += e.what();
@@ -111,7 +117,10 @@ bool LoggerManager::Init(const ConfigUtil &config, std::string &err)
         return false;
     }
 
-    logger_->set_level(config.GetLogLevel());
+    logger_->set_level(config.GetPerf() ? spdlog::level::warn : config.GetLogLevel());
+    if (getLogger_ != nullptr) {
+        getLogger_->set_level(config.GetLogLevel());
+    }
     logger_->flush_on(spdlog::level::err); // error 及以上立即落盘
     spdlog::flush_every(std::chrono::milliseconds(config.GetLogAsyncFlushIntervalMs()));
     return true;
@@ -138,17 +147,10 @@ std::shared_ptr<spdlog::logger> LoggerManager::GetLogger()
     return logger_;
 }
 
-bool LoggerManager::IsGetLogEnabled()
+std::shared_ptr<spdlog::logger> LoggerManager::GetGetLogger()
 {
-    return getLogger_ != nullptr;
+    return getLogger_;
 }
 
-void LoggerManager::WriteGetLog(const std::string &line)
-{
-    // 未启用（perf=on）或已关闭时安全跳过；async_logger 入队线程安全，
-    // 单写线程保证 get 文件内行完整有序
-    if (getLogger_ == nullptr) {
-        return;
-    }
-    getLogger_->info("{}", line);
-}
+// get 读回日志的写入经 LOG_INFO_GET 宏直接走 GetGetLogger（与 LOG_xxx 走 GetLogger 完全
+// 对称），不再需要单独的写入接口；async_logger 入队线程安全，单写线程保证 get 文件内行完整有序

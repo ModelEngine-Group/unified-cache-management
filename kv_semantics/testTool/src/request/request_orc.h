@@ -11,14 +11,14 @@
 enum class OrcOp {
     GET,     // 读取（get）
     PUT,     // 写入（put）
-    EXISTS,  // 存在性查询（exists）
+    EXIST,   // 存在性查询（exist）
     DELETE   // 删除（delete）
 };
 
 /**
  * input.txt 单条指令的原始解析结果（原始格式）：只承载输入文件中的信息，不做执行侧加工。
- * key 解析为 128 位整数后按两个分量保存：低 64 位（CacheKey 取此值）与高 16 位
- * （testmode=1 的 value 生成规则使用）。
+ * key 解析为 128 位整数后按两个分量保存：低 64 位（CacheKey 取此值）与 >>64 后的低 16 位
+ * （bit64-79，testmode=1 的 value 生成规则使用）。
  */
 struct RequestOrc {
     /** 操作类型 */
@@ -27,7 +27,7 @@ struct RequestOrc {
     std::uint64_t nsid{0};
     /** key 128 位整数的低 64 位（CacheKey 取此值） */
     std::uint64_t keyLow64{0};
-    /** key 128 位整数的高 16 位（testmode=1 的 value 生成规则使用） */
+    /** key 128 位整数右移 64 位后的低 16 位（bit64-79；testmode=1 的 value 生成规则使用） */
     std::uint16_t keyHigh16{0};
     /** 块内偏移（入 KVBuffer.offset） */
     std::uint32_t offset{0};

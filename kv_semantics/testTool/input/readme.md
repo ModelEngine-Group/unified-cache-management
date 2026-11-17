@@ -4,7 +4,7 @@ input的格式：
 optype nsid key offset length value
 
 batch格式:
-optype batch nsid=x 或者是 nsid x
+optype batch nsid=x 或者是 nsid x （nsid可省略，缺省为0）
 key offset length value
 key offset length value
 /batch
@@ -15,7 +15,7 @@ key offset length value
 
 
 
-optype: get put exists delete 
+optype: get put exist delete
 
 命令与命令之间可插入sleep x 模拟脉冲。所有线程同步暂停X秒。
 

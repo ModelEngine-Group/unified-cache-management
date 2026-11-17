@@ -241,8 +241,8 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
 
 bool Executor::WriteGetLog(const Request &request, const kv::TaskResult &result, std::string &err)
 {
-    // 性能模式未启用 get 读回日志：不组装内容，直接返回（零开销）
-    if (!LoggerManager::IsGetLogEnabled()) {
+    // get 读回日志未启用（perf=on）：不组装内容，直接返回（零开销）
+    if (LoggerManager::GetGetLogger() == nullptr) {
         return true;
     }
 
@@ -259,8 +259,11 @@ bool Executor::WriteGetLog(const Request &request, const kv::TaskResult &result,
         codes = std::to_string(static_cast<int>(result.status.code));
     }
 
-    // 每任务一行：get + 批量返回码 + 逐 entry 的 key/offset/value 首段/len/tail 组
-    std::string line = "get " + codes;
+    // 每任务一行，字段名(值) 形式标注（裸值无法分辨字段）：
+    // opcode(get) nsid(x) codes(y) key(k) offset(o) value(v) len(l) tail(t)——
+    // 多 entry batch 时 codes 只出现一次、其后逐 entry 追加 key/offset/value/len/tail 组；
+    // 行格式与全量日志一致（get logger 配置同款，pattern 沿用 log.pattern），业务代码不感知
+    std::string line = "opcode(get) nsid(" + std::to_string(request.nsid) + ") codes(" + codes + ")";
     for (std::size_t i = 0; i < entries.size(); ++i) {
         // key 字段：key 低 64 位与高 16 位十进制字符串直接拼接；value 生成种子串以
         // "低64 高16 offset" 开头，len + 2 恰好覆盖该前缀（两个分隔空格），供逐字段比对
@@ -312,10 +315,12 @@ bool Executor::WriteGetLog(const Request &request, const kv::TaskResult &result,
             }
         }
 
-        line += " " + keyStr + " " + offsetStr + " " + value + " " + std::to_string(len) + " " +
-                tail;
+        line += " key(" + keyStr + ") offset(" + offsetStr + ") value(" + value + ") len(" +
+                std::to_string(len) + ") tail(" + tail + ")";
     }
-    LoggerManager::WriteGetLog(line);
+    // 内容作为 fmt 参数而非格式串（"{}" 显式转义）：value/tail 为二进制转字符串，
+    // 可能含 '{' '}' 字节，作为格式串会被 fmt 误解析
+    LOG_INFO_GET("{}", line);
     return true;
 }
 

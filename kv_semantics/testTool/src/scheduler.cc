@@ -143,7 +143,8 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
     return true;
 }
 
-bool Scheduler::Run(const RequestManager &requestManager, int testmode, std::string &err)
+bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runtime, int loop,
+                    std::string &err)
 {
     if (client_ == nullptr) {
         err = "scheduler not initialized";
@@ -159,34 +160,49 @@ bool Scheduler::Run(const RequestManager &requestManager, int testmode, std::str
     metricsThread_ = std::thread(&Scheduler::MetricsLoop, this);
 
     // 按行序执行任务流：sleep 步骤原地暂停；kv 任务组装后逐个执行。
-    // 持续执行语义：单任务工具链失败记录后继续执行后续任务，err 保留首次失败描述
+    // 持续执行语义：单任务工具链失败记录后继续执行后续任务，err 保留首次失败描述。
+    // 圈数/时长控制（conf 语义）：runtime>0 限时模式，跑满 runtime 分钟即停（时间到不开
+    // 新圈，当前圈跑完）；runtime=0 圈数模式，整个任务流重复 loop 遍（Check 已保证 loop>0）
     bool toolChainOk = true;
     Executor *executor = executors_[0].get();
-    for (std::size_t i = 0; i < requestManager.StepCount(); ++i) {
-        const FlowStep &step = requestManager.GetStep(i);
-        if (const auto *sleepStep = std::get_if<SleepStep>(&step)) {
-            LOG_INFO("Scheduler: sleep {}s", sleepStep->seconds);
-            std::this_thread::sleep_for(std::chrono::seconds(sleepStep->seconds));
-            continue;
-        }
-        const OrcTask &task = std::get<OrcTask>(step);
-
-        Request request;
-        if (!buildTaskRequest(task, testmode, request, err)) {
-            LOG_ERROR("Scheduler: task {} build failed: {}", i, err);
-            toolChainOk = false;
-            continue;
-        }
-
-        std::string execErr;
-        if (!executor->Execute(MapOp(task.op), request, execErr)) {
-            LOG_ERROR("Scheduler: task {} execute failed: {}", i, execErr);
-            if (toolChainOk) {
-                err = execErr;
+    const auto startTime = std::chrono::steady_clock::now();
+    int round = 0;
+    while (true) {
+        for (std::size_t i = 0; i < requestManager.StepCount(); ++i) {
+            const FlowStep &step = requestManager.GetStep(i);
+            if (const auto *sleepStep = std::get_if<SleepStep>(&step)) {
+                LOG_INFO("Scheduler: sleep {}s", sleepStep->seconds);
+                std::this_thread::sleep_for(std::chrono::seconds(sleepStep->seconds));
+                continue;
             }
-            toolChainOk = false;
+            const OrcTask &task = std::get<OrcTask>(step);
+
+            Request request;
+            if (!buildTaskRequest(task, testmode, request, err)) {
+                LOG_ERROR("Scheduler: task {} build failed: {}", i, err);
+                toolChainOk = false;
+                continue;
+            }
+
+            std::string execErr;
+            if (!executor->Execute(MapOp(task.op), request, execErr)) {
+                LOG_ERROR("Scheduler: task {} execute failed: {}", i, execErr);
+                if (toolChainOk) {
+                    err = execErr;
+                }
+                toolChainOk = false;
+            }
+        }
+        ++round;
+        if (runtime > 0) {
+            if (std::chrono::steady_clock::now() - startTime >= std::chrono::minutes(runtime)) {
+                break;
+            }
+        } else if (round >= loop) {
+            break;
         }
     }
+    LOG_INFO("Scheduler: {} rounds executed", round);
 
     // 停止指标线程并输出运行总计
     metricsRunning_.store(false);
@@ -247,6 +263,7 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode, Request &req
         return false;
     }
 
+    request.nsid = task.nsid;
     request.keys.reserve(task.entries.size());
     request.keyHighs.reserve(task.entries.size());
     request.entries.reserve(task.entries.size());
@@ -306,7 +323,7 @@ OpType Scheduler::MapOp(OrcOp op)
             return OpType::LOAD;
         case OrcOp::PUT:
             return OpType::STORE;
-        case OrcOp::EXISTS:
+        case OrcOp::EXIST:
             return OpType::QUERY;
         case OrcOp::DELETE:
             return OpType::DELETE;
