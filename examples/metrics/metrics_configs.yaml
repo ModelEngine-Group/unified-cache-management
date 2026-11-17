@@ -817,10 +817,10 @@ histogram:
   # =========================================================================
   - name: "layerwise_layer_load_duration_ms"
     documentation: "Layerwise per-layer wall-clock time from layer load start to wait_for_layer_load return (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
   - name: "layerwise_batch_load_duration_sum_ms"
     documentation: "Sum of per-layer load durations within one Layerwise batch (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
 
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_duration_ms"

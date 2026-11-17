@@ -1193,12 +1193,12 @@ _HISTOGRAM_METRICS = [
     (
         "layerwise_layer_load_duration_ms",
         "Layerwise per-layer wall-clock time from layer load start to wait_for_layer_load return (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "layerwise_batch_load_duration_sum_ms",
         "Sum of per-layer load durations within one Layerwise batch (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        _DURATION_MS_BUCKETS,
     ),
     (
         "dramstore_lookup_duration_ms",
