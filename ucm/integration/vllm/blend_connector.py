@@ -382,7 +382,10 @@ class UCMBlendConnector(UCMDirectConnector):
             f"chunks cache total hit: {chunk_hit_blocks}, "
         )
         ucmmetrics.update_stats(
-            {"interval_lookup_hit_rates": chunk_hit_blocks / max_blk_num},
+            {
+                "interval_lookup_hit_rates": (pc_hit_blocks + chunk_hit_blocks)
+                / max_blk_num
+            },
         )
 
         pc_hit_tokens = pc_hit_blocks * self.block_size
