@@ -149,13 +149,17 @@ Status WaitWritable(int fd, std::chrono::steady_clock::time_point deadline,
 }
 
 Status ConnectSocket(const addrinfo& address, std::chrono::steady_clock::time_point deadline,
-                     std::atomic_int& activeFd, const std::atomic<bool>& stopRequested,
-                     int& connectedFd)
+                     std::atomic_int& activeFd, std::mutex& activeFdMutex,
+                     const std::atomic<bool>& stopRequested, int& connectedFd)
 {
     const int fd = socket(address.ai_family, address.ai_socktype, address.ai_protocol);
     if (fd < 0) { return SlaveError(StatusCode::CONNECTION_ERROR, "failed to create socket"); }
-    activeFd.store(fd);
+    {
+        std::lock_guard<std::mutex> lock(activeFdMutex);
+        activeFd.store(fd);
+    }
     auto fail = [&](Status status) {
+        std::lock_guard<std::mutex> lock(activeFdMutex);
         close(fd);
         activeFd.store(-1);
         return status;
@@ -336,14 +340,17 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
         auto status = receiveMore();
         if (!status.ok()) { return status; }
     }
+    if (wire.size() != bodyBegin + contentLength) {
+        return SlaveError(StatusCode::INTERNAL_ERROR, "HTTP response exceeds Content-Length");
+    }
     response.body = wire.substr(bodyBegin, contentLength);
     return Status::OK();
 }
 
 Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
                        std::chrono::steady_clock::time_point deadline,
-                       std::atomic_int& activeFd, const std::atomic<bool>& stopRequested,
-                       HttpResponse& response)
+                       std::atomic_int& activeFd, std::mutex& activeFdMutex,
+                       const std::atomic<bool>& stopRequested, HttpResponse& response)
 {
     if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
     if (std::chrono::steady_clock::now() >= deadline) {
@@ -374,7 +381,7 @@ Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
     Status lastFailure = SlaveError(StatusCode::CONNECTION_ERROR, "master is unreachable");
     for (const addrinfo* current = addresses.get(); current != nullptr; current = current->ai_next) {
         int fd{-1};
-        auto status = ConnectSocket(*current, deadline, activeFd, stopRequested, fd);
+        auto status = ConnectSocket(*current, deadline, activeFd, activeFdMutex, stopRequested, fd);
         if (!status.ok()) {
             lastFailure = std::move(status);
             if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
@@ -389,9 +396,12 @@ Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
         if (status.ok()) { status = SendAll(fd, request, stopRequested); }
         std::string wire;
         if (status.ok()) { status = ParseHttpResponse(wire, fd, deadline, stopRequested, response); }
-        shutdown(fd, SHUT_RDWR);
-        close(fd);
-        activeFd.store(-1);
+        {
+            std::lock_guard<std::mutex> lock(activeFdMutex);
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+            activeFd.store(-1);
+        }
         if (status.ok()) { return Status::OK(); }
         if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
         lastFailure = std::move(status);
@@ -403,6 +413,15 @@ class M800ViewSlaveServerImpl final : public M800ViewSlaveServer {
 public:
     explicit M800ViewSlaveServerImpl(M800ViewServerConfig config) : config_(std::move(config)) {}
     ~M800ViewSlaveServerImpl() override { Stop(); }
+
+    Status Start() override
+    {
+        auto initialUniverse = CreateViewUniverse();
+        if (!initialUniverse) {
+            return SlaveError(StatusCode::INTERNAL_ERROR, "failed to create initial ViewUniverse");
+        }
+        return GetAllViews(*initialUniverse);
+    }
 
     Status GetAllViews(ViewUniverse& universe)
     {
@@ -431,8 +450,8 @@ public:
                 return SlaveError(StatusCode::TIMEOUT, "worker fetch deadline expired");
             }
             HttpResponse response;
-            auto status = FetchFromMaster(address, requestEpoch, deadline, activeFd_, stopRequested_,
-                                          response);
+            auto status = FetchFromMaster(address, requestEpoch, deadline, activeFd_, activeFdMutex_,
+                                          stopRequested_, response);
             if (!status.ok()) {
                 if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
                 lastFailure = std::move(status);
@@ -496,8 +515,11 @@ public:
     void Stop() override
     {
         stopRequested_.store(true);
-        const int fd = activeFd_.load();
-        if (fd >= 0) { shutdown(fd, SHUT_RDWR); }
+        {
+            std::lock_guard<std::mutex> lock(activeFdMutex_);
+            const int fd = activeFd_.load();
+            if (fd >= 0) { shutdown(fd, SHUT_RDWR); }
+        }
         std::lock_guard<std::mutex> guard(mutex_);
         stopRequested_.store(false);
     }
@@ -505,6 +527,7 @@ public:
 private:
     M800ViewServerConfig config_;
     std::mutex mutex_;
+    std::mutex activeFdMutex_;
     std::atomic_int activeFd_{-1};
     std::atomic<bool> stopRequested_{false};
 };

@@ -116,9 +116,9 @@ Connection: close
 ## 8. 验证
 
 ```bash
-./build-m800-derived/tests/kv.test \
+./build-m800-full-review/tests/kv.test \
   --gtest_filter='ViewServerTest.*:ViewUniverseTest.*:M800View*:ViewHttpServerTest.*'
-ctest --test-dir build-m800-derived --output-on-failure -j2
+ctest --test-dir build-m800-full-review --output-on-failure -j2
 ```
 
 覆盖配置、XXH32、ABI/dlopen、Master 首图与部分失败、Codec 非法输入、HTTP 400/404/405/500、空输出全量拉取、多 Master、旧 epoch、304、超时、Stop/Start 和不可变快照。

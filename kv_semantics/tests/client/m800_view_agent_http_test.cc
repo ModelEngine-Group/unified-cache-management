@@ -345,6 +345,36 @@ TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
     server->Stop();
 }
 
+TEST(ViewHttpServerTest, StopThenRestartServesNewClient)
+{
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        const auto port = ReserveLoopbackPort();
+        ASSERT_GT(port, 0);
+        const auto handler = [](const ViewHttpRequest& request) {
+            return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW,
+                                 "since=" + std::to_string(request.sinceEpoch)};
+        };
+        auto first = CreateViewHttpServer(1000);
+        ASSERT_TRUE(first->Start("127.0.0.1:" + std::to_string(port), handler).ok());
+        const int client = ConnectLoopback(port);
+        ASSERT_GE(client, 0);
+        const std::string partial = "GET /v1/views";
+        ASSERT_GT(send(client, partial.data(), partial.size(), MSG_NOSIGNAL), 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        first->Stop();
+        shutdown(client, SHUT_RDWR);
+        close(client);
+
+        auto second = CreateViewHttpServer(1000);
+        ASSERT_TRUE(second->Start("127.0.0.1:" + std::to_string(port), handler).ok());
+        std::string response;
+        ASSERT_TRUE(RoundTrip(port, {"GET /v1/views?since_epoch=1 HTTP/1.1\r\n\r\n"}, response));
+        EXPECT_NE(response.find("HTTP/1.1 200 OK\r\n"), std::string::npos);
+        EXPECT_EQ(ResponseBody(response), "since=1");
+        second->Stop();
+    }
+}
+
 TEST(ViewHttpServerTest, OccupiedPortFailsWithoutReusePort)
 {
     const int blocker = socket(AF_INET, SOCK_STREAM, 0);

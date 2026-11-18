@@ -168,6 +168,7 @@ Status ParseEndpoint(std::string_view text, NodeEndpoint& endpoint)
             hasPort = true;
             status = ParseUnsigned(value, endpoint.port);
             if (!status.ok()) { return status; }
+            if (endpoint.port == 0) { return ProtocolError("endpoint port must be nonzero"); }
         } else if (key == "local.comm_id") {
             if (hasIp) { return ProtocolError("duplicate endpoint local.comm_id"); }
             hasIp = true;

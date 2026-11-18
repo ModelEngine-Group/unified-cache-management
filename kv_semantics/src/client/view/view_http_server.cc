@@ -325,8 +325,11 @@ public:
             shutdown(fd, SHUT_RDWR);
             CloseFd(fd);
         }
-        const int clientFd = activeClientFd_.load();
-        if (clientFd >= 0) { shutdown(clientFd, SHUT_RDWR); }
+        {
+            std::lock_guard<std::mutex> clientLock(clientFdMutex_);
+            const int current = activeClientFd_.load();
+            if (current >= 0) { shutdown(current, SHUT_RDWR); }
+        }
         if (thread_.joinable()) { thread_.join(); }
         handler_ = nullptr;
     }
@@ -407,16 +410,23 @@ private:
                 continue;
             }
             if (!running_.load()) {
+                std::lock_guard<std::mutex> clientLock(clientFdMutex_);
                 CloseFd(client);
                 break;
             }
             // v1 intentionally serves one accepted connection at a time. The
             // absolute per-connection deadline bounds occupancy; deployments
             // must size the worker set around this serial processing constraint.
-            activeClientFd_.store(client);
+            {
+                std::lock_guard<std::mutex> clientLock(clientFdMutex_);
+                activeClientFd_.store(client);
+            }
             HandleConnection(client);
-            activeClientFd_.store(-1);
-            CloseFd(client);
+            {
+                std::lock_guard<std::mutex> clientLock(clientFdMutex_);
+                activeClientFd_.store(-1);
+                CloseFd(client);
+            }
         }
     }
 
@@ -424,6 +434,7 @@ private:
     std::atomic_bool running_{false};
     std::atomic_int listenFd_{-1};
     std::atomic_int activeClientFd_{-1};
+    std::mutex clientFdMutex_;
     std::thread thread_;
     ViewHttpHandler handler_;
     std::mutex lifecycleMutex_;

@@ -35,6 +35,10 @@ namespace kv {
 // ViewUniverse::PublishAll; the slave keeps no independent epoch cache.
 class M800ViewSlaveServer : public ViewServer {
 public:
+    // Initializes the master HTTP client and performs the initial universe
+    // fetch. Start must fail if the initial fetch cannot complete.
+    virtual Status Start() = 0;
+
     // M800 slaves must decode the master's full universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
     // Returns the first namespace as the legacy single global view.

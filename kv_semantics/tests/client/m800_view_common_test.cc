@@ -233,6 +233,16 @@ TEST(M800ViewCommonTest, BuildSupportsCanonicalAndCephTimeoutKeys)
     EXPECT_EQ(ceph.agentFetchTimeoutMs, std::uint64_t{13000});
 }
 
+TEST(M800ViewCommonTest, BuildZeroEndpointPortFallsBackToDefault)
+{
+    auto config = MakeWorkerConfig();
+    config.attrs["view.endpoint_port"] = "0";
+    M800ViewServerConfig built;
+
+    ASSERT_TRUE(M800ViewServerConfig::Build(config, built).ok());
+    EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
+}
+
 TEST(M800ViewCommonTest, BuildIgnoresMisspelledTimeoutKeys)
 {
     auto config = MakeWorkerConfig();

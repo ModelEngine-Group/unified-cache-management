@@ -378,6 +378,25 @@ TEST(M800ViewMasterTest, DuplicateStartStillReturnsResourceBusy)
     master->Stop();
 }
 
+TEST(M800ViewMasterTest, EmbeddedNulAddressIsRejected)
+{
+    auto state = std::make_shared<FakeAgentState>();
+    const auto invalidAddress = std::string("10.0.0.1\0junk", 13);
+    SetNamespaces(state, 10, {{"pool-a", {MakeNode(1, invalidAddress)}}});
+    auto master = MakeMaster(MasterConfig(AllocatePort()), state);
+    EXPECT_EQ(master->Start().code, StatusCode::NOT_FOUND);
+    master->Stop();
+}
+
+TEST(M800ViewMasterTest, ExplicitZeroPortAddressIsRejected)
+{
+    auto state = std::make_shared<FakeAgentState>();
+    SetNamespaces(state, 10, {{"pool-a", {MakeNode(1, "10.0.0.1:0")}}});
+    auto master = MakeMaster(MasterConfig(AllocatePort()), state);
+    EXPECT_EQ(master->Start().code, StatusCode::NOT_FOUND);
+    master->Stop();
+}
+
 TEST(M800ViewMasterTest, InitialHashCollisionReturnsInternalErrorImmediately)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -989,6 +1008,23 @@ TEST(M800ViewSlaveTest, NonNumericAndEmbeddedNulMasterAddressesAreRejected)
         EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INVALID_ARGUMENT);
         EXPECT_TRUE(universe->Empty());
     }
+}
+
+TEST(M800ViewSlaveTest, StartPerformsInitialFetchAndReturnsFailures)
+{
+    auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
+    auto bodyMutex = std::make_shared<std::mutex>();
+    const auto port = AllocatePort();
+    auto server = StartTextServer(port, body, bodyMutex);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(port)};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    ASSERT_TRUE(worker->Start().ok());
+    server->Stop();
+    EXPECT_EQ(worker->Start().code, StatusCode::CONNECTION_ERROR);
+    worker->Stop();
 }
 
 TEST(M800ViewSlaveTest, WorkerBeforeMasterKeepsOutputUnchanged)

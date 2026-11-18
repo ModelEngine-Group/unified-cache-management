@@ -16,8 +16,9 @@ namespace {
 
 class RawResponseServer {
 public:
-    explicit RawResponseServer(std::string response, int responseDelayMs = 0)
-        : response_(std::move(response)), responseDelayMs_(responseDelayMs)
+    explicit RawResponseServer(std::string response, int responseDelayMs = 0,
+                               std::size_t fragmentAt = std::string::npos)
+        : response_(std::move(response)), responseDelayMs_(responseDelayMs), fragmentAt_(fragmentAt)
     {
         listenFd_ = socket(AF_INET, SOCK_STREAM, 0);
         if (listenFd_ < 0) { throw std::runtime_error("failed to create raw server socket"); }
@@ -58,12 +59,22 @@ private:
         if (responseDelayMs_ > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(responseDelayMs_));
         }
-        std::size_t sent{0};
-        while (sent < response_.size()) {
-            const auto result = send(client, response_.data() + sent, response_.size() - sent,
-                                     MSG_NOSIGNAL);
-            if (result <= 0) { break; }
-            sent += static_cast<std::size_t>(result);
+        auto sendPart = [&](const std::string& part) {
+            std::size_t sent{0};
+            while (sent < part.size()) {
+                const auto result = send(client, part.data() + sent, part.size() - sent, MSG_NOSIGNAL);
+                if (result <= 0) { return false; }
+                sent += static_cast<std::size_t>(result);
+            }
+            return true;
+        };
+        if (fragmentAt_ != std::string::npos && fragmentAt_ < response_.size()) {
+            if (sendPart(response_.substr(0, fragmentAt_))) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                sendPart(response_.substr(fragmentAt_));
+            }
+        } else {
+            sendPart(response_);
         }
         shutdown(client, SHUT_RDWR);
         close(client);
@@ -73,6 +84,7 @@ private:
     std::uint16_t port_{0};
     std::string response_;
     int responseDelayMs_{0};
+    std::size_t fragmentAt_{std::string::npos};
     std::thread worker_;
 };
 
@@ -120,6 +132,22 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniv
     }
 }
 
+TEST(M800ViewSlaveHttpNegativeTest, RejectsBodyBytesBeyondContentLength)
+{
+    const auto validBody = ValidText(10);
+    const std::string header = "HTTP/1.1 200 OK\r\nContent-Length: " +
+                               std::to_string(validBody.size()) + "\r\nConnection: close\r\n\r\n";
+    RawResponseServer server(header + validBody + "X", 0, header.size() + 2);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(universe->Empty());
+}
+
 TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
 {
     RawResponseServer server("", 500);
@@ -138,6 +166,37 @@ TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
     fetcher.join();
     EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(1));
     EXPECT_EQ(fetchStatus.code, StatusCode::CANCELED);
+}
+
+TEST(M800ViewSlaveHttpNegativeTest, StopThenNewConnectionWorks)
+{
+    for (int iteration = 0; iteration < 10; ++iteration) {
+        {
+            RawResponseServer slowServer("", 200);
+            M800ViewServerConfig config;
+            config.role = M800ViewRole::SLAVE;
+            config.masterAddrs = {"127.0.0.1:" + std::to_string(slowServer.Port())};
+            config.httpTimeoutMs = 1000;
+            auto worker = CreateM800ViewSlaveServer(config);
+            auto universe = CreateViewUniverse();
+            std::thread fetcher([&] { (void)worker->GetAllViews(*universe); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            worker->Stop();
+            fetcher.join();
+        }
+        RawResponseServer validServer("HTTP/1.1 200 OK\r\nContent-Length: " +
+                                      std::to_string(ValidText(10).size()) +
+                                      "\r\nConnection: close\r\n\r\n" + ValidText(10));
+        M800ViewServerConfig config;
+        config.role = M800ViewRole::SLAVE;
+        config.masterAddrs = {"127.0.0.1:" + std::to_string(validServer.Port())};
+        config.httpTimeoutMs = 300;
+        auto worker = CreateM800ViewSlaveServer(config);
+        auto universe = CreateViewUniverse();
+        ASSERT_TRUE(worker->GetAllViews(*universe).ok()) << "iteration=" << iteration;
+        EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+        worker->Stop();
+    }
 }
 
 TEST(M800ViewSlaveHttpNegativeTest, AllMasterAddressesShareOneDeadline)

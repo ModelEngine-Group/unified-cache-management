@@ -168,6 +168,17 @@ TEST(M800ViewCodecTest, DecodeRejectsNonAdjacentLocalKvNsId)
     }
 }
 
+TEST(M800ViewCodecTest, DecodeRejectsZeroEndpointPortWithoutChangingOutput)
+{
+    auto input = ValidText();
+    const auto pos = input.find("port=6000");
+    ASSERT_NE(pos, std::string::npos);
+    input.replace(pos, 9, "port=0");
+    auto universe = CreateViewUniverse();
+    EXPECT_EQ(M800ViewCodec::Decode(input, *universe).code, StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(universe->Empty());
+}
+
 TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
 {
     std::unordered_map<KvNsId, GlobalView> views;

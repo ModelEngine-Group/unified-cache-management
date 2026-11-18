@@ -239,7 +239,7 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
     constexpr std::uint16_t kDefaultEndpointPort = 6000;
     const auto endpointPort = ParseUint64OrDefault(
         ReadStringAttr(attrs, "view.endpoint_port", ""), kDefaultEndpointPort);
-    m800Config.endpointPort = endpointPort > std::numeric_limits<std::uint16_t>::max()
+    m800Config.endpointPort = endpointPort == 0 || endpointPort > std::numeric_limits<std::uint16_t>::max()
                                   ? kDefaultEndpointPort
                                   : static_cast<std::uint16_t>(endpointPort);
 

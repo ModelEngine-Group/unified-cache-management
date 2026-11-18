@@ -45,6 +45,7 @@ constexpr std::size_t kMaxAsusPerNamespace = 4096;
 constexpr std::size_t kMaxEndpointsPerAsu = 4;
 constexpr auto kInitialRetryInterval = std::chrono::milliseconds{200};
 constexpr const char* kHashCollisionMessage = "M800 pool name hash collision";
+constexpr const char* kNoUsableEndpointMessage = "namespace has no usable endpoint:";
 
 Status MasterError(StatusCode code, const std::string& message)
 {
@@ -58,13 +59,14 @@ bool ParsePort(std::string_view text, std::uint16_t& port)
     const char* begin = text.data();
     const char* end = begin + text.size();
     const auto result = std::from_chars(begin, end, value, 10);
-    if (result.ec != std::errc{} || result.ptr != end || value > 65535) { return false; }
+    if (result.ec != std::errc{} || result.ptr != end || value == 0 || value > 65535) { return false; }
     port = static_cast<std::uint16_t>(value);
     return true;
 }
 
 bool ValidIpAddress(const std::string& ip)
 {
+    if (ip.find('\0') != std::string::npos) { return false; }
     in_addr ipv4{};
     in6_addr ipv6{};
     return inet_pton(AF_INET, ip.c_str(), &ipv4) == 1 ||
@@ -161,8 +163,10 @@ public:
                 initial = std::move(candidate);
                 break;
             }
-            if (lastFailure.code == StatusCode::INTERNAL_ERROR &&
-                lastFailure.message == kHashCollisionMessage) {
+            if ((lastFailure.code == StatusCode::INTERNAL_ERROR &&
+                 lastFailure.message == kHashCollisionMessage) ||
+                (lastFailure.code == StatusCode::NOT_FOUND &&
+                 lastFailure.message.rfind(kNoUsableEndpointMessage, 0) == 0)) {
                 running_.store(false);
                 CleanupAgent();
                 return lastFailure;
@@ -467,6 +471,11 @@ private:
                 if (view.asuMap.empty()) {
                     auto statusEmpty = MasterError(StatusCode::NOT_FOUND,
                                                    "namespace has no usable endpoint: " + name);
+                    if (!nodes.empty()) {
+                        // Agent returned nodes, but every address/id is invalid.
+                        // This is a permanent data error, not initial-map latency.
+                        return statusEmpty;
+                    }
                     KV_WARN("ns={} view empty, no ASU endpoints", name);
                     if (firstFailure.ok()) { firstFailure = statusEmpty; }
                     failedNamespaces.emplace(nsId);
