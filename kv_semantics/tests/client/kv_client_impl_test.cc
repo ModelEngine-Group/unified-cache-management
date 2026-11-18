@@ -232,7 +232,7 @@ public:
         auto& routedKeys = state_->queryKeys[config_.nodeId];
         routedKeys.reserve(routedKeys.size() + keys.size);
         for (std::size_t index = 0; index < keys.size; ++index) {
-            routedKeys.emplace_back(CacheKey::FromBytes(keys[index].bytes));
+            routedKeys.emplace_back(CacheKey::FromBytes(keys[index].keyBytes));
         }
         auto failureIter = state_->queryFailures.find(config_.nodeId);
         if (failureIter != state_->queryFailures.end()) { return failureIter->second; }
@@ -240,9 +240,9 @@ public:
         result.exists.clear();
         result.exists.reserve(keys.size);
         for (std::size_t index = 0; index < keys.size; ++index) {
-            result.exists.emplace_back(keys[index].bytes ==
-                                           *MakeCacheKey("k15").TryGetBinaryKey() ||
-                                       keys[index].bytes == *MakeCacheKey("k25").TryGetBinaryKey());
+            result.exists.emplace_back(
+                keys[index].keyBytes == *MakeCacheKey("k15").TryGetBinaryKey() ||
+                keys[index].keyBytes == *MakeCacheKey("k25").TryGetBinaryKey());
         }
         result.prefixHitKeys = 0;
         return Status::OK();
@@ -258,11 +258,11 @@ public:
         state_->submittedResolvedKeys.clear();
         for (const auto& entry : task->entries) {
             state_->submittedEntries.push_back(
-                {CacheKey::FromBytes(entry.key.bytes), entry.buffer, entry.offset, entry.mrKey});
+                {CacheKey::FromBytes(entry.key.keyBytes), entry.buffer, entry.offset, entry.mrKey});
             state_->submittedResolvedKeys.push_back(entry.key);
         }
         for (const auto& key : task->keys) {
-            state_->submittedKeys.push_back(CacheKey::FromBytes(key.bytes));
+            state_->submittedKeys.push_back(CacheKey::FromBytes(key.keyBytes));
             state_->submittedResolvedKeys.push_back(key);
         }
         state_->submittedOpTypes.emplace_back(task->opType);
@@ -2371,7 +2371,7 @@ TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
              {"model@hash", "bcce7875d1eb6ebb"}
     }) {
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(text), "tenant", result).ok());
-        EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.bytes)), hex);
+        EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.keyBytes)), hex);
         EXPECT_EQ(result.gnsid, ResolveNamespace("tenant"));
     }
 }
@@ -2385,7 +2385,7 @@ TEST(KvClientImplTest, BinaryKeysPreserveBytesForEveryEngine)
         for (const auto* kvns : {"", "tenant"}) {
             ResolvedCacheKey result;
             ASSERT_TRUE(resolver->Resolve(CacheKey::FromBytes(bytes), kvns, result).ok());
-            EXPECT_EQ(result.bytes, bytes);
+            EXPECT_EQ(result.keyBytes, bytes);
             EXPECT_EQ(result.gnsid, ResolveNamespace(kvns));
         }
     }
@@ -2413,7 +2413,7 @@ TEST(KvClientImplTest, VllmNamespaceUsesOnlyPresentGroupAndPpFields)
         ResolvedCacheKey actual, expected;
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(item.input), "tenant", actual).ok());
         ASSERT_TRUE(generic->Resolve(CacheKey::FromEngineKey(item.identity), "", expected).ok());
-        EXPECT_EQ(actual.bytes, expected.bytes);
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
         EXPECT_EQ(actual.gnsid, ResolveNamespace(item.kvns));
     }
 }
@@ -2429,18 +2429,18 @@ TEST(KvClientImplTest, SglangPoolAndPpSelectNamespaceButCpRemainsInKey)
         ResolvedCacheKey actual;
         const auto input = std::string("model_hash_tp0_cp0_pp1_") + pool;
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(input), "tenant", actual).ok());
-        EXPECT_EQ(actual.bytes, expected.bytes);
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
         EXPECT_EQ(actual.gnsid, ResolveNamespace(std::string("tenant_") + pool + "_pp1"));
     }
     ResolvedCacheKey cp1, pp0;
     ASSERT_TRUE(
         resolver->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp1_pp1_kv"), "tenant", cp1)
             .ok());
-    EXPECT_NE(cp1.bytes, expected.bytes);
+    EXPECT_NE(cp1.keyBytes, expected.keyBytes);
     ASSERT_TRUE(
         resolver->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp0_pp0_kv"), "tenant", pp0)
             .ok());
-    EXPECT_EQ(pp0.bytes, expected.bytes);
+    EXPECT_EQ(pp0.keyBytes, expected.keyBytes);
     EXPECT_EQ(pp0.gnsid, ResolveNamespace("tenant_kv_pp0"));
 }
 
@@ -2453,7 +2453,7 @@ TEST(KvClientImplTest, UnrecognizedKeyFormatsRemainUnchanged)
         ResolvedCacheKey actual, expected;
         ASSERT_TRUE(resolver->Resolve(input, "base", actual).ok());
         ASSERT_TRUE(generic->Resolve(input, "base", expected).ok());
-        EXPECT_EQ(actual.bytes, expected.bytes);
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
         EXPECT_EQ(actual.gnsid, expected.gnsid);
     }
 }
@@ -2472,7 +2472,7 @@ TEST(KvClientImplTest, InvalidNamespaceFieldsLeaveResolverOutputUnchanged)
         ResolvedCacheKey result{BinaryKey{std::byte{7}}, 99};
         EXPECT_EQ(resolver->Resolve(CacheKey::FromEngineKey(input), "base", result).code,
                   StatusCode::INVALID_ARGUMENT);
-        EXPECT_EQ(result.bytes[0], std::byte{7});
+        EXPECT_EQ(result.keyBytes[0], std::byte{7});
         EXPECT_EQ(result.gnsid, 99U);
     }
 }
@@ -2496,7 +2496,7 @@ TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffse
     for (std::size_t i = 0; i < keys.size(); ++i) {
         ASSERT_TRUE(resolver->Resolve(keys[i], options.kvns, expected[i]).ok());
     }
-    EXPECT_EQ(expected[0].bytes, expected[1].bytes);
+    EXPECT_EQ(expected[0].keyBytes, expected[1].keyBytes);
     EXPECT_NE(expected[0].gnsid, expected[1].gnsid);
     for (int op = 0; op < 4; ++op) {
         TaskId task = kInvalidTaskId;
@@ -2509,7 +2509,7 @@ TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffse
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
         ASSERT_EQ(state->submittedResolvedKeys.size(), 2U);
         for (std::size_t i = 0; i < keys.size(); ++i) {
-            EXPECT_EQ(state->submittedResolvedKeys[i].bytes, expected[i].bytes);
+            EXPECT_EQ(state->submittedResolvedKeys[i].keyBytes, expected[i].keyBytes);
             EXPECT_EQ(state->submittedResolvedKeys[i].gnsid, expected[i].gnsid);
             if (op < 2) { EXPECT_EQ(state->submittedEntries[i].offset, entries[i].offset); }
         }

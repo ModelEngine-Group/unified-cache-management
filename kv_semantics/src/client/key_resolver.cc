@@ -140,10 +140,10 @@ std::uint32_t ResolveNamespace(std::string_view kvns)
 Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
                             ResolvedCacheKey& result) const
 {
-    ResolvedCacheKey resolved;
+    ResolvedCacheKey resolvedKey;
     std::string kvns(baseKvns);
     if (const auto* bytes = input.TryGetBinaryKey()) {
-        resolved.bytes = *bytes;
+        resolvedKey.keyBytes = *bytes;
     } else {
         ParsedKey parsed;
         auto status = ParseEngineKey(*input.TryGetEngineKey(), parsed);
@@ -151,13 +151,13 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
         if (parsed.component) { kvns += "_" + *parsed.component; }
         if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }
         auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), HASH_SEED_VALUE);
-        for (auto& byte : resolved.bytes) {
+        for (auto& byte : resolvedKey.keyBytes) {
             byte = static_cast<std::byte>(hash & 0xff);
             hash >>= 8;
         }
     }
-    resolved.gnsid = ResolveNamespace(kvns);
-    result = resolved;
+    resolvedKey.gnsid = ResolveNamespace(kvns);
+    result = resolvedKey;
     return Status::OK();
 }
 

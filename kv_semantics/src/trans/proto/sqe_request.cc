@@ -184,7 +184,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchStoreEntry entry;
-        entry.key = entries[index].key.bytes;
+        entry.key = entries[index].key.keyBytes;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = *entries[index].mrKey;
@@ -209,7 +209,7 @@ KvStoreRequest BuildStoreRequest(const ResolvedKVBuffer& entry,
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
-    request.key = entry.key.bytes;
+    request.key = entry.key.keyBytes;
     return request;
 }
 
@@ -226,7 +226,7 @@ KvRetrieveRequest BuildRetrieveRequest(const ResolvedKVBuffer& entry,
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
-    request.key = entry.key.bytes;
+    request.key = entry.key.keyBytes;
     return request;
 }
 
@@ -246,7 +246,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchRetrieveEntry entry;
-        entry.key = entries[index].key.bytes;
+        entry.key = entries[index].key.keyBytes;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = *entries[index].mrKey;
@@ -261,7 +261,7 @@ std::vector<BinaryKey> CopyKeys(const BatchView<ResolvedCacheKey>& keys)
     std::vector<BinaryKey> requestKeys;
     requestKeys.reserve(keys.size);
     for (std::size_t index = 0; index < keys.size; ++index) {
-        requestKeys.emplace_back(keys[index].bytes);
+        requestKeys.emplace_back(keys[index].keyBytes);
     }
     return requestKeys;
 }

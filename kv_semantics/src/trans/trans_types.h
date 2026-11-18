@@ -49,7 +49,7 @@ inline std::string_view CacheKeyView(const BinaryKey& key)
 
 inline std::string_view CacheKeyView(const ResolvedCacheKey& key)
 {
-    return CacheKeyView(key.bytes);
+    return CacheKeyView(key.keyBytes);
 }
 
 template <typename Key>

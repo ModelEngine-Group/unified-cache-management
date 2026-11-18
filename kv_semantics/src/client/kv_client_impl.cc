@@ -424,15 +424,15 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     ctx->viewSnapshot = snapshot;
     ctx->entries.reserve(entries.size());
     for (const auto& entry : entries) {
-        ResolvedKVBuffer resolved;
-        auto status = keyResolver_->Resolve(entry.key, options.kvns, resolved.key);
+        ResolvedKVBuffer resolvedKVBuffer;
+        auto status = keyResolver_->Resolve(entry.key, options.kvns, resolvedKVBuffer.key);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
         }
-        resolved.buffer = entry.buffer;
-        resolved.offset = entry.offset;
-        ctx->entries.push_back(std::move(resolved));
+        resolvedKVBuffer.buffer = entry.buffer;
+        resolvedKVBuffer.offset = entry.offset;
+        ctx->entries.push_back(std::move(resolvedKVBuffer));
     }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
@@ -499,13 +499,13 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->prerequisite = options.prerequisite;
     ctx->keys.reserve(keys.size());
     for (const auto& key : keys) {
-        ResolvedCacheKey resolved;
-        auto status = keyResolver_->Resolve(key, options.kvns, resolved);
+        ResolvedCacheKey resolvedKey;
+        auto status = keyResolver_->Resolve(key, options.kvns, resolvedKey);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
         }
-        ctx->keys.push_back(std::move(resolved));
+        ctx->keys.push_back(std::move(resolvedKey));
     }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);

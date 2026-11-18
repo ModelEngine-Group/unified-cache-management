@@ -227,8 +227,9 @@ TEST_F(SqeRequestTest, GlobalNamespaceDoesNotOverrideConfiguredProtocolNamespace
                               : op == AsuOpType::BATCH_STORE || op == AsuOpType::BATCH_LOAD
                                   ? kSqeDwordCount + 1
                                   : kSqeDwordCount;
-        EXPECT_EQ(std::memcmp(&sqe[keyDword], task.entries[0].key.bytes.data(), kCacheKeySizeBytes),
-                  0);
+        EXPECT_EQ(
+            std::memcmp(&sqe[keyDword], task.entries[0].key.keyBytes.data(), kCacheKeySizeBytes),
+            0);
         transport_->taskExecutor_->ReleaseAllSubBatchResources(batches);
     }
 }

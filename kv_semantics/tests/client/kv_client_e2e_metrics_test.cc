@@ -349,7 +349,7 @@ public:
         result.prefixHitKeys = 0;
         for (std::size_t index = 0; index < keys.size; ++index) {
             result.exists[index] =
-                store.find(CacheKey::FromBytes(keys[index].bytes)) == store.end() ? 0 : 1;
+                store.find(CacheKey::FromBytes(keys[index].keyBytes)) == store.end() ? 0 : 1;
         }
         return Status::OK();
     }
@@ -416,7 +416,7 @@ public:
         auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < entries.size; ++index) {
             const auto& entry = entries[index];
-            auto iter = store.find(CacheKey::FromBytes(entry.key.bytes));
+            auto iter = store.find(CacheKey::FromBytes(entry.key.keyBytes));
             if (iter == store.end()) {
                 entryStatus.emplace_back(
                     Status::Error(StatusCode::NOT_FOUND, "fake ASU key not found"));
@@ -462,7 +462,7 @@ public:
             }
 
             const auto* data = reinterpret_cast<const std::uint8_t*>(entry.buffer.region.addr);
-            store[CacheKey::FromBytes(entry.key.bytes)] =
+            store[CacheKey::FromBytes(entry.key.keyBytes)] =
                 std::vector<std::uint8_t>(data, data + entry.buffer.region.size);
             entryStatus.emplace_back(Status::OK());
         }
@@ -488,7 +488,7 @@ public:
         auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < keys.size; ++index) {
             const auto& key = keys[index];
-            if (store.erase(CacheKey::FromBytes(key.bytes)) == 0) {
+            if (store.erase(CacheKey::FromBytes(key.keyBytes)) == 0) {
                 entryStatus.emplace_back(
                     Status::Error(StatusCode::NOT_FOUND, "fake ASU key not found"));
             } else {
