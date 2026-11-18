@@ -44,6 +44,18 @@ target_link_libraries(kv-test
         kv_metrics_standalone
 )
 
+add_executable(m800-live-smoke src/m800_live_smoke.cc)
+target_include_directories(m800-live-smoke
+    PRIVATE
+        ../include
+        ../src/common
+        ../src/common/utils
+        ../src/common/ds
+        ../src/client
+        ../agent/include
+)
+target_link_libraries(m800-live-smoke PRIVATE kv_client ${CMAKE_DL_LIBS})
+
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     add_executable(kv-test-config.test

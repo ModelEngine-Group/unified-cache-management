@@ -23,19 +23,27 @@
  * */
 #pragma once
 
+#include <memory>
+#include "view/m800_view_common.h"
 #include "view/view_server.h"
 #include "view/view_universe.h"
 
 namespace kv {
 
 // Slave-side service boundary. It fetches the text protocol from the master
-// and exposes the decoded universe.
+// and exposes the decoded universe. Epoch acceptance is owned exclusively by
+// ViewUniverse::PublishAll; the slave keeps no independent epoch cache.
 class M800ViewSlaveServer : public ViewServer {
 public:
     // M800 slaves must decode the master's full universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
+    // Returns the first namespace as the legacy single global view.
+    virtual Status GetGlobalView(GlobalView& view) override = 0;
 
     virtual void Stop() = 0;
 };
+
+std::shared_ptr<M800ViewSlaveServer> CreateM800ViewSlaveServer(
+    const M800ViewServerConfig& config);
 
 }  // namespace kv

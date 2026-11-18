@@ -93,14 +93,21 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_get_all_ns_name(kv_client_agent_h
                                                                const char*** ns_names,
                                                                size_t* ns_count);
 
-// up and in are requested filter values; the M800 master requests 1/1.
-// The caller owns the returned node-view array, its address arrays, and every
-// string until the matching free function is called.
+// up and in are requested filter values. The caller owns the returned
+// node-view array, its address arrays, and every string until the matching
+// free function is called with the same handle, pointer, and count.
 KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_get_view_by_ns(kv_client_agent_handle* handle,
                                                               const char* ns_name, int32_t up,
                                                               int32_t in,
                                                               kv_client_agent_node_view** views,
                                                               size_t* view_count);
+
+// Returns all in-state OSDs regardless of their up state, with the same
+// ownership rules as kv_client_agent_get_view_by_ns.
+KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_get_in_by_ns(kv_client_agent_handle* handle,
+                                                            const char* ns_name,
+                                                            kv_client_agent_node_view** views,
+                                                            size_t* view_count);
 
 KV_CLIENT_AGENT_EXPORT void kv_client_agent_free_ns_names(kv_client_agent_handle* handle,
                                                           const char** ns_names, size_t ns_count);
