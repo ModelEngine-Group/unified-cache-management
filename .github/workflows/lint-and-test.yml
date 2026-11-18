@@ -102,8 +102,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install RDMA headers
+      # The unit tests cover the CPU-over-RoCE trans provider, whose headers
+      # include <infiniband/verbs.h>. No RDMA hardware is needed to run them.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends libibverbs-dev
+
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j
