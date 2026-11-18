@@ -3865,11 +3865,36 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         external_hit_tokens, need_load = self.connector.get_num_new_matched_tokens(
             request, num_computed_tokens
         )
+
+        params = getattr(request,"kv_transfer_params", None) or {}
+
+        logger.info(
+            "[PD-PARAMS] req=%s params=%r keys=%s prompt=%s computed=%s hit=%s",
+            request.request_id,
+            params,
+            sorted(params.keys()) if isinstance(params, dict) else None,
+            request.num_prompt_tokens,
+            num_computed_tokens,
+            external_hit_tokens,
+        )
+
+        #注：需要确保真的有do_remote_prefill这个参数，如果没有，需要在router里做好赋值功能，否则不会进入此分支，退化为原本的逻辑
+        if params.get("do_remote_prefill"):
+            logger.info("********** Decode ***********")
+            matched_tokens = num_computed_tokens + external_hit_tokens
+            remaining_tokens = request.num_prompt_tokens - matched_tokens
+
+
+            if remaining_tokens >= self.get_block_size():
+                logger.info("********** Need Waiting ***********")
+                return None
+
         self._record_prefix_cache_token_metrics(
             request,
             num_computed_tokens,
             external_hit_tokens,
         )
+        logger.info("********** Go ***********")
         return external_hit_tokens, need_load
 
     def _record_prefix_cache_token_metrics(
