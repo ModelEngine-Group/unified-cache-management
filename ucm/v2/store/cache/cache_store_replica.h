@@ -25,12 +25,15 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 #include "bootstrap.h"
 #include "cache_config.h"
 #include "control_codec.h"
 #include "data_plane.h"
 #include "offloadable.h"
+#include "prefetch_requests.h"
+#include "prefetchable.h"
 #include "shm_layout.h"
 #include "store.h"
 #include "tier_relay.h"
@@ -63,10 +66,18 @@ namespace UC::Store {
  * jobs. The facet is served only when the configuration wires a lower
  * tier.
  *
+ * The Prefetchable facet admits the tier below's data into the buffer:
+ * a request glue holds the request-scoped bookkeeping beside the
+ * caller, probing the wired lower tier for the query's absent blocks
+ * and driving the engine half over the control round trips to the
+ * primary, while the executor half runs locally through the tier
+ * relay's prefetch direction. The facet is served only when the
+ * configuration wires a lower tier.
+ *
  * @note Threading contract: one calling thread or external serialization;
  *       the sequence numbers and the connection are single-consumer state.
  */
-class CacheStoreReplica final : public Store, public Offloadable {
+class CacheStoreReplica final : public Store, public Offloadable, public Prefetchable {
 public:
     /**
      * @brief Joins the caller's cache domain and builds the replica.
@@ -112,7 +123,21 @@ public:
 
     Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
 
-    Prefetchable* AsPrefetchable() override { return nullptr; }
+    /*== The Prefetchable facet ==*/
+
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
+        const RequestId& requestId, const std::vector<BlockId>& blockIds) override;
+
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& keys,
+                                             const RequestContext& context) override;
+
+    void CompletePrefetch(const AddressedToken& plan, bool success) override;
+
+    Status Prefetch(std::size_t jobId, AddressedToken plan) override;
+
+    void ReleaseRequest(const RequestId& requestId) override;
+
+    Prefetchable* AsPrefetchable() override { return relay_ ? this : nullptr; }
 
 private:
     CacheStoreReplica(const CacheConfig& config, JoinResult&& join);
@@ -134,6 +159,22 @@ private:
     /** @brief Void-op round trip: transport errors are dropped by design. */
     void Discard(ControlRequest request);
 
+    /** @brief The prefetch glue's carrying channel over the control
+     *         connection to the primary. */
+    class WireEndpoint final : public ControlEndpoint {
+    public:
+        explicit WireEndpoint(CacheStoreReplica& owner) : owner_{owner} {}
+
+        Expected<ControlResponse> Execute(ControlRequest request) override
+        {
+            request.seq = ++owner_.seq_;
+            return owner_.RoundTrip(request);
+        }
+
+    private:
+        CacheStoreReplica& owner_;
+    };
+
     CacheConfig config_;
     Transfer::UdsConnection connection_;
     /** Shared pool of the domain, held for the data plane. */
@@ -144,6 +185,12 @@ private:
     /* The tier relay of the offload executor half, declared after the
      * mapping so its jobs drain while it is still valid. */
     std::unique_ptr<TierRelay> relay_;
+    /** The prefetch engine half's carrying channel; declared before the
+     *  glue that references it. */
+    WireEndpoint endpoint_{*this};
+    /** The prefetch facet's request glue over the endpoint and the
+     *  wired lower tier. */
+    PrefetchRequests prefetch_{endpoint_, config_.lowerStore};
     std::uint32_t seq_{0};
 };
 

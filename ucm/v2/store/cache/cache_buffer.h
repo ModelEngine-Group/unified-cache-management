@@ -45,8 +45,8 @@ namespace UC::Store {
 /**
  * @brief Block-level business layer over a ReplacementPolicy: owns the
  *        block-to-slot mapping, the two-phase admission visibility, the
- *        per-block TTL bookkeeping, and the cascaded-offload plan
- *        minting.
+ *        per-block TTL bookkeeping, the cascaded-offload plan minting,
+ *        and the prefetch window minting.
  *
  * The buffer maps the Store admission protocol onto the slot-level
  * engine: Reserve() backs Alloc(), Commit() concludes reservations,
@@ -81,6 +81,12 @@ namespace UC::Store {
  * offloaded again by the next mint. While a plan is in flight its
  * blocks are refused re-admission, so in-flight plans have
  * disjoint keys.
+ *
+ * Prefetch: PreparePrefetch opens one window -- the batch deduped,
+ * present blocks filtered out, one destination reserved per admitted
+ * block -- and mints its plan: the receipt handle plus the reserved
+ * slots. CompletePrefetch concludes the window by handle: success
+ * commits the reservation, failure releases it.
  *
  * @note Not thread-safe: callers must serialize access.
  */
@@ -123,6 +129,8 @@ public:
         offloadInFlight_.clear();
         offloadInFlightKeys_.clear();
         nextOffloadBatch_ = 1;
+        prefetchInFlight_.clear();
+        nextPrefetchBatch_ = 1;
         lowerTierWired_ = lowerTierWired;
         return Status::Ok();
     }
@@ -228,8 +236,13 @@ public:
      * reservation are skipped. Fully successful conclusions also
      * enter the offload pending set -- any failed sharer keeps
      * a block out of it.
+     *
+     * @param skipOffload Keeps a fully successful conclusion out of
+     *                    the offload pending set. A shared reservation
+     *                    takes the verdict of the last conclusion
+     *                    to arrive.
      */
-    void Commit(const std::vector<BlockId>& blockIds, bool success)
+    void Commit(const std::vector<BlockId>& blockIds, bool success, bool skipOffload)
     {
         const auto now = Clock::now();
         for (const auto& blockId : blockIds) {
@@ -249,7 +262,7 @@ public:
                     }
                     policy_->Touch(entry.slot);
                 }
-                if (!entry.anyFailed) { QueueForOffload(blockId); }
+                if (!entry.anyFailed && !skipOffload) { QueueForOffload(blockId); }
                 policy_->Unpin(entry.slot);
                 continue;
             }
@@ -263,7 +276,7 @@ public:
             committed_[blockId] = CommittedEntry{entry.slot, deadline};
             occupants_[entry.slot] = blockId;
             if (deadline) { PushExpiry({*deadline, blockId}); }
-            QueueForOffload(blockId);
+            if (!skipOffload) { QueueForOffload(blockId); }
         }
         if (expiryHeap_.size() > 2 * committed_.size() + 16) { CompactExpiry(); }
     }
@@ -423,6 +436,70 @@ public:
         offloadInFlight_.erase(plan);
     }
 
+    /*== Prefetch window engine half ==*/
+    /**
+     * @brief Opens one prefetch window: reserves a destination per
+     *        admitted block and mints the window plan -- backs the
+     *        engine half of the Prefetchable facet.
+     *
+     * The batch is deduped and present blocks are filtered out.
+     *
+     * @return Expected window plan token: keys of the admitted blocks
+     *         in first-occurrence order, payload the PlanPayload
+     *         envelope -- the receipt handle plus one destination slot
+     *         per key. An empty token when nothing is admittable, and
+     *         no handle is consumed then. A Reserve failure is
+     *         returned verbatim and opens no window.
+     */
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& blockIds,
+                                             const RequestContext& context)
+    {
+        AddressedToken plan;
+        if (policy_ == nullptr) { return plan; }
+        std::vector<BlockId> admitted;
+        const auto now = Clock::now();
+        for (const BlockId& blockId : blockIds) {
+            if (std::find(admitted.begin(), admitted.end(), blockId) != admitted.end()) {
+                continue;
+            }
+            auto committed = committed_.find(blockId);
+            if (committed != committed_.end() && !Expired(committed->second, now)) { continue; }
+            admitted.push_back(blockId);
+        }
+        if (admitted.empty()) { return plan; }
+
+        auto reserved = Reserve(admitted, context);
+        if (!reserved.HasValue()) { return reserved.Error(); }
+        const std::uint64_t batchId = nextPrefetchBatch_++;
+        PlanPayload payload;
+        payload.batchId = batchId;
+        payload.slots.reserve(reserved.Value().size());
+        for (const std::size_t slot : reserved.Value()) {
+            payload.slots.push_back(static_cast<std::uint32_t>(slot));
+        }
+        plan.keys = admitted;
+        plan.payload = EncodePlanPayload(payload);
+        prefetchInFlight_.emplace(batchId, PrefetchWindow{std::move(admitted), reserved.Value()});
+        return plan;
+    }
+    /**
+     * @brief Receipt of a concluded window: commits the admission on
+     *        success or releases the reservation on failure.
+     *
+     * The receipt handle alone identifies the window: an unknown or
+     * already-received handle is a no-op.
+     *
+     * @param batchId Receipt handle of the concluded window.
+     */
+    void CompletePrefetch(std::uint64_t batchId, bool success)
+    {
+        auto window = prefetchInFlight_.find(batchId);
+        if (window == prefetchInFlight_.end()) { return; }
+        PrefetchWindow concluded = std::move(window->second);
+        prefetchInFlight_.erase(window);
+        Commit(concluded.keys, success, /*skipOffload=*/true);
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -477,6 +554,13 @@ private:
         /** Planned blocks, in plan order. */
         std::vector<BlockId> keys;
         /** Source slots of the planned blocks, parallel to keys. */
+        std::vector<std::size_t> slots;
+    };
+    /** One window opened but not receipted: the reservation its receipt concludes. */
+    struct PrefetchWindow {
+        /** Admitted blocks. */
+        std::vector<BlockId> keys;
+        /** Reserved destinations, parallel to keys. */
         std::vector<std::size_t> slots;
     };
 
@@ -694,6 +778,12 @@ private:
     std::unordered_set<BlockId> offloadInFlightKeys_;
     /** Next plan receipt handle; minted from 1, 0 is reserved and never minted. */
     std::uint64_t nextOffloadBatch_{1};
+
+    /*== Prefetch window bookkeeping ==*/
+    /** Windows opened but not receipted: receipt handle -> reserved destinations. */
+    std::unordered_map<std::uint64_t, PrefetchWindow> prefetchInFlight_;
+    /** Next window receipt handle; minted from 1, 0 is reserved and never minted. */
+    std::uint64_t nextPrefetchBatch_{1};
     /** Whether a lower tier is wired. */
     bool lowerTierWired_{false};
 };

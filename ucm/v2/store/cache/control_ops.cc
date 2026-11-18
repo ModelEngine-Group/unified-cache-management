@@ -91,7 +91,7 @@ ControlResponse ExecuteControl(CacheBuffer& buffer, const ControlRequest& reques
             return response;
         }
         case ControlOp::Commit: {
-            buffer.Commit(request.blockIds, request.success);
+            buffer.Commit(request.blockIds, request.success, /*skipOffload=*/false);
             response.ok = true;
             return response;
         }
@@ -104,6 +104,23 @@ ControlResponse ExecuteControl(CacheBuffer& buffer, const ControlRequest& reques
         }
         case ControlOp::CompleteOffload: {
             buffer.CompleteOffload(request.planId);
+            response.ok = true;
+            return response;
+        }
+        case ControlOp::PreparePrefetch: {
+            auto minted = buffer.PreparePrefetch(request.blockIds, ContextOf(request));
+            if (!minted.HasValue()) {
+                FailWith(response, minted.Error());
+                return response;
+            }
+            AddressedToken plan = std::move(minted.Value());
+            response.keys = std::move(plan.keys);
+            response.tokenPayload = std::move(plan.payload);
+            response.ok = true;
+            return response;
+        }
+        case ControlOp::CompletePrefetch: {
+            buffer.CompletePrefetch(request.planId, request.success);
             response.ok = true;
             return response;
         }

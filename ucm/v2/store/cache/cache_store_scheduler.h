@@ -24,11 +24,15 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 #include "cache_buffer.h"
 #include "cache_config.h"
 #include "control_codec.h"
+#include "control_ops.h"
 #include "offloadable.h"
+#include "prefetch_requests.h"
+#include "prefetchable.h"
 #include "store.h"
 #include "type/block.h"
 #include "type/request.h"
@@ -56,15 +60,22 @@ namespace UC::Store {
  *
  * The Offloadable facet serves the engine half: plans mint and receipt
  * through the local engine, while the executor half is refused -- no
- * data plane runs here, so no lower tier is ever driven. The facet is
- * served only when the configuration wires a lower tier: without an
- * executor the minted plans would never conclude and their pins would
- * never release.
+ * data plane runs here, so the offload direction never drives the
+ * lower tier. The facet is served only when the configuration wires a
+ * lower tier: without an executor the minted plans would never
+ * conclude and their pins would never release.
+ *
+ * The Prefetchable facet admits the tier below's data into the buffer:
+ * the request glue probes the wired lower tier's presence, its only
+ * call below -- a metadata lookup that needs no data plane -- while
+ * windows mint and conclude through the local engine and the executor
+ * half is refused. The facet is served only when the configuration
+ * wires a lower tier: without one there is nothing to admit from.
  *
  * @note Threading contract: one calling thread or external serialization;
  *       the engine keeps exactly one serialized caller.
  */
-class CacheStoreScheduler final : public Store, public Offloadable {
+class CacheStoreScheduler final : public Store, public Offloadable, public Prefetchable {
 public:
     /**
      * @brief Joins the caller's cache domain and builds the engine.
@@ -114,7 +125,24 @@ public:
 
     Offloadable* AsOffloadable() override { return config_.lowerStore != nullptr ? this : nullptr; }
 
-    Prefetchable* AsPrefetchable() override { return nullptr; }
+    /*== The Prefetchable facet ==*/
+
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
+        const RequestId& requestId, const std::vector<BlockId>& blockIds) override;
+
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& keys,
+                                             const RequestContext& context) override;
+
+    void CompletePrefetch(const AddressedToken& plan, bool success) override;
+
+    Status Prefetch(std::size_t jobId, AddressedToken plan) override;
+
+    void ReleaseRequest(const RequestId& requestId) override;
+
+    Prefetchable* AsPrefetchable() override
+    {
+        return config_.lowerStore != nullptr ? this : nullptr;
+    }
 
 private:
     CacheStoreScheduler(const CacheConfig& config);
@@ -124,8 +152,28 @@ private:
     [[nodiscard]] ControlRequest MakeRequest(ControlOp op, const std::vector<BlockId>& blockIds,
                                              const RequestContext& context) const;
 
+    /** @brief The prefetch glue's carrying channel into the local engine. */
+    class LocalEndpoint final : public ControlEndpoint {
+    public:
+        explicit LocalEndpoint(CacheStoreScheduler& owner) : owner_{owner} {}
+
+        Expected<ControlResponse> Execute(ControlRequest request) override
+        {
+            return ExecuteControl(owner_.buffer_, request);
+        }
+
+    private:
+        CacheStoreScheduler& owner_;
+    };
+
     CacheConfig config_;
     CacheBuffer buffer_;
+    /** The prefetch engine half's carrying channel; declared before the
+     *  glue that references it. */
+    LocalEndpoint endpoint_{*this};
+    /** The prefetch facet's request glue over the endpoint and the
+     *  wired lower tier. */
+    PrefetchRequests prefetch_{endpoint_, config_.lowerStore};
 };
 
 }  // namespace UC::Store

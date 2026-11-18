@@ -27,11 +27,13 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 #include "bootstrap.h"
 #include "cache_config.h"
 #include "data_plane.h"
 #include "offloadable.h"
+#include "prefetchable.h"
 #include "shm_layout.h"
 #include "store.h"
 #include "tier_relay.h"
@@ -65,14 +67,16 @@ namespace UC::Store {
  * completions are reported exactly once through GetFinished()/Wait();
  * the Store contract's single-consumer rule serializes them.
  *
- * Offload: the facet's executor half drives the wired lower tier through
- * a tier relay over the held pool, and the relay's outer jobs share the
- * completion stream and the wait with the data plane's jobs. Each
- * executor claims the keys whose plan position matches this worker's
- * index in the domain's worker count, so one broadcast plan is executed
- * exactly once across the domain. The local engine half is structural
- * idle: no engine lives here, so plans mint empty and receipts no-op.
- * The facet is served only when the configuration wires a lower tier.
+ * The tier facets serve the executor half only: their jobs drive the
+ * wired lower tier through a tier relay over the held pool, and the
+ * relay's outer jobs share the completion stream and the wait with the
+ * data plane's jobs. Each executor claims the keys whose plan position
+ * matches this worker's index in the domain's worker count, so one
+ * broadcast plan is executed exactly once across the domain. The local
+ * engine halves are structural idle: no engine lives here, so plans
+ * and windows mint empty, receipts, conclusions and releases no-op,
+ * and prefetch probes refuse. The facets are served only when the
+ * configuration wires a lower tier.
  *
  * I/O model of the accept loop: blocking frame I/O between trusted peers; a
  * joiner dying mid-handshake is an external failure the loop does not defend
@@ -81,7 +85,7 @@ namespace UC::Store {
  * @note Non-movable: the accept thread captures this. The factory places
  *       the instance behind a unique_ptr, where it stays for its lifetime.
  */
-class CacheStoreWorker final : public Store, public Offloadable {
+class CacheStoreWorker final : public Store, public Offloadable, public Prefetchable {
 public:
     /**
      * @brief Installs the worker: the winner leads the domain, every loser
@@ -147,7 +151,31 @@ public:
     /** @brief The facet, served only when this store wired a lower tier. */
     Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
 
-    Prefetchable* AsPrefetchable() override { return nullptr; }
+    /*== The Prefetchable facet ==*/
+
+    /** @brief Structural refusal: no engine lives here to probe. */
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
+        const RequestId& requestId, const std::vector<BlockId>& blockIds) override;
+
+    /** @brief Structural idle: the mint is always the idle plan. */
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& /*keys*/,
+                                             const RequestContext& /*context*/) override
+    {
+        return AddressedToken{};
+    }
+
+    /** @brief Structural no-op: the receipt changes nothing here. */
+    void CompletePrefetch(const AddressedToken& /*plan*/, bool /*success*/) override {}
+
+    /** @brief Claims this worker's slice of the plan and submits it to
+     *         the tier relay as an asynchronous job. */
+    Status Prefetch(std::size_t jobId, AddressedToken plan) override;
+
+    /** @brief Structural no-op: nothing request-scoped is held here. */
+    void ReleaseRequest(const RequestId& /*requestId*/) override {}
+
+    /** @brief The facet, served only when this store wired a lower tier. */
+    Prefetchable* AsPrefetchable() override { return relay_ ? this : nullptr; }
 
 private:
     CacheStoreWorker(CacheConfig config);
@@ -161,6 +189,9 @@ private:
 
     /** @brief The pool this worker transfers over. */
     [[nodiscard]] const ShmMapping& Pool() const;
+
+    /** @brief Claims this worker's slice of one executor plan. */
+    [[nodiscard]] AddressedToken Claim(AddressedToken plan);
 
     CacheConfig config_;
 

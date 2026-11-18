@@ -77,10 +77,11 @@ std::vector<std::byte> Slice(const std::vector<std::byte>& data, std::size_t len
 
 TEST(ControlCodecTest, RequestRoundTripPerOp)
 {
-    const std::array<ControlOp, 8> ops = {
-        ControlOp::Lookup,         ControlOp::Touch,          ControlOp::Pin,
-        ControlOp::Unpin,          ControlOp::Alloc,          ControlOp::Commit,
-        ControlOp::PrepareOffload, ControlOp::CompleteOffload};
+    const std::array<ControlOp, 10> ops = {
+        ControlOp::Lookup,          ControlOp::Touch,           ControlOp::Pin,
+        ControlOp::Unpin,           ControlOp::Alloc,           ControlOp::Commit,
+        ControlOp::PrepareOffload,  ControlOp::CompleteOffload, ControlOp::PreparePrefetch,
+        ControlOp::CompletePrefetch};
     for (ControlOp op : ops) {
         const ControlRequest request = MakeRequest(op);
         auto encoded = EncodeRequest(request);

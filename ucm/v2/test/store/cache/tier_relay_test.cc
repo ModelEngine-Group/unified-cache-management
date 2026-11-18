@@ -53,7 +53,7 @@ BlockId MakeBlock(std::uint64_t tag)
 }
 
 /** A plan token in the engine half's encoding: the receipt handle plus
- *  one source slot per key. */
+ *  one slot per key. */
 AddressedToken MakePlan(const std::vector<BlockId>& ids, const std::vector<std::uint32_t>& slots,
                         std::uint64_t batchId = 1)
 {
@@ -256,6 +256,225 @@ TEST_F(TierRelayTest, FailedTransferFailsTheJob)
     EXPECT_EQ(lower_.commits[0].first, ids);
     EXPECT_FALSE(lower_.commits[0].second);
     EXPECT_TRUE(relay->GetFinished().empty());
+}
+
+/*== Prefetch: the read protocol ==*/
+
+TEST_F(TierRelayTest, PrefetchDrivesPinLoadUnpinPerSubBatch)
+{
+    auto relay = MakeRelay(4);
+    const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
+    const std::vector<std::uint32_t> slots{2, 5, 7};
+    EXPECT_EQ(relay->Prefetch(9, MakePlan(ids, slots)).Underlying(), 0);
+
+    /* One sub-batch: one Pin of all three keys, one Load whose
+     * destinations address each key's slot whole, no Unpin before the
+     * completion. */
+    ASSERT_EQ(lower_.pins.size(), 1U);
+    EXPECT_EQ(lower_.pins[0], ids);
+    ASSERT_EQ(lower_.loads.size(), 1U);
+    EXPECT_EQ(lower_.loads[0].jobId, 1U);
+    EXPECT_EQ(lower_.loads[0].keys, ids);
+    ASSERT_EQ(lower_.loads[0].destinations.size(), 3U);
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        EXPECT_EQ(lower_.loads[0].destinations[i],
+                  SlotAddress(region_.Mapping().Base(), slots[i], kBlockSize));
+    }
+    EXPECT_EQ(lower_.loads[0].sizes,
+              (std::vector<std::size_t>{kBlockSize, kBlockSize, kBlockSize}));
+    EXPECT_TRUE(lower_.unpins.empty());
+    EXPECT_TRUE(lower_.commits.empty());
+
+    /* The sub-batch's success releases its pins, then the outer job
+     * surfaces exactly once. */
+    lower_.Complete(1, true);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, 9U);
+    EXPECT_TRUE(finished[0].second);
+    ASSERT_EQ(lower_.unpins.size(), 1U);
+    EXPECT_EQ(lower_.unpins[0], ids);
+    EXPECT_TRUE(lower_.commits.empty());
+    EXPECT_TRUE(relay->GetFinished().empty());
+}
+
+TEST_F(TierRelayTest, PrefetchPlansSplitAtTierBatchSize)
+{
+    auto relay = MakeRelay(2);
+    std::vector<BlockId> ids;
+    std::vector<std::uint32_t> slots;
+    for (std::uint64_t i = 0; i < 5; ++i) {
+        ids.push_back(MakeBlock(i + 1));
+        slots.push_back(static_cast<std::uint32_t>(i));
+    }
+    EXPECT_EQ(relay->Prefetch(1, MakePlan(ids, slots)).Underlying(), 0);
+
+    /* Five blocks over batches of two: three sub-batches of 2 + 2 + 1,
+     * each its own pin set in plan order. */
+    ASSERT_EQ(lower_.pins.size(), 3U);
+    EXPECT_EQ(lower_.pins[0], (std::vector<BlockId>{ids[0], ids[1]}));
+    EXPECT_EQ(lower_.pins[1], (std::vector<BlockId>{ids[2], ids[3]}));
+    EXPECT_EQ(lower_.pins[2], (std::vector<BlockId>{ids[4]}));
+    ASSERT_EQ(lower_.loads.size(), 3U);
+    EXPECT_EQ(lower_.loads[2].jobId, 3U);
+    EXPECT_EQ(lower_.loads[2].destinations[0],
+              SlotAddress(region_.Mapping().Base(), 4, kBlockSize));
+
+    /* Every sub-batch concluding true releases its own pins and yields
+     * one verdict for the whole job. */
+    for (std::size_t sub = 1; sub <= 3; ++sub) { lower_.Complete(sub, true); }
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, 1U);
+    EXPECT_TRUE(finished[0].second);
+    ASSERT_EQ(lower_.unpins.size(), 3U);
+    EXPECT_EQ(lower_.unpins[0], (std::vector<BlockId>{ids[0], ids[1]}));
+    EXPECT_EQ(lower_.unpins[1], (std::vector<BlockId>{ids[2], ids[3]}));
+    EXPECT_EQ(lower_.unpins[2], (std::vector<BlockId>{ids[4]}));
+}
+
+TEST_F(TierRelayTest, PrefetchRefusedPinDropsTheSubBatch)
+{
+    auto relay = MakeRelay(1);
+    lower_.FailPinNth(1, Status::NotFound("stub lost the block"));
+    const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
+    EXPECT_EQ(relay->Prefetch(4, MakePlan(ids, {0, 1, 2})).Underlying(), 0);
+
+    /* The first chunk's Pin is refused: no Load and no Unpin for it,
+     * while the other two fly. */
+    ASSERT_EQ(lower_.pins.size(), 3U);
+    ASSERT_EQ(lower_.loads.size(), 2U);
+    EXPECT_EQ(lower_.loads[0].keys, (std::vector<BlockId>{ids[1]}));
+    EXPECT_EQ(lower_.loads[1].keys, (std::vector<BlockId>{ids[2]}));
+    EXPECT_TRUE(lower_.unpins.empty());
+
+    /* Both survivors succeed, yet the job fails on the dropped one. */
+    lower_.Complete(1, true);
+    lower_.Complete(2, true);
+    const Status st = relay->Wait(4);
+    EXPECT_EQ(st.Underlying(), Status::General().Underlying());
+    EXPECT_NE(st.ToString().find("1 of 3"), std::string::npos);
+    ASSERT_EQ(lower_.unpins.size(), 2U);
+    EXPECT_EQ(lower_.unpins[0], (std::vector<BlockId>{ids[1]}));
+    EXPECT_EQ(lower_.unpins[1], (std::vector<BlockId>{ids[2]}));
+}
+
+TEST_F(TierRelayTest, PrefetchLoadSubmitFailureReleasesThePins)
+{
+    auto relay = MakeRelay(4);
+    lower_.FailLoadNth(1, Status::OsApiError("stub engine broke"));
+    const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2)};
+    EXPECT_EQ(relay->Prefetch(2, MakePlan(ids, {0, 3})).Underlying(), 0);
+
+    /* Nothing flies, so the job is already concluded: the refused Load's
+     * pins are released, and the verdict queues without any lower-tier
+     * completion ever arriving. */
+    ASSERT_EQ(lower_.unpins.size(), 1U);
+    EXPECT_EQ(lower_.unpins[0], ids);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, 2U);
+    EXPECT_FALSE(finished[0].second);
+}
+
+TEST_F(TierRelayTest, PrefetchFailedTransferFailsTheJobAndStillUnpins)
+{
+    auto relay = MakeRelay(4);
+    const std::vector<BlockId> ids{MakeBlock(7)};
+    EXPECT_EQ(relay->Prefetch(1, MakePlan(ids, {4})).Underlying(), 0);
+
+    /* A failed transfer fails the job, and its conclusion still
+     * releases the pins. */
+    lower_.Complete(1, false);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, 1U);
+    EXPECT_FALSE(finished[0].second);
+    ASSERT_EQ(lower_.unpins.size(), 1U);
+    EXPECT_EQ(lower_.unpins[0], ids);
+    EXPECT_TRUE(relay->GetFinished().empty());
+}
+
+TEST_F(TierRelayTest, PrefetchSharesTheJobAndSubBatchIdSpaces)
+{
+    auto relay = MakeRelay(2);
+    const std::vector<BlockId> out{MakeBlock(1), MakeBlock(2)};
+    const std::vector<BlockId> in{MakeBlock(3), MakeBlock(4)};
+    EXPECT_EQ(relay->Offload(1, MakePlan(out, {0, 1})).Underlying(), 0);
+    EXPECT_EQ(relay->Prefetch(2, MakePlan(in, {2, 3})).Underlying(), 0);
+
+    /* One sub-batch id space: the two directions' transfers fly under
+     * consecutive ids. */
+    ASSERT_EQ(lower_.dumps.size(), 1U);
+    EXPECT_EQ(lower_.dumps[0].jobId, 1U);
+    ASSERT_EQ(lower_.loads.size(), 1U);
+    EXPECT_EQ(lower_.loads[0].jobId, 2U);
+
+    /* One outer ledger: an id in flight via one direction is refused by
+     * the other. */
+    EXPECT_EQ(relay->Offload(2, MakePlan(out, {0, 1})).Underlying(),
+              Status::InvalidParam().Underlying());
+
+    /* Both conclusions land, each settling with its own direction's
+     * release. */
+    lower_.Complete(1, true);
+    lower_.Complete(2, true);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 2U);
+    EXPECT_EQ(finished[0].first, 1U);
+    EXPECT_TRUE(finished[0].second);
+    EXPECT_EQ(finished[1].first, 2U);
+    EXPECT_TRUE(finished[1].second);
+    ASSERT_EQ(lower_.commits.size(), 1U);
+    EXPECT_EQ(lower_.commits[0].first, out);
+    EXPECT_TRUE(lower_.commits[0].second);
+    ASSERT_EQ(lower_.unpins.size(), 1U);
+    EXPECT_EQ(lower_.unpins[0], in);
+}
+
+TEST_F(TierRelayTest, PrefetchShapeViolationsRejectWithNothingStarted)
+{
+    auto relay = MakeRelay(2);
+    const std::vector<BlockId> ids{MakeBlock(1), MakeBlock(2)};
+
+    /* A plan without a receipt handle and a plan whose slot count
+     * disagrees with its keys are both refused before the lower tier is
+     * touched. */
+    EXPECT_EQ(relay->Prefetch(2, MakePlan(ids, {0, 1}, 0)).Underlying(),
+              Status::InvalidParam().Underlying());
+    EXPECT_EQ(relay->Prefetch(3, MakePlan(ids, {0})).Underlying(),
+              Status::InvalidParam().Underlying());
+    EXPECT_TRUE(lower_.pins.empty());
+
+    /* A duplicate in-flight id is refused whole; consumption frees it. */
+    EXPECT_EQ(relay->Prefetch(4, MakePlan(ids, {0, 1})).Underlying(), 0);
+    EXPECT_EQ(lower_.loads.size(), 1U);
+    EXPECT_EQ(relay->Prefetch(4, MakePlan(ids, {0, 1})).Underlying(),
+              Status::InvalidParam().Underlying());
+    lower_.Complete(1, true);
+    ASSERT_EQ(relay->GetFinished().size(), 1U);
+    EXPECT_EQ(relay->Prefetch(4, MakePlan(ids, {0, 1})).Underlying(), 0);
+    EXPECT_EQ(lower_.loads.size(), 2U);
+}
+
+TEST_F(TierRelayTest, PrefetchEmptyPlanConcludesImmediately)
+{
+    auto relay = MakeRelay(2);
+
+    /* An empty plan concludes on submission, with nothing driven in
+     * the lower tier. */
+    EXPECT_EQ(relay->Prefetch(7, MakePlan({}, {}, 1)).Underlying(), 0);
+    const auto finished = relay->GetFinished();
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished[0].first, std::size_t{7});
+    EXPECT_TRUE(finished[0].second);
+    EXPECT_TRUE(lower_.pins.empty());
+    EXPECT_TRUE(lower_.loads.empty());
+    EXPECT_EQ(relay->Wait(7).Underlying(), Status::InvalidParam().Underlying());
+
+    /* The idle plan carries no receipt handle: still refused. */
+    EXPECT_EQ(relay->Prefetch(8, MakePlan({}, {}, 0)).Underlying(),
+              Status::InvalidParam().Underlying());
 }
 
 /*== Completion discipline: exactly once, through either half ==*/

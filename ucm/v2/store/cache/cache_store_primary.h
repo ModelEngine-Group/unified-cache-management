@@ -29,6 +29,7 @@
 #include <memory>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "bootstrap.h"
 #include "cache_buffer.h"
@@ -38,6 +39,8 @@
 #include "ipc/uds.h"
 #include "offloadable.h"
 #include "policy/replacement_policy.h"
+#include "prefetch_requests.h"
+#include "prefetchable.h"
 #include "store.h"
 #include "tier_relay.h"
 #include "type/block.h"
@@ -75,6 +78,14 @@ namespace UC::Store {
  * store's completion stream and wait with the plane's jobs. The facet
  * is served only when the configuration wires a lower tier.
  *
+ * The Prefetchable facet admits the tier below's data into the buffer:
+ * a request glue holds the request-scoped bookkeeping beside the
+ * caller -- probing the wired lower tier for the query's absent
+ * blocks -- and drives the engine half through the pump like every
+ * other engine call, while the executor half runs on the caller's
+ * thread through the tier relay's prefetch direction. The facet is
+ * served only when the configuration wires a lower tier.
+ *
  * I/O model: blocking frame I/O -- every connection is a strict
  * request-response exchange between trusted peers; a peer dying mid-frame
  * is an external failure the pump does not defend against. A malformed
@@ -84,7 +95,7 @@ namespace UC::Store {
  * @note Non-movable: the pump thread captures this. The factory places the
  *       instance behind a unique_ptr, where it stays for its lifetime.
  */
-class CacheStorePrimary final : public Store, public Offloadable {
+class CacheStorePrimary final : public Store, public Offloadable, public Prefetchable {
 public:
     /**
      * @brief Brings the domain up and starts the pump.
@@ -143,7 +154,21 @@ public:
 
     Offloadable* AsOffloadable() override { return relay_ ? this : nullptr; }
 
-    Prefetchable* AsPrefetchable() override { return nullptr; }
+    /*== The Prefetchable facet ==*/
+
+    Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
+        const RequestId& requestId, const std::vector<BlockId>& blockIds) override;
+
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& keys,
+                                             const RequestContext& context) override;
+
+    void CompletePrefetch(const AddressedToken& plan, bool success) override;
+
+    Status Prefetch(std::size_t jobId, AddressedToken plan) override;
+
+    void ReleaseRequest(const RequestId& requestId) override;
+
+    Prefetchable* AsPrefetchable() override { return relay_ ? this : nullptr; }
 
 private:
     CacheStorePrimary(const CacheConfig& config, BootstrapLeader&& leader,
@@ -183,6 +208,20 @@ private:
     /** @brief Closes the pump's own descriptors; idempotent. */
     void CloseFds() noexcept;
 
+    /** @brief The prefetch glue's carrying channel into the pump. */
+    class PumpEndpoint final : public ControlEndpoint {
+    public:
+        explicit PumpEndpoint(CacheStorePrimary& owner) : owner_{owner} {}
+
+        Expected<ControlResponse> Execute(ControlRequest request) override
+        {
+            return owner_.CallPump(std::move(request));
+        }
+
+    private:
+        CacheStorePrimary& owner_;
+    };
+
     CacheConfig config_;
     /** The engine. Pump-thread-only state. */
     CacheBuffer buffer_;
@@ -196,6 +235,12 @@ private:
      * declared after the leader so its jobs drain while the led pool
      * mapping is still valid. */
     std::unique_ptr<TierRelay> relay_;
+    /** The prefetch engine half's carrying channel; declared before the
+     *  glue that references it. */
+    PumpEndpoint endpoint_{*this};
+    /** The prefetch facet's request glue over the endpoint and the
+     *  wired lower tier; caller-thread state. */
+    PrefetchRequests prefetch_{endpoint_, config_.lowerStore};
     int epollFd_{-1};
     /** eventfd: wakes the pump for a pending local call. */
     int queueFd_{-1};
