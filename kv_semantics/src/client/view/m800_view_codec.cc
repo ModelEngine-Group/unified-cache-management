@@ -469,6 +469,8 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
 
         bool inBlock{false};
         NamespaceBlock block;
+        NodeId lastAsuInfoNodeId{0};
+        bool hasImmediateAsuInfo{false};
         while (true) {
             status = nextContentLine(line, eof);
             if (!status.ok()) { return status; }
@@ -490,6 +492,8 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                 }
                 block = NamespaceBlock{};
                 block.nsId = nsId;
+                lastAsuInfoNodeId = 0;
+                hasImmediateAsuInfo = false;
                 inBlock = true;
                 continue;
             }
@@ -499,16 +503,19 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
             }
 
             if (key == "viewEpoch") {
+                hasImmediateAsuInfo = false;
                 if (block.hasViewEpoch) { return ProtocolError("duplicate viewEpoch"); }
                 block.hasViewEpoch = true;
                 status = ParseUnsigned(value, block.viewEpoch);
                 if (!status.ok()) { return status; }
             } else if (key == "viewId") {
+                hasImmediateAsuInfo = false;
                 if (block.hasViewId) { return ProtocolError("duplicate viewId"); }
                 block.hasViewId = true;
                 status = ParseUnsigned(value, block.viewId);
                 if (!status.ok()) { return status; }
             } else if (key == "asuIds") {
+                hasImmediateAsuInfo = false;
                 if (block.hasAsuIds) { return ProtocolError("duplicate asuIds"); }
                 block.hasAsuIds = true;
                 if (!value.empty()) {
@@ -534,6 +541,8 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                 status = ParseNodeInfo(value, info);
                 if (!status.ok()) { return status; }
                 block.asuInfos.emplace(nodeId, std::move(info));
+                lastAsuInfoNodeId = nodeId;
+                hasImmediateAsuInfo = true;
             } else if (key.rfind(M800ViewTextContract::kLocalKvNsIdFieldPrefix, 0) == 0) {
                 NodeId nodeId{0};
                 status = ParseUnsigned(
@@ -541,6 +550,10 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                         std::string_view{M800ViewTextContract::kLocalKvNsIdFieldPrefix}.size()),
                     nodeId);
                 if (!status.ok()) { return status; }
+                if (!hasImmediateAsuInfo || lastAsuInfoNodeId != nodeId) {
+                    return ProtocolError("localKvNsId must immediately follow its asuInfo");
+                }
+                hasImmediateAsuInfo = false;
                 KvNsId localKvNsId{0};
                 status = ParseUnsigned(value, localKvNsId);
                 if (!status.ok()) { return status; }
@@ -548,6 +561,7 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                     return ProtocolError("duplicate localKvNsId entry");
                 }
             } else {
+                hasImmediateAsuInfo = false;
                 status = ValidateScalar(key);
                 if (!status.ok()) { return status; }
                 status = ValidateScalar(value);

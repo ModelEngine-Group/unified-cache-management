@@ -74,6 +74,35 @@ TEST(M800ViewAgentClientTest, FakeLibraryPreservesInternalErrorAndEmptyViewDisti
     client->Stop();
 }
 
+TEST(M800ViewAgentClientTest, StopUnblocksInFlightNamespaceQuery)
+{
+    auto factory = CreateM800ViewAgentClientFactory();
+    ASSERT_NE(factory, nullptr);
+    M800ViewServerConfig config;
+    config.agentLibPath = M800_FAKE_AGENT_PATH;
+    config.monHost = "127.0.0.1:6789";
+    config.clientName = "admin";
+    config.clientKey = "test-key";
+    std::unique_ptr<M800ViewAgentClient> client;
+    ASSERT_TRUE(factory->Create(config, client).ok());
+    ASSERT_TRUE(client->Initialize().ok());
+    ASSERT_TRUE(client->Start().ok());
+
+    setenv("M800_FAKE_GET_IN_BLOCK", "1", 1);
+    unsetenv("M800_FAKE_GET_IN_UNBLOCK");
+    std::vector<M800AgentNodeView> views;
+    Status queryStatus;
+    std::thread query([&] { queryStatus = client->GetInByNs("pool-a", views); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto begin = std::chrono::steady_clock::now();
+    client->Stop();
+    query.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(1));
+    EXPECT_TRUE(queryStatus.ok()) << queryStatus.message;
+    unsetenv("M800_FAKE_GET_IN_BLOCK");
+    unsetenv("M800_FAKE_GET_IN_UNBLOCK");
+}
+
 int ReserveLoopbackPort()
 {
     const int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -94,6 +123,21 @@ int ReserveLoopbackPort()
     const int port = ntohs(address.sin_port);
     close(fd);
     return port;
+}
+
+int ConnectLoopback(int port)
+{
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { return -1; }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(port));
+    if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
 }
 
 bool SendAll(int fd, const std::string& data)
@@ -239,6 +283,61 @@ TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
                                   " HTTP/1.1\r\n\r\n";
     ASSERT_TRUE(RoundTrip(port, {oversizedRequest}, response));
     EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
+    server->Stop();
+}
+
+TEST(ViewHttpServerTest, StopShutsDownAcceptedSlowClient)
+{
+    const auto port = ReserveLoopbackPort();
+    auto server = CreateViewHttpServer(5000);
+    ASSERT_TRUE(server->Start("127.0.0.1:" + std::to_string(port),
+                              [](const ViewHttpRequest&) {
+                                  return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
+                              })
+                    .ok());
+    const int client = ConnectLoopback(port);
+    ASSERT_GE(client, 0);
+    const std::string partial = "GET /v1/views";
+    ASSERT_GT(send(client, partial.data(), partial.size(), MSG_NOSIGNAL), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const auto begin = std::chrono::steady_clock::now();
+    server->Stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(1));
+    shutdown(client, SHUT_RDWR);
+    close(client);
+}
+
+TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
+{
+    const auto port = ReserveLoopbackPort();
+    auto server = CreateViewHttpServer(200);
+    ASSERT_TRUE(server->Start("127.0.0.1:" + std::to_string(port),
+                              [](const ViewHttpRequest&) {
+                                  return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
+                              })
+                    .ok());
+    const int client = ConnectLoopback(port);
+    ASSERT_GE(client, 0);
+    const auto begin = std::chrono::steady_clock::now();
+    bool closedByServer{false};
+    for (int index = 0; index < 8 && !closedByServer; ++index) {
+        const char byte = 'x';
+        const auto sent = send(client, &byte, 1, MSG_NOSIGNAL);
+        if (sent < 0) {
+            closedByServer = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        char response[64];
+        const auto received = recv(client, response, sizeof(response), MSG_DONTWAIT);
+        if (received == 0) { closedByServer = true; }
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    EXPECT_TRUE(closedByServer);
+    EXPECT_LT(elapsed, std::chrono::milliseconds(350));
+    shutdown(client, SHUT_RDWR);
+    close(client);
     server->Stop();
 }
 

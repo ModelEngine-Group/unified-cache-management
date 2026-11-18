@@ -210,20 +210,25 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
     m800Config.agentLibPath =
         ReadStringAttr(attrs, "view.ceph.agent_lib", m800Config.agentLibPath);
 
-    const auto masterAddrs = ReadStringAttr(attrs, "view.master_addrs", "");
-    m800Config.masterAddrs = SplitConfigValue(masterAddrs, ',');
+    std::string masterAddrsValue;
+    const bool hasMasterAddrs = GetAttr(attrs, "view.master_addrs", masterAddrsValue);
+    m800Config.masterAddrs = SplitConfigValue(masterAddrsValue, ',');
+    if (!hasMasterAddrs) {
+        const auto legacyMasterAddr = ReadStringAttr(attrs, "view.master_addr", "");
+        if (!legacyMasterAddr.empty()) { m800Config.masterAddrs.emplace_back(legacyMasterAddr); }
+    }
     if (!m800Config.masterAddrs.empty()) {
         m800Config.masterAddr = m800Config.masterAddrs.front();
     }
 
     // Prefer correctly spelled keys when both forms are present, while keeping
     // compatibility with the names already deployed by the M800 view prompt.
-    const auto refreshInterval = TrimConfigValue(GetAttr(
-        attrs, {"view.refresh_interval_ms", "view.refresh_in_terval_ms"}));
+    const auto refreshInterval =
+        TrimConfigValue(GetAttr(attrs, {"view.refresh_interval_ms"}));
     m800Config.refreshIntervalMs =
         ParseTimeoutOrDefault(refreshInterval, m800Config.refreshIntervalMs);
     const auto agentFetchTimeout = TrimConfigValue(GetAttr(
-        attrs, {"view.agent_fetch_timeout_ms", "view.agent_fetch_timeoout_ms"}));
+        attrs, {"view.ceph.agent_fetch_timeout_ms", "view.agent_fetch_timeout_ms"}));
     m800Config.agentFetchTimeoutMs =
         ParseTimeoutOrDefault(agentFetchTimeout, m800Config.agentFetchTimeoutMs);
     m800Config.httpTimeoutMs = ParseTimeoutOrDefault(
@@ -246,7 +251,7 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
 
     if (m800Config.role == M800ViewRole::SLAVE) {
         if (m800Config.masterAddrs.empty()) {
-            return InvalidConfig("view.master_addrs is required for worker role");
+            return InvalidConfig("view.master_addrs or view.master_addr is required for worker role");
         }
         return Status::OK();
     }

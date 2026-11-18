@@ -28,6 +28,8 @@ struct FakeAgentState {
     std::atomic<bool> blockStop{false};
     std::atomic<bool> stopEntered{false};
     std::atomic<int> getInDelayMs{0};
+    std::atomic<bool> blockGetIn{false};
+    std::atomic<bool> getInEntered{false};
 };
 
 M800AgentNodeView MakeNode(std::int32_t osdId, const std::string& address, bool up = true,
@@ -68,6 +70,7 @@ public:
     void Stop() override
     {
         ++state_->stopCount;
+        state_->blockGetIn.store(false);
         state_->stopEntered.store(true);
         while (state_->blockStop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -107,6 +110,12 @@ public:
 
     Status GetInByNs(const std::string& name, std::vector<M800AgentNodeView>& views) const override
     {
+        if (state_->blockGetIn.load()) {
+            state_->getInEntered.store(true);
+            while (state_->blockGetIn.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
         const auto delay = state_->getInDelayMs.load();
         if (delay > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(delay)); }
         std::lock_guard<std::mutex> guard(state_->mutex);
@@ -245,6 +254,26 @@ TEST(M800ViewMasterTest, StopInterruptsInitialReadinessWait)
     EXPECT_NE(startStatus.message.find("canceled"), std::string::npos);
 }
 
+TEST(M800ViewMasterTest, StopInterruptsBlockedNamespaceQuery)
+{
+    auto state = std::make_shared<FakeAgentState>();
+    SetNamespaces(state, 10, {{"pool-a", {MakeNode(1, "10.0.0.1")}}});
+    state->blockGetIn.store(true);
+    auto master = MakeMaster(MasterConfig(AllocatePort()), state);
+    Status startStatus;
+    std::thread starter([&] { startStatus = master->Start(); });
+    for (int index = 0; index < 2000 && !state->getInEntered.load(); ++index) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(state->getInEntered.load());
+
+    const auto begin = std::chrono::steady_clock::now();
+    master->Stop();
+    starter.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(1));
+    EXPECT_EQ(startStatus.code, StatusCode::CANCELED);
+}
+
 TEST(M800ViewMasterTest, ConcurrentStartStopDoesNotSelfDeadlock)
 {
     for (int iteration = 0; iteration < 20; ++iteration) {
@@ -287,11 +316,24 @@ TEST(M800ViewMasterTest, StartWhileHttpStopIsBlockedReturnsCanceled)
     ASSERT_GT(send(client, partialRequest.data(), partialRequest.size(), MSG_NOSIGNAL), 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    state->blockStop.store(true);
+    state->stopEntered.store(false);
     std::thread stopping([&] { master->Stop(); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    for (int index = 0; index < 2000 && !state->stopEntered.load(); ++index) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!state->stopEntered.load()) {
+        state->blockStop.store(false);
+        shutdown(client, SHUT_RDWR);
+        close(client);
+        stopping.join();
+        FAIL() << "timed out waiting for agent Stop";
+        return;
+    }
     EXPECT_EQ(master->Start().code, StatusCode::CANCELED);
     shutdown(client, SHUT_RDWR);
     close(client);
+    state->blockStop.store(false);
     stopping.join();
     master->Stop();
 }
@@ -550,9 +592,71 @@ TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
     setResponse(ViewHttpReplyKind::NOT_MODIFIED, "");
     EXPECT_TRUE(worker->GetAllViews(*universe).ok());
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+    auto temporaryEmpty = CreateViewUniverse();
+    EXPECT_TRUE(worker->GetAllViews(*temporaryEmpty).ok());
+    EXPECT_TRUE(temporaryEmpty->Empty());
 
     worker->Stop();
     server->Stop();
+}
+
+TEST(M800ViewSlaveTest, EqualEpochDoesNotReplaceUniverse)
+{
+    auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
+    auto bodyMutex = std::make_shared<std::mutex>();
+    const auto port = AllocatePort();
+    auto server = StartTextServer(port, body, bodyMutex);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(port)};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(worker->GetAllViews(*universe).ok());
+
+    {
+        std::lock_guard<std::mutex> guard(*bodyMutex);
+        *body = MakeViewTextEpoch(10);
+        const auto pos = body->find("10.0.0.1");
+        ASSERT_NE(pos, std::string::npos);
+        body->replace(pos, std::string{"10.0.0.1"}.size(), "10.0.0.99");
+    }
+    ASSERT_TRUE(worker->GetAllViews(*universe).ok());
+    GlobalView view;
+    ASSERT_TRUE(universe->GetView(1, view).ok());
+    EXPECT_EQ(view.asuMap.at(1).endpoints.front().ip, "10.0.0.1");
+    EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+    worker->Stop();
+    server->Stop();
+}
+
+TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
+{
+    const auto portA = AllocatePort();
+    auto serverA = CreateViewHttpServer(300);
+    ASSERT_TRUE(serverA->Start("127.0.0.1:" + std::to_string(portA),
+                               [](const ViewHttpRequest&) {
+                                   return ViewHttpReply{ViewHttpReplyKind::NOT_MODIFIED, {}};
+                               })
+                    .ok());
+    auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(10));
+    auto mutexB = std::make_shared<std::mutex>();
+    const auto portB = AllocatePort();
+    auto serverB = StartTextServer(portB, bodyB, mutexB);
+
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(portA),
+                          "127.0.0.1:" + std::to_string(portB)};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(worker->GetAllViews(*universe).ok());
+    EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+    EXPECT_FALSE(universe->Empty());
+    worker->Stop();
+    serverA->Stop();
+    serverB->Stop();
 }
 
 TEST(M800ViewSlaveTest, AllStaleMastersReturnOkWithoutChangingUniverse)
@@ -654,6 +758,78 @@ TEST(M800ViewSlaveTest, NewerMasterIsAcceptedAfterStaleMaster)
     serverB->Stop();
 }
 
+TEST(M800ViewSlaveTest, PreexistingUniverseEpochParticipatesInStaleSelection)
+{
+    auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(15));
+    auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(25));
+    auto mutexA = std::make_shared<std::mutex>();
+    auto mutexB = std::make_shared<std::mutex>();
+    std::atomic<int> requestsB{0};
+    const auto portA = AllocatePort();
+    const auto portB = AllocatePort();
+    auto serverA = StartTextServer(portA, bodyA, mutexA);
+    auto serverB = StartTextServer(portB, bodyB, mutexB, &requestsB);
+
+    GlobalView existing;
+    existing.viewEpoch = 20;
+    existing.viewId = 999;
+    existing.asuMap.emplace(1, MakeNodeInfo("10.0.0.9"));
+    auto universe = CreateViewUniverse({{999, existing}}, 20);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(portA),
+                          "127.0.0.1:" + std::to_string(portB)};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    ASSERT_TRUE(worker->GetAllViews(*universe).ok());
+    EXPECT_EQ(universe->GetGlobalEpoch(), 25);
+    EXPECT_EQ(requestsB.load(), 1);
+    worker->Stop();
+    serverA->Stop();
+    serverB->Stop();
+}
+
+TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFailure)
+{
+    auto state = std::make_shared<FakeAgentState>();
+    SetNamespaces(state, 100,
+                  {{"pool-a", {MakeNode(1, "10.0.0.1")}},
+                   {"pool-b", {MakeNode(2, "10.0.0.2")}}});
+    auto master = MakeMaster(MasterConfig(AllocatePort()), state);
+    ASSERT_TRUE(master->Start().ok());
+
+    SetNamespaces(state, 110,
+                  {{"pool-a", {MakeNode(3, "10.0.0.3")}},
+                   {"pool-b", {MakeNode(2, "10.0.0.2")}}});
+    {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->namespaceStatus["pool-b"] = Status::Error(StatusCode::TIMEOUT, "pool-b timed out");
+    }
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(master->GetAllViews(*universe).ok());
+    GlobalView viewA;
+    GlobalView viewB;
+    ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-a"), viewA).ok());
+    ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-b"), viewB).ok());
+    EXPECT_EQ(viewA.asuMap.count(3), 1);
+    EXPECT_EQ(viewB.asuMap.count(2), 1);
+    EXPECT_EQ(viewB.viewEpoch, 110);
+
+    SetNamespaces(state, 111,
+                  {{"pool-a", {MakeNode(4, "10.0.0.4")}},
+                   {"pool-b", {MakeNode(5, "10.0.0.5")}}});
+    {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->namespaceStatus["pool-a"] = Status::Error(StatusCode::TIMEOUT, "pool-a timed out");
+        state->namespaceStatus["pool-b"] =
+            Status::Error(StatusCode::INTERNAL_ERROR, "pool-b internal error");
+    }
+    EXPECT_EQ(master->GetAllViews(*universe).code, StatusCode::TIMEOUT);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 110);
+    EXPECT_EQ(viewB.asuMap.count(2), 1);
+    master->Stop();
+}
+
 TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -678,9 +854,27 @@ TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
     auto fetched = CreateViewUniverse();
     ASSERT_TRUE(worker->GetAllViews(*fetched).ok());
     EXPECT_EQ(fetched->GetGlobalEpoch(), 200);
-    EXPECT_TRUE(fetched->GetView(999, newerView).ok());
+    GlobalView actualView;
+    ASSERT_TRUE(fetched->GetView(999, actualView).ok());
+    EXPECT_EQ(actualView.viewEpoch, 200);
+    EXPECT_EQ(actualView.viewId, 999);
+    ASSERT_EQ(actualView.asuMap.size(), 1);
+    EXPECT_EQ(actualView.asuMap.at(1).endpoints.front().ip, "10.0.0.9");
     worker->Stop();
     master->Stop();
+}
+
+TEST(M800ViewSlaveTest, MissingMasterAddressMessageMentionsBothKeys)
+{
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    const auto status = worker->GetAllViews(*universe);
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message.find("view.master_addrs"), std::string::npos);
+    EXPECT_NE(status.message.find("view.master_addr"), std::string::npos);
+    worker->Stop();
 }
 
 TEST(M800ViewSlaveTest, WorkerBeforeMasterKeepsOutputUnchanged)

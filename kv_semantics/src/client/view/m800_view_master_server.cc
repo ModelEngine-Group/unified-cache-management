@@ -127,7 +127,7 @@ public:
 
     Status Start() override
     {
-        std::lock_guard<std::mutex> fetchGuard(fetchMu_);
+        std::lock_guard<std::mutex> fetchGuard(fetchMutex_);
         {
             std::lock_guard<std::mutex> guard(mutex_);
             if (started_) {
@@ -172,7 +172,7 @@ public:
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto waitTime = std::min(kInitialRetryInterval, remaining);
             if (waitTime <= std::chrono::milliseconds::zero()) { break; }
-            std::unique_lock<std::mutex> waitLock(waitMu_);
+            std::unique_lock<std::mutex> waitLock(waitMutex_);
             waitCv_.wait_for(waitLock, waitTime, [this] { return !running_.load(); });
         }
         if (!initial) {
@@ -246,7 +246,12 @@ public:
         waitCv_.notify_all();
         if (httpServer) { httpServer->Stop(); }
 
-        std::lock_guard<std::mutex> fetchGuard(fetchMu_);
+        // Ask the agent to cancel an in-flight read before waiting for the
+        // master fetch mutex. Cleanup then waits for the query to finish and
+        // releases the handle/library in their owning order.
+        const auto agent = GetAgent();
+        if (agent) { agent->Stop(); }
+        std::lock_guard<std::mutex> fetchGuard(fetchMutex_);
         CleanupAgent();
         std::lock_guard<std::mutex> guard(mutex_);
         httpServer_.reset();
@@ -255,7 +260,7 @@ public:
 
     Status GetAllViews(ViewUniverse& universe) override
     {
-        std::lock_guard<std::mutex> fetchGuard(fetchMu_);
+        std::lock_guard<std::mutex> fetchGuard(fetchMutex_);
         if (!running_.load()) {
             return MasterError(StatusCode::NOT_INITIALIZED, "M800 master is not running");
         }
@@ -358,6 +363,7 @@ private:
 
         Status lastStatus = MasterError(StatusCode::INTERNAL_ERROR, "M800 view fetch failed");
         for (int attempt = 0; attempt < 2; ++attempt) {
+            if (!running_.load()) { return MasterError(StatusCode::CANCELED, "M800 view fetch canceled"); }
             std::uint64_t epochBefore{0};
             lastStatus = agent->GetEpoch(epochBefore);
             if (!lastStatus.ok()) { return lastStatus; }
@@ -400,6 +406,7 @@ private:
             std::size_t successCount{0};
 
             for (const auto& name : nsNames) {
+                if (!running_.load()) { return MasterError(StatusCode::CANCELED, "M800 view fetch canceled"); }
                 const auto nsId = M800PoolNameToKvNsId(name);
                 std::vector<M800AgentNodeView> nodes;
                 auto status = agent->GetInByNs(name, nodes);
@@ -531,10 +538,10 @@ private:
     std::shared_ptr<ViewHttpServer> httpServer_;
     std::shared_ptr<const ViewUniverse> lastFetched_;
 
-    std::mutex fetchMu_;
+    std::mutex fetchMutex_;
     std::mutex mutex_;
     std::mutex stopMutex_;
-    std::mutex waitMu_;
+    std::mutex waitMutex_;
     std::condition_variable waitCv_;
     std::atomic<bool> running_{false};
     bool started_{false};

@@ -70,7 +70,7 @@ struct M800ViewServerConfig {
 // Derives the public namespace id from the exact bytes of a Ceph pool name.
 KvNsId M800PoolNameToKvNsId(const std::string& poolName);
 
-struct M800ViewHTTPContract {
+struct M800ViewHttpContract {
     static constexpr const char* kViewsPath = "/v1/views";
     static constexpr const char* kSinceEpochParam = "since_epoch";
     static constexpr const char* kContentType = "text/plain";
@@ -84,8 +84,10 @@ struct M800ViewHTTPContract {
 // cannot contain CR, LF, or NUL in v1; no escaping is defined. The first two
 // fields are globalEpoch and nsCount; each namespace block starts at ns and
 // must include viewEpoch, viewId, asuIds, and one asuInfo.<nodeId> entry per
-// ASU. Pool names are consumed by the master while deriving KvNsId and are
-// not part of the client runtime contract.
+// ASU. An optional localKvNsId.<nodeId> line follows its asuInfo entry when the
+// ASU-local namespace id is nonzero; omission means zero. Pool names are
+// consumed by the master while deriving KvNsId and are not part of the client
+// runtime contract.
 struct M800ViewTextContract {
     static constexpr const char* kGlobalEpochField = "globalEpoch";
     static constexpr const char* kNsCountField = "nsCount";

@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -42,6 +43,24 @@ void CloseFd(int fd)
 std::string ErrnoMessage(int error)
 {
     return std::error_code(error, std::generic_category()).message();
+}
+
+std::uint32_t RemainingMs(std::chrono::steady_clock::time_point deadline)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) { return 0; }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    return static_cast<std::uint32_t>(std::max<std::int64_t>(1, remaining.count()));
+}
+
+bool SetDeadlineTimeout(int fd, int option, std::chrono::steady_clock::time_point deadline)
+{
+    const auto remaining = RemainingMs(deadline);
+    if (remaining == 0) { return false; }
+    timeval timeout{};
+    timeout.tv_sec = static_cast<time_t>(remaining / 1000);
+    timeout.tv_usec = static_cast<suseconds_t>((remaining % 1000) * 1000);
+    return setsockopt(fd, SOL_SOCKET, option, &timeout, sizeof(timeout)) == 0;
 }
 
 bool SplitListenAddress(const std::string& address, std::string& host, std::string& port)
@@ -129,22 +148,22 @@ bool ParseRequest(const std::string& request, ViewHttpRequest& parsed)
     const auto target = line.substr(firstSpace + 1, secondSpace - firstSpace - 1);
     const auto queryPos = target.find('?');
     const auto path = target.substr(0, queryPos);
-    if (path != M800ViewHTTPContract::kViewsPath) { return false; }
+    if (path != M800ViewHttpContract::kViewsPath) { return false; }
     parsed.sinceEpoch = ParseSinceEpoch(target);
     return true;
 }
 
 std::string BuildResponse(ViewHttpReplyKind kind, const std::string& requestedBody)
 {
-    int status = M800ViewHTTPContract::kStatusServerError;
+    int status = M800ViewHttpContract::kStatusServerError;
     const char* reason = "Internal Server Error";
     const std::string* body = nullptr;
     if (kind == ViewHttpReplyKind::FULL_VIEW && requestedBody.size() <= kMaxResponseBodyBytes) {
-        status = M800ViewHTTPContract::kStatusOk;
+        status = M800ViewHttpContract::kStatusOk;
         reason = "OK";
         body = &requestedBody;
     } else if (kind == ViewHttpReplyKind::NOT_MODIFIED) {
-        status = M800ViewHTTPContract::kStatusNotModified;
+        status = M800ViewHttpContract::kStatusNotModified;
         reason = "Not Modified";
     }
     static const std::string emptyBody;
@@ -152,19 +171,20 @@ std::string BuildResponse(ViewHttpReplyKind kind, const std::string& requestedBo
 
     std::string response = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n";
     response += "Content-Type: ";
-    response += M800ViewHTTPContract::kContentType;
+    response += M800ViewHttpContract::kContentType;
     response += "\r\nContent-Length: " + std::to_string(body->size());
     response += "\r\nConnection: ";
-    response += M800ViewHTTPContract::kConnection;
+    response += M800ViewHttpContract::kConnection;
     response += "\r\n\r\n";
     response += *body;
     return response;
 }
 
-bool SendAll(int fd, const std::string& data)
+bool SendAll(int fd, const std::string& data, std::chrono::steady_clock::time_point deadline)
 {
     std::size_t sent = 0;
     while (sent < data.size()) {
+        if (!SetDeadlineTimeout(fd, SO_SNDTIMEO, deadline)) { return false; }
 #ifdef MSG_NOSIGNAL
         constexpr int flags = MSG_NOSIGNAL;
 #else
@@ -284,27 +304,20 @@ public:
             shutdown(fd, SHUT_RDWR);
             CloseFd(fd);
         }
+        const int clientFd = activeClientFd_.load();
+        if (clientFd >= 0) { shutdown(clientFd, SHUT_RDWR); }
         if (thread_.joinable()) { thread_.join(); }
         handler_ = nullptr;
     }
 
 private:
-    bool ConfigureSocket(int fd) const
-    {
-        timeval timeout{};
-        const auto seconds = timeoutMs_ / 1000;
-        const auto maxSeconds = static_cast<std::uint64_t>(std::numeric_limits<time_t>::max());
-        timeout.tv_sec = static_cast<time_t>(seconds > maxSeconds ? maxSeconds : seconds);
-        timeout.tv_usec = static_cast<suseconds_t>((timeoutMs_ % 1000) * 1000);
-        return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
-               setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
-    }
-
-    bool ReceiveRequest(int fd, std::string& request) const
+    bool ReceiveRequest(int fd, std::string& request,
+                        std::chrono::steady_clock::time_point deadline) const
     {
         request.clear();
         char buffer[4096];
         while (request.find("\r\n\r\n") == std::string::npos) {
+            if (!SetDeadlineTimeout(fd, SO_RCVTIMEO, deadline)) { return false; }
             const auto received = recv(fd, buffer, sizeof(buffer), 0);
             if (received > 0) {
                 request.append(buffer, static_cast<std::size_t>(received));
@@ -324,12 +337,12 @@ private:
 
     void HandleConnection(int fd)
     {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs_);
         ViewHttpReply reply;
         try {
-            if (!ConfigureSocket(fd)) { return; }
             std::string request;
             ViewHttpRequest parsed;
-            if (!ReceiveRequest(fd, request) || !ParseRequest(request, parsed)) {
+            if (!ReceiveRequest(fd, request, deadline) || !ParseRequest(request, parsed)) {
                 reply.kind = ViewHttpReplyKind::INTERNAL_ERROR;
             } else {
                 try {
@@ -339,12 +352,12 @@ private:
                 }
             }
             const auto response = BuildResponse(reply.kind, reply.body);
-            SendAll(fd, response);
+            SendAll(fd, response, deadline);
         } catch (...) {
             try {
                 const auto response =
                     BuildResponse(ViewHttpReplyKind::INTERNAL_ERROR, std::string{});
-                SendAll(fd, response);
+                SendAll(fd, response, deadline);
             } catch (...) {
                 // The connection is closed by the accept loop.
             }
@@ -367,7 +380,9 @@ private:
                 CloseFd(client);
                 break;
             }
+            activeClientFd_.store(client);
             HandleConnection(client);
+            activeClientFd_.store(-1);
             CloseFd(client);
         }
     }
@@ -375,6 +390,7 @@ private:
     const std::uint64_t timeoutMs_;
     std::atomic_bool running_{false};
     std::atomic_int listenFd_{-1};
+    std::atomic_int activeClientFd_{-1};
     std::thread thread_;
     ViewHttpHandler handler_;
     std::mutex lifecycleMutex_;

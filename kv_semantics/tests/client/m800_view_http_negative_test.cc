@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <arpa/inet.h>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -15,7 +16,8 @@ namespace {
 
 class RawResponseServer {
 public:
-    explicit RawResponseServer(std::string response) : response_(std::move(response))
+    explicit RawResponseServer(std::string response, int responseDelayMs = 0)
+        : response_(std::move(response)), responseDelayMs_(responseDelayMs)
     {
         listenFd_ = socket(AF_INET, SOCK_STREAM, 0);
         if (listenFd_ < 0) { throw std::runtime_error("failed to create raw server socket"); }
@@ -53,6 +55,9 @@ private:
         if (client < 0) { return; }
         char request[2048];
         recv(client, request, sizeof(request), 0);
+        if (responseDelayMs_ > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(responseDelayMs_));
+        }
         std::size_t sent{0};
         while (sent < response_.size()) {
             const auto result = send(client, response_.data() + sent, response_.size() - sent,
@@ -67,6 +72,7 @@ private:
     int listenFd_{-1};
     std::uint16_t port_{0};
     std::string response_;
+    int responseDelayMs_{0};
     std::thread worker_;
 };
 
@@ -112,6 +118,45 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniv
         EXPECT_EQ(universe->GetAllNsIds().size(), 1) << response;
         worker->Stop();
     }
+}
+
+TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
+{
+    RawResponseServer server("", 500);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
+    config.httpTimeoutMs = 2000;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    Status fetchStatus;
+    std::thread fetcher([&] { fetchStatus = worker->GetAllViews(*universe); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto begin = std::chrono::steady_clock::now();
+    worker->Stop();
+    fetcher.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(1));
+    EXPECT_EQ(fetchStatus.code, StatusCode::CANCELED);
+}
+
+TEST(M800ViewSlaveHttpNegativeTest, AllMasterAddressesShareOneDeadline)
+{
+    RawResponseServer first("", 500);
+    RawResponseServer second("", 500);
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(first.Port()),
+                          "127.0.0.1:" + std::to_string(second.Port())};
+    config.httpTimeoutMs = 100;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    const auto begin = std::chrono::steady_clock::now();
+    const auto status = worker->GetAllViews(*universe);
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    EXPECT_EQ(status.code, StatusCode::TIMEOUT);
+    EXPECT_LT(elapsed, std::chrono::milliseconds(180));
+    worker->Stop();
 }
 
 }  // namespace

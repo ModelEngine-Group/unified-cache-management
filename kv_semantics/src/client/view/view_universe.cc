@@ -63,6 +63,10 @@ bool EndpointEquals(const NodeEndpoint& lhs, const NodeEndpoint& rhs)
            lhs.hcaPort == rhs.hcaPort && lhs.attrs == rhs.attrs;
 }
 
+}  // namespace
+
+namespace detail {
+
 bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs)
 {
     if (lhs.localKvNsId != rhs.localKvNsId || lhs.endpoints.size() != rhs.endpoints.size()) {
@@ -74,6 +78,10 @@ bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs)
     return true;
 }
 
+}  // namespace detail
+
+namespace {
+
 bool GlobalViewEquals(const GlobalView& lhs, const GlobalView& rhs)
 {
     if (lhs.viewEpoch != rhs.viewEpoch || lhs.viewId != rhs.viewId ||
@@ -83,7 +91,7 @@ bool GlobalViewEquals(const GlobalView& lhs, const GlobalView& rhs)
     }
     for (const auto& item : lhs.asuMap) {
         const auto rhsIt = rhs.asuMap.find(item.first);
-        if (rhsIt == rhs.asuMap.end() || !NodeInfoEquals(item.second, rhsIt->second)) {
+        if (rhsIt == rhs.asuMap.end() || !detail::NodeInfoEquals(item.second, rhsIt->second)) {
             return false;
         }
     }
@@ -115,6 +123,10 @@ public:
         // writeMutex_ and always acquire one complete immutable State.
         std::lock_guard<std::mutex> lock{writeMutex_};
         const auto current = LoadState();
+        if (current->globalEpoch == 0 && !current->views.empty() && nextEpoch == 0) {
+            KV_DEBUG("ViewUniverse publish no-op: equal zero globalEpoch with existing views");
+            return Status::OK();
+        }
         if (current->globalEpoch != 0) {
             if (nextEpoch == current->globalEpoch) {
                 KV_DEBUG("ViewUniverse publish no-op: equal globalEpoch={}", nextEpoch);

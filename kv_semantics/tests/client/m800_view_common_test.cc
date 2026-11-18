@@ -171,26 +171,48 @@ TEST(M800ViewCommonTest, BuildUnreadableKeyringReturnsOkWithEmptyClientKey)
     EXPECT_TRUE(built.clientKey.empty());
 }
 
-TEST(M800ViewCommonTest, BuildSupportsPromptAndNormalSpellings)
+TEST(M800ViewCommonTest, BuildSupportsLegacyMasterAddr)
 {
-    auto legacyConfig = MakeWorkerConfig();
-    legacyConfig.attrs["view.refresh_in_terval_ms"] = "41000";
-    legacyConfig.attrs["view.agent_fetch_timeoout_ms"] = "11000";
-    legacyConfig.attrs["view.endpoint_protocol"] = "RoCe";
-    legacyConfig.attrs["view.endpoint_port"] = "7000";
-    M800ViewServerConfig legacy;
+    KvClientConfig config;
+    config.attrs["view.role"] = "worker";
+    config.attrs["view.master_addr"] = "127.0.0.1:9100";
+    M800ViewServerConfig built;
 
-    ASSERT_TRUE(M800ViewServerConfig::Build(legacyConfig, legacy).ok());
-    EXPECT_EQ(legacy.refreshIntervalMs, std::uint64_t{41000});
-    EXPECT_EQ(legacy.agentFetchTimeoutMs, std::uint64_t{11000});
-    EXPECT_EQ(legacy.endpointProtocol, Protocol::ROCE);
-    EXPECT_EQ(legacy.endpointPort, std::uint16_t{7000});
+    ASSERT_TRUE(M800ViewServerConfig::Build(config, built).ok());
+    EXPECT_EQ(built.masterAddrs, std::vector<std::string>{"127.0.0.1:9100"});
+    EXPECT_EQ(built.masterAddr, "127.0.0.1:9100");
+}
 
+TEST(M800ViewCommonTest, BuildPrefersMasterAddrsOverLegacyMasterAddr)
+{
+    KvClientConfig config;
+    config.attrs["view.role"] = "worker";
+    config.attrs["view.master_addr"] = "127.0.0.1:9100";
+    config.attrs["view.master_addrs"] = "127.0.0.2:9100,127.0.0.3:9100";
+    M800ViewServerConfig built;
+
+    ASSERT_TRUE(M800ViewServerConfig::Build(config, built).ok());
+    EXPECT_EQ(built.masterAddrs,
+              (std::vector<std::string>{"127.0.0.2:9100", "127.0.0.3:9100"}));
+    EXPECT_EQ(built.masterAddr, "127.0.0.2:9100");
+}
+
+TEST(M800ViewCommonTest, BuildMasterAddrsEmptyTakesPrecedenceOverLegacyMasterAddr)
+{
+    KvClientConfig config;
+    config.attrs["view.role"] = "worker";
+    config.attrs["view.master_addr"] = "127.0.0.1:9100";
+    config.attrs["view.master_addrs"] = "";
+    M800ViewServerConfig built;
+
+    EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT);
+}
+
+TEST(M800ViewCommonTest, BuildSupportsCanonicalAndCephTimeoutKeys)
+{
     auto normalConfig = MakeWorkerConfig();
     normalConfig.attrs["view.refresh_interval_ms"] = "42000";
-    normalConfig.attrs["view.refresh_in_terval_ms"] = "41000";
     normalConfig.attrs["view.agent_fetch_timeout_ms"] = "12000";
-    normalConfig.attrs["view.agent_fetch_timeoout_ms"] = "11000";
     normalConfig.attrs["view.http_timeout_ms"] = "2500";
     normalConfig.attrs["view.endpoint_protocol"] = "TCP";
     normalConfig.attrs["view.endpoint_port"] = "65535";
@@ -202,9 +224,28 @@ TEST(M800ViewCommonTest, BuildSupportsPromptAndNormalSpellings)
     EXPECT_EQ(normal.httpTimeoutMs, std::uint64_t{2500});
     EXPECT_EQ(normal.endpointProtocol, Protocol::TCP);
     EXPECT_EQ(normal.endpointPort, std::uint16_t{65535});
+
+    auto cephConfig = MakeWorkerConfig();
+    cephConfig.attrs["view.ceph.agent_fetch_timeout_ms"] = "13000";
+    cephConfig.attrs["view.agent_fetch_timeout_ms"] = "12000";
+    M800ViewServerConfig ceph;
+    ASSERT_TRUE(M800ViewServerConfig::Build(cephConfig, ceph).ok());
+    EXPECT_EQ(ceph.agentFetchTimeoutMs, std::uint64_t{13000});
 }
 
-TEST(M800ViewCommonTest, BuildInvalidNumbersAndProtocolFallBackToDefaults)
+TEST(M800ViewCommonTest, BuildIgnoresMisspelledTimeoutKeys)
+{
+    auto config = MakeWorkerConfig();
+    config.attrs["view.agent_fetch_timeoout_ms"] = "11000";
+    config.attrs["view.refresh_in_terval_ms"] = "41000";
+    M800ViewServerConfig built;
+
+    ASSERT_TRUE(M800ViewServerConfig::Build(config, built).ok());
+    EXPECT_EQ(built.agentFetchTimeoutMs, std::uint64_t{10000});
+    EXPECT_EQ(built.refreshIntervalMs, std::uint64_t{30000});
+}
+
+TEST(M800ViewCommonTest, BuildInvalidNumbersAndProtocolFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();
     config.attrs["view.refresh_interval_ms"] = "12ms";
@@ -241,7 +282,7 @@ TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInNumericValues)
     EXPECT_EQ(built.endpointPort, 6000);
 }
 
-TEST(M800ViewCommonTest, BuildOutOfRangeTimeoutsFallBackToDefaults)
+TEST(M800ViewCommonTest, BuildOutOfRangeTimeoutsFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();
     config.attrs["view.refresh_interval_ms"] = "18446744073709551615";

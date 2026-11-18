@@ -268,5 +268,32 @@ TEST(ViewUniverseTest, CompoundReadsUseOneAtomicSnapshot)
     EXPECT_FALSE(failed.load());
 }
 
+TEST(ViewUniverseTest, EqualZeroEpochWithExistingViewsIsNoOp)
+{
+    auto universe = MakeUniverse({{1, MakeView(0, 1, 10)}}, 0);
+    auto next = MakeUniverse({{2, MakeView(0, 2, 20)}}, 0);
+
+    ASSERT_TRUE(universe->PublishAll(*next).ok());
+    EXPECT_EQ(universe->GetGlobalEpoch(), 0);
+    EXPECT_EQ(universe->GetAllNsIds().size(), 1);
+    EXPECT_EQ(universe->GetAllNsIds().front(), 1);
+    EXPECT_TRUE(universe->PublishAll(*universe).ok());
+    EXPECT_EQ(universe->GetAllNsIds().front(), 1);
+}
+
+TEST(ViewUniverseTest, LocalKvNsIdIsTheOnlyDifferenceDetectedAsChanged)
+{
+    auto currentView = MakeView(100, 1, 10);
+    currentView.asuMap.begin()->second.localKvNsId = 1;
+    auto unchangedView = currentView;
+    auto changedView = currentView;
+    changedView.asuMap.begin()->second.localKvNsId = 2;
+
+    EXPECT_TRUE(detail::NodeInfoEquals(currentView.asuMap.begin()->second,
+                                       unchangedView.asuMap.begin()->second));
+    EXPECT_FALSE(detail::NodeInfoEquals(currentView.asuMap.begin()->second,
+                                        changedView.asuMap.begin()->second));
+}
+
 }  // namespace
 }  // namespace kv::test

@@ -152,6 +152,22 @@ TEST(M800ViewCodecTest, DecodeRejectsInvalidLocalKvNsIdWithoutChangingOutput)
     }
 }
 
+TEST(M800ViewCodecTest, DecodeRejectsNonAdjacentLocalKvNsId)
+{
+    auto beforeAsuInfo = ValidText();
+    const auto pos = beforeAsuInfo.find("asuInfo.10=");
+    ASSERT_NE(pos, std::string::npos);
+    beforeAsuInfo.insert(pos, "localKvNsId.10=1\n");
+    const auto separated = ValidText() + "futureField=value\nlocalKvNsId.10=1\n";
+    auto baseline = CreateViewUniverse();
+
+    for (const auto& input : {beforeAsuInfo, separated}) {
+        EXPECT_EQ(M800ViewCodec::Decode(input, *baseline).code, StatusCode::INTERNAL_ERROR) << input;
+        EXPECT_TRUE(baseline->Empty());
+        EXPECT_EQ(baseline->GetGlobalEpoch(), 0);
+    }
+}
+
 TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
 {
     std::unordered_map<KvNsId, GlobalView> views;
@@ -334,6 +350,7 @@ TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
     for (KvNsId nsId = 1; nsId <= 65; ++nsId) {
         text += "ns=" + std::to_string(nsId) + "\nviewEpoch=99\nviewId=" +
                 std::to_string(nsId) + "\nasuIds=1\nasuInfo.1=" + endpoint + "\n";
+        if (nsId >= 64) { text += "localKvNsId.1=" + std::to_string(nsId) + "\n"; }
     }
     auto decoded = CreateViewUniverse();
     ASSERT_TRUE(M800ViewCodec::Decode(text, *decoded).ok());
@@ -341,6 +358,8 @@ TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
     GlobalView view;
     EXPECT_TRUE(decoded->GetView(1, view).ok());
     EXPECT_EQ(decoded->GetView(65, view).code, StatusCode::NOT_FOUND);
+    ASSERT_TRUE(decoded->GetView(64, view).ok());
+    EXPECT_EQ(view.asuMap.at(1).localKvNsId, 64);
 
     text = "globalEpoch=99\nnsCount=1\nns=1\nviewEpoch=99\nviewId=1\nasuIds=1\nasuInfo.1=";
     for (int index = 0; index < 5; ++index) {
@@ -348,9 +367,11 @@ TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
         text += "protocol=uboe,port=6000,local.comm_id=10.0.0." + std::to_string(index + 1);
     }
     text.push_back('\n');
+    text += "localKvNsId.1=9\n";
     decoded = CreateViewUniverse();
     ASSERT_TRUE(M800ViewCodec::Decode(text, *decoded).ok());
     ASSERT_TRUE(decoded->GetView(1, view).ok());
+    EXPECT_EQ(view.asuMap.at(1).localKvNsId, 9);
     ASSERT_EQ(view.asuMap.at(1).endpoints.size(), 4);
     EXPECT_EQ(view.asuMap.at(1).endpoints.back().ip, "10.0.0.4");
 
@@ -362,13 +383,40 @@ TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
     text.push_back('\n');
     for (NodeId nodeId = 1; nodeId <= 4097; ++nodeId) {
         text += "asuInfo." + std::to_string(nodeId) + "=" + endpoint + "\n";
+        if (nodeId >= 4095) {
+            text += "localKvNsId." + std::to_string(nodeId) + "=" + std::to_string(nodeId) + "\n";
+        }
     }
     decoded = CreateViewUniverse();
     ASSERT_TRUE(M800ViewCodec::Decode(text, *decoded).ok());
     ASSERT_TRUE(decoded->GetView(1, view).ok());
     EXPECT_EQ(view.asuMap.size(), 4096);
     EXPECT_EQ(view.asuMap.count(4096), 1);
+    EXPECT_EQ(view.asuMap.at(4096).localKvNsId, 4096);
     EXPECT_EQ(view.asuMap.count(4097), 0);
+}
+
+TEST(M800ViewCodecTest, EncodeTruncatesLocalKvNsIdTogetherWithItsAsu)
+{
+    auto view = MakeView(1, 99);
+    for (NodeId nodeId = 1; nodeId <= 4097; ++nodeId) {
+        NodeInfo info{{MakeEndpoint()}};
+        info.localKvNsId = static_cast<KvNsId>(nodeId);
+        view.asuMap.emplace(nodeId, std::move(info));
+    }
+    auto universe = CreateViewUniverse({{1, std::move(view)}}, 99);
+    std::string encoded;
+    ASSERT_TRUE(M800ViewCodec::Encode(*universe, encoded).ok());
+    EXPECT_NE(encoded.find("localKvNsId.4096=4096\n"), std::string::npos);
+    EXPECT_EQ(encoded.find("asuInfo.4097="), std::string::npos);
+    EXPECT_EQ(encoded.find("localKvNsId.4097="), std::string::npos);
+
+    auto decoded = CreateViewUniverse();
+    ASSERT_TRUE(M800ViewCodec::Decode(encoded, *decoded).ok());
+    GlobalView actual;
+    ASSERT_TRUE(decoded->GetView(1, actual).ok());
+    EXPECT_EQ(actual.asuMap.size(), 4096);
+    EXPECT_EQ(actual.asuMap.at(4096).localKvNsId, 4096);
 }
 
 }  // namespace

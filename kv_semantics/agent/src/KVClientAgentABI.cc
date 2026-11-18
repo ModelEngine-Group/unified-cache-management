@@ -7,6 +7,8 @@
 
 #include <cerrno>
 #include <cstring>
+#include <atomic>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -15,11 +17,12 @@
 
 struct kv_client_agent_handle {
     agent::KVClientAgent impl;
-    bool initialized{false};
-    bool started{false};
+    std::atomic<bool> initialized{false};
+    std::atomic<bool> started{false};
     // The current C++ agent cannot restart its refresher after Stop. Keep this
     // terminal state explicit rather than reporting a stale restart as success.
-    bool stopped{false};
+    std::atomic<bool> stopped{false};
+    std::mutex lifecycleMutex;
 };
 
 namespace {
@@ -38,7 +41,9 @@ int32_t FromAgentResult(int result)
 int32_t CheckReady(const kv_client_agent_handle* handle)
 {
     if (handle == nullptr) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
-    if (!handle->initialized || !handle->started) { return KV_CLIENT_AGENT_NOT_INITIALIZED; }
+    if (!handle->initialized.load() || !handle->started.load()) {
+        return KV_CLIENT_AGENT_NOT_INITIALIZED;
+    }
     return KV_CLIENT_AGENT_OK;
 }
 
@@ -162,7 +167,8 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_init(kv_client_agent_handle* hand
         return KV_CLIENT_AGENT_ABI_VERSION_MISMATCH;
     }
     if (configSize != sizeof(kv_client_agent_config)) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
-    if (handle->initialized) { return KV_CLIENT_AGENT_INTERNAL_ERROR; }
+    std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
+    if (handle->initialized.load()) { return KV_CLIENT_AGENT_INTERNAL_ERROR; }
     if (config->mon_host == nullptr || config->mon_host[0] == '\0' ||
         config->client_name == nullptr || config->client_name[0] == '\0' ||
         config->client_key == nullptr || config->client_key[0] == '\0' ||
@@ -183,9 +189,9 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_init(kv_client_agent_handle* hand
                                              : config->view_fetch_timeout;
         const auto result = FromAgentResult(handle->impl.init(agentConfig, config->log_dir));
         if (result == KV_CLIENT_AGENT_OK) {
-            handle->initialized = true;
-            handle->started = false;
-            handle->stopped = false;
+            handle->initialized.store(true);
+            handle->started.store(false);
+            handle->stopped.store(false);
         }
         return result;
     } catch (...) {
@@ -196,12 +202,13 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_init(kv_client_agent_handle* hand
 KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_start(kv_client_agent_handle* handle)
 {
     if (handle == nullptr) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
-    if (!handle->initialized) { return KV_CLIENT_AGENT_NOT_INITIALIZED; }
-    if (handle->started) { return KV_CLIENT_AGENT_OK; }
-    if (handle->stopped) { return KV_CLIENT_AGENT_INTERNAL_ERROR; }
+    std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
+    if (!handle->initialized.load()) { return KV_CLIENT_AGENT_NOT_INITIALIZED; }
+    if (handle->started.load()) { return KV_CLIENT_AGENT_OK; }
+    if (handle->stopped.load()) { return KV_CLIENT_AGENT_INTERNAL_ERROR; }
     try {
         const auto result = FromAgentResult(handle->impl.start());
-        if (result == KV_CLIENT_AGENT_OK) { handle->started = true; }
+        if (result == KV_CLIENT_AGENT_OK) { handle->started.store(true); }
         return result;
     } catch (...) {
         return KV_CLIENT_AGENT_INTERNAL_ERROR;
@@ -211,15 +218,13 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_start(kv_client_agent_handle* han
 KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_stop(kv_client_agent_handle* handle)
 {
     if (handle == nullptr) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
-    if (!handle->initialized) { return KV_CLIENT_AGENT_NOT_INITIALIZED; }
-    if (!handle->started) { return KV_CLIENT_AGENT_OK; }
+    std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
+    if (!handle->initialized.load()) { return KV_CLIENT_AGENT_NOT_INITIALIZED; }
+    if (!handle->started.load()) { return KV_CLIENT_AGENT_OK; }
+    handle->started.store(false);
+    handle->stopped.store(true);
     try {
-        const auto result = FromAgentResult(handle->impl.stop_view_refresh());
-        if (result == KV_CLIENT_AGENT_OK) {
-            handle->started = false;
-            handle->stopped = true;
-        }
-        return result;
+        return FromAgentResult(handle->impl.stop_view_refresh());
     } catch (...) {
         return KV_CLIENT_AGENT_INTERNAL_ERROR;
     }
@@ -297,6 +302,7 @@ KV_CLIENT_AGENT_EXPORT void kv_client_agent_free_node_views(kv_client_agent_hand
 KV_CLIENT_AGENT_EXPORT void kv_client_agent_destroy(kv_client_agent_handle* handle)
 {
     if (handle == nullptr) { return; }
+    std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
     try {
         handle->impl.stop_view_refresh();
     } catch (...) {

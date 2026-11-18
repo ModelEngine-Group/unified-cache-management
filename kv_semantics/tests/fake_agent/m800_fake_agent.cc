@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 #include <new>
+#include <chrono>
+#include <thread>
 
 struct kv_client_agent_handle {
     int placeholder{0};
@@ -19,6 +21,14 @@ void InitializeOutputs(kv_client_agent_node_view** views, size_t* viewCount)
 {
     if (views != nullptr) { *views = nullptr; }
     if (viewCount != nullptr) { *viewCount = 0; }
+}
+
+void BlockIfRequested()
+{
+    if (std::getenv("M800_FAKE_GET_IN_BLOCK") == nullptr) { return; }
+    while (std::getenv("M800_FAKE_GET_IN_UNBLOCK") == nullptr) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 }  // namespace
@@ -39,7 +49,11 @@ int32_t kv_client_agent_init(kv_client_agent_handle*, const kv_client_agent_conf
 }
 
 int32_t kv_client_agent_start(kv_client_agent_handle*) { return KV_CLIENT_AGENT_OK; }
-int32_t kv_client_agent_stop(kv_client_agent_handle*) { return KV_CLIENT_AGENT_OK; }
+int32_t kv_client_agent_stop(kv_client_agent_handle*)
+{
+    setenv("M800_FAKE_GET_IN_UNBLOCK", "1", 1);
+    return KV_CLIENT_AGENT_OK;
+}
 
 int32_t kv_client_agent_get_epoch(kv_client_agent_handle*, uint64_t* epoch)
 {
@@ -65,6 +79,7 @@ int32_t kv_client_agent_get_in_by_ns(kv_client_agent_handle*, const char*,
                                      kv_client_agent_node_view** views, size_t* viewCount)
 {
     InitializeOutputs(views, viewCount);
+    BlockIfRequested();
     return ResultFromEnvironment();
 }
 

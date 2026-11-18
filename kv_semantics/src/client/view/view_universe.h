@@ -32,6 +32,11 @@
 
 namespace kv {
 
+namespace detail {
+// Structural comparison used by snapshot change detection and unit tests.
+bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs);
+}  // namespace detail
+
 // ViewUniverse defines the update/query contract for the complete
 // multi-namespace cluster view. Shard 5 provides the concrete implementation.
 class ViewUniverse {

@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 
 #include <limits>
+#include <atomic>
 #include <mutex>
 #include <new>
 #include <string>
@@ -117,11 +118,11 @@ public:
     {
         std::lock_guard<std::mutex> lock{mutex_};
         if (handle_ == nullptr || library_ == nullptr) { return NotInitialized("initialize"); }
-        if (initialized_) { return Status::OK(); }
-        if (stopRequested_) {
+        if (stopRequested_.load()) {
             return Status::Error(StatusCode::INTERNAL_ERROR,
                                  "cannot initialize a stopped M800 agent client");
         }
+        if (initialized_.load()) { return Status::OK(); }
 
         int32_t refreshSeconds = 0;
         auto status = MillisecondsToSeconds(config_.refreshIntervalMs, refreshSeconds,
@@ -167,8 +168,14 @@ public:
 
     void Stop() override
     {
+        stopRequested_.store(true);
+        if (initialized_.load() && started_.load()) {
+            // Invoke the agent cancellation outside the query mutex so a
+            // blocked namespace read can be interrupted by stop_view_refresh.
+            api_.stop(handle_);
+        }
         std::lock_guard<std::mutex> lock{mutex_};
-        StopLocked();
+        started_.store(false);
     }
 
     Status GetEpoch(std::uint64_t& epoch) const override
@@ -363,9 +370,9 @@ private:
     AgentApi api_;
     M800ViewServerConfig config_;
     mutable std::mutex mutex_;
-    bool initialized_{false};
-    bool started_{false};
-    bool stopRequested_{false};
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> started_{false};
+    std::atomic<bool> stopRequested_{false};
 };
 
 class DlopenAgentClientFactory final : public M800ViewAgentClientFactory {

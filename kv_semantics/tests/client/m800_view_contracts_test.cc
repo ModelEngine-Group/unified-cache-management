@@ -54,13 +54,13 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_EQ(config.httpTimeoutMs, std::uint64_t{2000});
     EXPECT_EQ(config.refreshIntervalMs, std::uint64_t{30000});
 
-    EXPECT_STREQ(M800ViewHTTPContract::kViewsPath, "/v1/views");
-    EXPECT_STREQ(M800ViewHTTPContract::kSinceEpochParam, "since_epoch");
-    EXPECT_STREQ(M800ViewHTTPContract::kContentType, "text/plain");
-    EXPECT_STREQ(M800ViewHTTPContract::kConnection, "close");
-    EXPECT_EQ(M800ViewHTTPContract::kStatusOk, 200);
-    EXPECT_EQ(M800ViewHTTPContract::kStatusNotModified, 304);
-    EXPECT_EQ(M800ViewHTTPContract::kStatusServerError, 500);
+    EXPECT_STREQ(M800ViewHttpContract::kViewsPath, "/v1/views");
+    EXPECT_STREQ(M800ViewHttpContract::kSinceEpochParam, "since_epoch");
+    EXPECT_STREQ(M800ViewHttpContract::kContentType, "text/plain");
+    EXPECT_STREQ(M800ViewHttpContract::kConnection, "close");
+    EXPECT_EQ(M800ViewHttpContract::kStatusOk, 200);
+    EXPECT_EQ(M800ViewHttpContract::kStatusNotModified, 304);
+    EXPECT_EQ(M800ViewHttpContract::kStatusServerError, 500);
 
     EXPECT_STREQ(M800ViewTextContract::kGlobalEpochField, "globalEpoch");
     EXPECT_STREQ(M800ViewTextContract::kNsCountField, "nsCount");
