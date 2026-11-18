@@ -257,7 +257,7 @@ standalone file keys. Compatibility aliases are omitted.
 | `transport.provider_type` | AICPU, FAKE, AIV, or HCCP_KV_OVER_ROCE; the provider must be enabled at build time. |
 | `transport.device_id` | Local logical device ID; AICPU first uses the caller's current ACL device. |
 | `transport.hccp_kv_roce_lib_path` | Path of the external HCCP KV-over-RoCE library; defaults to `UCM_HCCP_KV_ROCE_LIB_PATH` and then `libhccp_kv_over_roce.so`. |
-| `transport.hccp_kv_roce_max_connections` | HBM connection-slot capacity for HCCP_KV_OVER_ROCE; defaults to 256 slots of 4096 bytes. |
+| `transport.hccp_kv_roce_max_connections` | HBM connection-slot capacity for HCCP_KV_OVER_ROCE; defaults to 3072 slots of 256 bytes. |
 | `transport.max_inflight_tasks` | Per-transport task capacity. |
 | `transport.max_error_count` | Consecutive channel failure threshold before draining. |
 | `transport.completion_poll_spin_limit` | Empty completion polling rounds before yielding the CPU. |
@@ -569,7 +569,7 @@ the call succeeded. `GetServerCapabilities` queries the manager of the IP pair
 that owns the handle.
 
 The provider allocates one contiguous HBM region of
-`hccp_kv_roce_max_connections` slots (default 256), each 4096 bytes. The region
+`hccp_kv_roce_max_connections` slots (default 3072), each 256 bytes. The region
 is shared by every IP pair, so that value bounds the total number of live QPs;
 it must be greater than zero, otherwise provider construction fails. A
 `CreateConnection` that asks for more QPs than the capacity reports

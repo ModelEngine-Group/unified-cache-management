@@ -46,6 +46,10 @@ struct Config {
     std::string aicpuHcommProtocol;
     std::vector<std::string> aicpuLocalAddrs;
     std::optional<std::uint64_t> aicpuSendTimeoutMs;
+    // HCCP KV-over-RoCE options, read from asu_hccp_kv_roce_lib_path and
+    // asu_hccp_kv_roce_max_connections when the backend is hccp_kv_over_roce.
+    std::string hccpKvRoceLibPath;
+    std::optional<std::uint64_t> hccpKvRoceMaxConnections;
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};

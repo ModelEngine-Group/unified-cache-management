@@ -131,6 +131,7 @@ const char* TransProviderBackendName(kv::TransProviderType providerType)
         case kv::TransProviderType::FAKE: return "fake";
         case kv::TransProviderType::AIV: return "aiv";
         case kv::TransProviderType::AICPU: return "aicpu";
+        case kv::TransProviderType::HCCP_KV_OVER_ROCE: return "hccp_kv_over_roce";
         case kv::TransProviderType::UNSUPPORTED: return "unsupported";
     }
     return "unknown";
@@ -143,6 +144,9 @@ kv::TransProviderType ParseTransProviderBackend(std::string backend)
     if (backend == "FAKE") { return kv::TransProviderType::FAKE; }
     if (backend == "AIV") { return kv::TransProviderType::AIV; }
     if (backend == "AICPU") { return kv::TransProviderType::AICPU; }
+    if (backend == "HCCP_KV_OVER_ROCE" || backend == "HCCP") {
+        return kv::TransProviderType::HCCP_KV_OVER_ROCE;
+    }
     return kv::TransProviderType::UNSUPPORTED;
 }
 
@@ -213,6 +217,18 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
         if (config.aicpuSendTimeoutMs.has_value()) {
             transportConfig.attrs["aicpu_send_timeout_ms"] =
                 std::to_string(*config.aicpuSendTimeoutMs);
+        }
+    }
+
+    if (config.transProviderType == kv::TransProviderType::HCCP_KV_OVER_ROCE) {
+        // These keys must match the ones hccp_kv_over_roce_trans_provider reads;
+        // a mismatch silently falls back to the provider defaults.
+        if (!config.hccpKvRoceLibPath.empty()) {
+            transportConfig.attrs["hccp_kv_roce_lib_path"] = config.hccpKvRoceLibPath;
+        }
+        if (config.hccpKvRoceMaxConnections.has_value()) {
+            transportConfig.attrs["hccp_kv_roce_max_connections"] =
+                std::to_string(*config.hccpKvRoceMaxConnections);
         }
     }
 
@@ -606,6 +622,17 @@ private:
                 config.aicpuSendTimeoutMs = timeoutMs;
             }
         }
+        if (config.transProviderType == kv::TransProviderType::HCCP_KV_OVER_ROCE &&
+            config.configPath.empty()) {
+            // TODO: add short aliases (e.g. asu_hccp_lib_path) if operators ask for
+            // them; asu_hccp_kv_roce_* stays the canonical spelling.
+            inConfig.Get("asu_hccp_kv_roce_lib_path", config.hccpKvRoceLibPath);
+            if (inConfig.Contains("asu_hccp_kv_roce_max_connections")) {
+                std::uint64_t maxConnections = 0;
+                inConfig.GetNumber("asu_hccp_kv_roce_max_connections", maxConnections);
+                config.hccpKvRoceMaxConnections = maxConnections;
+            }
+        }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
         inConfig.GetNumber("asu_fake_backend_worker_threads", config.fakeBackendWorkerThreads);
@@ -743,6 +770,21 @@ private:
                 (*config.aicpuSendTimeoutMs == 0 ||
                  *config.aicpuSendTimeoutMs > std::numeric_limits<std::uint32_t>::max())) {
                 return Status::InvalidParam("asu_aicpu_send_timeout_ms must be in [1, UINT32_MAX]");
+            }
+        }
+        if (config.transProviderType == kv::TransProviderType::HCCP_KV_OVER_ROCE &&
+            config.configPath.empty()) {
+            // The provider rejects an empty remote IP, so every ASU needs one.
+            if (config.asuIps.empty() ||
+                std::any_of(config.asuIps.begin(), config.asuIps.end(),
+                            [](const std::string& address) { return address.empty(); })) {
+                return Status::InvalidParam("HCCP requires a nonempty asu_ips entry for each ASU");
+            }
+            if (config.hccpKvRoceMaxConnections.has_value() &&
+                (*config.hccpKvRoceMaxConnections == 0 ||
+                 *config.hccpKvRoceMaxConnections > std::numeric_limits<std::uint32_t>::max())) {
+                return Status::InvalidParam(
+                    "asu_hccp_kv_roce_max_connections must be in [1, UINT32_MAX]");
             }
         }
         if (config.transProviderType == kv::TransProviderType::FAKE && !config.configPath.empty()) {
@@ -983,6 +1025,13 @@ private:
         UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
         UC_INFO("Set AsuStore::FakeBackendCompleteImmediately to {}.",
                 config.fakeBackendCompleteImmediately);
+        if (config.transProviderType == kv::TransProviderType::HCCP_KV_OVER_ROCE) {
+            UC_INFO("Set AsuStore::HccpKvRoceLibPath to {}.", config.hccpKvRoceLibPath);
+            if (config.hccpKvRoceMaxConnections.has_value()) {
+                UC_INFO("Set AsuStore::HccpKvRoceMaxConnections to {}.",
+                        *config.hccpKvRoceMaxConnections);
+            }
+        }
     }
 
     kv::MRHandle FindPersistentHandle(const kv::MemoryRegion& region) const

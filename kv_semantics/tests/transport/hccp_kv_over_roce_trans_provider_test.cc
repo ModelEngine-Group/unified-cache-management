@@ -510,8 +510,8 @@ TEST_F(HccpKvOverRoceTransProviderTest, SendForwardsSlotAddresses)
         reinterpret_cast<std::uintptr_t>(slotForQp1) - reinterpret_cast<std::uintptr_t>(slotForQp0),
         kHccpKvRoceConnSlotBytes);
 
-    // The operator reads the QPC out of the slot, so the slot must hold exactly
-    // the bytes filled by CreateConnection.
+    // The operator reads the QPC out of the slot, so the slot holds exactly the
+    // bytes filled by CreateConnection.
     std::vector<std::uint8_t> qpc(HCCP_KV_ROCE_QPC_BYTES, 0);
     ASSERT_EQ(
         aclrtMemcpy(qpc.data(), qpc.size(), slotForQp0, qpc.size(), ACL_MEMCPY_DEVICE_TO_HOST),
@@ -519,14 +519,6 @@ TEST_F(HccpKvOverRoceTransProviderTest, SendForwardsSlotAddresses)
     for (std::size_t index = 0; index < qpc.size(); ++index) {
         EXPECT_EQ(qpc[index], static_cast<std::uint8_t>(fake_.qpcByte(0))) << index;
     }
-
-    auto* tailAddress =
-        reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(slotForQp0) + qpc.size());
-    std::uint8_t tail = 0xFF;
-    ASSERT_EQ(
-        aclrtMemcpy(&tail, sizeof(tail), tailAddress, sizeof(tail), ACL_MEMCPY_DEVICE_TO_HOST),
-        ACL_SUCCESS);
-    EXPECT_EQ(tail, 0);
 }
 
 TEST_F(HccpKvOverRoceTransProviderTest, SendSkipsInvalidHandles)

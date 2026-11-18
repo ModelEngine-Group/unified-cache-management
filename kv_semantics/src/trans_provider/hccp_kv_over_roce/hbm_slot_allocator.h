@@ -33,9 +33,13 @@
 namespace kv {
 
 // Fixed per-connection slot size in HBM. Each connection stores its operator QPC
-// in one slot; the HBM region is carved into slots of this size.
-constexpr std::size_t kHccpKvRoceConnSlotBytes = 4096;
-constexpr std::uint32_t kHccpKvRoceDefaultSlotCapacity = 256;
+// in one slot; the HBM region is carved into slots of this size. A slot holds
+// exactly the QPC payload, with no padding, so this must match
+// HCCP_KV_ROCE_QPC_BYTES in hccp_kv_over_roce_abi.h.
+constexpr std::size_t kHccpKvRoceConnSlotBytes = 256;
+// Default slot capacity: 384 x 8, the connection budget of one non-shared
+// provider.
+constexpr std::uint32_t kHccpKvRoceDefaultSlotCapacity = 384 * 8;
 
 // Owns one contiguous NPU/HBM region and hands out fixed-size slots. Each slot
 // is tracked with an IndexPool index (the "slotid" recorded by the provider) and

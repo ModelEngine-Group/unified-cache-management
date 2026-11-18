@@ -93,8 +93,11 @@ typedef struct HccpKvRoceMemoryInfo {
 
 /* Provider-owned QP context payload. The provider allocates one entry per
  * connection and passes its address through connectionHandles; the library
- * fills the struct in place. No allocation happens on the library side. */
-#define HCCP_KV_ROCE_QPC_BYTES 512u
+ * fills the struct in place. No allocation happens on the library side.
+ * This size is an ABI contract with the library: the provider copies exactly
+ * HCCP_KV_ROCE_QPC_BYTES bytes into one HBM slot, so the slot size and this
+ * value must stay equal. */
+#define HCCP_KV_ROCE_QPC_BYTES 256u
 
 typedef struct HccpKvRoceQpc {
     uint8_t data[HCCP_KV_ROCE_QPC_BYTES];
