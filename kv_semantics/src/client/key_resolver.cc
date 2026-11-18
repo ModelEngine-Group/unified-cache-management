@@ -31,6 +31,11 @@
 namespace kv {
 namespace {
 
+std::uint32_t HashNamespace(std::string_view kvns)
+{
+    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
+}
+
 Status ParseRank(std::string_view value, std::uint32_t& rank)
 {
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), rank);
@@ -132,11 +137,6 @@ private:
 
 }  // namespace
 
-std::uint32_t ResolveNamespace(std::string_view kvns)
-{
-    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
-}
-
 Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
                             ResolvedCacheKey& result) const
 {
@@ -156,7 +156,7 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
             hash >>= 8;
         }
     }
-    resolvedKey.gnsid = ResolveNamespace(kvns);
+    resolvedKey.gnsid = HashNamespace(kvns);
     result = resolvedKey;
     return Status::OK();
 }

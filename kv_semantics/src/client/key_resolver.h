@@ -64,6 +64,4 @@ protected:
 
 std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config);
 
-std::uint32_t ResolveNamespace(std::string_view kvns);
-
 }  // namespace kv

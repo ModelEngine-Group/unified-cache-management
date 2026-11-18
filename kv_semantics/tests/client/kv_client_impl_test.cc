@@ -2361,6 +2361,18 @@ TEST(KvClientImplTest, CacheKeyFactoriesOwnInputAndPreserveRepresentation)
     EXPECT_NE(CacheKey::FromBytes(BinaryKey{}), CacheKey::FromEngineKey(std::string(8, '\0')));
 }
 
+namespace {
+
+std::uint32_t BaseNamespaceGnsid(std::string_view kvns)
+{
+    auto resolver = CreateDefaultKeyResolver({});
+    ResolvedCacheKey resolvedKey;
+    EXPECT_TRUE(resolver->Resolve(CacheKey::FromBytes(BinaryKey{}), kvns, resolvedKey).ok());
+    return resolvedKey.gnsid;
+}
+
+}  // namespace
+
 TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
 {
     auto resolver = CreateDefaultKeyResolver({});
@@ -2372,7 +2384,7 @@ TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
     }) {
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(text), "tenant", result).ok());
         EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.keyBytes)), hex);
-        EXPECT_EQ(result.gnsid, ResolveNamespace("tenant"));
+        EXPECT_EQ(result.gnsid, BaseNamespaceGnsid("tenant"));
     }
 }
 
@@ -2386,10 +2398,10 @@ TEST(KvClientImplTest, BinaryKeysPreserveBytesForEveryEngine)
             ResolvedCacheKey result;
             ASSERT_TRUE(resolver->Resolve(CacheKey::FromBytes(bytes), kvns, result).ok());
             EXPECT_EQ(result.keyBytes, bytes);
-            EXPECT_EQ(result.gnsid, ResolveNamespace(kvns));
+            EXPECT_EQ(result.gnsid, BaseNamespaceGnsid(kvns));
         }
     }
-    EXPECT_EQ(ResolveNamespace(""), 0xa3316a09U);
+    EXPECT_EQ(BaseNamespaceGnsid(""), 0xa3316a09U);
 }
 
 TEST(KvClientImplTest, VllmNamespaceUsesOnlyPresentGroupAndPpFields)
@@ -2414,7 +2426,7 @@ TEST(KvClientImplTest, VllmNamespaceUsesOnlyPresentGroupAndPpFields)
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(item.input), "tenant", actual).ok());
         ASSERT_TRUE(generic->Resolve(CacheKey::FromEngineKey(item.identity), "", expected).ok());
         EXPECT_EQ(actual.keyBytes, expected.keyBytes);
-        EXPECT_EQ(actual.gnsid, ResolveNamespace(item.kvns));
+        EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(item.kvns));
     }
 }
 
@@ -2430,7 +2442,7 @@ TEST(KvClientImplTest, SglangPoolAndPpSelectNamespaceButCpRemainsInKey)
         const auto input = std::string("model_hash_tp0_cp0_pp1_") + pool;
         ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(input), "tenant", actual).ok());
         EXPECT_EQ(actual.keyBytes, expected.keyBytes);
-        EXPECT_EQ(actual.gnsid, ResolveNamespace(std::string("tenant_") + pool + "_pp1"));
+        EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(std::string("tenant_") + pool + "_pp1"));
     }
     ResolvedCacheKey cp1, pp0;
     ASSERT_TRUE(
@@ -2441,7 +2453,7 @@ TEST(KvClientImplTest, SglangPoolAndPpSelectNamespaceButCpRemainsInKey)
         resolver->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp0_pp0_kv"), "tenant", pp0)
             .ok());
     EXPECT_EQ(pp0.keyBytes, expected.keyBytes);
-    EXPECT_EQ(pp0.gnsid, ResolveNamespace("tenant_kv_pp0"));
+    EXPECT_EQ(pp0.gnsid, BaseNamespaceGnsid("tenant_kv_pp0"));
 }
 
 TEST(KvClientImplTest, UnrecognizedKeyFormatsRemainUnchanged)
