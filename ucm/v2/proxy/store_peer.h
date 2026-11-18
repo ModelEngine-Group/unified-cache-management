@@ -51,7 +51,8 @@ public:
     Expected<std::pair<std::int64_t, bool>> LookupOnReverse(
         const RequestId& requestId, const std::vector<BlockId>& keys) override;
     void Touch(const RequestId& requestId, const std::vector<BlockId>& keys) override;
-    Expected<AddressedToken> PreparePrefetch(const RequestId& requestId) override;
+    Expected<AddressedToken> PreparePrefetch(const RequestId& requestId,
+                                             const std::vector<BlockId>& keys) override;
     void CompletePrefetch(const RequestId& requestId, bool success) override;
     Expected<AddressedToken> PrepareGet(const RequestId& requestId,
                                         const std::vector<BlockId>& keys) override;

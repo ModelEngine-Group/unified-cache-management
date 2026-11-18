@@ -33,6 +33,13 @@
 
 namespace UC::Store {
 
+/**
+ * @brief Store facet that fetches its absent blocks from the tier below.
+ *
+ * @note The requestId is the protocol's join key. The request-scoped
+ *       state it addresses is created by the first Lookup and
+ *       reclaimed by ReleaseRequest.
+ */
 class Prefetchable {
 public:
     virtual ~Prefetchable() = default;
@@ -43,67 +50,34 @@ public:
      * Overloads Store::Lookup: the two are distinguished by the requestId
      * parameter and the pair result.
      *
-     * @param requestId Correlation id of one logical query. It doubles as the
-     *                  join key of the prefetch protocol: the query issued
-     *                  here is the one PreparePrefetch(requestId) concludes.
-     * @param blockIds  Content-addressed ids of the blocks to probe, ordered by
-     *                  their position within the request.
+     * @param requestId Correlation id of one logical query.
+     * @param blockIds  Blocks to probe.
      *
-     * @return Expected {hits, prefetchable} pair on success: hits is the
-     *         per-block presence snapshot — hits[i] is non-zero iff
-     *         blockIds[i] is present, hits.size() == blockIds.size(), and
-     *         it is populated even when the prefetchable signal is set;
-     *         prefetchable is the request-level signal that the query
-     *         contains absent blocks this Store can prefetch from the
-     *         lower tier. An Error status means the query itself failed.
+     * @return Expected {hits, prefetchable} pair on success: hits[i] is
+     *         non-zero iff blockIds[i] is present (hits.size() ==
+     *         blockIds.size(), populated even when the signal is set);
+     *         prefetchable signals that the query contains absent blocks
+     *         this Store can prefetch from the lower tier. An error
+     *         status means the probe failed.
      *
-     * @note Field convention: first is the hit snapshot, second the
-     *       prefetchable signal — the two coexist, the signal neither
-     *       replaces nor errors out the hits.
-     * @note Finality: prefetchable == false concludes the request; hits is
-     *       the final answer. prefetchable == true is advisory: hits is the
-     *       current snapshot and the caller is free to either drive the
-     *       resolution protocol below or forgo prefetching and consume the
-     *       snapshot as-is (e.g. the hit ratio is good enough already, or
-     *       the request is routed to a deeper tier directly).
-     * @note Resolution protocol: upon prefetchable == true the caller drives
-     *       PreparePrefetch/Prefetch/CompletePrefetch, then retries Lookup
-     *       with the same requestId; committed keys become HIT (see
-     *       CompletePrefetch) and the retry yields the authoritative final
-     *       hit vector.
-     * @note requestId lifecycle: a requestId identifies exactly one logical
-     *       query and must not be reused for a different block set. The
-     *       request-scoped state lives from the first Lookup through the
-     *       prefetch protocol; once a concluding answer (prefetchable ==
-     *       false) or an error has been returned, the request is concluded
-     *       and implementations may reclaim its state. An abandoned
-     *       prefetchable signal — the caller never driving the protocol —
-     *       is legal; the state is reclaimed when the request finishes.
+     * @note Finality: prefetchable == false makes hits the final answer;
+     *       prefetchable == true is advisory — committed prefetches
+     *       change the snapshot, and a retry with the same requestId
+     *       returns the authoritative final hit vector.
      */
     virtual Expected<std::pair<std::vector<std::uint8_t>, bool>> Lookup(
         const RequestId& requestId, const std::vector<BlockId>& blockIds) = 0;
     /**
-     * @brief Prefix-oriented variant of Lookup: reports how far the request
-     * is present from its head.
+     * @brief Prefix-oriented variant of Lookup: reports how far the
+     * request is present from its head.
      *
-     * @param requestId See Lookup(); the prefetchable signal is
-     *                  inherited: the same requestId is passed through and
-     *                  the signal is propagated alongside the index when
-     *                  the underlying query is answered as prefetchable.
+     * @param requestId See Lookup().
      * @param blockIds  Blocks ordered by their position within the request.
      *
-     * @return Expected {index, prefetchable} pair: index of the last block
-     *         of the leading run of present blocks — -1 when the first
-     *         block is absent (empty input yields -1 as well),
-     *         blockIds.size() - 1 when every block is present;
-     *         prefetchable is the request-level signal (see Lookup). Error
+     * @return Expected {index, prefetchable} pair: index of the last
+     *         block of the leading run of present blocks, -1 when the
+     *         leading run is empty; prefetchable as in Lookup. Error
      *         status otherwise.
-     *
-     * @note Field convention: first is the index, second the prefetchable
-     *       signal; finality follows Lookup's.
-     * @note The default implementation derives the answer from a single
-     *       Lookup call; override to exploit ordered medium layouts, e.g.
-     *       by answering from metadata without probing each block.
      */
     virtual Expected<std::pair<std::int64_t, bool>> LookupOnPrefix(
         const RequestId& requestId, const std::vector<BlockId>& blockIds)
@@ -122,24 +96,13 @@ public:
      * @brief Reverse variant of Lookup: reports the rightmost present
      * block of the request.
      *
-     * @param requestId See Lookup(); the prefetchable signal is
-     *                  inherited: the same requestId is passed through and
-     *                  the signal is propagated alongside the index when
-     *                  the underlying query is answered as prefetchable.
+     * @param requestId See Lookup().
      * @param blockIds  Blocks ordered by their position within the request.
      *
      * @return Expected {index, prefetchable} pair: index of the rightmost
-     *         present block — -1 when none is present (empty input yields
-     *         -1 as well); prefetchable is the request-level signal (see
-     *         Lookup). Error status otherwise. Contiguity is neither
-     *         required nor checked: blocks before the returned index may
-     *         be absent.
-     *
-     * @note Field convention: first is the index, second the prefetchable
-     *       signal; finality follows Lookup's.
-     * @note The default implementation derives the answer from a single
-     *       Lookup call; override only if the Store can answer reverse
-     *       queries cheaper.
+     *         present block, -1 when none is present; blocks before it
+     *         may be absent. prefetchable as in Lookup. Error status
+     *         otherwise.
      */
     virtual Expected<std::pair<std::int64_t, bool>> LookupOnReverse(
         const RequestId& requestId, const std::vector<BlockId>& blockIds)
@@ -155,20 +118,24 @@ public:
         return std::make_pair(-1, prefetchable);
     }
     /**
-     * @brief Pin the sources and reserve the destinations for the
-     *        prefetchable subset of keys — the subset whose absence made
-     *        the matching Prefetchable::Lookup answer nullopt.
+     * @brief Pin the sources and reserve the destinations for the given
+     *        blocks of the request.
      *
-     * @param requestId Correlation id of the query to prefetch.
-     * @param context   Request facts for the destination admission: the
-     *                  internal Store::Alloc admits plan.keys with this
-     *                  context, e.g. carrying the current window's request
-     *                  TTL so prefetched blocks inherit it (see
-     *                  RequestContext::ttl).
+     * @param keys    Absent blocks to admit: a key outside the request's
+     *                probed set is a protocol violation (InvalidParam), a
+     *                key already present is filtered out, an empty list
+     *                yields an empty plan.
+     * @param context Request facts for the destination admission: the
+     *                internal Store::Alloc admits plan.keys with this
+     *                context.
      *
-     * @return The prefetch plan, or an error Status.
+     * @return The prefetch plan; token.keys echo the admitted subset.
+     *
+     * @note One prefetch window per request: a second call while one is
+     *       open is rejected (InvalidParam), a concluded window frees
+     *       the request for the next, and a failed call opens no window.
      */
-    virtual Expected<AddressedToken> PreparePrefetch(const RequestId& requestId,
+    virtual Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& keys,
                                                      const RequestContext& context) = 0;
     /**
      * @brief Conclude the plan opened by PreparePrefetch.
@@ -177,29 +144,36 @@ public:
      * plan.keys) and the keys become HIT; on success=false the admission
      * is rolled back.
      *
-     * @note Nothing is reported back: the transfer verdict already
-     *       reached the caller as the executing job's completion event,
-     *       which is what drives this conclusion.
+     * @param success Transfer verdict of the jobs that executed the plan,
+     *                consumed from their completion events.
+     *
      * @note Idempotent: concluding an already-concluded or unknown plan
      *       is a no-op.
      */
     virtual void CompletePrefetch(const AddressedToken& plan, bool success) = 0;
     /**
      * @brief Worker-side job: copy the plan's sources into this store's
-     *        destinations, as an asynchronous job.
+     *        destinations.
      *
-     * Split out of the Store base: plain Stores never receive it. Consumes
-     * the plan's self-addressed payload verbatim: implementations unpack
-     * what they packed in PreparePrefetch (conventionally the source metas
-     * minted by the lower tier's Pin and their own destination metas) and
-     * drive the lower tier's Load with the resolved destinations as
-     * payloads, passing the lower tier's read-end token along — keys-only
-     * when the lower tier uses default addressing.
+     * The payload is the envelope this store's PreparePrefetch minted:
+     * conventionally the source metas minted by the lower tier's Pin
+     * plus this store's own destination metas. The job drives the lower
+     * tier's Load with the resolved destinations as payloads, passing
+     * the lower tier's read-end token along — keys-only when the lower
+     * tier uses default addressing.
      *
      * @return Status indicating acceptance only; transfer failures are
-     *         reported via GetFinished()/Wait(), like every other job.
+     *         reported via GetFinished()/Wait().
      */
     virtual Status Prefetch(std::size_t jobId, AddressedToken plan) = 0;
+    /**
+     * @brief Releases the request-scoped state of a finished request.
+     *
+     * @param requestId The finished request.
+     *
+     * @note Releasing an unknown request is a no-op.
+     */
+    virtual void ReleaseRequest(const RequestId& requestId) = 0;
 };
 
 }  // namespace UC::Store
