@@ -110,7 +110,70 @@ Status TierRelay::Offload(std::size_t jobId, AddressedToken plan)
             outer.lost++;
             continue;
         }
-        subs_.emplace(subId, SubBatch{jobId, chunk});
+        subs_.emplace(subId, SubBatch{jobId, chunk, /*offload=*/true});
+        outer.pending++;
+    }
+
+    /* Every sub-batch dropped: the verdict is already final, so it queues
+     * here instead of waiting for a completion that will never come. */
+    if (outer.pending == 0) { ConcludeJob(jobId); }
+    return Status::Ok();
+}
+
+Status TierRelay::Prefetch(std::size_t jobId, AddressedToken plan)
+{
+    /* Shape checks first: a mismatch answers InvalidParam with nothing
+     * started, the lower tier untouched. */
+    const PlanPayload payload = DecodePlanPayload(plan.payload);
+    if (payload.batchId == 0) {
+        return Status::InvalidParam("prefetch job {} carries no receipt handle", jobId);
+    }
+    if (payload.slots.size() != plan.keys.size()) {
+        return Status::InvalidParam("prefetch job {} addresses {} blocks over {} slots", jobId,
+                                    plan.keys.size(), payload.slots.size());
+    }
+    if (Owns(jobId)) {
+        return Status::InvalidParam("prefetch job {} is in flight or unconsumed", jobId);
+    }
+
+    /* The plan splits at the tier batch size; every sub-batch walks the
+     * lower tier's read protocol on its own. */
+    OuterJob& outer = outers_[jobId];
+    for (std::size_t begin = 0; begin < plan.keys.size(); begin += tierBatchSize_) {
+        const std::size_t count = std::min(tierBatchSize_, plan.keys.size() - begin);
+        const std::vector<BlockId> chunk(plan.keys.begin() + begin,
+                                         plan.keys.begin() + begin + count);
+        outer.total++;
+
+        /* A refused pin is dropped and counted; nothing was taken, so
+         * nothing needs releasing. */
+        auto pinned = lower_->Pin(chunk);
+        if (!pinned.HasValue()) {
+            outer.lost++;
+            continue;
+        }
+
+        /* One whole-slot segment per planned key: the sub-batch's
+         * destination set, reserved by the plan's engine half. */
+        JobDescriptor transfer;
+        transfer.blockIds = chunk;
+        transfer.payloads.resize(chunk.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            transfer.payloads[i].pointers.push_back(
+                SlotAddress(base_, payload.slots[begin + i], blockSize_));
+            transfer.payloads[i].sizes.push_back(blockSize_);
+            transfer.payloads[i].offsets.push_back(0);
+        }
+        const std::size_t subId = nextSubJob_++;
+        if (Status submitted = lower_->Load(subId, std::move(transfer), std::move(pinned.Value()));
+            submitted.Failure()) {
+            /* Nothing is flying: the pins are released right away, and
+             * the sub-batch is lost like a refused one. */
+            lower_->Unpin(chunk);
+            outer.lost++;
+            continue;
+        }
+        subs_.emplace(subId, SubBatch{jobId, chunk, /*offload=*/false});
         outer.pending++;
     }
 
@@ -135,7 +198,7 @@ Status TierRelay::Wait(std::size_t jobId)
     /* A queued verdict needs no pumping at all. */
     if (auto concluded = TakeConcluded(jobId)) { return VerdictOf(*concluded); }
     if (outers_.find(jobId) == outers_.end()) {
-        return Status::InvalidParam("offload job {} is not in flight here", jobId);
+        return Status::InvalidParam("job {} is not in flight here", jobId);
     }
 
     /* The pump: settle everything already finished, then block on one
@@ -150,7 +213,7 @@ Status TierRelay::Wait(std::size_t jobId)
         Conclude(subId, lower_->Wait(subId).Success());
     }
     /* Unreachable by construction; fail closed anyway. */
-    return Status::General("offload job {} lost its in-flight sub-batches", jobId);
+    return Status::General("job {} lost its in-flight sub-batches", jobId);
 }
 
 bool TierRelay::Owns(std::size_t jobId) const
@@ -171,7 +234,11 @@ void TierRelay::Conclude(std::size_t subId, bool ok)
     if (sub == subs_.end()) { return; }
 
     const std::size_t outerId = sub->second.outerId;
-    lower_->Commit(sub->second.keys, ok);
+    if (sub->second.offload) {
+        lower_->Commit(sub->second.keys, ok);
+    } else {
+        lower_->Unpin(sub->second.keys);
+    }
     subs_.erase(sub);
 
     OuterJob& outer = outers_[outerId];
@@ -217,8 +284,8 @@ void TierRelay::DrainLower()
 Status TierRelay::VerdictOf(const ConcludedJob& job) const
 {
     if (job.success) { return Status::Ok(); }
-    return Status::General("offload job {}: {} of {} sub-batches were lost in the lower tier",
-                           job.id, job.lost, job.total);
+    return Status::General("job {}: {} of {} sub-batches were lost in the lower tier", job.id,
+                           job.lost, job.total);
 }
 
 }  // namespace UC::Store

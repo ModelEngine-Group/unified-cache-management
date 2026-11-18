@@ -40,9 +40,10 @@
 namespace UC::Store {
 
 /**
- * @brief The executor half of the Offloadable facet: drives offload plans
- *        into the wired lower tier and folds the lower tier's completion
- *        stream back into the outer jobs of this tier.
+ * @brief The executor half of the Offloadable and Prefetchable facets:
+ *        drives offload and prefetch plans over the wired lower tier and
+ *        folds the lower tier's completion stream back into the outer
+ *        jobs of this tier.
  *
  * Offload() splits each submitted plan into sub-batches of at most the
  * configured tier batch size and drives every sub-batch through the lower
@@ -58,6 +59,12 @@ namespace UC::Store {
  * its last pending sub-batch concludes, so a pending job always has a
  * sub-batch to wait on.
  *
+ * Prefetch() splits and accounts the same way, driving every sub-batch
+ * through the lower tier's read protocol: Pin guards the sources, Load
+ * copies them into the plan's reserved shared-pool slots, and the
+ * sub-batch's conclusion releases the pins -- unconditionally, the
+ * copy has ended either way.
+ *
  * Driving is lazy and on the calling thread: every pump step happens
  * inside GetFinished() and Wait(), so conclusions land at the caller's
  * drain cadence -- no thread is spawned.
@@ -65,16 +72,16 @@ namespace UC::Store {
  * @note Sole submitter: the pipe assembler wires the lower tier to this
  *       tier alone, so the sub-batch ids minted here are collision-free
  *       and this object is the lower tier's single completion consumer.
- *       A future prefetch direction shares this object's pump and id
- *       space for the same reason.
+ *       The offload and prefetch directions share this object's pump and
+ *       id space for the same reason.
  * @note Threading contract: single-threaded like the facet it backs --
  *       control-plane methods are called from one thread or are
  *       externally serialized.
  * @note Destruction contract: the caller must Wait() for every in-flight
  *       job before destruction; behavior with in-flight jobs is
- *       undefined. No defensive cleanup exists: a reservation can be
- *       released only after its Dump has finished, and waiting that out
- *       would block the destructor.
+ *       undefined. No defensive cleanup exists: a sub-batch's
+ *       lower-tier resources can be released only after its transfer
+ *       has finished, and waiting that out would block the destructor.
  * @note Lifetime: the lower tier and the pool mapping must outlive this
  *       object -- the pipe's declaration order guarantees the former; the
  *       host guarantees the latter by declaring this component after the
@@ -84,7 +91,7 @@ class TierRelay {
 public:
     /**
      * @brief Creates a relay over the wired lower tier and the mapped
-     *        shared pool of the offload sources.
+     *        shared pool the plans address.
      *
      * @param config The domain configuration (lower-tier wiring, block
      *               geometry, sub-batch size).
@@ -123,15 +130,38 @@ public:
     Status Offload(std::size_t jobId, AddressedToken plan);
 
     /**
+     * @brief Submits one prefetch plan as an asynchronous job: splits it
+     *        into sub-batches and drives each through the lower tier's
+     *        read protocol, backing the executor half of the
+     *        Prefetchable facet.
+     *
+     * A sub-batch that fails to pin or to submit is dropped and counted
+     * while the remaining sub-batches proceed; a job whose every
+     * sub-batch was dropped is already concluded when this method
+     * returns -- an empty plan likewise concludes immediately, its
+     * verdict true.
+     *
+     * @param jobId Handle of the asynchronous job; must be unique among
+     *              this relay's in-flight and unconsumed jobs.
+     * @param plan  Plan token of the engine half of an identically
+     *              configured instance; consumed verbatim.
+     *
+     * @return Status indicating acceptance only. InvalidParam when the
+     *         plan is malformed (no receipt handle, or a slot count
+     *         disagreeing with the keys) or the handle collides, with
+     *         nothing started.
+     */
+    Status Prefetch(std::size_t jobId, AddressedToken plan);
+
+    /**
      * @brief Returns the outer jobs concluded since the last call and
      *        consumes their verdicts.
      *
      * Concludes every lower-tier completion that has arrived so far
      * first, so a verdict lands as soon as its job's last sub-batch has.
      *
-     * @return (jobId, success) pairs, where success tells whether every
-     *         sub-batch of the job concluded with a successful
-     *         lower-tier Commit. Each verdict is reported exactly once
+     * @return (jobId, success) pairs, where success tells whether the job
+     *         lost no sub-batch. Each verdict is reported exactly once
      *         across GetFinished() and Wait().
      */
     std::vector<std::pair<std::size_t, bool>> GetFinished();
@@ -144,10 +174,9 @@ public:
      *              this relay or one already concluded but not yet
      *              consumed.
      *
-     * @return Status::Ok() when every sub-batch of the job concluded
-     *         with a successful lower-tier Commit; a General carrying
-     *         the loss count otherwise; InvalidParam for an unknown or
-     *         already-consumed id.
+     * @return Status::Ok() when the job lost no sub-batch; a General
+     *         carrying the loss count otherwise; InvalidParam for an
+     *         unknown or already-consumed id.
      */
     Status Wait(std::size_t jobId);
 
@@ -161,11 +190,13 @@ public:
     bool Owns(std::size_t jobId) const;
 
 private:
-    /** One in-flight sub-batch: the outer job it serves and the keys of
-     *  the reservation its conclusion commits. */
+    /** One in-flight sub-batch: the outer job it serves, its keys, and
+     *  its direction -- an offload conclusion commits its reservation,
+     *  a prefetch conclusion releases its source pins. */
     struct SubBatch {
         std::size_t outerId;       /* Outer job the sub-batch belongs to. */
-        std::vector<BlockId> keys; /* Keys of the sub-batch's reservation. */
+        std::vector<BlockId> keys; /* The sub-batch's blocks. */
+        bool offload;              /* Direction: true concludes with Commit, false with Unpin. */
     };
 
     /** One outer job's ledger. */
@@ -187,9 +218,10 @@ private:
 
     /*== Driving ==*/
 
-    /** Concludes one lower-tier completion: commits the sub-batch's
-     *  reservation and folds its verdict into the outer job, concluding
-     *  the job when its last pending sub-batch lands. */
+    /** Concludes one lower-tier completion: settles the sub-batch with
+     *  the lower tier per its direction and folds its verdict into the
+     *  outer job, concluding the job when its last pending sub-batch
+     *  lands. */
     void Conclude(std::size_t subId, bool ok);
 
     /** Moves a fully concluded outer job into the unconsumed queue. */
@@ -212,7 +244,7 @@ private:
     /*== Wiring and geometry ==*/
 
     Store* lower_;          /* Non-owning; outlives this relay via the pipe's declaration order. */
-    void* base_;            /* Mapped shared-pool base of the offload sources. */
+    void* base_;            /* Mapped shared-pool base of the planned slots. */
     std::size_t blockSize_; /* Byte length of one pool slot. */
     std::size_t tierBatchSize_; /* Blocks per lower-tier transfer sub-batch. */
 
