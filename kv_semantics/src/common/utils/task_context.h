@@ -32,9 +32,9 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
-#include "resolved_key.h"
 #include "trans_types.h"
 
 namespace kv {

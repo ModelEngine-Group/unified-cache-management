@@ -27,9 +27,22 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include "resolved_key.h"
+#include "kv_types.h"
 
 namespace kv {
+
+// Internal storage identity, normalized before routing.
+struct ResolvedCacheKey {
+    BinaryKey key{};
+    std::uint32_t gnsid{0};
+};
+
+struct ResolvedKVBuffer {
+    ResolvedCacheKey key;
+    Buffer buffer;
+    std::uint32_t offset{0};
+    std::optional<std::uint32_t> mrKey;
+};
 
 // Resolves namespace and storage identity before routing. Input buffers and offsets
 // remain unchanged. Implementations must be deterministic and thread-safe.

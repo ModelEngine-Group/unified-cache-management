@@ -29,8 +29,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_types.h"
-#include "resolved_key.h"
 
 namespace kv {
 
