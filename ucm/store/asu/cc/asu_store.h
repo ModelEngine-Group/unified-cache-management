@@ -53,6 +53,8 @@ struct Config {
     ssize_t sharedProviderMode{0};
     bool sc{true};
     std::unordered_map<std::string, std::string> clientAttrs;
+    // Provider specific knobs forwarded verbatim into TransportConfig::attrs.
+    std::unordered_map<std::string, std::string> roceAttrs;
 };
 
 }  // namespace UC::AsuStore
