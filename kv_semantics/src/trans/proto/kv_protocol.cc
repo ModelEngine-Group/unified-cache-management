@@ -113,10 +113,10 @@ static Status VerifyCacheKeyEntry(const std::uint32_t* key_dwords, const std::st
     return Status::OK();
 }
 
-static bool IsCacheKeyAllZero(const CacheKey& key)
+static bool IsCacheKeyAllZero(const BinaryKey& key)
 {
-    return std::all_of(CacheKeyView(key).begin(), CacheKeyView(key).end(),
-                       [](char value) { return value == '\0'; });
+    return std::all_of(key.begin(), key.end(),
+                       [](std::byte value) { return value == std::byte{0}; });
 }
 
 static Status VerifyBatchEntry(const std::uint32_t* base, const std::string& log_prefix,
@@ -176,7 +176,7 @@ Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::memcpy(&target[12], CacheKeyView(r.key).data(), kCacheKeySizeBytes);
+    std::memcpy(&target[12], r.key.data(), kCacheKeySizeBytes);
     return Status::OK();
 }
 
@@ -212,9 +212,6 @@ Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Store request");
-    }
-    if (CacheKeyView(r.key).size() != kCacheKeySizeBytes) [[unlikely]] {
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
     }
     if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Store request");
@@ -318,7 +315,7 @@ Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
     target[10] = r.offset;
     target[11] = (r.lr ? (1U << 31) : 0) | (r.length & 0xFFFFFF);
 
-    std::memcpy(&target[12], CacheKeyView(r.key).data(), kCacheKeySizeBytes);
+    std::memcpy(&target[12], r.key.data(), kCacheKeySizeBytes);
     return Status::OK();
 }
 
@@ -355,9 +352,6 @@ Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Retrieve request");
-    }
-    if (CacheKeyView(r.key).size() != kCacheKeySizeBytes) [[unlikely]] {
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
     }
     if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Retrieve request");
@@ -520,9 +514,6 @@ Status KvBatchStoreProtocol::ValidateRequest(const KvBatchStoreRequest& r) const
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchStore request");
         }
-        if (CacheKeyView(entry.key).size() != kCacheKeySizeBytes) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
-        }
         if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
@@ -558,7 +549,7 @@ void KvBatchStoreProtocol::PackEntry(const KvBatchStoreEntry& entry, std::uint32
 {
     base[0] = entry.offset;
 
-    std::memcpy(&base[1], CacheKeyView(entry.key).data(), kCacheKeySizeBytes);
+    std::memcpy(&base[1], entry.key.data(), kCacheKeySizeBytes);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -713,9 +704,6 @@ Status KvBatchRetrieveProtocol::ValidateRequest(const KvBatchRetrieveRequest& r)
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchRetrieve request");
         }
-        if (CacheKeyView(entry.key).size() != kCacheKeySizeBytes) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
-        }
         if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
@@ -751,7 +739,7 @@ void KvBatchRetrieveProtocol::PackEntry(const KvBatchRetrieveEntry& entry, std::
 {
     base[0] = entry.offset;
 
-    std::memcpy(&base[1], CacheKeyView(entry.key).data(), kCacheKeySizeBytes);
+    std::memcpy(&base[1], entry.key.data(), kCacheKeySizeBytes);
 
     base[5] = entry.buffer_addr & 0xFFFFFFFFULL;
     base[6] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
@@ -898,9 +886,6 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (CacheKeyView(r.keys[i]).size() != kCacheKeySizeBytes) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
-        }
         if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is all zeros in Delete request");
@@ -909,9 +894,9 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
     return Status::OK();
 }
 
-void KvDeleteProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
+void KvDeleteProtocol::PackEntry(const BinaryKey& key, std::uint32_t* base)
 {
-    std::memcpy(&base[0], CacheKeyView(key).data(), kCacheKeySizeBytes);
+    std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }
 
 Status KvDeleteProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
@@ -1052,9 +1037,6 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (CacheKeyView(r.keys[i]).size() != kCacheKeySizeBytes) [[unlikely]] {
-            return Status::Error(StatusCode::INVALID_ARGUMENT, "key length must be 8 bytes");
-        }
         if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is all zeros in Exist request");
@@ -1063,9 +1045,9 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
     return Status::OK();
 }
 
-void KvExistProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
+void KvExistProtocol::PackEntry(const BinaryKey& key, std::uint32_t* base)
 {
-    std::memcpy(&base[0], CacheKeyView(key).data(), kCacheKeySizeBytes);
+    std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }
 
 Status KvExistProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,

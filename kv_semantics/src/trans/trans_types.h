@@ -42,12 +42,18 @@ inline std::string_view CacheKeyView(const CacheKey& key)
     return *key.TryGetEngineKey();
 }
 
-inline std::string_view CacheKeyView(const ResolvedCacheKey& key)
+inline std::string_view CacheKeyView(const BinaryKey& key)
 {
-    return {reinterpret_cast<const char*>(key.key.data()), key.key.size()};
+    return {reinterpret_cast<const char*>(key.data()), key.size()};
 }
 
-inline std::string CacheKeyToHex(const CacheKey& key)
+inline std::string_view CacheKeyView(const ResolvedCacheKey& key)
+{
+    return CacheKeyView(key.bytes);
+}
+
+template <typename Key>
+inline std::string CacheKeyToHex(const Key& key)
 {
     static constexpr char kHex[] = "0123456789abcdef";
     const auto view = CacheKeyView(key);

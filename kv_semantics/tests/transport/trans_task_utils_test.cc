@@ -50,6 +50,9 @@ TEST(TransTaskUtilsTest, ResolvedKeyRoutingViewExcludesNamespace)
     const ResolvedCacheKey second{bytes, 2};
     EXPECT_EQ(CacheKeyView(first), CacheKeyView(second));
     EXPECT_EQ(CacheKeyView(first), CacheKeyView(CacheKey::FromBytes(bytes)));
+    EXPECT_EQ(CacheKeyView(first), CacheKeyView(bytes));
+    EXPECT_EQ(CacheKeyToHex(first), CacheKeyToHex(bytes));
+    EXPECT_EQ(CacheKeyToHex(first), CacheKeyToHex(CacheKey::FromBytes(bytes)));
 }
 
 TEST(TransTaskUtilsTest, CacheKeyViewPreservesStringBytes)

@@ -143,7 +143,7 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
     ResolvedCacheKey resolved;
     std::string kvns(baseKvns);
     if (const auto* bytes = input.TryGetBinaryKey()) {
-        resolved.key = *bytes;
+        resolved.bytes = *bytes;
     } else {
         ParsedKey parsed;
         auto status = ParseEngineKey(*input.TryGetEngineKey(), parsed);
@@ -151,7 +151,7 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
         if (parsed.component) { kvns += "_" + *parsed.component; }
         if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }
         auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), HASH_SEED_VALUE);
-        for (auto& byte : resolved.key) {
+        for (auto& byte : resolved.bytes) {
             byte = static_cast<std::byte>(hash & 0xff);
             hash >>= 8;
         }

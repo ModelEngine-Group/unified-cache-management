@@ -223,6 +223,12 @@ TEST_F(SqeRequestTest, GlobalNamespaceDoesNotOverrideConfiguredProtocolNamespace
         ASSERT_EQ(batches.size(), 1U);
         const auto* sqe = reinterpret_cast<const std::uint32_t*>(batches[0].sendSge.local_addr);
         EXPECT_EQ(sqe[1], 3U);
+        const auto keyDword = op == AsuOpType::STORE || op == AsuOpType::LOAD ? 12U
+                              : op == AsuOpType::BATCH_STORE || op == AsuOpType::BATCH_LOAD
+                                  ? kSqeDwordCount + 1
+                                  : kSqeDwordCount;
+        EXPECT_EQ(std::memcmp(&sqe[keyDword], task.entries[0].key.bytes.data(), kCacheKeySizeBytes),
+                  0);
         transport_->taskExecutor_->ReleaseAllSubBatchResources(batches);
     }
 }

@@ -59,7 +59,7 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     EXPECT_EQ(&batches[0].entries[0], &entries[0]);
     EXPECT_EQ(&batches[1].entries[0], &entries[2]);
     EXPECT_EQ(&batches[2].entries[0], &entries[4]);
-    EXPECT_EQ(batches[1].entries[1].key.key, MakeCacheKey("key_3").key);
+    EXPECT_EQ(batches[1].entries[1].key.bytes, MakeCacheKey("key_3").bytes);
 }
 
 TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)

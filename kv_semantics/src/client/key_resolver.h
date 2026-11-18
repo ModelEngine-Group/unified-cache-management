@@ -33,7 +33,7 @@ namespace kv {
 
 // Internal storage identity, normalized before routing.
 struct ResolvedCacheKey {
-    BinaryKey key{};
+    BinaryKey bytes{};
     std::uint32_t gnsid{0};
 };
 
