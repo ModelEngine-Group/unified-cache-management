@@ -107,9 +107,7 @@ def _apply_cuda_indexer_io_config(
         return
     for group in kv_cache_config.kv_cache_groups:
         layer_names = (
-            getattr(group, "layer_names", None)
-            or getattr(group, "kv_cache_specs", None)
-            or {}
+            getattr(group, "layer_names", None) or getattr(group, "kv_cache_specs", None) or {}
         )
         for name in layer_names:
             if not _has_layer_component(name, {"indexer", "index_cache"}):
@@ -347,9 +345,7 @@ def _scheduler_read_unique_id(prefix: str = "ucm") -> str:
                 return uid
         except FileNotFoundError:
             continue
-    raise RuntimeError(
-        "scheduler-side UCM initialization failed: unique_id file not found"
-    )
+    raise RuntimeError("scheduler-side UCM initialization failed: unique_id file not found")
 
 
 def _worker_publish_block_size(
@@ -395,14 +391,10 @@ def _scheduler_read_block_size(store_suffix: str = "") -> int | None:
         try:
             block_size = int(content)
         except ValueError:
-            logger.warning(
-                f"block_size file {path} holds a non-integer value {content!r}."
-            )
+            logger.warning(f"block_size file {path} holds a non-integer value {content!r}.")
             return None
         if block_size <= 0:
-            logger.warning(
-                f"block_size file {path} holds a non-positive value {block_size}."
-            )
+            logger.warning(f"block_size file {path} holds a non-positive value {block_size}.")
             return None
         logger.info(
             f"Read worker-published store block_size {block_size} from {path} "
@@ -486,9 +478,7 @@ class KVCacheLayout:
         )
         if self.pp_size > 1 and self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be > 0 when pp_size > 1")
-        self.layer_name_to_id = {
-            name: extract_layer_index(name) for name in kvcaches.keys()
-        }
+        self.layer_name_to_id = {name: extract_layer_index(name) for name in kvcaches.keys()}
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self.num_blocks = self.kv_cache_config.num_blocks
         self._build_layout(kvcaches)
@@ -515,9 +505,7 @@ class KVCacheLayout:
             expected_stride = 1
             for stride, size in packing:
                 if stride != expected_stride:
-                    raise ValueError(
-                        f"KV cache block is not a dense page: {layer_name}"
-                    )
+                    raise ValueError(f"KV cache block is not a dense page: {layer_name}")
                 expected_stride *= size
             block_stride = int(tensor.stride(0)) * int(tensor.element_size())
             if block_stride < bytes_per_block:
@@ -562,8 +550,7 @@ class KVCacheLayout:
                 handle_tensor(tensor)
         else:
             raise TypeError(
-                f"Unsupported KV cache type: layer={layer_name}, "
-                f"type={type(kv_layer)}."
+                f"Unsupported KV cache type: layer={layer_name}, " f"type={type(kv_layer)}."
             )
         return tuple(tensor_infos)
 
@@ -582,12 +569,8 @@ class KVCacheLayout:
     @staticmethod
     def _unpack_tensor_rows(tensor_rows):
         ptr_rows = [[tensor.ptr for tensor in row] for row in tensor_rows]
-        stride_rows = [
-            [tensor.bytes_per_block for tensor in row] for row in tensor_rows
-        ]
-        buffer_size_rows = [
-            [tensor.buffer_size for tensor in row] for row in tensor_rows
-        ]
+        stride_rows = [[tensor.bytes_per_block for tensor in row] for row in tensor_rows]
+        buffer_size_rows = [[tensor.buffer_size for tensor in row] for row in tensor_rows]
         return ptr_rows, stride_rows, buffer_size_rows
 
     def _dcp_replicated_scale(self, tensor: KVCacheTensorInfo) -> int:
@@ -617,33 +600,23 @@ class KVCacheLayout:
 
     def _build_layout(self, kvcaches):
         tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
-        raw_ptr_rows, stride_rows, buffer_size_rows = self._unpack_tensor_rows(
-            tensor_rows
-        )
+        raw_ptr_rows, stride_rows, buffer_size_rows = self._unpack_tensor_rows(tensor_rows)
 
         if not self.use_layerwise:
             # A direct transfer copies one whole KV-cache block. Keep only real
             # tensors and flatten all layers into that block; padding would add
             # fake tensors to the store metadata and copy path.
             flat_tensors = [info for row in tensor_rows for info in row]
-            self.base_ptrs = np.asarray(
-                [info.ptr for info in flat_tensors], dtype=np.uint64
-            )
+            self.base_ptrs = np.asarray([info.ptr for info in flat_tensors], dtype=np.uint64)
             self.tensor_size_lists = np.asarray(
-                [
-                    info.bytes_per_block * self._dcp_replicated_scale(info)
-                    for info in flat_tensors
-                ],
+                [info.bytes_per_block * self._dcp_replicated_scale(info) for info in flat_tensors],
                 dtype=np.uint64,
             )
             self.buffer_sizes = np.asarray(
                 [info.buffer_size for info in flat_tensors], dtype=np.uint64
             )
             self.block_stride_lists = np.asarray(
-                [
-                    info.block_stride * self._dcp_replicated_scale(info)
-                    for info in flat_tensors
-                ],
+                [info.block_stride * self._dcp_replicated_scale(info) for info in flat_tensors],
                 dtype=np.uint64,
             )
             logger.info(
@@ -690,10 +663,7 @@ class KVCacheLayout:
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
         self.block_stride_lists = np.asarray(
             [
-                [
-                    tensor.block_stride * self._dcp_replicated_scale(tensor)
-                    for tensor in row
-                ]
+                [tensor.block_stride * self._dcp_replicated_scale(tensor) for tensor in row]
                 for row in tensor_rows
             ],
             dtype=np.uint64,
@@ -709,9 +679,7 @@ class KVCacheLayout:
         vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
         if not self.use_layerwise:
             if layer_first:
-                raise ValueError(
-                    "layer_first=True requires a layerwise KV cache layout"
-                )
+                raise ValueError("layer_first=True requires a layerwise KV cache layout")
             return (
                 vllm_block_ids_np[:, None] * self.block_stride_lists[None, :]
                 + self.base_ptrs[None, :]
@@ -832,9 +800,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     @classmethod
     def _cache_role(cls, layer_name: str) -> str:
         """Classify an attention or Indexer cache independently of platform."""
-        path_components = [
-            component for component in layer_name.lower().split(".") if component
-        ]
+        path_components = [component for component in layer_name.lower().split(".") if component]
         for index, component in enumerate(path_components[:-1]):
             if component == "layers" and path_components[index + 1].isdigit():
                 path_components = path_components[index + 2 :]
@@ -847,19 +813,14 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
 
     def _collect_role_tensors(self, kvcaches, tensor_infos):
         """Group cache entries by layer and semantic role."""
-        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
-            {}
-        )
+        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = {}
         for layer_name, kv_layer in kvcaches.items():
             layer_id = self.layer_name_to_id[layer_name]
-            layer = layer_tensors.setdefault(
-                layer_id, {"attention": None, "indexer": None}
-            )
+            layer = layer_tensors.setdefault(layer_id, {"attention": None, "indexer": None})
             slot = self._cache_role(layer_name)
             if layer[slot] is not None:
                 raise ValueError(
-                    f"Duplicate Shared Indexer {slot} cache for "
-                    f"layer {layer_id}: {layer_name}."
+                    f"Duplicate Shared Indexer {slot} cache for " f"layer {layer_id}: {layer_name}."
                 )
             layer[slot] = tensor_infos(layer_name, kv_layer)
         return layer_tensors
@@ -889,15 +850,12 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             1,
         )
         indexer_replicated = dcp_size > 1 and any(
-            layer.indexer is not None
-            and self._dcp_replicated_scale(layer.indexer) == dcp_size
+            layer.indexer is not None and self._dcp_replicated_scale(layer.indexer) == dcp_size
             for layer in layers
         )
         segment_rows = []
         for layer in layers:
-            segments = [
-                self._whole_tensor_segment(tensor) for tensor in layer.sfa_tensors
-            ]
+            segments = [self._whole_tensor_segment(tensor) for tensor in layer.sfa_tensors]
 
             if layout_mode == "bf16":
                 if layer.indexer is not None:
@@ -1056,9 +1014,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                     )
                 segments.extend([g1, g2, g3])
             else:
-                raise ValueError(
-                    f"Unsupported Shared Indexer layout mode: {layout_mode}."
-                )
+                raise ValueError(f"Unsupported Shared Indexer layout mode: {layout_mode}.")
             segment_rows.append(segments)
         return segment_rows
 
@@ -1129,9 +1085,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         attention_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
         incompatible_attention_layers = {}
         for layer in layers[1:]:
-            current_attention_sizes = [
-                tensor.bytes_per_block for tensor in layer.sfa_tensors
-            ]
+            current_attention_sizes = [tensor.bytes_per_block for tensor in layer.sfa_tensors]
             if current_attention_sizes != attention_sizes:
                 incompatible_attention_layers[layer.layer_id] = current_attention_sizes
         if incompatible_attention_layers:
@@ -1145,8 +1099,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         indexer_layers = [layer for layer in layers if layer.indexer is not None]
         if not indexer_layers:
             raise ValueError(
-                "CUDA Shared Indexer KV cache layout did not find any "
-                "independent Indexer layer."
+                "CUDA Shared Indexer KV cache layout did not find any " "independent Indexer layer."
             )
         indexer_size = self._validate_uniform_sizes(
             [layer.indexer.bytes_per_block for layer in indexer_layers],
@@ -1234,9 +1187,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
 
         c8_layers = [layer for layer in layers if layer.scale is not None]
         bf16_layers = [
-            layer
-            for layer in layers
-            if layer.indexer is not None and layer.scale is None
+            layer for layer in layers if layer.indexer is not None and layer.scale is None
         ]
 
         if c8_layers and bf16_layers:
@@ -1383,8 +1334,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     def _require_tensor(layer_name: str, value) -> torch.Tensor:
         if not isinstance(value, torch.Tensor):
             raise TypeError(
-                "Unsupported MiniMax M3 KV cache value: "
-                f"layer={layer_name}, type={type(value)}."
+                "Unsupported MiniMax M3 KV cache value: " f"layer={layer_name}, type={type(value)}."
             )
         return value
 
@@ -1454,9 +1404,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
             role = "indexer" if self._is_indexer(layer_name) else "attention"
             layer = layers.setdefault(layer_id, {"attention": None, "indexer": None})
             if layer[role] is not None:
-                raise ValueError(
-                    f"Duplicate MiniMax M3 {role} cache for layer {layer_id}."
-                )
+                raise ValueError(f"Duplicate MiniMax M3 {role} cache for layer {layer_id}.")
             layer[role] = (
                 (self._indexer_segment(layer_name, value),)
                 if role == "indexer"
@@ -1481,9 +1429,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
         for layer_id in layer_ids:
             attention = collected[layer_id]["attention"]
             if not attention:
-                raise ValueError(
-                    f"MiniMax M3 layer {layer_id} has no Attention KV cache."
-                )
+                raise ValueError(f"MiniMax M3 layer {layer_id} has no Attention KV cache.")
             indexer = collected[layer_id]["indexer"]
             layers.append((attention, indexer[0] if indexer else None))
 
@@ -1505,16 +1451,12 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
             # only Attention entries. Layerwise M3 mode cannot manufacture its
             # Indexer slot size without observing at least one sparse layer.
             if self.use_layerwise:
-                raise ValueError(
-                    "MiniMax M3 KV cache layout did not find an Indexer cache."
-                )
+                raise ValueError("MiniMax M3 KV cache layout did not find an Indexer cache.")
             indexer_size = None
         else:
             indexer_sizes = {indexer.copy_size for indexer in indexers}
             if len(indexer_sizes) != 1:
-                raise ValueError(
-                    f"MiniMax M3 Indexer block sizes differ: {sorted(indexer_sizes)}."
-                )
+                raise ValueError(f"MiniMax M3 Indexer block sizes differ: {sorted(indexer_sizes)}.")
             indexer_size = indexers[0].copy_size
 
         rows = []
@@ -1548,9 +1490,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
             # flat shard. Ghosts must be omitted because they are schema padding,
             # not memory that should participate in a direct transfer.
             segments = [segment for row in rows for segment in row if segment.ptr]
-            self.base_ptrs = np.asarray(
-                [segment.ptr for segment in segments], dtype=np.uint64
-            )
+            self.base_ptrs = np.asarray([segment.ptr for segment in segments], dtype=np.uint64)
             self.tensor_size_lists = np.asarray(
                 [segment.copy_size for segment in segments], dtype=np.uint64
             )
@@ -1561,8 +1501,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
                 [segment.buffer_size for segment in segments], dtype=np.uint64
             )
         logger.info(
-            "MiniMax M3 KV cache layout: device=%s, slot_sizes=%s, "
-            "indexer_layers=%s/%s",
+            "MiniMax M3 KV cache layout: device=%s, slot_sizes=%s, " "indexer_layers=%s/%s",
             getattr(current_platform, "device_type", None),
             attention_sizes + ([indexer_size] if indexer_size is not None else []),
             len(indexers),
@@ -1658,12 +1597,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.use_layerwise = False
         self.kv_caches: dict[str, torch.Tensor] = {}
-        self.local_rank = (
-            -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
-        )
-        self.device_id = (
-            -1 if role == KVConnectorRole.SCHEDULER else get_current_device_id()
-        )
+        self.local_rank = -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
+        self.device_id = -1 if role == KVConnectorRole.SCHEDULER else get_current_device_id()
         if role != KVConnectorRole.SCHEDULER:
             logger.info(
                 "UCM worker device mapping: local_rank=%s, device_id=%s",
@@ -1678,14 +1613,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.tp_size = self._vllm_config.parallel_config.tensor_parallel_size
         self.kv_cache_dtype: torch.dtype = None
-        self.num_head = vllm_config.model_config.get_num_kv_heads(
-            vllm_config.parallel_config
-        )
+        self.num_head = vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config)
         self.head_size = vllm_config.model_config.get_head_size()
         self.element_size = vllm_config.model_config.dtype.itemsize
-        self.use_compress = hasattr(
-            self._vllm_config.model_config.hf_config, "compress_ratios"
-        )
+        self.use_compress = hasattr(self._vllm_config.model_config.hf_config, "compress_ratios")
         self._kv_cache_config = kv_cache_config
 
         if self.device_id >= 0:
@@ -1709,9 +1640,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
-        self.enable_record_traces = self.launch_config.get(
-            "enable_record_traces", False
-        )
+        self.enable_record_traces = self.launch_config.get("enable_record_traces", False)
         self._skip_null_vllm_blocks = False
 
         self.chunk_size = self.block_size
@@ -1739,17 +1668,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             ),
         )
 
-        self.persist_token_threshold = self.launch_config.get(
-            "persist_token_threshold", 0
-        )
+        self.persist_token_threshold = self.launch_config.get("persist_token_threshold", 0)
 
         # invalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
-        request_async_configured = bool(
-            self.launch_config.get("use_request_async_load", False)
-        )
+        request_async_configured = bool(self.launch_config.get("use_request_async_load", False))
         self.use_request_async_load = (
             request_async_configured and self._supports_request_async_load()
         )
@@ -1785,9 +1710,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if speculative_config is None:
                 cached = 2
             else:
-                spec_token_num = getattr(
-                    speculative_config, "num_speculative_tokens", 0
-                )
+                spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
                 try:
                     spec_token_num = int(spec_token_num)
                 except (TypeError, ValueError):
@@ -1805,8 +1728,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return []
         tp_size = vllm_config.parallel_config.tensor_parallel_size
         return [
-            RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
-            for rank_id in range(1, tp_size)
+            RequestHasher(build_kv_hash_meta(vllm_config, rank_id)) for rank_id in range(1, tp_size)
         ]
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
@@ -1956,9 +1878,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if getattr(self, "_is_pp", False):
             layer_start = self.first_layer_id
             layer_count = len(self.layer_ids)
-            self._configure_pp_store(
-                config, get_pp_group().rank_in_group, layer_start, layer_count
-            )
+            self._configure_pp_store(config, get_pp_group().rank_in_group, layer_start, layer_count)
             # The scheduler has no KV cache layout, so publish the layer
             # allocation with the geometry it needs to name the same directory.
             self._pp_store_sizes = {
@@ -2085,9 +2005,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             try:
                 self._prefetch_store(hbm_hit_block_ids)
             except Exception as e:
-                logger.warning(
-                    "UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}"
-                )
+                logger.warning("UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}")
 
         if all_hit_block_ids:
             try:
@@ -2095,9 +2013,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             except Exception as e:
                 # Prefetch is only a GC hotness hint. A failure must not turn a
                 # valid cache hit into a scheduler-side miss.
-                logger.warning(
-                    "UCM all-rank hotness update failed. " f"{type(e).__name__}: {e}"
-                )
+                logger.warning("UCM all-rank hotness update failed. " f"{type(e).__name__}: {e}")
 
     def get_num_new_matched_tokens(
         self,
@@ -2118,9 +2034,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             try:
                 ucm_block_ids = self.request_block_hasher(request)
             except Exception as e:
-                logger.error(
-                    f"request {request.request_id} hash error. {type(e).__name__}: {e}"
-                )
+                logger.error(f"request {request.request_id} hash error. {type(e).__name__}: {e}")
                 return 0, False
         else:
             request_meta = self.requests_meta[request.request_id]
@@ -2165,9 +2079,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 lookup_start_block_num = req_meta.total_hit_block_num - 1
                 resume_from_last_hit = True
 
-        external_block_ids = ucm_block_ids[
-            lookup_start_block_num * self.cp_world_size :
-        ]
+        external_block_ids = ucm_block_ids[lookup_start_block_num * self.cp_world_size :]
         external_hit_blocks = 0
         if external_block_ids:
             try:
@@ -2175,29 +2087,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 found_blocks = external_hit_hashes // self.cp_world_size
                 if resume_from_last_hit and found_blocks == 0:
                     lookup_start_block_num = hbm_hit_block_num
-                    external_block_ids = ucm_block_ids[
-                        hbm_hit_block_num * self.cp_world_size :
-                    ]
+                    external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
                     if external_block_ids:
-                        external_hit_hashes = (
-                            self._lookup_all_stages(external_block_ids) + 1
-                        )
+                        external_hit_hashes = self._lookup_all_stages(external_block_ids) + 1
                     else:
                         external_hit_hashes = 0
                     found_blocks = external_hit_hashes // self.cp_world_size
-                external_hit_blocks = (
-                    lookup_start_block_num - hbm_hit_block_num
-                ) + found_blocks
+                external_hit_blocks = (lookup_start_block_num - hbm_hit_block_num) + found_blocks
             except Exception as e:
-                logger.error(
-                    f"request {request.request_id} look up error. {type(e).__name__}: {e}"
-                )
+                logger.error(f"request {request.request_id} look up error. {type(e).__name__}: {e}")
                 self._record_counter("connector_lookup_errors_total")
 
         hbm_hit_hashes = hbm_hit_block_num * self.cp_world_size
-        total_hit_hashes = (
-            hbm_hit_block_num + external_hit_blocks
-        ) * self.cp_world_size
+        total_hit_hashes = (hbm_hit_block_num + external_hit_blocks) * self.cp_world_size
         self._prefetch_direct_hit_key_hotness(
             ucm_block_ids[:hbm_hit_hashes],
             ucm_block_ids[:total_hit_hashes],
@@ -2265,9 +2167,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_id = request.request_id
         req_meta = self.requests_meta.get(request_id)
         if req_meta is None:
-            raise RuntimeError(
-                f"Request {request_id} has external tokens but no UCM metadata."
-            )
+            raise RuntimeError(f"Request {request_id} has external tokens but no UCM metadata.")
 
         block_ids_by_group = blocks.get_block_ids()
         if not block_ids_by_group:
@@ -2334,9 +2234,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_block_start = 0
         if need_load:
             load_ucm_block_ids = ucm_block_ids[
-                hbm_hit_block_num
-                * self.cp_world_size : total_hit_block_num
-                * self.cp_world_size
+                hbm_hit_block_num * self.cp_world_size : total_hit_block_num * self.cp_world_size
             ]
             load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
 
@@ -2364,9 +2262,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             dump_block_start=dump_block_start,
         )
 
-    def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
+    def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
         requests_dispatch_meta = {}
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
@@ -2394,9 +2290,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     if scheduled_cached_reqs.new_block_ids[i] != None:
                         new_block_ids = scheduled_cached_reqs.new_block_ids[i][0]
                     if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                        resumed_from_preemption = (
-                            scheduled_cached_reqs.resumed_from_preemption[i]
-                        )
+                        resumed_from_preemption = scheduled_cached_reqs.resumed_from_preemption[i]
                     else:
                         resumed_from_preemption = (
                             request_id in scheduled_cached_reqs.resumed_req_ids
@@ -2405,8 +2299,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
                         new_block_ids,
-                        resumed_from_preemption
-                        and request_id not in self._async_load_req_ids,
+                        resumed_from_preemption and request_id not in self._async_load_req_ids,
                     )
         else:
             for request in scheduled_cached_reqs:
@@ -2479,18 +2372,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         self._finished_async_load_req_ids.add(request_id)
                     continue
                 if sync_load:
-                    num_loaded_block -= len(request.load_block_ids[0]) - len(
-                        ucm_block_ids
-                    )
+                    num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0 and not self.is_mla:
-                store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
-                ]
+                store_block_ids = [self.request_hasher(block_id) for block_id in ucm_block_ids]
             if request.load_async and request_id in self._pending_load_tasks:
-                logger.warning(
-                    "Ignore duplicate async load metadata for request %s.", request_id
-                )
+                logger.warning("Ignore duplicate async load metadata for request %s.", request_id)
                 continue
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
@@ -2515,8 +2402,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     request_to_load_blocks[request_id] = len(ucm_block_ids)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} submit load task error. "
-                    f"{type(e).__name__}: {e}"
+                    f"request {request_id} submit load task error. " f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
@@ -2534,8 +2420,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._rank_consistency.wait_load(task)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} wait load task error. "
-                    f"{type(e).__name__}: {e}"
+                    f"request {request_id} wait load task error. " f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_wait_errors_total",
@@ -2590,11 +2475,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self._release_dump_event_handle(pending_dump_task)
 
     def _release_dump_event_handle(self, pending_dump_task: PendingDumpTask) -> None:
-        if (
-            self.enable_event_sync
-            and pending_dump_task.event_handle
-            and self.device is not None
-        ):
+        if self.enable_event_sync and pending_dump_task.event_handle and self.device is not None:
             self.device.destroy_event_handle(pending_dump_task.event_handle)
             pending_dump_task.event_handle = 0
 
@@ -2615,9 +2496,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 # after completion and removes the task from the store.
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error_limit(
-                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
-                )
+                logger.error_limit(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
 
         self._pending_dump_tasks = remaining_tasks
 
@@ -2626,17 +2505,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._pending_dump_tasks = []
         remaining_tasks: list[PendingDumpTask] = []
         for pending_dump_task in pending_dump_tasks:
-            if request_ids is not None and not (
-                pending_dump_task.request_ids & request_ids
-            ):
+            if request_ids is not None and not (pending_dump_task.request_ids & request_ids):
                 remaining_tasks.append(pending_dump_task)
                 continue
             try:
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error_limit(
-                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
-                )
+                logger.error_limit(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
         self._pending_dump_tasks = remaining_tasks
 
     def handle_preemptions(
@@ -2683,18 +2558,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             num_saved_block += len(ucm_block_ids)
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0 and not self.is_mla:
-                store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
-                ]
+                store_block_ids = [self.request_hasher(block_id) for block_id in ucm_block_ids]
             total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if is_save:
             event_handle = 0
             try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                    total_vllm_block_ids
-                )
+                total_ptrs = self.kv_cache_layout.extract_block_addrs(total_vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(total_ucm_block_ids)
                 event_handle = self._get_event_handle()
@@ -2747,10 +2618,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         """Return worker events accumulated since the last call."""
-        if (
-            not self._rank_consistency.enabled
-            and not self._connector_worker_meta.load_failed_reqs
-        ):
+        if not self._rank_consistency.enabled and not self._connector_worker_meta.load_failed_reqs:
             return None
         self._rank_consistency.update_worker_meta(self._connector_worker_meta)
         meta = self._connector_worker_meta
@@ -2769,13 +2637,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if req_id in meta.missing_reqs and req_meta is not None:
                 # for block missing, try to fall back to recompute and continue dump to fix it
                 logger.info(
-                    f"Request {req_id} loaded an incomplete UCM block; "
-                    "recompute and dump it."
+                    f"Request {req_id} loaded an incomplete UCM block; " "recompute and dump it."
                 )
                 req_meta.total_hit_block_num = req_meta.hbm_hit_block_num
-                req_meta.token_processed = (
-                    req_meta.hbm_hit_block_num * self.get_block_size()
-                )
+                req_meta.token_processed = req_meta.hbm_hit_block_num * self.get_block_size()
             else:
                 # for other failure, pop metadata so won't dump for the request
                 logger.info(f"Request {req_id} failed to load, skip caching.")
@@ -2818,8 +2683,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             except Exception as e:
                 completed = True
                 logger.error(
-                    f"request {request_id} async load task failed. "
-                    f"{type(e).__name__}: {e}"
+                    f"request {request_id} async load task failed. " f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_wait_errors_total",
@@ -2972,9 +2836,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         if not self._is_pp:
             return
         if getattr(self, "_pp_stores", None) is not None:
-            logger.info(
-                "Ignore repeated PP handshake metadata; stage stores already exist."
-            )
+            logger.info("Ignore repeated PP handshake metadata; stage stores already exist.")
             return
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
@@ -3011,9 +2873,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             # for the split files; they do not participate in hit decisions.
             if pp_rank != 0:
                 config["store_pipeline"] = "Posix"
-            stores.append(
-                UcmConnectorFactoryV1.create_connector(name, config, module_path)
-            )
+            stores.append(UcmConnectorFactoryV1.create_connector(name, config, module_path))
         self._pp_stores = stores
         self.store = stores[0]
 
@@ -3031,10 +2891,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             return hit
 
         pool = self._get_lookup_pool(len(stores))
-        futures = [
-            pool.submit(self._lookup_one_stage, store, block_ids)
-            for store in stores[1:]
-        ]
+        futures = [pool.submit(self._lookup_one_stage, store, block_ids) for store in stores[1:]]
         try:
             stage_hits = [future.result() for future in futures]
         except BaseException:
@@ -3048,9 +2905,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         """Create the lookup pool once; per-lookup threads would leak metrics slots."""
         pool = getattr(self, "_lookup_pool", None)
         if pool is None:
-            pool = ThreadPoolExecutor(
-                max_workers=workers, thread_name_prefix="ucm-pp-lookup"
-            )
+            pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ucm-pp-lookup")
             self._lookup_pool = pool
         return pool
 
@@ -3083,9 +2938,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         metadata = self._get_connector_metadata()
         block_ids_by_request = {
-            request_id: set(
-                self._get_rank_dump_blocks(metadata.request_meta[request_id])[0]
-            )
+            request_id: set(self._get_rank_dump_blocks(metadata.request_meta[request_id])[0])
             for request_id in dump_request_ids
         }
         local_layer_id = layer_id - self.first_layer_id
@@ -3115,14 +2968,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     event_handle=event_handle,
                 )
             )
-            self._layerwise_save_bytes += (
-                len(total_ucm_block_ids) * self.kv_cache_layout.shard_size
-            )
+            self._layerwise_save_bytes += len(total_ucm_block_ids) * self.kv_cache_layout.shard_size
             return True
         except Exception as e:
-            logger.error(
-                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
-            )
+            logger.error(f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}")
             self._record_counter("connector_dump_submit_errors_total")
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
@@ -3202,15 +3051,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             vllm_block_ids = list(request.load_block_ids[1])
             store_block_ids = ucm_block_ids
             if self.tp_rank % self.tp_size != 0 and not self.is_mla:
-                store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
-                ]
-            total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                vllm_block_ids, layer_first=True
-            )
-            self.request_data.append(
-                (request_id, ucm_block_ids, store_block_ids, total_ptrs)
-            )
+                store_block_ids = [self.request_hasher(block_id) for block_id in ucm_block_ids]
+            total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids, layer_first=True)
+            self.request_data.append((request_id, ucm_block_ids, store_block_ids, total_ptrs))
 
         if self.need_load:
             self._submit_request_load_tasks_for_layer(
@@ -3256,17 +3099,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
 
         wait_end = time.perf_counter()
-        load_duration_recorded = self._record_layerwise_load_duration(
-            current_layer_id, wait_end
-        )
+        load_duration_recorded = self._record_layerwise_load_duration(current_layer_id, wait_end)
 
         next_layer_id = current_layer_id + 1
         has_next = next_layer_id in self.layer_ids
         if has_next:
             next_local_row = next_layer_id - self.first_layer_id
-            self._submit_request_load_tasks_for_layer(
-                next_layer_id, next_local_row, metadata
-            )
+            self._submit_request_load_tasks_for_layer(next_layer_id, next_local_row, metadata)
         elif load_duration_recorded:
             duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
             ucmmetrics.update_stats(
@@ -3309,9 +3148,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             dump_request_ids.add(request_id)
             store_block_ids = ucm_block_ids
             if self.tp_rank % self.tp_size != 0 and not self.is_mla:
-                store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
-                ]
+                store_block_ids = [self.request_hasher(block_id) for block_id in ucm_block_ids]
             total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
@@ -3351,9 +3188,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
     @staticmethod
     def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
         if launch_config.get("use_consistency_manager", False):
-            raise ValueError(
-                "Rank consistency manager is not supported by UCMCPConnector."
-            )
+            raise ValueError("Rank consistency manager is not supported by UCMCPConnector.")
         return False
 
     def __init__(
@@ -3379,9 +3214,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
 
         try:
             self.pcp_world_size = get_pcp_group().world_size
-            self.pcp_rank = (
-                get_pcp_group().rank_in_group if self.pcp_world_size > 1 else 0
-            )
+            self.pcp_rank = get_pcp_group().rank_in_group if self.pcp_world_size > 1 else 0
             self.dcp_world_size = get_dcp_group().world_size
             self.dcp_rank = get_dcp_group().rank_in_group
         except AssertionError:
@@ -3412,9 +3245,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
             # init scheduler-side connector
             self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(
-                build_kv_hash_meta(vllm_config, self.tp_rank)
-            )
+            self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, self.tp_rank))
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
         self._bind_request_block_hasher()
@@ -3529,9 +3360,7 @@ class UCMMockConnector(UCMDirectConnector):
         expect_hit_block_num = expect_hit_tokens // self.block_size
         request_meta = self.requests_meta[request.request_id]
         request_meta.total_hit_block_num = expect_hit_block_num
-        request_meta.hbm_hit_block_num = min(
-            expect_hit_block_num, request_meta.hbm_hit_block_num
-        )
+        request_meta.hbm_hit_block_num = min(expect_hit_block_num, request_meta.hbm_hit_block_num)
 
         logger.info(
             "Hijacked By MockConnector,"
@@ -3598,13 +3427,10 @@ class UCMLiteConnector(KVConnectorBase_V1):
         elif kv_lora and qk_rope:
             per_tok = (kv_lora + qk_rope) * dt
         else:
-            kv_heads = getattr(
-                hf, "num_key_value_heads", getattr(hf, "num_attention_heads", 0)
-            )
+            kv_heads = getattr(hf, "num_key_value_heads", getattr(hf, "num_attention_heads", 0))
             tp = vllm_config.parallel_config.tensor_parallel_size
             head_dim = getattr(hf, "head_dim", 0) or (
-                getattr(hf, "hidden_size", 0)
-                // max(getattr(hf, "num_attention_heads", 1), 1)
+                getattr(hf, "hidden_size", 0) // max(getattr(hf, "num_attention_heads", 1), 1)
             )
             per_tok = 2 * head_dim * (kv_heads // tp) * dt
 
@@ -3659,9 +3485,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
     ):
         pass
 
-    def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
+    def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
         return UCMConnectorMetadata()
@@ -3775,9 +3599,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
         use_lite = (
-            self.launch_config.get("use_lite", False)
-            if self.launch_config is not None
-            else False
+            self.launch_config.get("use_lite", False) if self.launch_config is not None else False
         )
 
         if use_lite:
@@ -3791,12 +3613,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
 
             if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
-                self.connector = UCMFAWALiteConnector(
-                    vllm_config, role, kv_cache_config
-                )
-            elif UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
-                kv_cache_config
-            ):
+                self.connector = UCMFAWALiteConnector(vllm_config, role, kv_cache_config)
+            elif UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config):
                 self.connector = UCMHLALiteConnector(vllm_config, role, kv_cache_config)
             else:
                 self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
@@ -3823,15 +3641,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
 
-        use_ratio_rate = (
-            self.launch_config is not None and "hit_ratio" in self.launch_config
-        )
+        use_ratio_rate = self.launch_config is not None and "hit_ratio" in self.launch_config
 
         use_cp_parallel = (
             hasattr(self._vllm_config.parallel_config, "prefill_context_parallel_size")
-            and hasattr(
-                self._vllm_config.parallel_config, "decode_context_parallel_size"
-            )
+            and hasattr(self._vllm_config.parallel_config, "decode_context_parallel_size")
             and self._vllm_config.parallel_config.prefill_context_parallel_size
             * self._vllm_config.parallel_config.decode_context_parallel_size
             > 1
@@ -3852,9 +3666,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         use_hybrid_linear_attention = False
         if not is_fawa:
             use_hybrid_linear_attention = (
-                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
-                    kv_cache_config
-                )
+                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(kv_cache_config)
             )
         cuda_blnhc = is_cuda_blnhc_layout(kv_cache_config)
         use_hybrid_linear_attention_layerwise = (
@@ -3869,8 +3681,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 "to use whole-store."
             )
         if use_hybrid_linear_attention_layerwise:
-            layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
-                vllm_config
+            layerwise_block_reason = (
+                UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
+                    vllm_config
+                )
             )
             if layerwise_block_reason:
                 logger.warning(
@@ -3888,9 +3702,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 vllm_config, role, kv_cache_config
             )
         elif use_hybrid_linear_attention:
-            self.connector = UCMHybridLinearAttentionConnector(
-                vllm_config, role, kv_cache_config
-            )
+            self.connector = UCMHybridLinearAttentionConnector(vllm_config, role, kv_cache_config)
         elif use_cp_parallel:
             self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
         elif use_layerwise:
@@ -3942,12 +3754,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 worker_id,
                 metrics_config_path,
             )
-            logger.info(
-                f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}"
-            )
-        if self.metrics_config and consumer_enabled(
-            self.metrics_config, VLLM_CONNECTOR_CONSUMER
-        ):
+            logger.info(f"metrics_config_path: {metrics_config_path}, set worker_id: {worker_id}")
+        if self.metrics_config and consumer_enabled(self.metrics_config, VLLM_CONNECTOR_CONSUMER):
             self._vllm_metric_definitions = get_vllm_connector_metric_definitions(
                 self.metrics_config
             )
@@ -3960,8 +3768,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         if self._metrics_dispatcher is None:
             return None
         self._metrics_dispatcher.drain_to_consumers()
-        counter_stats, gauge_stats, histogram_stats = (
-            self._metrics_dispatcher.get_stats_and_clear(VLLM_CONNECTOR_CONSUMER)
+        counter_stats, gauge_stats, histogram_stats = self._metrics_dispatcher.get_stats_and_clear(
+            VLLM_CONNECTOR_CONSUMER
         )
         stats = UCMConnectorStats.from_ucm_snapshot(
             counter_stats,
@@ -3988,9 +3796,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> Optional["KVConnectorPromMetrics"]:
         if not UCM_HAS_PROM_METRICS:
             return None
-        config = load_launch_metrics_config(
-            Config(vllm_config.kv_transfer_config).get_config()
-        )
+        config = load_launch_metrics_config(Config(vllm_config.kv_transfer_config).get_config())
         if not config or not consumer_enabled(config, VLLM_CONNECTOR_CONSUMER):
             return None
         if not get_vllm_connector_metric_definitions(config):
@@ -4024,11 +3830,34 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         external_hit_tokens, need_load = self.connector.get_num_new_matched_tokens(
             request, num_computed_tokens
         )
+
+        params = getattr(request, "kv_transfer_params", None) or {}
+
+        logger.info(
+            "[PD-PARAMS] req=%s params=%r keys=%s prompt=%s computed=%s hit=%s",
+            request.request_id,
+            params,
+            sorted(params.keys()) if isinstance(params, dict) else None,
+            request.num_prompt_tokens,
+            num_computed_tokens,
+            external_hit_tokens,
+        )
+
+        if params.get("do_remote_prefill"):
+            logger.info("********** Decode ***********")
+            matched_tokens = num_computed_tokens + external_hit_tokens
+            remaining_tokens = request.num_prompt_tokens - matched_tokens
+
+            if remaining_tokens >= self.get_block_size():
+                logger.info("********** Need Waiting ***********")
+                return None
+
         self._record_prefix_cache_token_metrics(
             request,
             num_computed_tokens,
             external_hit_tokens,
         )
+        logger.info("********** Go ***********")
         return external_hit_tokens, need_load
 
     def _record_prefix_cache_token_metrics(
@@ -4079,9 +3908,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector.register_kv_caches(kv_caches)
 
     @_record_connector_interface_duration
-    def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
+    def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
         """
         Build the connector metadata for this step.
 
