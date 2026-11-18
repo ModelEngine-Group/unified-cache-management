@@ -122,7 +122,7 @@ def check_batches(worker, plans, records, hashes, *, is_dump, checkpoints=None):
         if coalesce_ranges(observed) != coalesce_ranges(ranges):
             op = "Dump" if is_dump else "Get"
             raise AssertionError(
-                f"rank {worker.context.global_rank}: {op} offsets, pointers or sizes disagree for {key.hex()}"
+                f"rank {worker.context.worker_rank}: {op} offsets, pointers or sizes disagree for {key.hex()}"
             )
         if is_dump:
             intervals = []

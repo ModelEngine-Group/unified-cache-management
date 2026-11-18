@@ -82,18 +82,19 @@ class UCMConnectorMetadata(KVConnectorMetadata):
 
 
 class JobOperation(Enum):
-    """The Store operation completed by a group of jobs for one request."""
+    """Store operation tracked until every participating worker finishes."""
 
     GET = "Get"
     PUT = "Put"
     PREFETCH = "Prefetch"
+    OFFLOAD = "Offload"
 
 
 @dataclass
 class PendingJob:
     """One Prepare: all ranks report its parent job before Complete."""
 
-    request_id: str
+    request_id: str | None
     operation: JobOperation
     prepared_job: PreparedJob
     completed_ranks: set[ParallelRank] = field(default_factory=set)
@@ -148,7 +149,6 @@ class UCMConnectorScheduler:
         # Odd main IDs leave even native IDs available for Worker-local subjobs.
         self._job_ids = count(1, JOB_ID_STRIDE)
         self._pending_jobs: dict[int, PendingJob] = {}
-        self._offload_jobs: dict[int, PreparedJob] = {}
         self._needs_offload_drain = False
 
     def set_xfer_handshake_metadata(
@@ -318,7 +318,7 @@ class UCMConnectorScheduler:
         self,
         job_id: int,
         operation: JobOperation,
-        request_id: str,
+        request_id: str | None,
         token: AddressedToken,
         ucm_keys: tuple[bytes, ...] = (),
     ) -> PreparedJob:
@@ -363,8 +363,13 @@ class UCMConnectorScheduler:
         if self._needs_offload_drain:
             jobs = []
             for token in self._store_scheduler.prepare_offload():
-                job = PreparedJob(self._allocate_job_id(), token.keys, token)
-                self._offload_jobs[job.job_id] = job
+                job = self._track_prepared_job(
+                    self._allocate_job_id(),
+                    JobOperation.OFFLOAD,
+                    None,
+                    token,
+                    token.keys,
+                )
                 jobs.append(job)
             metadata.offload_jobs = tuple(jobs)
             self._needs_offload_drain = False
@@ -436,12 +441,21 @@ class UCMConnectorScheduler:
                     request_id, prepared_job.token, success
                 )
                 self._needs_offload_drain = True
-            else:
+            elif operation is JobOperation.PREFETCH:
                 self._store_scheduler.complete_prefetch(request_id, success)
                 self._needs_offload_drain = True
                 self._request_states[request_id].prefetch_job_id = None
+            else:
+                # Every worker claims its subset of this broadcast plan. The
+                # shared source pins stay held until all workers reach terminal IO.
+                self._store_scheduler.complete_offload(prepared_job.token)
+                if not success:
+                    logger.warning("UCM offload job %d failed", job_id)
             del self._pending_jobs[job_id]
-            self._close_finished_request(request_id, self._request_states[request_id])
+            if request_id is not None:
+                self._close_finished_request(
+                    request_id, self._request_states[request_id]
+                )
 
     def _close_finished_request(self, request_id: str, state: RequestState) -> None:
         if (
@@ -467,15 +481,6 @@ class UCMConnectorScheduler:
                 request_state.external_hit_tokens = 0
                 request_state.needs_load = False
         for job_result in metadata.job_results:
-            offload_job = self._offload_jobs.get(job_result.job_id)
-            if offload_job is not None:
-                # Only the worker owning Store-only IO reports this job. The
-                # receipt releases source pins on both success and failure.
-                self._store_scheduler.complete_offload(offload_job.token)
-                if not job_result.success:
-                    logger.warning("UCM offload job %d failed", job_result.job_id)
-                del self._offload_jobs[job_result.job_id]
-                continue
             pending_job = self._pending_jobs.get(job_result.job_id)
             if pending_job is None:
                 continue
@@ -493,12 +498,11 @@ class UCMConnectorScheduler:
     def has_pending_push_work(self) -> bool:
         return bool(
             self._needs_offload_drain
-            or self._offload_jobs
             or any(
                 state.async_load is not None for state in self._request_states.values()
             )
             or any(
-                job.operation is JobOperation.PREFETCH
+                job.operation in (JobOperation.PREFETCH, JobOperation.OFFLOAD)
                 or (self.context.load_async and job.operation is JobOperation.GET)
                 for job in self._pending_jobs.values()
             )

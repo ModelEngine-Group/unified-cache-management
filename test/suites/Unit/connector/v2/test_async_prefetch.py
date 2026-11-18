@@ -165,7 +165,6 @@ def test_async_get_dispatches_without_forward_and_cancel_keeps_its_window(
         store.prepare_get.side_effect = StoreIOError("miss")
     scheduler._request_states = {}
     scheduler._pending_jobs = {}
-    scheduler._offload_jobs = {}
     scheduler._needs_offload_drain = False
     scheduler._job_ids = count(1, 2)
     rank0, rank1 = ParallelRank(), ParallelRank(tp_rank=1)
@@ -326,7 +325,6 @@ def test_finished_request_waits_for_every_rank_before_prefetch_complete(success)
             "r", JobOperation.PREFETCH, SimpleNamespace(job_id=1), dispatched=True
         )
     }
-    scheduler._offload_jobs = {}
     scheduler._needs_offload_drain = False
     request = SimpleNamespace(request_id="r", num_preemptions=0)
     scheduler._request_states = {"r": RequestState(request, prefetch_job_id=1)}

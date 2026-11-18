@@ -185,6 +185,26 @@ def schedule_step(scheduler, req, cursor, hit, first, args):
     with patch.object(manager, "take_boundary_state_offloads", observe_offloads):
         output = scheduler.schedule()
     scheduled = output.num_scheduled_tokens.get(req.request_id, 0)
+    meta = output.kv_connector_metadata.requests.get(req.request_id)
+    if scheduled == 0 and meta is not None and meta.load_async:
+        from vllm.v1.request import RequestStatus
+
+        if (
+            req.status != RequestStatus.WAITING_FOR_REMOTE_KVS
+            or req.num_computed_tokens != hit
+            or not first
+            or not meta.load_plans
+            or meta.dump_plans
+        ):
+            raise AssertionError("Invalid asynchronous Get-only step")
+        return output, (
+            hit,
+            hit,
+            0,
+            meta,
+            manager.get_block_ids(req.request_id),
+            offloads,
+        )
     if not 0 < scheduled <= args.max_num_batched_tokens:
         raise AssertionError(
             f"Invalid step budget or no progress: {output.num_scheduled_tokens}"
@@ -210,7 +230,6 @@ def schedule_step(scheduler, req, cursor, hit, first, args):
         != (0, hit)
     ):
         raise AssertionError(f"Unexpected native prefix-cache decision: {stats}")
-    meta = output.kv_connector_metadata.requests[req.request_id]
     return output, (
         compute_start,
         end,
@@ -238,7 +257,10 @@ def run(args, cleanup, scratch, kv_device):
     from vllm.sampling_params import SamplingParams
     from vllm.utils.hashing import get_hash_fn_by_name
     from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
-    from vllm.v1.outputs import make_empty_encoder_model_runner_output
+    from vllm.v1.outputs import (
+        KVConnectorOutput,
+        make_empty_encoder_model_runner_output,
+    )
     from vllm.v1.request import Request, RequestStatus
     from vllm.v1.structured_output import StructuredOutputManager
 
@@ -305,6 +327,7 @@ def run(args, cleanup, scratch, kv_device):
     )
 
     steps = num_get = num_dump = 0
+    prefix_loaded = False
     covered_policies = set()
     cursor = hit
     while cursor < args.tokens:
@@ -312,8 +335,9 @@ def run(args, cleanup, scratch, kv_device):
         if root:
             output, step = schedule_step(scheduler, req, cursor, hit, steps == 0, args)
         compute_start, end, scheduled, meta, tables, offloads = broadcast(step)
+        step_label = "async Get plan" if meta.load_async else f"step {steps + 1}"
         print(
-            f"rank {dist.get_rank()} step {steps + 1}: "
+            f"rank {dist.get_rank()} {step_label}: "
             f"compute [{compute_start}, {end}), scheduled={scheduled}"
         )
         geometry = layout, cfg, views, tables, placements
@@ -323,7 +347,7 @@ def run(args, cleanup, scratch, kv_device):
         if meta.prepare_get_failed or meta.prefetch_job:
             raise AssertionError("Unexpected Get preparation failure or prefetch")
         loads = checkpoints = {}
-        if steps == 0 and hit:
+        if not prefix_loaded and hit:
             loads = expected_records(*geometry, 0, hit, state_load_target=end)
             checkpoints = expected_records(
                 *geometry, 0, hit, state_load_target=hit, only_state=True
@@ -340,7 +364,11 @@ def run(args, cleanup, scratch, kv_device):
             worker.connector_worker, meta.dump_plans, dumps, hashes, is_dump=True
         )
         covered_policies.update(policy.name for policy, _ in (loads if hit else dumps))
-        print(f"step {steps + 1}: Get windows={len(loads)}, Dump windows={len(dumps)}")
+        print(f"{step_label}: Get windows={len(loads)}, Dump windows={len(dumps)}")
+        if meta.load_async:
+            # Every rank must validate its planned Get ranges before the
+            # plan-only harness simulates receive completion. No IO is run.
+            dist.barrier()
         if root:
             model_output = make_empty_encoder_model_runner_output(output)
             if args.ucm_config:
@@ -359,10 +387,16 @@ def run(args, cleanup, scratch, kv_device):
                     kv_device,
                 )
             else:
+                if meta.load_async:
+                    model_output.kv_connector_output = KVConnectorOutput(
+                        finished_recving={req.request_id}
+                    )
                 scheduler.update_from_output(output, model_output)
         num_get += len(loads)
         num_dump += len(dumps)
-        steps += 1
+        prefix_loaded |= bool(loads)
+        if scheduled:
+            steps += 1
         cursor = end
 
     if root:

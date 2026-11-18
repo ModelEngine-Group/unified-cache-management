@@ -266,7 +266,7 @@ def expected_records(
                     f"Incorrect Store offset for {policy.name} group {gid}"
                 )
             record = records[window]
-            writer = placement.replicas[(start // chunk) % len(placement.replicas)]
+            writer = placement.replicas[0]
             include_local = state_load_target is not None or writer == placement.rank
             for page in pages:
                 slot = (

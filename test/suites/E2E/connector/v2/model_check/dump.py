@@ -85,11 +85,14 @@ def execute_store_step(engine, scheduler, worker, output, model_output, views):
             worker.wait_for_layer_load(name)
             worker.save_kv_layer(name, view, None)
         worker.wait_for_save()
-    worker.get_transfer_results(set())
+    transfers = worker.get_transfer_results(set())
     result = worker.build_connector_worker_meta()
     worker.clear_connector_metadata()
     model_output.kv_connector_output = KVConnectorOutput(
-        kv_connector_worker_meta=result
+        kv_connector_worker_meta=result,
+        finished_recving=transfers.finished_recving,
+        finished_sending=transfers.finished_sending,
+        failed_recving=transfers.failed_recving,
     )
     scheduler.update_from_output(output, model_output)
     return result

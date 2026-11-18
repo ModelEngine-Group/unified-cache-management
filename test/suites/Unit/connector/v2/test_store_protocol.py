@@ -113,37 +113,48 @@ def test_runtime_resolves_layerwise_mode(
     assert logger.warning.call_count == int(warn)
 
 
-def test_store_runtime_hashes_engine_id_for_cache_domain():
+@pytest.mark.parametrize(
+    "coordinates, worker_index",
+    [((0, 0, 0), 0), ((1, 0, 1), 3), ((1, 1, 0), 5), ((1, 1, 1), 7)],
+)
+def test_store_runtime_hashes_engine_id_for_cache_domain(coordinates, worker_index):
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
     from ucm.integration.vllm.v2.runtime import (
         ParallelRank,
         ParallelTopology,
         UCMRuntimeContext,
+        _worker_rank,
     )
 
     # Default vLLM UUID followed by the Ascend suffix from the remote repro.
     engine_id = "04807027-2f9b-4387-b71e-5c265a5ac995-" + "a" * 32
+    topology = ParallelTopology(tp_size=2, pp_size=2, pcp_size=2)
+    rank = ParallelRank(*coordinates)
     worker = UCMRuntimeContext(
         role=KVConnectorRole.WORKER,
         device_type="npu",
         engine_id=engine_id,
-        global_rank=0,
-        rank=ParallelRank(),
-        parallel_topology=ParallelTopology(tp_size=2, pp_size=2, pcp_size=2),
+        worker_rank=_worker_rank(topology, rank),
+        rank=rank,
+        parallel_topology=topology,
         launch_config={},
         use_layerwise=True,
         spec=NS(),
         fingerprint="",
     )
-    scheduler = replace(worker, role=KVConnectorRole.SCHEDULER, rank=None)
+    scheduler = replace(
+        worker, role=KVConnectorRole.SCHEDULER, rank=None, worker_rank=None
+    )
     domain_id = hashlib.sha256(engine_id.encode("utf-8")).hexdigest()[:32]
 
     assert len(domain_id) == 32
     assert replace(worker, engine_id=None).store_runtime(4096)["unique_id"] is None
     assert worker.store_runtime(4096)["unique_id"] == domain_id
+    assert worker.store_runtime(4096)["worker_index"] == worker_index
     assert scheduler.store_runtime(4096)["unique_id"] == domain_id
     assert scheduler.store_runtime(4096)["worker_number"] == 8
+    assert scheduler.store_runtime(4096)["worker_index"] == 0
     other_dp = replace(worker, engine_id=engine_id + "_dp1")
     other_domain_id = other_dp.store_runtime(4096)["unique_id"]
     assert (
@@ -161,7 +172,7 @@ def test_cache_worker_uses_largest_complete_record_without_reducing(monkeypatch)
     from ucm.integration.vllm.v2.runtime import ParallelRank, ParallelTopology
 
     worker = object.__new__(connector_worker.UCMConnectorWorker)
-    worker.context = NS(launch_config={}, store_runtime=Mock())
+    worker.context = NS(launch_config={}, store_runtime=Mock(), state_shard_ranks={})
     worker.spec = NS()
     worker.parallel_topology = ParallelTopology(tp_size=2, pcp_size=2)
     worker._parallel_rank = ParallelRank()
@@ -497,7 +508,6 @@ def test_resume_does_not_wait_for_old_get_and_put_results():
     state = RequestState(request, num_preemptions=0)
     scheduler._request_states = {"r": state}
     scheduler._pending_jobs = {}
-    scheduler._offload_jobs = {}
     rank = ParallelRank()
     scheduler._expected_worker_ranks = {rank}
     put_token = AddressedToken((b"put",), b"old-put")
@@ -566,7 +576,6 @@ def test_load_failure_only_invalidates_dump_jobs_in_the_same_output():
     scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     scheduler._pending_jobs = {}
-    scheduler._offload_jobs = {}
     rank = ParallelRank()
     scheduler._expected_worker_ranks = {rank}
     scheduler._request_states = {"r": RequestState(NS(num_computed_tokens=0))}
@@ -799,7 +808,6 @@ def test_each_window_completes_with_its_token_after_all_ranks(operation):
     scheduler._pending_jobs = {}
     rank0, rank1 = ParallelRank(), ParallelRank(pp_rank=1)
     scheduler._expected_worker_ranks = {rank0, rank1}
-    scheduler._offload_jobs = {}
     scheduler._request_states = {"r": RequestState(NS(request_id="r"))}
     op = JobOperation[operation.upper()]
     first = scheduler._track_prepared_job(1, op, "r", AddressedToken((b"fa",), b"A"))
@@ -851,9 +859,9 @@ def test_offload_runs_without_a_live_request_and_releases_its_pin(success):
     store = scheduler._store_scheduler = Mock()
     scheduler._pending_jobs = {}
     scheduler._job_ids = count(1, 2)
-    scheduler._expected_worker_ranks = {ParallelRank()}
+    rank0, rank1 = ParallelRank(), ParallelRank(tp_rank=1)
+    scheduler._expected_worker_ranks = {rank0, rank1}
     scheduler._needs_offload_drain = False
-    scheduler._offload_jobs = {}
     scheduler._request_states = {"r": RequestState(NS(request_id="r"), finished=True)}
     token = AddressedToken((b"key",), b"offload")
     store.prepare_offload.return_value = (token,)
@@ -861,16 +869,17 @@ def test_offload_runs_without_a_live_request_and_releases_its_pin(success):
         scheduler._allocate_job_id(), JobOperation.PUT, "r", token
     )
 
-    def report(job, succeeded):
+    def report(job, rank, succeeded):
         scheduler.update_connector_output(
             NS(
                 kv_connector_worker_meta=UCMWorkerMetadata(
-                    job_results={JobResult(job.job_id, ParallelRank(), succeeded)}
+                    job_results={JobResult(job.job_id, rank, succeeded)}
                 )
             )
         )
 
-    report(put, True)
+    report(put, rank0, True)
+    report(put, rank1, True)
     store.complete_put.assert_called_once_with("r", token, True)
     store.on_request_finished.assert_called_once_with("r")
     assert scheduler.has_pending_push_work()
@@ -886,25 +895,35 @@ def test_offload_runs_without_a_live_request_and_releases_its_pin(success):
     assert not scheduler.build_connector_meta(output).offload_jobs
     store.complete_offload.assert_not_called()
 
-    worker = object.__new__(UCMConnectorWorker)
-    worker._parallel_rank = ParallelRank()
-    worker.use_layerwise = False
-    worker._prefetch_offload_tasks = {}
-    worker._async_loads = {}
-    worker._completion_metadata = UCMWorkerMetadata()
-    worker._store_worker = Mock()
-    task = NS(success=None)
-    worker._store_worker.submit_offload.return_value = task
-    worker.start_load_kv(metadata, None)
-    worker._store_worker.submit_offload.assert_called_once_with(job)
-    worker.poll_finished()
-    assert worker.build_connector_worker_meta() is None
+    workers = []
+    for rank in (rank0, rank1):
+        worker = object.__new__(UCMConnectorWorker)
+        worker._parallel_rank = rank
+        worker.use_layerwise = False
+        worker._prefetch_offload_tasks = {}
+        worker._async_loads = {}
+        worker._completion_metadata = UCMWorkerMetadata()
+        worker._store_worker = Mock()
+        worker._store_worker.submit_offload.return_value = NS(success=None)
+        worker.start_load_kv(metadata, None)
+        worker._store_worker.submit_offload.assert_called_once_with(job)
+        worker.poll_finished()
+        assert worker.build_connector_worker_meta() is None
+        workers.append(worker)
 
-    task.success = success
-    worker.poll_finished()
-    scheduler.update_connector_output(
-        NS(kv_connector_worker_meta=worker.build_connector_worker_meta())
-    )
+    for index, worker in enumerate(workers):
+        worker._store_worker.submit_offload.return_value.success = (
+            success if index == 0 else True
+        )
+        worker.poll_finished()
+        result = NS(kv_connector_worker_meta=worker.build_connector_worker_meta())
+        scheduler.update_connector_output(result)
+        if index == 0:
+            store.complete_offload.assert_not_called()
+            assert scheduler.has_pending_push_work()
+            # Duplicate receipts cannot stand in for another worker.
+            scheduler.update_connector_output(result)
+            store.complete_offload.assert_not_called()
     store.complete_offload.assert_called_once_with(token)
     assert not scheduler.has_pending_push_work()
 

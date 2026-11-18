@@ -287,9 +287,8 @@ class UCMConnectorWorker:
         forward_context: "ForwardContext",
         **kwargs: Any,
     ) -> None:
-        if self._parallel_rank == ParallelRank(tp_rank=0, pp_rank=0, pcp_rank=0):
-            for job in connector_metadata.offload_jobs:
-                self._execute_offload(job)
+        for job in connector_metadata.offload_jobs:
+            self._execute_offload(job)
         failed_loads = self._completion_metadata.failed_load_request_ids
         for request_metadata in connector_metadata.requests.values():
             if request_metadata.prefetch_job is not None:

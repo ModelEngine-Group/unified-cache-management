@@ -60,7 +60,7 @@ def broadcast(value):
 class Placement:
     shards: tuple  # (TP KV shard, native DCP rank), in record order
     index: int
-    replicas: tuple  # global ranks sharing the local shard, in writer rotation order
+    replicas: tuple  # global ranks sharing the local shard, first rank writes
     rank: int
     dcp_size: int
     interleave: int
@@ -163,9 +163,13 @@ def inspect_workers(worker, cfg, args):
             dcp_size,
             worker.context.parallel_topology.cp_kv_cache_interleave_size,
         )
+        if worker.connector_worker.layout.store_layouts[gid].is_dump_writer != (
+            rank == placements[gid].replicas[0]
+        ):
+            raise AssertionError(f"Incorrect fixed Dump writer for group {gid}")
         if rank == 0:
             print(
-                f"group {gid}: shard (tp,dcp) -> writer rotation {dict(sorted(owners.items()))}",
+                f"group {gid}: shard (tp,dcp) -> replicas (first writes) {dict(sorted(owners.items()))}",
                 flush=True,
             )
     return handshakes, placements

@@ -109,10 +109,11 @@ def _load_launch_config(vllm_config: "VllmConfig") -> dict[str, Any]:
     return dict(Config(vllm_config.kv_transfer_config).get_config())
 
 
-def _worker_rank() -> int:
-    from vllm.distributed.parallel_state import get_world_group
-
-    return get_world_group().rank
+def _worker_rank(topology: ParallelTopology, rank: ParallelRank) -> int:
+    """Flatten PP/PCP/TP coordinates within one DP replica, TP innermost."""
+    return (
+        rank.pp_rank * topology.pcp_size + rank.pcp_rank
+    ) * topology.tp_size + rank.tp_rank
 
 
 def _worker_parallel_ranks(topology: ParallelTopology) -> ParallelRank:
@@ -135,7 +136,8 @@ def _dump_raw_kv_cache_config(kv_cache_config: KVCacheConfig, rank: int | None) 
     """Write the raw KVCacheConfig vLLM handed over to a JSON file.
 
     Enabled by ``UCM_V2_DUMP_CONFIG=<path>``; a ``%d`` in the path receives
-    the worker rank so tensor-parallel shards can be captured side by side.
+    the DP-local worker rank so shards can be captured side by side. Separate
+    DP replicas should use separate output paths.
     """
 
     path_template = os.environ.get("UCM_V2_DUMP_CONFIG", "")
@@ -217,7 +219,7 @@ class UCMRuntimeContext:
     role: KVConnectorRole
     device_type: str
     engine_id: str | None
-    global_rank: int | None
+    worker_rank: int | None
     rank: ParallelRank | None
     parallel_topology: ParallelTopology
     launch_config: dict[str, Any]
@@ -246,6 +248,7 @@ class UCMRuntimeContext:
                 "scheduler" if self.role == KVConnectorRole.SCHEDULER else "worker"
             ),
             "worker_number": self.parallel_topology.world_size,
+            "worker_index": self.worker_rank if self.worker_rank is not None else 0,
             "device_id": device_id,
             "block_size": block_size,
         }
@@ -269,14 +272,16 @@ class UCMRuntimeContext:
         chunk_size = launch_config.get("chunk_size")
         if chunk_size is not None:
             chunk_size = int(chunk_size)
-        worker_rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank()
-        _dump_raw_kv_cache_config(kv_cache_config, worker_rank)
         parallel_topology = ParallelTopology.from_config(vllm_config)
         rank = (
             ParallelRank(*_worker_parallel_ranks(parallel_topology))
             if role == KVConnectorRole.WORKER
             else None
         )
+        worker_rank = (
+            _worker_rank(parallel_topology, rank) if rank is not None else None
+        )
+        _dump_raw_kv_cache_config(kv_cache_config, worker_rank)
         device_type = vllm_config.device_config.device_type
         text_config = vllm_config.model_config.hf_text_config
         spec: UCMKVCacheSpec = parse_kv_cache_config(
@@ -384,7 +389,7 @@ class UCMRuntimeContext:
             role=role,
             device_type=device_type,
             engine_id=vllm_config.kv_transfer_config.engine_id,
-            global_rank=worker_rank,
+            worker_rank=worker_rank,
             rank=rank,
             parallel_topology=parallel_topology,
             launch_config=launch_config,
