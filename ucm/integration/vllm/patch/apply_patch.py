@@ -26,13 +26,12 @@ Monkey patching module for vLLM to apply UCM patches automatically.
 This replaces the need for manual `git apply` commands.
 """
 
+import os
 from typing import Optional
 
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
-
-import os
 
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
     "1",
@@ -148,7 +147,31 @@ def apply_all_patches() -> None:
     """Apply all vLLM patches based on detected version."""
     version: Optional[str] = None
     try:
-        from ucm.integration.vllm.patch.logger_patch import patch_logger
+        from ucm.integration.vllm.patch.logger_patch import patch_logger  # noqa: F401
+        from ucm.integration.vllm.patch.utils import when_imported
+
+        # Remove these hooks with the patch once vLLM routes each child's handshake.
+        @when_imported("vllm.distributed.kv_transfer.kv_connector.v1.multi_connector")
+        def patch_multi_connector(module):
+            if not hasattr(module.MultiConnector, "set_xfer_handshake_metadata"):
+                return
+
+            from ucm.integration.vllm.patch.multi_connector_handshake_patch import (
+                patch_handshake,
+            )
+
+            patch_handshake(module.MultiConnector)
+
+        @when_imported("vllm.v1.executor.abstract")
+        def patch_executor(module):
+            if not hasattr(module.Executor, "get_kv_connector_handshake_metadata"):
+                return
+
+            from ucm.integration.vllm.patch.multi_connector_handshake_patch import (
+                patch_handshake_collection,
+            )
+
+            patch_handshake_collection(module.Executor)
 
         if not ENABLE_UCM_PATCH:
             return
@@ -378,7 +401,7 @@ def apply_all_patches() -> None:
         # @maybe_transfer_kv_layer; wire the per-layer KV hooks in for the
         # layerwise v2 connector. @when_imported is self-guarding (only fires
         # when the GDN modules exist).
-        import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch
+        import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch  # noqa: F401
 
         logger.info("UCM patch initialization completed!")
 
