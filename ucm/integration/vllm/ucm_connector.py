@@ -4025,7 +4025,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             request, num_computed_tokens
         )
 
-        params = getattr(request,"kv_transfer_params", None) or {}
+        params = getattr(request, "kv_transfer_params", None) or {}
 
         logger.info(
             "[PD-PARAMS] req=%s params=%r keys=%s prompt=%s computed=%s hit=%s",
@@ -4037,7 +4037,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             external_hit_tokens,
         )
 
-        #注：需要确保真的有do_remote_prefill这个参数，如果没有，需要在router里做好赋值功能，否则不会进入此分支，退化为原本的逻辑
+        # 注：需要确保真的有do_remote_prefill这个参数，如果没有，需要在router里做好赋值功能，否则不会进入此分支，退化为原本的逻辑
         if params.get("do_remote_prefill"):
             logger.info("********** Decode ***********")
             matched_tokens = num_computed_tokens + external_hit_tokens
