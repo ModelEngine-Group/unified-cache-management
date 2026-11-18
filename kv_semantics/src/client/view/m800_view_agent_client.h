@@ -60,6 +60,9 @@ public:
     virtual Status GetAllNsNames(std::vector<std::string>& nsNames) const = 0;
     virtual Status GetViewByNs(const std::string& nsName, bool up, bool in,
                                std::vector<M800AgentNodeView>& views) const = 0;
+    // Returns all in-state nodes regardless of their up state.
+    virtual Status GetInByNs(const std::string& nsName,
+                             std::vector<M800AgentNodeView>& views) const = 0;
 };
 
 // Creates a configured agent client. The default factory dlopens
@@ -73,5 +76,7 @@ public:
     virtual Status Create(const M800ViewServerConfig& config,
                           std::unique_ptr<M800ViewAgentClient>& client) const = 0;
 };
+
+std::unique_ptr<M800ViewAgentClientFactory> CreateM800ViewAgentClientFactory();
 
 }  // namespace kv

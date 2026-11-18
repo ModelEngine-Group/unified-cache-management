@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include "kv_types.h"
 
 namespace kv {
@@ -43,18 +44,22 @@ struct M800ViewServerConfig {
 
     std::string listenAddr{"0.0.0.0:9100"};
     std::string masterAddr;
+    std::vector<std::string> masterAddrs;
+
+    Protocol endpointProtocol{Protocol::UB};
+    std::uint16_t endpointPort{6000};
 
     std::string monHost;
-    std::string clientName;
-    std::string keyringPath;
+    std::string clientName{"admin"};
+    std::string keyringPath{"/etc/ceph/ceph.client.admin.keyring"};
     std::string clientKey;
-    std::string agentLibPath;
+    std::string agentLibPath{"/usr/lib/libkv_agent.so"};
 
     // Timeout and interval values are milliseconds. The Agent C ABI accepts
     // seconds; convert explicitly before setting its view timeout/interval
     // fields.
     std::uint64_t agentFetchTimeoutMs{10000};
-    std::uint64_t httpTimeoutMs{10000};
+    std::uint64_t httpTimeoutMs{2000};
     std::uint64_t refreshIntervalMs{30000};
 
     // Parses and validates role-specific attributes. The implementation is
@@ -62,13 +67,19 @@ struct M800ViewServerConfig {
     static Status Build(const KvClientConfig& config, M800ViewServerConfig& m800Config);
 };
 
-struct M800ViewHTTPContract {
+// Derives the public namespace id from the exact bytes of a Ceph pool name.
+KvNsId M800PoolNameToKvNsId(const std::string& poolName);
+
+struct M800ViewHttpContract {
     static constexpr const char* kViewsPath = "/v1/views";
     static constexpr const char* kSinceEpochParam = "since_epoch";
     static constexpr const char* kContentType = "text/plain";
     static constexpr const char* kConnection = "close";
     static constexpr int kStatusOk = 200;
     static constexpr int kStatusNotModified = 304;
+    static constexpr int kStatusBadRequest = 400;
+    static constexpr int kStatusNotFound = 404;
+    static constexpr int kStatusMethodNotAllowed = 405;
     static constexpr int kStatusServerError = 500;
 };
 
@@ -76,8 +87,10 @@ struct M800ViewHTTPContract {
 // cannot contain CR, LF, or NUL in v1; no escaping is defined. The first two
 // fields are globalEpoch and nsCount; each namespace block starts at ns and
 // must include viewEpoch, viewId, asuIds, and one asuInfo.<nodeId> entry per
-// ASU. Pool names are consumed by the master while deriving KvNsId and are
-// not part of the client runtime contract.
+// ASU. An optional localKvNsId.<nodeId> line follows its asuInfo entry when the
+// ASU-local namespace id is nonzero; omission means zero. Pool names are
+// consumed by the master while deriving KvNsId and are not part of the client
+// runtime contract.
 struct M800ViewTextContract {
     static constexpr const char* kGlobalEpochField = "globalEpoch";
     static constexpr const char* kNsCountField = "nsCount";
@@ -86,6 +99,7 @@ struct M800ViewTextContract {
     static constexpr const char* kViewIdField = "viewId";
     static constexpr const char* kAsuIdsField = "asuIds";
     static constexpr const char* kAsuInfoFieldPrefix = "asuInfo.";
+    static constexpr const char* kLocalKvNsIdFieldPrefix = "localKvNsId.";
 };
 
 }  // namespace kv

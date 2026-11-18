@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <memory>
 #include "view/m800_view_agent_client.h"
 #include "view/view_http_server.h"
 #include "view/view_server.h"
@@ -37,23 +38,21 @@ public:
     // Creates and initializes the agent client, starts the agent, fetches the
     // initial universe, then starts the read-only HTTP service. HTTP must not
     // accept Worker requests before the initial universe is available.
+    // A duplicate Start returns RESOURCE_BUSY; a Start racing an in-progress
+    // Stop returns CANCELED without creating new resources.
     virtual Status Start() = 0;
     // Stops the HTTP service first, then stops the agent client. Stop is
     // idempotent and safe to call when Start failed.
     virtual void Stop() = 0;
 
-    // M800 serves multiple namespaces, so the legacy single-namespace entry
-    // point is intentionally unsupported. Use GetAllViews instead; this method
-    // must not modify view.
-    virtual Status GetGlobalView(GlobalView& view) override
-    {
-        (void)view;
-        return Status::Error(StatusCode::UNSUPPORTED,
-                             "M800 view master serves multiple namespaces; use GetAllViews");
-    }
-
     // M800 masters must return a real multi-namespace universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
+    // Returns the first namespace as the legacy single global view.
+    virtual Status GetGlobalView(GlobalView& view) override = 0;
 };
+
+std::shared_ptr<M800ViewMasterServer> CreateM800ViewMasterServer(
+    const M800ViewServerConfig& config,
+    std::unique_ptr<M800ViewAgentClientFactory> agentFactory = nullptr);
 
 }  // namespace kv
