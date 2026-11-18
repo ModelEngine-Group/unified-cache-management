@@ -496,100 +496,21 @@ Set `KV_TEST_SCRIPT_LOG_DIR` to place these artifacts elsewhere.
 `transport.provider_type=HCCP_KV_OVER_ROCE` uses the Ascend HCCP KV-over-RoCE
 data path. The provider is compiled only when
 `BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON` and loads the implementation
-library at runtime:
+library at runtime. See
+[HCCP KV-over-RoCE trans provider](hccp-kv-over-roce-provider.md) for the full
+configuration, the ABI contract, the HBM sizing and the limits.
 
 ```text
 transport.provider_type=HCCP_KV_OVER_ROCE
 transport.device_id=0
 transport.hccp_kv_roce_lib_path=/path/to/libhccp_kv_over_roce.so
-transport.hccp_kv_roce_max_connections=256
+transport.hccp_kv_roce_max_connections=3072
+asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001
 ```
 
 `hccp_lib_path` and `hccp_max_connections` are accepted as legacy aliases for
-the two HCCP keys.
-
-The library may also be selected with the `UCM_HCCP_KV_ROCE_LIB_PATH`
-environment variable; otherwise the provider tries
-`libhccp_kv_over_roce.so`. It must export `CreateConnection`,
-`DeleteConnections`, and `RegisterMemory` with the C ABI declared in
-`src/trans_provider/hccp_kv_over_roce/hccp_kv_over_roce_abi.h`. The provider is
-bound to `transport.device_id` (falling back to the current ACL device, then
-device 0) and binds that device/context around every library call. Other symbols
-(`UnregisterMemory`, `Send`, `GetServerCapabilities`) are optional: when a symbol
-is missing, the matching operation uses its documented fallback (`UNSUPPORTED`
-for `Send` and `GetServerCapabilities`, and local bookkeeping only for
-`UnregisterMemory`). `GetAbiVersion` is optional as well, but a library that
-exports it must return `HCCP_KV_ROCE_ABI_VERSION` (currently `1`); any other
-value makes provider construction fail with `INTERNAL_ERROR` and the library is
-closed again. Thread bookkeeping is not part of the ABI: the operator owns no
-per-thread resources, so `AllocThread` returns success with no handles and
-`FreeThread` succeeds without calling the library.
-
-`RegisterMemory` only registers the MRs and reports one
-`HccpKvRoceMemoryInfo` (address, size, access and rkey) per descriptor; the
-provider allocates its own `MRHandle` values starting at 1 and keeps a
-one-to-one handle-to-info mapping. Only device memory is accepted: HCCP cannot
-address host buffers, so `RegisterMemory` and `BindMemory` reject `MEM_HOST`
-descriptors with `INVALID_ARGUMENT`.
-
-Memory bookkeeping is provider-local. `RegisterMemory` treats a zero `rkey` as a
-failure and rolls the batch back through the optional `UnregisterMemory`.
-`BindMemory` never calls the library: it reuses a token that another provider
-already registered and only allocates a local handle. `GetMemTokenId` reads the
-rkey from the local record. `UnregisterMemory` forwards only records created by
-`RegisterMemory`, passing the stored `HccpKvRoceMemoryInfo`, and always drops
-bind-only records locally.
-
-Connections are QPC based and managed per IP pair. `CreateConnection` requires
-`qpNum > 0` and hands the library one provider-owned `HccpKvRoceQpc` per QP
-through the in/out `connectionHandles` array; the library fills the QPC in place,
-reports the created count through `connectionHandleNum` (it must not exceed
-`qpNum`) and returns one manager for the whole IP pair through
-`connectionManager`. A success without a manager is treated as a failed
-creation. The provider then copies each QPC into its HBM connection slot and
-passes that slot address (`HccpKvRoceSendIoBatch::slotAddress`) to `Send`. The
-provider still returns one handle per QP to the transport.
-
-Library return codes are translated to the transport status of the same name
-(`UNSUPPORTED`, `RESOURCE_BUSY`, `CONNECTION_ERROR`, `IO_ERROR`,
-`BUFFER_NOT_REGISTERED`, and so on); a code the provider does not recognize
-becomes `INTERNAL_ERROR`. `Send` checks each batch on its own: a null or unknown
-connection handle fails only that batch with `INVALID_ARGUMENT`, while the valid
-batches are still handed to the library in a single call. A library that does
-not export `Send` fails the whole call with `UNSUPPORTED`.
-
-`DeleteConnections` is manager based: the provider groups the requested QP
-handles by their IP pair and calls the library once with the manager array. A
-record is only deleted when the caller passes every QP of that record; a partial
-handle set is rejected with `INVALID_ARGUMENT` and nothing of that record is
-deleted, and listing the same handle twice invalidates the whole IP pair in the
-same way. If the library rejects the delete call, the provider puts the affected
-records back so the caller can retry; slots are only cleared and recycled once
-the call succeeded. `GetServerCapabilities` queries the manager of the IP pair
-that owns the handle.
-
-The provider allocates one contiguous HBM region of
-`hccp_kv_roce_max_connections` slots (default 3072), each 256 bytes. The region
-is shared by every IP pair, so that value bounds the total number of live QPs;
-it must be greater than zero, otherwise provider construction fails. A
-`CreateConnection` that asks for more QPs than the capacity reports
-`RESOURCE_BUSY` before the library is called, and a call that cannot acquire
-every slot it needs releases the slots it already took and reports
-`RESOURCE_BUSY` too.
-
-Every live QP owns exactly one slot, and the provider records its `slotid`. The
-provider's slot allocator tracks each slot as `FREE` or `IN_USE`: acquiring a
-slot marks it `IN_USE`, releasing it returns it to `FREE`, and writes or clears
-are only accepted while the slot is `IN_USE`. Releasing a free slot, or writing
-or clearing a slot that was never acquired, is reported as `INVALID_ARGUMENT`
-instead of silently corrupting the region. `SlotAddress` performs no state
-check, because the provider hands it to the library as-is; the external library
-never sees the HBM region itself, only the slot address used by `Send`.
-
-`CreateConnection` is all or nothing. A library error, a created count that
-differs from `qpNum`, a null connection handle, a missing manager, or a failed
-slot write deletes the manager that was already reported (best effort) and
-releases every slot acquired by the call.
+the two HCCP keys, and `UCM_HCCP_KV_ROCE_LIB_PATH` overrides the default library
+name.
 
 ## Command behavior
 
