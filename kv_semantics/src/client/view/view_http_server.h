@@ -40,6 +40,9 @@ enum class ViewHttpReplyKind {
     NOT_MODIFIED,
     FULL_VIEW,
     INTERNAL_ERROR,
+    BAD_REQUEST,
+    NOT_FOUND,
+    METHOD_NOT_ALLOWED,
 };
 
 struct ViewHttpReply {
@@ -51,8 +54,9 @@ struct ViewHttpReply {
 using ViewHttpHandler = std::function<ViewHttpReply(const ViewHttpRequest&)>;
 
 // Minimal read-only HTTP/1.1 server contract. The implementation accepts only
-// GET /v1/views, parses since_epoch, maps the reply kind to 304/200/500, and
-// closes each connection after writing the response.
+// GET /v1/views, parses since_epoch, maps reply kinds to 200/304/400/404/405/500,
+// and closes each connection after writing the response. Connections are handled
+// serially; each one is bounded by the configured absolute request deadline.
 class ViewHttpServer {
 public:
     virtual ~ViewHttpServer() = default;

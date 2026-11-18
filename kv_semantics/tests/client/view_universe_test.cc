@@ -268,6 +268,15 @@ TEST(ViewUniverseTest, CompoundReadsUseOneAtomicSnapshot)
     EXPECT_FALSE(failed.load());
 }
 
+TEST(ViewUniverseTest, PublishLogMessagesMatchContract)
+{
+    GlobalView next = MakeView(12, 7, 1);
+    EXPECT_EQ(detail::BuildViewPublishedLog(7, 10, next),
+              "ns=7 view published, epocj=10->12, asu_count=1");
+    EXPECT_EQ(detail::BuildViewNotPublishedLog(7, 12),
+              "ns=7 view not published, epocj unchanged=12");
+}
+
 TEST(ViewUniverseTest, EqualZeroEpochWithExistingViewsIsNoOp)
 {
     auto universe = MakeUniverse({{1, MakeView(0, 1, 10)}}, 0);

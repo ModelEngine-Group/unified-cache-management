@@ -251,10 +251,14 @@ TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
     EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
 
     ASSERT_TRUE(RoundTrip(port, {"GET /not/views HTTP/1.1\r\n\r\n"}, response));
-    EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
+    EXPECT_NE(response.find("HTTP/1.1 404 Not Found\r\n"), std::string::npos);
 
     ASSERT_TRUE(RoundTrip(port, {"POST /v1/views HTTP/1.1\r\n\r\n"}, response));
-    EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
+    EXPECT_NE(response.find("HTTP/1.1 405 Method Not Allowed\r\n"), std::string::npos);
+    EXPECT_NE(response.find("Allow: GET\r\n"), std::string::npos);
+
+    ASSERT_TRUE(RoundTrip(port, {"BROKEN\r\n\r\n"}, response));
+    EXPECT_NE(response.find("HTTP/1.1 400 Bad Request\r\n"), std::string::npos);
 
     server->Stop();
     server->Stop();
@@ -282,7 +286,7 @@ TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
     const auto oversizedRequest = "GET /v1/views?ignored=" + std::string(9 * 1024, 'a') +
                                   " HTTP/1.1\r\n\r\n";
     ASSERT_TRUE(RoundTrip(port, {oversizedRequest}, response));
-    EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
+    EXPECT_NE(response.find("HTTP/1.1 400 Bad Request\r\n"), std::string::npos);
     server->Stop();
 }
 

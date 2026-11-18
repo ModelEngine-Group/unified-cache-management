@@ -126,11 +126,20 @@ std::uint64_t ParseSinceEpoch(const std::string& target)
     return result;
 }
 
-bool ParseRequest(const std::string& request, ViewHttpRequest& parsed)
+enum class RequestParseResult {
+    OK,
+    BAD_REQUEST,
+    NOT_FOUND,
+    METHOD_NOT_ALLOWED,
+};
+
+RequestParseResult ParseRequest(const std::string& request, ViewHttpRequest& parsed)
 {
     parsed.sinceEpoch = 0;
     const auto lineEnd = request.find("\r\n");
-    if (lineEnd == std::string::npos || lineEnd > kMaxRequestLineBytes) { return false; }
+    if (lineEnd == std::string::npos || lineEnd > kMaxRequestLineBytes) {
+        return RequestParseResult::BAD_REQUEST;
+    }
     const auto line = request.substr(0, lineEnd);
     const auto firstSpace = line.find(' ');
     const auto secondSpace = firstSpace == std::string::npos
@@ -139,18 +148,20 @@ bool ParseRequest(const std::string& request, ViewHttpRequest& parsed)
     if (firstSpace == std::string::npos || secondSpace == std::string::npos ||
         firstSpace == 0 || secondSpace == firstSpace + 1 || secondSpace + 1 >= line.size() ||
         line.find(' ', secondSpace + 1) != std::string::npos) {
-        return false;
+        return RequestParseResult::BAD_REQUEST;
     }
-    if (line.substr(0, firstSpace) != "GET") { return false; }
+    if (line.substr(0, firstSpace) != "GET") { return RequestParseResult::METHOD_NOT_ALLOWED; }
     const auto version = line.substr(secondSpace + 1);
-    if (version != "HTTP/1.1" && version != "HTTP/1.0") { return false; }
+    if (version != "HTTP/1.1" && version != "HTTP/1.0") {
+        return RequestParseResult::BAD_REQUEST;
+    }
 
     const auto target = line.substr(firstSpace + 1, secondSpace - firstSpace - 1);
     const auto queryPos = target.find('?');
     const auto path = target.substr(0, queryPos);
-    if (path != M800ViewHttpContract::kViewsPath) { return false; }
+    if (path != M800ViewHttpContract::kViewsPath) { return RequestParseResult::NOT_FOUND; }
     parsed.sinceEpoch = ParseSinceEpoch(target);
-    return true;
+    return RequestParseResult::OK;
 }
 
 std::string BuildResponse(ViewHttpReplyKind kind, const std::string& requestedBody)
@@ -165,6 +176,15 @@ std::string BuildResponse(ViewHttpReplyKind kind, const std::string& requestedBo
     } else if (kind == ViewHttpReplyKind::NOT_MODIFIED) {
         status = M800ViewHttpContract::kStatusNotModified;
         reason = "Not Modified";
+    } else if (kind == ViewHttpReplyKind::BAD_REQUEST) {
+        status = M800ViewHttpContract::kStatusBadRequest;
+        reason = "Bad Request";
+    } else if (kind == ViewHttpReplyKind::NOT_FOUND) {
+        status = M800ViewHttpContract::kStatusNotFound;
+        reason = "Not Found";
+    } else if (kind == ViewHttpReplyKind::METHOD_NOT_ALLOWED) {
+        status = M800ViewHttpContract::kStatusMethodNotAllowed;
+        reason = "Method Not Allowed";
     }
     static const std::string emptyBody;
     if (body == nullptr) { body = &emptyBody; }
@@ -175,6 +195,7 @@ std::string BuildResponse(ViewHttpReplyKind kind, const std::string& requestedBo
     response += "\r\nContent-Length: " + std::to_string(body->size());
     response += "\r\nConnection: ";
     response += M800ViewHttpContract::kConnection;
+    if (kind == ViewHttpReplyKind::METHOD_NOT_ALLOWED) { response += "\r\nAllow: GET"; }
     response += "\r\n\r\n";
     response += *body;
     return response;
@@ -342,13 +363,22 @@ private:
         try {
             std::string request;
             ViewHttpRequest parsed;
-            if (!ReceiveRequest(fd, request, deadline) || !ParseRequest(request, parsed)) {
-                reply.kind = ViewHttpReplyKind::INTERNAL_ERROR;
+            if (!ReceiveRequest(fd, request, deadline)) {
+                reply.kind = ViewHttpReplyKind::BAD_REQUEST;
             } else {
-                try {
-                    reply = handler_(parsed);
-                } catch (...) {
-                    reply = ViewHttpReply{};
+                const auto parseResult = ParseRequest(request, parsed);
+                if (parseResult == RequestParseResult::BAD_REQUEST) {
+                    reply.kind = ViewHttpReplyKind::BAD_REQUEST;
+                } else if (parseResult == RequestParseResult::NOT_FOUND) {
+                    reply.kind = ViewHttpReplyKind::NOT_FOUND;
+                } else if (parseResult == RequestParseResult::METHOD_NOT_ALLOWED) {
+                    reply.kind = ViewHttpReplyKind::METHOD_NOT_ALLOWED;
+                } else {
+                    try {
+                        reply = handler_(parsed);
+                    } catch (...) {
+                        reply = ViewHttpReply{};
+                    }
                 }
             }
             const auto response = BuildResponse(reply.kind, reply.body);
@@ -380,6 +410,9 @@ private:
                 CloseFd(client);
                 break;
             }
+            // v1 intentionally serves one accepted connection at a time. The
+            // absolute per-connection deadline bounds occupancy; deployments
+            // must size the worker set around this serial processing constraint.
             activeClientFd_.store(client);
             HandleConnection(client);
             activeClientFd_.store(-1);

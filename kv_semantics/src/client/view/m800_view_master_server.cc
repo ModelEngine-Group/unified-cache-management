@@ -267,13 +267,6 @@ public:
         return FetchAndPublish(universe);
     }
 
-    Status GetGlobalView(GlobalView& view) override
-    {
-        (void)view;
-        return MasterError(StatusCode::UNSUPPORTED,
-                           "GetGlobalView is unsupported for a multi-namespace M800 master");
-    }
-
 private:
     Status InitializeAgent()
     {

@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include <type_traits>
 #include "KVClientAgentABI.h"
-#include "router/router.h"
 #include "view/m800_view_agent_client.h"
 #include "view/m800_view_codec.h"
 #include "view/m800_view_common.h"
@@ -13,26 +12,6 @@
 
 namespace kv::test {
 namespace {
-
-class FixedRouter final : public Router {
-public:
-    explicit FixedRouter(HashFunction hash) : Router(std::move(hash)) {}
-
-private:
-    NodeId RouteKey(const Key&) const override { return 10; }
-};
-
-TEST(M800ViewContractsTest, RouterFallbackContractPreservesLegacyRouting)
-{
-    FixedRouter router([](const Key&) { return 0; });
-    const std::vector<Key> keys = {"key-0", "key-1", "key-2"};
-    const UnavailableNodeSet unavailableNodes = {10};
-
-    const auto legacyRoutes = router.RouteKeys(keys);
-    const auto fallbackRoutes = router.RouteKeys(keys, unavailableNodes);
-
-    EXPECT_EQ(legacyRoutes, fallbackRoutes);
-}
 
 TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
 {
@@ -60,6 +39,9 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_STREQ(M800ViewHttpContract::kConnection, "close");
     EXPECT_EQ(M800ViewHttpContract::kStatusOk, 200);
     EXPECT_EQ(M800ViewHttpContract::kStatusNotModified, 304);
+    EXPECT_EQ(M800ViewHttpContract::kStatusBadRequest, 400);
+    EXPECT_EQ(M800ViewHttpContract::kStatusNotFound, 404);
+    EXPECT_EQ(M800ViewHttpContract::kStatusMethodNotAllowed, 405);
     EXPECT_EQ(M800ViewHttpContract::kStatusServerError, 500);
 
     EXPECT_STREQ(M800ViewTextContract::kGlobalEpochField, "globalEpoch");

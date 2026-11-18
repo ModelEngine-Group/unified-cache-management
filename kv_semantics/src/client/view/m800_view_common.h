@@ -77,6 +77,9 @@ struct M800ViewHttpContract {
     static constexpr const char* kConnection = "close";
     static constexpr int kStatusOk = 200;
     static constexpr int kStatusNotModified = 304;
+    static constexpr int kStatusBadRequest = 400;
+    static constexpr int kStatusNotFound = 404;
+    static constexpr int kStatusMethodNotAllowed = 405;
     static constexpr int kStatusServerError = 500;
 };
 

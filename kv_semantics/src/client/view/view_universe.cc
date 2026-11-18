@@ -78,6 +78,20 @@ bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs)
     return true;
 }
 
+std::string BuildViewPublishedLog(KvNsId nsId, std::uint64_t previousEpoch,
+                                  const GlobalView& nextView)
+{
+    return "ns=" + std::to_string(nsId) + " view published, epocj=" +
+           std::to_string(previousEpoch) + "->" + std::to_string(nextView.viewEpoch) +
+           ", asu_count=" + std::to_string(nextView.asuMap.size());
+}
+
+std::string BuildViewNotPublishedLog(KvNsId nsId, std::uint64_t currentEpoch)
+{
+    return "ns=" + std::to_string(nsId) + " view not published, epocj unchanged=" +
+           std::to_string(currentEpoch);
+}
+
 }  // namespace detail
 
 namespace {
@@ -96,6 +110,33 @@ bool GlobalViewEquals(const GlobalView& lhs, const GlobalView& rhs)
         }
     }
     return true;
+}
+
+void LogViewsNotPublished(const std::unordered_map<KvNsId, GlobalView>& views,
+                          std::uint64_t currentEpoch)
+{
+    std::vector<KvNsId> ids;
+    ids.reserve(views.size());
+    for (const auto& item : views) { ids.emplace_back(item.first); }
+    std::sort(ids.begin(), ids.end());
+    for (const auto nsId : ids) {
+        KV_INFO_UNLIMITED("{}", detail::BuildViewNotPublishedLog(nsId, currentEpoch));
+    }
+}
+
+void LogViewsPublished(const std::unordered_map<KvNsId, GlobalView>& currentViews,
+                       const std::unordered_map<KvNsId, GlobalView>& nextViews)
+{
+    std::vector<KvNsId> ids;
+    ids.reserve(nextViews.size());
+    for (const auto& item : nextViews) { ids.emplace_back(item.first); }
+    std::sort(ids.begin(), ids.end());
+    for (const auto nsId : ids) {
+        const auto currentIt = currentViews.find(nsId);
+        const auto previousEpoch = currentIt == currentViews.end() ? 0 : currentIt->second.viewEpoch;
+        const auto& nextView = nextViews.at(nsId);
+        KV_INFO_UNLIMITED("{}", detail::BuildViewPublishedLog(nsId, previousEpoch, nextView));
+    }
 }
 
 class ViewUniverseImpl final : public ViewUniverse {
@@ -124,15 +165,18 @@ public:
         std::lock_guard<std::mutex> lock{writeMutex_};
         const auto current = LoadState();
         if (current->globalEpoch == 0 && !current->views.empty() && nextEpoch == 0) {
+            LogViewsNotPublished(nextViews, current->globalEpoch);
             KV_DEBUG("ViewUniverse publish no-op: equal zero globalEpoch with existing views");
             return Status::OK();
         }
         if (current->globalEpoch != 0) {
             if (nextEpoch == current->globalEpoch) {
+                LogViewsNotPublished(nextViews, current->globalEpoch);
                 KV_DEBUG("ViewUniverse publish no-op: equal globalEpoch={}", nextEpoch);
                 return Status::OK();
             }
             if (nextEpoch == 0 || nextEpoch < current->globalEpoch) {
+                LogViewsNotPublished(nextViews, current->globalEpoch);
                 KV_DEBUG("ViewUniverse publish no-op: stale globalEpoch={}, currentGlobalEpoch={}",
                          nextEpoch, current->globalEpoch);
                 return Status::OK();
@@ -161,14 +205,9 @@ public:
         std::sort(changedNs.begin(), changedNs.end());
 
         StoreState(next);
-        for (const auto nsId : addedNs) {
-            KV_INFO("ViewUniverse added namespace: nsId={}, globalEpoch={}", nsId, nextEpoch);
-        }
+        LogViewsPublished(current->views, next->views);
         for (const auto nsId : removedNs) {
             KV_INFO("ViewUniverse removed namespace: nsId={}, globalEpoch={}", nsId, nextEpoch);
-        }
-        for (const auto nsId : changedNs) {
-            KV_INFO("ViewUniverse changed namespace: nsId={}, globalEpoch={}", nsId, nextEpoch);
         }
         KV_INFO(
             "ViewUniverse published complete snapshot: previousGlobalEpoch={}, globalEpoch={}, "

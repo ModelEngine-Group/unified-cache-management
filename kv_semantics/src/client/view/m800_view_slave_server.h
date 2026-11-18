@@ -31,11 +31,12 @@
 namespace kv {
 
 // Slave-side service boundary. It fetches the text protocol from the master
-// and exposes the decoded universe.
+// and exposes the decoded universe. Epoch acceptance is owned exclusively by
+// ViewUniverse::PublishAll; the slave keeps no independent epoch cache.
 class M800ViewSlaveServer : public ViewServer {
 public:
     // M800 slaves must decode the master's full universe.
-    virtual Status GetAllViews(ViewUniverse& universe) = 0;
+    virtual Status GetAllViews(ViewUniverse& universe) override = 0;
 
     virtual void Stop() = 0;
 };

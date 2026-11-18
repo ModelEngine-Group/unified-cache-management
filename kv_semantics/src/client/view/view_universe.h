@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "kv_types.h"
@@ -35,6 +36,9 @@ namespace kv {
 namespace detail {
 // Structural comparison used by snapshot change detection and unit tests.
 bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs);
+std::string BuildViewPublishedLog(KvNsId nsId, std::uint64_t previousEpoch,
+                                  const GlobalView& nextView);
+std::string BuildViewNotPublishedLog(KvNsId nsId, std::uint64_t currentEpoch);
 }  // namespace detail
 
 // ViewUniverse defines the update/query contract for the complete

@@ -19,6 +19,20 @@ std::string GetArg(int argc, const char** argv, const std::string& name, const s
     return fallback;
 }
 
+std::vector<std::size_t> ParseCounts(const std::string& text)
+{
+    std::vector<std::size_t> counts;
+    std::size_t begin{0};
+    while (begin <= text.size()) {
+        const auto end = text.find(',', begin);
+        const auto token = text.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        if (!token.empty()) { counts.emplace_back(std::strtoull(token.c_str(), nullptr, 10)); }
+        if (end == std::string::npos) { break; }
+        begin = end + 1;
+    }
+    return counts;
+}
+
 int Fail(const std::string& message, const kv::Status* status = nullptr)
 {
     std::cerr << "[FAIL] " << message;
@@ -50,6 +64,8 @@ int Run(int argc, const char** argv)
     const auto forbiddenPool = GetArg(argc, argv, "--forbid-pool");
     const auto expectedAddPool = GetArg(argc, argv, "--expect-add");
     const auto expectedRemovePool = GetArg(argc, argv, "--expect-remove");
+    const auto watchAsuPool = GetArg(argc, argv, "--watch-asu-pool");
+    const auto expectedAsuCounts = ParseCounts(GetArg(argc, argv, "--expect-asu-counts"));
     const auto watchSecondsArg = GetArg(argc, argv, "--watch-seconds", "0");
     const auto refreshIntervalMsArg = GetArg(argc, argv, "--refresh-interval-ms", "30000");
     const auto watchSeconds = static_cast<unsigned>(std::strtoul(watchSecondsArg.c_str(), nullptr, 10));
@@ -57,7 +73,12 @@ int Run(int argc, const char** argv)
         std::cerr << "usage: m800-live-smoke --mon-host <host:port> --client-key <key> "
                      "[--client-name client.admin] [--agent-lib path] [--listen-addr 127.0.0.1:19100] "
                      "[--require-pool name] [--forbid-pool name] [--expect-add name] [--expect-remove name] "
-                     "[--watch-seconds N] [--refresh-interval-ms N]\n";
+                     "[--watch-seconds N] [--refresh-interval-ms N] "
+                     "[--watch-asu-pool name --expect-asu-counts 3,5,4,5]\n";
+        return 2;
+    }
+    if (!expectedAsuCounts.empty() && (watchAsuPool.empty() || watchSeconds == 0)) {
+        std::cerr << "--expect-asu-counts requires --watch-asu-pool and --watch-seconds\n";
         return 2;
     }
 
@@ -157,14 +178,52 @@ int Run(int argc, const char** argv)
         const auto expectedRemoveId = expectedRemovePool.empty()
                                           ? kv::KvNsId{0}
                                           : kv::M800PoolNameToKvNsId(expectedRemovePool);
+        const auto watchAsuId = watchAsuPool.empty() ? kv::KvNsId{0}
+                                                     : kv::M800PoolNameToKvNsId(watchAsuPool);
+        std::size_t asuSequenceIndex{0};
+        bool asuSequenceDone = expectedAsuCounts.empty();
+        bool hasLastAsuCount{false};
+        std::size_t lastAsuCount{0};
+        std::uint64_t lastAsuChangeEpoch{0};
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(watchSeconds);
-        while (std::chrono::steady_clock::now() < deadline && !(addSeen && removeSeen)) {
+        while (std::chrono::steady_clock::now() < deadline &&
+               !(addSeen && removeSeen && asuSequenceDone)) {
             const auto masterStatus = master->GetAllViews(*universe);
             if (!masterStatus.ok()) { return Fail("Master refresh failed during watch", &masterStatus); }
             const auto workerStatus = worker->GetAllViews(*universe);
             if (!workerStatus.ok()) { return Fail("Slave refresh failed during watch", &workerStatus); }
-            std::cout << "[WATCH] epoch=" << universe->GetGlobalEpoch()
-                      << " nsCount=" << universe->GetAllNsIds().size() << '\n';
+
+            std::size_t currentAsuCount{0};
+            if (!watchAsuPool.empty()) {
+                kv::GlobalView asuView;
+                if (universe->GetView(watchAsuId, asuView).ok()) { currentAsuCount = asuView.asuMap.size(); }
+            }
+            const auto currentEpoch = universe->GetGlobalEpoch();
+            std::cout << "[WATCH] epoch=" << currentEpoch
+                      << " nsCount=" << universe->GetAllNsIds().size();
+            if (!watchAsuPool.empty()) { std::cout << " asuCount=" << currentAsuCount; }
+            std::cout << '\n';
+
+            if (!watchAsuPool.empty()) {
+                if (hasLastAsuCount && currentAsuCount != lastAsuCount) {
+                    if (currentEpoch <= lastAsuChangeEpoch) {
+                        return Fail("ASU count changed without a newer globalEpoch");
+                    }
+                    std::cout << "[OK] ASU count changed " << lastAsuCount << "->" << currentAsuCount
+                              << " at epoch " << lastAsuChangeEpoch << "->" << currentEpoch << '\n';
+                    lastAsuCount = currentAsuCount;
+                    lastAsuChangeEpoch = currentEpoch;
+                } else if (!hasLastAsuCount) {
+                    lastAsuCount = currentAsuCount;
+                    lastAsuChangeEpoch = currentEpoch;
+                    hasLastAsuCount = true;
+                }
+            }
+            if (!asuSequenceDone && currentAsuCount == expectedAsuCounts[asuSequenceIndex]) {
+                std::cout << "[OK] expected ASU count observed: " << currentAsuCount << '\n';
+                ++asuSequenceIndex;
+                asuSequenceDone = asuSequenceIndex == expectedAsuCounts.size();
+            }
             if (!addSeen) {
                 kv::GlobalView addedView;
                 if (universe->GetView(expectedAddId, addedView).ok()) {
@@ -179,10 +238,14 @@ int Run(int argc, const char** argv)
                     std::cout << "[OK] expected namespace disappeared: " << expectedRemovePool << '\n';
                 }
             }
-            if (!(addSeen && removeSeen)) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
+            if (!(addSeen && removeSeen && asuSequenceDone)) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
         }
-        if (!addSeen || !removeSeen) { return Fail("dynamic namespace expectation timed out"); }
-        std::cout << "[OK] dynamic namespace add/remove validated\n";
+        if (!addSeen || !removeSeen || !asuSequenceDone) {
+            return Fail("dynamic namespace/ASU expectation timed out");
+        }
+        std::cout << "[OK] dynamic namespace/ASU transitions validated\n";
     }
 
     std::cout << "[OK] M800 live Master->HTTP->Slave view validation completed, namespaces="

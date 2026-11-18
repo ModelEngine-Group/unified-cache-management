@@ -504,15 +504,19 @@ TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndPreservesFailedNa
     EXPECT_EQ(viewB.asuMap.count(20), 1);
     EXPECT_EQ(viewB.viewEpoch, 124);
 
+    GlobalView legacyMasterView;
+    GlobalView legacyWorkerView;
+    ASSERT_TRUE(master->GetGlobalView(legacyMasterView).ok());
+    ASSERT_TRUE(worker->GetGlobalView(legacyWorkerView).ok());
+    EXPECT_EQ(legacyMasterView.viewId, universe->GetAllNsIds().front());
+    EXPECT_EQ(legacyWorkerView.viewId, universe->GetAllNsIds().front());
+
     SetNamespaces(state, 125, {{"pool-a", {}}, {"pool-b", {}}});
     EXPECT_EQ(master->GetAllViews(*refreshed).code, StatusCode::NOT_FOUND);
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
     EXPECT_EQ(universe->GetGlobalEpoch(), 124);
     EXPECT_EQ(universe->GetAllNsIds().size(), 2);
 
-    GlobalView unsupported;
-    EXPECT_EQ(master->GetGlobalView(unsupported).code, StatusCode::UNSUPPORTED);
-    EXPECT_EQ(worker->GetGlobalView(unsupported).code, StatusCode::UNSUPPORTED);
     worker->Stop();
     master->Stop();
 }
@@ -592,9 +596,6 @@ TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
     setResponse(ViewHttpReplyKind::NOT_MODIFIED, "");
     EXPECT_TRUE(worker->GetAllViews(*universe).ok());
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
-    auto temporaryEmpty = CreateViewUniverse();
-    EXPECT_TRUE(worker->GetAllViews(*temporaryEmpty).ok());
-    EXPECT_TRUE(temporaryEmpty->Empty());
 
     worker->Stop();
     server->Stop();
@@ -630,6 +631,52 @@ TEST(M800ViewSlaveTest, EqualEpochDoesNotReplaceUniverse)
     server->Stop();
 }
 
+TEST(M800ViewSlaveTest, EmptyOutputForcesFullDownloadAfterPreviousFetch)
+{
+    const auto port = AllocatePort();
+    auto server = CreateViewHttpServer(300);
+    std::mutex requestMutex;
+    std::vector<std::uint64_t> requestedEpochs;
+    ASSERT_TRUE(server->Start("127.0.0.1:" + std::to_string(port),
+                              [&](const ViewHttpRequest& request) {
+                                  {
+                                      std::lock_guard<std::mutex> lock(requestMutex);
+                                      requestedEpochs.emplace_back(request.sinceEpoch);
+                                  }
+                                  if (request.sinceEpoch == 0) {
+                                      return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW,
+                                                           MakeViewTextEpoch(7)};
+                                  }
+                                  return ViewHttpReply{ViewHttpReplyKind::NOT_MODIFIED, {}};
+                              })
+                    .ok());
+
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"127.0.0.1:" + std::to_string(port)};
+    config.httpTimeoutMs = 300;
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto first = CreateViewUniverse();
+    ASSERT_TRUE(worker->GetAllViews(*first).ok());
+    ASSERT_EQ(first->GetGlobalEpoch(), 7);
+
+    auto emptyOutput = CreateViewUniverse();
+    ASSERT_TRUE(worker->GetAllViews(*emptyOutput).ok());
+    EXPECT_FALSE(emptyOutput->Empty());
+    EXPECT_EQ(emptyOutput->GetGlobalEpoch(), 7);
+    ASSERT_TRUE(worker->GetAllViews(*first).ok());
+
+    {
+        std::lock_guard<std::mutex> lock(requestMutex);
+        ASSERT_EQ(requestedEpochs.size(), 3);
+        EXPECT_EQ(requestedEpochs[0], 0);
+        EXPECT_EQ(requestedEpochs[1], 0);
+        EXPECT_EQ(requestedEpochs[2], 7);
+    }
+    worker->Stop();
+    server->Stop();
+}
+
 TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
 {
     const auto portA = AllocatePort();
@@ -659,7 +706,7 @@ TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
     serverB->Stop();
 }
 
-TEST(M800ViewSlaveTest, AllStaleMastersReturnOkWithoutChangingUniverse)
+TEST(M800ViewSlaveTest, StaleResponseIsNoOpInsidePublishAllWithoutSecondMaster)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -690,13 +737,13 @@ TEST(M800ViewSlaveTest, AllStaleMastersReturnOkWithoutChangingUniverse)
     }
     EXPECT_TRUE(worker->GetAllViews(*universe).ok());
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
-    EXPECT_EQ(requestsB.load(), 1);
+    EXPECT_EQ(requestsB.load(), 0);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
 }
 
-TEST(M800ViewSlaveTest, StaleMasterFollowedByFailureReturnsActualFailure)
+TEST(M800ViewSlaveTest, StaleResponseReturnsOkWithoutTryingFailedBackup)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyMutex = std::make_shared<std::mutex>();
@@ -717,13 +764,13 @@ TEST(M800ViewSlaveTest, StaleMasterFollowedByFailureReturnsActualFailure)
         std::lock_guard<std::mutex> guard(*bodyMutex);
         *body = MakeViewTextEpoch(9);
     }
-    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::CONNECTION_ERROR);
+    EXPECT_TRUE(worker->GetAllViews(*universe).ok());
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
     worker->Stop();
     server->Stop();
 }
 
-TEST(M800ViewSlaveTest, NewerMasterIsAcceptedAfterStaleMaster)
+TEST(M800ViewSlaveTest, StaleFirstMasterDoesNotFallThroughToNewerBackup)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(11));
@@ -751,14 +798,14 @@ TEST(M800ViewSlaveTest, NewerMasterIsAcceptedAfterStaleMaster)
         *bodyA = MakeViewTextEpoch(9);
     }
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 11);
-    EXPECT_EQ(requestsB.load(), 1);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+    EXPECT_EQ(requestsB.load(), 0);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
 }
 
-TEST(M800ViewSlaveTest, PreexistingUniverseEpochParticipatesInStaleSelection)
+TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(15));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(25));
@@ -782,8 +829,8 @@ TEST(M800ViewSlaveTest, PreexistingUniverseEpochParticipatesInStaleSelection)
     config.httpTimeoutMs = 300;
     auto worker = CreateM800ViewSlaveServer(config);
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 25);
-    EXPECT_EQ(requestsB.load(), 1);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 20);
+    EXPECT_EQ(requestsB.load(), 0);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
@@ -875,6 +922,17 @@ TEST(M800ViewSlaveTest, MissingMasterAddressMessageMentionsBothKeys)
     EXPECT_NE(status.message.find("view.master_addrs"), std::string::npos);
     EXPECT_NE(status.message.find("view.master_addr"), std::string::npos);
     worker->Stop();
+}
+
+TEST(M800ViewSlaveTest, HostnameMasterAddressIsRejected)
+{
+    M800ViewServerConfig config;
+    config.role = M800ViewRole::SLAVE;
+    config.masterAddrs = {"localhost:9100"};
+    auto worker = CreateM800ViewSlaveServer(config);
+    auto universe = CreateViewUniverse();
+    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_TRUE(universe->Empty());
 }
 
 TEST(M800ViewSlaveTest, WorkerBeforeMasterKeepsOutputUnchanged)

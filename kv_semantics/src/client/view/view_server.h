@@ -33,6 +33,7 @@
 namespace kv {
 
 struct KvClientConfig;
+class ViewUniverse;
 
 // GlobalView carries the routing membership and view metadata.
 struct GlobalView {
@@ -48,8 +49,14 @@ class ViewServer {
 public:
     // Destroys the view server interface.
     virtual ~ViewServer() = default;
-    // Fetches the current global view.
-    virtual Status GetGlobalView(GlobalView& view) = 0;
+    // Fetches the first namespace as a legacy single global view. The default
+    // adapter delegates to GetAllViews; legacy implementations instead override
+    // this method and receive the default GetAllViews adapter below.
+    virtual Status GetGlobalView(GlobalView& view);
+    // Fetches all namespaces. The default adapter wraps a legacy GetGlobalView
+    // as one namespace. A concrete implementation must override at least one of
+    // the two methods so the two compatibility adapters cannot recurse.
+    virtual Status GetAllViews(ViewUniverse& universe);
     // Returns whether a fetched view should replace the published view.
     virtual bool ShouldPublishView(const GlobalView& publishedView,
                                    const GlobalView& fetchedView) const;

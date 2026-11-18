@@ -24,6 +24,7 @@
 #include "view/m800_view_slave_server.h"
 
 #include <algorithm>
+#include <arpa/inet.h>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -76,6 +77,16 @@ bool ParsePort(std::string_view text, std::uint16_t& port)
     return true;
 }
 
+bool IsNumericHost(const std::string& host, bool ipv6)
+{
+    if (ipv6) {
+        in6_addr parsed{};
+        return inet_pton(AF_INET6, host.c_str(), &parsed) == 1;
+    }
+    in_addr parsed{};
+    return inet_pton(AF_INET, host.c_str(), &parsed) == 1;
+}
+
 bool ParseMasterAddress(const std::string& text, MasterAddress& address)
 {
     if (text.empty() || text.find_first_of("\r\n\0 ") != std::string::npos) { return false; }
@@ -90,13 +101,13 @@ bool ParseMasterAddress(const std::string& text, MasterAddress& address)
                 return false;
             }
         }
-        return true;
+        return IsNumericHost(address.host, true);
     }
     const auto colonCount = static_cast<std::size_t>(std::count(text.begin(), text.end(), ':'));
     if (colonCount >= 2) {
         address.host = text;
         address.ipv6 = true;
-        return true;
+        return IsNumericHost(address.host, true);
     }
     if (colonCount == 1) {
         const auto colon = text.find(':');
@@ -105,7 +116,7 @@ bool ParseMasterAddress(const std::string& text, MasterAddress& address)
     } else {
         address.host = text;
     }
-    return !address.host.empty();
+    return !address.host.empty() && IsNumericHost(address.host, false);
 }
 
 std::uint32_t RemainingMs(std::chrono::steady_clock::time_point deadline)
@@ -343,6 +354,7 @@ Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_NUMERICHOST;
     addrinfo* rawAddresses{nullptr};
     const auto service = std::to_string(address.port);
     const int gaiResult = getaddrinfo(address.host.c_str(), service.c_str(), &hints, &rawAddresses);
@@ -403,17 +415,20 @@ public:
         }
 
         Status lastFailure = SlaveError(StatusCode::CONNECTION_ERROR, "no master is available");
-        const auto effectiveEpoch = std::max(cachedEpoch_, universe.GetGlobalEpoch());
+        const auto callerEpoch = universe.GetGlobalEpoch();
+        // The conditional request belongs to this output object. Epoch
+        // acceptance is decided only by ViewUniverse::PublishAll, not by a
+        // second worker-local epoch cache or a slave-side comparison.
+        const auto requestEpoch = universe.Empty() ? std::uint64_t{0} : callerEpoch;
         const auto timeout = config_.httpTimeoutMs == 0 ? std::uint64_t{2000} : config_.httpTimeoutMs;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
-        std::size_t staleMasterCount{0};
         for (const auto& address : addresses) {
             if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
             if (std::chrono::steady_clock::now() >= deadline) {
                 return SlaveError(StatusCode::TIMEOUT, "worker fetch deadline expired");
             }
             HttpResponse response;
-            auto status = FetchFromMaster(address, effectiveEpoch, deadline, activeFd_, stopRequested_,
+            auto status = FetchFromMaster(address, requestEpoch, deadline, activeFd_, stopRequested_,
                                           response);
             if (!status.ok()) {
                 if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
@@ -421,9 +436,9 @@ public:
                 continue;
             }
             if (response.status == 304) {
-                if (effectiveEpoch == 0) {
+                if (requestEpoch == 0 || universe.Empty()) {
                     lastFailure = SlaveError(StatusCode::INTERNAL_ERROR,
-                                             "master returned 304 without a known local epoch");
+                                             "master returned 304 without a populated caller view");
                     continue;
                 }
                 return Status::OK();
@@ -445,13 +460,6 @@ public:
                 lastFailure = SlaveError(StatusCode::INTERNAL_ERROR, "master returned an empty universe");
                 continue;
             }
-            const auto nextEpoch = decoded->GetGlobalEpoch();
-            if (effectiveEpoch != 0 && nextEpoch < effectiveEpoch) {
-                ++staleMasterCount;
-                KV_WARN("Master {} returned stale epoch {} < effective epoch {}, trying next master",
-                        address, nextEpoch, effectiveEpoch);
-                continue;
-            }
             status = universe.PublishAll(*decoded);
             if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
             if (std::chrono::steady_clock::now() >= deadline) {
@@ -461,15 +469,9 @@ public:
                 lastFailure = std::move(status);
                 continue;
             }
-            cachedEpoch_ = std::max(cachedEpoch_, universe.GetGlobalEpoch());
             return Status::OK();
         }
         if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
-        if (staleMasterCount == addresses.size()) {
-            // Every address returned a valid, non-empty but stale view. This is
-            // an intentional no-op, not a new publication or an error.
-            return Status::OK();
-        }
         return lastFailure;
     }
 
@@ -479,15 +481,7 @@ public:
         const int fd = activeFd_.load();
         if (fd >= 0) { shutdown(fd, SHUT_RDWR); }
         std::lock_guard<std::mutex> guard(mutex_);
-        cachedEpoch_ = 0;
         stopRequested_.store(false);
-    }
-
-    Status GetGlobalView(GlobalView& view) override
-    {
-        (void)view;
-        return SlaveError(StatusCode::UNSUPPORTED,
-                          "GetGlobalView is unsupported for a multi-namespace M800 worker");
     }
 
 private:
@@ -495,7 +489,6 @@ private:
     std::mutex mutex_;
     std::atomic_int activeFd_{-1};
     std::atomic<bool> stopRequested_{false};
-    std::uint64_t cachedEpoch_{0};
 };
 
 }  // namespace

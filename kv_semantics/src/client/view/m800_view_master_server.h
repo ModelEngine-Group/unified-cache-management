@@ -46,7 +46,7 @@ public:
     virtual void Stop() = 0;
 
     // M800 masters must return a real multi-namespace universe.
-    virtual Status GetAllViews(ViewUniverse& universe) = 0;
+    virtual Status GetAllViews(ViewUniverse& universe) override = 0;
 };
 
 std::shared_ptr<M800ViewMasterServer> CreateM800ViewMasterServer(
