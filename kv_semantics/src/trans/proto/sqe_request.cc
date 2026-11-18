@@ -42,7 +42,7 @@ namespace {
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
 
-Status ValidateSqeMrKeys(const BatchView<KVBuffer>& entries)
+Status ValidateSqeMrKeys(const BatchView<ResolvedKVBuffer>& entries)
 {
     for (std::size_t index = 0; index < entries.size; ++index) {
         if (!entries[index].mrKey.has_value()) {
@@ -106,15 +106,15 @@ void SetSubBatchBuildFailed(TransportSubBatchContext& subBatchContext, const Sta
 }
 
 struct SubBatchRequestSource {
-    const BatchView<KVBuffer>* entries{nullptr};
-    const BatchView<CacheKey>* keys{nullptr};
+    const BatchView<ResolvedKVBuffer>* entries{nullptr};
+    const BatchView<ResolvedCacheKey>* keys{nullptr};
 
-    static SubBatchRequestSource FromEntries(const BatchView<KVBuffer>& value)
+    static SubBatchRequestSource FromEntries(const BatchView<ResolvedKVBuffer>& value)
     {
         return SubBatchRequestSource{&value, nullptr};
     }
 
-    static SubBatchRequestSource FromKeys(const BatchView<CacheKey>& value)
+    static SubBatchRequestSource FromKeys(const BatchView<ResolvedCacheKey>& value)
     {
         return SubBatchRequestSource{nullptr, &value};
     }
@@ -167,8 +167,9 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
 }
 
 KvBatchStoreRequest BuildBatchStoreRequest(
-    const BatchView<KVBuffer>& entries, const std::unordered_map<std::string, std::string>& attrs,
-    std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
+    const BatchView<ResolvedKVBuffer>& entries,
+    const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
+    const ScatterGatherEntry& flagBuffer)
 {
     KvBatchStoreRequest request;
     request.cid = cid;
@@ -183,7 +184,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchStoreEntry entry;
-        entry.key = entries[index].key;
+        entry.key = entries[index].key.keyBytes;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = *entries[index].mrKey;
@@ -193,7 +194,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     return request;
 }
 
-KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
+KvStoreRequest BuildStoreRequest(const ResolvedKVBuffer& entry,
                                  const std::unordered_map<std::string, std::string>& attrs,
                                  std::uint16_t cid)
 {
@@ -208,11 +209,11 @@ KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
-    request.key = entry.key;
+    request.key = entry.key.keyBytes;
     return request;
 }
 
-KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
+KvRetrieveRequest BuildRetrieveRequest(const ResolvedKVBuffer& entry,
                                        const std::unordered_map<std::string, std::string>& attrs,
                                        std::uint16_t cid)
 {
@@ -225,13 +226,14 @@ KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
-    request.key = entry.key;
+    request.key = entry.key.keyBytes;
     return request;
 }
 
 KvBatchRetrieveRequest BuildBatchRetrieveRequest(
-    const BatchView<KVBuffer>& entries, const std::unordered_map<std::string, std::string>& attrs,
-    std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
+    const BatchView<ResolvedKVBuffer>& entries,
+    const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
+    const ScatterGatherEntry& flagBuffer)
 {
     KvBatchRetrieveRequest request;
     request.cid = cid;
@@ -244,7 +246,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
         KvBatchRetrieveEntry entry;
-        entry.key = entries[index].key;
+        entry.key = entries[index].key.keyBytes;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
         entry.mr_key = *entries[index].mrKey;
@@ -254,17 +256,17 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     return request;
 }
 
-std::vector<CacheKey> CopyKeys(const BatchView<CacheKey>& keys)
+std::vector<BinaryKey> CopyKeys(const BatchView<ResolvedCacheKey>& keys)
 {
-    std::vector<CacheKey> requestKeys;
+    std::vector<BinaryKey> requestKeys;
     requestKeys.reserve(keys.size);
     for (std::size_t index = 0; index < keys.size; ++index) {
-        requestKeys.emplace_back(keys[index]);
+        requestKeys.emplace_back(keys[index].keyBytes);
     }
     return requestKeys;
 }
 
-KvDeleteRequest BuildDeleteRequest(const BatchView<CacheKey>& keys,
+KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys,
                                    const std::unordered_map<std::string, std::string>& attrs,
                                    std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
 {
@@ -279,7 +281,7 @@ KvDeleteRequest BuildDeleteRequest(const BatchView<CacheKey>& keys,
     return request;
 }
 
-KvExistRequest BuildExistRequest(const BatchView<CacheKey>& keys,
+KvExistRequest BuildExistRequest(const BatchView<ResolvedCacheKey>& keys,
                                  const std::unordered_map<std::string, std::string>& attrs,
                                  std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
 {

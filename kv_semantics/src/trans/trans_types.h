@@ -29,22 +29,38 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_types.h"
 
 namespace kv {
 
 inline std::string_view CacheKeyView(const CacheKey& key)
 {
+    if (const auto* binary = key.TryGetBinaryKey()) {
+        return {reinterpret_cast<const char*>(binary->data()), binary->size()};
+    }
+    return *key.TryGetStringKey();
+}
+
+inline std::string_view CacheKeyView(const BinaryKey& key)
+{
     return {reinterpret_cast<const char*>(key.data()), key.size()};
 }
 
-inline std::string CacheKeyToHex(const CacheKey& key)
+inline std::string_view CacheKeyView(const ResolvedCacheKey& key)
+{
+    return CacheKeyView(key.keyBytes);
+}
+
+template <typename Key>
+inline std::string CacheKeyToHex(const Key& key)
 {
     static constexpr char kHex[] = "0123456789abcdef";
+    const auto view = CacheKeyView(key);
     std::string text;
-    text.reserve(key.size() * 2);
-    for (auto byte : key) {
-        const auto value = static_cast<unsigned char>(std::to_integer<unsigned char>(byte));
+    text.reserve(view.size() * 2);
+    for (auto byte : view) {
+        const auto value = static_cast<unsigned char>(byte);
         text.push_back(kHex[value >> 4]);
         text.push_back(kHex[value & 0x0F]);
     }

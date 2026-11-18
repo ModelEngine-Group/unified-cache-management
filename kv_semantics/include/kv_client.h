@@ -41,18 +41,18 @@ public:
     virtual Status Shutdown() = 0;
 
     // Submits an asynchronous existence query and returns a task ID for retrieving its result.
-    virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                              const IoOptions& options = {}) = 0;
     // Submits asynchronous reads into the supplied buffers and returns a task ID.
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    // Submits asynchronous writes from the supplied buffers after the optional prerequisite
-    // callback. Runs prerequisite on the Client worker before dispatch. Empty means no
-    // prerequisite. Return a failure to complete the task without sending; exceptions become
-    // INTERNAL_ERROR. The callback runs once and may block subsequent tasks. It must set any
-    // required device context and keep captured events/streams alive until it returns.
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                             const IoOptions& options = {}) = 0;
+    // Submits asynchronous writes. The optional prerequisite runs once on the client worker
+    // before dispatch; its error completes the task without IO. Exceptions become INTERNAL_ERROR.
     virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                              std::function<Status()> prerequisite = {}) = 0;
+                              const IoOptions& options = {}) = 0;
     // Submits asynchronous deletion of the supplied keys and returns a task ID.
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                               const IoOptions& options = {}) = 0;
 
     // Checks completion without consuming the task, returning true also for an unknown task ID.
     virtual bool Check(TaskId taskId) = 0;
