@@ -3,8 +3,8 @@
 
 `HCCP_KV_OVER_ROCE` is the Ascend HCCP KV-over-RoCE data path. This guide covers
 building the provider, configuring it from `kv-test` and from ucm/vLLM, the
-runtime library contract, and the sizing rules. For the `kv-test` command
-workflow itself, see [kv-test](kv-test.md).
+runtime library contract, a checklist for the operator library, and the sizing
+rules. For the `kv-test` command workflow itself, see [kv-test](kv-test.md).
 
 ## Responsibilities
 
@@ -247,6 +247,115 @@ accepted by `DeleteConnections` and `GetServerCapabilities`.
 Each provider instance loads the library once and closes it on destruction.
 `dlopen` reference counting makes several instances safe, including several
 providers pointing at the same file.
+
+## Operator library checklist
+
+The header is the contract. The provider validates what it can and trusts the
+library for the rest, so an implementation that satisfies these points avoids the
+failure modes the provider cannot detect at runtime.
+
+### Symbols and version
+
+- [ ] Export the C ABI with `extern "C"` and the exact signatures from the
+      header; never let a C++ exception cross the boundary.
+- [ ] Export `CreateConnection`, `DeleteConnections` and `RegisterMemory`. A
+      missing required symbol makes provider construction fail.
+- [ ] If `GetAbiVersion` is exported, return `HCCP_KV_ROCE_ABI_VERSION`. Bump it
+      only with an incompatible change, and build against the same header the
+      provider uses.
+- [ ] Return only `HccpKvRoceReturnCode` values; any other value becomes
+      `INTERNAL_ERROR` or the operation fallback at the provider.
+
+### CreateConnection
+
+- [ ] Accept an empty `localIp`: the transport may not know the local address.
+      The provider only validates that `remoteIp` is non-empty.
+- [ ] Fill each `connectionHandles[i]` in place and keep the pointer: the
+      provider passes addresses of its own `HccpKvRoceQpc` records and copies
+      them into HBM afterwards.
+- [ ] Write at most `HCCP_KV_ROCE_QPC_BYTES` (256) bytes per QPC. The HBM slot is
+      exactly one QPC, so a larger payload corrupts the next slot.
+- [ ] Set `*connectionHandleNum` to `qpNum` on success and never write or report
+      more than `qpNum` entries.
+- [ ] Return a non-null, IP-pair-scoped `*connectionManager` on success. It must
+      stay valid until `DeleteConnections` succeeds for it.
+- [ ] On failure, return a nonzero code and leave no untracked QPs: either free
+      everything internally and return a null manager, or return a manager that
+      `DeleteConnections` can use to free the partial set.
+- [ ] Do not keep the `connectionHandles` array pointer; copy what you need. The
+      QPC pointers themselves stay valid until the IP pair is deleted.
+- [ ] Support several live IP pairs at once, one manager each.
+
+### DeleteConnections
+
+- [ ] Accept several managers in one call: the provider batches every complete
+      IP pair requested by the caller.
+- [ ] Treat the array as all-or-nothing. Return `HCCP_KV_ROCE_OK` only if every
+      manager was released; on a nonzero code the provider retries the same
+      managers later, so none of them may be consumed.
+- [ ] Free every QP owned by a manager, including QPs left behind by a partially
+      failed `CreateConnection`.
+- [ ] Keep the manager valid until the call returns success; the provider may
+      still use it through `GetServerCapabilities` while the pair is live.
+
+### RegisterMemory and UnregisterMemory
+
+- [ ] Register device memory only. Host addresses and unaligned or otherwise
+      unsupported ranges must fail with `HCCP_KV_ROCE_INVALID_ARGUMENT` instead
+      of being registered silently.
+- [ ] Fill every `memoryInfos[i]` (`addr`, `size`, `access`, `rkey`) and return a
+      nonzero `rkey` for each entry on success.
+- [ ] On a partial failure, report a nonzero `rkey` for the entries you did
+      register and return a nonzero code: the provider rolls those entries back
+      through `UnregisterMemory`.
+- [ ] `UnregisterMemory` receives the `HccpKvRoceMemoryInfo` values exactly as
+      reported; on a nonzero code keep them valid so the provider can retry.
+- [ ] Treat `localAddr` as opaque input; the provider passes it through unchanged
+      and may pass `0`.
+- [ ] Do not keep pointers to `descs` or `memoryInfos`; they are caller arrays.
+
+### Send
+
+- [ ] Fill one `statuses[i]` per batch and never write past `batchNum` entries.
+- [ ] Return `HCCP_KV_ROCE_OK` when only individual batches failed, and report
+      each failure in its `statuses` entry. Reserve a nonzero return for a
+      failure that affects the whole call.
+- [ ] Read the QPC from `batch->slotAddress`, which is device HBM owned by the
+      provider. Do not write it, free it, or cache it past `DeleteConnections`.
+- [ ] Use `sendBuffer`, `flagBuffer` and `len` as provided; the caller owns the
+      buffers and the provider only forwards the transport request.
+- [ ] Map `kernelCount` and `quietCount` to your launch semantics; the provider
+      forwards them unchanged.
+
+### GetServerCapabilities
+
+- [ ] Accept the IP-pair manager returned by `CreateConnection`.
+- [ ] Fill every field: `queueNum`, `ioQueueDepth`, `ioQueueKeyConcurrency`,
+      `connectionKeyConcurrency`, `singleValueMaxBytes`, `batchValueMaxBytes`,
+      `batchStoreKeys`, `batchLoadKeys`, `deleteKeys`, `queryKeys`, `keyLength`
+      and `kvCapabilities`. The provider copies them without further validation.
+
+### Cross-cutting
+
+- [ ] Tolerate concurrency: `Send` may run while another thread creates or
+      deletes a different IP pair.
+- [ ] Do not change the calling thread's ACL device or context; the provider
+      binds its own context around each call and restores the caller's.
+- [ ] Be safe to unload: the provider deletes live connections, unregisters its
+      MRs, then closes the library. Do not leave threads, timers or callbacks
+      that can run after `DeleteConnections` and `UnregisterMemory`.
+- [ ] Report every failure through the return code. Unrecognized codes become
+      `INTERNAL_ERROR`, which the caller sees as a failed operation.
+
+### What the provider cannot check
+
+- QPC payload size: only a compile-time assert on the provider side. A library
+  built with a different header silently overflows the slot.
+- Manager lifetime and delete atomicity: the provider only knows whether the
+  call returned zero.
+- Exceptions crossing the ABI: they are not caught on the library call path.
+- Library-side thread and context hygiene, and the honesty of the reported
+  capabilities.
 
 ## Sizing
 
