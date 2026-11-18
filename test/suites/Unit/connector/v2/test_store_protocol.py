@@ -51,6 +51,68 @@ def test_connector_sets_recompute_tokens_from_graph_mode(
     assert not ucm_connector.UCMConnector.requires_piecewise_for_cudagraph({})
 
 
+@pytest.mark.parametrize(
+    ("device_type", "launch_config", "expected", "warn"),
+    [
+        ("cuda", {}, False, False),
+        ("cuda", {"use_layerwise": False}, False, False),
+        ("cuda", {"use_layerwise": True}, False, True),
+        ("npu", {}, True, False),
+        ("npu", {"use_layerwise": True}, True, False),
+        ("npu", {"use_layerwise": False}, False, False),
+    ],
+)
+def test_runtime_resolves_layerwise_mode(
+    monkeypatch, device_type, launch_config, expected, warn
+):
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
+    from vllm.v1.core import kv_cache_utils
+
+    from ucm.integration.vllm.v2 import runtime
+
+    monkeypatch.setattr(runtime, "_load_launch_config", lambda _: launch_config)
+    monkeypatch.setattr(runtime, "_dump_raw_kv_cache_config", Mock())
+    monkeypatch.setattr(
+        kv_cache_utils, "resolve_kv_cache_block_sizes", lambda *_: (128, 128)
+    )
+    monkeypatch.setattr(
+        runtime.ParallelTopology,
+        "from_config",
+        Mock(return_value=runtime.ParallelTopology()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "parse_kv_cache_config",
+        Mock(return_value=NS(chunk_size=128, groups=())),
+    )
+    monkeypatch.setattr(runtime.envs, "VLLM_KV_CACHE_LAYOUT", "LBHNC")
+    logger = Mock()
+    monkeypatch.setattr(runtime, "logger", logger)
+    config = NS(
+        device_config=NS(device_type=device_type),
+        model_config=NS(
+            hf_text_config=NS(to_dict=lambda: {}),
+            hf_config=NS(model_type="qwen3"),
+            dtype="float16",
+            model="qwen3",
+            revision=None,
+            code_revision=None,
+        ),
+        speculative_config=None,
+        additional_config={},
+        cache_config=NS(
+            cache_dtype="auto", mamba_cache_dtype="auto", mamba_ssm_cache_dtype="auto"
+        ),
+        kv_transfer_config=NS(engine_id="test"),
+    )
+    context = runtime.UCMRuntimeContext.from_vllm_config(
+        config, KVConnectorRole.SCHEDULER, NS(kv_cache_layout="LBHNC")
+    )
+    assert context.use_layerwise is expected
+    assert context.load_async == (device_type == "cuda")
+    assert logger.warning.call_count == int(warn)
+
+
 def test_store_runtime_hashes_engine_id_for_cache_domain():
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
@@ -283,6 +345,7 @@ def test_lookup_checks_boundary_keys_only_within_the_fa_hit():
     from ucm.integration.vllm.v2.kv_cache_spec import RestorePolicy
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     scheduler.spec = NS(chunk_size=128)
     scheduler._recompute_tokens = 1
     fa, wa, state = RestorePolicy
@@ -334,6 +397,7 @@ def test_fa_miss_only_offers_fa_prefetch_until_the_boundary_is_known():
     from ucm.integration.vllm.v2.kv_cache_spec import RestorePolicy
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     scheduler.spec = NS(chunk_size=128)
     scheduler._recompute_tokens = 1
     fa, wa = RestorePolicy.FA, RestorePolicy.WA
@@ -380,6 +444,7 @@ def test_prefetch_rejection_keeps_the_hit_and_allocation_owns_the_get():
     from ucm.integration.vllm.v2.store_client import StoreIOError
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     store.prepare_prefetch.side_effect = StoreIOError("no space")
     scheduler._job_ids = count(1, 2)
@@ -421,6 +486,7 @@ def test_resume_does_not_wait_for_old_get_and_put_results():
     from ucm.integration.vllm.v2.store_client import AddressedToken
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     request = NS(
         request_id="r",
@@ -467,6 +533,7 @@ def test_skip_reading_prefix_cache_does_not_prepare_prefetch():
     from ucm.integration.vllm.v2.connector_scheduler import UCMConnectorScheduler
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     scheduler._request_states = {}
     scheduler._chunk_hasher = Mock(return_value=(b"a" * 16,))
@@ -496,6 +563,7 @@ def test_load_failure_only_invalidates_dump_jobs_in_the_same_output():
     from ucm.integration.vllm.v2.store_client import AddressedToken
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     scheduler._pending_jobs = {}
     scheduler._offload_jobs = {}
@@ -542,6 +610,7 @@ def test_plans_prepare_separately_without_filtering_put_keys():
     from ucm.integration.vllm.v2.store_client import AddressedToken
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     scheduler._pending_jobs = {}
     scheduler._job_ids = count(1, 2)
@@ -725,6 +794,7 @@ def test_each_window_completes_with_its_token_after_all_ranks(operation):
     client._proxy = NS(AddressedToken=NativeToken, BlockId=bytes, UcmError=RuntimeError)
     complete = getattr(native_scheduler, f"complete_{operation}")
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     scheduler._store_scheduler = client
     scheduler._pending_jobs = {}
     rank0, rank1 = ParallelRank(), ParallelRank(pp_rank=1)
@@ -777,6 +847,7 @@ def test_offload_runs_without_a_live_request_and_releases_its_pin(success):
     from ucm.integration.vllm.v2.store_client import AddressedToken
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = NS(load_async=False)
     store = scheduler._store_scheduler = Mock()
     scheduler._pending_jobs = {}
     scheduler._job_ids = count(1, 2)
@@ -819,6 +890,7 @@ def test_offload_runs_without_a_live_request_and_releases_its_pin(success):
     worker._parallel_rank = ParallelRank()
     worker.use_layerwise = False
     worker._prefetch_offload_tasks = {}
+    worker._async_loads = {}
     worker._completion_metadata = UCMWorkerMetadata()
     worker._store_worker = Mock()
     task = NS(success=None)

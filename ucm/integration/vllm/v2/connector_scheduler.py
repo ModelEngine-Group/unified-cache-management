@@ -72,6 +72,7 @@ class RequestMetadata:
     dump_plans: tuple[UCMDispatchPlan, ...] = ()
     prefetch_job: PreparedJob | None = None
     prepare_get_failed: bool = False
+    load_async: bool = False
 
 
 @dataclass
@@ -116,6 +117,8 @@ class RequestState:
     # Cleared after the first scheduled step builds its initial Get plans.
     # JobResult records actual IO completion and success independently.
     needs_load: bool = False
+    # Allocation can enqueue a load before this request enters a forward batch.
+    async_load: RequestMetadata | None = None
 
 
 class UCMConnectorScheduler:
@@ -177,7 +180,7 @@ class UCMConnectorScheduler:
     def get_num_new_matched_tokens(
         self, request: Request, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
-        """Return external hit tokens or None for prefetch. KV loads are synchronous."""
+        """Return external hit tokens and their platform's HBM load mode."""
         request_id = str(request.request_id)
         request_state = self._request_states[request_id]
         if request_state.prefetch_job_id is not None:
@@ -221,15 +224,27 @@ class UCMConnectorScheduler:
         external_hit_tokens = (
             hit_tokens if hit_tokens > self.load_threshold_tokens else 0
         )
-        return external_hit_tokens, False
+        return external_hit_tokens, external_hit_tokens > 0 and self.context.load_async
 
     def update_state_after_alloc(
-        self, request: Request, num_external_tokens: int
+        self,
+        request: Request,
+        num_external_tokens: int,
+        block_tables: Sequence[Sequence[int]] = (),
     ) -> None:
         request_state = self._request_states[str(request.request_id)]
+        # Async requests receive a second allocation callback after loading.
+        # Keep the adopted hit boundary for subsequent Dump planning.
+        if self.context.load_async and num_external_tokens == 0:
+            return
         if request_state.num_preemptions is not None:
             request_state.external_hit_tokens = num_external_tokens
             request_state.needs_load = num_external_tokens > 0
+            if self.context.load_async and request_state.needs_load:
+                request_state.async_load = self._build_request_plan(
+                    str(request.request_id), request_state, block_tables, 0
+                )
+                request_state.needs_load = False
 
     def _lookup_key_groups(
         self,
@@ -360,6 +375,7 @@ class UCMConnectorScheduler:
                 or request_state.num_preemptions
                 != request_state.request.num_preemptions
                 or request_state.finished
+                or request_state.async_load is not None
             ):
                 continue
             block_tables = block_state.get_block_ids(request_id)
@@ -373,6 +389,11 @@ class UCMConnectorScheduler:
             )
             if scheduled_tokens > 0:
                 request_state.needs_load = False
+        for request_id, request_state in tuple(self._request_states.items()):
+            if request_state.async_load is not None:
+                metadata.requests[request_id] = request_state.async_load
+                request_state.async_load = None
+                self._close_finished_request(request_id, request_state)
         for pending_job in self._pending_jobs.values():
             request_id = pending_job.request_id
             if (
@@ -423,8 +444,12 @@ class UCMConnectorScheduler:
             self._close_finished_request(request_id, self._request_states[request_id])
 
     def _close_finished_request(self, request_id: str, state: RequestState) -> None:
-        if state.finished and not any(
-            job.request_id == request_id for job in self._pending_jobs.values()
+        if (
+            state.finished
+            and state.async_load is None
+            and not any(
+                job.request_id == request_id for job in self._pending_jobs.values()
+            )
         ):
             self._store_scheduler.on_request_finished(request_id)
             del self._request_states[request_id]
@@ -470,7 +495,11 @@ class UCMConnectorScheduler:
             self._needs_offload_drain
             or self._offload_jobs
             or any(
+                state.async_load is not None for state in self._request_states.values()
+            )
+            or any(
                 job.operation is JobOperation.PREFETCH
+                or (self.context.load_async and job.operation is JobOperation.GET)
                 for job in self._pending_jobs.values()
             )
         )
@@ -550,7 +579,9 @@ class UCMConnectorScheduler:
             step_start_token + scheduled_tokens,
             request_state.num_tokens,
         )
-        should_load = request_state.needs_load and scheduled_tokens > 0
+        should_load = request_state.needs_load and (
+            scheduled_tokens > 0 or self.context.load_async
+        )
         load_end_token = (
             request_state.hbm_hit_tokens + request_state.external_hit_tokens
         )
@@ -580,8 +611,13 @@ class UCMConnectorScheduler:
         if any(plan.prepared_job is None for plan in load_plans):
             # Report the missing KV and acknowledge any Gets already prepared.
             return RequestMetadata(
-                request_id, load_plans=load_plans, prepare_get_failed=True
+                request_id,
+                load_plans=load_plans,
+                prepare_get_failed=True,
+                load_async=self.context.load_async,
             )
+        if self.context.load_async and should_load:
+            return RequestMetadata(request_id, load_plans=load_plans, load_async=True)
         dump_plans = self.build_dispatch_plans(
             request_state, block_tables, dump_start_token, dump_end_token, is_load=False
         ) + self._state_dump_plans(request_state, state_offloads)

@@ -98,10 +98,48 @@ def page_ranges(layer, view, block, first, stop, group, device_type):
         yield from merged
 
 
-def append_page(record, cursor, store, views, page, placement, include_local):
+def native_block_first_span(config, group_id, views, block):
+    """Read this group's page span, including padding, from native placement."""
+    from vllm.v1.kv_cache_layout import KVCacheLayout
+
+    packing = KVCacheLayout[config.kv_cache_layout]
+    if not (packing.is_block_outermost and packing.is_block_compact):
+        return None
+    names = set(config.kv_cache_groups[group_id].layer_names)
+    descriptors = [
+        descriptor
+        for descriptor in config.kv_cache_tensors
+        if descriptor.layers[0] in names
+    ]
+    first = min(descriptors, key=lambda descriptor: descriptor.offset)
+    if any(
+        not 0 < descriptor.layer_stride <= descriptor.block_stride
+        or descriptor.block_stride != first.block_stride
+        for descriptor in descriptors
+    ):
+        return None
+    tensor = components(views[first.layers[0]])[0]
+    base = tensor.data_ptr() + block * first.block_stride
+    end = max(
+        descriptor.offset + len(descriptor.layers) * descriptor.layer_stride
+        for descriptor in descriptors
+    )
+    return base, end - first.offset
+
+
+def append_page(
+    record, cursor, store, views, page, placement, include_local, slot=None
+):
     # Distributed pages pack the distinct (TP,DCP) shards in order. Use
     # native tensor slices to measure each shard, including partial WA tails.
     block, first, stop = page
+    if slot is not None:
+        ptr, width = slot
+        for index, _ in enumerate(placement.shards):
+            if index == placement.index and include_local:
+                record.append((cursor, ptr, width))
+            cursor += width
+        return cursor
     slices = {}
     for index, (_, dcp_rank) in enumerate(placement.shards):
         lo = placement.local_position(first, dcp_rank)
@@ -231,8 +269,13 @@ def expected_records(
             writer = placement.replicas[(start // chunk) % len(placement.replicas)]
             include_local = state_load_target is not None or writer == placement.rank
             for page in pages:
+                slot = (
+                    native_block_first_span(config, gid, views, page[0])
+                    if layout.spec.device_type in ("cuda", "cpu")
+                    else None
+                )
                 cursor = append_page(
-                    record, cursor, store, views, page, placement, include_local
+                    record, cursor, store, views, page, placement, include_local, slot
                 )
             global_sizes[window] = cursor
         print(

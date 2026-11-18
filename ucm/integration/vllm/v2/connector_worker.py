@@ -56,6 +56,13 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
         return self
 
 
+@dataclass
+class AsyncLoad:
+    metadata: RequestMetadata
+    tasks: list[TransferTask] = field(default_factory=list)
+    failed: bool = False
+
+
 class UCMConnectorWorker:
     """Own local KV registration and all per-step transfer lifetimes."""
 
@@ -80,6 +87,8 @@ class UCMConnectorWorker:
         self._layer_load_tasks: dict[
             int | None, list[tuple[RequestMetadata, TransferTask]]
         ] = {}
+        self._async_loads: dict[str, AsyncLoad] = {}
+        self._finished_loads: dict[str, bool] = {}
         self._dump_tasks: list[TransferTask] = []
         # Prefetch and offload own Store memory and can outlive the step.
         self._prefetch_offload_tasks: dict[int, TransferTask] = {}
@@ -111,9 +120,11 @@ class UCMConnectorWorker:
             self._release_transfer_event(task)
 
     def shutdown(self) -> None:
-        device_tasks = [
-            task for tasks in self._layer_load_tasks.values() for _, task in tasks
-        ] + self._dump_tasks
+        device_tasks = (
+            [task for tasks in self._layer_load_tasks.values() for _, task in tasks]
+            + self._dump_tasks
+            + [task for load in self._async_loads.values() for task in load.tasks]
+        )
         first_error = None
         for task in device_tasks:
             try:
@@ -127,6 +138,7 @@ class UCMConnectorWorker:
             first_error = first_error or exc
         else:
             self._layer_load_tasks.clear()
+            self._async_loads.clear()
             self._dump_tasks.clear()
             self._prefetch_offload_tasks.clear()
         finally:
@@ -178,6 +190,8 @@ class UCMConnectorWorker:
     def _mark_load_failed(self, request_metadata: RequestMetadata) -> None:
         request_id = request_metadata.request_id
         self._completion_metadata.failed_load_request_ids.add(request_id)
+        if request_metadata.load_async:
+            return
         # Match the existing load_failure_patch's group 0 block table.
         self._invalid_vllm_block_ids.update(
             int(block_id)
@@ -197,7 +211,7 @@ class UCMConnectorWorker:
         self._dump_submitted_layer_ids.clear()
         self._failed_dump_jobs.clear()
         for request_metadata in connector_metadata.requests.values():
-            if request_metadata.prepare_get_failed:
+            if request_metadata.prepare_get_failed and not request_metadata.load_async:
                 self._mark_load_failed(request_metadata)
 
     def _report_job_result(self, job_id: int, success: bool) -> None:
@@ -258,11 +272,14 @@ class UCMConnectorWorker:
             if event_handle:
                 self._device.destroy_event_handle(event_handle)
             raise
-        self._layer_load_tasks.setdefault(layer_id, []).append(
-            (request_metadata, load_task)
-        )
-        if layer_id is None:
-            self._wait_layer_load(None)
+        if request_metadata.load_async:
+            self._async_loads[request_metadata.request_id].tasks.append(load_task)
+        else:
+            self._layer_load_tasks.setdefault(layer_id, []).append(
+                (request_metadata, load_task)
+            )
+            if layer_id is None:
+                self._wait_layer_load(None)
 
     def start_load_kv(
         self,
@@ -277,6 +294,12 @@ class UCMConnectorWorker:
         for request_metadata in connector_metadata.requests.values():
             if request_metadata.prefetch_job is not None:
                 self._execute_prefetch(request_metadata.prefetch_job)
+            if request_metadata.load_async:
+                self._async_loads[request_metadata.request_id] = AsyncLoad(
+                    request_metadata, failed=request_metadata.prepare_get_failed
+                )
+                if request_metadata.prepare_get_failed:
+                    continue
             if request_metadata.request_id in failed_loads:
                 continue
             try:
@@ -287,7 +310,10 @@ class UCMConnectorWorker:
                     else:
                         self._submit_load(request_metadata, load_plan)
             except StoreIOError:
-                self._mark_load_failed(request_metadata)
+                if request_metadata.load_async:
+                    self._async_loads[request_metadata.request_id].failed = True
+                else:
+                    self._mark_load_failed(request_metadata)
         if self.use_layerwise:
             state_layer_ids = {
                 layer_spec.layer_index
@@ -434,6 +460,8 @@ class UCMConnectorWorker:
                 self._drain_dump_tasks()
         failed_loads = self._completion_metadata.failed_load_request_ids
         for request_metadata in connector_metadata.requests.values():
+            if request_metadata.load_async:
+                continue
             load_succeeded = request_metadata.request_id not in failed_loads
             # Empty ranks acknowledge each prepared job after local IO drains.
             for plan in request_metadata.load_plans + request_metadata.dump_plans:
@@ -455,10 +483,28 @@ class UCMConnectorWorker:
         # StoreWorkerClient caches consumed terminal status, so a later layer wait
         # never waits for a second notification of that job.
         self._store_worker.poll_finished()
+        for request_id, load in tuple(self._async_loads.items()):
+            if any(task.success is None for task in load.tasks):
+                continue
+            success = not load.failed and all(task.success for task in load.tasks)
+            for task in load.tasks:
+                self._release_transfer_event(task)
+            if not success:
+                self._mark_load_failed(load.metadata)
+            for plan in load.metadata.load_plans:
+                if plan.prepared_job is not None:
+                    self._report_job_result(plan.prepared_job.job_id, success)
+            self._finished_loads[request_id] = success
+            del self._async_loads[request_id]
         for job_id, task in tuple(self._prefetch_offload_tasks.items()):
             if task.success is not None:
                 self._report_job_result(job_id, task.success)
                 del self._prefetch_offload_tasks[job_id]
+
+    def take_finished_loads(self) -> dict[str, bool]:
+        finished = self._finished_loads
+        self._finished_loads = {}
+        return finished
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if (

@@ -9,7 +9,14 @@ pytestmark = [pytest.mark.stage(0), pytest.mark.feature("connector_v2")]
 
 
 @pytest.mark.parametrize(
-    ("start", "scheduled", "local_hit", "external_hit", "expected_start", "expected_end"),
+    (
+        "start",
+        "scheduled",
+        "local_hit",
+        "external_hit",
+        "expected_start",
+        "expected_end",
+    ),
     [
         (29312, 3456, 0, 29440, 29440, 32768),
         (29312, 3456, 29440, 0, 29440, 32768),
@@ -24,6 +31,7 @@ def test_replay_does_not_dump_the_hit(
     from ucm.integration.vllm.v2.connector_scheduler import UCMConnectorScheduler
 
     scheduler = object.__new__(UCMConnectorScheduler)
+    scheduler.context = SimpleNamespace(load_async=False)
     scheduler.build_dispatch_plans = Mock(return_value=())
     scheduler._state_dump_plans = Mock(return_value=())
     state = SimpleNamespace(

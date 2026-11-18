@@ -54,6 +54,21 @@ def assume_prefix(role, hashes, hit_chunks):
     role._prepare_plan_job = lambda *args, **kwargs: sentinel.unsubmitted_plan
 
 
+def coalesce_ranges(ranges):
+    """Compare byte coverage independently of contiguous DMA segment merging."""
+    merged = []
+    for offset, pointer, size in sorted(ranges, key=lambda item: (item[1], item[0])):
+        if merged and (
+            merged[-1][0] + merged[-1][2] == offset
+            and merged[-1][1] + merged[-1][2] == pointer
+        ):
+            previous_offset, previous_pointer, previous_size = merged[-1]
+            merged[-1] = (previous_offset, previous_pointer, previous_size + size)
+        else:
+            merged.append((offset, pointer, size))
+    return sorted(merged)
+
+
 def check_batches(worker, plans, records, hashes, *, is_dump, checkpoints=None):
     """Compare the Worker payload at the Submit boundary with native tensor slices."""
     chunk = worker.spec.chunk_size
@@ -104,7 +119,7 @@ def check_batches(worker, plans, records, hashes, *, is_dump, checkpoints=None):
     coverage = {}
     for key, ranges in expected.items():
         observed = sorted(actual.get(key, ()))
-        if observed != sorted(ranges):
+        if coalesce_ranges(observed) != coalesce_ranges(ranges):
             op = "Dump" if is_dump else "Get"
             raise AssertionError(
                 f"rank {worker.context.global_rank}: {op} offsets, pointers or sizes disagree for {key.hex()}"

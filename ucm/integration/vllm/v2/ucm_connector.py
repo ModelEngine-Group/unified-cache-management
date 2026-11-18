@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorRole,
+    KVConnectorTransferResults,
     SupportsHMA,
 )
 
@@ -148,7 +149,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
     def get_transfer_results(self, finished_req_ids):
         self.connector_worker.poll_finished()
-        return super().get_transfer_results(finished_req_ids)
+        finished = self.connector_worker.take_finished_loads()
+        return KVConnectorTransferResults(
+            finished_recving=set(finished),
+            failed_recving={
+                request_id for request_id, success in finished.items() if not success
+            },
+        )
 
     def build_connector_worker_meta(self):
         return self.connector_worker.build_connector_worker_meta()
@@ -157,7 +164,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.connector_worker.get_block_ids_with_load_errors()
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
-        self.connector_scheduler.update_state_after_alloc(request, num_external_tokens)
+        self.connector_scheduler.update_state_after_alloc(
+            request,
+            num_external_tokens,
+            block_tables=(
+                blocks.get_block_ids()
+                if self.context.load_async and num_external_tokens > 0
+                else ()
+            ),
+        )
 
     def request_finished_all_groups(self, request, block_ids):
         self.connector_scheduler.request_finished(request.request_id)

@@ -23,6 +23,7 @@ from .kv_cache_spec import (
     RestorePolicy,
     UCMKVCacheSpec,
     _member_specs,
+    is_block_first_layout,
     parse_kv_cache_config,
 )
 
@@ -225,6 +226,10 @@ class UCMRuntimeContext:
     fingerprint: str
     state_shard_ranks: dict[int, tuple[int, ...]] = field(default_factory=dict)
 
+    @property
+    def load_async(self) -> bool:
+        return self.device_type == "cuda" and not self.use_layerwise
+
     def store_runtime(self, block_size: int, *, device_id: int = 0) -> dict[str, Any]:
         # Cache rejects domain ids above 88 bytes: its rendezvous paths are
         # /dev/shm/ucm-<id>.{lock,sock}. Hash the engine id (vLLM/Ascend may
@@ -302,7 +307,13 @@ class UCMRuntimeContext:
         model_dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         speculative_config = vllm_config.speculative_config
         additional_config = vllm_config.additional_config or {}
-        use_layerwise = bool(launch_config.get("use_layerwise", True))
+        use_layerwise = bool(launch_config.get("use_layerwise", device_type != "cuda"))
+        if device_type == "cuda" and use_layerwise:
+            logger.warning(
+                "UCM v2 on CUDA only supports non-layerwise transfers. "
+                "Overriding use_layerwise=True with False."
+            )
+            use_layerwise = False
         fingerprint_schema = {
             "device_type": device_type,
             "model_dtype": model_dtype,
@@ -350,6 +361,9 @@ class UCMRuntimeContext:
                 else None
             ),
         }
+        if is_block_first_layout(kv_cache_config, device_type):
+            # Group spans include page padding but exclude the unused slot tail.
+            fingerprint_schema["block_first_store_format"] = 2
         fingerprint = hashlib.sha256(
             json.dumps(
                 fingerprint_schema, sort_keys=True, separators=(",", ":")

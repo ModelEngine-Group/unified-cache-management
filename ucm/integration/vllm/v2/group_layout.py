@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from . import cache_view
-from .cache_view import LayerView
+from .cache_view import LayerView, MemorySegment
 
 if TYPE_CHECKING:
     import torch
@@ -33,21 +33,6 @@ class GroupLayoutMetadata:
     tp_shards: int
     # Model-declared State partitions in PCP-major, TP-minor rank order.
     state_shard_ranks: tuple[int, ...] | None = None
-
-
-@dataclass(frozen=True)
-class BlockFirstView:
-    """One group's contiguous per-block span on a Block First layout.
-
-    The group's descriptors tile the block slot back to back (each
-    starting where the previous ends, paddings riding inside), so one
-    block of this group is one IO span: every layer page of every
-    descriptor in it.
-    """
-
-    base_ptr: int  # first layer of the first (lowest-offset) descriptor
-    block_stride: int
-    block_size_bytes: int  # sum of per-descriptor layer_count * layer_stride
 
 
 class KVCacheGroupLayout:
@@ -80,7 +65,7 @@ class KVCacheGroupLayout:
         # order key and the name is only a stable tiebreak within the same
         # layer -- the record layout must not depend on the config's
         # enumeration order.
-        segment_layer_ids: list[int] = []
+        segment_layer_ids: list[int] | None = []
         base_ptrs: list[int] = []
         block_strides: list[int] = []
         states_per_block: list[int] = []
@@ -116,17 +101,32 @@ class KVCacheGroupLayout:
                 states_per_block.append(segment.states_per_block)
                 payload_bytes.append(segment.payload_bytes)
 
-        # Flat columns carry the arithmetic; model layer IDs select segments.
-        self.segment_layer_ids = np.asarray(segment_layer_ids, dtype=np.uint64)
-        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
-        self.block_strides = np.asarray(block_strides, dtype=np.uint64)
-        self.states_per_block = np.asarray(states_per_block, dtype=np.uint64)
-        self.payload_bytes = np.asarray(payload_bytes, dtype=np.uint64)
         self.supports_partial_tokens = all(
             layer_view.supports_partial_tokens
             for layer_view in self.layer_views.values()
         )
-        self.block_first = self._block_first_span() if block_first_layout else None
+        if block_first_layout:
+            segment = self._block_first_segment()
+            if segment is not None:
+                # Normalize the whole group to one indivisible IO segment.
+                # Real layer declarations remain available for names/shards.
+                segment_layer_ids = None
+                base_ptrs = [segment.base_ptr]
+                block_strides = [segment.block_stride_bytes]
+                states_per_block = [segment.states_per_block]
+                payload_bytes = [segment.payload_bytes]
+                self.supports_partial_tokens = False
+
+        # Flat columns carry the arithmetic; None denotes group-wide IO.
+        self.segment_layer_ids = (
+            np.asarray(segment_layer_ids, dtype=np.uint64)
+            if segment_layer_ids is not None
+            else None
+        )
+        self.base_ptrs = np.asarray(base_ptrs, dtype=np.uint64)
+        self.block_strides = np.asarray(block_strides, dtype=np.uint64)
+        self.states_per_block = np.asarray(states_per_block, dtype=np.uint64)
+        self.payload_bytes = np.asarray(payload_bytes, dtype=np.uint64)
 
     def export_metadata(
         self, tp_size: int, *, state_shard_ranks: tuple[int, ...] | None = None
@@ -148,7 +148,7 @@ class KVCacheGroupLayout:
             state_shard_ranks=state_shard_ranks,
         )
 
-    def _block_first_span(self) -> BlockFirstView | None:
+    def _block_first_segment(self) -> MemorySegment | None:
         """Use CUDA/CPU BLHNC/BLNHC placement declarations directly.
 
         The native allocator places a group's descriptors consecutively
@@ -164,18 +164,24 @@ class KVCacheGroupLayout:
             descriptors[id(descriptor)] = descriptor
         first_descriptor = min(descriptors.values(), key=lambda item: item.offset)
         if any(
-            not 0 < descriptor.layer_stride < descriptor.block_stride
+            not 0 < descriptor.layer_stride <= descriptor.block_stride
             or descriptor.block_stride != first_descriptor.block_stride
             for descriptor in descriptors.values()
         ):
             return None
-        return BlockFirstView(
-            base_ptr=self.layer_views[first_descriptor.layers[0]].segments[0].base_ptr,
-            block_stride=first_descriptor.block_stride,
-            block_size_bytes=sum(
-                len(descriptor.layers) * descriptor.layer_stride
-                for descriptor in descriptors.values()
-            ),
+        first_segment = self.layer_views[first_descriptor.layers[0]].segments[0]
+        end = max(
+            descriptor.offset + len(descriptor.layers) * descriptor.layer_stride
+            for descriptor in descriptors.values()
+        )
+        size = end - first_descriptor.offset
+        return MemorySegment(
+            base_ptr=first_segment.base_ptr,
+            block_stride_bytes=first_descriptor.block_stride,
+            states_per_block=1,
+            bytes_per_state=size,
+            payload_bytes=size,
+            storage_base_ptr=first_segment.storage_base_ptr,
         )
 
     # ------------------------------------------------------------------
@@ -186,6 +192,8 @@ class KVCacheGroupLayout:
         """Select all registered segments of one model layer; None selects all."""
         if layer_id is None:
             return None
+        if self.segment_layer_ids is None:
+            raise ValueError(f"KV cache group {self.group_id} requires whole-group IO")
         return self.segment_layer_ids == np.uint64(layer_id)
 
     def resolve_ptrs(
@@ -200,17 +208,6 @@ class KVCacheGroupLayout:
         return (
             self.base_ptrs[None, segment_columns]
             + vllm_block_ids[:, None] * self.block_strides[None, segment_columns]
-        )
-
-    def resolve_block_first_ptrs(
-        self, vllm_block_ids: Sequence[int] | np.ndarray
-    ) -> np.ndarray:
-        """Return one contiguous group-span base per physical block."""
-        block_first_view = self.block_first
-        assert block_first_view is not None
-        vllm_block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return np.uint64(block_first_view.base_ptr) + vllm_block_ids * np.uint64(
-            block_first_view.block_stride
         )
 
     def tokens_to_bytes(

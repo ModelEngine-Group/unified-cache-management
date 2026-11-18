@@ -10,7 +10,15 @@ CHUNK_TOKENS = 64
 LAYER_NAMES = ("model.layers.0.self_attn", "model.layers.1.self_attn")
 
 
-@pytest.fixture(params=["LBHNC", "BLHNC"])
+@pytest.fixture(
+    params=[
+        ("LBHNC", True, False),
+        ("BLHNC", True, False),
+        ("BLHNC", False, False),
+        ("LBHNC", True, True),
+        ("BLHNC", True, True),
+    ]
+)
 def fa_cache(request):
     import torch
     from vllm.v1.kv_cache_interface import (
@@ -23,18 +31,30 @@ def fa_cache(request):
     from vllm.v1.kv_cache_layout import KVCacheLayout
     from vllm.v1.worker.utils import allocate_kv_cache
 
+    layout_name, reverse_layers, padded = request.param
     fa = FullAttentionSpec(
-        block_size=BLOCK_TOKENS, num_kv_heads=2, head_size=64, dtype=torch.float16
+        block_size=BLOCK_TOKENS,
+        num_kv_heads=2,
+        head_size=64,
+        dtype=torch.float16,
+        page_size_padded=12288 if padded else None,
     )
-    packing = KVCacheLayout[request.param]
+    packing = KVCacheLayout[layout_name]
     num_blocks = 16
-    # Put layer 1 first physically. The Store record still follows model order.
-    layers = list(reversed(LAYER_NAMES))
+    # Layer First keeps model order. Block First preserves physical placement.
+    layers = list(reversed(LAYER_NAMES)) if reverse_layers else list(LAYER_NAMES)
     layer_stride, block_stride, *_ = compute_layout_strides(
         fa, num_blocks, len(layers), packing
     )
+    if padded and layout_name == "BLHNC":
+        # Also leave unused space after this group's last physical page.
+        block_stride += 4096
     tensor = KVCacheTensor(
-        size=num_blocks * len(layers) * fa.page_size_bytes,
+        size=(
+            num_blocks * block_stride
+            if layout_name == "BLHNC"
+            else num_blocks * len(layers) * fa.page_size_bytes
+        ),
         layers=layers,
         layer_stride=layer_stride,
         block_stride=block_stride,
@@ -104,6 +124,14 @@ def test_full_chunk_transfer_ranges(fa_cache, layer_id):
     # Two complete chunks use different device pages and the same record offsets.
     block_ids = _allocate_external_prefix(config, 2 * CHUNK_TOKENS)
     store_layout = layout.store_layouts[0]
+    block_first = config.kv_cache_layout == "BLHNC"
+    if block_first:
+        assert store_layout.group_layout.payload_bytes.size == 1
+        assert not store_layout.group_layout.supports_partial_tokens
+        if layer_id is not None:
+            with pytest.raises(ValueError, match="whole-group IO"):
+                store_layout.group_layout.segment_mask(layer_id)
+            return
     offsets, ptrs, sizes = store_layout.resolve_transfer_ranges(
         np.asarray(block_ids, dtype=np.uint64),
         np.array([0, CHUNK_TOKENS], dtype=np.uint64),
@@ -118,6 +146,13 @@ def test_full_chunk_transfer_ranges(fa_cache, layer_id):
         row = []
         offset = 0
         for block_id in block_ids[start : start + blocks_per_chunk]:
+            if block_first:
+                descriptor = config.kv_cache_tensors[0]
+                base = views[descriptor.layers[0]][block_id].data_ptr()
+                width = len(descriptor.layers) * descriptor.layer_stride
+                row.append((offset, base, width))
+                offset += width
+                continue
             for index, name in enumerate(LAYER_NAMES):
                 page = views[name][block_id]
                 page_bytes = page.numel() * page.element_size()
