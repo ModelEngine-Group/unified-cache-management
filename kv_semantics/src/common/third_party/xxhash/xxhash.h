@@ -1,3 +1,12 @@
+/*
+ * Third-party dependency: xxHash
+ * Upstream: https://github.com/Cyan4973/xxHash
+ * Version: v0.8.3
+ * Source: https://github.com/Cyan4973/xxHash/blob/v0.8.3/xxhash.h
+ * License: BSD-2-Clause (see original notice below)
+ * Local modifications: source attribution and clang-format suppression only.
+ */
+
 // clang-format off
 /*
  * xxHash - Extremely Fast Hash algorithm
