@@ -52,7 +52,7 @@ private:
     const SpaceLayout* layout_;
     const std::vector<std::string>* backends_{nullptr};
     BlockCommitTracker tracker_;
-    std::deque<LoadHandleCache> loadHandles_;
+    LoadHandleCache loadHandles_;
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;

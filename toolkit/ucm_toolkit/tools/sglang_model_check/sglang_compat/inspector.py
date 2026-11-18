@@ -40,6 +40,9 @@ def server_args_guard(*, single_rank=True, **fields):
             yield
             return
         values = {"attn_dp_size": 1, "attn_dp_rank": 0}
+        # No DP controller is spawned by the single-rank probe.
+        if inspect.getattr_static(parallel, "dp_rank", None) is not None:
+            values["dp_rank"] = None
         # Modern SGLang publishes groups independently of process placement.
         # Building a singleton TP group alone does not populate tp_rank, etc.
         # Read declarations statically: reading an unset rank property raises.

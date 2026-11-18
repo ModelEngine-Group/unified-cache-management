@@ -35,4 +35,4 @@ External reuse replaces part of Prefill with lookup, reading, transfer and synch
 - `ucm/integration/vllm/ucm_connector.py`: block identifiers, scheduling matches and Worker transfer.
 - `ucm/store/ucmstore_v1.py`: lookup and task contracts.
 - `ucm/store/pipeline/connector.py`: stage composition and the Python/native boundary.
-- `ucm/store/cache/cc/load_queue.cc` and `ucm/store/posix/`: host-buffer waits and backend I/O.
+- `ucm/store/cache/v2/load_queue.h` and `ucm/store/posix/`: host-buffer waits and backend I/O.

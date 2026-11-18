@@ -3,10 +3,10 @@ import glob
 import math
 import os
 import re
-import shutil
 import time
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
@@ -35,7 +35,7 @@ try:
 except ImportError:
     KVConnectorTransferResults = None
 
-from vllm.distributed.parallel_state import get_world_group
+from vllm.distributed.parallel_state import get_pp_group, get_world_group
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -72,7 +72,6 @@ from ucm.metrics_config import (
 from ucm.metrics_dispatcher import get_metrics_dispatcher
 from ucm.observability import PrometheusStatsLogger
 from ucm.shared.metrics import ucmmetrics
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
@@ -93,6 +92,43 @@ if TYPE_CHECKING:
 from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
+
+
+def _has_layer_component(layer_name: str, components: set[str]) -> bool:
+    """Match complete path components, ignoring case and avoiding substrings."""
+    return not components.isdisjoint(layer_name.lower().split("."))
+
+
+def _apply_cuda_indexer_io_config(
+    launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
+) -> None:
+    """Resolve IO mode before connector selection and cache layout creation."""
+    if not current_platform.is_cuda() or kv_cache_config is None:
+        return
+    for group in kv_cache_config.kv_cache_groups:
+        layer_names = (
+            getattr(group, "layer_names", None)
+            or getattr(group, "kv_cache_specs", None)
+            or {}
+        )
+        for name in layer_names:
+            if not _has_layer_component(name, {"indexer", "index_cache"}):
+                continue
+            if pipeline_parallel_size > 1:
+                raise RuntimeError(
+                    "UCM does not support CUDA indexer models with pipeline "
+                    "parallelism: whole-block loading requires "
+                    "pipeline_parallel_size=1. Set pipeline_parallel_size=1 "
+                    "to use this configuration."
+                )
+            launch_config["use_layerwise"] = False
+            launch_config["use_request_async_load"] = True
+            logger.warning(
+                "CUDA indexer KV cache requires whole-block loading; "
+                "disabling use_layerwise and enabling use_request_async_load "
+                "where supported by the connector."
+            )
+            return
 
 
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
@@ -219,32 +255,6 @@ def _get_store_gc_block_size(
 
 
 _SHM_DIR = "/dev/shm"
-
-
-def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
-    """Early-validate that /dev/shm can hold the shared-buffer store.
-
-    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
-    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
-    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
-    the C++ store; raise here instead with an actionable message.
-    """
-    if uses_partitioned_cache() or cache_buffer_capacity_gb <= 0:
-        return
-    try:
-        shm_total = shutil.disk_usage(_SHM_DIR).total
-    except OSError:
-        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
-        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
-        return
-    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
-    if shm_total < needed_bytes:
-        raise RuntimeError(
-            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
-            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
-            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
-            f"larger size= option) or decrease cache_buffer_capacity_gb."
-        )
 
 
 def _drop_null_vllm_blocks(
@@ -734,30 +744,9 @@ class KVCacheLayout:
             else self.tensor_size_lists[0].sum()
         )
 
-    def _num_mtp_layers(self) -> int:
-        """Return the MTP layers indexed after the target decoder layers.
-
-        ``SpeculativeConfig.hf_config_override`` normalizes every MTP family to
-        ``n_predict`` on the draft config, and each MTP module builds one layer
-        from that count. Families whose MTP layers share the target KV cache
-        (e.g. Gemma4) only make this an upper bound, which is safe here because
-        an oversized store block only wastes space.
-        """
-        speculative_config = getattr(self.vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return 0
-        if getattr(speculative_config, "method", None) != "mtp":
-            return 0
-        draft_config = getattr(speculative_config, "draft_model_config", None)
-        draft_hf_config = getattr(draft_config, "hf_config", None)
-        num_layers = getattr(draft_hf_config, "n_predict", None)
-        return num_layers if isinstance(num_layers, int) and num_layers > 0 else 1
-
     @property
     def block_size(self) -> int:
-        if self.pp_size > 1:
-            num_layers = self.num_hidden_layers + self._num_mtp_layers()
-            return int(self.tensor_size_lists[0].sum()) * num_layers
+        # Registered tensors include only this worker's layers, including MTP.
         return int(self.tensor_size_lists.sum())
 
 
@@ -1362,8 +1351,7 @@ class MiniMaxM3KVCacheLayout(KVCacheLayout):
     def _is_indexer(layer_name: str) -> bool:
         # Match a complete path component instead of a substring so an unrelated
         # module whose name merely contains "index_cache" cannot be misclassified.
-        components = layer_name.lower().split(".")
-        return "index_cache" in components
+        return _has_layer_component(layer_name, {"index_cache"})
 
     def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
         # All supported M3 tensors are block-first. Dimension zero is therefore
@@ -1711,23 +1699,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
-        if not uses_partitioned_cache():
-            self.engine_id = self.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        share_buffer_enable = (
-            self.connector_configs[0]
-            .get("ucm_connector_config", {})
-            .get("share_buffer_enable", self.is_mla)
-        )
-        if share_buffer_enable and not uses_partitioned_cache():
-            if role == KVConnectorRole.WORKER:
-                self.unique_id = _worker_generate_unique_id()
-            else:
-                self.unique_id = _scheduler_read_unique_id()
-        else:
-            self.unique_id = self.engine_id
+        self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
@@ -1848,22 +1828,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
-        if uses_partitioned_cache() or cache_core_version() == 1:
-            configure_cache_capacity(config, self._vllm_config.parallel_config)
-            if not uses_partitioned_cache() and config.get(
-                "share_buffer_enable", False
-            ):
-                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
-            return
-        if not bool(config.get("share_buffer_enable", False)):
-            return
-        if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
-            logger.info(
-                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
-            )
-        # Only legacy cache/cc is constrained by the /dev/shm mount size.
-        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
+        configure_cache_capacity(config, self._vllm_config.parallel_config)
 
     def _get_world_size(self) -> int:
         return cache_rank_count(self._vllm_config.parallel_config)
@@ -1919,9 +1884,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
@@ -1946,7 +1910,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 store_shard_size,
                 store_block_size,
             )
-            self._publish_block_size(gc_block_size)
+            if not getattr(self, "_is_pp", False):
+                self._publish_block_size(gc_block_size)
             if store_shard_size != logical_shard_size:
                 logger.info(
                     "Pad Store sizes for I/O alignment: "
@@ -1955,8 +1920,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"logical_block_size={logical_block_size}, "
                     f"store_block_size={store_block_size}."
                 )
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()
@@ -1990,6 +1953,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 logger.warning(f"Falling back to manual block_size estimate: {bs}")
             config["block_size"] = bs
         config["posix_gc_enable"] = self._gc_owner
+        if getattr(self, "_is_pp", False):
+            layer_start = self.first_layer_id
+            layer_count = len(self.layer_ids)
+            self._configure_pp_store(
+                config, get_pp_group().rank_in_group, layer_start, layer_count
+            )
+            # The scheduler has no KV cache layout, so publish the layer
+            # allocation with the geometry it needs to name the same directory.
+            self._pp_store_sizes = {
+                "block_size": config["block_size"],
+                "shard_size": config["shard_size"],
+                "layer_start": layer_start,
+                "layer_count": layer_count,
+            }
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
@@ -2064,10 +2041,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
+    def _prefetch_store(self, block_ids: list[bytes]) -> None:
+        for store in getattr(self, "_pp_stores", [self.store]):
+            store.prefetch(block_ids)
+
+    def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
+        """Query the single store; the layer-wise connector intersects stages."""
+        return self._lookup_one_stage(self.store, block_ids)
+
+    def _lookup_one_stage(self, store, block_ids: list[bytes]) -> int:
+        return self._rank_consistency.lookup_on_prefix(store, block_ids)
+
     def _prefetch_all_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
         if not rank0_block_ids:
             return
-        self.store.prefetch(rank0_block_ids)
+        self._prefetch_store(rank0_block_ids)
 
         if not self._other_rank_hashers:
             return
@@ -2078,7 +2066,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ]
 
         if other_rank_block_ids:
-            self.store.prefetch(other_rank_block_ids)
+            self._prefetch_store(other_rank_block_ids)
 
     def _prefetch_direct_hit_key_hotness(
         self,
@@ -2095,7 +2083,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if hbm_hit_block_ids:
             try:
-                self.store.prefetch(hbm_hit_block_ids)
+                self._prefetch_store(hbm_hit_block_ids)
             except Exception as e:
                 logger.warning(
                     "UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}"
@@ -2183,12 +2171,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         external_hit_blocks = 0
         if external_block_ids:
             try:
-                external_hit_hashes = (
-                    self._rank_consistency.lookup_on_prefix(
-                        self.store, external_block_ids
-                    )
-                    + 1
-                )
+                external_hit_hashes = self._lookup_all_stages(external_block_ids) + 1
                 found_blocks = external_hit_hashes // self.cp_world_size
                 if resume_from_last_hit and found_blocks == 0:
                     lookup_start_block_num = hbm_hit_block_num
@@ -2197,10 +2180,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     ]
                     if external_block_ids:
                         external_hit_hashes = (
-                            self._rank_consistency.lookup_on_prefix(
-                                self.store, external_block_ids
-                            )
-                            + 1
+                            self._lookup_all_stages(external_block_ids) + 1
                         )
                     else:
                         external_hit_hashes = 0
@@ -2572,7 +2552,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
 
-    def _get_dump_event_handle(self) -> int:
+    def _get_event_handle(self) -> int:
         if not self.enable_event_sync:
             self.device.synchronize()
             return 0
@@ -2717,7 +2697,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(total_ucm_block_ids)
-                event_handle = self._get_dump_event_handle()
+                event_handle = self._get_event_handle()
                 task = self._rank_consistency.submit_dump(
                     self.store,
                     block_ids_by_request,
@@ -2896,6 +2876,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         role: KVConnectorRole,
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
+        self._is_pp = vllm_config.parallel_config.pipeline_parallel_size > 1
+        if self._is_pp:
+            self._defer_scheduler_store = True
         super().__init__(vllm_config, role, kv_cache_config)
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
@@ -2913,6 +2896,170 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
+
+    @staticmethod
+    def _pp_stage_name(pp_rank: int, layer_start: int, layer_count: int) -> str:
+        return f"pp_{pp_rank}_l{layer_start}-{layer_count}"
+
+    @staticmethod
+    def _pp_stage_paths(
+        backends: str | list[str],
+        rank: int,
+        layer_start: int,
+        layer_count: int,
+    ) -> list[str]:
+        roots = backends.split(":") if isinstance(backends, str) else list(backends)
+        if not roots or any(not root for root in roots):
+            raise ValueError("PP stage storage requires nonempty shared Posix roots")
+        name = UCMLayerWiseConnector._pp_stage_name(rank, layer_start, layer_count)
+        paths = []
+        for root in roots:
+            if not os.path.isdir(root):
+                raise FileNotFoundError(f"Storage backend path does not exist: {root}")
+            path = os.path.join(root, name)
+            os.makedirs(path, exist_ok=True)
+            paths.append(path)
+        return paths
+
+    def _configure_pp_store(
+        self,
+        config: dict[str, Any],
+        pp_rank: int,
+        layer_start: int,
+        layer_count: int,
+    ) -> None:
+        pp_size = self._vllm_config.parallel_config.pipeline_parallel_size
+        local_ranks = self._get_world_size()
+        if "storage_backends" not in config:
+            raise ValueError(
+                "PP stages require a shared Posix backend: set storage_backends "
+                "in ucm_connector_config so every stage has a reachable store."
+            )
+        stage_name = self._pp_stage_name(pp_rank, layer_start, layer_count)
+        config["storage_backends"] = self._pp_stage_paths(
+            config["storage_backends"], pp_rank, layer_start, layer_count
+        )
+        # Same signature in the Cache id, so a re-partition cannot reuse the
+        # host buffers of the previous layer set.
+        config["unique_id"] = f"{self.unique_id}_{stage_name}"
+        config["local_rank_size"] = min(self.tp_size, local_ranks)
+        # Split the node budget across the PP stages sharing this node.
+        local_stages = max(1, math.ceil(local_ranks / self.tp_size))
+        capacity = int(config["cache_buffer_capacity_gb"]) // local_stages
+        if capacity < 1:
+            raise ValueError(
+                f"cache_buffer_capacity_gb="
+                f"{config['cache_buffer_capacity_gb']} is too small for "
+                f"{local_stages} PP stage(s) on this node; set at least "
+                f"{local_stages}GB."
+            )
+        config["cache_buffer_capacity_gb"] = capacity
+        if config.get("posix_capacity_gb", 0):
+            capacity = int(config["posix_capacity_gb"]) // pp_size
+            if capacity < 1:
+                raise ValueError(
+                    f"posix_capacity_gb={config['posix_capacity_gb']} is too small "
+                    f"for pipeline_parallel_size={pp_size}; set at least {pp_size}GB."
+                )
+            config["posix_capacity_gb"] = capacity
+
+    def get_handshake_metadata(self) -> Optional[dict]:
+        if self._is_pp:
+            return getattr(self, "_pp_store_sizes", None)
+        return None
+
+    def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
+        if not self._is_pp:
+            return
+        if getattr(self, "_pp_stores", None) is not None:
+            logger.info(
+                "Ignore repeated PP handshake metadata; stage stores already exist."
+            )
+            return
+        name = self.connector_configs[0]["ucm_connector_name"]
+        module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
+        stores = []
+        for pp_rank in range(self._vllm_config.parallel_config.pipeline_parallel_size):
+            config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+            config.setdefault("share_buffer_enable", self.is_mla)
+            config["tensor_layout"] = "mla" if self.is_mla else "gqa"
+            self._set_default_shm_buffer_capacity(config)
+            stage_meta = metadata.get((pp_rank, 0))
+            if stage_meta is None:
+                raise ValueError(
+                    f"Missing handshake metadata for PP stage {pp_rank}, tp_rank 0; "
+                    f"received keys: {list(metadata)}."
+                )
+            stage_meta = dict(stage_meta)
+            layer_start = stage_meta.pop("layer_start", None)
+            layer_count = stage_meta.pop("layer_count", None)
+            if layer_start is None or layer_count is None:
+                raise ValueError(
+                    f"PP stage {pp_rank} handshake metadata has no layer "
+                    f"allocation; every worker must publish layer_start and "
+                    f"layer_count so stage directories stay layer-scoped. "
+                    f"Received keys: {sorted(stage_meta)}."
+                )
+            self._configure_pp_store(config, pp_rank, layer_start, layer_count)
+            config.update(stage_meta)
+            config.update(
+                device_id=-1,
+                posix_gc_enable=self._gc_owner,
+            )
+            # Lookup retains the original first-shard semantics through PP0.
+            # Other stage backends only retain GC and prefetch/hotness handling
+            # for the split files; they do not participate in hit decisions.
+            if pp_rank != 0:
+                config["store_pipeline"] = "Posix"
+            stores.append(
+                UcmConnectorFactoryV1.create_connector(name, config, module_path)
+            )
+        self._pp_stores = stores
+        self.store = stores[0]
+
+    def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
+        """Return the last prefix hit every PP stage can serve (-1 = none).
+
+        Only a full miss on PP0 settles the answer early; the rest run in parallel.
+        """
+        stores = getattr(self, "_pp_stores", None) or [self.store]
+        if len(stores) == 1:
+            return self._lookup_one_stage(stores[0], block_ids)
+
+        hit = self._lookup_one_stage(stores[0], block_ids)
+        if hit < 0:
+            return hit
+
+        pool = self._get_lookup_pool(len(stores))
+        futures = [
+            pool.submit(self._lookup_one_stage, store, block_ids)
+            for store in stores[1:]
+        ]
+        try:
+            stage_hits = [future.result() for future in futures]
+        except BaseException:
+            # Running C++ calls cannot be cancelled; stop waiting on them.
+            for future in futures:
+                future.cancel()
+            raise
+        return min([hit, *stage_hits])
+
+    def _get_lookup_pool(self, workers: int) -> ThreadPoolExecutor:
+        """Create the lookup pool once; per-lookup threads would leak metrics slots."""
+        pool = getattr(self, "_lookup_pool", None)
+        if pool is None:
+            pool = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="ucm-pp-lookup"
+            )
+            self._lookup_pool = pool
+        return pool
+
+    def shutdown(self) -> None:
+        """Release the lookup pool so process exit cannot block on it."""
+        pool = getattr(self, "_lookup_pool", None)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            self._lookup_pool = None
 
     def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
         if layer_id not in self._layerwise_load_start_by_layer:
@@ -2950,8 +3097,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         event_handle = 0
         try:
             layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-            shard_indexs = [layer_id] * len(total_ucm_block_ids)
-            event_handle = self._get_dump_event_handle()
+            shard_id = local_layer_id if self._is_pp else layer_id
+            shard_indexs = [shard_id] * len(total_ucm_block_ids)
+            event_handle = self._get_event_handle()
             task = self._rank_consistency.submit_dump(
                 self.store,
                 block_ids_by_request,
@@ -2999,7 +3147,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if request_id in self._failure_req_ids:
                 continue
             try:
-                shard_indexs = [layer_id] * len(ucm_block_ids)
+                shard_id = local_row if self._is_pp else layer_id
+                shard_indexs = [shard_id] * len(ucm_block_ids)
                 layer_ptrs = total_ptrs[local_row]
                 task = self._rank_consistency.submit_load(
                     self.store,
@@ -3213,6 +3362,11 @@ class UCMCPConnector(UCMLayerWiseConnector):
         role: KVConnectorRole,
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
+        if vllm_config.parallel_config.pipeline_parallel_size > 1:
+            raise ValueError(
+                "Context parallelism combined with pipeline parallelism is not "
+                "supported by UCMCPConnector; set pipeline_parallel_size=1."
+            )
         super().__init__(vllm_config, role, kv_cache_config)
         self.use_layerwise = self.launch_config.get("use_layerwise", True)
 
@@ -3599,6 +3753,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
+        _apply_cuda_indexer_io_config(
+            self.launch_config,
+            kv_cache_config,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
@@ -3724,8 +3883,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)
-        elif use_cp_parallel:
-            self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
         elif use_hybrid_linear_attention_layerwise:
             self.connector = UCMHybridLinearAttentionLayerWiseConnector(
                 vllm_config, role, kv_cache_config
@@ -3734,6 +3891,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMHybridLinearAttentionConnector(
                 vllm_config, role, kv_cache_config
             )
+        elif use_cp_parallel:
+            self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
         elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
@@ -4114,7 +4273,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.connector.get_block_ids_with_load_errors()
 
     @_record_connector_interface_duration
-    def set_xfer_handshake_metadata_pp_aware(self, metadata) -> None:
+    def get_handshake_metadata(self) -> Optional[dict]:
+        if getattr(self.connector, "_is_pp", False):
+            return self.connector.get_handshake_metadata()
+        return None
+
+    @_record_connector_interface_duration
+    def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
+        if getattr(self.connector, "_is_pp", False):
+            return self.connector.set_xfer_handshake_metadata_pp_aware(metadata)
         logger.info(
             "UCMConnector ignores PP-disaggregated handshake metadata: %s",
             list(metadata.keys()),

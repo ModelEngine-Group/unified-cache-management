@@ -21,46 +21,9 @@
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
-// libndsclient.so 的私有最小 ABI 声明，仅供本实现文件使用。
-// 集群模式的连接管理、哈希环、请求分发和断链重连均由库内负责，不在上层
-// 重复声明其私有类型或全局状态。以下布局、数组长度和函数签名必须与库一致。
-#define MAX_ADDR_NUM_IPC 4096
-
-#pragma pack(push, 1)
-typedef struct {
-    uint64_t key_low;
-    uint16_t key_high;
-    uint16_t reserve[3];
-} block_key;
-
-typedef struct {
-    uint32_t offset;
-    block_key block_id;
-    uint64_t hbm_addr;
-    uint32_t length;
-    uint32_t remote_key;
-} addr_pair;
-#pragma pack(pop)
-
-typedef struct {
-    uint64_t task_id;
-    uint64_t mr_id;
-    uint16_t addr_num;
-    uint32_t nsid;
-    addr_pair addr_pair_list[MAX_ADDR_NUM_IPC];
-} NDS_REQ;
-
-struct kv_mr {
-    uint64_t addr;
-    uint64_t len;
-};
-
-typedef int NDS_ERROR_T;
-
-typedef struct {
-    std::vector<int> batch_code_set;
-    std::vector<int> key_code_set;
-} CODE_SET;
+// ABI 类型和函数声明以 SDK 头文件为唯一来源，避免 wrapper 手抄声明与库漂移。
+// 以下断言仍在编译期锁定本 wrapper 依赖的布局，SDK 不兼容时直接构建失败。
+#include "NDS_client.h"
 
 static_assert(sizeof(block_key) == 16, "NDS block_key ABI mismatch");
 static_assert(sizeof(addr_pair) == 36, "NDS addr_pair ABI mismatch");
@@ -71,13 +34,6 @@ static_assert(offsetof(NDS_REQ, addr_num) == 16, "NDS_REQ.addr_num ABI mismatch"
 static_assert(offsetof(NDS_REQ, nsid) == 20, "NDS_REQ.nsid ABI mismatch");
 static_assert(offsetof(NDS_REQ, addr_pair_list) == 24, "NDS_REQ.addr_pair_list ABI mismatch");
 static_assert(sizeof(NDS_REQ) == 24 + MAX_ADDR_NUM_IPC * 36, "NDS_REQ size ABI mismatch");
-
-NDS_ERROR_T nds_init(void** kv_cache, int mr_num);
-uint64_t nds_kv_exist(NDS_REQ* req);
-NDS_ERROR_T nds_kv_get(NDS_REQ* req);
-NDS_ERROR_T nds_kv_put(NDS_REQ* req);
-CODE_SET nds_kv_wait(uint64_t task_id, uint32_t total_blocks);
-void nds_kv_get_nds_config(const char* path_nds_config);
 
 // 全局配置变量（默认值与原先硬编码一致，可被 nds_wrapper.conf 覆盖）
 static size_t g_max_exist_addr_num = 256;
@@ -95,10 +51,10 @@ static size_t g_value_size = 33554432;            // 32M, NDS namespace valueSiz
 static size_t g_max_inflight_reqs = 8;
 
 // 单个 NDS_REQ 的 addr_pair 物理上限（conf 键 max_addr_num_per_req）：
-// 默认跟随最小 ABI 声明中的 MAX_ADDR_NUM_IPC。NdsReqWrapper 是栈上对象，越界写入
+// 默认跟随 SDK NDS_client.h 中的 MAX_ADDR_NUM_IPC。NdsReqWrapper 是栈上对象，越界写入
 // 即栈溢出（batchPut 大批量时 SIGABRT/segfault）；maxAddrNum 由 conf 的
 // req_size/batch_size 推导（如 234MB/16KB=14976），可能远超物理数组，必须 clamp。
-// 厂商 SDK 更换后若数组大小变化，必须同步最小 ABI 声明并干净重编；conf 可进一步
+// 厂商 SDK 更换后若数组大小变化，静态 ABI 断言会在构建期报错；conf 可进一步
 // 调低上限，但不能用来兼容不同的 NDS_REQ 布局。
 static size_t g_max_addr_num_per_req = MAX_ADDR_NUM_IPC;
 

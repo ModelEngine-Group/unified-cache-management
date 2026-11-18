@@ -8,7 +8,6 @@ layer-ready and completion queues. Store setup and I/O stay in the adapter.
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 import time
 from collections import OrderedDict, deque
@@ -37,8 +36,9 @@ from ucm.integration.sglang.ucm_direct_store_adapter import (
     UcmLayerTransfer,
     UcmPoolMetadata,
 )
+from ucm.logger import init_logger
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 device_module = get_device_module()
 _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
@@ -93,6 +93,13 @@ class _PendingOffload:
     result: bool | None = None
 
 
+@dataclass
+class _PrefetchLoad:
+    transfers: list[PoolTransfer]
+    ready_events: list[object]
+    future: Future[bool]
+
+
 class UcmDirectLinker(UnifiedCacheLinker):
     """Link SGLang's L1 cache pools to a UCM Store adapter.
 
@@ -131,7 +138,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], list[object]] | None
+            tuple[int, dict[str, list[PoolTransfer]], list[object]]
+            | _PrefetchLoad
+            | None
         ] = Queue()
         self._completed_loads: Queue[list[str]] = Queue()
         self._requires_load_finish = hasattr(
@@ -172,9 +181,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
         self.layer_done_counter = LayerWiseLoadCounter(self.num_layers)
         if PoolName.MAMBA in self.pools:
-            params.req_to_token_pool.register_layer_transfer_counter(
-                self.layer_done_counter
+            register = getattr(
+                params.req_to_token_pool, "register_layer_transfer_counter", None
             )
+            if callable(register):
+                register(self.layer_done_counter)
+            elif not callable(
+                getattr(self._kv_cache, "register_layer_transfer_counter", None)
+            ):
+                raise RuntimeError(
+                    "SGLang provides no layer transfer counter registration"
+                )
+            # New SGLang registers the KV pool in its cache registry after
+            # constructing the linker, including Mamba layer-router setup.
 
         self._load_thread = threading.Thread(
             target=self._load_worker, daemon=True, name=f"ucm-load-tp{self._tp_rank}"
@@ -242,10 +261,17 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def _create_adapter(
         self, params: CacheInitParams, extra_config: dict[str, Any] | None
     ) -> UcmDirectStoreAdapter:
+        parallel = get_parallel()
+        # Like vLLM: derive node-local workers from the launch world and node count,
+        # then limit the Cache domain to its attention TP group.
+        world_size = self._tp_size
+        local_world_size = parallel.tp_size * parallel.pp_size // parallel.nnodes
+        local_count = min(world_size, local_world_size)
         identity = {
             "model": getattr(get_model(), "model_path", None),
             "tp_rank": self._tp_rank,
             "tp_size": self._tp_size,
+            "cache_local_rank_size": local_count,
             "dp_rank": self._dp_rank,
             "attn_dp_rank": self._attn_dp_rank,
             "pp_rank": params.pp_rank,
@@ -627,11 +653,23 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         ):
             resume_from_pages = previous.hit_pages
-        result = self.adapter.lookup(
-            lookup_transfers,
-            page_keys,
-            resume_from_pages=resume_from_pages,
-        )
+        try:
+            result = self.adapter.lookup(
+                lookup_transfers,
+                page_keys,
+                resume_from_pages=resume_from_pages,
+            )
+        except Exception:
+            logger.exception(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLookup] lookup_failed request_id=%s external_query_tokens=%d",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+                len(page_keys) * self.page_size,
+            )
+            raise
         self._lookup_progress[rid] = _LookupProgress(
             tuple(page_keys), transfer_keys, result[-1] if result else 0
         )
@@ -642,13 +680,47 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
         self._lookup_progress.pop(rid, None)
-        expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
+        try:
+            expanded = self._expand(
+                transfers, allow_partial=True, allow_missing_kv=True
+            )
+        except Exception:
+            logger.exception(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_failed request_id=%s",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+            )
+            raise
         if not expanded:
             return False
         if rid in self._pending_loads:
+            logger.error(
+                "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                "[CacheLoad] load_rejected request_id=%s reason=already_queued",
+                self._dp_rank,
+                self._attn_dp_rank,
+                self._tp_rank,
+                rid,
+            )
             raise RuntimeError(f"UCM load for rid={rid} is already queued.")
         self._pending_loads[rid] = expanded
         return True
+
+    def prefetch(self, transfers: list[PoolTransfer]) -> Future[bool] | None:
+        """Queue all-layer restoration; completion means device writes stopped."""
+        if self._closed or not self._load_thread.is_alive():
+            return None
+        expanded = self._expand(transfers, allow_partial=True, allow_missing_kv=True)
+        if not expanded:
+            return None
+        self._freeze_gc_once()
+        ready_events = self._record_transfer_events()
+        future: Future[bool] = Future()
+        self._load_queue.put(_PrefetchLoad(expanded, ready_events, future))
+        return future
 
     def cancel_queued_load(self, rid: str) -> bool:
         return self._pending_loads.pop(rid, None) is not None
@@ -722,7 +794,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
             try:
                 if task is None:
                     return
-                counter_index, pending, ready_events = task
+                prefetch = isinstance(task, _PrefetchLoad)
+                if prefetch:
+                    if not task.future.set_running_or_notify_cancel():
+                        continue
+                    counter_index = -1
+                    pending = {"prefetch": task.transfers}
+                    ready_events = task.ready_events
+                else:
+                    counter_index, pending, ready_events = task
                 landed = True
                 active_layer = -1
                 try:
@@ -749,45 +829,63 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 prerequisite_handle=prerequisite_handle,
                             )
                             while next_complete <= layer:
+                                active_layer = next_complete
                                 tasks = in_flight[next_complete]
                                 if not all(self.adapter.check(t) for t in tasks):
                                     break
                                 self.adapter.wait(in_flight.pop(next_complete))
-                                self.layer_done_counter.complete(
-                                    counter_index, next_complete
-                                )
+                                if not prefetch:
+                                    self.layer_done_counter.complete(
+                                        counter_index, next_complete
+                                    )
                                 next_complete += 1
 
                         while next_complete < self.num_layers:
                             active_layer = next_complete
                             self.adapter.wait(in_flight.pop(next_complete))
-                            self.layer_done_counter.complete(
-                                counter_index, next_complete
-                            )
+                            if not prefetch:
+                                self.layer_done_counter.complete(
+                                    counter_index, next_complete
+                                )
                             next_complete += 1
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
-                        for tasks in in_flight.values():
+                        for drain_layer, tasks in in_flight.items():
                             try:
                                 self.adapter.wait(tasks)
                             except Exception:
                                 logger.exception(
-                                    "UCM prefetched load failed while draining"
+                                    "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                                    "[CacheLoad] cleanup_failed request_ids=%s "
+                                    "load_batch_id=%d layer=%d",
+                                    self._dp_rank,
+                                    self._attn_dp_rank,
+                                    self._tp_rank,
+                                    list(pending),
+                                    counter_index,
+                                    drain_layer,
                                 )
                 except BaseException as error:
                     landed = False
-                    self.layer_done_counter.fail(counter_index, error)
+                    if not prefetch:
+                        self.layer_done_counter.fail(counter_index, error)
                     logger.exception(
-                        "UCM layer-wise load batch failed tp_rank=%d batch=%d "
-                        "layer=%d requests=%d",
+                        "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
+                        "[CacheLoad] load_failed load_batch_id=%d "
+                        "layer=%d requests=%d request_ids=%s",
+                        self._dp_rank,
+                        self._attn_dp_rank,
                         self._tp_rank,
                         counter_index,
                         active_layer,
                         len(pending),
+                        list(pending),
                     )
                 finally:
-                    if self._requires_load_finish:
+                    if prefetch:
+                        task.future.set_result(landed)
+                    elif self._requires_load_finish:
                         self._load_results[counter_index].set_result(landed)
                     else:
                         self._completed_loads.put(list(pending))
@@ -1014,8 +1112,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def close(self) -> None:
         if self._closed:
             return
-        self.reset()
         self._closed = True
+        self.reset()
         self._load_queue.put(None)
         self._offload_queue.put(None)
         self._load_thread.join()

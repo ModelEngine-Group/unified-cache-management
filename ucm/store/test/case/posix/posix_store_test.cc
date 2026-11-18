@@ -734,7 +734,7 @@ TEST(UCAioImplTest, TeardownReturnsLoadHandlesToTheirOwner)
         SCOPED_TRACE(capacity);
         LoadHandleCache cache;
         ASSERT_EQ(cache.Setup(capacity, false), UC::Status::OK());
-        auto borrowed = cache.GetOrOpen({}, "/dev/null");
+        auto borrowed = cache.GetOrOpen({}, 0, "/dev/null");
         ASSERT_TRUE(borrowed.Valid());
         auto fd = borrowed.Fd();
         auto buffer = MakeAlignedBuffer(8);
@@ -754,7 +754,7 @@ TEST(UCAioImplTest, TeardownReturnsLoadHandlesToTheirOwner)
         }
         EXPECT_EQ(::fcntl(fd, F_GETFD) >= 0, capacity != 0);
         if (capacity != 0) {
-            auto hit = cache.GetOrOpen({}, "/dev/null");
+            auto hit = cache.GetOrOpen({}, 0, "/dev/null");
             EXPECT_TRUE(hit.Cached());
             EXPECT_EQ(hit.Fd(), fd);
         }

@@ -2,18 +2,212 @@
 
 import array
 import os
+import queue
 import sys
 import types
 import unittest
+from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from common.sglang_utils import adapter_module, linker_module, pipeline_module
 
 
 class LayoutPreparationTest(unittest.TestCase):
+    def test_linker_resolves_geometry_before_registering_native_stores(self):
+        adapter = adapter_module.UcmDirectStoreAdapter(
+            connector_name="UcmPipelineStore",
+            module_path=None,
+            store_config={"store_pipeline": "Cache|Posix"},
+            identity={},
+        )
+
+        def create_adapter(config, identity):
+            adapter._identity = identity
+            return adapter
+
+        def register(pools):
+            self.assertEqual(adapter._identity["cache_local_rank_size"], 8)
+
+        adapter.register_device_pools = Mock(side_effect=register)
+        distributed = types.SimpleNamespace(
+            is_available=lambda: True,
+            is_initialized=lambda: True,
+            get_rank=lambda **kwargs: 8,
+            get_world_size=lambda **kwargs: 16,
+            all_gather_object=Mock(),
+        )
+        parallel = types.SimpleNamespace(tp_size=16, pp_size=1, nnodes=2, tp_rank=8)
+        pools = types.SimpleNamespace(entry_map={}, num_layers=1, rank_replicated=True)
+        params = types.SimpleNamespace(
+            page_size=4,
+            token_to_kv_pool_allocator=types.SimpleNamespace(
+                get_kvcache=lambda: object()
+            ),
+            attn_tp_cache_group=object(),
+            attn_cp_size=1,
+            attn_cp_rank=0,
+            pp_rank=0,
+            pp_size=1,
+        )
+        with (
+            patch.multiple(
+                linker_module,
+                create=True,
+                Queue=queue.Queue,
+                OrderedDict=OrderedDict,
+                get_parallel=lambda: parallel,
+                get_model=lambda: types.SimpleNamespace(model_path="model"),
+                device_module=types.SimpleNamespace(current_device=lambda: 0),
+                resolve_hybrid_device_pool_group=lambda **kwargs: pools,
+                LayerWiseLoadCounter=Mock(),
+                PoolName=types.SimpleNamespace(MAMBA="mamba"),
+                torch=types.SimpleNamespace(distributed=distributed),
+            ),
+            patch.object(
+                adapter_module.UcmDirectStoreAdapter,
+                "from_config",
+                side_effect=create_adapter,
+            ),
+            patch.object(linker_module.threading, "Thread"),
+            patch.object(linker_module.UcmDirectLinker, "_build_pool_bundles"),
+            patch.object(linker_module.UcmDirectLinker, "_build_layer_pointer_layouts"),
+            patch.object(linker_module.UcmDirectLinker, "_log_pool_topology"),
+            patch.object(
+                linker_module.UcmDirectLinker, "_pool_metadata", return_value=[]
+            ),
+            patch.object(linker_module.UcmDirectLinker, "_select_store_ranks"),
+        ):
+            linker_module.UcmDirectLinker(None, params, components=[])
+        adapter.register_device_pools.assert_called_once_with([])
+        distributed.all_gather_object.assert_not_called()
+
+    def test_cache_geometry_follows_node_placement_and_attention_subgroups(self):
+        # TP size, PP size, nodes, Cache group size, replicated KV.
+        topologies = (
+            (16, 1, 2, 16, True),
+            (8, 1, 1, 4, True),
+            (8, 1, 1, 8, True),
+            (8, 2, 2, 8, True),
+            (16, 2, 4, 16, True),
+            (4, 4, 2, 4, True),
+            (16, 1, 2, 4, True),
+            (16, 1, 4, 8, True),
+            (1, 1, 1, 1, True),
+            (16, 1, 2, 16, False),
+        )
+        for tp_size, pp_size, nnodes, group_size, replicated in topologies:
+            # Enumerate the launcher's node assignment to verify Cache membership.
+            node_ranks = np.array_split(np.arange(tp_size), max(nnodes // pp_size, 1))
+            for rank in range(tp_size):
+                with self.subTest(
+                    topology=(tp_size, pp_size, nnodes, group_size, replicated),
+                    rank=rank,
+                ):
+                    group = range(
+                        rank // group_size * group_size,
+                        (rank // group_size + 1) * group_size,
+                    )
+                    node = next(ranks.tolist() for ranks in node_ranks if rank in ranks)
+                    expected_count = (
+                        len(set(node).intersection(group)) if replicated else 1
+                    )
+                    linker = object.__new__(linker_module.UcmDirectLinker)
+                    linker._tp_rank, linker._tp_size = rank % group_size, group_size
+                    linker._dp_rank = 0
+                    linker._attn_dp_rank = rank // group_size
+                    linker.pool_group = types.SimpleNamespace(
+                        rank_replicated=replicated
+                    )
+                    parallel = types.SimpleNamespace(
+                        tp_size=tp_size, pp_size=pp_size, nnodes=nnodes, tp_rank=rank
+                    )
+                    params = types.SimpleNamespace(
+                        pp_rank=0, pp_size=pp_size, attn_cp_rank=0, attn_cp_size=1
+                    )
+                    adapter = adapter_module.UcmDirectStoreAdapter(
+                        connector_name="UcmPipelineStore",
+                        module_path=None,
+                        store_config={
+                            "store_pipeline": "Cache|Posix",
+                            "local_rank_size": 99,
+                        },
+                        identity={},
+                    )
+
+                    def create_adapter(config, identity):
+                        adapter._identity = identity
+                        return adapter
+
+                    with (
+                        patch.multiple(
+                            linker_module,
+                            create=True,
+                            get_parallel=lambda: parallel,
+                            get_model=lambda: types.SimpleNamespace(model_path="model"),
+                            device_module=types.SimpleNamespace(
+                                current_device=lambda: node.index(rank)
+                            ),
+                            torch=Mock(),
+                        ),
+                        patch.object(
+                            adapter_module.UcmDirectStoreAdapter,
+                            "from_config",
+                            side_effect=create_adapter,
+                        ),
+                    ):
+                        linker._create_adapter(params, {})
+                        linker_module.torch.distributed.all_gather_object.assert_not_called()
+                    adapter._backend_paths_by_group["kv"] = ["/cache"]
+                    factory = types.SimpleNamespace(
+                        create_connector=lambda _name, config, _module: config
+                    )
+                    with (
+                        patch.object(
+                            adapter_module,
+                            "UcmConnectorFactoryV1",
+                            factory,
+                            create=True,
+                        ),
+                        patch.object(Path, "mkdir"),
+                    ):
+                        config = adapter._ensure_store_schema(
+                            "kv",
+                            ((4096, 0),),
+                            shard_size=4096,
+                            tensor_size_list=(4096,),
+                        )
+                    self.assertEqual(config["local_rank_size"], expected_count)
+                    self.assertEqual(config["device_id"], node.index(rank))
+
+    def test_replicated_cache_domains_are_isolated_by_dp(self):
+        adapter = adapter_module.UcmDirectStoreAdapter(
+            connector_name="UcmPipelineStore",
+            module_path=None,
+            store_config={},
+            identity={"rank_replicated": True, "tp_size": 4},
+        )
+
+        def store_id():
+            return adapter._store_unique_id(
+                "kv",
+                schema=((4096, 0),),
+                shard_size=4096,
+                tensor_size_list=(4096,),
+                block_size=4096,
+            )
+
+        first = store_id()
+        adapter._identity["tp_rank"] = 1
+        self.assertEqual(first, store_id())
+        adapter._identity["dp_rank"] = 1
+        second = store_id()
+        self.assertNotEqual(first, second)
+        adapter._identity["attn_dp_rank"] = 1
+        self.assertNotEqual(second, store_id())
+
     def test_linker_yaml_path_requires_explicit_config(self):
         linker = object.__new__(linker_module.UcmDirectLinker)
         linker._tp_rank = linker._dp_rank = linker._attn_dp_rank = 0
@@ -26,6 +220,14 @@ class LayoutPreparationTest(unittest.TestCase):
             patch.dict(os.environ, {"UNIFIEDCACHE_CONFIG_FILE": "environment.yaml"}),
             # Let a regression reading os.environ reach the assertions below.
             patch.object(linker_module, "os", os, create=True),
+            patch.object(
+                linker_module,
+                "get_parallel",
+                lambda: types.SimpleNamespace(
+                    tp_size=1, pp_size=1, nnodes=1, tp_rank=0
+                ),
+                create=True,
+            ),
             patch.object(
                 linker_module,
                 "get_model",
