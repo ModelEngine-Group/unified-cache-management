@@ -16,3 +16,9 @@ target_include_directories(infra_thread PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE UCMINFRA_TIME_SOURCE_FILES "time/*.*")
 add_library(infra_time OBJECT ${UCMINFRA_TIME_SOURCE_FILES})
 target_include_directories(infra_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# These OBJECT libraries only carry headers, so CMake cannot infer a linker
+# language from the (empty) source list and generation fails on every CMake
+# version.  Pin the language explicitly.
+set_target_properties(infra_status infra_template infra_thread infra_time
+    PROPERTIES LINKER_LANGUAGE CXX)
