@@ -57,11 +57,11 @@ TEST(TransTaskUtilsTest, ResolvedKeyRoutingViewExcludesNamespace)
 
 TEST(TransTaskUtilsTest, CacheKeyViewPreservesStringBytes)
 {
-    const CacheKey key = CacheKey::FromEngineKey(std::string("a\0b", 3));
+    const CacheKey key = CacheKey::FromString(std::string("a\0b", 3));
     const auto view = CacheKeyView(key);
     EXPECT_EQ(view, std::string_view("a\0b", 3));
-    EXPECT_EQ(view.data(), key.TryGetEngineKey()->data());
-    EXPECT_TRUE(CacheKeyView(CacheKey::FromEngineKey(std::string{})).empty());
+    EXPECT_EQ(view.data(), key.TryGetStringKey()->data());
+    EXPECT_TRUE(CacheKeyView(CacheKey::FromString(std::string{})).empty());
 }
 
 TEST(TransTaskUtilsTest, CacheKeyToHexPreservesBinaryAndStringBytes)
@@ -70,10 +70,10 @@ TEST(TransTaskUtilsTest, CacheKeyToHexPreservesBinaryAndStringBytes)
                           std::byte{0xab}, std::byte{0xcd}, std::byte{0xef}, std::byte{0xff}};
     EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(bytes)), "00017f80abcdefff");
     EXPECT_EQ(
-        CacheKeyToHex(CacheKey::FromEngineKey(std::string("\x00\x01\x7f\x80\xab\xcd\xef\xff", 8))),
+        CacheKeyToHex(CacheKey::FromString(std::string("\x00\x01\x7f\x80\xab\xcd\xef\xff", 8))),
         "00017f80abcdefff");
-    EXPECT_EQ(CacheKeyToHex(CacheKey::FromEngineKey(std::string("a\0b", 3))), "610062");
-    EXPECT_EQ(CacheKeyToHex(CacheKey::FromEngineKey(std::string{})), "");
+    EXPECT_EQ(CacheKeyToHex(CacheKey::FromString(std::string("a\0b", 3))), "610062");
+    EXPECT_EQ(CacheKeyToHex(CacheKey::FromString(std::string{})), "");
     EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(BinaryKey{})), "0000000000000000");
 }
 

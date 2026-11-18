@@ -50,7 +50,7 @@ struct CacheKeyHasher {
             return std::hash<std::string_view>{}(
                 std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
         }
-        return std::hash<std::string_view>{}(*key.TryGetEngineKey());
+        return std::hash<std::string_view>{}(*key.TryGetStringKey());
     }
 };
 

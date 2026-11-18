@@ -2346,10 +2346,10 @@ TEST(KvClientImplTest,
 TEST(KvClientImplTest, CacheKeyFactoriesOwnInputAndPreserveRepresentation)
 {
     std::string text = "model@hash@1";
-    const auto engine = CacheKey::FromEngineKey(text);
+    const auto engine = CacheKey::FromString(text);
     text.clear();
-    ASSERT_NE(engine.TryGetEngineKey(), nullptr);
-    EXPECT_EQ(*engine.TryGetEngineKey(), "model@hash@1");
+    ASSERT_NE(engine.TryGetStringKey(), nullptr);
+    EXPECT_EQ(*engine.TryGetStringKey(), "model@hash@1");
     EXPECT_EQ(engine.TryGetBinaryKey(), nullptr);
     BinaryKey bytes{};
     bytes[0] = std::byte{7};
@@ -2357,8 +2357,8 @@ TEST(KvClientImplTest, CacheKeyFactoriesOwnInputAndPreserveRepresentation)
     bytes[0] = std::byte{9};
     ASSERT_NE(encoded.TryGetBinaryKey(), nullptr);
     EXPECT_EQ((*encoded.TryGetBinaryKey())[0], std::byte{7});
-    EXPECT_EQ(encoded.TryGetEngineKey(), nullptr);
-    EXPECT_NE(CacheKey::FromBytes(BinaryKey{}), CacheKey::FromEngineKey(std::string(8, '\0')));
+    EXPECT_EQ(encoded.TryGetStringKey(), nullptr);
+    EXPECT_NE(CacheKey::FromBytes(BinaryKey{}), CacheKey::FromString(std::string(8, '\0')));
 }
 
 namespace {
@@ -2382,7 +2382,7 @@ TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
              {"abc",        "1f4573c6b5c1d119"},
              {"model@hash", "bcce7875d1eb6ebb"}
     }) {
-        ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(text), "tenant", result).ok());
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(text), "tenant", result).ok());
         EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.keyBytes)), hex);
         EXPECT_EQ(result.gnsid, BaseNamespaceGnsid("tenant"));
     }
@@ -2423,8 +2423,8 @@ TEST(KvClientImplTest, VllmNamespaceUsesOnlyPresentGroupAndPpFields)
               "model@tp_rank:3@cache_role:kv@hash@7",                                 "tenant_group2_pp1"}
     }) {
         ResolvedCacheKey actual, expected;
-        ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(item.input), "tenant", actual).ok());
-        ASSERT_TRUE(generic->Resolve(CacheKey::FromEngineKey(item.identity), "", expected).ok());
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(item.input), "tenant", actual).ok());
+        ASSERT_TRUE(generic->Resolve(CacheKey::FromString(item.identity), "", expected).ok());
         EXPECT_EQ(actual.keyBytes, expected.keyBytes);
         EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(item.kvns));
     }
@@ -2435,23 +2435,21 @@ TEST(KvClientImplTest, SglangPoolAndPpSelectNamespaceButCpRemainsInKey)
     auto resolver = CreateDefaultKeyResolver({InferenceEngine::SGLANG});
     auto generic = CreateDefaultKeyResolver({});
     ResolvedCacheKey expected;
-    ASSERT_TRUE(generic->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp0"), "", expected).ok());
+    ASSERT_TRUE(generic->Resolve(CacheKey::FromString("model_hash_tp0_cp0"), "", expected).ok());
     for (const auto* pool : {"kv", "indexer", "indexer_scale", "swa", "future_custom_pool",
                              "custom_cp_pool", "custom_pp_pool", "custom_cp1_pp2_pool"}) {
         ResolvedCacheKey actual;
         const auto input = std::string("model_hash_tp0_cp0_pp1_") + pool;
-        ASSERT_TRUE(resolver->Resolve(CacheKey::FromEngineKey(input), "tenant", actual).ok());
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(input), "tenant", actual).ok());
         EXPECT_EQ(actual.keyBytes, expected.keyBytes);
         EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(std::string("tenant_") + pool + "_pp1"));
     }
     ResolvedCacheKey cp1, pp0;
     ASSERT_TRUE(
-        resolver->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp1_pp1_kv"), "tenant", cp1)
-            .ok());
+        resolver->Resolve(CacheKey::FromString("model_hash_tp0_cp1_pp1_kv"), "tenant", cp1).ok());
     EXPECT_NE(cp1.keyBytes, expected.keyBytes);
     ASSERT_TRUE(
-        resolver->Resolve(CacheKey::FromEngineKey("model_hash_tp0_cp0_pp0_kv"), "tenant", pp0)
-            .ok());
+        resolver->Resolve(CacheKey::FromString("model_hash_tp0_cp0_pp0_kv"), "tenant", pp0).ok());
     EXPECT_EQ(pp0.keyBytes, expected.keyBytes);
     EXPECT_EQ(pp0.gnsid, BaseNamespaceGnsid("tenant_kv_pp0"));
 }
@@ -2461,7 +2459,7 @@ TEST(KvClientImplTest, UnrecognizedKeyFormatsRemainUnchanged)
     auto generic = CreateDefaultKeyResolver({});
     for (auto engine : {InferenceEngine::GENERIC, InferenceEngine::SGLANG}) {
         auto resolver = CreateDefaultKeyResolver({engine});
-        const auto input = CacheKey::FromEngineKey("model@group:2@pp_rank:1@hash@7");
+        const auto input = CacheKey::FromString("model@group:2@pp_rank:1@hash@7");
         ResolvedCacheKey actual, expected;
         ASSERT_TRUE(resolver->Resolve(input, "base", actual).ok());
         ASSERT_TRUE(generic->Resolve(input, "base", expected).ok());
@@ -2482,7 +2480,7 @@ TEST(KvClientImplTest, InvalidNamespaceFieldsLeaveResolverOutputUnchanged)
     }) {
         auto resolver = CreateDefaultKeyResolver({engine});
         ResolvedCacheKey result{BinaryKey{std::byte{7}}, 99};
-        EXPECT_EQ(resolver->Resolve(CacheKey::FromEngineKey(input), "base", result).code,
+        EXPECT_EQ(resolver->Resolve(CacheKey::FromString(input), "base", result).code,
                   StatusCode::INVALID_ARGUMENT);
         EXPECT_EQ(result.keyBytes[0], std::byte{7});
         EXPECT_EQ(result.gnsid, 99U);
@@ -2497,8 +2495,8 @@ TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffse
     config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
     ASSERT_TRUE(client->Init(config).ok());
     const std::vector<KVBuffer> entries{
-        {CacheKey::FromEngineKey("model@group:0@pp_rank:0@hash@7"), {}, 17},
-        {CacheKey::FromEngineKey("model@group:1@pp_rank:0@hash@7"), {}, 31}
+        {CacheKey::FromString("model@group:0@pp_rank:0@hash@7"), {}, 17},
+        {CacheKey::FromString("model@group:1@pp_rank:0@hash@7"), {}, 31}
     };
     const std::vector<CacheKey> keys{entries[0].key, entries[1].key};
     auto resolver = CreateDefaultKeyResolver(config.keyResolution);
@@ -2538,7 +2536,7 @@ TEST(KvClientImplTest, InvalidKeysAreRejectedBeforeAnyOperationIsSubmitted)
     auto config = MakeConfig({10});
     config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
     ASSERT_TRUE(client->Init(config).ok());
-    const auto key = CacheKey::FromEngineKey("model@group:bad@hash");
+    const auto key = CacheKey::FromString("model@group:bad@hash");
     const std::vector<KVBuffer> entries{
         {key, {}}
     };

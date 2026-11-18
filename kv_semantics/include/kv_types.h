@@ -47,10 +47,10 @@ public:
     CacheKey() = default;
 
     static CacheKey FromBytes(BinaryKey key) { return CacheKey(key); }
-    static CacheKey FromEngineKey(std::string key) { return CacheKey(std::move(key)); }
+    static CacheKey FromString(std::string key) { return CacheKey(std::move(key)); }
 
     const BinaryKey* TryGetBinaryKey() const { return std::get_if<BinaryKey>(&value_); }
-    const std::string* TryGetEngineKey() const { return std::get_if<std::string>(&value_); }
+    const std::string* TryGetStringKey() const { return std::get_if<std::string>(&value_); }
 
     bool operator==(const CacheKey& other) const { return value_ == other.value_; }
     bool operator!=(const CacheKey& other) const { return !(*this == other); }

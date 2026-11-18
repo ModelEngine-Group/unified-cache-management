@@ -146,7 +146,7 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
         resolvedKey.keyBytes = *bytes;
     } else {
         ParsedKey parsed;
-        auto status = ParseEngineKey(*input.TryGetEngineKey(), parsed);
+        auto status = ParseEngineKey(*input.TryGetStringKey(), parsed);
         if (!status.ok()) { return status; }
         if (parsed.component) { kvns += "_" + *parsed.component; }
         if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }

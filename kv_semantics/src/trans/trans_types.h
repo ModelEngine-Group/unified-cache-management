@@ -39,7 +39,7 @@ inline std::string_view CacheKeyView(const CacheKey& key)
     if (const auto* binary = key.TryGetBinaryKey()) {
         return {reinterpret_cast<const char*>(binary->data()), binary->size()};
     }
-    return *key.TryGetEngineKey();
+    return *key.TryGetStringKey();
 }
 
 inline std::string_view CacheKeyView(const BinaryKey& key)

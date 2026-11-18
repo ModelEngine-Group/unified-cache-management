@@ -259,7 +259,7 @@ standalone file keys. Compatibility aliases are omitted.
 | `asu_info.<id>` | Endpoint configuration for one ASU; multiple endpoints are separated by semicolons. |
 | `inference.engine` | Key and namespace resolution rules; defaults to `generic`. Recognized values are `generic`, `vllm_ascend`, and `sglang` (case-sensitive). Other values log a warning and use generic handling. |
 
-`inference.engine` selects how `CacheKey::FromEngineKey` inputs are normalized
+`inference.engine` selects how `CacheKey::FromString` inputs are normalized
 before routing. `CacheKey::FromBytes` preserves the eight encoded bytes and
 uses `IoOptions::kvns` as its namespace without engine-specific parsing.
 
