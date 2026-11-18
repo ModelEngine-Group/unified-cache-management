@@ -144,6 +144,13 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
     return routes;
 }
 
+std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
+    const std::vector<Key>& keys, const UnavailableNodeSet& unavailableNodes) const
+{
+    (void)unavailableNodes;
+    return RouteKeys(keys);
+}
+
 RingHashRouter::RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
                                RouterConfig config)
     : Router(std::move(hash)), config_(config)
