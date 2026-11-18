@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "status/status.h"
@@ -56,25 +57,32 @@ struct StubLoadCall {
 
 /**
  * @brief Scriptable stand-in for the wired lower tier: records the
- *        admission and read protocols a relay drives (Alloc, Dump,
- *        Commit; Pin, Load, Unpin) and settles completions on command
- *        instead of moving any bytes.
+ *        admission, read, and probe protocols a relay or glue drives
+ *        (Lookup; Alloc, Dump, Commit; Pin, Load, Unpin) and settles
+ *        completions on command instead of moving any bytes.
  *
- * The records are public and in call order: allocs holds every
- * requested reservation's keys, dumps every Dump submission (admitted
- * or refused, flattened to its source pointers and sizes), commits
- * every concluded Commit with its verdict; pins holds every requested
- * pin's keys, loads every Load submission (admitted or refused,
- * flattened to its destination pointers and sizes), unpins every
- * Unpin's keys. Completions are scripted: Complete() parks a verdict
- * for the next GetFinished() drain; FailAllocNth()/FailDumpNth()/
- * FailPinNth()/FailLoadNth() turn the n-th call of that entry point
- * from now on into the given error; SettleOnWait() has Wait() conclude
- * a still-flying job on the spot instead of blocking, so a
+ * The records are public and in call order: lookups holds every
+ * probe's keys, allocs holds every requested reservation's keys,
+ * dumps every Dump submission (admitted or refused, flattened to its
+ * source pointers and sizes), commits every concluded Commit with
+ * its verdict; pins holds every requested pin's keys, loads every
+ * Load submission (admitted or refused, flattened to its destination
+ * pointers and sizes), unpins every Unpin's keys. Lookup answers
+ * from the present set -- the stub owns no data plane, so presence
+ * is scripted, not flown. Completions are scripted: Complete()
+ * parks a verdict for the next GetFinished() drain;
+ * FailLookupNth()/FailAllocNth()/FailDumpNth()/FailPinNth()/
+ * FailLoadNth() turn the n-th call of that entry point from now on
+ * into the given error; SettleOnWait() has Wait() conclude a
+ * still-flying job on the spot instead of blocking, so a
  * single-threaded test can drive a blocking pump path.
  */
 class StubLowerStore final : public Store {
 public:
+    /* Keys of every probe, in call order. */
+    std::vector<std::vector<BlockId>> lookups;
+    /* The presence map probes answer from. */
+    std::unordered_set<BlockId> present;
     /* Keys of every requested reservation, in call order. */
     std::vector<std::vector<BlockId>> allocs;
     /* Every Dump submission, admitted or refused. */
@@ -87,6 +95,14 @@ public:
     std::vector<StubLoadCall> loads;
     /* Keys of every Unpin, in call order. */
     std::vector<std::vector<BlockId>> unpins;
+
+    /** Makes the n-th Lookup from now on answer the given error
+     *  instead of probing. */
+    void FailLookupNth(std::size_t nth, Status error)
+    {
+        failLookupNth_ = nth;
+        failLookup_ = std::move(error);
+    }
 
     /** Makes the n-th Alloc from now on answer the given error instead of
      *  reserving. */
@@ -142,9 +158,15 @@ public:
 
     Status Setup(const Dictionary&) override { return Status::Ok(); }
 
-    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>&) override
+    Expected<std::vector<std::uint8_t>> Lookup(const std::vector<BlockId>& blockIds) override
     {
-        return Status::Unsupported("the stub lower tier is not probeable");
+        lookups.push_back(blockIds);
+        if (failLookupNth_ != 0 && --failLookupNth_ == 0) { return *failLookup_; }
+        std::vector<std::uint8_t> hits(blockIds.size(), 0);
+        for (std::size_t i = 0; i < blockIds.size(); ++i) {
+            hits[i] = present.count(blockIds[i]) != 0 ? 1 : 0;
+        }
+        return hits;
     }
 
     Expected<AddressedToken> Alloc(const std::vector<BlockId>& blockIds,
@@ -243,16 +265,18 @@ private:
 
     std::vector<std::size_t> inFlight_;                  /* Dumped or loaded, not yet settled. */
     std::vector<std::pair<std::size_t, bool>> finished_; /* Settled, not yet drained. */
-    std::size_t failAllocNth_{0};     /* Alloc calls left before the scripted error fires. */
-    std::optional<Status> failAlloc_; /* The scripted Alloc error. */
-    std::size_t failDumpNth_{0};      /* Dump calls left before the scripted error fires. */
-    std::optional<Status> failDump_;  /* The scripted Dump error. */
-    std::size_t failPinNth_{0};       /* Pin calls left before the scripted error fires. */
-    std::optional<Status> failPin_;   /* The scripted Pin error. */
-    std::size_t failLoadNth_{0};      /* Load calls left before the scripted error fires. */
-    std::optional<Status> failLoad_;  /* The scripted Load error. */
-    bool settleOnWait_{false};        /* Wait() settles a still-flying job instead of blocking. */
-    bool settleVerdict_{true};        /* The verdict an on-wait settle concludes with. */
+    std::size_t failLookupNth_{0};     /* Lookup calls left before the scripted error fires. */
+    std::optional<Status> failLookup_; /* The scripted Lookup error. */
+    std::size_t failAllocNth_{0};      /* Alloc calls left before the scripted error fires. */
+    std::optional<Status> failAlloc_;  /* The scripted Alloc error. */
+    std::size_t failDumpNth_{0};       /* Dump calls left before the scripted error fires. */
+    std::optional<Status> failDump_;   /* The scripted Dump error. */
+    std::size_t failPinNth_{0};        /* Pin calls left before the scripted error fires. */
+    std::optional<Status> failPin_;    /* The scripted Pin error. */
+    std::size_t failLoadNth_{0};       /* Load calls left before the scripted error fires. */
+    std::optional<Status> failLoad_;   /* The scripted Load error. */
+    bool settleOnWait_{false};         /* Wait() settles a still-flying job instead of blocking. */
+    bool settleVerdict_{true};         /* The verdict an on-wait settle concludes with. */
 };
 
 }  // namespace UC::Store
