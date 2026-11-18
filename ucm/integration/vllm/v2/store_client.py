@@ -222,8 +222,8 @@ class StoreWorkerClient(_StoreBinding):
             if sub_job_id > MAX_NATIVE_JOB_ID:
                 raise OverflowError("UCM subjob IDs exhausted the uint64 range")
         # Payload order follows the Prepare input, independently of the token.
-        # Keep the complete opaque token; empty payloads leave other objects
-        # untouched. Only the binding conversion copies token fields.
+        # Keep the complete opaque token; each writer supplies every key.
+        # Only the binding conversion copies token fields.
         payloads = [self._proxy.BlockPayload() for _ in job.ucm_keys]
         payload_index_by_key = {
             ucm_key: index for index, ucm_key in enumerate(job.ucm_keys)

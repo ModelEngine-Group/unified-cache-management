@@ -485,7 +485,6 @@ class UCMConnectorWorker:
         """Resolve one prepared plan into this rank's device-to-store ranges."""
         ucm_keys = dispatch_plan.ucm_keys
         transfer_batches = []
-        chunk_indices = dispatch_plan.token_starts // self.spec.chunk_size
         # A State plan restores the same source ranges to running and checkpoint
         # targets in one Submit. Both targets stay under this plan's single job.
         for group_id, group_block_ids in chain(
@@ -499,23 +498,16 @@ class UCMConnectorWorker:
             store_layout = self.layout.store_layouts.get(group_id)
             if store_layout is None:
                 continue
+            # The first replica writes every key of this shard.
+            if is_dump and not store_layout.is_dump_writer:
+                continue
             segment_mask = store_layout.group_layout.segment_mask(layer_id)
             if segment_mask is not None and not segment_mask.any():
                 continue
-            selected_chunk_rows = (
-                store_layout.select_writer_chunk_rows(chunk_indices)
-                if is_dump
-                else np.arange(len(chunk_indices))
-            )
-            if not len(selected_chunk_rows):
-                continue
-            selected_block_ids = group_block_ids.reshape(len(chunk_indices), -1)[
-                selected_chunk_rows
-            ].reshape(-1)
             store_offsets, device_ptrs, byte_sizes = (
                 store_layout.resolve_transfer_ranges(
-                    selected_block_ids,
-                    dispatch_plan.token_starts[selected_chunk_rows],
+                    group_block_ids,
+                    dispatch_plan.token_starts,
                     segment_mask=segment_mask,
                 )
             )
@@ -526,7 +518,7 @@ class UCMConnectorWorker:
             )
             transfer_batches.append(
                 TransferBatch(
-                    ucm_keys=tuple(ucm_keys[int(row)] for row in selected_chunk_rows),
+                    ucm_keys=ucm_keys,
                     device_ptrs=device_ptrs,
                     byte_sizes=byte_sizes,
                     store_offsets=store_offsets,

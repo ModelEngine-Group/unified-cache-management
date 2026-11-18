@@ -62,8 +62,7 @@ class GroupStoreLayout:
     group_layout: KVCacheGroupLayout | None
     tp_shards: int
     shard: UCMShard | None
-    replica_index: int
-    replica_count: int
+    is_dump_writer: bool
     # Matrices: [blocks in this chunk/window, local segments].
     # HBM offsets are relative to each segment's local block base.
     segment_byte_offsets_in_block: np.ndarray
@@ -95,7 +94,7 @@ class GroupStoreLayout:
         tp_shards = group_metadata.tp_shards if group_metadata is not None else 0
         global_block_sizes, global_states_per_block = [], []
         local_segment_start, local_segment_count, local_shard = 0, 0, None
-        replica_index, replica_count = 0, 1
+        is_dump_writer = False
         owners = {
             shard: replicas
             for pp_rank, metadata in metadata_by_stage.items()
@@ -113,8 +112,7 @@ class GroupStoreLayout:
                 local_segment_start = len(global_block_sizes)
                 local_segment_count = len(metadata.sizes)
                 local_shard = ucm_shard
-                replica_index = replica_ranks.index(parallel_rank)
-                replica_count = len(replica_ranks)
+                is_dump_writer = parallel_rank == replica_ranks[0]
             global_block_sizes.extend(metadata.sizes)
             global_states_per_block.extend(metadata.states_per_block)
         block_token_span = group_spec.block_token_span
@@ -171,8 +169,7 @@ class GroupStoreLayout:
             group_layout=group_layout,
             tp_shards=tp_shards,
             shard=local_shard,
-            replica_index=replica_index,
-            replica_count=replica_count,
+            is_dump_writer=is_dump_writer,
             segment_byte_offsets_in_block=block_token_offsets[:, None]
             * block_segment_bytes[local_segment_slice][None, :]
             // np.uint64(block_token_span),
@@ -182,10 +179,6 @@ class GroupStoreLayout:
             whole_block_nbytes=int(block_segment_bytes.sum()),
             whole_chunk_nbytes=int(chunk_segment_bytes.sum()),
         )
-
-    def select_writer_chunk_rows(self, chunk_indices: np.ndarray) -> np.ndarray:
-        """One writer owns every local segment of this group at a chunk index."""
-        return np.flatnonzero(chunk_indices % self.replica_count == self.replica_index)
 
     def resolve_transfer_ranges(
         self,

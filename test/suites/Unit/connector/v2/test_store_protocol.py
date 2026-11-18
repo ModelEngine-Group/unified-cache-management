@@ -238,11 +238,18 @@ def test_pp_stages_write_disjoint_shards_into_the_same_key(monkeypatch):
                 assert layout.store_sizes_by_policy == {RestorePolicy.FA: 704}
                 assert layout.store_offsets_by_group == {0: 0, 1: 640}
                 assert layout.store_layouts[0].shard == UCMShard(tp, 0, pp)
+                assert layout.store_layouts[0].is_dump_writer == (pcp == 0)
+                if pp == 1:
+                    assert layout.store_layouts[1].is_dump_writer == (
+                        pcp == 0 and tp == 0
+                    )
                 worker = object.__new__(UCMConnectorWorker)
                 worker.spec = spec
                 worker.layout = layout
                 batches = worker._build_transfer_batches(plan, is_dump=True)
+                assert bool(batches) == (pcp == 0)
                 for batch in batches:
+                    assert batch.ucm_keys == keys
                     for key, offsets, sizes in zip(
                         batch.ucm_keys,
                         batch.store_offsets,
