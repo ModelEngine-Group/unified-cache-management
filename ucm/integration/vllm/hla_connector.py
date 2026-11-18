@@ -1137,11 +1137,6 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             raise ValueError("NPU flash-next PLE layer has no live tensor.")
         page = int(self.page_types[0])
         stage_bytes = len(rows) * page
-        logger.info(
-            "NPU flash-next PLE stage: blocks=%s bytes=%s",
-            len(rows),
-            stage_bytes,
-        )
         self._ple_stage = torch.empty(
             stage_bytes,
             dtype=torch.uint8,
@@ -3291,24 +3286,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                 )
 
-    def _is_full_cudagraph(self) -> bool:
-        """True when the engine may replay a full model graph this process.
-
-        ``FULL``, ``FULL_DECODE_ONLY``, and ``FULL_AND_PIECEWISE`` all report
-        ``has_full_cudagraphs()`` / decode-side FULL. Those replays skip
-        per-layer Python wait hooks, so the depth-2 load pipeline cannot
-        submit later positions or wait before the model reads KV.
-        """
-        cc = getattr(self._vllm_config, "compilation_config", None)
-        cg_mode = getattr(cc, "cudagraph_mode", None)
-        if cg_mode is None:
-            return False
-        has_full = getattr(cg_mode, "has_full_cudagraphs", None)
-        if callable(has_full):
-            return bool(has_full())
-        name = str(getattr(cg_mode, "name", cg_mode) or "NONE")
-        return name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
-
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -3322,14 +3299,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         # has completed before load DMA (store stream) can overwrite the
         # state it copies.
         self.device.synchronize()
-        if self._is_full_cudagraph():
-            # Finish every layer load before forward enters the captured
-            # graph; wait_for_save drain cannot recover unsubmitted layers.
-            for pos in range(len(self.layer_order)):
-                self._submit_layer_load(pos)
-            self._drain_unwaited_loads()
-            self._record_load_bytes()
-            return
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.
