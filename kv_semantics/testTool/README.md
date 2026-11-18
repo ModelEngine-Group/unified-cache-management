@@ -6,6 +6,7 @@ kv_semantics 测试工具（C++17），开发中。
 
 - `src/` 源码（根目录为顶层编排 `main` / `scheduler`；模块目录 `log` / `request` / `utils` / `worker`；`test/` 为临时测试目录，开发完成后删除）
 - `conf/` 运行时配置
+- `demo/` 真机验证引导（build/执行 SOP、只建链验证配置、kv client 配置模板）
 - `input/` 流量模型输入文件（`input.txt` 为驱动源，格式见 `input/readme.md`）
 - `scripts/` 辅助脚本
 
