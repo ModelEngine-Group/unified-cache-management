@@ -279,10 +279,10 @@ String identities use XXH64, encoded as eight little-endian bytes. Namespaces
 use XXH32 to produce GNSIDs. Both hashes use seed 5381. Load/Store offsets
 are passed through unchanged; layer-slot configuration is no longer used.
 
-Normalized keys carry per-item GNSIDs internally; public `CacheKey` and
-`KVBuffer` types do not expose this metadata. Namespace grouping, local-ID
-view lookup and namespace-specific protocol dispatch are not implemented
-here. Protocol requests still use the configured `transport.kv_ns_id`.
+Normalized keys carry a per-item global namespace ID (GNSID) as internal
+metadata; public `CacheKey` and `KVBuffer` types remain independent of this
+representation. The protocol-local namespace ID is configured through
+`transport.kv_ns_id`.
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
 `KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`
