@@ -151,12 +151,13 @@ void StorePeer::Touch(const RequestId& requestId, const std::vector<BlockId>& ke
     branches_[guard.Value()->branch]->Touch(requestId, keys);
 }
 
-Expected<AddressedToken> StorePeer::PreparePrefetch(const RequestId& requestId)
+Expected<AddressedToken> StorePeer::PreparePrefetch(const RequestId& requestId,
+                                                    const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
     const std::size_t branch = guard.Value()->branch;
-    return WrapToken(branch, branches_[branch]->PreparePrefetch(requestId));
+    return WrapToken(branch, branches_[branch]->PreparePrefetch(requestId, keys));
 }
 
 void StorePeer::CompletePrefetch(const RequestId& requestId, bool success)

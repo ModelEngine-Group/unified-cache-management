@@ -59,7 +59,8 @@ namespace UC::Proxy {
  *       in-flight job drained (the Store destruction contract applies);
  *       windows left open are concluded best-effort as a safety net
  *       (Unpin / Commit(false) / CompletePrefetch(false)), each open
- *       Get/Put window individually.
+ *       Get/Put window individually; the store's request-scoped
+ *       prefetch state is released (Prefetchable::ReleaseRequest).
  * @note Offload drain loop, independent of requests: PrepareOffload()
  *       drains the plans the topology's own concluded admissions have
  *       queued; SubmitOffload() (StoreWorker) executes a drained plan as
@@ -89,7 +90,8 @@ public:
 
     virtual void Touch(const RequestId& requestId, const std::vector<BlockId>& keys) = 0;
 
-    virtual Expected<AddressedToken> PreparePrefetch(const RequestId& requestId) = 0;
+    virtual Expected<AddressedToken> PreparePrefetch(const RequestId& requestId,
+                                                     const std::vector<BlockId>& keys) = 0;
     virtual void CompletePrefetch(const RequestId& requestId, bool success) = 0;
 
     virtual Expected<AddressedToken> PrepareGet(const RequestId& requestId,

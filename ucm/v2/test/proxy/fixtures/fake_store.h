@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,11 @@ struct RecordedJob {
     std::size_t jobId;
     JobDescriptor job;
     AddressedToken token;
+};
+
+struct RecordedPrepare {
+    std::vector<BlockId> keys;
+    RequestContext context;
 };
 
 inline AddressedToken MakeAddressedToken(std::size_t tag)
@@ -158,14 +164,28 @@ public:
         return std::make_pair(std::vector<std::uint8_t>(blockIds.size(), 1), signalPrefetchable);
     }
 
-    Expected<AddressedToken> PreparePrefetch(const RequestId& requestId,
+    Expected<AddressedToken> PreparePrefetch(const std::vector<BlockId>& keys,
                                              const RequestContext& context) override
     {
-        preparedPrefetches.push_back({requestId, context});
+        preparedPrefetches.push_back({keys, context});
+        /* Contract emulation: keys must belong to the set this request
+         * last probed. */
+        std::vector<BlockId> probed;
+        for (auto it = prefetchLookups.rbegin(); it != prefetchLookups.rend(); ++it) {
+            if (it->first == context.requestId) {
+                probed = it->second;
+                break;
+            }
+        }
+        for (const auto& key : keys) {
+            if (std::find(probed.begin(), probed.end(), key) == probed.end()) {
+                return Status::InvalidParam("prefetch key was not probed by request '{}'",
+                                            context.requestId);
+            }
+        }
         AddressedToken token;
-        token.keys =
-            prefetchLookups.empty() ? std::vector<BlockId>{} : prefetchLookups.back().second;
-        token.payload = {std::byte{1}, std::byte{2}};
+        token.keys = keys;
+        if (!keys.empty()) { token.payload = {std::byte{1}, std::byte{2}}; }
         return token;
     }
 
@@ -178,6 +198,16 @@ public:
     {
         prefetches.push_back({jobId, std::move(plan)});
         return prefetchStatus;
+    }
+
+    void ReleaseRequest(const RequestId& requestId) override
+    {
+        releasedRequests.push_back(requestId);
+        prefetchLookups.erase(std::remove_if(prefetchLookups.begin(), prefetchLookups.end(),
+                                             [&requestId](const auto& recorded) {
+                                                 return recorded.first == requestId;
+                                             }),
+                              prefetchLookups.end());
     }
 
     /*== Offloadable ==*/
@@ -233,7 +263,8 @@ public:
     std::vector<std::pair<std::vector<BlockId>, RequestContext>> allocs;
     std::vector<std::pair<std::vector<BlockId>, bool>> commits;
     std::vector<std::pair<RequestId, std::vector<BlockId>>> prefetchLookups;
-    std::vector<std::pair<RequestId, RequestContext>> preparedPrefetches;
+    std::vector<RequestId> releasedRequests;
+    std::vector<RecordedPrepare> preparedPrefetches;
     std::vector<std::pair<AddressedToken, bool>> completedPrefetches;
     std::vector<std::pair<std::size_t, AddressedToken>> prefetches;
     std::vector<AddressedToken> completedOffloads;

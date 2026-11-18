@@ -80,6 +80,7 @@ void StoreEntry::OnRequestFinished(const RequestId& requestId)
     for (const auto& reserved : state.putReservations) {
         loaded_->Store()->Commit(reserved, false);
     }
+    if (prefetchable_) { prefetchable_->ReleaseRequest(requestId); }
     requests_.erase(it);
 }
 
@@ -123,7 +124,8 @@ void StoreEntry::Touch(const RequestId& requestId, const std::vector<BlockId>& k
     loaded_->Store()->Touch(keys, guard.Value()->request);
 }
 
-Expected<AddressedToken> StoreEntry::PreparePrefetch(const RequestId& requestId)
+Expected<AddressedToken> StoreEntry::PreparePrefetch(const RequestId& requestId,
+                                                     const std::vector<BlockId>& keys)
 {
     auto guard = RequireRequest(requestId);
     if (!guard) { return guard.Error(); }
@@ -132,7 +134,7 @@ Expected<AddressedToken> StoreEntry::PreparePrefetch(const RequestId& requestId)
         return Status::InvalidParam("request '{}' has an unconcluded prefetch window", requestId);
     }
     if (!prefetchable_) { return AddressedToken{}; }
-    auto res = prefetchable_->PreparePrefetch(requestId, guard.Value()->request);
+    auto res = prefetchable_->PreparePrefetch(keys, guard.Value()->request);
     if (!res) { return res.Error(); }
     guard.Value()->prefetchToken = res.Value();
     return std::move(res).Value();

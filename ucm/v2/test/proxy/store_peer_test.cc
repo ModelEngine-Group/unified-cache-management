@@ -126,7 +126,7 @@ TEST(StorePeerTest, SchedulerOperationsStickToRequestBranch)
     ASSERT_TRUE(handle.peer->LookupOnPrefix("r", keys));
     ASSERT_TRUE(handle.peer->LookupOnReverse("r", keys));
     handle.peer->Touch("r", keys);
-    auto plan = handle.peer->PreparePrefetch("r");
+    auto plan = handle.peer->PreparePrefetch("r", keys);
     ASSERT_TRUE(plan);
     handle.peer->CompletePrefetch("r", true);
     auto token = handle.peer->PrepareGet("r", keys);
@@ -182,7 +182,7 @@ TEST(StorePeerTest, OperationsOnUnknownRequestFail)
     EXPECT_FALSE(handle.peer->Lookup("missing", keys));
     EXPECT_FALSE(handle.peer->LookupOnPrefix("missing", keys));
     EXPECT_FALSE(handle.peer->LookupOnReverse("missing", keys));
-    EXPECT_FALSE(handle.peer->PreparePrefetch("missing"));
+    EXPECT_FALSE(handle.peer->PreparePrefetch("missing", keys));
     EXPECT_FALSE(handle.peer->PrepareGet("missing", keys));
     EXPECT_FALSE(handle.peer->PreparePut("missing", keys));
     handle.peer->Touch("missing", keys);
@@ -205,6 +205,8 @@ TEST(StorePeerTest, OnRequestFinishedForwardsAndCleansUp)
     ASSERT_TRUE(handle.peer->Lookup("r", keys));
     handle.peer->OnRequestFinished("r");
     EXPECT_FALSE(handle.peer->Lookup("r", keys));
+    ASSERT_EQ(handle.fakes[0]->releasedRequests.size(), 1);
+    EXPECT_EQ(handle.fakes[0]->releasedRequests[0], "r");
     EXPECT_EQ(handle.routing->selects.size(), 1);
 }
 
@@ -220,7 +222,7 @@ TEST(StorePeerTest, PreparePrefetchWrapsPlanForRouting)
     ASSERT_TRUE(signal);
     EXPECT_TRUE(signal.Value().second);
     EXPECT_EQ(signal.Value().first, std::vector<std::uint8_t>(2, 1));
-    auto plan = handle.peer->PreparePrefetch("r");
+    auto plan = handle.peer->PreparePrefetch("r", keys);
     ASSERT_TRUE(plan);
     EXPECT_EQ(plan.Value().keys, keys);
     EXPECT_NE(plan.Value().payload, (std::vector<std::byte>{std::byte{1}, std::byte{2}}));
@@ -229,6 +231,34 @@ TEST(StorePeerTest, PreparePrefetchWrapsPlanForRouting)
     EXPECT_EQ(handle.fakes[0]->prefetches[0].first, 7);
     EXPECT_EQ(handle.fakes[0]->prefetches[0].second.keys, keys);
     EXPECT_EQ(handle.fakes[0]->prefetches[0].second.payload,
+              (std::vector<std::byte>{std::byte{1}, std::byte{2}}));
+}
+
+TEST(StorePeerTest, PreparePrefetchSubsetRoutesToRequestBranch)
+{
+    auto handle = MakePeer({
+        {true, true},
+        {true, true}
+    });
+    handle.routing->branches["r"] = 1;
+    handle.peer->OnNewRequest(MakeContext("r"));
+    handle.fakes[1]->signalPrefetchable = true;
+    const std::vector<BlockId> keys = MakeKeys(1, 4);
+    ASSERT_TRUE(handle.peer->Lookup("r", keys).Value().second);
+    const std::vector<BlockId> subset = {keys[1], keys[2]};
+    auto plan = handle.peer->PreparePrefetch("r", subset);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(plan.Value().keys, subset);
+    EXPECT_NE(plan.Value().payload, (std::vector<std::byte>{std::byte{1}, std::byte{2}}));
+    ASSERT_EQ(handle.fakes[1]->preparedPrefetches.size(), 1);
+    EXPECT_EQ(handle.fakes[1]->preparedPrefetches[0].keys, subset);
+    EXPECT_TRUE(handle.fakes[0]->preparedPrefetches.empty());
+    EXPECT_TRUE(handle.peer->SubmitPrefetch(7, plan.Value()).Success());
+    /* The frame is stripped on the way in: the branch executes the plan
+     * it minted. */
+    ASSERT_EQ(handle.fakes[1]->prefetches.size(), 1);
+    EXPECT_EQ(handle.fakes[1]->prefetches[0].second.keys, subset);
+    EXPECT_EQ(handle.fakes[1]->prefetches[0].second.payload,
               (std::vector<std::byte>{std::byte{1}, std::byte{2}}));
 }
 
@@ -347,7 +377,8 @@ TEST(StorePeerTest, NonPrefetchableBranchSynthesizesThroughPeer)
         {false, true}
     });
     handle.peer->OnNewRequest(MakeContext("r"));
-    auto plan = handle.peer->PreparePrefetch("r");
+    /* No prior Lookup: only the empty subset is in-protocol here. */
+    auto plan = handle.peer->PreparePrefetch("r", {});
     ASSERT_TRUE(plan);
     EXPECT_TRUE(plan.Value().keys.empty());
     EXPECT_TRUE(handle.peer->SubmitPrefetch(7, plan.Value()).Success());
@@ -373,9 +404,9 @@ TEST(StorePeerTest, DuplicateJobIdRejectedAcrossBranches)
     handle.routing->branches["r2"] = 1;
     handle.peer->OnNewRequest(MakeContext("r1"));
     handle.peer->OnNewRequest(MakeContext("r2"));
-    auto plan1 = handle.peer->PreparePrefetch("r1");
+    auto plan1 = handle.peer->PreparePrefetch("r1", {});
     ASSERT_TRUE(plan1);
-    auto plan2 = handle.peer->PreparePrefetch("r2");
+    auto plan2 = handle.peer->PreparePrefetch("r2", {});
     ASSERT_TRUE(plan2);
     EXPECT_TRUE(handle.peer->SubmitPrefetch(7, plan1.Value()).Success());
     auto rejected = handle.peer->SubmitPrefetch(7, plan2.Value());

@@ -304,12 +304,15 @@ PYBIND11_MODULE(ucm_proxy, m)
                  py::gil_scoped_release release;
                  scheduler.Touch(requestId, blockIds);
              })
-        .def(
-            "prepare_prefetch",
-            [](StoreScheduler& scheduler, const RequestId& requestId) {
-                return Unwrap(scheduler.PreparePrefetch(requestId));
-            },
-            py::call_guard<py::gil_scoped_release>())
+        .def("prepare_prefetch",
+             [](StoreScheduler& scheduler, const RequestId& requestId, const py::bytes& keys) {
+                 const std::vector<BlockId> blockIds = ToBlockIdVector(keys);
+                 auto result = [&] {
+                     py::gil_scoped_release release;
+                     return scheduler.PreparePrefetch(requestId, blockIds);
+                 }();
+                 return Unwrap(std::move(result));
+             })
         .def(
             "complete_prefetch",
             [](StoreScheduler& scheduler, const RequestId& requestId, bool success) {

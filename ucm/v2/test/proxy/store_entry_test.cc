@@ -45,7 +45,7 @@ TEST(StoreEntryTest, OperationsOnUnknownRequestFail)
     EXPECT_FALSE(handle.entry->Lookup("missing", keys));
     EXPECT_FALSE(handle.entry->LookupOnPrefix("missing", keys));
     EXPECT_FALSE(handle.entry->LookupOnReverse("missing", keys));
-    EXPECT_FALSE(handle.entry->PreparePrefetch("missing"));
+    EXPECT_FALSE(handle.entry->PreparePrefetch("missing", keys));
     EXPECT_FALSE(handle.entry->PrepareGet("missing", keys));
     EXPECT_FALSE(handle.entry->PreparePut("missing", keys));
     handle.entry->Touch("missing", keys);
@@ -261,7 +261,7 @@ TEST(StoreEntryTest, SubmitPrefetchForwardsPlanToPrefetchableStore)
     handle.entry->OnNewRequest(MakeContext("r"));
     handle.fake->signalPrefetchable = true;
     ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
-    auto token = handle.entry->PreparePrefetch("r");
+    auto token = handle.entry->PreparePrefetch("r", keys);
     ASSERT_TRUE(token);
     EXPECT_EQ(token.Value().keys, keys);
     EXPECT_TRUE(handle.entry->SubmitPrefetch(7, token.Value()).Success());
@@ -668,11 +668,83 @@ TEST(StoreEntryTest, PreparePrefetchRejectsOverlappingWindow)
     handle.fake->signalPrefetchable = true;
     const std::vector<BlockId> keys = MakeKeys(1, 2);
     ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
-    ASSERT_TRUE(handle.entry->PreparePrefetch("r"));
-    auto overlapping = handle.entry->PreparePrefetch("r");
+    ASSERT_TRUE(handle.entry->PreparePrefetch("r", keys));
+    auto overlapping = handle.entry->PreparePrefetch("r", keys);
     ASSERT_FALSE(overlapping);
     EXPECT_EQ(overlapping.Error(), Status::InvalidParam());
     ASSERT_EQ(handle.fake->preparedPrefetches.size(), 1);
+}
+
+TEST(StoreEntryTest, PreparePrefetchForwardsCallerSelectedSubset)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    handle.fake->signalPrefetchable = true;
+    const std::vector<BlockId> keys = MakeKeys(1, 4);
+    ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
+    const std::vector<BlockId> subset = {keys[1], keys[3]};
+    auto token = handle.entry->PreparePrefetch("r", subset);
+    ASSERT_TRUE(token);
+    EXPECT_EQ(token.Value().keys, subset);
+    ASSERT_EQ(handle.fake->preparedPrefetches.size(), 1);
+    EXPECT_EQ(handle.fake->preparedPrefetches[0].context.requestId, "r");
+    EXPECT_EQ(handle.fake->preparedPrefetches[0].keys, subset);
+    EXPECT_EQ(handle.fake->preparedPrefetches[0].context.ttl, std::chrono::milliseconds(500));
+    EXPECT_EQ(handle.fake->preparedPrefetches[0].context.totalBlockCount, 3);
+}
+
+TEST(StoreEntryTest, PreparePrefetchAdmitsEmptyPlanWithoutWindow)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    handle.fake->signalPrefetchable = true;
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
+    auto token = handle.entry->PreparePrefetch("r", {});
+    ASSERT_TRUE(token);
+    EXPECT_TRUE(token.Value().keys.empty());
+    EXPECT_TRUE(token.Value().payload.empty());
+    /* The empty plan opened no window: the next Prepare is not
+     * rejected as overlapping. */
+    auto next = handle.entry->PreparePrefetch("r", keys);
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next.Value().keys, keys);
+}
+
+TEST(StoreEntryTest, PreparePrefetchRejectsKeyOutsideLookupSet)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    handle.fake->signalPrefetchable = true;
+    const std::vector<BlockId> keys = MakeKeys(1, 2);
+    ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
+    auto violation = handle.entry->PreparePrefetch("r", MakeKeys(9, 1));
+    ASSERT_FALSE(violation);
+    EXPECT_EQ(violation.Error(), Status::InvalidParam());
+    /* The failed Prepare opened no window: a valid subset still admits. */
+    auto token = handle.entry->PreparePrefetch("r", keys);
+    ASSERT_TRUE(token);
+    EXPECT_EQ(token.Value().keys, keys);
+}
+
+TEST(StoreEntryTest, PrefetchWindowReopensForNextSubsetAfterConclusion)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    handle.fake->signalPrefetchable = true;
+    const std::vector<BlockId> keys = MakeKeys(1, 4);
+    ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
+    const std::vector<BlockId> firstSubset = {keys[0], keys[1]};
+    const std::vector<BlockId> secondSubset = {keys[2], keys[3]};
+    auto first = handle.entry->PreparePrefetch("r", firstSubset);
+    ASSERT_TRUE(first);
+    handle.entry->CompletePrefetch("r", true);
+    auto second = handle.entry->PreparePrefetch("r", secondSubset);
+    ASSERT_TRUE(second);
+    ASSERT_EQ(handle.fake->preparedPrefetches.size(), 2);
+    EXPECT_EQ(handle.fake->preparedPrefetches[0].keys, firstSubset);
+    EXPECT_EQ(handle.fake->preparedPrefetches[1].keys, secondSubset);
+    handle.entry->CompletePrefetch("r", true);
 }
 
 TEST(StoreEntryTest, WindowReopensAfterComplete)
@@ -740,12 +812,31 @@ TEST(StoreEntryTest, OnRequestFinishedCancelsOpenPrefetchPlan)
     handle.fake->signalPrefetchable = true;
     const std::vector<BlockId> keys = MakeKeys(1, 2);
     ASSERT_TRUE(handle.entry->Lookup("r", keys).Value().second);
-    auto plan = handle.entry->PreparePrefetch("r");
+    auto plan = handle.entry->PreparePrefetch("r", keys);
     ASSERT_TRUE(plan);
     handle.entry->OnRequestFinished("r");
     ASSERT_EQ(handle.fake->completedPrefetches.size(), 1);
     EXPECT_FALSE(handle.fake->completedPrefetches[0].second);
     EXPECT_EQ(handle.fake->completedPrefetches[0].first.keys, keys);
+}
+
+TEST(StoreEntryTest, OnRequestFinishedReleasesStoreRequestState)
+{
+    auto handle = MakeEntry(true, true);
+    handle.entry->OnNewRequest(MakeContext("r"));
+    handle.entry->OnNewRequest(MakeContext("q"));
+    handle.fake->signalPrefetchable = true;
+    ASSERT_TRUE(handle.entry->Lookup("r", MakeKeys(1, 4)).Value().second);
+    /* The abandoned signal — no window was ever opened — still releases
+     * the store's request state. */
+    handle.entry->OnRequestFinished("r");
+    /* "q" never reached the store: releasing an unknown request stays
+     * a no-op. */
+    handle.entry->OnRequestFinished("q");
+    ASSERT_EQ(handle.fake->releasedRequests.size(), 2);
+    EXPECT_EQ(handle.fake->releasedRequests[0], "r");
+    EXPECT_EQ(handle.fake->releasedRequests[1], "q");
+    EXPECT_TRUE(handle.fake->prefetchLookups.empty());
 }
 
 TEST(StoreEntryTest, OnRequestFinishedWithoutWindowsLeavesStoreUntouched)
