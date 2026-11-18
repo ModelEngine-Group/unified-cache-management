@@ -279,7 +279,7 @@ def test_cli_atomic_export_and_no_nan_result(hma, tmp_path):
     command = [sys.executable, str(MODULE), "--metadata", str(path), str(binary)]
     result = subprocess.run(command, check=False, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["status"] == "no_nan_in_typed_regions"
+    assert result.stdout == ""
     binary.write_bytes(struct.pack("<H", 0x7FC0) + binary.read_bytes()[2:])
     result = subprocess.run(command, check=False, text=True, capture_output=True)
     assert result.returncode == 1
@@ -313,10 +313,7 @@ def test_cli_recursively_scans_nested_files_and_skips_tmp(directory_scan):
     result = subprocess.run(command, check=False, text=True, capture_output=True)
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert result.returncode == 0, result.stderr
-    assert {row["file"] for row in rows[:-1]} == {
-        str(root / "key-one"),
-        str(nested / "key-two"),
-    }
+    assert len(rows) == 1
     assert rows[-1] == {
         "type": "summary",
         "scanned_files": 2,
@@ -349,11 +346,7 @@ def test_cli_accepts_files_and_multiple_directories_together(directory_scan, tmp
     result = subprocess.run(command, check=False, text=True, capture_output=True)
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert result.returncode == 0, result.stderr
-    assert {row["file"] for row in rows[:-1]} == {
-        str(explicit),
-        str(root / "first-key"),
-        str(another / "second-key"),
-    }
+    assert len(rows) == 1
     assert rows[-1]["scanned_files"] == 3
     assert rows[-1]["statuses"] == {"no_nan_in_typed_regions": 3}
 
@@ -369,11 +362,9 @@ def test_cli_directory_continues_after_an_invalid_file(directory_scan, status):
     result = subprocess.run(command, check=False, text=True, capture_output=True)
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert result.returncode == 1
-    assert [row["status"] for row in rows[:-1]] == [
-        "no_nan_in_typed_regions",
-        status,
-        "no_nan_in_typed_regions",
-    ]
+    assert len(rows) == 2
+    assert rows[0]["file"] == str(root / "b-bad")
+    assert rows[0]["status"] == status
     assert rows[-1]["scanned_files"] == 3
     assert rows[-1]["statuses"] == {"no_nan_in_typed_regions": 2, status: 1}
     assert rows[-1]["nan_count"] == int(status == "nan_found")
@@ -407,7 +398,8 @@ def test_cli_reports_directory_traversal_errors(directory_scan, monkeypatch, cap
     )
     assert metadata.main() == 1
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert rows[1]["status"] == "error"
+    assert len(rows) == 2
+    assert rows[0]["status"] == "error"
     assert rows[-1]["directory_errors"] == 1
     assert rows[-1]["scanned_files"] == 1
 

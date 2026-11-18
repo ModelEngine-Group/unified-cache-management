@@ -503,7 +503,8 @@ def main():
             result = inspect_file(metadata, path)
         except (OSError, ValueError, KeyError) as error:
             result = {"file": str(path), "status": "error", "error": str(error)}
-        print(json.dumps(result, ensure_ascii=False))
+        if result["status"] != "no_nan_in_typed_regions":
+            print(json.dumps(result, ensure_ascii=False))
         statuses[result["status"]] += 1
         for field in ("nan_count", "inf_count", "opaque_bytes"):
             summary[field] += result.get(field, 0)
