@@ -34,6 +34,9 @@
 namespace kv {
 namespace {
 
+constexpr std::uint8_t kSlotFree = 0;
+constexpr std::uint8_t kSlotInUse = 1;
+
 Status AclError(const std::string& operation, aclError ret)
 {
     std::string message = operation + " failed ret=" + std::to_string(static_cast<int>(ret));
@@ -53,7 +56,7 @@ Status AclError(const std::string& operation, aclError ret)
 
 HbmSlotAllocator::HbmSlotAllocator(std::int32_t deviceId, std::size_t slotBytes,
                                    std::uint32_t capacity)
-    : deviceId_(deviceId), slotBytes_(slotBytes), capacity_(capacity)
+    : deviceId_(deviceId), slotBytes_(slotBytes), capacity_(capacity), slotStates_(capacity)
 {
 }
 
@@ -91,6 +94,7 @@ Status HbmSlotAllocator::Init()
         return AclError("aclrtMemset bytes=" + std::to_string(bytes), memsetRet);
     }
 
+    for (auto& slotState : slotStates_) { slotState.store(kSlotFree, std::memory_order_relaxed); }
     base_ = base;
     indexPool_.Setup(capacity_);
     initialized_ = true;
@@ -113,6 +117,7 @@ Status HbmSlotAllocator::Acquire(std::uint32_t& slotId)
         return Status::Error(StatusCode::RESOURCE_BUSY,
                              "HbmSlotAllocator: no free HBM connection slot");
     }
+    slotStates_[index].store(kSlotInUse, std::memory_order_release);
     slotId = index;
     return Status::OK();
 }
@@ -127,6 +132,11 @@ Status HbmSlotAllocator::Release(std::uint32_t slotId)
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "HbmSlotAllocator: invalid slot id " + std::to_string(slotId));
     }
+    if (slotStates_[slotId].exchange(kSlotFree, std::memory_order_acq_rel) != kSlotInUse) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "HbmSlotAllocator: slot id " + std::to_string(slotId) +
+                                 " is not acquired or was already released");
+    }
     indexPool_.Release(slotId);
     return Status::OK();
 }
@@ -137,18 +147,22 @@ Status HbmSlotAllocator::Write(std::uint32_t slotId, const void* data, std::size
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HbmSlotAllocator: HBM region is not initialized");
     }
-    if (!ValidSlot(slotId) || data == nullptr || size == 0 || size > slotBytes_) {
+    if (!ValidSlot(slotId) || slotStates_[slotId].load(std::memory_order_acquire) != kSlotInUse) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "HbmSlotAllocator: slot id " + std::to_string(slotId) + " is not acquired");
+    }
+    if (data == nullptr || size == 0 || size > slotBytes_) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "HbmSlotAllocator: invalid write slot_id=" + std::to_string(slotId) +
                                  " size=" + std::to_string(size));
     }
 
-    const auto ret = aclrtMemcpy(SlotAddress(slotId), slotBytes_, data, size,
-                                 ACL_MEMCPY_HOST_TO_DEVICE);
+    const auto ret =
+        aclrtMemcpy(SlotAddress(slotId), slotBytes_, data, size, ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
-        return AclError("aclrtMemcpy slot_id=" + std::to_string(slotId) +
-                            " size=" + std::to_string(size),
-                        ret);
+        return AclError(
+            "aclrtMemcpy slot_id=" + std::to_string(slotId) + " size=" + std::to_string(size), ret);
     }
     return Status::OK();
 }
@@ -159,9 +173,10 @@ Status HbmSlotAllocator::Clear(std::uint32_t slotId)
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HbmSlotAllocator: HBM region is not initialized");
     }
-    if (!ValidSlot(slotId)) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "HbmSlotAllocator: invalid slot id " + std::to_string(slotId));
+    if (!ValidSlot(slotId) || slotStates_[slotId].load(std::memory_order_acquire) != kSlotInUse) {
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "HbmSlotAllocator: slot id " + std::to_string(slotId) + " is not acquired");
     }
 
     const auto ret = aclrtMemset(SlotAddress(slotId), slotBytes_, 0, slotBytes_);
@@ -171,10 +186,7 @@ Status HbmSlotAllocator::Clear(std::uint32_t slotId)
     return Status::OK();
 }
 
-bool HbmSlotAllocator::ValidSlot(std::uint32_t slotId) const noexcept
-{
-    return slotId < capacity_;
-}
+bool HbmSlotAllocator::ValidSlot(std::uint32_t slotId) const noexcept { return slotId < capacity_; }
 
 void* HbmSlotAllocator::SlotAddress(std::uint32_t slotId) const noexcept
 {
