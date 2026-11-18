@@ -24,6 +24,7 @@
 #include "cache_store_replica.h"
 #include <unistd.h>
 #include "control_ops.h"
+#include "token_codec.h"
 
 namespace UC::Store {
 

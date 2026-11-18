@@ -185,6 +185,19 @@ public:
         target = static_cast<T>(value);
     }
 
+    /** Read a required non-negative integer of integral type T. */
+    template <typename T>
+    void RequiredNonNegative(const char* key, T& target)
+    {
+        if (status_.Failure()) { return; }
+        std::int64_t value = 0;
+        if (!dict_.GetInt64(key, value) || value < 0 || !FitsIn<T>(value)) {
+            Fail("'{}' must be a non-negative integer", key);
+            return;
+        }
+        target = static_cast<T>(value);
+    }
+
     /** Read an optional strictly positive integer of integral type T. */
     template <typename T>
     void OptionalPositive(const char* key, T& target)

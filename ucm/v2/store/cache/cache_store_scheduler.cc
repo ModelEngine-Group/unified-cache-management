@@ -25,7 +25,7 @@
 #include "bootstrap.h"
 #include "control_ops.h"
 #include "policy/replacement_policy_registry.h"
-#include "shm_layout.h"
+#include "token_codec.h"
 
 namespace UC::Store {
 namespace {

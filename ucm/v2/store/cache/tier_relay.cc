@@ -24,6 +24,7 @@
 #include "tier_relay.h"
 #include <algorithm>
 #include <utility>
+#include "token_codec.h"
 
 namespace UC::Store {
 
@@ -58,9 +59,6 @@ Status TierRelay::Offload(std::size_t jobId, AddressedToken plan)
     /* Shape checks first: a mismatch answers InvalidParam with nothing
      * started, the lower tier untouched. */
     const PlanPayload payload = DecodePlanPayload(plan.payload);
-    if (plan.keys.empty()) {
-        return Status::InvalidParam("offload job {} carries no blocks", jobId);
-    }
     if (payload.batchId == 0) {
         return Status::InvalidParam("offload job {} carries no receipt handle", jobId);
     }

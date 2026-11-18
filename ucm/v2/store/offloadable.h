@@ -47,8 +47,13 @@ namespace UC::Store {
  *       instances, each executing plans against its own lower-tier
  *       instance. Plans travel between the halves over the deployment's
  *       channel of choice -- the facet fixes the plan's encoding,
- *       execution, and receipt, not the transport. An instance serving
- *       both roles can close the loop internally.
+ *       execution, and receipt, not the transport. Every key of a
+ *       minted plan is executed exactly once: the channel may carry the
+ *       whole plan to every worker-role instance, and each executor
+ *       claims the keys whose plan position matches its worker index in
+ *       the domain's worker count -- an empty claim concludes
+ *       immediately. An instance serving both roles can close the loop
+ *       internally.
  * @note Scenario precondition: the deployment never re-admits a committed
  *       block -- a key whose admission has concluded is never Alloc'd
  *       again while it remains resident (the window protocol does not

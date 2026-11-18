@@ -67,10 +67,12 @@ namespace UC::Store {
  *
  * Offload: the facet's executor half drives the wired lower tier through
  * a tier relay over the held pool, and the relay's outer jobs share the
- * completion stream and the wait with the data plane's jobs. The local
- * engine half is structural idle: no engine lives here, so plans mint
- * empty and receipts no-op. The facet is served only when the
- * configuration wires a lower tier.
+ * completion stream and the wait with the data plane's jobs. Each
+ * executor claims the keys whose plan position matches this worker's
+ * index in the domain's worker count, so one broadcast plan is executed
+ * exactly once across the domain. The local engine half is structural
+ * idle: no engine lives here, so plans mint empty and receipts no-op.
+ * The facet is served only when the configuration wires a lower tier.
  *
  * I/O model of the accept loop: blocking frame I/O between trusted peers; a
  * joiner dying mid-handshake is an external failure the loop does not defend
@@ -85,7 +87,8 @@ public:
      * @brief Installs the worker: the winner leads the domain, every loser
      *        attaches to it.
      *
-     * @param config  The worker's domain configuration.
+     * @param config  The worker's domain configuration; the worker index
+     *                must fall inside the domain's worker count.
      * @param ticket  The leadership contest's outcome for this process.
      *
      * @return Expected the worker on success; the failing step's error
@@ -137,7 +140,8 @@ public:
     /** @brief Structural no-op: the receipt changes nothing here. */
     void CompleteOffload(const AddressedToken& /*plan*/) override {}
 
-    /** @brief Submits the plan to the tier relay as an asynchronous job. */
+    /** @brief Claims this worker's slice of the plan and submits it to
+     *         the tier relay as an asynchronous job. */
     Status Offload(std::size_t jobId, AddressedToken plan) override;
 
     /** @brief The facet, served only when this store wired a lower tier. */

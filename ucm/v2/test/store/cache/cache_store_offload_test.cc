@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 #include "cache/cache_store.h"
-#include "cache/shm_layout.h"
+#include "cache/token_codec.h"
 #include "fixtures/stub_lower_store.h"
 #include "offloadable.h"
 #include "status/status.h"
@@ -82,6 +82,7 @@ Dictionary MakeDomainDict(const std::string& uniqueId, const char* role, Store* 
     dict.Set("unique_id", uniqueId);
     dict.Set("llm_role", std::string(role));
     dict.SetInt64("worker_number", 1);
+    dict.SetInt64("worker_index", 0);
     dict.SetInt64("device_id", 0);
     dict.SetInt64("block_size", kBlockSize);
     dict.SetInt64("cache_buffer_capacity_gb", 1);
@@ -168,6 +169,18 @@ TEST_F(CacheStoreOffloadTest, WorkerExposesTheExecutorHalfWhenWired)
     EXPECT_EQ(leader->Wait(9).Underlying(), 0);
     EXPECT_TRUE(leader->GetFinished().empty());
     EXPECT_EQ(leader->Wait(9).Underlying(), Status::InvalidParam().Underlying());
+}
+
+/*== The worker index: an out-of-domain index is refused ==*/
+
+TEST_F(CacheStoreOffloadTest, WorkerRefusesAnIndexOutsideTheDomainWorkers)
+{
+    StubLowerStore lower;
+    /* The domain declares one worker: index 1 is outside it. */
+    Dictionary dict = MakeDomainDict(FreshId(), "worker", &lower);
+    dict.SetInt64("worker_index", 1);
+    CacheStore store;
+    EXPECT_EQ(store.Setup(dict).Underlying(), Status::InvalidParam().Underlying());
 }
 
 /*== The engine half, as served by the scheduler role ==*/

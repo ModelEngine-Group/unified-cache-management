@@ -24,6 +24,7 @@
 #include "data_plane.h"
 #include <cstdint>
 #include "memory/dma/dma_engine_registry.h"
+#include "token_codec.h"
 
 namespace UC::Store {
 

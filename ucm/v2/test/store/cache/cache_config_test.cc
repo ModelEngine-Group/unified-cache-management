@@ -46,6 +46,7 @@ Dictionary MakeDict(const std::string& omitted = {})
     }
     if (omitted != "llm_role") { dict.Set("llm_role", std::string("worker")); }
     if (omitted != "worker_number") { dict.SetInt64("worker_number", 8); }
+    if (omitted != "worker_index") { dict.SetInt64("worker_index", 0); }
     if (omitted != "device_id") { dict.SetInt64("device_id", 3); }
     if (omitted != "block_size") { dict.SetInt64("block_size", kMb); }
     if (omitted != "cache_buffer_capacity_gb") { dict.SetInt64("cache_buffer_capacity_gb", 2); }
@@ -64,6 +65,7 @@ Dictionary MakeRequiredOnlyDict()
     dict.Set("unique_id", std::string("0123456789abcdef0123456789abcdef"));
     dict.Set("llm_role", std::string("both"));
     dict.SetInt64("worker_number", 1);
+    dict.SetInt64("worker_index", 0);
     dict.SetInt64("device_id", 0);
     dict.SetInt64("block_size", kMb);
     return dict;
@@ -123,7 +125,8 @@ TEST(CacheConfigTest, FromAppliesDefaultsWhenOptionalKeysAbsent)
 
 TEST(CacheConfigTest, FromRejectsMissingRequiredKeys)
 {
-    for (const auto* key : {"unique_id", "llm_role", "worker_number", "device_id", "block_size"}) {
+    for (const auto* key :
+         {"unique_id", "llm_role", "worker_number", "worker_index", "device_id", "block_size"}) {
         auto res = CacheConfig::From(MakeDict(key));
         ASSERT_FALSE(res.HasValue()) << key;
         EXPECT_EQ(res.Error(), Status::InvalidParam()) << key;
@@ -155,6 +158,29 @@ TEST(CacheConfigTest, FromRejectsNonPositiveWorkerNumber)
     ASSERT_FALSE(CacheConfig::From(dict).HasValue());
     dict.SetInt64("worker_number", -1);
     ASSERT_FALSE(CacheConfig::From(dict).HasValue());
+}
+
+TEST(CacheConfigTest, FromReadsTheWorkerIndex)
+{
+    /* Zero is a legal index; any other non-negative value reads as is. */
+    Dictionary dict = MakeDict();
+    dict.SetInt64("worker_index", 0);
+    auto zero = CacheConfig::From(dict);
+    ASSERT_TRUE(zero.HasValue());
+    EXPECT_EQ(zero.Value().workerIndex, std::size_t{0});
+
+    dict.SetInt64("worker_index", 3);
+    auto read = CacheConfig::From(dict);
+    ASSERT_TRUE(read.HasValue());
+    EXPECT_EQ(read.Value().workerIndex, std::size_t{3});
+
+    /* Negative is refused. */
+    dict.SetInt64("worker_index", -1);
+    EXPECT_FALSE(CacheConfig::From(dict).HasValue());
+
+    /* A value of the wrong type is refused. */
+    dict.Set("worker_index", std::string("1"));
+    EXPECT_FALSE(CacheConfig::From(dict).HasValue());
 }
 
 TEST(CacheConfigTest, FromRejectsDeviceIdOutOfInt32Range)
