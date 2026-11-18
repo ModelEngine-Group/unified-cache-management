@@ -29,6 +29,8 @@ static_assert(std::is_same<decltype(&kv_client_agent_get_in_by_ns), GetInByNsAbi
               "the twelfth ABI entry must retain its C signature");
 static_assert(KV_CLIENT_AGENT_ABI_VERSION == 1U, "the M800 ABI must remain v1");
 
+// 测试场景：未安装 Ceph 代理库时，分别使用空路径和不存在的 libkv_agent.so 路径创建客户端。
+// 预期结果：两次 Create 均返回 NOT_FOUND，且不生成客户端实例。
 TEST(M800ViewAgentClientTest, FactoryRejectsMissingLibrariesWithoutCeph)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -47,6 +49,8 @@ TEST(M800ViewAgentClientTest, FactoryRejectsMissingLibrariesWithoutCeph)
     EXPECT_EQ(client, nullptr);
 }
 
+// 测试场景：代理动态库路径中间包含 NUL 字符，工厂尝试按该路径创建客户端。
+// 预期结果：路径校验拒绝存在截断歧义的输入，Create 返回 INVALID_ARGUMENT。
 TEST(M800ViewAgentClientTest, FactoryRejectsEmbeddedNulAgentLibraryPath)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -57,6 +61,8 @@ TEST(M800ViewAgentClientTest, FactoryRejectsEmbeddedNulAgentLibraryPath)
     EXPECT_EQ(factory->Create(config, client).code, StatusCode::INVALID_ARGUMENT);
 }
 
+// 测试场景：使用伪代理库成功创建客户端，但 monHost 在 127.0.0.1 后嵌入 NUL 和额外字符。
+// 预期结果：Initialize 拒绝非法监控地址并返回 INVALID_ARGUMENT。
 TEST(M800ViewAgentClientTest, InitializeRejectsEmbeddedNulMonHost)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -71,6 +77,8 @@ TEST(M800ViewAgentClientTest, InitializeRejectsEmbeddedNulMonHost)
     EXPECT_EQ(client->Initialize().code, StatusCode::INVALID_ARGUMENT);
 }
 
+// 测试场景：通过伪代理库依次注入返回码 6、4 和 0，查询同一命名空间 pool-a。
+// 预期结果：返回码 6 映射为 INTERNAL_ERROR，4 映射为 NOT_FOUND，0 则查询成功且视图列表为空，三种结果保持明确区分。
 TEST(M800ViewAgentClientTest, FakeLibraryPreservesInternalErrorAndEmptyViewDistinction)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -98,6 +106,8 @@ TEST(M800ViewAgentClientTest, FakeLibraryPreservesInternalErrorAndEmptyViewDisti
     client->Stop();
 }
 
+// 测试场景：伪代理库被配置为阻塞 GetInByNs，查询在线程中尚未返回时调用客户端 Stop。
+// 预期结果：Stop 唤醒进行中的命名空间查询，查询线程在 Stop 后 1 秒内结束，且查询最终返回成功。
 TEST(M800ViewAgentClientTest, StopUnblocksInFlightNamespaceQuery)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -223,6 +233,8 @@ std::string ResponseBody(const std::string& response)
     return split == std::string::npos ? std::string{} : response.substr(split + 4);
 }
 
+// 测试场景：先以空处理器启动服务，再发送完整和分片 GET 请求，并覆盖非法或重复 since_epoch、304、处理器异常、错误路径、POST、损坏请求行及重复 Stop。
+// 预期结果：空处理器启动返回 INVALID_ARGUMENT；正常 GET 返回 200、Connection: close 和 since=12，分片请求返回 since=13；非法或重复参数按 0 处理；304 无响应体；异常、错误路径、POST 和坏请求分别返回 500、404、405（Allow: GET）和 400，Stop 可重复调用。
 TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
 {
     const int port = ReserveLoopbackPort();
@@ -288,6 +300,8 @@ TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
     server->Stop();
 }
 
+// 测试场景：处理器为 since_epoch=1 生成超过 4MiB 的响应体，随后客户端发送带约 9KiB 查询参数的超长请求行。
+// 预期结果：超大响应体被转换为 500 且不发送响应体，超长请求行被拒绝并返回 400。
 TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
 {
     const int port = ReserveLoopbackPort();
@@ -314,6 +328,8 @@ TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
     server->Stop();
 }
 
+// 测试场景：HTTP 服务请求超时为 5000ms，已接受的客户端只发送部分请求行后保持连接，随后调用 server->Stop。
+// 预期结果：Stop 主动关闭慢客户端连接并在 1 秒内返回，不等待完整的 5000ms 请求超时。
 TEST(ViewHttpServerTest, StopShutsDownAcceptedSlowClient)
 {
     const auto port = ReserveLoopbackPort();
@@ -336,6 +352,8 @@ TEST(ViewHttpServerTest, StopShutsDownAcceptedSlowClient)
     close(client);
 }
 
+// 测试场景：服务请求超时为 200ms，客户端每隔 50ms 仅发送 1 个字节，始终不组成完整请求。
+// 预期结果：逐字节到达不会续延绝对截止时间，服务在 350ms 内主动关闭连接。
 TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
 {
     const auto port = ReserveLoopbackPort();
@@ -369,6 +387,8 @@ TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
     server->Stop();
 }
 
+// 测试场景：连续 5 轮先停止仍持有半请求客户端连接的服务，再在同一回环端口创建并启动新服务处理 since_epoch=1 请求。
+// 预期结果：每轮端口都能立即重新监听，新客户端收到 200 和正文 since=1，不受上一轮连接或 Stop 状态影响。
 TEST(ViewHttpServerTest, StopThenRestartServesNewClient)
 {
     for (int iteration = 0; iteration < 5; ++iteration) {
@@ -399,6 +419,8 @@ TEST(ViewHttpServerTest, StopThenRestartServesNewClient)
     }
 }
 
+// 测试场景：分别使用端口号 0，以及在 127.0.0.1 后嵌入 NUL 和额外字符的监听地址启动 HTTP 服务。
+// 预期结果：两种非法监听地址均在 Start 参数校验阶段被拒绝，并返回 INVALID_ARGUMENT。
 TEST(ViewHttpServerTest, RejectsZeroPortAndEmbeddedNulListenAddress)
 {
     auto server = CreateViewHttpServer(100);
@@ -410,6 +432,8 @@ TEST(ViewHttpServerTest, RejectsZeroPortAndEmbeddedNulListenAddress)
     EXPECT_EQ(server->Start(embeddedNul, handler).code, StatusCode::INVALID_ARGUMENT);
 }
 
+// 测试场景：已有一个 socket 在回环地址上完成 bind 和 listen 后，再让 HTTP 服务绑定同一端口。
+// 预期结果：服务不会复用已占用端口，Start 返回 CONNECTION_ERROR。
 TEST(ViewHttpServerTest, OccupiedPortFailsWithoutReusePort)
 {
     const int blocker = socket(AF_INET, SOCK_STREAM, 0);

@@ -37,10 +37,10 @@ namespace {
 
 using namespace std::chrono_literals;
 
+// 测试场景：分别以零或负 interval、空 callback 调用 Start，并在合法启动后重复 Start、Stop 后重启及重复 Stop。
+// 预期结果：非法参数返回 INVALID_ARGUMENT，运行中重复启动返回 RESOURCE_BUSY，停止后可成功重启且重复停止安全。
 TEST(ThreadedRefreshScheduler, ValidatesStartAndSupportsRestart)
 {
-    // 测试场景：Start 入参非法、重复启动、Stop 后重启以及重复 Stop。
-    // 期望调度器拒绝非法 interval/callback，运行中不允许再次 Start，Stop 后可重新启动且 Stop 幂等。
     ThreadedRefreshScheduler scheduler;
     const auto refresh = [] { return Status::OK(); };
 
@@ -63,10 +63,10 @@ TEST(ThreadedRefreshScheduler, ValidatesStartAndSupportsRestart)
     scheduler.Stop();
 }
 
+// 测试场景：以 10ms 周期启动调度器，刷新回调在互斥锁保护下累计执行次数并通知等待线程。
+// 预期结果：定时器自动触发串行刷新，2 秒内至少执行 2 次回调，停止后保留正确的累计次数。
 TEST(ThreadedRefreshScheduler, TimerRefreshesSerially)
 {
-    // 测试场景：定时器按配置周期自动触发刷新。
-    // 期望 worker 线程多次执行同一个回调，并通过互斥锁验证回调执行是串行的。
     ThreadedRefreshScheduler scheduler;
     std::mutex mutex;
     std::condition_variable cv;
@@ -90,10 +90,10 @@ TEST(ThreadedRefreshScheduler, TimerRefreshesSerially)
     EXPECT_GE(refreshCount, std::uint32_t{2});
 }
 
+// 测试场景：IO 失败触发一个阻塞中的刷新回调，在回调结束前再同时发起定时触发和另一次 IO 失败触发。
+// 预期结果：活动刷新期间的触发被合并，不会并发执行或在释放回调后补跑第二次，最终回调计数为 1。
 TEST(ThreadedRefreshScheduler, TriggersAreMergedWhileRefreshIsActive)
 {
-    // 测试场景：刷新回调尚未结束时，定时和 IO 失败触发同时到达。
-    // 期望这些触发合并到当前刷新，不会产生并发或排队后的第二次回调。
     ThreadedRefreshScheduler scheduler;
     std::atomic_uint32_t refreshCount{0};
     std::promise<void> entered;
@@ -120,10 +120,10 @@ TEST(ThreadedRefreshScheduler, TriggersAreMergedWhileRefreshIsActive)
     EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
 }
 
+// 测试场景：调度器启动且尚未到定时周期时调用 RefreshNow，回调返回指定 IO 错误，停止后再次手动刷新。
+// 预期结果：首次手动刷新立即执行一次并原样返回回调错误码和消息，停止后的调用返回 NOT_INITIALIZED。
 TEST(ThreadedRefreshScheduler, ManualRefreshRunsImmediatelyAndReturnsCallbackResult)
 {
-    // 测试场景：调度器已启动且未到定时周期时调用 RefreshNow，随后 Stop 后再次调用。
-    // 期望手动刷新立即执行并返回回调的失败结果；调度器停止后返回 NOT_INITIALIZED。
     ThreadedRefreshScheduler scheduler;
     std::atomic_uint32_t refreshCount{0};
 
@@ -143,10 +143,10 @@ TEST(ThreadedRefreshScheduler, ManualRefreshRunsImmediatelyAndReturnsCallbackRes
     EXPECT_EQ(stoppedResult.code, StatusCode::NOT_INITIALIZED);
 }
 
+// 测试场景：调度器以较长定时间隔启动后，向 TriggerByIoFailure 传入 Status::OK 并短暂等待。
+// 预期结果：成功状态被忽略，不唤醒刷新线程，等待期间刷新回调计数保持为 0。
 TEST(ThreadedRefreshScheduler, SuccessfulIoStatusDoesNotTriggerRefresh)
 {
-    // 测试场景：IO 失败触发接口收到成功状态。
-    // 期望成功状态被忽略，不唤醒刷新线程，也不执行刷新回调。
     ThreadedRefreshScheduler scheduler;
     std::atomic_uint32_t refreshCount{0};
 
@@ -163,10 +163,10 @@ TEST(ThreadedRefreshScheduler, SuccessfulIoStatusDoesNotTriggerRefresh)
     scheduler.Stop();
 }
 
+// 测试场景：刷新回调抛出内容为 callback failed 的 runtime_error，随后通过 RefreshNow 获取执行结果。
+// 预期结果：异常被调度器捕获并转换为 INTERNAL_ERROR，返回消息包含固定前缀和原异常内容。
 TEST(ThreadedRefreshScheduler, CallbackExceptionBecomesInternalError)
 {
-    // 测试场景：刷新回调抛出异常。
-    // 期望 worker 捕获异常并将其转换为 INTERNAL_ERROR，异常不会穿透调度线程。
     ThreadedRefreshScheduler scheduler;
 
     const auto status =
@@ -180,10 +180,10 @@ TEST(ThreadedRefreshScheduler, CallbackExceptionBecomesInternalError)
     scheduler.Stop();
 }
 
+// 测试场景：三个线程并发调用 RefreshNow，首个刷新回调进入后阻塞，待所有调用方就绪后再释放回调。
+// 预期结果：并发手动刷新合并为一次回调执行，三个调用方均获得成功结果，最终刷新计数为 1。
 TEST(ThreadedRefreshScheduler, ConcurrentManualRefreshesAreMerged)
 {
-    // 测试场景：三个线程在同一个回调执行期间并发调用 RefreshNow。
-    // 期望并发手动刷新合并为一次回调执行，所有调用方拿到同一个成功结果。
     ThreadedRefreshScheduler scheduler;
     std::atomic_uint32_t refreshCount{0};
     std::atomic_int manualCallersReady{0};
@@ -226,10 +226,10 @@ TEST(ThreadedRefreshScheduler, ConcurrentManualRefreshesAreMerged)
     EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
 }
 
+// 测试场景：IO 失败触发一个阻塞中的刷新回调，另一线程在回调返回前调用 Stop，随后释放回调。
+// 预期结果：Stop 在回调活动期间持续等待而不中断它，回调释放后 Stop 完成且刷新仅执行一次。
 TEST(ThreadedRefreshScheduler, StopWaitsForActiveRefresh)
 {
-    // 测试场景：回调尚未返回时调用 Stop，并释放回调等待条件。
-    // 期望 Stop 不中断活动回调，等待回调完成后退出，且回调只执行一次。
     ThreadedRefreshScheduler scheduler;
     std::atomic_uint32_t refreshCount{0};
     std::promise<void> entered;
@@ -259,10 +259,10 @@ TEST(ThreadedRefreshScheduler, StopWaitsForActiveRefresh)
     EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
 }
 
+// 测试场景：活动刷新期间两个线程并发 Stop，首个 Stop 清理后另一线程立即重新 Start，最后释放原回调。
+// 预期结果：两个 Stop 均能完成，等待中的 Stop 不会被新一轮 running 状态卡住，调度器可成功重启并再次停止。
 TEST(ThreadedRefreshScheduler, ConcurrentStopDoesNotWaitForRestartedScheduler)
 {
-    // 测试场景：两个线程并发 Stop，其中一个 Stop 完成清理后调度器立即重新 Start。
-    // 期望等待中的另一个 Stop 只等待本轮 Stop 完成，不会被新一轮 running 状态卡住。
     ThreadedRefreshScheduler scheduler;
     std::promise<void> entered;
     std::promise<void> release;

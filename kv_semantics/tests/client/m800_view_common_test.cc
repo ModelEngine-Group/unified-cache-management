@@ -18,6 +18,8 @@ KvClientConfig MakeWorkerConfig()
     return config;
 }
 
+// 测试场景：使用空串、普通字符串、不同长度输入、内嵌 NUL 及已知冲突池名作为 M800PoolNameToKvNsId 的输入。
+// 预期结果：所有结果逐一等于标准 XXH32 测试向量，包括内嵌 NUL 输入和两个 pool 名称得到相同哈希值的情况。
 TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
 {
     struct HashVector {
@@ -42,6 +44,8 @@ TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
     }
 }
 
+// 测试场景：仅设置 view.ceph.mon_host，未指定角色及其余配置时构建服务端配置。
+// 预期结果：构建成功，角色为 MASTER，监听 0.0.0.0:9100，Master 地址为空，monHost 为 127.0.0.1:6789，其余 Ceph/agent 默认值、10000/2000/30000 ms 时间参数及 UB/6000 端点均正确。
 TEST(M800ViewCommonTest, BuildUsesMasterDefaults)
 {
     KvClientConfig config;
@@ -66,6 +70,8 @@ TEST(M800ViewCommonTest, BuildUsesMasterDefaults)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
+// 测试场景：以混合大小写和空白设置 worker 角色，配置含 IPv4/IPv6 的 master_addrs，并预置旧 clientKey 与 worker keyring 路径。
+// 预期结果：构建成功并识别为 SLAVE，地址去空白后按原顺序解析且首个写入 masterAddr，monHost 为空，不读取 keyring 且 clientKey 被清空。
 TEST(M800ViewCommonTest, BuildWorkerParsesAddressesWithoutReadingKeyring)
 {
     KvClientConfig config;
@@ -86,6 +92,8 @@ TEST(M800ViewCommonTest, BuildWorkerParsesAddressesWithoutReadingKeyring)
     EXPECT_TRUE(built.clientKey.empty());
 }
 
+// 测试场景：配置 view.role=slave 构建服务端配置，输出对象预置旧角色、地址、密钥和 TCP 端点。
+// 预期结果：返回 INVALID_ARGUMENT，并清除旧输出，恢复 MASTER、0.0.0.0:9100、空 Master 地址/密钥、admin 及 UB/6000 等默认值。
 TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
 {
     KvClientConfig config;
@@ -112,6 +120,8 @@ TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
+// 测试场景：Master 只有 legacy viewServiceAddrs 而缺少必需 Ceph 配置，以及 Worker 的 master_addrs 仅含逗号和空白时分别构建配置。
+// 预期结果：两种缺少角色必需字段的配置均返回 INVALID_ARGUMENT，legacy viewServiceAddrs 不能替代 Master 必需配置。
 TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
 {
     KvClientConfig masterConfig;
@@ -126,6 +136,8 @@ TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
               StatusCode::INVALID_ARGUMENT);
 }
 
+// 测试场景：Master 指向含注释、section 和重复 key 行的 keyring，Worker 也配置同一路径。
+// 预期结果：两者构建均成功；Master 仅读取首个 key 的值 AQIDBAU=++== 并忽略后续重复项，Worker 不读取文件且 clientKey 为空。
 TEST(M800ViewCommonTest, BuildReadsFirstKeyValueOnlyForMaster)
 {
     const std::string keyringPath = "m800_view_common_test_keyring.conf";
@@ -157,6 +169,8 @@ TEST(M800ViewCommonTest, BuildReadsFirstKeyValueOnlyForMaster)
     EXPECT_TRUE(worker.clientKey.empty());
 }
 
+// 测试场景：Master 配置不存在的 keyring 文件，且输出对象预置 clientKey 为 stale-secret。
+// 预期结果：构建仍返回成功，旧 clientKey 被清空。
 TEST(M800ViewCommonTest, BuildUnreadableKeyringReturnsOkWithEmptyClientKey)
 {
     KvClientConfig config;
@@ -171,6 +185,8 @@ TEST(M800ViewCommonTest, BuildUnreadableKeyringReturnsOkWithEmptyClientKey)
     EXPECT_TRUE(built.clientKey.empty());
 }
 
+// 测试场景：Worker 仅通过旧配置项 view.master_addr 指定 Master 地址。
+// 预期结果：构建成功，masterAddrs 仅含 127.0.0.1:9100，masterAddr 也为该地址。
 TEST(M800ViewCommonTest, BuildSupportsLegacyMasterAddr)
 {
     KvClientConfig config;
@@ -183,6 +199,8 @@ TEST(M800ViewCommonTest, BuildSupportsLegacyMasterAddr)
     EXPECT_EQ(built.masterAddr, "127.0.0.1:9100");
 }
 
+// 测试场景：Worker 同时配置旧 master_addr 和包含两个地址的新 master_addrs。
+// 预期结果：构建成功并优先使用新配置，masterAddrs 为两个新地址且 masterAddr 取首个 127.0.0.2:9100。
 TEST(M800ViewCommonTest, BuildPrefersMasterAddrsOverLegacyMasterAddr)
 {
     KvClientConfig config;
@@ -197,6 +215,8 @@ TEST(M800ViewCommonTest, BuildPrefersMasterAddrsOverLegacyMasterAddr)
     EXPECT_EQ(built.masterAddr, "127.0.0.2:9100");
 }
 
+// 测试场景：Worker 同时设置有效的旧 master_addr 和显式为空的新 master_addrs。
+// 预期结果：空的新配置仍优先于旧配置，构建返回 INVALID_ARGUMENT，不回退使用旧地址。
 TEST(M800ViewCommonTest, BuildMasterAddrsEmptyTakesPrecedenceOverLegacyMasterAddr)
 {
     KvClientConfig config;
@@ -208,6 +228,8 @@ TEST(M800ViewCommonTest, BuildMasterAddrsEmptyTakesPrecedenceOverLegacyMasterAdd
     EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT);
 }
 
+// 测试场景：Worker 分别使用标准时间/端点配置键，以及同时设置 view.ceph.agent_fetch_timeout_ms 和标准 agent 超时键。
+// 预期结果：标准键值 42000、12000、2500、TCP、65535 被正确解析；Ceph 前缀键优先，使 agent 获取超时为 13000 ms。
 TEST(M800ViewCommonTest, BuildSupportsCanonicalAndCephTimeoutKeys)
 {
     auto normalConfig = MakeWorkerConfig();
@@ -233,6 +255,8 @@ TEST(M800ViewCommonTest, BuildSupportsCanonicalAndCephTimeoutKeys)
     EXPECT_EQ(ceph.agentFetchTimeoutMs, std::uint64_t{13000});
 }
 
+// 测试场景：Worker 将 view.endpoint_port 配置为 0。
+// 预期结果：构建成功，端点端口回退为默认值 6000。
 TEST(M800ViewCommonTest, BuildZeroEndpointPortFallsBackToDefault)
 {
     auto config = MakeWorkerConfig();
@@ -243,6 +267,8 @@ TEST(M800ViewCommonTest, BuildZeroEndpointPortFallsBackToDefault)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
+// 测试场景：Worker 使用拼错的 agent_fetch_timeoout_ms 和 refresh_in_terval_ms 配置键。
+// 预期结果：构建成功并忽略这两个键，agent 获取超时和刷新间隔分别保持默认值 10000 ms 和 30000 ms。
 TEST(M800ViewCommonTest, BuildIgnoresMisspelledTimeoutKeys)
 {
     auto config = MakeWorkerConfig();

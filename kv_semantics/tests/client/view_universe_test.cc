@@ -55,6 +55,8 @@ std::shared_ptr<ViewUniverse> MakeUniverse(
     return CreateViewUniverse(std::move(views), globalEpoch);
 }
 
+// 测试场景：由现有视图集合和默认参数分别创建 ViewUniverse，并修改源集合及 GetAllViews 返回的快照。
+// 预期结果：实例保存独立且完整的视图与全局 epoch，外部修改不影响内部状态，默认实例为空且 epoch 为 0。
 TEST(ViewUniverseTest, FactoriesReturnIndependentSnapshots)
 {
     std::unordered_map<KvNsId, GlobalView> source{{1, MakeView(7, 70, 10)}};
@@ -87,6 +89,8 @@ TEST(ViewUniverseTest, FactoriesReturnIndependentSnapshots)
     EXPECT_TRUE(empty->GetAllNsIds().empty());
 }
 
+// 测试场景：在已有命名空间 1 的 ViewUniverse 中查询不存在的命名空间 2，输出参数预先填入其他视图。
+// 预期结果：GetView 返回 NOT_FOUND，且不修改输出参数中的原有视图内容。
 TEST(ViewUniverseTest, MissingViewReturnsNotFoundWithoutChangingOutput)
 {
     auto universe = MakeUniverse({{1, MakeView(1, 10, 10)}}, 1);
@@ -98,6 +102,8 @@ TEST(ViewUniverseTest, MissingViewReturnsNotFoundWithoutChangingOutput)
     ExpectView(output, 88, 99, 77);
 }
 
+// 测试场景：向全局 epoch 为 100 且已有视图的实例发布空快照，以及全局 epoch 为 0、99 或 100 的非空快照。
+// 预期结果：各次 PublishAll 均成功但作为整个实例的无操作处理，原 epoch 和命名空间 1 的视图不变，命名空间 2 不会加入。
 TEST(ViewUniverseTest, PublishAllEmptyZeroAndNonIncreasingEpochsAreWholeUniverseNoOps)
 {
     auto universe = MakeUniverse({{1, MakeView(10, 100, 10)}}, 100);
@@ -117,6 +123,8 @@ TEST(ViewUniverseTest, PublishAllEmptyZeroAndNonIncreasingEpochsAreWholeUniverse
     EXPECT_EQ(universe->GetView(2, view).code, StatusCode::NOT_FOUND);
 }
 
+// 测试场景：默认空实例首次发布一个全局 epoch 为 0、包含命名空间 7 的非空快照。
+// 预期结果：初始快照被接受，实例变为非空，全局 epoch 保持 0，且可读取命名空间 7 的完整视图。
 TEST(ViewUniverseTest, PublishAllAcceptsInitialNonEmptyZeroEpochSnapshot)
 {
     auto universe = CreateViewUniverse();
@@ -131,6 +139,8 @@ TEST(ViewUniverseTest, PublishAllAcceptsInitialNonEmptyZeroEpochSnapshot)
     ExpectView(view, 0, 70, 70);
 }
 
+// 测试场景：用全局 epoch 更高的快照发布更新，新快照修改命名空间 1、删除命名空间 2、新增命名空间 3，且各视图自身 epoch 更低。
+// 预期结果：PublishAll 按全局 epoch 整体替换内容，不逐命名空间比较视图 epoch，最终仅保留新快照中的命名空间 1 和 3。
 TEST(ViewUniverseTest, PublishAllHigherGlobalEpochReplacesEverythingWithoutPerNsDecisions)
 {
     auto universe = MakeUniverse(
@@ -148,6 +158,8 @@ TEST(ViewUniverseTest, PublishAllHigherGlobalEpochReplacesEverythingWithoutPerNs
     ExpectView(views.at(3), 0, 3000, 30);
 }
 
+// 测试场景：依次用全局 epoch 更低的非空快照和空快照调用 ReplaceAll，随后调用 Clear。
+// 预期结果：ReplaceAll 无条件替换 epoch 与全部内容，空快照也会生效；Clear 清空所有视图并将全局 epoch 重置为 0。
 TEST(ViewUniverseTest, ReplaceAllAndClearReplaceEpochAndContentsUnconditionally)
 {
     auto universe = MakeUniverse({{1, MakeView(100, 1000, 10)}}, 100);
@@ -167,6 +179,8 @@ TEST(ViewUniverseTest, ReplaceAllAndClearReplaceEpochAndContentsUnconditionally)
     EXPECT_EQ(universe->GetGlobalEpoch(), std::uint64_t{0});
 }
 
+// 测试场景：在同一个 ViewUniverse 实例上分别以自身为参数调用 PublishAll 和 ReplaceAll。
+// 预期结果：自发布和自替换均成功且不会死锁，全局 epoch 与原有视图内容保持不变。
 TEST(ViewUniverseTest, SelfPublishAndSelfReplaceDoNotDeadlockOrChangeState)
 {
     auto universe = MakeUniverse({{1, MakeView(1, 10, 10)}}, 1);
@@ -180,6 +194,8 @@ TEST(ViewUniverseTest, SelfPublishAndSelfReplaceDoNotDeadlockOrChangeState)
     ExpectView(view, 1, 10, 10);
 }
 
+// 测试场景：两个读线程反复调用 GetAllViews，同时写线程在两组完整视图状态之间执行 1000 次 ReplaceAll。
+// 预期结果：每次读取都得到同一状态的完整原子快照，不会出现不同状态混合的视图，最终一致性检查无失败。
 TEST(ViewUniverseTest, ConcurrentReadersNeverObserveMixedStates)
 {
     std::unordered_map<KvNsId, GlobalView> stateA{{1, MakeView(1, 10, 10)},
@@ -221,6 +237,8 @@ TEST(ViewUniverseTest, ConcurrentReadersNeverObserveMixedStates)
     EXPECT_FALSE(failed.load(std::memory_order_acquire));
 }
 
+// 测试场景：写线程持续替换源实例时，并发执行 GetSnapshot、ReplaceAll、PublishAll 以及 M800 编解码等复合读取。
+// 预期结果：源实例、复制实例和编解码结果中的视图 epoch 均与同次快照的全局 epoch 一致，不会观察到混合状态。
 TEST(ViewUniverseTest, CompoundReadsUseOneAtomicSnapshot)
 {
     const std::unordered_map<KvNsId, GlobalView> stateA{{1, MakeView(10, 1, 10)}};
@@ -268,6 +286,8 @@ TEST(ViewUniverseTest, CompoundReadsUseOneAtomicSnapshot)
     EXPECT_FALSE(failed.load());
 }
 
+// 测试场景：以 20、10、5、30、1 的乱序向无序视图集合插入命名空间后调用 GetAllNsIds。
+// 预期结果：返回的命名空间 ID 按升序排列为 1、5、10、20、30。
 TEST(ViewUniverseTest, GetAllNsIdsAreSorted)
 {
     std::unordered_map<KvNsId, GlobalView> views;
@@ -278,6 +298,8 @@ TEST(ViewUniverseTest, GetAllNsIdsAreSorted)
     EXPECT_EQ(universe->GetAllNsIds(), (std::vector<KvNsId>{1, 5, 10, 20, 30}));
 }
 
+// 测试场景：分别构造单命名空间发布成功、未发布以及多命名空间发布汇总的日志消息。
+// 预期结果：三类日志严格符合约定格式，并正确包含命名空间、epoch 变化、ASU 数量及变更统计。
 TEST(ViewUniverseTest, PublishLogMessagesMatchContract)
 {
     GlobalView next = MakeView(12, 7, 1);
@@ -289,6 +311,8 @@ TEST(ViewUniverseTest, PublishLogMessagesMatchContract)
               "ViewUniverse published, ns_changed=2, ns_total=5, changed_ns=1");
 }
 
+// 测试场景：已有命名空间 1 且全局 epoch 为 0 的实例，发布同为 0 epoch 但包含命名空间 2 的快照，随后再自发布。
+// 预期结果：相等 0 epoch 的发布均成功但不改变已有内容，实例始终只保留命名空间 1。
 TEST(ViewUniverseTest, EqualZeroEpochWithExistingViewsIsNoOp)
 {
     auto universe = MakeUniverse({{1, MakeView(0, 1, 10)}}, 0);
@@ -302,6 +326,8 @@ TEST(ViewUniverseTest, EqualZeroEpochWithExistingViewsIsNoOp)
     EXPECT_EQ(universe->GetAllNsIds().front(), 1);
 }
 
+// 测试场景：复制同一个 NodeInfo，仅将其中一份的 localKvNsId 从 1 改为 2，再分别与原节点比较。
+// 预期结果：未修改的节点被判为相等，仅 localKvNsId 不同的节点被判为不相等，说明比较逻辑覆盖该字段。
 TEST(ViewUniverseTest, LocalKvNsIdIsTheOnlyDifferenceDetectedAsChanged)
 {
     auto currentView = MakeView(100, 1, 10);

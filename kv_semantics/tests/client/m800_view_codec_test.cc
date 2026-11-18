@@ -37,6 +37,8 @@ std::string ValidText()
            "asuInfo.10=protocol=uboe,port=6000,local.comm_id=10.0.0.1\n";
 }
 
+// 测试场景：编码 localKvNsId 默认为 0 的节点，并分别解码省略该字段和显式设为 0 的文本。
+// 预期结果：编码结果与 ValidText 完全一致且不包含 localKvNsId. 字段；两种解码结果的 localKvNsId 均为 0，显式零值再次编码也不输出该字段。
 TEST(M800ViewCodecTest, DefaultZeroLocalKvNsIdPreservesWireFormat)
 {
     EXPECT_STREQ(M800ViewTextContract::kLocalKvNsIdFieldPrefix, "localKvNsId.");
@@ -63,6 +65,8 @@ TEST(M800ViewCodecTest, DefaultZeroLocalKvNsIdPreservesWireFormat)
     EXPECT_EQ(encoded, ValidText());
 }
 
+// 测试场景：对 localKvNsId 为 uint32_t 最大值且包含两个端点的节点执行编码、解码和再次编码。
+// 预期结果：编码包含首个端点及 localKvNsId.10=4294967295；解码保留最大 ID 和两个 IP 的顺序，再编码文本与首次完全一致。
 TEST(M800ViewCodecTest, NonZeroLocalKvNsIdRoundTripsWithMultipleEndpoints)
 {
     auto view = MakeView(1, 123);
@@ -91,6 +95,8 @@ TEST(M800ViewCodecTest, NonZeroLocalKvNsIdRoundTripsWithMultipleEndpoints)
     EXPECT_EQ(reencoded, encoded);
 }
 
+// 测试场景：按 20、10 的顺序插入两个带非零 localKvNsId 的 ASU 后编码视图。
+// 预期结果：ASU 按 10、20 升序输出，每条 localKvNsId 紧跟对应的 asuInfo，完整编码文本与预期逐字一致。
 TEST(M800ViewCodecTest, LocalKvNsIdEncodingIsOrderedAndAdjacentToItsAsuInfo)
 {
     auto view = MakeView(1, 123);
@@ -118,6 +124,8 @@ TEST(M800ViewCodecTest, LocalKvNsIdEncodingIsOrderedAndAdjacentToItsAsuInfo)
     EXPECT_EQ(encoded, expected);
 }
 
+// 测试场景：向合法文本追加重复、指向未声明 ASU、键名错误、空值、非十进制、负数、带后缀或超范围的 localKvNsId 字段，并解码到已有视图。
+// 预期结果：每种输入均返回 INTERNAL_ERROR，原 global epoch 55、唯一 ASU 7 的 localKvNsId 77 及端点 10.0.0.7 均保持不变。
 TEST(M800ViewCodecTest, DecodeRejectsInvalidLocalKvNsIdWithoutChangingOutput)
 {
     const std::vector<std::string> invalidSuffixes = {
@@ -152,6 +160,8 @@ TEST(M800ViewCodecTest, DecodeRejectsInvalidLocalKvNsIdWithoutChangingOutput)
     }
 }
 
+// 测试场景：将 localKvNsId.10 放在对应 asuInfo.10 之前，或用其他字段将二者隔开后解码。
+// 预期结果：两种非相邻布局均返回 INTERNAL_ERROR，输出视图宇宙保持为空且 global epoch 为 0。
 TEST(M800ViewCodecTest, DecodeRejectsNonAdjacentLocalKvNsId)
 {
     auto beforeAsuInfo = ValidText();
@@ -168,6 +178,8 @@ TEST(M800ViewCodecTest, DecodeRejectsNonAdjacentLocalKvNsId)
     }
 }
 
+// 测试场景：将合法视图文本中的端点端口改为 0 后解码。
+// 预期结果：返回 INTERNAL_ERROR，输出视图宇宙保持为空。
 TEST(M800ViewCodecTest, DecodeRejectsZeroEndpointPortWithoutChangingOutput)
 {
     auto input = ValidText();
@@ -179,6 +191,8 @@ TEST(M800ViewCodecTest, DecodeRejectsZeroEndpointPortWithoutChangingOutput)
     EXPECT_TRUE(universe->Empty());
 }
 
+// 测试场景：编码包含端口为 0 的端点的视图，输出字符串预置为 unchanged。
+// 预期结果：返回 INTERNAL_ERROR，输出字符串仍为 unchanged，不写入部分编码内容。
 TEST(M800ViewCodecTest, EncodeRejectsZeroEndpointPortWithoutChangingOutput)
 {
     auto view = MakeView(1, 123);
@@ -191,6 +205,8 @@ TEST(M800ViewCodecTest, EncodeRejectsZeroEndpointPortWithoutChangingOutput)
     EXPECT_EQ(output, "unchanged");
 }
 
+// 测试场景：以无序方式存放两个命名空间，并编码含 IPv4、IPv6、NUMA/HCA 信息和乱序属性的端点后再解码、重编码。
+// 预期结果：命名空间按 ID 升序、asuIds 和属性按排序结果输出；解码保留 global epoch 123、两个命名空间及 IPv6 端点各字段，重编码与首次相同。
 TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
 {
     std::unordered_map<KvNsId, GlobalView> views;
@@ -236,6 +252,8 @@ TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
     EXPECT_EQ(reencoded, encoded);
 }
 
+// 测试场景：将合法文本转换为 CRLF 换行，添加开头空行并去掉末尾换行后解码。
+// 预期结果：解码成功且得到一个命名空间。
 TEST(M800ViewCodecTest, DecodeAcceptsCrlfBlankLinesAndMissingFinalNewline)
 {
     std::string text = ValidText();
@@ -250,6 +268,8 @@ TEST(M800ViewCodecTest, DecodeAcceptsCrlfBlankLinesAndMissingFinalNewline)
     EXPECT_EQ(decoded->GetAllNsIds().size(), 1);
 }
 
+// 测试场景：解码空文本、非法 epoch、字段或 ID 不一致、非法端口或协议、未知外层字段及异常控制字符等多组畸形输入，输出对象预置 epoch 55 和命名空间 7。
+// 预期结果：所有输入均返回 INTERNAL_ERROR，且原 global epoch 55 和唯一命名空间 7 不被修改。
 TEST(M800ViewCodecTest, DecodeRejectsMalformedInputWithoutChangingOutput)
 {
     std::vector<std::string> invalidInputs;
@@ -308,6 +328,8 @@ TEST(M800ViewCodecTest, DecodeRejectsMalformedInputWithoutChangingOutput)
     }
 }
 
+// 测试场景：分别在命名空间块内的 asuIds 前和命名空间块外的 ns=1 前插入 futureField 未知字段后解码。
+// 预期结果：块内未知字段被忽略且解码成功；块外未知字段返回 INTERNAL_ERROR，已有输出的 global epoch 55 保持不变。
 TEST(M800ViewCodecTest, UnknownBlockFieldIsIgnoredButOutsideFieldIsRejected)
 {
     auto input = ValidText();
@@ -322,6 +344,8 @@ TEST(M800ViewCodecTest, UnknownBlockFieldIsIgnoredButOutsideFieldIsRejected)
     EXPECT_EQ(unchanged->GetGlobalEpoch(), 55);
 }
 
+// 测试场景：分别编码 viewEpoch 与全局 epoch 不一致的视图，以及端点属性值含逗号的视图，输出字符串预置为 unchanged。
+// 预期结果：两次编码均返回 INTERNAL_ERROR，且输出字符串始终保持 unchanged。
 TEST(M800ViewCodecTest, EncodeRejectsInconsistentViewAndInvalidScalar)
 {
     auto invalid = MakeView(1, 10);
@@ -340,6 +364,8 @@ TEST(M800ViewCodecTest, EncodeRejectsInconsistentViewAndInvalidScalar)
     EXPECT_EQ(output, "unchanged");
 }
 
+// 测试场景：编码 65 个命名空间、每个 ASU 含 5 个端点的视图，再解码编码结果。
+// 预期结果：nsCount 为 64，仅保留前 64 个命名空间且不输出 ns=65；解码后命名空间 1 的 ASU 仅保留 4 个端点。
 TEST(M800ViewCodecTest, NamespaceAndEndpointLimitsAreTruncatedDeterministically)
 {
     std::unordered_map<KvNsId, GlobalView> views;

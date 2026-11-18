@@ -248,6 +248,8 @@ private:
     std::chrono::milliseconds delay_;
 };
 
+// 测试场景：主节点启动时 Agent 尚无命名空间数据，另一线程延迟 300ms 发布 epoch 10 的 pool-a OSD 视图。
+// 预期结果：Start 等待初始 OSD Map 就绪后成功返回，耗时至少 200ms，不将空数据视为启动成功。
 TEST(M800ViewMasterTest, StartWaitsForInitialOsdMap)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -267,6 +269,8 @@ TEST(M800ViewMasterTest, StartWaitsForInitialOsdMap)
     master->Stop();
 }
 
+// 测试场景：Agent 始终无初始命名空间数据且获取超时配置为 5000ms，主节点启动等待 250ms 后并发调用 Stop。
+// 预期结果：Stop 在 1500ms 内结束等待，Start 返回 CANCELED，且错误消息包含 canceled。
 TEST(M800ViewMasterTest, StopInterruptsInitialReadinessWait)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -284,6 +288,8 @@ TEST(M800ViewMasterTest, StopInterruptsInitialReadinessWait)
     EXPECT_NE(startStatus.message.find("canceled"), std::string::npos);
 }
 
+// 测试场景：主节点启动读取已有 pool-a 时 Agent 的 GetInByNs 被持续阻塞，确认进入查询后并发调用 Stop。
+// 预期结果：Stop 在 1 秒内解除查询阻塞，启动以 CANCELED 返回而不等待初始拉取完成。
 TEST(M800ViewMasterTest, StopInterruptsBlockedNamespaceQuery)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -304,6 +310,8 @@ TEST(M800ViewMasterTest, StopInterruptsBlockedNamespaceQuery)
     EXPECT_EQ(startStatus.code, StatusCode::CANCELED);
 }
 
+// 测试场景：对已有 pool-a 视图的主节点连续 20 轮并发执行 Start 与 Stop，并交替让出 CPU 或延迟 1ms 改变竞争时序。
+// 预期结果：每轮均能正常汇合且 Start 仅返回 OK 或 CANCELED，随后重复 Stop 不发生自死锁。
 TEST(M800ViewMasterTest, ConcurrentStartStopDoesNotSelfDeadlock)
 {
     for (int iteration = 0; iteration < 20; ++iteration) {
@@ -325,6 +333,8 @@ TEST(M800ViewMasterTest, ConcurrentStartStopDoesNotSelfDeadlock)
     }
 }
 
+// 测试场景：主节点已启动且 HTTP 连接只发送部分请求，停止过程同时被阻塞在 Agent::Stop，期间再次调用 Start。
+// 预期结果：停止中的并发 Start 返回 CANCELED；解除 HTTP 连接与 Agent 停止阻塞后可完成清理。
 TEST(M800ViewMasterTest, StartWhileHttpStopIsBlockedReturnsCanceled)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -368,6 +378,8 @@ TEST(M800ViewMasterTest, StartWhileHttpStopIsBlockedReturnsCanceled)
     master->Stop();
 }
 
+// 测试场景：主节点已成功加载 epoch 10 的 pool-a 初始视图并保持运行，再次调用 Start。
+// 预期结果：首次 Start 成功，第二次 Start 返回 RESOURCE_BUSY。
 TEST(M800ViewMasterTest, DuplicateStartStillReturnsResourceBusy)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -378,6 +390,8 @@ TEST(M800ViewMasterTest, DuplicateStartStillReturnsResourceBusy)
     master->Stop();
 }
 
+// 测试场景：初始 pool-a 节点的地址为含嵌入 NUL 及尾随 junk 的字符串 10.0.0.1\0junk。
+// 预期结果：主节点拒绝该非法地址，Start 返回 NOT_FOUND，而不是按 NUL 前缀截断后启动。
 TEST(M800ViewMasterTest, EmbeddedNulAddressIsRejected)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -388,6 +402,8 @@ TEST(M800ViewMasterTest, EmbeddedNulAddressIsRejected)
     master->Stop();
 }
 
+// 测试场景：初始 pool-a 节点地址显式指定端口 0（10.0.0.1:0）。
+// 预期结果：主节点不使用默认端口兜底，Start 返回 NOT_FOUND。
 TEST(M800ViewMasterTest, ExplicitZeroPortAddressIsRejected)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -397,6 +413,8 @@ TEST(M800ViewMasterTest, ExplicitZeroPortAddressIsRejected)
     master->Stop();
 }
 
+// 测试场景：初始 Agent 数据同时包含哈希映射到同一 KvNsId 的 pool-69670 与 pool-261455，获取超时配置为 5000ms。
+// 预期结果：Start 不进入长时间重试，并在 1 秒内返回 INTERNAL_ERROR。
 TEST(M800ViewMasterTest, InitialHashCollisionReturnsInternalErrorImmediately)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -413,6 +431,8 @@ TEST(M800ViewMasterTest, InitialHashCollisionReturnsInternalErrorImmediately)
     master->Stop();
 }
 
+// 测试场景：主节点停止被阻塞在 Agent::Stop 时并发发起 Start，20ms 后解除停止阻塞；若重启遭遇 RESOURCE_BUSY 或 CANCELED 则再启动一次。
+// 预期结果：最终 Start 成功且新 Agent 未丢失，可读取全量视图并保持全局 epoch 为 10。
 TEST(M800ViewMasterTest, RestartDuringStopNeverLosesNewAgent)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -450,6 +470,8 @@ TEST(M800ViewMasterTest, RestartDuringStopNeverLosesNewAgent)
     master->Stop();
 }
 
+// 测试场景：Agent 始终没有命名空间数据，主节点初始获取截止时间为 40ms，启动会经历空数据重试。
+// 预期结果：Start 返回 CONNECTION_ERROR，且总耗时低于 180ms，不因重试间隔显著越过配置截止时间。
 TEST(M800ViewMasterTest, InitialRetryWaitDoesNotExceedConfiguredDeadline)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -463,6 +485,8 @@ TEST(M800ViewMasterTest, InitialRetryWaitDoesNotExceedConfiguredDeadline)
     master->Stop();
 }
 
+// 测试场景：初始 pool-a 视图在 Agent 延迟 80ms 后可用，但主节点获取截止时间为 30ms，随后用从节点读取并在取消延迟后重启主节点。
+// 预期结果：首次 Start 返回 CONNECTION_ERROR，超时后的迟到结果不发布、从节点拉取也返回 CONNECTION_ERROR；重启后视图成功发布且 epoch 为 10。
 TEST(M800ViewMasterTest, SlowInitialSuccessAfterDeadlineIsNotPublished)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -491,6 +515,8 @@ TEST(M800ViewMasterTest, SlowInitialSuccessAfterDeadlineIsNotPublished)
     master->Stop();
 }
 
+// 测试场景：Agent 始终不提供初始命名空间数据，主节点 Agent 获取超时配置为 250ms。
+// 预期结果：Start 等待至超时窗口后返回 CONNECTION_ERROR，实际耗时至少 200ms。
 TEST(M800ViewMasterTest, InitialTimeoutReturnsConnectionError)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -504,6 +530,8 @@ TEST(M800ViewMasterTest, InitialTimeoutReturnsConnectionError)
     master->Stop();
 }
 
+// 测试场景：主从同步 epoch 123 的 pool-a（节点 10 up/in、11 down/in）和 pool-b（节点 20 地址带 :7000），再于 epoch 124 替换 pool-a 并置空 pool-b，最后置空所有命名空间。
+// 预期结果：从节点获得两个命名空间和 epoch 123，pool-a 保留两节点且 UB 端点默认端口为 6000；epoch 124 中 pool-a 仅含节点 12、pool-b 沿用节点 20，最终全空查询返回 NOT_FOUND 时从节点仍保留 epoch 124 双视图。
 TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndPreservesFailedNamespace)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -570,6 +598,8 @@ TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndPreservesFailedNa
     master->Stop();
 }
 
+// 测试场景：主节点视图先从 pool-a/pool-b 变为仅 pool-a，再新增 pool-c，最后同时下发哈希冲突的 pool-69670 与 pool-261455。
+// 预期结果：删除和新增按 Agent 当前权威集合生效，命名空间数依次为 2、1、2；冲突刷新返回 INTERNAL_ERROR 且全局 epoch 保持 102，不部分覆盖旧视图。
 TEST(M800ViewMasterSlaveTest, NamespaceDeletionAndHashCollisionPreserveAuthorityRules)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -605,6 +635,8 @@ TEST(M800ViewMasterSlaveTest, NamespaceDeletionAndHashCollisionPreserveAuthority
     master->Stop();
 }
 
+// 测试场景：从节点以 300ms HTTP 超时拉取 epoch 10 的完整视图，但目标 ViewUniverse::PublishAll 额外阻塞 400ms。
+// 预期结果：发布耗时超过 HTTP 超时不导致失败，GetAllViews 返回 OK 且全局 epoch 为 10。
 TEST(M800ViewSlaveTest, SuccessfulPublishAfterDeadlineReturnsSuccess)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -624,6 +656,8 @@ TEST(M800ViewSlaveTest, SuccessfulPublishAfterDeadlineReturnsSuccess)
     server->Stop();
 }
 
+// 测试场景：从节点已缓存 epoch 10 后，主节点依次返回 epoch 9 全量文本、非法文本、空全量响应及空 304 NOT_MODIFIED。
+// 预期结果：旧 epoch 和 304 返回 OK，非法或空全量响应返回 INTERNAL_ERROR，所有情况下现有全局 epoch 均保持 10。
 TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
 {
     std::mutex responseMutex;
@@ -669,6 +703,8 @@ TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
     server->Stop();
 }
 
+// 测试场景：从节点已保存 epoch 10、节点地址 10.0.0.1 的视图，主节点随后返回同为 epoch 10 但地址改为 10.0.0.99 的全量视图。
+// 预期结果：相同 epoch 不覆盖已发布内容，拉取返回 OK，节点地址仍为 10.0.0.1 且全局 epoch 保持 10。
 TEST(M800ViewSlaveTest, EqualEpochDoesNotReplaceUniverse)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -699,6 +735,8 @@ TEST(M800ViewSlaveTest, EqualEpochDoesNotReplaceUniverse)
     server->Stop();
 }
 
+// 测试场景：从节点先向空输出发布 epoch 7，再换用另一个空 ViewUniverse 拉取，最后再次使用已含 epoch 7 的原输出；服务器仅对 sinceEpoch=0 返回全量视图。
+// 预期结果：第二个空输出也被填为 epoch 7，三次请求的 sinceEpoch 依次为 0、0、7，第三次可接受 304。
 TEST(M800ViewSlaveTest, EmptyOutputForcesFullDownloadAfterPreviousFetch)
 {
     const auto port = AllocatePort();
@@ -745,6 +783,8 @@ TEST(M800ViewSlaveTest, EmptyOutputForcesFullDownloadAfterPreviousFetch)
     server->Stop();
 }
 
+// 测试场景：空从节点依次配置两个主节点，首个对 sinceEpoch=0 错误返回 304 NOT_MODIFIED，备用主节点提供 epoch 10 全量视图。
+// 预期结果：零 epoch 的 304 被视为无效并切换备用主节点，最终拉取成功、全局 epoch 为 10 且视图非空。
 TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
 {
     const auto portA = AllocatePort();
@@ -774,6 +814,8 @@ TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
     serverB->Stop();
 }
 
+// 测试场景：从节点已从首选主节点缓存 epoch 10，首选与备用主节点随后都改为 epoch 9，并统计备用节点请求数。
+// 预期结果：首选的旧快照在 PublishAll 中作为无操作处理并返回 OK，全局 epoch 保持 10，备用主节点始终未被请求。
 TEST(M800ViewSlaveTest, StaleResponseIsNoOpInsidePublishAllWithoutSecondMaster)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -811,6 +853,8 @@ TEST(M800ViewSlaveTest, StaleResponseIsNoOpInsidePublishAllWithoutSecondMaster)
     serverB->Stop();
 }
 
+// 测试场景：从节点已从首选主节点缓存 epoch 10，备用地址无服务，首选主节点随后返回 epoch 9 的旧快照。
+// 预期结果：旧快照按成功无操作处理，不继续访问不可用备用地址，GetAllViews 返回 OK 且全局 epoch 保持 10。
 TEST(M800ViewSlaveTest, StaleResponseReturnsOkWithoutTryingFailedBackup)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -838,6 +882,8 @@ TEST(M800ViewSlaveTest, StaleResponseReturnsOkWithoutTryingFailedBackup)
     server->Stop();
 }
 
+// 测试场景：首选主节点先提供 epoch 10、备用主节点已准备 epoch 11；缓存建立后首选改发 epoch 9，并统计备用请求数。
+// 预期结果：首选旧响应直接返回 OK，不回退获取更新的备用快照，全局 epoch 保持 10 且备用主节点请求数为 0。
 TEST(M800ViewSlaveTest, StaleFirstMasterDoesNotFallThroughToNewerBackup)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -873,6 +919,8 @@ TEST(M800ViewSlaveTest, StaleFirstMasterDoesNotFallThroughToNewerBackup)
     serverB->Stop();
 }
 
+// 测试场景：输出 ViewUniverse 已含 viewId=999、全局 epoch 20 的视图，首选主节点仅提供 epoch 15，备用主节点提供 epoch 25。
+// 预期结果：PublishAll 自身拒绝更旧快照，拉取返回 OK、全局 epoch 保持 20，且不请求备用主节点。
 TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(15));
@@ -904,6 +952,8 @@ TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
     serverB->Stop();
 }
 
+// 测试场景：主节点已有 epoch 100 的 pool-a/pool-b，Agent 在 epoch 110 将 pool-a 改为节点 3，并把 pool-b 节点 2 的地址改为非法 not-an-ip。
+// 预期结果：整体刷新仍成功且全局 epoch 为 110，pool-a 使用节点 3，pool-b 回填旧节点 2 并把自己的 viewEpoch 更新为 110。
 TEST(M800ViewMasterTest, InvalidNamespaceIsBackfilledWhileOtherNamespacesRefresh)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -929,6 +979,8 @@ TEST(M800ViewMasterTest, InvalidNamespaceIsBackfilledWhileOtherNamespacesRefresh
     master->Stop();
 }
 
+// 测试场景：基于 epoch 100 旧视图，epoch 110 刷新时 pool-b 查询超时、pool-a 更新为节点 3；epoch 111 再让 pool-a 先返回 TIMEOUT、pool-b 返回 INTERNAL_ERROR。
+// 预期结果：单命名空间失败时其余视图可刷新，pool-b 保留旧节点 2 且 viewEpoch 为 110；两者均失败时返回首个 TIMEOUT，全局 epoch 保持 110。
 TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFailure)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -970,6 +1022,8 @@ TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFai
     master->Stop();
 }
 
+// 测试场景：主节点 Agent 仅持有 epoch 100，但传给 GetAllViews 的输出 ViewUniverse 已含 epoch 200、viewId=999、地址 10.0.0.9 的更新视图，随后从节点经 HTTP 拉取。
+// 预期结果：HTTP 快照取实际发布后的状态而非 Agent 旧快照，从节点获得 viewId 999 和地址 10.0.0.9，且全局 epoch 与视图 epoch 均为 200。
 TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -1004,6 +1058,8 @@ TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
     master->Stop();
 }
 
+// 测试场景：从节点未配置任何主节点地址，直接调用 GetAllViews。
+// 预期结果：返回 INVALID_ARGUMENT，错误消息同时提示新键 view.master_addrs 和兼容键 view.master_addr。
 TEST(M800ViewSlaveTest, MissingMasterAddressMessageMentionsBothKeys)
 {
     M800ViewServerConfig config;
@@ -1017,6 +1073,8 @@ TEST(M800ViewSlaveTest, MissingMasterAddressMessageMentionsBothKeys)
     worker->Stop();
 }
 
+// 测试场景：从节点分别使用非数字主机名 localhost:9100、含嵌入 NUL 的 IPv4 地址 127.0.0.1\0junk 和 IPv6 地址 [::1]\0junk。
+// 预期结果：三种地址均返回 INVALID_ARGUMENT，且输出 ViewUniverse 始终为空，不按 NUL 前缀截断或解析主机名。
 TEST(M800ViewSlaveTest, NonNumericAndEmbeddedNulMasterAddressesAreRejected)
 {
     const std::vector<std::string> invalidAddresses = {
@@ -1035,6 +1093,8 @@ TEST(M800ViewSlaveTest, NonNumericAndEmbeddedNulMasterAddressesAreRejected)
     }
 }
 
+// 测试场景：从节点启动时主节点先提供 epoch 10 全量视图，首次 Start 成功后关闭服务器，再次调用 Start。
+// 预期结果：Start 会执行初始拉取并透传失败，首次返回 OK，服务器关闭后的第二次 Start 返回 CONNECTION_ERROR。
 TEST(M800ViewSlaveTest, StartPerformsInitialFetchAndReturnsFailures)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -1052,6 +1112,8 @@ TEST(M800ViewSlaveTest, StartPerformsInitialFetchAndReturnsFailures)
     worker->Stop();
 }
 
+// 测试场景：从节点先于主节点启动，配置的主地址无监听服务，输出 ViewUniverse 预置全局 epoch 8 和一个 viewId=9 的视图。
+// 预期结果：拉取返回 CONNECTION_ERROR，已有输出不被清空或改写，全局 epoch 仍为 8 且命名空间数量仍为 1。
 TEST(M800ViewSlaveTest, WorkerBeforeMasterKeepsOutputUnchanged)
 {
     M800ViewServerConfig config;

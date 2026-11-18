@@ -96,6 +96,8 @@ std::string ValidText(std::uint64_t epoch)
            "asuInfo.1=protocol=uboe,port=6000,local.comm_id=10.0.0.1\n";
 }
 
+// 测试场景：从节点在已有 globalEpoch=8、仅含命名空间 9 的 Universe 上拉取视图，主节点依次返回 304、畸形状态行、chunked、声明长度超过实际正文和 Content-Length 截断有效正文的响应。
+// 预期结果：304、畸形状态行、chunked 和正文被截断均返回 INTERNAL_ERROR，正文不足声明长度返回 CONNECTION_ERROR；每次失败后 globalEpoch 仍为 8，命名空间数量仍为 1。
 TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniverse)
 {
     const auto validBody = ValidText(10);
@@ -132,6 +134,8 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniv
     }
 }
 
+// 测试场景：主节点返回 HTTP 500，分别不携带 Content-Length、声明 4 字节却只发送 3 字节，以及声明 3 字节却额外发送 1 字节。
+// 预期结果：无 Content-Length 和正文超出声明长度时返回 INTERNAL_ERROR，正文不足时返回 CONNECTION_ERROR；三种响应均不会向空 Universe 写入视图。
 TEST(M800ViewSlaveHttpNegativeTest, RejectsNon200FramingErrors)
 {
     const std::vector<std::pair<std::string, StatusCode>> cases = {
@@ -155,6 +159,8 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsNon200FramingErrors)
     }
 }
 
+// 测试场景：主节点以 200 返回合法视图正文，Content-Length 恰好等于正文长度，但分片发送时在该长度之后额外附加字符 X。
+// 预期结果：从节点拒绝 Content-Length 之外的多余字节，GetAllViews 返回 INTERNAL_ERROR，Universe 保持为空。
 TEST(M800ViewSlaveHttpNegativeTest, RejectsBodyBytesBeyondContentLength)
 {
     const auto validBody = ValidText(10);
@@ -171,6 +177,8 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsBodyBytesBeyondContentLength)
     EXPECT_TRUE(universe->Empty());
 }
 
+// 测试场景：主节点延迟 500ms 且不发送任何响应，从节点的 HTTP 超时为 2000ms；拉取线程阻塞读取期间调用 Stop。
+// 预期结果：Stop 主动中断阻塞读，拉取线程在 1 秒内退出并返回 CANCELED，而不是等待响应或 HTTP 超时。
 TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
 {
     RawResponseServer server("", 500);
@@ -191,6 +199,8 @@ TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
     EXPECT_EQ(fetchStatus.code, StatusCode::CANCELED);
 }
 
+// 测试场景：连续 10 轮先在慢主节点连接仍未响应时 Stop 旧 worker 并等待拉取线程退出，再创建新 worker 连接返回合法 epoch 10 视图的主节点。
+// 预期结果：每轮旧连接都能完成停止和线程回收，新 worker 均可独立建立连接、成功拉取视图，并将 globalEpoch 更新为 10。
 TEST(M800ViewSlaveHttpNegativeTest, StopThenNewConnectionWorks)
 {
     for (int iteration = 0; iteration < 10; ++iteration) {
@@ -222,6 +232,8 @@ TEST(M800ViewSlaveHttpNegativeTest, StopThenNewConnectionWorks)
     }
 }
 
+// 测试场景：配置两个各延迟 500ms 才响应的主节点地址，从节点整体 HTTP 超时仅为 100ms，并依次尝试两个地址。
+// 预期结果：两个主节点共用同一绝对截止时间，GetAllViews 返回 TIMEOUT，总耗时小于 180ms，而非为每个地址分别等待 100ms。
 TEST(M800ViewSlaveHttpNegativeTest, AllMasterAddressesShareOneDeadline)
 {
     RawResponseServer first("", 500);
