@@ -332,6 +332,33 @@ Status CacheStorePrimary::Offload(std::size_t jobId, AddressedToken plan)
     return relay_->Offload(jobId, std::move(plan));
 }
 
+Expected<std::pair<std::vector<std::uint8_t>, bool>> CacheStorePrimary::Lookup(
+    const RequestId& requestId, const std::vector<BlockId>& blockIds)
+{
+    return prefetch_.Lookup(requestId, blockIds);
+}
+
+Expected<AddressedToken> CacheStorePrimary::PreparePrefetch(const std::vector<BlockId>& keys,
+                                                            const RequestContext& context)
+{
+    return prefetch_.PreparePrefetch(context.requestId, keys, context);
+}
+
+void CacheStorePrimary::CompletePrefetch(const AddressedToken& plan, bool success)
+{
+    prefetch_.CompletePrefetch(plan, success);
+}
+
+Status CacheStorePrimary::Prefetch(std::size_t jobId, AddressedToken plan)
+{
+    return relay_->Prefetch(jobId, std::move(plan));
+}
+
+void CacheStorePrimary::ReleaseRequest(const RequestId& requestId)
+{
+    prefetch_.ReleaseRequest(requestId);
+}
+
 std::vector<std::pair<std::size_t, bool>> CacheStorePrimary::GetFinished()
 {
     auto finished = dataPlane_->GetFinished();

@@ -39,6 +39,7 @@
 #include "cache/token_codec.h"
 #include "fixtures/stub_lower_store.h"
 #include "offloadable.h"
+#include "prefetchable.h"
 #include "status/status.h"
 #include "type/block.h"
 #include "type/dictionary.h"
@@ -80,8 +81,10 @@ struct Cmd {
     std::int32_t success{0};
     /** Handle of the offload plan this command carries; 0 = no plan. */
     std::uint64_t planId{0};
-    /** Data-plane job id, and the token's slot numbers in block order. */
+    /** Data-plane job id, and the prefetch request's join key -- the
+     *  prefetch calls read it as its decimal string. */
     std::uint32_t jobId{0};
+    /** The token's slot numbers, in block order. */
     std::uint32_t slots[kMaxBatch]{};
     BlockId ids[kMaxBatch]{};
 };
@@ -96,6 +99,8 @@ struct Result {
     std::uint32_t slots[kMaxBatch]{};
     /** Handle of the minted offload plan; 0 = no plan was minted. */
     std::uint64_t planId{0};
+    /** The prefetch probe's signal; 1 = the lower tier holds an absent key. */
+    std::uint64_t signal{0};
 };
 
 static_assert(std::is_trivially_copyable_v<Cmd> && std::is_trivially_copyable_v<Result>);
@@ -120,6 +125,13 @@ enum : std::int32_t {
     kOpOffload,
     kOpCompleteOffload,
     kOpLowerProbe,
+    kOpAsPrefetchable,
+    kOpLookupPair,
+    kOpPreparePrefetch,
+    kOpPrefetch,
+    kOpCompletePrefetch,
+    kOpReleaseRequest,
+    kOpLowerProbeRead,
 };
 
 /** What a forked child tells its parent: 3 = ready, 4 = self-check failed,
@@ -206,6 +218,24 @@ Cmd MakeJobCmd(std::int32_t op, std::uint32_t jobId)
     Cmd cmd;
     cmd.op = op;
     cmd.jobId = jobId;
+    return cmd;
+}
+
+/** The prefetch request's join key: the command's job id in its decimal
+ *  form, so one field drives both a transfer and its request. */
+RequestId RequestIdOf(const Cmd& cmd) { return std::to_string(cmd.jobId); }
+
+/** A prefetch request command: the join key's source and the blocks it
+ *  names, in probe order. */
+Cmd MakeRequestCmd(std::int32_t op, std::uint32_t requestId,
+                   std::initializer_list<std::uint64_t> tags)
+{
+    Cmd cmd;
+    cmd.op = op;
+    cmd.jobId = requestId;
+    cmd.n = static_cast<std::int32_t>(tags.size());
+    std::size_t i = 0;
+    for (const std::uint64_t tag : tags) { cmd.ids[i++] = MakeBlock(tag); }
     return cmd;
 }
 
@@ -485,6 +515,126 @@ Result RunOne(CacheStore& store, const Cmd& cmd, std::size_t blockSize,
             bool covered = shape;
             for (std::size_t i = 0; covered && i < count; i++) {
                 covered = lower->dumps[0].keys[i] == ids[i];
+            }
+            result.slots[0] = covered ? 1 : 0;
+            return result;
+        }
+        case kOpAsPrefetchable: {
+            result.n = store.AsPrefetchable() != nullptr ? 1 : 0;
+            return result;
+        }
+        case kOpLookupPair: {
+            Prefetchable* facet = store.AsPrefetchable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            auto outcome = facet->Lookup(RequestIdOf(cmd), ids);
+            if (!outcome.HasValue()) {
+                result.code = outcome.Error().Underlying();
+                return result;
+            }
+            result.n = cmd.n;
+            for (std::size_t i = 0; i < count && i < outcome.Value().first.size(); i++) {
+                result.hits[i] = outcome.Value().first[i] != 0 ? 1 : 0;
+            }
+            result.signal = outcome.Value().second ? 1 : 0;
+            return result;
+        }
+        case kOpPreparePrefetch: {
+            Prefetchable* facet = store.AsPrefetchable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            context.requestId = RequestIdOf(cmd);
+            auto plan = facet->PreparePrefetch(ids, context);
+            if (!plan.HasValue()) {
+                result.code = plan.Error().Underlying();
+                return result;
+            }
+            /* The mint must cover the commanded keys, in order -- the
+             * parent's positional slot checks below lean on this. */
+            bool covered = plan.Value().keys.size() == count;
+            for (std::size_t i = 0; covered && i < count; i++) {
+                covered = plan.Value().keys[i] == ids[i];
+            }
+            if (!covered) {
+                result.code = Status::General("the minted plan does not cover the commanded keys")
+                                  .Underlying();
+                return result;
+            }
+            const PlanPayload payload = DecodePlanPayload(plan.Value().payload);
+            result.n = static_cast<std::int32_t>(payload.slots.size());
+            for (std::size_t i = 0; i < payload.slots.size() && i < kMaxBatch; i++) {
+                result.slots[i] = payload.slots[i];
+            }
+            result.planId = payload.batchId;
+            return result;
+        }
+        case kOpPrefetch: {
+            Prefetchable* facet = store.AsPrefetchable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            /* The minted plan rebuilt from the command: keys, destination
+             * slots, and handle -- the parent's pipes stand in for the
+             * deployment's plan broadcast. */
+            AddressedToken plan;
+            plan.keys = ids;
+            PlanPayload payload;
+            payload.batchId = cmd.planId;
+            payload.slots.assign(cmd.slots, cmd.slots + count);
+            plan.payload = EncodePlanPayload(payload);
+            const Status st = facet->Prefetch(cmd.jobId, std::move(plan));
+            result.code = st.Underlying();
+            if (st.Failure()) { return result; }
+            result.n = static_cast<std::int32_t>(count);
+            return result;
+        }
+        case kOpCompletePrefetch: {
+            Prefetchable* facet = store.AsPrefetchable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            AddressedToken plan;
+            plan.keys = ids;
+            PlanPayload payload;
+            payload.batchId = cmd.planId;
+            payload.slots.assign(cmd.slots, cmd.slots + count);
+            plan.payload = EncodePlanPayload(payload);
+            facet->CompletePrefetch(plan, cmd.success != 0);
+            return result;
+        }
+        case kOpReleaseRequest: {
+            Prefetchable* facet = store.AsPrefetchable();
+            if (facet == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            facet->ReleaseRequest(RequestIdOf(cmd));
+            return result;
+        }
+        case kOpLowerProbeRead: {
+            /* The inherited stub's books of the read protocol, packed for
+             * the parent: the probe count, the pin, load, and unpin
+             * counts, and whether the loads covered the commanded keys in
+             * order. */
+            if (lower == nullptr) {
+                result.code = Status::Unsupported().Underlying();
+                return result;
+            }
+            result.n = static_cast<std::int32_t>(lower->lookups.size());
+            result.hits[0] = static_cast<std::int32_t>(lower->pins.size());
+            result.hits[1] = static_cast<std::int32_t>(lower->loads.size());
+            result.hits[2] = static_cast<std::int32_t>(lower->unpins.size());
+            const bool shape = lower->loads.size() == (count == 0 ? 0 : 1) &&
+                               (count == 0 || lower->loads[0].keys.size() == count);
+            bool covered = shape;
+            for (std::size_t i = 0; covered && i < count; i++) {
+                covered = lower->loads[0].keys[i] == ids[i];
             }
             result.slots[0] = covered ? 1 : 0;
             return result;
@@ -1713,6 +1863,445 @@ TEST_F(MultiprocessTest, FailedOffloadStillConcludesAndReceipts)
     EXPECT_EQ(Drive(replica, MakeJobCmd(kOpPrepareOffload, 0)).n, 0);
     EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {5})).code, 0);
     EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {5}, 0, 1)).code, 0);
+
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(replica));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));
+}
+
+/*== M: the prefetch loop over the worker domain's process split ==*/
+
+TEST_F(MultiprocessTest, PrefetchMintAndExecutionSpanTheWorkerDomain)
+{
+    const std::string id = MakeUniqueId("prefetch");
+    /* One lower tier rides the fork to every child, its copies holding
+     * the scripted presence; only the leaf's copy is ever read from. */
+    StubLowerStore lower;
+    lower.present.insert(MakeBlock(1));
+    lower.present.insert(MakeBlock(2));
+    lower.present.insert(MakeBlock(3));
+    lower.SettleOnWait(true);
+    Child leader;
+    Child leaf;
+    Child scheduler;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots4BlockSize, 1, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leaf, MakeDict(id, "worker", kSlots4BlockSize, 1, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots4BlockSize, 1, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
+
+    /* The wiring gate: every process of the wired domain exposes the
+     * facet. */
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpAsPrefetchable, 0)).n, 1);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpAsPrefetchable, 0)).n, 1);
+    EXPECT_EQ(Drive(scheduler, MakeJobCmd(kOpAsPrefetchable, 0)).n, 1);
+
+    /* No engine lives in a worker: the probe refuses, the mint is
+     * structural idle. */
+    EXPECT_EQ(Drive(leaf, MakeRequestCmd(kOpLookupPair, 0, {1})).code,
+              Status::Unsupported().Underlying());
+    const Result idle = Drive(leaf, MakeRequestCmd(kOpPreparePrefetch, 0, {}));
+    EXPECT_EQ(idle.n, 0);
+    EXPECT_EQ(idle.planId, 0U);
+
+    /* The minting scheduler probes: its engine's snapshot is empty, the
+     * signal comes from the tier below. */
+    const Result probe = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(probe.code, 0);
+    ASSERT_EQ(probe.n, 2);
+    EXPECT_EQ(probe.hits[0], 0);
+    EXPECT_EQ(probe.hits[1], 0);
+    EXPECT_EQ(probe.signal, 1U);
+
+    /* The mint covers the probed keys, with one destination slot per
+     * key. */
+    const Result mint = Drive(scheduler, MakeRequestCmd(kOpPreparePrefetch, 5, {1, 2}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 2);
+    EXPECT_NE(mint.planId, 0U);
+
+    /* The mint pins its two destinations: two slots stay, so a three-slot
+     * admission finds no ground until the plan's verdict. */
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {3, 4, 5})).code, Status::NoSpace().Underlying());
+
+    /* The same plan reaches the executor over the parent's pipes,
+     * standing in for the deployment's channel. The minting scheduler
+     * is not an executor: no data plane runs there. */
+    const Cmd plan =
+        MakePlanCmd(kOpPrefetch, 9, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    EXPECT_EQ(Drive(scheduler, plan).code, Status::Unsupported().Underlying());
+
+    /* The leaf executes: its wired tier sees the whole read protocol,
+     * and the verdict surfaces once through its own stream. */
+    EXPECT_EQ(Drive(leaf, plan).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    const Result leafBooks = Drive(leaf, MakeRequestCmd(kOpLowerProbeRead, 0, {1, 2}));
+    ASSERT_EQ(leafBooks.code, 0);
+    EXPECT_EQ(leafBooks.n, 0);         /* no probe on the executor's copy */
+    EXPECT_EQ(leafBooks.hits[0], 1);   /* one pin */
+    EXPECT_EQ(leafBooks.hits[1], 1);   /* one load */
+    EXPECT_EQ(leafBooks.hits[2], 1);   /* one unpin */
+    EXPECT_EQ(leafBooks.slots[0], 1U); /* the load covered the plan's keys */
+
+    /* The minter's copy saw only the probe: one lookup, no read. */
+    const Result schedulerBooks = Drive(scheduler, MakeRequestCmd(kOpLowerProbeRead, 0, {}));
+    ASSERT_EQ(schedulerBooks.code, 0);
+    EXPECT_EQ(schedulerBooks.n, 1);
+    EXPECT_EQ(schedulerBooks.hits[0], 0);
+    EXPECT_EQ(schedulerBooks.hits[1], 0);
+    EXPECT_EQ(schedulerBooks.hits[2], 0);
+    EXPECT_EQ(schedulerBooks.slots[0], 1U); /* nothing loaded, nothing commanded */
+
+    /* The receipt commits the admission on the minting engine: a re-probe
+     * under the same request reports the keys present with the signal
+     * off. */
+    Cmd receipt =
+        MakePlanCmd(kOpCompletePrefetch, 0, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    receipt.success = 1;
+    EXPECT_EQ(Drive(scheduler, receipt).code, 0);
+    const Result again = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(again.code, 0);
+    EXPECT_EQ(again.hits[0], 1);
+    EXPECT_EQ(again.hits[1], 1);
+    EXPECT_EQ(again.signal, 0U);
+
+    /* The release drops the request: its join key mints nothing again. */
+    EXPECT_EQ(Drive(scheduler, MakeRequestCmd(kOpReleaseRequest, 5, {})).code, 0);
+    EXPECT_EQ(Drive(scheduler, MakeRequestCmd(kOpPreparePrefetch, 5, {1, 2})).code,
+              Status::InvalidParam().Underlying());
+
+    /* A fresh request on a mixed probe: the hit stays a hit, the miss
+     * plans, and the leaf fetches it. */
+    const Result fresh = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 7, {2, 3}));
+    ASSERT_EQ(fresh.code, 0);
+    ASSERT_EQ(fresh.n, 2);
+    EXPECT_EQ(fresh.hits[0], 1);
+    EXPECT_EQ(fresh.hits[1], 0);
+    EXPECT_EQ(fresh.signal, 1U);
+    const Result mint2 = Drive(scheduler, MakeRequestCmd(kOpPreparePrefetch, 7, {3}));
+    ASSERT_EQ(mint2.code, 0);
+    ASSERT_EQ(mint2.n, 1);
+    EXPECT_NE(mint2.planId, 0U);
+    const Cmd plan2 = MakePlanCmd(kOpPrefetch, 10, {3}, {mint2.slots[0]}, mint2.planId);
+    EXPECT_EQ(Drive(leaf, plan2).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 10)).code, 0);
+    Cmd receipt2 = MakePlanCmd(kOpCompletePrefetch, 0, {3}, {mint2.slots[0]}, mint2.planId);
+    receipt2.success = 1;
+    EXPECT_EQ(Drive(scheduler, receipt2).code, 0);
+    const Result settled = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 7, {2, 3}));
+    ASSERT_EQ(settled.code, 0);
+    EXPECT_EQ(settled.hits[0], 1);
+    EXPECT_EQ(settled.hits[1], 1);
+    EXPECT_EQ(settled.signal, 0U);
+
+    /* Teardown order: joiners first, the leader last. */
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(scheduler));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leaf));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leader));
+}
+
+/*== N: one broadcast plan divided across the domain's workers ==*/
+
+TEST_F(MultiprocessTest, PrefetchPlanDividesAcrossTheDomainWorkers)
+{
+    const std::string id = MakeUniqueId("pdivide");
+    /* One lower tier rides the fork to every child, and each worker's
+     * index rides its dictionary: the leader holds 0, the leaf 1. */
+    StubLowerStore lower;
+    for (std::uint64_t tag = 1; tag <= 5; tag++) { lower.present.insert(MakeBlock(tag)); }
+    lower.SettleOnWait(true);
+    Child leader;
+    Child leaf;
+    Child scheduler;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(leader, MakeDict(id, "worker", kSlots6BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leader));
+    Dictionary leafDict = MakeDict(id, "worker", kSlots6BlockSize, 2, {}, &lower);
+    leafDict.SetInt64("worker_index", 1);
+    ASSERT_NO_FATAL_FAILURE(ForkStoreChild(leaf, leafDict));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(leaf));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(scheduler, MakeDict(id, "scheduler", kSlots6BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(scheduler));
+
+    /* The minting scheduler probes: everything misses, the signal comes
+     * from below. */
+    const Result probe = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 5, {1, 2, 3, 4}));
+    ASSERT_EQ(probe.code, 0);
+    ASSERT_EQ(probe.n, 4);
+    for (std::size_t i = 0; i < 4; i++) { EXPECT_EQ(probe.hits[i], 0); }
+    EXPECT_EQ(probe.signal, 1U);
+
+    /* The mint covers the probed keys, and its window pins four of the
+     * six slots. */
+    const Result mint = Drive(scheduler, MakeRequestCmd(kOpPreparePrefetch, 5, {1, 2, 3, 4}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 4);
+    EXPECT_NE(mint.planId, 0U);
+    EXPECT_EQ(Drive(scheduler, MakeCmd(kOpAlloc, {6, 7, 8})).code, Status::NoSpace().Underlying());
+
+    /* One broadcast of the whole plan to every worker: each executor
+     * claims the keys whose plan position falls to it -- the leader the
+     * even positions, the leaf the odd ones -- so no key rides twice. */
+    const Cmd plan =
+        MakePlanCmd(kOpPrefetch, 9, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    EXPECT_EQ(Drive(leader, plan).code, 0);
+    EXPECT_EQ(Drive(leaf, plan).code, 0);
+
+    /* Each claim concludes through its own stream: one wait, the second
+     * wait unknown, the log empty. */
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The books split along the claim: each copy saw one pin, one load,
+     * one unpin, and the load covered exactly its own half. */
+    const Result leaderBooks = Drive(leader, MakeRequestCmd(kOpLowerProbeRead, 0, {1, 3}));
+    ASSERT_EQ(leaderBooks.code, 0);
+    EXPECT_EQ(leaderBooks.n, 0);
+    EXPECT_EQ(leaderBooks.hits[0], 1);
+    EXPECT_EQ(leaderBooks.hits[1], 1);
+    EXPECT_EQ(leaderBooks.hits[2], 1);
+    EXPECT_EQ(leaderBooks.slots[0], 1U);
+
+    const Result leafBooks = Drive(leaf, MakeRequestCmd(kOpLowerProbeRead, 0, {2, 4}));
+    ASSERT_EQ(leafBooks.code, 0);
+    EXPECT_EQ(leafBooks.n, 0);
+    EXPECT_EQ(leafBooks.hits[0], 1);
+    EXPECT_EQ(leafBooks.hits[1], 1);
+    EXPECT_EQ(leafBooks.hits[2], 1);
+    EXPECT_EQ(leafBooks.slots[0], 1U);
+
+    /* The minter never reads from its own tier. */
+    const Result schedulerBooks = Drive(scheduler, MakeRequestCmd(kOpLowerProbeRead, 0, {}));
+    ASSERT_EQ(schedulerBooks.code, 0);
+    EXPECT_EQ(schedulerBooks.n, 1);
+    EXPECT_EQ(schedulerBooks.hits[0], 0);
+    EXPECT_EQ(schedulerBooks.hits[1], 0);
+    EXPECT_EQ(schedulerBooks.hits[2], 0);
+
+    /* Both shares concluded, so one receipt commits the whole admission:
+     * a re-probe reports every key present with the signal off. */
+    Cmd receipt =
+        MakePlanCmd(kOpCompletePrefetch, 0, {1, 2, 3, 4},
+                    {mint.slots[0], mint.slots[1], mint.slots[2], mint.slots[3]}, mint.planId);
+    receipt.success = 1;
+    EXPECT_EQ(Drive(scheduler, receipt).code, 0);
+    const Result again = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 5, {1, 2, 3, 4}));
+    ASSERT_EQ(again.code, 0);
+    for (std::size_t i = 0; i < 4; i++) { EXPECT_EQ(again.hits[i], 1); }
+    EXPECT_EQ(again.signal, 0U);
+
+    /* A one-key plan divides into one share and one empty claim: the
+     * leader fetches the key, the leaf concludes having driven
+     * nothing, and one receipt still closes the plan. */
+    const Result probe2 = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 7, {5}));
+    ASSERT_EQ(probe2.code, 0);
+    EXPECT_EQ(probe2.hits[0], 0);
+    EXPECT_EQ(probe2.signal, 1U);
+    const Result mint2 = Drive(scheduler, MakeRequestCmd(kOpPreparePrefetch, 7, {5}));
+    ASSERT_EQ(mint2.code, 0);
+    ASSERT_EQ(mint2.n, 1);
+    EXPECT_NE(mint2.planId, 0U);
+    const Cmd plan2 = MakePlanCmd(kOpPrefetch, 10, {5}, {mint2.slots[0]}, mint2.planId);
+    EXPECT_EQ(Drive(leader, plan2).code, 0);
+    EXPECT_EQ(Drive(leaf, plan2).code, 0);
+    EXPECT_EQ(Drive(leader, MakeJobCmd(kOpWait, 10)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpWait, 10)).code, 0);
+    EXPECT_EQ(Drive(leaf, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The leader's books grew by one fetch; the leaf's did not. */
+    const Result leaderGrew = Drive(leader, MakeRequestCmd(kOpLowerProbeRead, 0, {}));
+    ASSERT_EQ(leaderGrew.code, 0);
+    EXPECT_EQ(leaderGrew.hits[0], 2);
+    EXPECT_EQ(leaderGrew.hits[1], 2);
+    EXPECT_EQ(leaderGrew.hits[2], 2);
+
+    const Result leafSteady = Drive(leaf, MakeRequestCmd(kOpLowerProbeRead, 0, {}));
+    ASSERT_EQ(leafSteady.code, 0);
+    EXPECT_EQ(leafSteady.hits[0], 1);
+    EXPECT_EQ(leafSteady.hits[1], 1);
+    EXPECT_EQ(leafSteady.hits[2], 1);
+
+    Cmd receipt2 = MakePlanCmd(kOpCompletePrefetch, 0, {5}, {mint2.slots[0]}, mint2.planId);
+    receipt2.success = 1;
+    EXPECT_EQ(Drive(scheduler, receipt2).code, 0);
+    const Result settled = Drive(scheduler, MakeRequestCmd(kOpLookupPair, 7, {5}));
+    ASSERT_EQ(settled.code, 0);
+    EXPECT_EQ(settled.hits[0], 1);
+    EXPECT_EQ(settled.signal, 0U);
+
+    /* Teardown order: joiners first, the leader last. */
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(scheduler));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leaf));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(leader));
+}
+
+/*== O: the prefetch loop over the both-domain's control plane ==*/
+
+TEST_F(MultiprocessTest, PrefetchLoopClosesOverTheBothDomainControlPlane)
+{
+    const std::string id = MakeUniqueId("bothprefetch");
+    /* One lower tier rides the fork to both children; the probe and the
+     * execution both drive the replica's copy. */
+    StubLowerStore lower;
+    lower.present.insert(MakeBlock(1));
+    lower.present.insert(MakeBlock(2));
+    lower.SettleOnWait(true);
+    Child primary;
+    Child replica;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
+
+    /* Both processes of the wired domain expose the facet. */
+    EXPECT_EQ(Drive(primary, MakeJobCmd(kOpAsPrefetchable, 0)).n, 1);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpAsPrefetchable, 0)).n, 1);
+
+    /* The replica's probe rides the control plane for the snapshot and
+     * its own wire for the signal. */
+    const Result probe = Drive(replica, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(probe.code, 0);
+    ASSERT_EQ(probe.n, 2);
+    EXPECT_EQ(probe.hits[0], 0);
+    EXPECT_EQ(probe.hits[1], 0);
+    EXPECT_EQ(probe.signal, 1U);
+
+    /* The admission lands in the primary's engine over the control
+     * connection. */
+    const Result mint = Drive(replica, MakeRequestCmd(kOpPreparePrefetch, 5, {1, 2}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 2);
+    EXPECT_NE(mint.planId, 0U);
+
+    /* The mint pins its two destinations: no ground for a three-slot
+     * admission until the plan's verdict. */
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {3, 4, 5})).code, Status::NoSpace().Underlying());
+
+    /* The replica executes the plan on its own wired tier, and the
+     * verdict surfaces once through its own stream. */
+    const Cmd plan =
+        MakePlanCmd(kOpPrefetch, 9, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    EXPECT_EQ(Drive(replica, plan).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 9)).code, 0);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    const Result books = Drive(replica, MakeRequestCmd(kOpLowerProbeRead, 0, {1, 2}));
+    ASSERT_EQ(books.code, 0);
+    EXPECT_EQ(books.n, 1);         /* one probe on the replica's copy */
+    EXPECT_EQ(books.hits[0], 1);   /* one pin */
+    EXPECT_EQ(books.hits[1], 1);   /* one load */
+    EXPECT_EQ(books.hits[2], 1);   /* one unpin */
+    EXPECT_EQ(books.slots[0], 1U); /* the load covered the plan's keys */
+
+    /* The primary's copy is untouched: neither probed nor read from. */
+    const Result primaryBooks = Drive(primary, MakeRequestCmd(kOpLowerProbeRead, 0, {}));
+    ASSERT_EQ(primaryBooks.code, 0);
+    EXPECT_EQ(primaryBooks.n, 0);
+    EXPECT_EQ(primaryBooks.hits[0], 0);
+    EXPECT_EQ(primaryBooks.hits[1], 0);
+    EXPECT_EQ(primaryBooks.hits[2], 0);
+    EXPECT_EQ(primaryBooks.slots[0], 1U); /* nothing loaded, nothing commanded */
+
+    /* The receipt rides the control connection back to the primary's
+     * engine: the keys turn present under the same request. */
+    Cmd receipt =
+        MakePlanCmd(kOpCompletePrefetch, 0, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    receipt.success = 1;
+    EXPECT_EQ(Drive(replica, receipt).code, 0);
+    const Result again = Drive(replica, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(again.code, 0);
+    EXPECT_EQ(again.hits[0], 1);
+    EXPECT_EQ(again.hits[1], 1);
+    EXPECT_EQ(again.signal, 0U);
+
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(replica));
+    ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));
+}
+
+/*== P: a failed prefetch still concludes and rolls back ==*/
+
+TEST_F(MultiprocessTest, FailedPrefetchStillConcludesAndRollsBack)
+{
+    const std::string id = MakeUniqueId("preffail");
+    /* One lower tier rides the fork to both children, refusing its first
+     * load: the plan's only sub-batch is lost in flight. */
+    StubLowerStore lower;
+    lower.present.insert(MakeBlock(1));
+    lower.present.insert(MakeBlock(2));
+    lower.FailLoadNth(1, Status::General("scripted lower-tier load failure"));
+    Child primary;
+    Child replica;
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(primary, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(primary));
+    ASSERT_NO_FATAL_FAILURE(
+        ForkStoreChild(replica, MakeDict(id, "both", kSlots4BlockSize, 2, {}, &lower)));
+    ASSERT_NO_FATAL_FAILURE(ExpectReady(replica));
+
+    /* The replica probes and mints through the control plane. */
+    const Result probe = Drive(replica, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(probe.code, 0);
+    ASSERT_EQ(probe.n, 2);
+    EXPECT_EQ(probe.hits[0], 0);
+    EXPECT_EQ(probe.hits[1], 0);
+    EXPECT_EQ(probe.signal, 1U);
+    const Result mint = Drive(replica, MakeRequestCmd(kOpPreparePrefetch, 5, {1, 2}));
+    ASSERT_EQ(mint.code, 0);
+    ASSERT_EQ(mint.n, 2);
+    EXPECT_NE(mint.planId, 0U);
+
+    /* The mint pins its two destinations: no ground for a three-slot
+     * admission until the plan's verdict. */
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {3, 4, 5})).code, Status::NoSpace().Underlying());
+
+    /* The submission is accepted; the loss plays out in the lower tier,
+     * and the failure surfaces as one completion event. */
+    const Cmd plan =
+        MakePlanCmd(kOpPrefetch, 9, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    EXPECT_EQ(Drive(replica, plan).code, 0);
+    const auto settled = PollFinished(replica, 9);
+    ASSERT_TRUE(settled.has_value());
+    EXPECT_FALSE(settled->second);
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpWait, 9)).code, Status::InvalidParam().Underlying());
+    EXPECT_EQ(Drive(replica, MakeJobCmd(kOpGetFinished, 0)).n, 0);
+
+    /* The lower tier saw the whole read protocol: the refused flight
+     * released its pin on the spot. */
+    const Result books = Drive(replica, MakeRequestCmd(kOpLowerProbeRead, 0, {1, 2}));
+    ASSERT_EQ(books.code, 0);
+    EXPECT_EQ(books.n, 1);
+    EXPECT_EQ(books.hits[0], 1);
+    EXPECT_EQ(books.hits[1], 1);
+    EXPECT_EQ(books.hits[2], 1);
+    EXPECT_EQ(books.slots[0], 1U);
+
+    /* The failed verdict rolls the admission back: a re-probe still
+     * misses, and the ground reopens for a full refill. */
+    const Cmd receipt =
+        MakePlanCmd(kOpCompletePrefetch, 0, {1, 2}, {mint.slots[0], mint.slots[1]}, mint.planId);
+    EXPECT_EQ(Drive(replica, receipt).code, 0);
+    const Result again = Drive(replica, MakeRequestCmd(kOpLookupPair, 5, {1, 2}));
+    ASSERT_EQ(again.code, 0);
+    EXPECT_EQ(again.hits[0], 0);
+    EXPECT_EQ(again.hits[1], 0);
+    EXPECT_EQ(again.signal, 1U);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpAlloc, {3, 4, 5, 6})).code, 0);
+    EXPECT_EQ(Drive(replica, MakeCmd(kOpCommit, {3, 4, 5, 6}, 0, 1)).code, 0);
 
     ASSERT_NO_FATAL_FAILURE(ReleaseChild(replica));
     ASSERT_NO_FATAL_FAILURE(ReleaseChild(primary));

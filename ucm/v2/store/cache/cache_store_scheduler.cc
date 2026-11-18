@@ -138,6 +138,33 @@ Status CacheStoreScheduler::Offload(std::size_t /*jobId*/, AddressedToken /*plan
     return Status::Unsupported(kDataPlaneMessage);
 }
 
+Expected<std::pair<std::vector<std::uint8_t>, bool>> CacheStoreScheduler::Lookup(
+    const RequestId& requestId, const std::vector<BlockId>& blockIds)
+{
+    return prefetch_.Lookup(requestId, blockIds);
+}
+
+Expected<AddressedToken> CacheStoreScheduler::PreparePrefetch(const std::vector<BlockId>& keys,
+                                                              const RequestContext& context)
+{
+    return prefetch_.PreparePrefetch(context.requestId, keys, context);
+}
+
+void CacheStoreScheduler::CompletePrefetch(const AddressedToken& plan, bool success)
+{
+    prefetch_.CompletePrefetch(plan, success);
+}
+
+Status CacheStoreScheduler::Prefetch(std::size_t /*jobId*/, AddressedToken /*plan*/)
+{
+    return Status::Unsupported(kDataPlaneMessage);
+}
+
+void CacheStoreScheduler::ReleaseRequest(const RequestId& requestId)
+{
+    prefetch_.ReleaseRequest(requestId);
+}
+
 std::vector<std::pair<std::size_t, bool>> CacheStoreScheduler::GetFinished() { return {}; }
 
 Status CacheStoreScheduler::Wait(std::size_t jobId)

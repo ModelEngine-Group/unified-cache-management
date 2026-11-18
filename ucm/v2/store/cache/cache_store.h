@@ -39,12 +39,10 @@ namespace UC::Store {
  *        primary for the contest winner and a replica for every loser.
  *        Every Store method forwards to the installed implementation.
  *
- * The facade stays default-constructible (the plugin contract) and stateless
- * apart from that implementation. The Prefetchable facet is not implemented:
- * AsPrefetchable answers nullptr, so the proxy-side capability dispatch
- * serves the basic interface and synthesizes prefetch completions. The
- * Offloadable facet is the installed implementation's: AsOffloadable
- * forwards to it.
+ * The facade stays default-constructible (the plugin contract) and
+ * stateless apart from that implementation. The Offloadable and
+ * Prefetchable facets are the installed implementation's: AsOffloadable
+ * and AsPrefetchable forward to it.
  *
  * @note Lifecycle: the upper layer guarantees exactly one Setup before
  *       any call and no calls during destruction; the facade deliberately
@@ -75,6 +73,8 @@ public:
     /*== Facets ==*/
 
     Offloadable* AsOffloadable() override { return impl_->AsOffloadable(); }
+
+    Prefetchable* AsPrefetchable() override { return impl_->AsPrefetchable(); }
 
     /*== Addressing & admission ==*/
 

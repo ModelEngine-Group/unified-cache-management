@@ -204,7 +204,7 @@ Status CacheStoreWorker::Dump(std::size_t jobId, JobDescriptor job, AddressedTok
     return dataPlane_->Dump(jobId, job, token);
 }
 
-Status CacheStoreWorker::Offload(std::size_t jobId, AddressedToken plan)
+AddressedToken CacheStoreWorker::Claim(AddressedToken plan)
 {
     /* The claim: only the keys whose plan position falls to this worker
      * ride on; a shape-mismatched plan rides on whole for the relay to
@@ -221,9 +221,25 @@ Status CacheStoreWorker::Offload(std::size_t jobId, AddressedToken plan)
             }
         }
         claim.payload = EncodePlanPayload(claimed);
-        plan = std::move(claim);
+        return claim;
     }
-    return relay_->Offload(jobId, std::move(plan));
+    return plan;
+}
+
+Status CacheStoreWorker::Offload(std::size_t jobId, AddressedToken plan)
+{
+    return relay_->Offload(jobId, Claim(std::move(plan)));
+}
+
+Expected<std::pair<std::vector<std::uint8_t>, bool>> CacheStoreWorker::Lookup(
+    const RequestId& /*requestId*/, const std::vector<BlockId>& /*blockIds*/)
+{
+    return Status::Unsupported(kMetadataMessage);
+}
+
+Status CacheStoreWorker::Prefetch(std::size_t jobId, AddressedToken plan)
+{
+    return relay_->Prefetch(jobId, Claim(std::move(plan)));
 }
 
 std::vector<std::pair<std::size_t, bool>> CacheStoreWorker::GetFinished()
