@@ -46,26 +46,25 @@ public:
     }
     void Generate()
     {
-    constexpr size_t kIoAlignment = 4096;
+        constexpr size_t kIoAlignment = 4096;
 
-    if (this->data_) {
-        free(this->data_);
-        this->data_ = nullptr;
+        if (this->data_) {
+            free(this->data_);
+            this->data_ = nullptr;
+        }
+
+        const size_t bytes = this->Size();
+        if (bytes == 0) { return; }
+
+        const size_t rounded = (bytes + kIoAlignment - 1) / kIoAlignment * kIoAlignment;
+
+        void* ptr = nullptr;
+        const int rc = ::posix_memalign(&ptr, kIoAlignment, rounded);
+        assert(rc == 0);
+        assert(ptr != nullptr);
+
+        this->data_ = ptr;
     }
-
-    const size_t bytes = this->Size();
-    if (bytes == 0) { return; }
-
-    const size_t rounded =
-        (bytes + kIoAlignment - 1) / kIoAlignment * kIoAlignment;
-
-    void* ptr = nullptr;
-    const int rc = ::posix_memalign(&ptr, kIoAlignment, rounded);
-    assert(rc == 0);
-    assert(ptr != nullptr);
-
-    this->data_ = ptr;
-    }   
     void GenerateRandom()
     {
         this->Generate();
