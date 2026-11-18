@@ -20,6 +20,7 @@ import socket
 import struct
 import sys
 import tempfile
+from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -448,25 +449,70 @@ def inspect_file(metadata, path):
     return result
 
 
+def _input_files(paths):
+    """Expand directories without following directory symlinks or hiding errors."""
+    for path in paths:
+        if not path.is_dir():
+            yield path, None
+            continue
+        errors = []
+        for root, directories, names in os.walk(path, onerror=errors.append):
+            directories.sort()
+            for name in sorted(names):
+                yield Path(root) / name, None
+        for error in errors:
+            yield Path(error.filename or path), error
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--metadata", required=True, type=Path)
-    parser.add_argument("files", nargs="+", type=Path)
+    parser.add_argument(
+        "files",
+        nargs="+",
+        type=Path,
+        help="Files or directories to inspect. Directories are scanned recursively.",
+    )
     args = parser.parse_args()
     with args.metadata.open(encoding="utf-8") as source:
         metadata = json.load(source)
-    exit_code = 0
-    for path in args.files:
+    recursive = any(path.is_dir() for path in args.files)
+    statuses = Counter()
+    summary = {
+        "type": "summary",
+        "scanned_files": 0,
+        "skipped_tmp_files": 0,
+        "nan_count": 0,
+        "inf_count": 0,
+        "opaque_bytes": 0,
+        "directory_errors": 0,
+    }
+    for path, traversal_error in _input_files(args.files):
+        if traversal_error is None and recursive and path.name.endswith(".tmp"):
+            summary["skipped_tmp_files"] += 1
+            continue
         try:
+            if traversal_error is not None:
+                summary["directory_errors"] += 1
+                raise traversal_error
+            summary["scanned_files"] += 1
+            if path.exists() and not path.is_file():
+                raise ValueError("Input is not a regular file")
             result = inspect_file(metadata, path)
         except (OSError, ValueError, KeyError) as error:
             result = {"file": str(path), "status": "error", "error": str(error)}
         print(json.dumps(result, ensure_ascii=False))
-        if result["status"] != "no_nan_in_typed_regions":
-            exit_code = 1
-    return exit_code
+        statuses[result["status"]] += 1
+        for field in ("nan_count", "inf_count", "opaque_bytes"):
+            summary[field] += result.get(field, 0)
+    if recursive:
+        print(json.dumps({**summary, "statuses": dict(statuses)}, ensure_ascii=False))
+    return int(
+        not summary["scanned_files"]
+        or any(status != "no_nan_in_typed_regions" for status in statuses)
+    )
 
 
 if __name__ == "__main__":

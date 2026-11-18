@@ -288,6 +288,130 @@ def test_cli_atomic_export_and_no_nan_result(hma, tmp_path):
     assert list(path.parent.iterdir()) == [path]
 
 
+@pytest.fixture
+def directory_scan(hma, tmp_path):
+    tensor = torch.ones((2, 8, 1, 1), dtype=torch.bfloat16)
+    connector, config = connector_for(hma, {"model.layers.0.attn": tensor})
+    json_path = metadata.write_fawa_metadata(
+        connector, "FA", config, tmp_path / "metadata"
+    )
+    root = tmp_path / "data"
+    root.mkdir()
+    payload = ctypes.string_at(tensor.data_ptr(), 16) + bytes(4096 - 16)
+    return json_path, root, payload
+
+
+def test_cli_recursively_scans_nested_files_and_skips_tmp(directory_scan):
+    json_path, root, payload = directory_scan
+    nested = root / "ab" / "cd"
+    nested.mkdir(parents=True)
+    (root / "key-one").write_bytes(payload)
+    (nested / "key-two").write_bytes(payload)
+    (nested / "writing.tmp").write_bytes(b"unfinished")
+    (nested / "parent-link").symlink_to(root, target_is_directory=True)
+    command = [sys.executable, str(MODULE), "--metadata", str(json_path), str(root)]
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert result.returncode == 0, result.stderr
+    assert {row["file"] for row in rows[:-1]} == {
+        str(root / "key-one"),
+        str(nested / "key-two"),
+    }
+    assert rows[-1] == {
+        "type": "summary",
+        "scanned_files": 2,
+        "skipped_tmp_files": 1,
+        "nan_count": 0,
+        "inf_count": 0,
+        "opaque_bytes": 0,
+        "directory_errors": 0,
+        "statuses": {"no_nan_in_typed_regions": 2},
+    }
+
+
+def test_cli_accepts_files_and_multiple_directories_together(directory_scan, tmp_path):
+    json_path, root, payload = directory_scan
+    explicit = tmp_path / "explicit-key"
+    explicit.write_bytes(payload)
+    (root / "first-key").write_bytes(payload)
+    another = tmp_path / "another-directory"
+    another.mkdir()
+    (another / "second-key").write_bytes(payload)
+    command = [
+        sys.executable,
+        str(MODULE),
+        "--metadata",
+        str(json_path),
+        str(explicit),
+        str(root),
+        str(another),
+    ]
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert result.returncode == 0, result.stderr
+    assert {row["file"] for row in rows[:-1]} == {
+        str(explicit),
+        str(root / "first-key"),
+        str(another / "second-key"),
+    }
+    assert rows[-1]["scanned_files"] == 3
+    assert rows[-1]["statuses"] == {"no_nan_in_typed_regions": 3}
+
+
+@pytest.mark.parametrize("status", ["nan_found", "invalid_size"])
+def test_cli_directory_continues_after_an_invalid_file(directory_scan, status):
+    json_path, root, payload = directory_scan
+    (root / "a-good").write_bytes(payload)
+    bad = struct.pack("<H", 0x7FC0) + payload[2:] if status == "nan_found" else b"short"
+    (root / "b-bad").write_bytes(bad)
+    (root / "c-good").write_bytes(payload)
+    command = [sys.executable, str(MODULE), "--metadata", str(json_path), str(root)]
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert result.returncode == 1
+    assert [row["status"] for row in rows[:-1]] == [
+        "no_nan_in_typed_regions",
+        status,
+        "no_nan_in_typed_regions",
+    ]
+    assert rows[-1]["scanned_files"] == 3
+    assert rows[-1]["statuses"] == {"no_nan_in_typed_regions": 2, status: 1}
+    assert rows[-1]["nan_count"] == int(status == "nan_found")
+
+
+@pytest.mark.parametrize("tmp_only", [False, True])
+def test_cli_directory_requires_at_least_one_checked_file(directory_scan, tmp_only):
+    json_path, root, _ = directory_scan
+    if tmp_only:
+        (root / "writing.tmp").write_bytes(b"unfinished")
+    command = [sys.executable, str(MODULE), "--metadata", str(json_path), str(root)]
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
+    summary = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert summary["scanned_files"] == 0
+    assert summary["skipped_tmp_files"] == int(tmp_only)
+    assert summary["statuses"] == {}
+
+
+def test_cli_reports_directory_traversal_errors(directory_scan, monkeypatch, capsys):
+    json_path, root, payload = directory_scan
+    (root / "good-key").write_bytes(payload)
+
+    def walk(path, *, onerror):
+        onerror(PermissionError(13, "Permission denied", str(path / "private")))
+        yield str(path), [], ["good-key"]
+
+    monkeypatch.setattr(metadata.os, "walk", walk)
+    monkeypatch.setattr(
+        sys, "argv", [str(MODULE), "--metadata", str(json_path), str(root)]
+    )
+    assert metadata.main() == 1
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[1]["status"] == "error"
+    assert rows[-1]["directory_errors"] == 1
+    assert rows[-1]["scanned_files"] == 1
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_store_startup_exports_only_when_enabled(hma, tmp_path, monkeypatch, enabled):
     tensor = torch.ones((2, 8, 1, 1), dtype=torch.bfloat16)
