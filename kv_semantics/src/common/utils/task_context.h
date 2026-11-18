@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "trans_types.h"
@@ -91,8 +92,8 @@ struct TransportTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;
-    std::vector<CacheKey> keys;
-    std::vector<KVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -127,8 +128,8 @@ struct ClientTask {
     AsuOpType opType{AsuOpType::LOAD};
     std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
-    std::vector<KVBuffer> entries;
-    std::vector<CacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;

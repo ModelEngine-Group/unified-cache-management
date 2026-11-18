@@ -91,12 +91,12 @@ private:
     Status ResolveLocalAddress(const void* providerAddr, std::size_t size, void*& localAddr);
     void ProcessIoTask(IoTask& task);
 
-    bool StoreBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+    bool StoreBytes(NodeId nodeId, const BinaryKey& key, std::uint32_t offset, std::uint64_t addr,
                     std::uint32_t length);
-    bool LoadBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+    bool LoadBytes(NodeId nodeId, const BinaryKey& key, std::uint32_t offset, std::uint64_t addr,
                    std::uint32_t length);
-    bool DeleteKey(NodeId nodeId, const CacheKey& key);
-    bool ExistsKey(NodeId nodeId, const CacheKey& key);
+    bool DeleteKey(NodeId nodeId, const BinaryKey& key);
+    bool ExistsKey(NodeId nodeId, const BinaryKey& key);
     Status CompleteStore(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
     Status CompleteRetrieve(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
     Status CompleteBatchStore(NodeId nodeId, const std::uint32_t* request,
