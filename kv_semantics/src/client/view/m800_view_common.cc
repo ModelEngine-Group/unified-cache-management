@@ -171,6 +171,11 @@ std::string ReadKeyring(const std::string& keyringPath)
     return {};
 }
 
+bool HasEmbeddedNul(const std::string& value)
+{
+    return value.find('\0') != std::string::npos;
+}
+
 Status InvalidConfig(const std::string& message)
 {
     return Status::Error(StatusCode::INVALID_ARGUMENT, message);
@@ -249,6 +254,11 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
                 filter);
     }
 
+    if (HasEmbeddedNul(m800Config.monHost) || HasEmbeddedNul(m800Config.clientName) ||
+        HasEmbeddedNul(m800Config.keyringPath) || HasEmbeddedNul(m800Config.agentLibPath)) {
+        return InvalidConfig("M800 C ABI string contains embedded NUL");
+    }
+
     if (m800Config.role == M800ViewRole::SLAVE) {
         if (m800Config.masterAddrs.empty()) {
             return InvalidConfig("view.master_addrs or view.master_addr is required for worker role");
@@ -260,6 +270,11 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
         return InvalidConfig("view.ceph.mon_host is required for master role");
     }
     m800Config.clientKey = ReadKeyring(m800Config.keyringPath);
+    if (HasEmbeddedNul(m800Config.monHost) || HasEmbeddedNul(m800Config.clientName) ||
+        HasEmbeddedNul(m800Config.keyringPath) || HasEmbeddedNul(m800Config.agentLibPath) ||
+        HasEmbeddedNul(m800Config.clientKey)) {
+        return InvalidConfig("M800 C ABI string contains embedded NUL");
+    }
     return Status::OK();
 }
 

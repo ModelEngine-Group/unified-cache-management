@@ -292,6 +292,16 @@ TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInNumericValues)
     EXPECT_EQ(built.endpointPort, 6000);
 }
 
+TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInAgentConnectionStrings)
+{
+    for (const auto& key : {std::string("view.ceph.mon_host"), std::string("view.ceph.agent_lib")}) {
+        auto config = MakeWorkerConfig();
+        config.attrs[key] = std::string("bad\0value", 9);
+        M800ViewServerConfig built;
+        EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT) << key;
+    }
+}
+
 TEST(M800ViewCommonTest, BuildOutOfRangeTimeoutsFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();

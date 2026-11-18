@@ -302,11 +302,13 @@ KV_CLIENT_AGENT_EXPORT void kv_client_agent_free_node_views(kv_client_agent_hand
 KV_CLIENT_AGENT_EXPORT void kv_client_agent_destroy(kv_client_agent_handle* handle)
 {
     if (handle == nullptr) { return; }
-    std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
-    try {
-        handle->impl.stop_view_refresh();
-    } catch (...) {
-        // Destruction must continue so the library can be unloaded safely.
+    {
+        std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
+        try {
+            handle->impl.stop_view_refresh();
+        } catch (...) {
+            // Destruction must continue so the library can be unloaded safely.
+        }
     }
     delete handle;
 }

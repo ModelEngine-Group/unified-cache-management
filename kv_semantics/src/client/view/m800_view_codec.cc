@@ -225,6 +225,7 @@ Status EncodeEndpoint(const NodeEndpoint& endpoint, std::string& text)
     if (!status.ok()) { return status; }
     const auto protocol = ProtocolName(endpoint.protocol);
     if (protocol.empty()) { return ProtocolError("invalid endpoint protocol enum"); }
+    if (endpoint.port == 0) { return ProtocolError("endpoint port must be nonzero"); }
 
     text += "protocol=";
     text += protocol;

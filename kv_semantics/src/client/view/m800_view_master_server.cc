@@ -413,6 +413,7 @@ private:
             std::unordered_map<KvNsId, GlobalView> nextViews;
             std::set<KvNsId> failedNamespaces;
             Status firstFailure = Status::OK();
+            Status permanentFailure = Status::OK();
             std::size_t successCount{0};
 
             for (const auto& name : nsNames) {
@@ -472,9 +473,12 @@ private:
                     auto statusEmpty = MasterError(StatusCode::NOT_FOUND,
                                                    "namespace has no usable endpoint: " + name);
                     if (!nodes.empty()) {
-                        // Agent returned nodes, but every address/id is invalid.
-                        // This is a permanent data error, not initial-map latency.
-                        return statusEmpty;
+                        // Invalid endpoint data is permanent for this namespace,
+                        // but other namespaces may still be usable and backfilled.
+                        if (permanentFailure.ok()) { permanentFailure = statusEmpty; }
+                        if (firstFailure.ok()) { firstFailure = statusEmpty; }
+                        failedNamespaces.emplace(nsId);
+                        continue;
                     }
                     KV_WARN("ns={} view empty, no ASU endpoints", name);
                     if (firstFailure.ok()) { firstFailure = statusEmpty; }
@@ -486,6 +490,8 @@ private:
                 nextViews.emplace(nsId, std::move(view));
                 ++successCount;
             }
+
+            if (successCount == 0 && !permanentFailure.ok()) { return permanentFailure; }
 
             std::uint64_t epochAfter{0};
             lastStatus = agent->GetEpoch(epochAfter);

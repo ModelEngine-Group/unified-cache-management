@@ -51,6 +51,11 @@ bool LoadSymbol(void* library, const char* name, T& function, std::string& error
     return true;
 }
 
+bool HasEmbeddedNul(const std::string& value)
+{
+    return value.find('\0') != std::string::npos;
+}
+
 bool LoadApi(void* library, AgentApi& api, std::string& error)
 {
     return LoadSymbol(library, "kv_client_agent_get_abi_version", api.getAbiVersion, error) &&
@@ -123,6 +128,11 @@ public:
                                  "cannot initialize a stopped M800 agent client");
         }
         if (initialized_.load()) { return Status::OK(); }
+        if (HasEmbeddedNul(config_.monHost) || HasEmbeddedNul(config_.clientName) ||
+            HasEmbeddedNul(config_.clientKey)) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "agent connection configuration contains embedded NUL");
+        }
 
         int32_t refreshSeconds = 0;
         auto status = MillisecondsToSeconds(config_.refreshIntervalMs, refreshSeconds,
@@ -383,6 +393,10 @@ public:
         client.reset();
         if (config.agentLibPath.empty()) {
             return Status::Error(StatusCode::NOT_FOUND, "agent library path must not be empty");
+        }
+        if (HasEmbeddedNul(config.agentLibPath)) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "agent library path contains embedded NUL");
         }
 
         dlerror();

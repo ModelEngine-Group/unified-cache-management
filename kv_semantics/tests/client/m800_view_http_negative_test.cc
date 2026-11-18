@@ -132,6 +132,29 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniv
     }
 }
 
+TEST(M800ViewSlaveHttpNegativeTest, RejectsNon200FramingErrors)
+{
+    const std::vector<std::pair<std::string, StatusCode>> cases = {
+        {"HTTP/1.1 500 Internal Server Error\r\n\r\n", StatusCode::INTERNAL_ERROR},
+        {"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nabc",
+         StatusCode::CONNECTION_ERROR},
+        {"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nabcd",
+         StatusCode::INTERNAL_ERROR},
+    };
+    for (const auto& [response, expectedCode] : cases) {
+        RawResponseServer server(response);
+        M800ViewServerConfig config;
+        config.role = M800ViewRole::SLAVE;
+        config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
+        config.httpTimeoutMs = 300;
+        auto worker = CreateM800ViewSlaveServer(config);
+        auto universe = CreateViewUniverse();
+        EXPECT_EQ(worker->GetAllViews(*universe).code, expectedCode) << response;
+        EXPECT_TRUE(universe->Empty());
+        worker->Stop();
+    }
+}
+
 TEST(M800ViewSlaveHttpNegativeTest, RejectsBodyBytesBeyondContentLength)
 {
     const auto validBody = ValidText(10);

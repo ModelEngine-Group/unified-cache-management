@@ -47,6 +47,30 @@ TEST(M800ViewAgentClientTest, FactoryRejectsMissingLibrariesWithoutCeph)
     EXPECT_EQ(client, nullptr);
 }
 
+TEST(M800ViewAgentClientTest, FactoryRejectsEmbeddedNulAgentLibraryPath)
+{
+    auto factory = CreateM800ViewAgentClientFactory();
+    ASSERT_NE(factory, nullptr);
+    M800ViewServerConfig config;
+    config.agentLibPath = std::string("/tmp/lib\0junk", 13);
+    std::unique_ptr<M800ViewAgentClient> client;
+    EXPECT_EQ(factory->Create(config, client).code, StatusCode::INVALID_ARGUMENT);
+}
+
+TEST(M800ViewAgentClientTest, InitializeRejectsEmbeddedNulMonHost)
+{
+    auto factory = CreateM800ViewAgentClientFactory();
+    ASSERT_NE(factory, nullptr);
+    M800ViewServerConfig config;
+    config.agentLibPath = M800_FAKE_AGENT_PATH;
+    config.monHost = std::string("127.0.0.1\0junk", 14);
+    config.clientName = "admin";
+    config.clientKey = "test-key";
+    std::unique_ptr<M800ViewAgentClient> client;
+    ASSERT_TRUE(factory->Create(config, client).ok());
+    EXPECT_EQ(client->Initialize().code, StatusCode::INVALID_ARGUMENT);
+}
+
 TEST(M800ViewAgentClientTest, FakeLibraryPreservesInternalErrorAndEmptyViewDistinction)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -373,6 +397,17 @@ TEST(ViewHttpServerTest, StopThenRestartServesNewClient)
         EXPECT_EQ(ResponseBody(response), "since=1");
         second->Stop();
     }
+}
+
+TEST(ViewHttpServerTest, RejectsZeroPortAndEmbeddedNulListenAddress)
+{
+    auto server = CreateViewHttpServer(100);
+    const auto handler = [](const ViewHttpRequest&) {
+        return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
+    };
+    EXPECT_EQ(server->Start("127.0.0.1:0", handler).code, StatusCode::INVALID_ARGUMENT);
+    const std::string embeddedNul("127.0.0.1\0junk:9100", 19);
+    EXPECT_EQ(server->Start(embeddedNul, handler).code, StatusCode::INVALID_ARGUMENT);
 }
 
 TEST(ViewHttpServerTest, OccupiedPortFailsWithoutReusePort)

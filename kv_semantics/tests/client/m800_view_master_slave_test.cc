@@ -904,6 +904,31 @@ TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
     serverB->Stop();
 }
 
+TEST(M800ViewMasterTest, InvalidNamespaceIsBackfilledWhileOtherNamespacesRefresh)
+{
+    auto state = std::make_shared<FakeAgentState>();
+    SetNamespaces(state, 100,
+                  {{"pool-a", {MakeNode(1, "10.0.0.1")}},
+                   {"pool-b", {MakeNode(2, "10.0.0.2")}}});
+    auto master = MakeMaster(MasterConfig(AllocatePort()), state);
+    ASSERT_TRUE(master->Start().ok());
+
+    SetNamespaces(state, 110,
+                  {{"pool-a", {MakeNode(3, "10.0.0.3")}},
+                   {"pool-b", {MakeNode(2, "not-an-ip")}}});
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(master->GetAllViews(*universe).ok());
+    EXPECT_EQ(universe->GetGlobalEpoch(), 110);
+    GlobalView viewA;
+    GlobalView viewB;
+    ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-a"), viewA).ok());
+    ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-b"), viewB).ok());
+    EXPECT_EQ(viewA.asuMap.count(3), 1);
+    EXPECT_EQ(viewB.asuMap.count(2), 1);
+    EXPECT_EQ(viewB.viewEpoch, 110);
+    master->Stop();
+}
+
 TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFailure)
 {
     auto state = std::make_shared<FakeAgentState>();

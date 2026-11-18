@@ -179,6 +179,18 @@ TEST(M800ViewCodecTest, DecodeRejectsZeroEndpointPortWithoutChangingOutput)
     EXPECT_TRUE(universe->Empty());
 }
 
+TEST(M800ViewCodecTest, EncodeRejectsZeroEndpointPortWithoutChangingOutput)
+{
+    auto view = MakeView(1, 123);
+    auto endpoint = MakeEndpoint();
+    endpoint.port = 0;
+    view.asuMap.emplace(10, NodeInfo{{endpoint}});
+    auto universe = CreateViewUniverse({{1, std::move(view)}}, 123);
+    std::string output = "unchanged";
+    EXPECT_EQ(M800ViewCodec::Encode(*universe, output).code, StatusCode::INTERNAL_ERROR);
+    EXPECT_EQ(output, "unchanged");
+}
+
 TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
 {
     std::unordered_map<KvNsId, GlobalView> views;

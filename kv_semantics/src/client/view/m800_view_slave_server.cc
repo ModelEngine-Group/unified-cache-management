@@ -323,15 +323,8 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
     }
 
     const std::size_t bodyBegin = headerEnd + 4;
-    if (response.status != 200) {
-        if (response.status == 304 &&
-            (!hasContentLength || contentLength != 0 || wire.size() > bodyBegin)) {
-            return SlaveError(StatusCode::INTERNAL_ERROR, "304 response has a body or no Content-Length");
-        }
-        return Status::OK();
-    }
     if (!hasContentLength) {
-        return SlaveError(StatusCode::INTERNAL_ERROR, "200 response misses Content-Length");
+        return SlaveError(StatusCode::INTERNAL_ERROR, "HTTP response misses Content-Length");
     }
     if (wire.size() > bodyBegin + contentLength) {
         return SlaveError(StatusCode::INTERNAL_ERROR, "HTTP response exceeds Content-Length");
@@ -343,6 +336,10 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
     if (wire.size() != bodyBegin + contentLength) {
         return SlaveError(StatusCode::INTERNAL_ERROR, "HTTP response exceeds Content-Length");
     }
+    if (response.status == 304 && contentLength != 0) {
+        return SlaveError(StatusCode::INTERNAL_ERROR, "304 response has a nonzero Content-Length");
+    }
+    if (response.status != 200) { return Status::OK(); }
     response.body = wire.substr(bodyBegin, contentLength);
     return Status::OK();
 }

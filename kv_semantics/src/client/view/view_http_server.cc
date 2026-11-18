@@ -67,7 +67,7 @@ bool SplitListenAddress(const std::string& address, std::string& host, std::stri
 {
     host.clear();
     port.clear();
-    if (address.empty()) { return false; }
+    if (address.empty() || address.find('\0') != std::string::npos) { return false; }
     if (address.front() == '[') {
         const auto closeBracket = address.find(']');
         if (closeBracket == std::string::npos || closeBracket == 1 ||
@@ -90,7 +90,7 @@ bool SplitListenAddress(const std::string& address, std::string& host, std::stri
     unsigned int numericPort = 0;
     const auto result = std::from_chars(port.data(), port.data() + port.size(), numericPort, 10);
     return result.ec == std::errc{} && result.ptr == port.data() + port.size() &&
-           numericPort <= 65535;
+           numericPort > 0 && numericPort <= 65535;
 }
 
 std::uint64_t ParseSinceEpoch(const std::string& target)
@@ -409,16 +409,15 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
-            if (!running_.load()) {
-                std::lock_guard<std::mutex> clientLock(clientFdMutex_);
-                CloseFd(client);
-                break;
-            }
             // v1 intentionally serves one accepted connection at a time. The
             // absolute per-connection deadline bounds occupancy; deployments
             // must size the worker set around this serial processing constraint.
             {
                 std::lock_guard<std::mutex> clientLock(clientFdMutex_);
+                if (!running_.load()) {
+                    CloseFd(client);
+                    break;
+                }
                 activeClientFd_.store(client);
             }
             HandleConnection(client);
