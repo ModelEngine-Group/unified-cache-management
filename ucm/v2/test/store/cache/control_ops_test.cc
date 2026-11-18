@@ -22,10 +22,12 @@
  * SOFTWARE.
  * */
 #include "cache/control_ops.h"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <memory>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "cache/cache_buffer.h"
@@ -68,7 +70,7 @@ TEST_F(ControlOpsTest, PrepareOffloadAnswersWithPlanBody)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
 
     const ControlResponse response =
         ExecuteControl(buffer_, MakeRequest(ControlOp::PrepareOffload));
@@ -99,7 +101,7 @@ TEST_F(ControlOpsTest, CompleteOffloadReleasesPinsByHandle)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
 
     const ControlResponse minted = ExecuteControl(buffer_, MakeRequest(ControlOp::PrepareOffload));
     ASSERT_TRUE(minted.ok);
@@ -193,6 +195,157 @@ TEST_F(ControlOpsTest, PlanOutcomeFromRejectsDriftAndErrors)
     auto error = PlanOutcomeFrom(std::move(failed));
     ASSERT_FALSE(error);
     EXPECT_EQ(error.Error(), Status::NotFound());
+}
+
+TEST_F(ControlOpsTest, PreparePrefetchAnswersWithPlanBody)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = blocks;
+    const ControlResponse response = ExecuteControl(buffer_, request);
+    EXPECT_TRUE(response.ok);
+    EXPECT_EQ(response.seq, std::uint32_t{7});  // the request's seq, echoed
+    EXPECT_EQ(response.keys, blocks);           // admitted keys, first occurrence each
+    EXPECT_TRUE(response.hits.empty());         // the plan body is single-choice
+    EXPECT_TRUE(response.slots.empty());
+    const PlanPayload plan = DecodePlanPayload(response.tokenPayload);
+    EXPECT_EQ(plan.batchId, std::uint64_t{1});  // minted from 1; 0 is reserved
+    EXPECT_EQ(plan.slots, (std::vector<std::uint32_t>{0, 1}));
+}
+
+TEST_F(ControlOpsTest, PreparePrefetchIdleAnswersWithNoBody)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId present = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({present}, RequestContext{}));
+    buffer_.Commit({present}, true, false);
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = {present};
+    const ControlResponse response = ExecuteControl(buffer_, request);
+    EXPECT_TRUE(response.ok);  // idle is a success without a plan
+    EXPECT_TRUE(response.keys.empty());
+    EXPECT_TRUE(response.tokenPayload.empty());
+    EXPECT_TRUE(response.hits.empty());
+    EXPECT_TRUE(response.slots.empty());
+}
+
+TEST_F(ControlOpsTest, PreparePrefetchFailureRecodesError)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = {MakeBlock(1), MakeBlock(2)};
+    const ControlResponse response = ExecuteControl(buffer_, request);
+    EXPECT_FALSE(response.ok);
+    EXPECT_EQ(response.statusCode, Status::NoSpace().Underlying());
+    EXPECT_FALSE(response.message.empty());
+    EXPECT_TRUE(response.keys.empty());
+    EXPECT_TRUE(response.tokenPayload.empty());
+}
+
+TEST_F(ControlOpsTest, PreparePrefetchCarriesTheTtlFact)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = {block};
+    request.hasTtl = true;
+    request.ttlMs = 30;
+    const ControlResponse response = ExecuteControl(buffer_, request);
+    ASSERT_TRUE(response.ok);
+    const std::uint64_t handle = DecodePlanPayload(response.tokenPayload).batchId;
+
+    ControlRequest receipt = MakeRequest(ControlOp::CompletePrefetch);
+    receipt.planId = handle;
+    receipt.success = true;
+    ASSERT_TRUE(ExecuteControl(buffer_, receipt).ok);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{40});
+    // The window inherited the request's TTL: the block expired by now.
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+}
+
+TEST_F(ControlOpsTest, CompletePrefetchConcludesTheWindow)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = blocks;
+    const ControlResponse minted = ExecuteControl(buffer_, request);
+    ASSERT_TRUE(minted.ok);
+    const std::uint64_t handle = DecodePlanPayload(minted.tokenPayload).batchId;
+
+    // The receipt settles by handle alone; the echoed keys are informational.
+    ControlRequest receipt = MakeRequest(ControlOp::CompletePrefetch);
+    receipt.planId = handle;
+    receipt.success = true;
+    receipt.blockIds = minted.keys;
+    const ControlResponse done = ExecuteControl(buffer_, receipt);
+    EXPECT_TRUE(done.ok);  // a void op: success with no body
+    EXPECT_TRUE(done.hits.empty());
+    EXPECT_TRUE(done.slots.empty());
+    EXPECT_TRUE(done.keys.empty());
+    EXPECT_TRUE(done.tokenPayload.empty());
+
+    // Admitted and visible, yet kept out of the offload pending set.
+    EXPECT_EQ(buffer_.Lookup(blocks), (std::vector<std::uint8_t>{1, 1}));
+    const ControlResponse drain = ExecuteControl(buffer_, MakeRequest(ControlOp::PrepareOffload));
+    EXPECT_TRUE(drain.ok);
+    EXPECT_TRUE(drain.keys.empty());
+    EXPECT_TRUE(drain.tokenPayload.empty());
+}
+
+TEST_F(ControlOpsTest, CompletePrefetchFailureReleasesReservation)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = {block};
+    const ControlResponse minted = ExecuteControl(buffer_, request);
+    ASSERT_TRUE(minted.ok);
+
+    ControlRequest receipt = MakeRequest(ControlOp::CompletePrefetch);
+    receipt.planId = DecodePlanPayload(minted.tokenPayload).batchId;
+    receipt.success = false;
+    ASSERT_TRUE(ExecuteControl(buffer_, receipt).ok);
+
+    // The failed receipt released the reservation: invisible, and the
+    // pool's only slot is free again.
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+    ASSERT_TRUE(buffer_.Reserve({MakeBlock(2)}, RequestContext{}));
+}
+
+TEST_F(ControlOpsTest, CompletePrefetchUnknownHandleIsNoOp)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+
+    ControlRequest request = MakeRequest(ControlOp::PreparePrefetch);
+    request.blockIds = {block};
+    const ControlResponse minted = ExecuteControl(buffer_, request);
+    ASSERT_TRUE(minted.ok);
+    const std::uint64_t handle = DecodePlanPayload(minted.tokenPayload).batchId;
+
+    // A stray handle is a receipt-shaped no-op, not an error: the open
+    // window keeps its reservation.
+    ControlRequest stray = MakeRequest(ControlOp::CompletePrefetch);
+    stray.planId = handle + 99;
+    stray.success = true;
+    const ControlResponse ignored = ExecuteControl(buffer_, stray);
+    EXPECT_TRUE(ignored.ok);
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+
+    // The real handle still concludes the window exactly once.
+    ControlRequest receipt = MakeRequest(ControlOp::CompletePrefetch);
+    receipt.planId = handle;
+    receipt.success = true;
+    ASSERT_TRUE(ExecuteControl(buffer_, receipt).ok);
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{1}));
 }
 
 }  // namespace

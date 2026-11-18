@@ -80,7 +80,7 @@ TEST_F(CacheBufferTest, OperationsBeforeSetupAreInert)
     auto pinned = buffer_.Pin(blocks);
     ASSERT_FALSE(pinned);
     EXPECT_EQ(pinned.Error(), Status::NotFound());
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     buffer_.Unpin(blocks);
     buffer_.Touch(blocks, RequestContext{});
 }
@@ -95,7 +95,7 @@ TEST_F(CacheBufferTest, ReservationsAreInvisibleUntilCommit)
     auto pinned = buffer_.Pin(blocks);
     ASSERT_FALSE(pinned);
     EXPECT_EQ(pinned.Error(), Status::NotFound());
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     EXPECT_EQ(buffer_.Lookup(blocks), (std::vector<std::uint8_t>{1, 1}));
 }
 
@@ -105,9 +105,9 @@ TEST_F(CacheBufferTest, CommitFalseReleasesReservation)
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, false);
+    buffer_.Commit({first}, false, false);
     ASSERT_TRUE(buffer_.Reserve({second}, RequestContext{}));
-    buffer_.Commit({second}, true);
+    buffer_.Commit({second}, true, false);
     EXPECT_EQ(buffer_.Lookup({first, second}), (std::vector<std::uint8_t>{0, 1}));
 }
 
@@ -119,7 +119,7 @@ TEST_F(CacheBufferTest, ReserveAndPinResolveConsistentSlots)
     ASSERT_TRUE(reserved);
     EXPECT_EQ((*reserved)[0], 0U);
     EXPECT_EQ((*reserved)[1], 1U);
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     auto pinned = buffer_.Pin(blocks);
     ASSERT_TRUE(pinned);
     EXPECT_EQ((*pinned)[0], 0U);
@@ -133,11 +133,11 @@ TEST_F(CacheBufferTest, EvictionRemovesDisplacedBlock)
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, true);
+    buffer_.Commit({first}, true, false);
     auto reserved = buffer_.Reserve({second}, RequestContext{});
     ASSERT_TRUE(reserved);
     EXPECT_EQ((*reserved)[0], 0U);
-    buffer_.Commit({second}, true);
+    buffer_.Commit({second}, true, false);
     EXPECT_EQ(buffer_.Lookup({first, second}), (std::vector<std::uint8_t>{0, 1}));
 }
 
@@ -148,11 +148,11 @@ TEST_F(CacheBufferTest, ReadmissionKeepsSlotWithoutExtendingDeadline)
     const BlockId permanent = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({readmitted}, Ctx(30ms)));
     ASSERT_TRUE(buffer_.Reserve({permanent}, RequestContext{}));
-    buffer_.Commit({readmitted, permanent}, true);
+    buffer_.Commit({readmitted, permanent}, true, false);
     auto reserved = buffer_.Reserve({readmitted}, RequestContext{});
     ASSERT_TRUE(reserved);
     EXPECT_EQ((*reserved)[0], 0U);  // re-admission keeps the slot
-    buffer_.Commit({readmitted}, true);
+    buffer_.Commit({readmitted}, true, false);
     std::this_thread::sleep_for(60ms);
     // The live block's deadline is not extended by re-admission; only Touch()
     // extends retention.
@@ -165,16 +165,16 @@ TEST_F(CacheBufferTest, ReadmissionPinsSlotUntilConcluded)
     const BlockId resident = MakeBlock(1);
     const BlockId newcomer = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({resident}, RequestContext{}));
-    buffer_.Commit({resident}, true);
+    buffer_.Commit({resident}, true, false);
     ASSERT_TRUE(buffer_.Reserve({resident}, RequestContext{}));
     auto blocked = buffer_.Reserve({newcomer}, RequestContext{});
     ASSERT_FALSE(blocked);  // the in-flight rewrite pins the only slot
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({resident}, false);
+    buffer_.Commit({resident}, false, false);
     auto evicting = buffer_.Reserve({newcomer}, RequestContext{});
     ASSERT_TRUE(evicting);
     EXPECT_EQ((*evicting)[0], 0U);
-    buffer_.Commit({newcomer}, true);
+    buffer_.Commit({newcomer}, true, false);
     EXPECT_EQ(buffer_.Lookup({resident, newcomer}), (std::vector<std::uint8_t>{0, 1}));
 }
 
@@ -185,7 +185,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackCompletely)
     const BlockId b = MakeBlock(2);
     const BlockId c = MakeBlock(3);
     ASSERT_TRUE(buffer_.Reserve({a, b, c}, RequestContext{}));
-    buffer_.Commit({a, b, c}, true);
+    buffer_.Commit({a, b, c}, true, false);
     auto pinned = buffer_.Pin({c});  // the only eligible victim is protected
     ASSERT_TRUE(pinned);
     auto blocked = buffer_.Reserve({MakeBlock(4), MakeBlock(5), MakeBlock(6)}, RequestContext{});
@@ -205,7 +205,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackCompletely)
     auto evicting = buffer_.Reserve({MakeBlock(7)}, RequestContext{});
     ASSERT_TRUE(evicting);
     EXPECT_EQ((*evicting)[0], 2U);
-    buffer_.Commit({MakeBlock(7)}, true);
+    buffer_.Commit({MakeBlock(7)}, true, false);
     EXPECT_EQ(buffer_.Lookup({a, b, c}), (std::vector<std::uint8_t>{1, 1, 0}));
 }
 
@@ -215,7 +215,7 @@ TEST_F(CacheBufferTest, FastFailLeavesEvictionOrderUntouched)
     const BlockId a = MakeBlock(1);
     const BlockId b = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({a, b}, RequestContext{}));
-    buffer_.Commit({a, b}, true);
+    buffer_.Commit({a, b}, true, false);
     auto blocked = buffer_.Reserve({MakeBlock(4), MakeBlock(5), MakeBlock(6)}, RequestContext{});
     ASSERT_FALSE(blocked);
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
@@ -223,7 +223,7 @@ TEST_F(CacheBufferTest, FastFailLeavesEvictionOrderUntouched)
     auto evicting = buffer_.Reserve({MakeBlock(7)}, RequestContext{});
     ASSERT_TRUE(evicting);
     EXPECT_EQ((*evicting)[0], 0U);  // FIFO still evicts the oldest block
-    buffer_.Commit({MakeBlock(7)}, true);
+    buffer_.Commit({MakeBlock(7)}, true, false);
     EXPECT_EQ(buffer_.Lookup({a, b}), (std::vector<std::uint8_t>{0, 1}));
 }
 
@@ -232,14 +232,14 @@ TEST_F(CacheBufferTest, PinIsAtomicOnMissingBlocks)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId resident = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({resident}, RequestContext{}));
-    buffer_.Commit({resident}, true);
+    buffer_.Commit({resident}, true, false);
     auto pinned = buffer_.Pin({resident, MakeBlock(9)});
     ASSERT_FALSE(pinned);
     EXPECT_EQ(pinned.Error(), Status::NotFound());
     // The failed Pin left nothing pinned: the resident stays evictable.
     auto evicting = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
     ASSERT_TRUE(evicting);
-    buffer_.Commit({MakeBlock(2)}, true);
+    buffer_.Commit({MakeBlock(2)}, true, false);
     EXPECT_EQ(buffer_.Lookup({resident}), (std::vector<std::uint8_t>{0}));
 }
 
@@ -248,7 +248,7 @@ TEST_F(CacheBufferTest, ExpiryDeferredWhilePinned)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, Ctx(30ms)));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     auto pinned = buffer_.Pin(blocks);
     ASSERT_TRUE(pinned);
     std::this_thread::sleep_for(60ms);
@@ -259,7 +259,7 @@ TEST_F(CacheBufferTest, ExpiryDeferredWhilePinned)
     buffer_.Unpin(blocks);
     auto admitted = buffer_.Reserve({MakeBlock(3)}, RequestContext{});
     ASSERT_TRUE(admitted);  // the sweep releases both expired blocks
-    buffer_.Commit({MakeBlock(3)}, true);
+    buffer_.Commit({MakeBlock(3)}, true, false);
     EXPECT_EQ(buffer_.Lookup({blocks[0], blocks[1], MakeBlock(3)}),
               (std::vector<std::uint8_t>{0, 0, 1}));
 }
@@ -271,12 +271,12 @@ TEST_F(CacheBufferTest, PressureReleasesExpiredBeforeDiscipline)
     const BlockId expiring = MakeBlock(2);  // newer, but expires
     ASSERT_TRUE(buffer_.Reserve({good}, RequestContext{}));
     ASSERT_TRUE(buffer_.Reserve({expiring}, Ctx(30ms)));
-    buffer_.Commit({good, expiring}, true);
+    buffer_.Commit({good, expiring}, true, false);
     std::this_thread::sleep_for(60ms);
     auto admitted = buffer_.Reserve({MakeBlock(3)}, RequestContext{});
     ASSERT_TRUE(admitted);
     EXPECT_EQ((*admitted)[0], 1U);  // took the expired block's slot
-    buffer_.Commit({MakeBlock(3)}, true);
+    buffer_.Commit({MakeBlock(3)}, true, false);
     auto pinned = buffer_.Pin({good, MakeBlock(3)});
     ASSERT_TRUE(pinned);
     EXPECT_EQ((*pinned)[0], 0U);  // the discipline never saw the good block
@@ -290,7 +290,7 @@ TEST_F(CacheBufferTest, SetupResetsState)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     auto pinned = buffer_.Pin(blocks);
     ASSERT_TRUE(pinned);
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
@@ -308,7 +308,7 @@ TEST_F(CacheBufferTest, TouchExtendsDeadlineWithTheLargerTtl)
     const BlockId longLived = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({shortLived}, Ctx(40ms)));
     ASSERT_TRUE(buffer_.Reserve({longLived}, Ctx(200ms)));
-    buffer_.Commit({shortLived, longLived}, true);
+    buffer_.Commit({shortLived, longLived}, true, false);
     buffer_.Touch({shortLived, longLived}, Ctx(120ms));
     std::this_thread::sleep_for(80ms);
     // shortLived was extended past its original 40ms deadline.
@@ -324,7 +324,7 @@ TEST_F(CacheBufferTest, TouchWithoutTtlFactKeepsDeadline)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, Ctx(40ms)));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     buffer_.Touch({block}, RequestContext{});
     std::this_thread::sleep_for(60ms);
     EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
@@ -335,7 +335,7 @@ TEST_F(CacheBufferTest, TouchKeepsNeverExpiringDeadline)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     buffer_.Touch({block}, Ctx(30ms));
     std::this_thread::sleep_for(60ms);
     EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{1}));
@@ -347,12 +347,12 @@ TEST_F(CacheBufferTest, ExpiredBlockIsRevivedByReadmission)
     const BlockId revived = MakeBlock(1);
     const BlockId expired = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({revived, expired}, Ctx(30ms)));
-    buffer_.Commit({revived, expired}, true);
+    buffer_.Commit({revived, expired}, true, false);
     std::this_thread::sleep_for(60ms);
     auto reserved = buffer_.Reserve({revived}, Ctx(200ms));
     ASSERT_TRUE(reserved);
     EXPECT_EQ((*reserved)[0], 0U);  // revived in place, no data movement
-    buffer_.Commit({revived}, true);
+    buffer_.Commit({revived}, true, false);
     EXPECT_EQ(buffer_.Lookup({revived, expired}), (std::vector<std::uint8_t>{1, 0}));
 }
 
@@ -361,11 +361,11 @@ TEST_F(CacheBufferTest, MidFlightExpiryIsRevivedAtCommit)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(50ms)));
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     std::this_thread::sleep_for(20ms);              // x is still live here
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(300ms)));  // re-admission opens
     std::this_thread::sleep_for(45ms);              // the 50ms deadline passes mid-flight
-    buffer_.Commit({x}, true);                      // the conclusion revives with the fresh fact
+    buffer_.Commit({x}, true, false);               // the conclusion revives with the fresh fact
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
     std::this_thread::sleep_for(40ms);  // well past the old deadline
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
@@ -376,17 +376,17 @@ TEST_F(CacheBufferTest, CommitFalseOnReadmissionDoesNotRevive)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId x = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(30ms)));
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     std::this_thread::sleep_for(60ms);  // x is expired
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(300ms)));
-    buffer_.Commit({x}, false);  // the failed rewrite must not revive
+    buffer_.Commit({x}, false, false);  // the failed rewrite must not revive
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{0}));
     // A live block's deadline survives a failed re-admission unchanged.
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(200ms)));
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     std::this_thread::sleep_for(30ms);
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(30ms)));  // would shorten
-    buffer_.Commit({x}, false);
+    buffer_.Commit({x}, false, false);
     std::this_thread::sleep_for(40ms);  // ~130ms into the 200ms deadline
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
 }
@@ -398,7 +398,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackUnderClockPolicy)
     const BlockId b = MakeBlock(2);
     const BlockId c = MakeBlock(3);
     ASSERT_TRUE(buffer_.Reserve({a, b, c}, RequestContext{}));
-    buffer_.Commit({a, b, c}, true);
+    buffer_.Commit({a, b, c}, true, false);
     auto pinned = buffer_.Pin({c});  // the only eligible victim is protected
     ASSERT_TRUE(pinned);
     auto blocked = buffer_.Reserve({MakeBlock(4), MakeBlock(5), MakeBlock(6)}, RequestContext{});
@@ -416,7 +416,7 @@ TEST_F(CacheBufferTest, FailedBatchRollsBackUnderClockPolicy)
     auto evicting = buffer_.Reserve({MakeBlock(7)}, RequestContext{});
     ASSERT_TRUE(evicting);
     EXPECT_EQ((*evicting)[0], 2U);
-    buffer_.Commit({MakeBlock(7)}, true);
+    buffer_.Commit({MakeBlock(7)}, true, false);
     EXPECT_EQ(buffer_.Lookup({a, b, c}), (std::vector<std::uint8_t>{1, 1, 0}));
 }
 
@@ -427,13 +427,13 @@ TEST_F(CacheBufferTest, BatchOrderDoesNotEvictCommittedMembers)
     const BlockId c = MakeBlock(2);
     const BlockId b = MakeBlock(3);
     ASSERT_TRUE(buffer_.Reserve({a, c}, RequestContext{}));
-    buffer_.Commit({a, c}, true);
+    buffer_.Commit({a, c}, true, false);
     // The newcomer is listed before the re-admitted committed block.
     auto reserved = buffer_.Reserve({b, a}, RequestContext{});
     ASSERT_TRUE(reserved);
-    EXPECT_EQ((*reserved)[0], 1U);  // b evicts c, not the batch member a
-    EXPECT_EQ((*reserved)[1], 0U);  // a keeps its slot
-    buffer_.Commit({b, a}, false);  // the failed admission must not lose a
+    EXPECT_EQ((*reserved)[0], 1U);         // b evicts c, not the batch member a
+    EXPECT_EQ((*reserved)[1], 0U);         // a keeps its slot
+    buffer_.Commit({b, a}, false, false);  // the failed admission must not lose a
     EXPECT_EQ(buffer_.Lookup({a, b, c}), (std::vector<std::uint8_t>{1, 0, 0}));
     auto pinned = buffer_.Pin({a});
     ASSERT_TRUE(pinned);
@@ -442,12 +442,12 @@ TEST_F(CacheBufferTest, BatchOrderDoesNotEvictCommittedMembers)
     // The mirrored order resolves the same per-block slots.
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     ASSERT_TRUE(buffer_.Reserve({a, c}, RequestContext{}));
-    buffer_.Commit({a, c}, true);
+    buffer_.Commit({a, c}, true, false);
     auto mirrored = buffer_.Reserve({a, b}, RequestContext{});
     ASSERT_TRUE(mirrored);
     EXPECT_EQ((*mirrored)[0], 0U);
     EXPECT_EQ((*mirrored)[1], 1U);
-    buffer_.Commit({a, b}, false);
+    buffer_.Commit({a, b}, false, false);
     EXPECT_EQ(buffer_.Lookup({a, b, c}), (std::vector<std::uint8_t>{1, 0, 0}));
 }
 
@@ -459,7 +459,7 @@ TEST_F(CacheBufferTest, DuplicateBlocksInBatchShareOneSlot)
     ASSERT_TRUE(reserved);
     EXPECT_EQ((*reserved)[0], 0U);
     EXPECT_EQ((*reserved)[1], 0U);
-    buffer_.Commit({b, b}, true);
+    buffer_.Commit({b, b}, true, false);
     EXPECT_EQ(buffer_.Lookup({b}), (std::vector<std::uint8_t>{1}));
 }
 
@@ -470,16 +470,16 @@ TEST_F(CacheBufferTest, SharedReservationOutlivesAFailedConclusion)
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));  // joins: refs = 2
-    buffer_.Commit({x}, false);  // one conclusion: the other's Dump still flies
+    buffer_.Commit({x}, false, false);  // one conclusion: the other's Dump still flies
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // the slot was not released under the in-flight Dump
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, true);  // the last conclusion: one failure vetoes
+    buffer_.Commit({x}, true, false);  // the last conclusion: one failure vetoes
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{0}));
     auto admitted = buffer_.Reserve({y}, RequestContext{});  // the released slot hosts it
     ASSERT_TRUE(admitted);
     EXPECT_EQ((*admitted)[0], 0U);
-    buffer_.Commit({y}, true);
+    buffer_.Commit({y}, true, false);
     EXPECT_EQ(buffer_.Lookup({y}), (std::vector<std::uint8_t>{1}));
 }
 
@@ -490,11 +490,11 @@ TEST_F(CacheBufferTest, SharedReservationReleasesDespiteOneSuccess)
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));  // joins: refs = 2
-    buffer_.Commit({x}, true);                            // one success does not conclude
+    buffer_.Commit({x}, true, false);                     // one success does not conclude
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // one reference is still outstanding
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, false);  // the last conclusion: any failure releases
+    buffer_.Commit({x}, false, false);  // the last conclusion: any failure releases
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{0}));
 }
 
@@ -508,11 +508,11 @@ TEST_F(CacheBufferTest, SharedReservationConcludesOnAllSuccess)
     ASSERT_TRUE(first);
     ASSERT_TRUE(joined);
     EXPECT_EQ((*joined)[0], (*first)[0]);  // one reservation, one slot
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // one reference is still outstanding
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, true);  // every sharer concluded successfully
+    buffer_.Commit({x}, true, false);  // every sharer concluded successfully
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
 }
 
@@ -523,11 +523,11 @@ TEST_F(CacheBufferTest, DuplicatePendingBlocksGainOneRefPerOccurrence)
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));     // the original reference
     ASSERT_TRUE(buffer_.Reserve({x, x}, RequestContext{}));  // duplicates join in
-    buffer_.Commit({x, x}, true);  // mirrors the occurrences: one reference left
+    buffer_.Commit({x, x}, true, false);  // mirrors the occurrences: one reference left
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // the original reference still holds the slot
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, true);  // the original concludes the reservation
+    buffer_.Commit({x}, true, false);  // the original concludes the reservation
     EXPECT_EQ(buffer_.Lookup({x}), (std::vector<std::uint8_t>{1}));
 }
 
@@ -537,17 +537,17 @@ TEST_F(CacheBufferTest, FailedReserveReturnsItsSharedRef)
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));  // re-admission in flight
     // The joining batch fails wholesale; its shared ref must be returned.
     auto blocked = buffer_.Reserve({x, y}, RequestContext{});
     ASSERT_FALSE(blocked);
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, false);  // the original admission still concludes
+    buffer_.Commit({x}, false, false);  // the original admission still concludes
     auto evicting = buffer_.Reserve({y}, RequestContext{});
     ASSERT_TRUE(evicting);  // no leaked pin or reservation
     EXPECT_EQ((*evicting)[0], 0U);
-    buffer_.Commit({y}, true);
+    buffer_.Commit({y}, true, false);
 }
 
 TEST_F(CacheBufferTest, SweepHonorsRefreshedDeadlineOverStaleIndexEntry)
@@ -557,14 +557,14 @@ TEST_F(CacheBufferTest, SweepHonorsRefreshedDeadlineOverStaleIndexEntry)
     const BlockId x = MakeBlock(2);  // expires, then revived
     ASSERT_TRUE(buffer_.Reserve({z}, RequestContext{}));
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(30ms)));
-    buffer_.Commit({z, x}, true);
+    buffer_.Commit({z, x}, true, false);
     std::this_thread::sleep_for(60ms);              // x expires
     ASSERT_TRUE(buffer_.Reserve({x}, Ctx(300ms)));  // revival in flight
-    buffer_.Commit({x}, true);                      // revived; a stale 30ms index entry lingers
+    buffer_.Commit({x}, true, false);               // revived; a stale 30ms index entry lingers
     auto admitted = buffer_.Reserve({MakeBlock(3)}, RequestContext{});  // pressure
     ASSERT_TRUE(admitted);
     EXPECT_EQ((*admitted)[0], 0U);  // the sweep must not release x: FIFO evicts z
-    buffer_.Commit({MakeBlock(3)}, true);
+    buffer_.Commit({MakeBlock(3)}, true, false);
     EXPECT_EQ(buffer_.Lookup({z, x}), (std::vector<std::uint8_t>{0, 1}));
 }
 
@@ -574,21 +574,21 @@ TEST_F(CacheBufferTest, UnpinWithoutMatchingPinIsNoOp)
     const BlockId x = MakeBlock(1);
     const BlockId y = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     buffer_.Unpin({x});                                   // never pinned via Pin: no-op
     ASSERT_TRUE(buffer_.Reserve({x}, RequestContext{}));  // re-admission in flight
     buffer_.Unpin({x});  // out-of-contract: must not eat the reservation pin
     auto blocked = buffer_.Reserve({y}, RequestContext{});
     ASSERT_FALSE(blocked);  // the in-flight rewrite still pins the slot
     EXPECT_EQ(blocked.Error(), Status::NoSpace());
-    buffer_.Commit({x}, true);
+    buffer_.Commit({x}, true, false);
     auto pinned = buffer_.Pin({x});  // balanced pins still work
     ASSERT_TRUE(pinned);
     buffer_.Unpin({x});
     buffer_.Unpin({x});  // one more than pinned: no-op
     auto evicting = buffer_.Reserve({y}, RequestContext{});
     ASSERT_TRUE(evicting);  // fully unpinned: evictable again
-    buffer_.Commit({y}, true);
+    buffer_.Commit({y}, true, false);
 }
 
 TEST_F(CacheBufferTest, OffloadIsIdleWithoutConcludedAdmissions)
@@ -610,7 +610,7 @@ TEST_F(CacheBufferTest, OffloadPlanCoversConcludedAdmissionsInOrder)
     ASSERT_TRUE(buffer_.Setup(3, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2), MakeBlock(3)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
 
     auto plan = buffer_.PrepareOffload();
     EXPECT_EQ(plan.keys, blocks);  // conclusion order
@@ -630,9 +630,9 @@ TEST_F(CacheBufferTest, OffloadSkipsFailedConclusions)
     const BlockId good = MakeBlock(1);
     const BlockId bad = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({good}, RequestContext{}));
-    buffer_.Commit({good}, true);
+    buffer_.Commit({good}, true, false);
     ASSERT_TRUE(buffer_.Reserve({bad}, RequestContext{}));
-    buffer_.Commit({bad}, false);
+    buffer_.Commit({bad}, false, false);
 
     auto plan = buffer_.PrepareOffload();
     EXPECT_EQ(plan.keys, (std::vector<BlockId>{good}));
@@ -645,7 +645,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferEviction)
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, true);
+    buffer_.Commit({first}, true, false);
     ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
 
     // The plan pin holds the pool's only slot: no eligible victim.
@@ -656,7 +656,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferEviction)
     buffer_.CompleteOffload(1);
     auto admitted = buffer_.Reserve({second}, RequestContext{});
     ASSERT_TRUE(admitted);
-    buffer_.Commit({second}, true);
+    buffer_.Commit({second}, true, false);
     EXPECT_EQ(buffer_.Lookup({first}), (std::vector<std::uint8_t>{0}));
 }
 
@@ -665,7 +665,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferExpiry)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, Ctx(30ms)));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
 
     std::this_thread::sleep_for(60ms);
@@ -679,7 +679,7 @@ TEST_F(CacheBufferTest, OffloadPinsDeferExpiry)
     buffer_.CompleteOffload(1);
     auto admitted = buffer_.Reserve({MakeBlock(2)}, RequestContext{});
     ASSERT_TRUE(admitted);
-    buffer_.Commit({MakeBlock(2)}, true);
+    buffer_.Commit({MakeBlock(2)}, true, false);
 }
 
 TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
@@ -687,7 +687,7 @@ TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
 
     // A re-admission is rewriting the block: the mint holds it back.
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
@@ -695,7 +695,7 @@ TEST_F(CacheBufferTest, OffloadExcludesInFlightReadmissions)
     EXPECT_TRUE(idle.keys.empty());
     EXPECT_TRUE(idle.payload.empty());
 
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     auto plan = buffer_.PrepareOffload();
     EXPECT_EQ(plan.keys, (std::vector<BlockId>{block}));
     // The skipped mint consumed no handle: this one is still the first.
@@ -708,10 +708,10 @@ TEST_F(CacheBufferTest, OffloadQueueDropsBlocksEvictedBeforeMint)
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, true);
+    buffer_.Commit({first}, true, false);
     // first is evicted by second's admission before any mint.
     ASSERT_TRUE(buffer_.Reserve({second}, RequestContext{}));
-    buffer_.Commit({second}, true);
+    buffer_.Commit({second}, true, false);
 
     auto plan = buffer_.PrepareOffload();
     EXPECT_EQ(plan.keys, (std::vector<BlockId>{second}));
@@ -725,7 +725,7 @@ TEST_F(CacheBufferTest, OffloadReceiptIsIdempotent)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     ASSERT_EQ(buffer_.PrepareOffload().keys, blocks);
 
     buffer_.CompleteOffload(1);
@@ -742,16 +742,16 @@ TEST_F(CacheBufferTest, EvictedBlockOffloadsAgainAfterReadmission)
     const BlockId first = MakeBlock(1);
     const BlockId second = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, true);
+    buffer_.Commit({first}, true, false);
     auto firstPlan = buffer_.PrepareOffload();
     ASSERT_EQ(firstPlan.keys, (std::vector<BlockId>{first}));
     buffer_.CompleteOffload(DecodePlanPayload(firstPlan.payload).batchId);
 
     // first is evicted by second, then re-admitted: it offloads again.
     ASSERT_TRUE(buffer_.Reserve({second}, RequestContext{}));
-    buffer_.Commit({second}, true);
+    buffer_.Commit({second}, true, false);
     ASSERT_TRUE(buffer_.Reserve({first}, RequestContext{}));
-    buffer_.Commit({first}, true);
+    buffer_.Commit({first}, true, false);
 
     auto secondPlan = buffer_.PrepareOffload();
     EXPECT_EQ(secondPlan.keys, (std::vector<BlockId>{first}));
@@ -765,7 +765,7 @@ TEST_F(CacheBufferTest, OffloadPinsAreInvisibleToUnpin)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
 
     // A data-plane Unpin cannot steal a plan pin: the block stays put.
@@ -785,7 +785,7 @@ TEST_F(CacheBufferTest, ReadmissionOfInFlightOffloadKeyIsRefused)
     const BlockId block = MakeBlock(1);
     const BlockId other = MakeBlock(3);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
 
     // The refusal is whole-batch and settles nothing.
@@ -795,12 +795,12 @@ TEST_F(CacheBufferTest, ReadmissionOfInFlightOffloadKeyIsRefused)
 
     // Clean members still admit while the plan flies.
     ASSERT_TRUE(buffer_.Reserve({other}, RequestContext{}));
-    buffer_.Commit({other}, true);
+    buffer_.Commit({other}, true, false);
 
     // Once receipted, the block is re-admittable again.
     buffer_.CompleteOffload(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
 }
 
 TEST_F(CacheBufferTest, SuccessfulReadmissionRequeuesOffload)
@@ -808,12 +808,12 @@ TEST_F(CacheBufferTest, SuccessfulReadmissionRequeuesOffload)
     ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     buffer_.CompleteOffload(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId);
 
     // A concluded re-admission rewrites the block: it offloads again.
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     auto plan = buffer_.PrepareOffload();
     EXPECT_EQ(plan.keys, (std::vector<BlockId>{block}));
     EXPECT_EQ(DecodePlanPayload(plan.payload).batchId, std::uint64_t{2});
@@ -824,7 +824,7 @@ TEST_F(CacheBufferTest, SetupResetsOffloadState)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
     const BlockId block = MakeBlock(1);
     ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
-    buffer_.Commit({block}, true);
+    buffer_.Commit({block}, true, false);
     ASSERT_FALSE(buffer_.PrepareOffload().keys.empty());
 
     // A fresh Setup drops the queue, the in-flight plans and the handle
@@ -837,7 +837,7 @@ TEST_F(CacheBufferTest, SetupResetsOffloadState)
 
     const BlockId fresh = MakeBlock(2);
     ASSERT_TRUE(buffer_.Reserve({fresh}, RequestContext{}));
-    buffer_.Commit({fresh}, true);
+    buffer_.Commit({fresh}, true, false);
     EXPECT_EQ(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId, std::uint64_t{1});
 }
 
@@ -846,7 +846,7 @@ TEST_F(CacheBufferTest, UnwiredLowerTierKeepsNoPendingSet)
     ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), false).Success());
     const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
 
     // Conclusions queue for no one; the mint stays idle, now and after
     // another conclusion.
@@ -854,10 +854,227 @@ TEST_F(CacheBufferTest, UnwiredLowerTierKeepsNoPendingSet)
     EXPECT_TRUE(plan.keys.empty());
     EXPECT_TRUE(plan.payload.empty());
     ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
-    buffer_.Commit(blocks, true);
+    buffer_.Commit(blocks, true, false);
     const AddressedToken again = buffer_.PrepareOffload();
     EXPECT_TRUE(again.keys.empty());
     EXPECT_TRUE(again.payload.empty());
+}
+
+TEST_F(CacheBufferTest, CommitSkipOffloadKeepsNewBlockOutOfPendingSet)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+    ASSERT_TRUE(buffer_.Reserve(blocks, RequestContext{}));
+    buffer_.Commit(blocks, true, true);
+
+    EXPECT_EQ(buffer_.Lookup(blocks), (std::vector<std::uint8_t>{1, 1}));
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+
+    // An ordinary conclusion still queues: only the skip flag excludes.
+    const BlockId ordinary = MakeBlock(3);
+    ASSERT_TRUE(buffer_.Reserve({ordinary}, RequestContext{}));
+    buffer_.Commit({ordinary}, true, false);
+    const AddressedToken next = buffer_.PrepareOffload();
+    EXPECT_EQ(next.keys, (std::vector<BlockId>{ordinary}));
+}
+
+TEST_F(CacheBufferTest, CommitSkipOffloadKeepsReadmittedBlockOutOfPendingSet)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true, false);
+    buffer_.CompleteOffload(DecodePlanPayload(buffer_.PrepareOffload().payload).batchId);
+
+    ASSERT_TRUE(buffer_.Reserve({block}, RequestContext{}));
+    buffer_.Commit({block}, true, true);  // the re-admission path honors the flag too
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{1}));
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+}
+
+TEST_F(CacheBufferTest, SharedReservationFinalConclusionDecidesOffload)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId skipper = MakeBlock(1);
+    const BlockId keeper = MakeBlock(2);
+
+    // Two admissions share each reservation.
+    ASSERT_TRUE(buffer_.Reserve({skipper}, RequestContext{}));
+    ASSERT_TRUE(buffer_.Reserve({skipper}, RequestContext{}));
+    buffer_.Commit({skipper}, true, false);
+    buffer_.Commit({skipper}, true, true);  // last word: keep out
+
+    ASSERT_TRUE(buffer_.Reserve({keeper}, RequestContext{}));
+    ASSERT_TRUE(buffer_.Reserve({keeper}, RequestContext{}));
+    buffer_.Commit({keeper}, true, true);
+    buffer_.Commit({keeper}, true, false);  // last word: queue
+
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_EQ(plan.keys, (std::vector<BlockId>{keeper}));
+    EXPECT_EQ(DecodePlanPayload(plan.payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, PrefetchWindowMintsBatchAndSlots)
+{
+    ASSERT_TRUE(buffer_.Setup(3, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2), MakeBlock(1)};
+    auto window = buffer_.PreparePrefetch(blocks, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    EXPECT_EQ(window.Value().keys, (std::vector<BlockId>{MakeBlock(1), MakeBlock(2)}));
+    const PlanPayload payload = DecodePlanPayload(window.Value().payload);
+    EXPECT_EQ(payload.batchId, std::uint64_t{1});  // minted from 1; 0 is reserved
+    EXPECT_EQ(payload.slots, (std::vector<std::uint32_t>{0, 1}));
+
+    // Open windows may coexist; each mint takes the next handle.
+    auto next = buffer_.PreparePrefetch({MakeBlock(3)}, RequestContext{});
+    ASSERT_TRUE(next.HasValue());
+    const PlanPayload nextPayload = DecodePlanPayload(next.Value().payload);
+    EXPECT_EQ(nextPayload.batchId, std::uint64_t{2});
+    EXPECT_EQ(nextPayload.slots, (std::vector<std::uint32_t>{2}));
+}
+
+TEST_F(CacheBufferTest, PrefetchFiltersPresentBlocks)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId present = MakeBlock(1);
+    const BlockId missing = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({present}, RequestContext{}));
+    buffer_.Commit({present}, true, false);
+
+    auto window = buffer_.PreparePrefetch({present, missing}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    EXPECT_EQ(window.Value().keys, (std::vector<BlockId>{missing}));
+    EXPECT_EQ(DecodePlanPayload(window.Value().payload).slots, (std::vector<std::uint32_t>{1}));
+
+    // The receipt admits the missing one; the present one is untouched.
+    buffer_.CompletePrefetch(DecodePlanPayload(window.Value().payload).batchId, true);
+    EXPECT_EQ(buffer_.Lookup({present, missing}), (std::vector<std::uint8_t>{1, 1}));
+}
+
+TEST_F(CacheBufferTest, PrefetchAllPresentMintsIdle)
+{
+    // Before a successful Setup the mint is inert, like every other op.
+    auto unset = buffer_.PreparePrefetch({MakeBlock(9)}, RequestContext{});
+    ASSERT_TRUE(unset.HasValue());
+    EXPECT_TRUE(unset.Value().keys.empty());
+    EXPECT_TRUE(unset.Value().payload.empty());
+
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId present = MakeBlock(1);
+    const BlockId absent = MakeBlock(2);
+    ASSERT_TRUE(buffer_.Reserve({present}, RequestContext{}));
+    buffer_.Commit({present}, true, false);
+
+    const auto window = buffer_.PreparePrefetch({present}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    EXPECT_TRUE(window.Value().keys.empty());
+    EXPECT_TRUE(window.Value().payload.empty());
+
+    // The idle mint consumed no handle: the next window is the first.
+    auto next = buffer_.PreparePrefetch({absent}, RequestContext{});
+    ASSERT_TRUE(next.HasValue());
+    EXPECT_EQ(next.Value().keys, (std::vector<BlockId>{absent}));
+    EXPECT_EQ(DecodePlanPayload(next.Value().payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, PrefetchReserveFailureOpensNoWindow)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+
+    auto refused = buffer_.PreparePrefetch(blocks, RequestContext{});
+    ASSERT_FALSE(refused.HasValue());
+    EXPECT_EQ(refused.Error(), Status::NoSpace());
+
+    // No window opened and no handle consumed: the next mint is the first.
+    auto window = buffer_.PreparePrefetch({MakeBlock(3)}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    EXPECT_EQ(DecodePlanPayload(window.Value().payload).batchId, std::uint64_t{1});
+}
+
+TEST_F(CacheBufferTest, PrefetchWindowReceiptCommitsVisibleAndSkipsOffload)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const std::vector<BlockId> blocks{MakeBlock(1), MakeBlock(2)};
+    auto window = buffer_.PreparePrefetch(blocks, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    ASSERT_EQ(window.Value().keys, blocks);
+
+    buffer_.CompletePrefetch(DecodePlanPayload(window.Value().payload).batchId, true);
+    EXPECT_EQ(buffer_.Lookup(blocks), (std::vector<std::uint8_t>{1, 1}));
+
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+}
+
+TEST_F(CacheBufferTest, PrefetchWindowReceiptFailureReleasesReservation)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+    auto window = buffer_.PreparePrefetch({block}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    ASSERT_FALSE(window.Value().keys.empty());
+
+    buffer_.CompletePrefetch(DecodePlanPayload(window.Value().payload).batchId, false);
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+
+    // The released destination hosts the next admission.
+    ASSERT_TRUE(buffer_.Reserve({MakeBlock(2)}, RequestContext{}));
+}
+
+TEST_F(CacheBufferTest, PrefetchReceiptIsIdempotent)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+    auto window = buffer_.PreparePrefetch({block}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    const std::uint64_t handle = DecodePlanPayload(window.Value().payload).batchId;
+
+    buffer_.CompletePrefetch(handle, true);
+    buffer_.CompletePrefetch(handle, true);  // already received: a no-op
+    buffer_.CompletePrefetch(99, true);      // unknown handle: a no-op
+
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{1}));
+    const AddressedToken plan = buffer_.PrepareOffload();
+    EXPECT_TRUE(plan.keys.empty());
+    EXPECT_TRUE(plan.payload.empty());
+}
+
+TEST_F(CacheBufferTest, PrefetchTtlIsInheritedFromWindowContext)
+{
+    ASSERT_TRUE(buffer_.Setup(1, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+    auto window = buffer_.PreparePrefetch({block}, Ctx(30ms));
+    ASSERT_TRUE(window.HasValue());
+    buffer_.CompletePrefetch(DecodePlanPayload(window.Value().payload).batchId, true);
+
+    std::this_thread::sleep_for(40ms);
+    // Admitted with the window's TTL fact: expired by now.
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+}
+
+TEST_F(CacheBufferTest, SetupResetsPrefetchState)
+{
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    const BlockId block = MakeBlock(1);
+    auto window = buffer_.PreparePrefetch({block}, RequestContext{});
+    ASSERT_TRUE(window.HasValue());
+    ASSERT_EQ(DecodePlanPayload(window.Value().payload).batchId, std::uint64_t{1});
+
+    // A fresh Setup drops the open windows and the handle counter; a
+    // receipt for the dead window is a no-op.
+    ASSERT_TRUE(buffer_.Setup(2, MakePolicy(), true).Success());
+    buffer_.CompletePrefetch(1, true);
+    EXPECT_EQ(buffer_.Lookup({block}), (std::vector<std::uint8_t>{0}));
+
+    auto fresh = buffer_.PreparePrefetch({block}, RequestContext{});
+    ASSERT_TRUE(fresh.HasValue());
+    EXPECT_EQ(DecodePlanPayload(fresh.Value().payload).batchId, std::uint64_t{1});
 }
 
 }  // namespace

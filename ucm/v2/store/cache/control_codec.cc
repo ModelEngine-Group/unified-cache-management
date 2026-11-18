@@ -42,7 +42,7 @@ constexpr std::uint16_t kMaxShortStringLength = 65535;
 bool IsControlOp(std::uint8_t op)
 {
     return op >= static_cast<std::uint8_t>(ControlOp::Lookup) &&
-           op <= static_cast<std::uint8_t>(ControlOp::CompleteOffload);
+           op <= static_cast<std::uint8_t>(ControlOp::CompletePrefetch);
 }
 
 /** Fail-safe little-endian encoder; never fails -- all validity is checked up front. */

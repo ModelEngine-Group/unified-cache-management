@@ -41,8 +41,10 @@ enum class ControlOp : std::uint8_t {
     Unpin = 4,
     Alloc = 5,
     Commit = 6,
-    PrepareOffload = 7,  /** Mint the next offload plan */
-    CompleteOffload = 8, /** Receipt a concluded offload plan */
+    PrepareOffload = 7,    /** Mint the next offload plan */
+    CompleteOffload = 8,   /** Receipt a concluded offload plan */
+    PreparePrefetch = 9,   /** Open the next prefetch window */
+    CompletePrefetch = 10, /** Receipt a concluded prefetch window */
 };
 
 /**
@@ -58,9 +60,9 @@ struct ControlRequest {
     /** Whether ttlMs carries a TTL fact (RequestContext.ttl); false leaves ttlMs ignored. */
     bool hasTtl{false};
     std::int64_t ttlMs{0};
-    /** Commit's success flag; ignored by the other ops. */
+    /** Commit/CompletePrefetch's success flag; ignored by the other ops. */
     bool success{false};
-    /** Handle of the plan this request is about. */
+    /** Handle of the offload plan or prefetch window this request is about. */
     std::uint64_t planId{0};
 };
 
@@ -71,11 +73,11 @@ struct ControlRequest {
  *        u32 tokenLen | token bytes
  *
  * The result body is single-choice by op: Lookup answers with hits, Pin/Alloc
- * with slots, PrepareOffload with the planned keys; every other op (and any
- * failure) carries none. A successful Pin/Alloc additionally attaches the
- * minted AddressedToken payload (self-addressing envelope) as opaque bytes,
- * and a successful PrepareOffload its plan payload (see PlanPayload) -- the
- * token tail's internal encoding belongs to the token codec.
+ * with slots, PrepareOffload/PreparePrefetch with the planned keys; every other
+ * op (and any failure) carries none. A successful Pin/Alloc additionally attaches
+ * the minted AddressedToken payload (self-addressing envelope) as opaque bytes,
+ * and a successful PrepareOffload/PreparePrefetch its plan payload (see
+ * PlanPayload) -- the token tail's internal encoding belongs to the token codec.
  *
  * Handshake replies reuse this frame: seq stays 0. A
  * successful Hello answers ok=1 with no result body, the shared memfd riding
@@ -91,10 +93,11 @@ struct ControlResponse {
     std::vector<std::uint8_t> hits;
     /** Pin/Alloc result: slot index per block. */
     std::vector<std::uint32_t> slots;
-    /** PrepareOffload result: the planned keys; keys[i] pairs with slot i of the plan payload. */
+    /** PrepareOffload/PreparePrefetch result: the planned keys; keys[i] pairs with slot i of the
+     * plan payload. */
     std::vector<BlockId> keys;
-    /** Opaque tail of a successful Pin/Alloc (AddressedToken) or PrepareOffload (plan payload);
-     *  empty otherwise. */
+    /** Opaque tail of a successful Pin/Alloc (AddressedToken), PrepareOffload, or PreparePrefetch
+     *  (plan payload); empty otherwise. */
     std::vector<std::byte> tokenPayload;
 };
 
@@ -116,7 +119,7 @@ struct HelloRequest {
 };
 
 /**
- * @brief Encodes a control-plane request (Lookup through CompleteOffload).
+ * @brief Encodes a control-plane request (Lookup through CompletePrefetch).
  *
  * @return Expected the wire bytes on success; InvalidParam when op is Hello or
  *         out of range.
