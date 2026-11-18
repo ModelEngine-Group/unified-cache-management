@@ -36,11 +36,20 @@ namespace kv {
 using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
 using NodeId = std::uint64_t;
+using KvNsId = std::uint32_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
 using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
 
 // KV protocol requires 512B alignment for device buffers and offsets.
 constexpr std::uint32_t kAlignmentBytes = 512;
+
+// Legacy single-namespace clients use this id when they are adapted to the
+// multi-namespace ViewUniverse contract. M800 clients must use the XXHASH32
+// value derived from the Ceph pool name instead.
+constexpr KvNsId kDefaultKvNsId = 0;
+// Fixed seed used by every M800 component that derives KvNsId from a Ceph
+// pool name. All producers must agree on this value before encoding a view.
+constexpr KvNsId kKvNsIdHashSeed = 5381;
 
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;
@@ -160,6 +169,7 @@ struct NodeEndpoint {
 
 struct NodeInfo {
     std::vector<NodeEndpoint> endpoints;
+    KvNsId localKvNsId{0};
 };
 
 struct TransportConfig {

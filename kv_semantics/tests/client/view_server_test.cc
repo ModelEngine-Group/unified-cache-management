@@ -3,6 +3,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include "kv_client.h"
+#include "view/view_universe.h"
 
 namespace kv::test {
 namespace {
@@ -65,6 +66,61 @@ TEST(ViewServerTest, ConfigBackedViewServerBuildsViewFromTransportConfigs)
     ASSERT_EQ(view.asuMap[10].endpoints.size(), std::size_t{1});
     EXPECT_EQ(view.asuMap[10].endpoints[0].ip, "127.0.0.1");
     EXPECT_EQ(view.asuMap[10].endpoints[0].protocol, Protocol::ROCE);
+}
+
+TEST(ViewServerTest, LegacySingleViewIsAdaptedToAllViews)
+{
+    KvClientConfig config;
+    TransportConfig transportConfig;
+    transportConfig.nodeId = 10;
+    config.transportConfigs.emplace_back(transportConfig);
+    auto viewServer = CreateDefaultViewServer(config);
+    auto universe = CreateViewUniverse();
+
+    ASSERT_TRUE(viewServer->GetAllViews(*universe).ok());
+    const auto nsIds = universe->GetAllNsIds();
+    ASSERT_EQ(nsIds.size(), 1);
+    EXPECT_EQ(nsIds.front(), 0);
+    GlobalView view;
+    ASSERT_TRUE(universe->GetView(nsIds.front(), view).ok());
+    EXPECT_EQ(view.asuMap.count(10), 1);
+}
+
+class MultiNamespaceViewServer final : public ViewServer {
+public:
+    Status GetAllViews(ViewUniverse& universe) override
+    {
+        std::unordered_map<KvNsId, GlobalView> views;
+        for (const auto nsId : {KvNsId{20}, KvNsId{10}}) {
+            GlobalView view;
+            view.viewId = nsId;
+            view.viewEpoch = 9;
+            views.emplace(nsId, std::move(view));
+        }
+        auto next = CreateViewUniverse(std::move(views), 9);
+        return universe.ReplaceAll(*next);
+    }
+};
+
+class EmptyNamespaceViewServer final : public ViewServer {
+public:
+    Status GetAllViews(ViewUniverse&) override { return Status::OK(); }
+};
+
+TEST(ViewServerTest, DefaultGetGlobalViewReturnsFirstNamespace)
+{
+    MultiNamespaceViewServer server;
+    GlobalView view;
+    ASSERT_TRUE(server.GetGlobalView(view).ok());
+    EXPECT_EQ(view.viewId, 10);
+    EXPECT_EQ(view.viewEpoch, 9);
+}
+
+TEST(ViewServerTest, DefaultGetGlobalViewReturnsNotFoundForEmptyUniverse)
+{
+    EmptyNamespaceViewServer server;
+    GlobalView view;
+    EXPECT_EQ(server.GetGlobalView(view).code, StatusCode::NOT_FOUND);
 }
 
 TEST(ViewServerTest, PublishAndRefreshPolicies)

@@ -29,6 +29,7 @@
 #include "parser_common.h"
 #include "status_utils.h"
 #include "utils/config_utils.h"
+#include "view/view_universe.h"
 
 namespace kv {
 namespace {
@@ -117,6 +118,32 @@ GlobalView BuildConfigGlobalView(const KvClientConfig& config)
         view.asuMap.emplace(transportConfig.nodeId, ExtractAsuInfo(transportConfig));
     }
     return view;
+}
+
+Status ViewServer::GetGlobalView(GlobalView& view)
+{
+    auto universe = CreateViewUniverse();
+    if (!universe) { return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create ViewUniverse"); }
+    const auto status = GetAllViews(*universe);
+    if (!status.ok()) { return status; }
+    const auto nsIds = universe->GetAllNsIds();
+    if (nsIds.empty()) {
+        return Status::Error(StatusCode::NOT_FOUND, "ViewServer has no namespace view");
+    }
+    return universe->GetView(nsIds.front(), view);
+}
+
+Status ViewServer::GetAllViews(ViewUniverse& universe)
+{
+    GlobalView legacyView;
+    const auto status = GetGlobalView(legacyView);
+    if (!status.ok()) { return status; }
+    const auto viewEpoch = legacyView.viewEpoch;
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(legacyView.viewId, std::move(legacyView));
+    auto adapted = CreateViewUniverse(std::move(views), viewEpoch);
+    if (!adapted) { return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create ViewUniverse"); }
+    return universe.ReplaceAll(*adapted);
 }
 
 bool ViewServer::ShouldPublishView(const GlobalView& publishedView,
