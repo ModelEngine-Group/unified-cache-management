@@ -3129,50 +3129,28 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
-    """Layerwise connector: per-pair store, per-layer dump/load, depth-2 load.
+    """Per-layer loads with checkpoint-window dumps on Ascend.
 
-    One shard per (block, pair); the posix commit fires on the max-pair
-    shard, so max-pair layers defer their dump to the commit task in
-    ``wait_for_save``. Loads pipeline with depth 2: ``start_load_kv``
-    submits the first two layers; each ``wait_for_layer_load`` hook waits
-    its pair and submits two positions ahead. Dumps fire per layer
-    right after the layer's forward (attention layers: vLLM's decorator;
-    GDN/KDA layers: ``mamba_layer_hooks_patch``).
+    Loads use each layer's native prefix and pipeline with depth 2. A dump
+    window ends at a full-attention checkpoint and contains the preceding
+    linear-attention layers, whose empty save-hook names are not needed.
+    ``wait_for_save`` backfills the tail and handles the max-pair commit.
     """
-
-    # These families' linear layers have no custom-op boundary, so their
-    # module-forward hooks are pruned under compiled execution.
-    _MODULE_TIER_ONLY_ARCHITECTURES = (
-        "KimiK3ForConditionalGeneration",
-        "Glm5NextForConditionalGeneration",
-    )
 
     @classmethod
     def layerwise_engine_config_error(cls, vllm_config) -> Optional[str]:
-        """Why layerwise cannot run under this engine config, or None."""
-        hf_config = getattr(
-            getattr(vllm_config, "model_config", None), "hf_config", None
-        )
-        architectures = list(getattr(hf_config, "architectures", None) or [])
-        matched = [
-            arch
-            for arch in architectures
-            if arch in cls._MODULE_TIER_ONLY_ARCHITECTURES
-        ]
-        if not matched:
+        """Return the fallback log, or None when layerwise is allowed.
+
+        Layerwise HLA transfers rely on per-layer native hooks that only the
+        Ascend backends provide end to end; on CUDA-like platforms every
+        architecture falls back to direct mode.
+        """
+        if not current_platform.is_cuda_alike():
             return None
-        cc = getattr(vllm_config, "compilation_config", None)
-        mode = str(getattr(getattr(cc, "mode", None), "name", None) or "NONE")
-        cg_mode = str(
-            getattr(getattr(cc, "cudagraph_mode", None), "name", None) or "NONE"
-        )
-        if mode == "NONE" and cg_mode != "FULL":
-            return None
+        platform = getattr(current_platform, "device_type", "unknown").upper()
         return (
-            f"Layerwise for {matched[0]} requires mode=NONE and "
-            f"cudagraph_mode != FULL (got mode={mode}, "
-            f"cudagraph_mode={cg_mode}). Use --enforce-eager or "
-            '\'{"mode": "NONE", "cudagraph_mode": "FULL_DECODE_ONLY"}\'.'
+            "Layerwise mode is not supported on "
+            f"{platform}; falling back to direct mode."
         )
 
     def __init__(
@@ -3190,6 +3168,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.launch_config = copy.deepcopy(self.launch_config)
         self.launch_config["use_layerwise"] = True
         self.use_layerwise = True
+        self.checkpoint_windows: list[list[str]] = []
+        self._checkpoint_to_window: dict[str, int] = {}
         # Deferred-commit plan (filled by register_kv_caches).
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
@@ -3215,7 +3195,24 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             worker_cores,
             store_cores,
         )
-        # Max-pair layers defer their dump to the commit task (see class doc).
+        # Physical layouts may create anchors by cache type rather than model
+        # execution order. Draft groups run after all target layers despite
+        # having an independent numeric layer-id space.
+        eagle_layers = {
+            name
+            for cache_group in self._kv_cache_config.kv_cache_groups
+            if getattr(cache_group, "is_eagle_group", False)
+            for name in cache_group.layer_names
+        }
+        ordered_layers = sorted(
+            layout.layer_anchors,
+            key=lambda name: (layout.layer_name_to_id[name], name),
+        )
+        self.layer_order = [
+            name for name in ordered_layers if name not in eagle_layers
+        ] + [name for name in ordered_layers if name in eagle_layers]
+        self.layer_pos = {name: pos for pos, name in enumerate(self.layer_order)}
+        # Max-pair layers defer their dump to the commit task.
         self._max_slot = layout.num_slots - 1
         self._deferred_dump_layers = {
             name
@@ -3231,6 +3228,35 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 or layout.layer_name_to_id[name] > layout.layer_name_to_id[existing]
             ):
                 self._group_commit_layer[gid] = name
+        self._build_checkpoint_windows()
+
+    def _build_checkpoint_windows(self) -> None:
+        specs = layer_name_to_kv_cache_spec(self._kv_cache_config)
+        checkpoint_layers = {
+            name
+            for name in self.layer_order
+            if any(
+                isinstance(spec, FullAttentionSpec)
+                and participates_in_prefix_caching(spec)
+                and not is_mamba_align_kv_cache_spec(spec)
+                and (
+                    getattr(spec, "is_index_group_leader", True)
+                    or getattr(spec, "tokens_per_state", 1) == 1
+                )
+                for spec in specs.get(name, [])
+            )
+        }
+        self.checkpoint_windows = []
+        self._checkpoint_to_window = {}
+        start = 0
+        for end, layer_name in enumerate(self.layer_order):
+            if layer_name not in checkpoint_layers:
+                continue
+            self._checkpoint_to_window[layer_name] = len(self.checkpoint_windows)
+            self.checkpoint_windows.append(self.layer_order[start : end + 1])
+            start = end + 1
+        if start < len(self.layer_order) and self.checkpoint_windows:
+            self.checkpoint_windows.append(self.layer_order[start:])
 
     def _submit_layer_load(self, pos: int) -> None:
         """Submit load tasks for the layer at execution position ``pos``."""
@@ -3649,20 +3675,15 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         attn_metadata: "AttentionMetadata",
         **kwargs,
     ) -> None:
-        if not self._connector_metadata:
+        if not self._connector_metadata or layer_name in self._dumped_layers:
             return
-        if layer_name in self._dumped_layers:
+        window_id = getattr(self, "_checkpoint_to_window", {}).get(layer_name)
+        if window_id is None:
             return
-        if layer_name in self._deferred_dump_layers:
-            # Deferred to the commit task in wait_for_save (see class doc).
-            self._dumped_layers.add(layer_name)
-            self._dumped_group_slots.add(
-                (self.layer_to_group[layer_name], self.layer_to_slot[layer_name])
-            )
-            return
-        if layer_name not in self.layer_pos:
-            return
-        self._submit_layer_dump(layer_name)
+        for name in self.checkpoint_windows[window_id]:
+            if name in self._dumped_layers or name in self._deferred_dump_layers:
+                continue
+            self._submit_layer_dump(name)
 
     def wait_for_save(self) -> None:
         """Layerwise dump: catch up undumped layers, then the max-pair commit."""
