@@ -108,7 +108,7 @@ class RuntimeTest(unittest.TestCase):
             "complete_put": ("r", token, False),
             "prepare_offload": (),
             "complete_offload": (context,),
-            "prepare_prefetch": ("r",),
+            "prepare_prefetch": ("r", b"x" * 16),
             "complete_prefetch": ("r", True),
         }
         for name, args in calls.items():

@@ -156,18 +156,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
         """Check the worker axes of one DP replica before building its layout."""
         if not dist.is_initialized():
             return
-        groups = tuple(
-            dict.fromkeys(
-                group
-                for group in (
-                    params.tp_cache_group,
-                    params.attn_tp_cache_group,
-                    getattr(params, "attn_cp_cache_group", None),
-                    getattr(params, "pp_cache_group", None),
-                )
-                if group is not None and dist.get_world_size(group) > 1
-            )
-        )
+        # SGLang scopes tp_cache_group to attention TP when attention DP is
+        # enabled. Do not substitute the world group: independent DP replicas
+        # have separate cache domains and may live on different hosts.
+        groups = {}
+        for name, attribute in (
+            ("cache TP", "tp_cache_group"),
+            ("attention TP", "attn_tp_cache_group"),
+            ("attention CP", "attn_cp_cache_group"),
+            ("PP", "pp_cache_group"),
+        ):
+            group = getattr(params, attribute, None)
+            if group is not None and dist.get_world_size(group) > 1:
+                groups.setdefault(group, []).append(name)
         if not groups:
             return
 
@@ -180,15 +181,24 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Carry the earlier axes' observations into the later axes, so a
         # mismatch discovered in one TP slice reaches the whole replica.
         host_ids = {host_id}
-        for group in groups:
+        checked_axes = []
+        for group, names in groups.items():
             peers = [None] * dist.get_world_size(group)
             dist.all_gather_object(peers, host_ids, group=group)
             host_ids = set().union(*peers)
+            checked_axes.extend(names)
+        # Finish every collective before rejecting the topology; an early
+        # exception could leave peers blocked in a later cache-group check.
         if None in host_ids or len(host_ids) != 1:
             raise ValueError(
                 "SGLang UCM Store V2 requires all workers of each DP replica "
-                "on one host with a readable boot ID. Cross-node TP, PP, and "
-                "attention CP within a DP replica are not supported."
+                "on one host with a readable boot ID: Cache v2 uses host-local "
+                "shared memory. Cross-node TP, PP, and attention CP within a "
+                "DP replica are not supported. "
+                f"Checked cache axes: {', '.join(checked_axes)}; "
+                f"observed hosts: {len(host_ids - {None})}; "
+                f"missing host identity: {None in host_ids}. "
+                "Independent DP replicas may run on different hosts."
             )
 
     def lookup(self, rid, transfers):

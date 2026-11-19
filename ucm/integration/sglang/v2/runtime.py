@@ -120,6 +120,7 @@ class Runtime:
         return self.scheduler.on_new_request(context)
 
     def on_request_finished(self, request_id):
+        # Native scheduler also releases request-scoped Prefetchable state.
         return self.scheduler.on_request_finished(request_id)
 
     def lookup(self, request_id, keys):
@@ -152,8 +153,9 @@ class Runtime:
     def complete_offload(self, plan):
         return self.scheduler.complete_offload(plan)
 
-    def prepare_prefetch(self, request_id):
-        return self.scheduler.prepare_prefetch(request_id)
+    def prepare_prefetch(self, request_id, keys):
+        """Prepare a caller-selected subset of this request's probed block IDs."""
+        return self.scheduler.prepare_prefetch(request_id, keys)
 
     def complete_prefetch(self, request_id, success):
         return self.scheduler.complete_prefetch(request_id, success)
