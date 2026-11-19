@@ -17,10 +17,12 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "kv_metrics/metrics.h"
 #include "router/router.h"
+#include "transport/asu_transport_pool.h"
 #include "utils/config_utils.h"
 
 namespace kv::test {
@@ -79,6 +81,8 @@ struct TestState {
     bool returnPartialRegister{false};
     bool mismatchRegisterResultCount{false};
     bool failUnregister{false};
+    std::unordered_set<NodeId> unhealthyNodes;
+    std::vector<NodeId> shutdownCalls;
     std::vector<NodeId> queryCalls;
     std::unordered_map<NodeId, std::size_t> queryKeyCounts;
     std::unordered_map<NodeId, std::vector<CacheKey>> queryKeys;
@@ -210,11 +214,18 @@ public:
 
     Status Shutdown() override
     {
+        state_->shutdownCalls.emplace_back(config_.nodeId);
         initialized_ = false;
         return Status::OK();
     }
 
-    Status CheckHealth() override { return initialized_ ? Status::OK() : NotInitialized(); }
+    Status CheckHealth() override
+    {
+        if (state_->unhealthyNodes.count(config_.nodeId) != 0) {
+            return Status::Error(StatusCode::CONNECTION_ERROR, "fake transport is unhealthy");
+        }
+        return initialized_ ? Status::OK() : NotInitialized();
+    }
 
     virtual Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
     {
@@ -2320,6 +2331,179 @@ TEST(KvClientImplTest,
     TaskResult secondTaskResult;
     EXPECT_TRUE(client->Wait(taskId, 100, secondTaskResult).ok());
     EXPECT_EQ(state->storeCalls, std::vector<NodeId>({20, 10}));
+}
+
+TEST(KvClientImplTest, TaskBuild_SkipsGroupsRoutedToUnhealthyNode)
+{
+    // Maglev keeps its affinity and ignores the unavailable set in the router, so the task
+    // builder must skip groups that land on a node whose health check failed.
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "MAGLEV";
+    ASSERT_TRUE(client->Init(config).ok());
+    state->unhealthyNodes.insert(10);
+    state->unhealthyNodes.insert(20);
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({MakeCacheKey("k05"), MakeCacheKey("k15")}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::NO_AVAILABLE_NODE);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{2});
+    for (const auto& entryStatus : result.entryStatus) {
+        EXPECT_EQ(entryStatus.code, StatusCode::NO_AVAILABLE_NODE);
+    }
+    EXPECT_TRUE(state->queryCalls.empty());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+namespace {
+
+NodeEndpoint TestEndpoint(const std::string& ip, std::uint16_t port)
+{
+    NodeEndpoint endpoint;
+    endpoint.ip = ip;
+    endpoint.port = port;
+    endpoint.protocol = Protocol::TCP;
+    return endpoint;
+}
+
+AsuTransportPool::Creator MakePoolCreator(const std::shared_ptr<TestState>& state)
+{
+    return [state](const TransportConfig& config, std::shared_ptr<AsuTransport>& transport) {
+        ++state->createdTransports;
+        auto created = std::make_shared<FakeTransport>(state);
+        auto status = created->Init(config, nullptr);
+        if (!status.ok()) { return status; }
+        transport = created;
+        return Status::OK();
+    };
+}
+
+}  // namespace
+
+TEST(KvClientImplTest, TaskBuild_PartialRoutingFailureKeepsRoutableEntries)
+{
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "MAGLEV";
+    kv::RouterConfig routerConfig;
+    ASSERT_TRUE(kv::BuildRouterConfigFromAttrs(config.attrs, routerConfig).ok());
+    auto router = kv::CreateRouter({10, 20}, kv::HashFunction{}, routerConfig);
+
+    // The client routes the 16-byte CacheKey view, not the printable text, so the probes
+    // must be built the same way.
+    const auto findKey = [&router](NodeId target) {
+        for (std::uint32_t index = 1; index < 1000000; ++index) {
+            std::uint64_t combined = (static_cast<std::uint64_t>(target) << 32) | index;
+            CacheKey cacheKey{};
+            std::memcpy(cacheKey.data(), &combined, sizeof(combined));
+            const auto routes = router->RouteKeys({std::string(CacheKeyView(cacheKey))});
+            if (routes.size() == 1 && routes.begin()->first == target) { return cacheKey; }
+        }
+        return CacheKey{};
+    };
+    const auto keyFor10 = findKey(10);
+    const auto keyFor20 = findKey(20);
+    ASSERT_NE(keyFor10, CacheKey{});
+    ASSERT_NE(keyFor20, CacheKey{});
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+    state->unhealthyNodes.insert(10);
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({keyFor10, keyFor20}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{2});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::NO_AVAILABLE_NODE);
+    EXPECT_TRUE(result.entryStatus[1].ok());
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({20}));
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(AsuTransportPoolTest, ReusesTransportPerNode)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    std::shared_ptr<AsuTransport> second;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+    ASSERT_TRUE(pool.GetOrCreate(config, second).ok());
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(state->createdTransports, 1U);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+}
+
+TEST(AsuTransportPoolTest, ComparesEndpointsAsMultiset)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000), TestEndpoint("10.0.0.2", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+
+    TransportConfig reordered = config;
+    reordered.endpoints = {TestEndpoint("10.0.0.2", 9000), TestEndpoint("10.0.0.1", 9000)};
+    std::shared_ptr<AsuTransport> second;
+    ASSERT_TRUE(pool.GetOrCreate(reordered, second).ok());
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(state->createdTransports, 1U);
+}
+
+TEST(AsuTransportPoolTest, ReportsEndpointChangeAndReplaces)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+
+    TransportConfig changed = config;
+    changed.endpoints = {TestEndpoint("10.0.0.2", 9000)};
+    std::shared_ptr<AsuTransport> rejected;
+    EXPECT_EQ(pool.GetOrCreate(changed, rejected).code, StatusCode::ENDPOINT_CHANGED);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+
+    std::shared_ptr<AsuTransport> replaced;
+    ASSERT_TRUE(pool.Replace(changed, replaced).ok());
+    EXPECT_NE(replaced, first);
+    EXPECT_EQ(state->createdTransports, 2U);
+    EXPECT_EQ(pool.Find(NodeId{10}), replaced);
+}
+
+TEST(AsuTransportPoolTest, ShutdownAllClosesEveryTransportOnce)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    for (const auto nodeId : {10, 20}) {
+        TransportConfig config;
+        config.nodeId = nodeId;
+        config.endpoints = {TestEndpoint("10.0.0." + std::to_string(nodeId), 9000)};
+        std::shared_ptr<AsuTransport> transport;
+        ASSERT_TRUE(pool.GetOrCreate(config, transport).ok());
+    }
+
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(pool.Size(), std::size_t{0});
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
 }
 
 }  // namespace kv::test
