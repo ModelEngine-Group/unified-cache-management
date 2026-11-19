@@ -101,6 +101,20 @@ TEST(CpuKvOverRoceCreateConnectionTest, AdoptsTheQueuePairCountOfTheStore)
     EXPECT_EQ(0U, server.ConnectionCount());
 }
 
+TEST(CpuKvOverRoceCreateConnectionTest, RejectsAMissingGidIndex)
+{
+    TransportConfig config = MakeClientConfig();
+    config.attrs.erase("roce_gid_index");
+    roce::CpuKvOverRoceTransProvider provider(config);
+
+    ConnectionHandles handles;
+    const Status status =
+        provider.CreateConnection("127.0.0.1", "127.0.0.1", 19001, 1, 500, handles);
+    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code);
+    EXPECT_NE(std::string::npos, status.message.find("roce_gid_index is required"));
+    EXPECT_TRUE(handles.empty());
+}
+
 TEST(CpuKvOverRoceCreateConnectionTest, RejectsInvalidArguments)
 {
     roce::CpuKvOverRoceTransProvider provider(MakeClientConfig());

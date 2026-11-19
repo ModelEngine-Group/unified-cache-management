@@ -308,6 +308,10 @@ Status CpuKvOverRoceTransProvider::BuildVerbConfig(const std::string& localIp, V
     // The limits are the widths the verbs attributes and the protocol table give
     // these fields: 8 bits for sl/traffic class, 5 for the timeout and the RNR
     // timer, 3 for the retry counters, 8 for the queue pair atomicity.
+    if (config_.attrs.find("roce_gid_index") == config_.attrs.end()) {
+        error = "roce_gid_index is required (the provider does not choose a GID automatically)";
+        return Failure(StatusCode::INVALID_ARGUMENT, error);
+    }
     if (!ApplyUnsigned(config_.attrs, "roce_gid_index", config.gidIndex, 0xFFU, error) ||
         !ApplyUnsigned(config_.attrs, "roce_sq_depth", config.sendDepth, 0x7FFFU, error) ||
         !ApplyUnsigned(config_.attrs, "roce_rq_depth", config.recvDepth, 0x7FFFU, error) ||

@@ -22,6 +22,8 @@ TransportConfig MakeRoceConfig()
     config.qpNum = 2;
     config.endpoints.push_back(
         NodeEndpoint{"10.0.0.11", 19001, Protocol::ROCE, -1, "mlx5_0", 1, {}});
+    // The provider requires the GID table index, so the fixture has to name one.
+    config.attrs["roce_gid_index"] = "0";
     return config;
 }
 

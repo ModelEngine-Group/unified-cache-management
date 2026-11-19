@@ -40,13 +40,6 @@ std::string VerbsError(const std::string& operation)
     return operation + " failed: " + std::strerror(errno);
 }
 
-bool IsIpv4MappedGid(const ibv_gid& gid)
-{
-    static const std::uint8_t kPrefix[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    if (std::memcmp(gid.raw, kPrefix, sizeof(kPrefix)) != 0) { return false; }
-    return gid.raw[10] == 0xFFU && gid.raw[11] == 0xFFU;
-}
-
 bool IsZeroGid(const ibv_gid& gid)
 {
     for (std::uint8_t byte : gid.raw) {
@@ -171,41 +164,30 @@ Status VerbDevice::Open(const VerbQpConfig& config, VerbDevice& device, std::str
     opened.lid_ = portAttributes.lid;
     opened.mtuCode_ = static_cast<std::uint8_t>(portAttributes.active_mtu);
 
-    int gidIndex = -1;
-    if (config.gidIndex >= 0) {
-        ibv_gid gid{};
-        if (ibv_query_gid(opened.context_, config.port, config.gidIndex, &gid) != 0) {
-            error = "configured gid_index " + std::to_string(config.gidIndex) + " is not usable";
-            return Fail(StatusCode::INVALID_ARGUMENT, error);
-        }
-        gidIndex = config.gidIndex;
-        std::memcpy(opened.gid_, gid.raw, sizeof(opened.gid_));
-    } else {
-        for (int index = 0; index < 256; ++index) {
-            ibv_gid gid{};
-            if (ibv_query_gid(opened.context_, config.port, index, &gid) != 0) { break; }
-            if (IsZeroGid(gid)) { continue; }
-            const bool ipv4 = IsIpv4MappedGid(gid);
-            if (!config.localIp.empty() && ipv4) {
-                char text[64] = {0};
-                std::snprintf(text, sizeof(text), "%u.%u.%u.%u", gid.raw[12], gid.raw[13],
-                              gid.raw[14], gid.raw[15]);
-                if (config.localIp != text) { continue; }
-            } else if (!config.localIp.empty() && !ipv4) {
-                continue;
-            }
-            gidIndex = index;
-            std::memcpy(opened.gid_, gid.raw, sizeof(opened.gid_));
-            break;
-        }
-        if (gidIndex < 0) {
-            error = config.localIp.empty()
-                        ? "no usable GID was found on port " + std::to_string(config.port)
-                        : "no RoCEv2 GID matches local_ip " + config.localIp;
-            return Fail(StatusCode::INVALID_ARGUMENT, error);
-        }
+    // The index is configured, never guessed: which entry of the GID table
+    // carries a usable address depends on the fabric configuration of the host.
+    if (config.gidIndex < 0) {
+        error = "roce_gid_index is required (the provider does not choose a GID automatically)";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
     }
-    opened.gidIndex_ = static_cast<std::uint32_t>(gidIndex);
+    if (config.gidIndex >= portAttributes.gid_tbl_len) {
+        error = "gid_index " + std::to_string(config.gidIndex) + " is outside the " +
+                std::to_string(portAttributes.gid_tbl_len) + " entries of port " +
+                std::to_string(config.port);
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    ibv_gid gid{};
+    if (ibv_query_gid(opened.context_, config.port, config.gidIndex, &gid) != 0) {
+        error = "configured gid_index " + std::to_string(config.gidIndex) + " is not usable";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (IsZeroGid(gid)) {
+        error = "gid_index " + std::to_string(config.gidIndex) + " of port " +
+                std::to_string(config.port) + " is the all zero GID; check the IP configuration";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    opened.gidIndex_ = static_cast<std::uint32_t>(config.gidIndex);
+    std::memcpy(opened.gid_, gid.raw, sizeof(opened.gid_));
     opened.name_ = std::move(selectedName);
 
     opened.pd_ = ibv_alloc_pd(opened.context_);

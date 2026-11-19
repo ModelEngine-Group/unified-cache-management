@@ -52,6 +52,7 @@ inline TransportConfig MakeClientConfig(std::uint32_t handshakeTimeoutMs = 4000)
     config.attrs["roce_oob_connect_timeout_ms"] = "2000";
     config.attrs["roce_handshake_timeout_ms"] = std::to_string(handshakeTimeoutMs);
     config.attrs["roce_qp_backend"] = "simulated";
+    config.attrs["roce_gid_index"] = "0";
     return config;
 }
 
@@ -64,6 +65,7 @@ inline TransportConfig MakeServerConfig()
     config.attrs["roce_oob_connect_timeout_ms"] = "2000";
     config.attrs["roce_handshake_timeout_ms"] = "4000";
     config.attrs["roce_qp_backend"] = "simulated";
+    config.attrs["roce_gid_index"] = "0";
     return config;
 }
 

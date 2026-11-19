@@ -111,7 +111,7 @@ them into `TransportConfig::attrs` as `roce_*`.
 | `asu_roce_handshake_timeout_ms` | `5000` | timeout of every message exchange |
 | `asu_roce_hca_name` | first device | HCA to open, for example `mlx5_0` |
 | `asu_roce_hca_port` | `1` | port of the HCA |
-| `asu_roce_gid_index` | auto | explicit GID index; otherwise matched against the `asu_local_ip` of the store or the first RoCEv2 GID |
+| `asu_roce_gid_index` | required | GID table index to use; there is no automatic selection |
 | `asu_roce_sq_depth` / `asu_roce_rq_depth` / `asu_roce_cq_depth` | `256` / `64` / `512` | queue sizes |
 | `asu_roce_inline_threshold` | `0` | inline data size per send |
 | `asu_roce_sl`, `asu_roce_traffic_class` | `3`, `104` | service level and traffic class |
