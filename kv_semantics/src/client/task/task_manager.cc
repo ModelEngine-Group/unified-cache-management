@@ -65,10 +65,7 @@ std::vector<kv::Key> ExtractEntryKeys(const std::vector<ResolvedKVBuffer>& entri
     return keys;
 }
 
-std::uint32_t GetTargetNamespaceId(NodeId nodeId, std::uint32_t gnsid)
-{
-    return gnsid;
-}
+std::uint32_t GetTargetNamespaceId(NodeId nodeId, std::uint32_t gnsid) { return gnsid; }
 
 Status AddContext(Status status, const std::string& context)
 {
