@@ -54,6 +54,11 @@ void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Stat
 Status TransportTaskExecutor::PrepareTaskSubBatches(
     const TransportTask& ctx, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
+    // The namespace belongs to the task, so every sub-batch request inherits it.
+    const auto applyNsId = [&ctx](TransportSubBatchContext& subBatchContext) {
+        subBatchContext.nsId = ctx.nsId;
+    };
+
     if (IsEntryBatchOp(ctx.opType)) {
         const auto opType = ctx.opType;
         if (ctx.entries.empty()) {
@@ -66,6 +71,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
+            applyNsId(subBatchContext);
             const auto subBatchStatus =
                 BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
@@ -88,6 +94,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
+            applyNsId(subBatchContext);
             const auto subBatchStatus =
                 SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
@@ -99,6 +106,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         }
     } else if (IsKeepAliveOp(ctx.opType)) {
         auto& subBatchContext = subBatchContexts.emplace_back();
+        applyNsId(subBatchContext);
         const auto subBatchStatus = SubmitKeepAliveRequest(subBatchContext);
         if (!subBatchStatus.ok()) {
             KV_ERROR("Submit keep-alive request failed code={} message={}",

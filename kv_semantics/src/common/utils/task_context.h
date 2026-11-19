@@ -93,6 +93,9 @@ struct TransportTask {
     std::weak_ptr<AsuTransport> transport;
     std::vector<CacheKey> keys;
     std::vector<KVBuffer> entries;
+    // Namespace of the request. The value is forwarded to the request header, with
+    // kDefaultKvNsId acting as the default when the caller does not specify one.
+    KvNsId nsId{kDefaultKvNsId};
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -127,11 +130,19 @@ struct ClientTask {
     AsuOpType opType{AsuOpType::LOAD};
     std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
+    // Namespace of this client task; the snapshot is selected by it and the value is
+    // forwarded to every transport task of the batch.
+    KvNsId nsId{kDefaultKvNsId};
     std::vector<KVBuffer> entries;
     std::vector<CacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;
+    // Number of entries that could not be routed to any healthy node (primary and
+    // secondary ring both failed). Such entries stay in entryStatus with
+    // StatusCode::NO_AVAILABLE_NODE. The task reports NO_AVAILABLE_NODE when every
+    // entry is unroutable, otherwise PARTIAL_FAILED.
+    std::size_t routingFailedEntries{0};
 
     std::atomic<std::size_t> remainingTransportTasks{0};
     std::atomic<std::size_t> remainingTransportSendTasks{0};

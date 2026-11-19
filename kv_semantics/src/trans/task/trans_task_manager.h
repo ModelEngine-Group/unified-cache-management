@@ -42,6 +42,8 @@ struct TransportSubBatchContext {
     Status status{Status::OK()};
     std::shared_ptr<ConnectionChannel> channel;
     bool useSeekControl{false};
+    // Namespace written into the request header; kDefaultKvNsId is just the default value.
+    KvNsId nsId{kDefaultKvNsId};
     ScatterGatherEntry sendSge;
     ScatterGatherEntry flagBuffer;
     std::vector<Status> entryStatus;
