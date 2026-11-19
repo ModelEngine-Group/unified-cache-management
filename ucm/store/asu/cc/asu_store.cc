@@ -35,6 +35,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include "kv_client.h"
 #include "kv_metrics/ucm_metrics_backend.h"
@@ -131,6 +132,7 @@ const char* TransProviderBackendName(kv::TransProviderType providerType)
         case kv::TransProviderType::FAKE: return "fake";
         case kv::TransProviderType::AIV: return "aiv";
         case kv::TransProviderType::AICPU: return "aicpu";
+        case kv::TransProviderType::CPU: return "cpu";
         case kv::TransProviderType::UNSUPPORTED: return "unsupported";
     }
     return "unknown";
@@ -143,6 +145,7 @@ kv::TransProviderType ParseTransProviderBackend(std::string backend)
     if (backend == "FAKE") { return kv::TransProviderType::FAKE; }
     if (backend == "AIV") { return kv::TransProviderType::AIV; }
     if (backend == "AICPU") { return kv::TransProviderType::AICPU; }
+    if (backend == "CPU") { return kv::TransProviderType::CPU; }
     return kv::TransProviderType::UNSUPPORTED;
 }
 
@@ -171,6 +174,36 @@ bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key
     }
     return false;
 }
+
+// The RoCE provider takes its knobs through TransportConfig::attrs.  A dictionary
+// cannot be enumerated, so every forwarded key is listed here and also consumed
+// by CpuKvOverRoceTransProvider.  Adding a knob therefore means touching both
+// this table and the provider.
+constexpr std::string_view kRoceTransportKeys[] = {
+    "asu_roce_hca_name",
+    "asu_roce_hca_port",
+    "asu_roce_gid_index",
+    "asu_roce_sq_depth",
+    "asu_roce_rq_depth",
+    "asu_roce_cq_depth",
+    "asu_roce_inline_threshold",
+    "asu_roce_sl",
+    "asu_roce_traffic_class",
+    "asu_roce_qp_timeout",
+    "asu_roce_retry_cnt",
+    "asu_roce_rnr_retry",
+    "asu_roce_min_rnr_timer",
+    "asu_roce_qp_rd_atom",
+    "asu_roce_qp_backend",
+    "asu_roce_oob_role",
+    "asu_roce_oob_bind_ip",
+    "asu_roce_oob_connect_timeout_ms",
+    "asu_roce_handshake_timeout_ms",
+};
+
+// Every key in the table starts with the ASU store prefix, which is stripped before the
+// value reaches the transport provider.
+constexpr std::size_t kAsuKeyPrefixLength = std::string_view("asu_").size();
 
 void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlKey,
                     const std::string& attrKey, Config& config)
@@ -214,6 +247,11 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
             transportConfig.attrs["aicpu_send_timeout_ms"] =
                 std::to_string(*config.aicpuSendTimeoutMs);
         }
+    }
+
+    // The provider reads these attributes; backends that do not know a key ignore it.
+    for (const auto& entry : config.roceAttrs) {
+        transportConfig.attrs[entry.first] = entry.second;
     }
 
     if (!config.asuIps.empty()) {
@@ -628,6 +666,15 @@ private:
         ReadClientAttr(inConfig, "asu_batch_topk_affinity_dynamic_adjust_enabled",
                        "batch_topk_affinity.dynamic_adjust_enabled", config);
 
+        // Collected for every backend; only the transport provider consumes them.
+        for (const std::string_view key : kRoceTransportKeys) {
+            const std::string keyName(key);
+            std::string value;
+            if (TryGetStringLike(inConfig, keyName, value)) {
+                config.roceAttrs[keyName.substr(kAsuKeyPrefixLength)] = value;
+            }
+        }
+
         std::size_t tensorSize = 0;
         inConfig.GetNumber("tensor_size", tensorSize);
         if (tensorSize != 0) {
@@ -721,6 +768,14 @@ private:
         }
         if (config.transProviderType == kv::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
+        }
+        // The provider refuses to guess a GID table entry, so a cpu backend
+        // without the index would only fail on the first connection attempt.
+        if (config.transProviderType == kv::TransProviderType::CPU &&
+            config.roceAttrs.find("roce_gid_index") == config.roceAttrs.end()) {
+            return Status::InvalidParam(
+                "asu_roce_gid_index is required when asu_trans_provider_backend is cpu (the "
+                "provider does not choose a GID automatically)");
         }
         if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
             const auto& protocol = config.aicpuHcommProtocol;
@@ -979,6 +1034,9 @@ private:
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
+        for (const auto& [key, value] : config.roceAttrs) {
+            UC_INFO("Set AsuStore::TransportAttr {} to {}.", key, value);
+        }
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
         UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
         UC_INFO("Set AsuStore::FakeBackendCompleteImmediately to {}.",

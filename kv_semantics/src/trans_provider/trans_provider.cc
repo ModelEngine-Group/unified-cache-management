@@ -11,6 +11,7 @@
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
 #include "fake/fake_trans_provider.h"
 #endif
+#include "roce/cpu_kv_over_roce_trans_provider.h"
 
 namespace kv {
 
@@ -54,6 +55,12 @@ Status CreateTransProvider(const TransportConfig& config,
                 "AIV trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_AIV and set "
                 "KV_CLIENT_AIV_PROVIDER_ROOT");
 #endif
+        case TransProviderType::CPU:
+            // The provider is always built: without libibverbs the device half
+            // is the stub, which refuses to open an adapter but still runs the
+            // link protocol, so tests keep their coverage.
+            transProvider = roce::CreateCpuKvOverRoceTransProvider(config);
+            return Status::OK();
         case TransProviderType::UNSUPPORTED:
             return Status::Error(StatusCode::UNSUPPORTED,
                                  "ASU trans provider backend is not supported");

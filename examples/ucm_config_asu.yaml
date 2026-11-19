@@ -53,3 +53,31 @@ ucm_connectors:
 enable_event_sync: true
 use_layerwise: false
 persist_token_threshold: 0
+
+# ---------------------------------------------------------------------------
+# CPU-over-RoCE transport provider (asu_trans_provider_backend: "cpu").
+# The keys below are the ones the provider reads; see
+# kv_semantics/docs/guide/roce-provider.md for the full table and defaults.
+#
+#      asu_trans_provider_backend: "cpu"
+#      # Required: there is no automatic GID selection.
+#      asu_roce_gid_index: 0
+#      # Optional tuning.
+#      asu_roce_hca_name: "mlx5_0"
+#      asu_roce_hca_port: 1
+#      asu_roce_sl: 3
+#      asu_roce_traffic_class: 104
+#      asu_roce_qp_timeout: 17
+#      asu_roce_retry_cnt: 7
+#      asu_roce_rnr_retry: 7
+#      asu_roce_min_rnr_timer: 12
+#      asu_roce_qp_rd_atom: 16
+#      asu_roce_sq_depth: 256
+#      asu_roce_rq_depth: 64
+#      asu_roce_cq_depth: 512
+#      asu_roce_inline_threshold: 0
+#      asu_roce_qp_backend: "verbs"      # verbs | simulated
+#      asu_roce_oob_role: "client"       # client connects, server listens
+#      asu_roce_oob_bind_ip: "0.0.0.0"
+#      asu_roce_oob_connect_timeout_ms: 3000
+#      asu_roce_handshake_timeout_ms: 4000
