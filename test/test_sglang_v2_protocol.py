@@ -57,6 +57,8 @@ class RuntimeTest(unittest.TestCase):
             "unique_id": "sglang-test",
             "block_size": 8192,
             "device_id": 3,
+            "worker_index": 1,
+            "worker_number": 2,
         }
         self.runtime = runtime.Runtime(
             {"UCM_CONFIG_FILE": str(self.config_file)}, **self.runtime_args

@@ -63,6 +63,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         self.pools = {entry.name: entry for entry in self.layout.entries}
         self._coordinated_puts = self.layout.has_shared_shards
+        worker_index, worker_number = 0, 1
+        if tp_group is not None and dist.is_initialized():
+            worker_index = dist.get_rank(tp_group)
+            worker_number = dist.get_world_size(tp_group)
         self._dump_rank, self._dump_size = 0, 1
         if tp_group is not None and dist.is_initialized():
             if pool_group.rank_replicated:
@@ -91,6 +95,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
             unique_id=unique_id,
             block_size=max(self.layout.section_sizes.values()),
             device_id=self.layout.device_id,
+            worker_index=worker_index,
+            worker_number=worker_number,
             dump_partitions=self._dump_size,
             coordinated_puts=self._coordinated_puts,
         )

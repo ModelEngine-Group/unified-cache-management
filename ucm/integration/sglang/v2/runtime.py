@@ -26,6 +26,8 @@ class Runtime:
         unique_id: str,
         block_size: int,
         device_id: int,
+        worker_index: int = 0,
+        worker_number: int = 1,
         dump_partitions: int = 1,
         coordinated_puts: bool = False,
     ):
@@ -82,9 +84,17 @@ class Runtime:
                                 options.pop("unique_id", None)
                                 options.pop("block_size", None)
                                 options.pop("device_id", None)
+                                options.pop("worker_index", None)
+                                options.pop("worker_number", None)
         self.assembler = proxy().StoreAssembler(
             config,
-            {"unique_id": unique_id, "block_size": block_size, "device_id": device_id},
+            {
+                "unique_id": unique_id,
+                "block_size": block_size,
+                "device_id": device_id,
+                "worker_index": worker_index,
+                "worker_number": worker_number,
+            },
         )
         self.scheduler = self.assembler.get_scheduler()
         self.worker = self.assembler.get_worker()
