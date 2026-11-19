@@ -76,6 +76,7 @@ struct TestState {
     std::vector<KVBuffer> submittedEntries;
     std::vector<CacheKey> submittedKeys;
     std::vector<ResolvedCacheKey> submittedResolvedKeys;
+    std::vector<std::pair<std::uint32_t, std::vector<std::size_t>>> submittedNamespaceGroups;
     std::vector<NodeId> unregisterCalls;
     bool failRegister{false};
     bool failProviderBind{false};
@@ -253,6 +254,7 @@ public:
         if (!task) {
             return Status::Error(StatusCode::INVALID_ARGUMENT, "fake transport task is null");
         }
+        state_->submittedNamespaceGroups.emplace_back(task->namespaceId, task->originalIndices);
         state_->submittedEntries.clear();
         state_->submittedKeys.clear();
         state_->submittedResolvedKeys.clear();
@@ -2495,20 +2497,22 @@ TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffse
     config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
     ASSERT_TRUE(client->Init(config).ok());
     const std::vector<KVBuffer> entries{
-        {CacheKey::FromString("model@group:0@pp_rank:0@hash@7"), {}, 17},
-        {CacheKey::FromString("model@group:1@pp_rank:0@hash@7"), {}, 31}
+        {CacheKey::FromString("model@group:0@pp_rank:0@hash@7"),  {}, 17},
+        {CacheKey::FromString("model@group:1@pp_rank:0@hash@7"),  {}, 31},
+        {CacheKey::FromString("model@group:0@pp_rank:0@other@7"), {}, 47}
     };
-    const std::vector<CacheKey> keys{entries[0].key, entries[1].key};
+    const std::vector<CacheKey> keys{entries[0].key, entries[1].key, entries[2].key};
     auto resolver = CreateDefaultKeyResolver(config.keyResolution);
     IoOptions options;
     options.kvns = "tenant";
-    std::vector<ResolvedCacheKey> expected(2);
+    std::vector<ResolvedCacheKey> expected(keys.size());
     for (std::size_t i = 0; i < keys.size(); ++i) {
         ASSERT_TRUE(resolver->Resolve(keys[i], options.kvns, expected[i]).ok());
     }
     EXPECT_EQ(expected[0].keyBytes, expected[1].keyBytes);
     EXPECT_NE(expected[0].gnsid, expected[1].gnsid);
     for (int op = 0; op < 4; ++op) {
+        state->submittedNamespaceGroups.clear();
         TaskId task = kInvalidTaskId;
         auto status = op == 0   ? client->StoreAsync(entries, task, options)
                       : op == 1 ? client->LoadAsync(entries, task, options)
@@ -2517,12 +2521,15 @@ TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffse
         ASSERT_TRUE(status.ok()) << status.message;
         TaskResult result;
         ASSERT_TRUE(client->Wait(task, 100, result).ok());
-        ASSERT_EQ(state->submittedResolvedKeys.size(), 2U);
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            EXPECT_EQ(state->submittedResolvedKeys[i].keyBytes, expected[i].keyBytes);
-            EXPECT_EQ(state->submittedResolvedKeys[i].gnsid, expected[i].gnsid);
-            if (op < 2) { EXPECT_EQ(state->submittedEntries[i].offset, entries[i].offset); }
-        }
+        ASSERT_EQ(state->submittedNamespaceGroups.size(), 2U);
+        EXPECT_EQ(state->submittedNamespaceGroups[0],
+                  std::make_pair(expected[0].gnsid, std::vector<std::size_t>{0, 2}));
+        EXPECT_EQ(state->submittedNamespaceGroups[1],
+                  std::make_pair(expected[1].gnsid, std::vector<std::size_t>{1}));
+        ASSERT_EQ(state->submittedResolvedKeys.size(), 1U);
+        EXPECT_EQ(state->submittedResolvedKeys[0].keyBytes, expected[1].keyBytes);
+        if (op < 2) { EXPECT_EQ(state->submittedEntries[0].offset, entries[1].offset); }
+        EXPECT_EQ(result.entryStatus.size(), keys.size());
     }
     EXPECT_EQ(entries[0].key, keys[0]);
     EXPECT_EQ(entries[0].offset, 17U);

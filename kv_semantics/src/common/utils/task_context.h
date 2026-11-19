@@ -89,6 +89,7 @@ struct TransportTask {
     TransportTask();
 
     NodeId nodeId{0};
+    std::uint32_t namespaceId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;
