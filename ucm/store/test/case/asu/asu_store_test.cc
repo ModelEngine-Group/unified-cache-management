@@ -561,6 +561,26 @@ TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
     ASSERT_TRUE(status.Failure());
 }
 
+TEST(UCAsuStoreTest, CpuBackendRequiresTheGidIndex)
+{
+    // The provider never picks a GID table entry on its own, so a cpu backend
+    // without the index has to be rejected while the store is set up instead of
+    // failing on the first connection attempt.
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"cpu"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+
+    // The same configuration is accepted by a backend that ignores the RoCE
+    // knobs, which shows the rejection comes from the missing index alone.
+    UC::AsuStore::AsuStore fakeStore;
+    auto fakeConfig = MakeBaseConfig();
+    fakeConfig.Set("asu_ids", std::vector<ssize_t>{1001});
+    EXPECT_TRUE(fakeStore.Setup(fakeConfig).Success());
+}
+
 TEST(UCAsuStoreTest, ParsesKvNamespaces)
 {
     {

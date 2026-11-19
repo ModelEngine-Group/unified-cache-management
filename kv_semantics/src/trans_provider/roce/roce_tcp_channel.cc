@@ -371,6 +371,11 @@ Status Transfer(bool sending, int fd, const std::uint8_t* data, std::size_t size
                     std::to_string(size) + " bytes";
             return Status::Error(StatusCode::CONNECTION_ERROR, error);
         }
+        if (sending && step == 0) {
+            error = "peer stopped accepting data after " + std::to_string(done) + " of " +
+                    std::to_string(size) + " bytes";
+            return Status::Error(StatusCode::CONNECTION_ERROR, error);
+        }
         if (step < 0 && errno == EINTR) { continue; }
         if (step < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             const int budget = RemainingMs(deadline);

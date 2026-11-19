@@ -769,6 +769,14 @@ private:
         if (config.transProviderType == kv::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
         }
+        // The provider refuses to guess a GID table entry, so a cpu backend
+        // without the index would only fail on the first connection attempt.
+        if (config.transProviderType == kv::TransProviderType::CPU &&
+            config.roceAttrs.find("roce_gid_index") == config.roceAttrs.end()) {
+            return Status::InvalidParam(
+                "asu_roce_gid_index is required when asu_trans_provider_backend is cpu (the "
+                "provider does not choose a GID automatically)");
+        }
         if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
             const auto& protocol = config.aicpuHcommProtocol;
             if (protocol != "ubg" && protocol != "ubc_ctp" && protocol != "ub" &&

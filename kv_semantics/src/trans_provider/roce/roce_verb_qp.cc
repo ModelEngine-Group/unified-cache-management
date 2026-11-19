@@ -73,6 +73,7 @@ VerbDevice::VerbDevice(VerbDevice&& other) noexcept
       pd_(other.pd_),
       lid_(other.lid_),
       mtuCode_(other.mtuCode_),
+      maxQpRdAtom_(other.maxQpRdAtom_),
       gidIndex_(other.gidIndex_),
       name_(std::move(other.name_))
 {
@@ -90,6 +91,7 @@ VerbDevice& VerbDevice::operator=(VerbDevice&& other) noexcept
         pd_ = other.pd_;
         lid_ = other.lid_;
         mtuCode_ = other.mtuCode_;
+        maxQpRdAtom_ = other.maxQpRdAtom_;
         gidIndex_ = other.gidIndex_;
         name_ = std::move(other.name_);
         std::memcpy(gid_, other.gid_, sizeof(gid_));
@@ -196,6 +198,16 @@ Status VerbDevice::Open(const VerbQpConfig& config, VerbDevice& device, std::str
         return Fail(StatusCode::IO_ERROR, error);
     }
 
+    // max_dest_rd_atomic has to stay inside what the adapter can honour, so ask
+    // the device instead of trusting the peer's advertisement.
+    ibv_device_attr deviceAttributes{};
+    if (ibv_query_device(opened.context_, &deviceAttributes) == 0 &&
+        deviceAttributes.max_qp_rd_atom > 0) {
+        const int capacity =
+            deviceAttributes.max_qp_rd_atom > 0xFF ? 0xFF : deviceAttributes.max_qp_rd_atom;
+        opened.maxQpRdAtom_ = static_cast<std::uint8_t>(capacity);
+    }
+
     device = std::move(opened);
     return Status::OK();
 }
@@ -211,6 +223,8 @@ ibv_pd* VerbDevice::Pd() const noexcept { return pd_; }
 std::uint16_t VerbDevice::Lid() const noexcept { return lid_; }
 
 std::uint8_t VerbDevice::MtuCode() const noexcept { return mtuCode_; }
+
+std::uint8_t VerbDevice::MaxQpRdAtom() const noexcept { return maxQpRdAtom_; }
 
 std::uint32_t VerbDevice::GidIndex() const noexcept { return gidIndex_; }
 
@@ -282,9 +296,14 @@ Status VerbQp::Create(VerbDevice& device, const VerbQpConfig& config, VerbQp& qp
     attributes.cap.max_inline_data = config.inlineThreshold;
 
     created.qp_ = ibv_create_qp(device.Pd(), &attributes);
-    if (created.qp_ == nullptr && config.inlineThreshold > 0U) {
-        attributes.cap.max_inline_data = 0;
-        created.qp_ = ibv_create_qp(device.Pd(), &attributes);
+    if (created.qp_ == nullptr) {
+        // Only an inline reservation the adapter refused is worth retrying
+        // without it; the other failures must keep the error that explains them.
+        const int inlineFailure = errno;
+        if (config.inlineThreshold > 0U && inlineFailure == EINVAL) {
+            attributes.cap.max_inline_data = 0;
+            created.qp_ = ibv_create_qp(device.Pd(), &attributes);
+        }
     }
     if (created.qp_ == nullptr) {
         error = VerbsError("ibv_create_qp");
@@ -294,6 +313,15 @@ Status VerbQp::Create(VerbDevice& device, const VerbQpConfig& config, VerbQp& qp
     qp = std::move(created);
     return Status::OK();
 }
+
+namespace {
+std::uint8_t LocalReadAtomicDepth(const VerbQpConfig& config, const VerbDevice& device)
+{
+    const std::uint8_t requested = config.qpRdAtom == 0U ? 1U : config.qpRdAtom;
+    const std::uint8_t capacity = device.MaxQpRdAtom() == 0U ? 1U : device.MaxQpRdAtom();
+    return requested < capacity ? requested : capacity;
+}
+}  // namespace
 
 Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpInfo& peer,
                        std::uint32_t peerQpn, std::uint32_t linkPsn, std::string& error)
@@ -329,7 +357,10 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
     rtr.dest_qp_num = peerQpn;
     // The receive sequence number is the one the peer announced for its sends.
     rtr.rq_psn = peer.startPsn;
-    rtr.max_dest_rd_atomic = std::max<std::uint8_t>(peer.qpRdAtom, 1U);
+    // This is the depth this end promises for incoming read and atomic
+    // operations, so it follows the local policy and the adapter limit. The
+    // peer's qp_rd_atom bounds what it posts to us, not what we accept.
+    rtr.max_dest_rd_atomic = LocalReadAtomicDepth(config, device);
     rtr.min_rnr_timer = peer.rnrTimer;
     rtr.ah_attr.is_global = 1;
     rtr.ah_attr.dlid = peer.lid;
@@ -360,7 +391,7 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
     rts.rnr_retry = config.rnrRetryCnt;
     // One PSN covers the whole link, so every queue pair sends from it.
     rts.sq_psn = linkPsn;
-    rts.max_rd_atomic = std::max<std::uint8_t>(config.qpRdAtom, 1U);
+    rts.max_rd_atomic = LocalReadAtomicDepth(config, device);
     mask = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
            IBV_QP_MAX_QP_RD_ATOMIC;
     if (ibv_modify_qp(qp_, &rts, mask) != 0) {

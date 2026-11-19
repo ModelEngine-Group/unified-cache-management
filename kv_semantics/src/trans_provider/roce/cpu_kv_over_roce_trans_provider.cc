@@ -40,6 +40,11 @@ constexpr std::uint32_t kHandleIndexBits = 8;
 constexpr std::uint32_t kDefaultOutOfBandTimeoutMs = 3000;
 constexpr std::uint32_t kDefaultHandshakeTimeoutMs = 5000;
 
+// Announcing a teardown is best effort: the peer notices the closed socket
+// anyway, so this must not block the caller (or process exit) for as long as
+// a handshake would.
+constexpr std::uint32_t kDisconnectTimeoutMs = 200;
+
 constexpr const char* kAttrRole = "roce_oob_role";
 constexpr const char* kAttrBindIp = "roce_oob_bind_ip";
 constexpr const char* kAttrConnectTimeout = "roce_oob_connect_timeout_ms";
@@ -152,7 +157,9 @@ CpuKvOverRoceTransProvider::~CpuKvOverRoceTransProvider()
         // closed socket.
         std::vector<std::uint8_t> frame;
         std::string ignored;
-        if (EncodeDisconnect(frame).ok()) { static_cast<void>(SendFrame(*link, frame, ignored)); }
+        if (EncodeDisconnect(frame).ok()) {
+            static_cast<void>(SendFrame(*link, frame, ignored, kDisconnectTimeoutMs));
+        }
         TeardownLink(*link);
     }
     links_.clear();
@@ -385,7 +392,14 @@ Status CpuKvOverRoceTransProvider::SendFrame(const Link& link,
                                              const std::vector<std::uint8_t>& frame,
                                              std::string& error) const
 {
-    Status status = link.channel.SendAll(frame.data(), frame.size(), HandshakeTimeout(), error);
+    return SendFrame(link, frame, error, HandshakeTimeout());
+}
+
+Status CpuKvOverRoceTransProvider::SendFrame(const Link& link,
+                                             const std::vector<std::uint8_t>& frame,
+                                             std::string& error, std::uint32_t timeoutMs) const
+{
+    Status status = link.channel.SendAll(frame.data(), frame.size(), timeoutMs, error);
     if (!status.ok()) {
         error = "send of command " + std::to_string(frame[kWireCmdOffset]) + " failed: " + error;
         return Failure(status.code, error);
@@ -826,7 +840,7 @@ std::vector<Status> CpuKvOverRoceTransProvider::DeleteConnections(
                 if (EncodeDisconnect(frame).ok()) {
                     // The disconnect request is one-way as well: announce the
                     // teardown, then drop the link without waiting for an answer.
-                    static_cast<void>(SendFrame(*closing, frame, error));
+                    static_cast<void>(SendFrame(*closing, frame, error, kDisconnectTimeoutMs));
                 }
                 TeardownLink(*closing);
             }

@@ -65,7 +65,6 @@ persist_token_threshold: 0
 #      # Optional tuning.
 #      asu_roce_hca_name: "mlx5_0"
 #      asu_roce_hca_port: 1
-#      asu_roce_mtu: 4096
 #      asu_roce_sl: 3
 #      asu_roce_traffic_class: 104
 #      asu_roce_qp_timeout: 17
@@ -77,7 +76,6 @@ persist_token_threshold: 0
 #      asu_roce_rq_depth: 64
 #      asu_roce_cq_depth: 512
 #      asu_roce_inline_threshold: 0
-#      asu_roce_use_peermem: true
 #      asu_roce_qp_backend: "verbs"      # verbs | simulated
 #      asu_roce_oob_role: "client"       # client connects, server listens
 #      asu_roce_oob_bind_ip: "0.0.0.0"

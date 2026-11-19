@@ -81,6 +81,10 @@ public:
 
     std::uint8_t MtuCode() const noexcept;
 
+    // How many outstanding RDMA read and atomic operations this adapter
+    // supports per queue pair; the local policy is capped by it.
+    std::uint8_t MaxQpRdAtom() const noexcept;
+
     std::uint32_t GidIndex() const noexcept;
 
     const std::uint8_t* Gid() const noexcept;
@@ -90,6 +94,7 @@ private:
     ibv_pd* pd_{nullptr};
     std::uint16_t lid_{0};
     std::uint8_t mtuCode_{5};
+    std::uint8_t maxQpRdAtom_{1};
     std::uint32_t gidIndex_{0};
     std::uint8_t gid_[16]{};
     std::string name_;

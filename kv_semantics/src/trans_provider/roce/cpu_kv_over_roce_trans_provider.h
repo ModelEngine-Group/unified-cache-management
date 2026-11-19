@@ -182,6 +182,9 @@ private:
     Status SendFrame(const Link& link, const std::vector<std::uint8_t>& frame,
                      std::string& error) const;
 
+    Status SendFrame(const Link& link, const std::vector<std::uint8_t>& frame, std::string& error,
+                     std::uint32_t timeoutMs) const;
+
     Status ReceiveFrame(const Link& link, Message& message, std::string& error) const;
 
     Status ReceiveMessage(const Link& link, const std::vector<std::uint8_t>& acceptedCommands,
