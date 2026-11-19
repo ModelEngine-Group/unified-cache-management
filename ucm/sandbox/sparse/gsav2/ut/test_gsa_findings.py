@@ -48,9 +48,7 @@ class TestBuildSparseMetaNewReqArg:
         recorded = []
         # 实例级打桩：只记录收到的参数，绕过内部 gsa_stats 查找
         g._load_kv_dram = lambda req_id: recorded.append(req_id)
-        so = fakes.FakeSchedulerOutput(
-            num_scheduled_tokens={"r_new": 1}, new_reqs=[nr]
-        )
+        so = fakes.FakeSchedulerOutput(num_scheduled_tokens={"r_new": 1}, new_reqs=[nr])
         add = fakes.FakeAddReqState(
             block_ids=[[5]],
             prompt_token_ids=list(range(200)),
@@ -80,9 +78,7 @@ class TestSchedulerSlotsNumGuard:
     def _make_p_node_scheduler(self, make_gsa, monkeypatch):
         # PD 分离 P 节点：producer-only（is_kv_consumer=False → is_decode_node=False）
         monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", True)
-        return make_gsa(
-            role=UcmSparseRole.SCHEDULER, consumer=False, producer=True
-        )
+        return make_gsa(role=UcmSparseRole.SCHEDULER, consumer=False, producer=True)
 
     def test_fixed_scheduler_skips_attach(self, make_gsa, monkeypatch):
         """修复后行为：非 decode 的 scheduler 不创建/attach slots_num shm。"""

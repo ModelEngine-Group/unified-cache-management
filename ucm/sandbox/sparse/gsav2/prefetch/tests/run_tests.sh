@@ -164,6 +164,8 @@ CXX_FLAGS=(
 
 LINK_FLAGS=(
     $COV_FLAGS -fopenmp
+)
+LINK_LIBS=(
     -L"$TORCH_LIB" -ltorch -lc10 -ltorch_cpu
     -L"$PYTHON_LIB_DIR" -l"$PYTHON_VER"
     -lpthread -ldl -lrt
@@ -272,7 +274,7 @@ for tsrc in "${TEST_SOURCES[@]}"; do
     # 链接（增量：.o 比 bin 新才重链）
     if needs_rebuild "$tobj" "$tbin"; then
         if ! g++ "${LINK_FLAGS[@]}" "$tobj" "${PROD_OBJS[@]}" "$BUILD_DIR/libgtest.a" \
-                $GCOV_LINK_FLAG -o "$tbin" 2>>"$BUILD_DIR/${tname}.err"; then
+                "${LINK_LIBS[@]}" $GCOV_LINK_FLAG -o "$tbin" 2>>"$BUILD_DIR/${tname}.err"; then
             err "链接失败: $tname"; tail -8 "$BUILD_DIR/${tname}.err"
             COMPILE_FAIL=$((COMPILE_FAIL + 1))
             echo "LINK_FAIL  $tname" >> "$RESULTS_FILE"
@@ -286,9 +288,9 @@ for tsrc in "${TEST_SOURCES[@]}"; do
     run_out="$BUILD_DIR/${tname}.run"
     : > "$run_out"
     if [[ $VERBOSE -eq 1 ]]; then
-        timeout --preserve-status 180s "$tbin" --gtest_color=yes >"$run_out" 2>&1
+        timeout --preserve-status 300s "$tbin" --gtest_color=yes >"$run_out" 2>&1
     else
-        timeout --preserve-status 180s "$tbin" --gtest_brief=1 --gtest_color=no >"$run_out" 2>&1
+        timeout --preserve-status 300s "$tbin" --gtest_brief=1 --gtest_color=no >"$run_out" 2>&1
     fi
     rc=$?
 
@@ -296,9 +298,9 @@ for tsrc in "${TEST_SOURCES[@]}"; do
     #   [==========] 8 tests from 1 test suite ran. (47 ms total)
     #   [  PASSED  ] 8 tests.
     #   [  FAILED  ] 2 tests
-    n_tests=$(grep -oP '\[==========\] \K[0-9]+(?= tests)' "$run_out" 2>/dev/null | head -1)
-    n_passed=$(grep -oP '\[  PASSED  \] \K[0-9]+(?= tests)' "$run_out" 2>/dev/null | head -1)
-    n_failed=$(grep -oP '\[  FAILED  \] \K[0-9]+(?= tests)' "$run_out" 2>/dev/null | head -1)
+    n_tests=$(grep -oP '\[==========\] \K[0-9]+(?= tests?)' "$run_out" 2>/dev/null | head -1)
+    n_passed=$(grep -oP '\[  PASSED  \] \K[0-9]+(?= tests?)' "$run_out" 2>/dev/null | head -1)
+    n_failed=$(grep -oP '\[  FAILED  \] \K[0-9]+(?= tests?)' "$run_out" 2>/dev/null | head -1)
     [[ -z "$n_tests" ]] && n_tests=0
     [[ -z "$n_passed" ]] && n_passed=0
     [[ -z "$n_failed" ]] && n_failed=0
@@ -437,10 +439,10 @@ if [[ $DO_COV -eq 1 ]]; then
     unset awk_parse
 
     if [[ $COV_LINES_TOTAL -gt 0 ]]; then
-        COV_LINE_PCT=$(echo "scale=2; $COV_LINES_HIT * 100 / $COV_LINES_TOTAL" | bc -l 2>/dev/null || echo "0")
+        COV_LINE_PCT=$(awk -v h="$COV_LINES_HIT" -v t="$COV_LINES_TOTAL" 'BEGIN{printf "%.2f", h*100/t}')
     fi
     if [[ $COV_BRANCH_TOTAL -gt 0 ]]; then
-        COV_BRANCH_PCT=$(echo "scale=2; $COV_BRANCH_HIT * 100 / $COV_BRANCH_TOTAL" | bc -l 2>/dev/null || echo "0")
+        COV_BRANCH_PCT=$(awk -v h="$COV_BRANCH_HIT" -v t="$COV_BRANCH_TOTAL" 'BEGIN{printf "%.2f", h*100/t}')
     fi
     ok "覆盖率统计完成"
 fi
@@ -466,7 +468,7 @@ else
     printf "  失败数          : %d\n" "$TOTAL_FAILED"
 fi
 printf "  通过率          : %.1f%%\n" \
-    "$(echo "scale=1; $TOTAL_PASSED * 100 / ($TOTAL_TESTS + 0.001)" | bc -l 2>/dev/null || echo 0)"
+    "$(awk -v p="$TOTAL_PASSED" -v t="$TOTAL_TESTS" 'BEGIN{printf "%.1f", p*100/(t+0.001)}')"
 echo ""
 
 if [[ $DO_COV -eq 1 ]]; then

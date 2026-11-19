@@ -2292,9 +2292,7 @@ class TestSchedulerSide:
         md = gsa_mod.GSAMetaData(g._vllm_config, 2)
         md.gsa_stats["r_new"] = gsa_mod.GSAReqStat("r_new", g._vllm_config, 2)
         g.gsa_stats = md.gsa_stats
-        so = fakes.FakeSchedulerOutput(
-            num_scheduled_tokens={"r_new": 1}, new_reqs=[nr]
-        )
+        so = fakes.FakeSchedulerOutput(num_scheduled_tokens={"r_new": 1}, new_reqs=[nr])
         add = fakes.FakeAddReqState(
             block_ids=[[5]],
             prompt_token_ids=list(range(200)),

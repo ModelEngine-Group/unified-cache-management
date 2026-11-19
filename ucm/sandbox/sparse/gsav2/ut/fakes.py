@@ -262,8 +262,8 @@ class FakeUCMPrefetch:
     def __init__(self):
         self.calls = []
         self.lookup_results = None  # e.g. [[False]*4, [True]*4]
-        self.check_results = None   # e.g. [0, 1]（0=运行中，1=完成，负数=错误）
-        self.wait_results = None    # e.g. [0, -50003]（0=成功，负数=失败）
+        self.check_results = None  # e.g. [0, 1]（0=运行中，1=完成，负数=错误）
+        self.wait_results = None  # e.g. [0, -50003]（0=成功，负数=失败）
 
     def store_init(self, ptr, layer_num, tensor_count):
         self.calls.append(("store_init", ptr, layer_num, tensor_count))

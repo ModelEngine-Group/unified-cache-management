@@ -53,6 +53,11 @@ struct IndexerFixture {
         CleanupShmFor(dpRank);
         logFile = std::make_unique<TempLogFile>();
         store = std::make_unique<MockStoreV1>();
+        /* Indexer shards point straight into 32-byte device slots (see
+         * TryAppendInitShard: indexerBaseAddr + id * mIndexerSizeBytesBlock);
+         * the mock's default 4096-byte payload would overrun the fixture's
+         * 8*32 buffer and corrupt the heap. Match the block size instead. */
+        store->SetHostBufferPayload(/*bytesPerBlock=*/32, /*kvLayerBytes=*/32);
         auto model = MakeModelInfo(layerNum, 4096, /*spaTopkLen=*/32,
                                    /*streamNum=*/1, sparseLen, 1, /*dpRank=*/dpRank,
                                    /*tpSize=*/1, /*indexerOffload=*/1, /*isSfaC8=*/0, /*maxBs=*/2);

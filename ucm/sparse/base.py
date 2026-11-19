@@ -195,7 +195,9 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_finished(self, logits_indices: torch.Tensor, rec_result=None) -> torch.Tensor:
+    def execute_finished(
+        self, logits_indices: torch.Tensor, rec_result=None
+    ) -> torch.Tensor:
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """

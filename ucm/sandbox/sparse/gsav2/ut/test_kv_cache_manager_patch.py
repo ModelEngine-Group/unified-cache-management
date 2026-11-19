@@ -30,7 +30,7 @@ _UTILS.when_imported = lambda name: (lambda fn: fn)
 sys.modules.setdefault("ucm.integration.vllm.patch.utils", _UTILS)
 
 _MOD_PATH = (
-    Path(__file__).resolve().parents[1] / "patch" / "vllm" / "kv_cache_manager_patch.py"
+    Path(__file__).resolve().parents[1] / "patch" / "vllm" / "v0230" / "kv_cache_manager_patch.py"
 )
 
 
@@ -145,9 +145,7 @@ class TestAllocateSlotsGuard:
         mgr = _FakeKvCacheManager()
         req = _FakeRequest()
 
-        out = kcm_patch.allocate_slots(
-            mgr, req, num_new_tokens=8, num_slots_sparsed=-1
-        )
+        out = kcm_patch.allocate_slots(mgr, req, num_new_tokens=8, num_slots_sparsed=-1)
 
         assert out == ("NATIVE_BLOCKS", ("blk-0", "blk-1"))
         assert gsa.allocate_calls == []
@@ -159,9 +157,7 @@ class TestAllocateSlotsGuard:
         mgr = _FakeKvCacheManager()
         req = _FakeRequest()
 
-        out = kcm_patch.allocate_slots(
-            mgr, req, num_new_tokens=8, num_slots_sparsed=42
-        )
+        out = kcm_patch.allocate_slots(mgr, req, num_new_tokens=8, num_slots_sparsed=42)
 
         assert out == "GSA_ALLOCATED"
         assert gsa.allocate_calls == [("req-1", 42)]

@@ -43,15 +43,16 @@ constexpr int64_t kStatusNotFound = -50005;           /* Status::NotFound      *
 TEST(UCMKVPrefetch, StoreInitRejectsNullPointer)
 {
     UCMKVPrefetch p;
-    EXPECT_THROW(p.StoreInit(reinterpret_cast<uintptr_t>(nullptr), /*layerNum=*/78),
-                 std::runtime_error);
+    EXPECT_THROW(
+        p.StoreInit(reinterpret_cast<uintptr_t>(nullptr), /*layerNum=*/78, /*tensorCount*/4),
+        std::runtime_error);
 }
 
 TEST(UCMKVPrefetch, StoreInitAcceptsValidPointer)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     /* No exception. */
     SUCCEED();
 }
@@ -68,7 +69,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDReturnsInvalidParamForEmptyInput)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> empty;
     EXPECT_EQ(p.UCMLoadSSD(empty), kStatusInvalidParam);
     /* The store must not be touched for an empty request. */
@@ -79,7 +80,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDReturnsTaskHandleAndBuildsWarmTask)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/4);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/4, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1), MakeBlockId(2)};
     const auto ret = p.UCMLoadSSD(ids);
     /* > 0 task handle (first mock handle is 1), never a status code. */
@@ -91,7 +92,8 @@ TEST(UCMKVPrefetch, UCMLoadSSDReturnsTaskHandleAndBuildsWarmTask)
     /* Every shard is destination-less (cache-warm contract) and carries the
      * requested block ids with per-layer shard indices 0..layerNum-1. */
     for (size_t i = 0; i < store.calls[0].task.size(); ++i) {
-        EXPECT_TRUE(store.calls[0].task[i].addrs.empty());
+        ASSERT_EQ(store.calls[0].task[i].addrs.size(), 4u);
+        for (auto* addr : store.calls[0].task[i].addrs) { EXPECT_EQ(addr, nullptr); }
         EXPECT_EQ(store.calls[0].task[i].owner, ids[i / 4]);
         EXPECT_EQ(store.calls[0].task[i].index, i % 4);
     }
@@ -103,7 +105,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDReturnsStoreErrorOnFailure)
     MockStoreV1 store;
     store.loadFails = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     EXPECT_EQ(p.UCMLoadSSD(ids), kStatusError);
     ASSERT_EQ(store.calls.size(), 1u);
@@ -114,7 +116,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDUsesConfiguredLayerNumForShardCount)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/3);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/3, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto ret = p.UCMLoadSSD(ids);
     EXPECT_GT(ret, 0);
@@ -134,7 +136,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDRejectsStoreReturnedInvalidHandle)
         }
     } store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     EXPECT_EQ(p.UCMLoadSSD(ids), kStatusError);
 }
@@ -148,7 +150,7 @@ TEST(UCMKVPrefetch, UCMLoadSSDAndUCMWaitRoundtripWithoutBlocking)
     auto start = std::chrono::steady_clock::now();
     {
         UCMKVPrefetch p;
-        p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+        p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
         std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
         const auto handle = p.UCMLoadSSD(ids);
         ASSERT_GT(handle, 0);
@@ -169,7 +171,7 @@ TEST(UCMKVPrefetch, UCMCheckReturnsDoneWhenTaskFinished)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -185,7 +187,7 @@ TEST(UCMKVPrefetch, UCMCheckReturnsRunningWhenTaskInFlight)
     MockStoreV1 store;
     store.checkRunning = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -197,7 +199,7 @@ TEST(UCMKVPrefetch, UCMCheckReturnsErrorOnStoreFailure)
     MockStoreV1 store;
     store.checkFails = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -211,7 +213,7 @@ TEST(UCMKVPrefetch, UCMCheckReturnsNotFoundForConsumedHandle)
     MockStoreV1 store;
     store.checkNotFound = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -222,7 +224,7 @@ TEST(UCMKVPrefetch, UCMCheckRejectsInvalidHandle)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     EXPECT_EQ(p.UCMCheck(0), kStatusInvalidParam);
     /* The store must not be touched for an invalid handle. */
     EXPECT_TRUE(store.calls.empty());
@@ -240,7 +242,7 @@ TEST(UCMKVPrefetch, UCMWaitReturnsOkOnSuccess)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -252,7 +254,7 @@ TEST(UCMKVPrefetch, UCMWaitReturnsErrorOnStoreFailure)
     MockStoreV1 store;
     store.waitFails = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -264,7 +266,7 @@ TEST(UCMKVPrefetch, UCMWaitReturnsNotFoundForUnknownTask)
     MockStoreV1 store;
     store.waitNotFound = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     const auto handle = p.UCMLoadSSD(ids);
     ASSERT_GT(handle, 0);
@@ -275,7 +277,7 @@ TEST(UCMKVPrefetch, UCMWaitRejectsInvalidHandle)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     EXPECT_EQ(p.UCMWait(0), kStatusInvalidParam);
     EXPECT_TRUE(store.calls.empty());
 }
@@ -299,7 +301,7 @@ TEST(UCMKVPrefetch, UCMLookupReturnsEmptyForEmptyInput)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> empty;
     EXPECT_TRUE(p.UCMLookup(empty).empty());
 }
@@ -308,7 +310,7 @@ TEST(UCMKVPrefetch, UCMLookupReturnsExistenceVector)
 {
     MockStoreV1 store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1), MakeBlockId(2), MakeBlockId(3)};
     auto result = p.UCMLookup(ids);
     EXPECT_EQ(result.size(), ids.size());
@@ -320,7 +322,7 @@ TEST(UCMKVPrefetch, UCMLookupReturnsEmptyOnStoreFailure)
     MockStoreV1 store;
     store.lookupFails = true;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     EXPECT_TRUE(p.UCMLookup(ids).empty());
 }
@@ -336,7 +338,7 @@ TEST(UCMKVPrefetch, UCMLookupReturnsEmptyOnSizeMismatch)
         }
     } store;
     UCMKVPrefetch p;
-    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78);
+    p.StoreInit(reinterpret_cast<uintptr_t>(&store), /*layerNum=*/78, /*tensorCount*/4);
     std::vector<UC::Detail::BlockId> ids = {MakeBlockId(1)};
     EXPECT_TRUE(p.UCMLookup(ids).empty());
 }

@@ -1007,7 +1007,9 @@ class TestBuildSparseMeta:
     def test_early_return(self, make_worker, set_gsa_const):
         set_gsa_const(IS_OPEN_GSA=False)
         g, _ = make_worker()
-        gsa_module.GSAV2.build_sparse_meta(g, fakes.FakeSchedulerOutput(), {}, None, None)
+        gsa_module.GSAV2.build_sparse_meta(
+            g, fakes.FakeSchedulerOutput(), {}, None, None
+        )
 
     def test_full_flow(self, make_worker, set_gsa_const, kv_group_stub):
         set_gsa_const(SEG_PREFILL_THRESHOLD=8)

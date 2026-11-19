@@ -57,12 +57,20 @@ AIC_NUM = 24  # A2/A3 cube 核数(GetBlockNum())
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="bench splitKV for kv_quant_sparse_flash_attention_gsa")
+    p = argparse.ArgumentParser(
+        description="bench splitKV for kv_quant_sparse_flash_attention_gsa"
+    )
     p.add_argument("--bs", type=str, default="1,2,4,8,12,16,24,25,30,36,48,64,112,128")
     p.add_argument("--kv-len", type=int, default=32768)
-    p.add_argument("--sparse-count", type=int, default=5120, help="sparse_indices 最后一维 K")
-    p.add_argument("--valid-count", type=int, default=0,
-                   help="有效(非-1)索引个数, 0=全部有效; 尾部自动填 -1 padding")
+    p.add_argument(
+        "--sparse-count", type=int, default=5120, help="sparse_indices 最后一维 K"
+    )
+    p.add_argument(
+        "--valid-count",
+        type=int,
+        default=0,
+        help="有效(非-1)索引个数, 0=全部有效; 尾部自动填 -1 padding",
+    )
     p.add_argument("--gsize", type=int, default=32, help="n1/n2 (q heads per kv group)")
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     p.add_argument("--scale-value", type=float, default=0.0, help="0 表示 1/sqrt(576)")
@@ -70,11 +78,20 @@ def parse_args(argv=None):
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--check-only", action="store_true")
-    p.add_argument("--force-p", type=int, default=0, help=">0 时设置 QSFA_FORCE_SPLITKV 强制 P")
-    p.add_argument("--random-scale", action="store_true", help="随机 per-tile scale(默认全 1.0)")
+    p.add_argument(
+        "--force-p", type=int, default=0, help=">0 时设置 QSFA_FORCE_SPLITKV 强制 P"
+    )
+    p.add_argument(
+        "--random-scale", action="store_true", help="随机 per-tile scale(默认全 1.0)"
+    )
     # 内部参数(子进程模式)
-    p.add_argument("--state", type=str, default=None, choices=[None, "off", "auto"],
-                   help=argparse.SUPPRESS)
+    p.add_argument(
+        "--state",
+        type=str,
+        default=None,
+        choices=[None, "off", "auto"],
+        help=argparse.SUPPRESS,
+    )
     p.add_argument("--dump", type=str, default=None, help=argparse.SUPPRESS)
     p.add_argument("--timed", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -125,14 +142,18 @@ def expected_splitkv_p(task_num, s2_loops, aic=AIC_NUM):
     for x in candidates:
         if x == 0 or x > task_num:
             continue
-        sub_for_p = (sub_budget - (task_num - x)) // x if sub_budget > (task_num - x) else 0
+        sub_for_p = (
+            (sub_budget - (task_num - x)) // x if sub_budget > (task_num - x) else 0
+        )
         p_max = min(s2_loops, max_p, sub_for_p)
         for p in range(2, p_max + 1):
             sub_total = (task_num - x) + x * p
             if sub_total > sub_budget:
                 continue
             mk = simulate(x, p)
-            if mk < best_mk or (mk == best_mk and best_sub > 0 and sub_total < best_sub):
+            if mk < best_mk or (
+                mk == best_mk and best_sub > 0 and sub_total < best_sub
+            ):
                 best_p, best_tail, best_mk, best_sub = p, x, mk, sub_total
     if best_p >= 2 and best_mk * 4 <= base * 3:
         return best_p, best_tail, best_mk
@@ -146,27 +167,43 @@ def make_inputs(args, bs, device):
     dt = torch.bfloat16 if args.dtype == "bf16" else torch.float16
 
     # TND query: [T=bs*1, gsize, 576] (decode: 每batch 1个token)
-    query = (torch.randn(bs, args.gsize, HEAD_DIM + HEAD_DIM_ROPE, dtype=torch.float32) * 0.05).to(dt)
+    query = (
+        torch.randn(bs, args.gsize, HEAD_DIM + HEAD_DIM_ROPE, dtype=torch.float32)
+        * 0.05
+    ).to(dt)
 
     # PA_BSND packed KV: [totalBlocks, blockSize, 1(=kvHeadNum), PACK_DIM]
     blocks_per_batch = (args.kv_len + BLOCK_SIZE - 1) // BLOCK_SIZE
     total_blocks = bs * blocks_per_batch
-    kv = torch.randint(-64, 63, (total_blocks, BLOCK_SIZE, 1, PACK_DIM), dtype=torch.int8)
+    kv = torch.randint(
+        -64, 63, (total_blocks, BLOCK_SIZE, 1, PACK_DIM), dtype=torch.int8
+    )
     kv_bytes = kv.view(torch.uint8)
     rope_begin = HEAD_DIM
     rope_end = rope_begin + ROPE_BYTES
     # rope: 字节 [512, 640) 按 dt 解释
-    rope = (torch.randn(total_blocks, BLOCK_SIZE, 1, HEAD_DIM_ROPE, dtype=torch.float32) * 0.05).to(dt)
-    kv_bytes[..., rope_begin:rope_end] = rope.view(torch.uint8).reshape(total_blocks, BLOCK_SIZE, 1, -1)
+    rope = (
+        torch.randn(total_blocks, BLOCK_SIZE, 1, HEAD_DIM_ROPE, dtype=torch.float32)
+        * 0.05
+    ).to(dt)
+    kv_bytes[..., rope_begin:rope_end] = rope.view(torch.uint8).reshape(
+        total_blocks, BLOCK_SIZE, 1, -1
+    )
     # per-tile scale: 字节 [640, 656) 4 x fp32
     if args.random_scale:
-        scales = torch.rand(total_blocks, BLOCK_SIZE, 1, 4, dtype=torch.float32) * 0.5 + 0.5
+        scales = (
+            torch.rand(total_blocks, BLOCK_SIZE, 1, 4, dtype=torch.float32) * 0.5 + 0.5
+        )
     else:
         scales = torch.ones(total_blocks, BLOCK_SIZE, 1, 4, dtype=torch.float32)
-    kv_bytes[..., rope_end:] = scales.view(torch.uint8).reshape(total_blocks, BLOCK_SIZE, 1, -1)
+    kv_bytes[..., rope_end:] = scales.view(torch.uint8).reshape(
+        total_blocks, BLOCK_SIZE, 1, -1
+    )
 
     # block_table: [bs, blocksPerBatch] int32 (连续块编号, token i -> bt[b, i//128]块的 i%128行)
-    block_table = torch.arange(total_blocks, dtype=torch.int32).reshape(bs, blocks_per_batch)
+    block_table = torch.arange(total_blocks, dtype=torch.int32).reshape(
+        bs, blocks_per_batch
+    )
 
     # sparse_indices: TND [T=bs, 1, K], 稠密前缀 + 尾部 -1
     valid = args.valid_count if args.valid_count > 0 else args.sparse_count
@@ -179,25 +216,46 @@ def make_inputs(args, bs, device):
     # TND: actual_seq_lens_q 为前缀和(decode 每 batch 1 token -> [1,2,...,bs])
     seq_q = torch.cumsum(torch.ones(bs, dtype=torch.int32), 0).to(torch.int32)
     seq_kv = torch.full((bs,), args.kv_len, dtype=torch.int32)
-    return query.to(device), kv.to(device), indices.to(device), seq_q.to(device), \
-        seq_kv.to(device), block_table.to(device)
+    return (
+        query.to(device),
+        kv.to(device),
+        indices.to(device),
+        seq_q.to(device),
+        seq_kv.to(device),
+        block_table.to(device),
+    )
 
 
 def run_op(args, query, kv, indices, seq_q, seq_kv, block_table):
     # 生产签名: layout_query=TND, layout_kv=PA_BSND, sparse_mode=3, attention_mode=2(MLA-absorb),
     # quant_scale_repo_mode=1(COMBINE packed), pre/next tokens INT64_MAX(mode3下内核自行推导)
     out = torch.ops._C_gsa.npu_kv_quant_sparse_flash_attention_gsa(
-        query, kv, kv, indices,
-        args.scale_value, 2, 2,            # key/value quant mode: 2=per-tile
-        None, None, block_table,           # dequant scale 走 COMBINE packed; PA_BSND 需 block_table
-        seq_q, seq_kv,
-        None, None,                        # sinks, actualSparseLengths
-        1,                                 # sparse_block_size
-        "TND", "PA_BSND",
-        3,                                 # sparse_mode: right-down causal
-        9223372036854775807, 9223372036854775807,  # pre/next tokens (mode3 下内核自行推导)
-        2, 1,                              # attention_mode=2(MLA-absorb), quant_scale_repo_mode=COMBINE
-        128, 64, False)                    # tile_size, rope_head_dim, return_softmax_lse
+        query,
+        kv,
+        kv,
+        indices,
+        args.scale_value,
+        2,
+        2,  # key/value quant mode: 2=per-tile
+        None,
+        None,
+        block_table,  # dequant scale 走 COMBINE packed; PA_BSND 需 block_table
+        seq_q,
+        seq_kv,
+        None,
+        None,  # sinks, actualSparseLengths
+        1,  # sparse_block_size
+        "TND",
+        "PA_BSND",
+        3,  # sparse_mode: right-down causal
+        9223372036854775807,
+        9223372036854775807,  # pre/next tokens (mode3 下内核自行推导)
+        2,
+        1,  # attention_mode=2(MLA-absorb), quant_scale_repo_mode=COMBINE
+        128,
+        64,
+        False,
+    )  # tile_size, rope_head_dim, return_softmax_lse
     return out[0] if isinstance(out, tuple) else out
 
 
@@ -217,15 +275,22 @@ def reference(args, query, kv, indices, block_table):
         blk = bt[b][idx // BLOCK_SIZE]
         sel = kv_cpu[blk, idx % BLOCK_SIZE, 0].contiguous()  # [K, 656] int8
         nope_dq = sel[:, :HEAD_DIM].to(torch.float32)  # int8 -> fp32(带符号)
-        scales = sel[:, HEAD_DIM + ROPE_BYTES:] \
-            .contiguous().view(torch.float32)  # [K, 4]
-        rope = sel[:, HEAD_DIM:HEAD_DIM + ROPE_BYTES] \
-            .contiguous().view(dt).to(torch.float32)  # [K, 64]
+        scales = (
+            sel[:, HEAD_DIM + ROPE_BYTES :].contiguous().view(torch.float32)
+        )  # [K, 4]
+        rope = (
+            sel[:, HEAD_DIM : HEAD_DIM + ROPE_BYTES]
+            .contiguous()
+            .view(dt)
+            .to(torch.float32)
+        )  # [K, 64]
         nope_dq = nope_dq * scales.repeat_interleave(HEAD_DIM // 4, dim=-1)
         k_n = nope_dq
         k_p = rope
         qq = q[b]  # [G, 576]
-        scores = (qq[:, :HEAD_DIM] @ k_n.T + qq[:, HEAD_DIM:] @ k_p.T) * args.scale_value
+        scores = (
+            qq[:, :HEAD_DIM] @ k_n.T + qq[:, HEAD_DIM:] @ k_p.T
+        ) * args.scale_value
         p = torch.softmax(scores, dim=-1)
         out[b] = p @ k_n
     return out
@@ -233,14 +298,37 @@ def reference(args, query, kv, indices, block_table):
 
 def run_child(args, bs):
     """在独立子进程中以指定 state 跑一次算子(保存输出) + 可选计时。"""
-    dump = os.path.join(tempfile.gettempdir(), "bench_splitkv_%s_bs%d.pt" % (args.state, bs))
-    cmd = [sys.executable, os.path.abspath(__file__),
-           "--bs", str(bs), "--kv-len", str(args.kv_len),
-           "--sparse-count", str(args.sparse_count), "--valid-count", str(args.valid_count),
-           "--gsize", str(args.gsize), "--dtype", args.dtype,
-           "--scale-value", str(args.scale_value),
-           "--warmup", str(args.warmup), "--iters", str(args.iters),
-           "--seed", str(args.seed), "--state", args.state, "--dump", dump]
+    dump = os.path.join(
+        tempfile.gettempdir(), "bench_splitkv_%s_bs%d.pt" % (args.state, bs)
+    )
+    cmd = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--bs",
+        str(bs),
+        "--kv-len",
+        str(args.kv_len),
+        "--sparse-count",
+        str(args.sparse_count),
+        "--valid-count",
+        str(args.valid_count),
+        "--gsize",
+        str(args.gsize),
+        "--dtype",
+        args.dtype,
+        "--scale-value",
+        str(args.scale_value),
+        "--warmup",
+        str(args.warmup),
+        "--iters",
+        str(args.iters),
+        "--seed",
+        str(args.seed),
+        "--state",
+        args.state,
+        "--dump",
+        dump,
+    ]
     if args.force_p > 0:
         cmd += ["--force-p", str(args.force_p)]
     if args.random_scale:
@@ -267,6 +355,7 @@ def child_main(args):
         print("[child] torch.npu 不可用")
         sys.exit(2)
     import gsa_ops  # noqa: F401  加载 torch.ops._C_gsa 注册
+
     if args.state == "off":
         os.environ["QSFA_DISABLE_SPLITKV"] = "1"
     elif args.force_p > 0:
@@ -303,9 +392,18 @@ def main():
     valid = args.valid_count if args.valid_count > 0 else args.sparse_count
     s2_loops = (min(valid, args.kv_len) + S_INNER - 1) // S_INNER
 
-    print("[bench] dtype=%s gsize=%d kv_len=%d sparse=%d(valid=%d) scale=%.6f iters=%d" %
-          (args.dtype, args.gsize, args.kv_len, args.sparse_count, valid,
-           args.scale_value, args.iters))
+    print(
+        "[bench] dtype=%s gsize=%d kv_len=%d sparse=%d(valid=%d) scale=%.6f iters=%d"
+        % (
+            args.dtype,
+            args.gsize,
+            args.kv_len,
+            args.sparse_count,
+            valid,
+            args.scale_value,
+            args.iters,
+        )
+    )
     if args.force_p > 0:
         print("[bench] QSFA_FORCE_SPLITKV=%d (强制 combine 路径验证)" % args.force_p)
     print("bs\ttaskNum\ts2Loops\tP/tail(model)\toff_ms\tauto_ms\tspeedup")
@@ -332,11 +430,22 @@ def main():
         ok_ref = torch.allclose(out_on, ref, rtol=tol, atol=tol)
 
         status = "PASS" if (ok_onoff and ok_ref) else ("WARN" if ok_onoff else "FAIL")
-        print("[check] bs=%-3d on-vs-off max=%.3e(%s) on-vs-ref=%.3e off-vs-ref=%.3e ref_tol=%.0e [%s]" %
-              (bs, diff_onoff, "ok" if ok_onoff else "MISMATCH",
-               diff_on_ref, diff_off_ref, tol, status))
+        print(
+            "[check] bs=%-3d on-vs-off max=%.3e(%s) on-vs-ref=%.3e off-vs-ref=%.3e ref_tol=%.0e [%s]"
+            % (
+                bs,
+                diff_onoff,
+                "ok" if ok_onoff else "MISMATCH",
+                diff_on_ref,
+                diff_off_ref,
+                tol,
+                status,
+            )
+        )
         if not ok_onoff:
-            print("[check] splitKV 开/关结果不一致——combine 路径存在正确性问题, 跳过该 bs 计时")
+            print(
+                "[check] splitKV 开/关结果不一致——combine 路径存在正确性问题, 跳过该 bs 计时"
+            )
             continue
 
         if args.check_only or ms_auto is None:
@@ -350,11 +459,15 @@ def main():
             continue
 
         speedup = ms_off / ms_auto if ms_auto > 0 else float("inf")
-        print("%d\t%d\t%d\t%d/%d\t%.3f\t%.3f\t%.2fx" %
-              (bs, bs, s2_loops, p_model, tail_model, ms_off, ms_auto, speedup))
+        print(
+            "%d\t%d\t%d\t%d/%d\t%.3f\t%.3f\t%.2fx"
+            % (bs, bs, s2_loops, p_model, tail_model, ms_off, ms_auto, speedup)
+        )
 
-    print("[bench] done. (P/tail(model)=host DecideSplitKV 同模型预期值(P/尾波任务数); "
-          "实际决策可用 ASCEND_GLOBAL_LOG_LEVEL=1 从 plog 中 grep 'splitKV enabled')")
+    print(
+        "[bench] done. (P/tail(model)=host DecideSplitKV 同模型预期值(P/尾波任务数); "
+        "实际决策可用 ASCEND_GLOBAL_LOG_LEVEL=1 从 plog 中 grep 'splitKV enabled')"
+    )
 
 
 if __name__ == "__main__":
