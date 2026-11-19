@@ -145,9 +145,7 @@ class TestAllocateSlotsGuard:
         mgr = _FakeKvCacheManager()
         req = _FakeRequest()
 
-        out = kcm_patch.allocate_slots(
-            mgr, req, num_new_tokens=8, num_slots_sparsed=-1
-        )
+        out = kcm_patch.allocate_slots(mgr, req, num_new_tokens=8, num_slots_sparsed=-1)
 
         assert out == ("NATIVE_BLOCKS", ("blk-0", "blk-1"))
         assert gsa.allocate_calls == []
@@ -159,9 +157,7 @@ class TestAllocateSlotsGuard:
         mgr = _FakeKvCacheManager()
         req = _FakeRequest()
 
-        out = kcm_patch.allocate_slots(
-            mgr, req, num_new_tokens=8, num_slots_sparsed=42
-        )
+        out = kcm_patch.allocate_slots(mgr, req, num_new_tokens=8, num_slots_sparsed=42)
 
         assert out == "GSA_ALLOCATED"
         assert gsa.allocate_calls == [("req-1", 42)]

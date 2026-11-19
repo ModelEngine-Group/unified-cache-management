@@ -64,6 +64,7 @@ from ucm.sparse.base import (
     UcmSparseRole,
 )
 from ucm.sparse.utils import (
+    DEFAULT_TOPK_LEN,
     GSA_SPARSE_LEN,
     INDEXER_OFFLOAD_BLOCKS,
     INDEXER_PREFETCH_RATIO,
@@ -84,7 +85,6 @@ from ucm.sparse.utils import (
     STREAM_NUM,
     VLLM_ASCEND_VERSION,
     WARMUP_TOPK_LEN,
-    DEFAULT_TOPK_LEN,
     DSAInputStruct,
     TopkIndices,
     bind_thread_memory_policy,
@@ -324,12 +324,10 @@ class GSAReqStat:
     def _apply_preempt_token_lens(self, add_req_state, preempt_req_output_tokens):
         """抢占恢复：以 original prompt 为准重算 token/块计数。"""
         self.num_prompt_tokens = (
-            len(add_req_state.prompt_token_ids)
-            + preempt_req_output_tokens[self.req_id]
+            len(add_req_state.prompt_token_ids) + preempt_req_output_tokens[self.req_id]
         )
         self.num_output_tokens = (
-            len(add_req_state.output_token_ids)
-            - preempt_req_output_tokens[self.req_id]
+            len(add_req_state.output_token_ids) - preempt_req_output_tokens[self.req_id]
         )
         self.original_prompt_tokens = len(add_req_state.prompt_token_ids)
         self.non_ucm_block_count = (
@@ -467,11 +465,7 @@ class GSAV2(UcmSparseBase):
         self._init_runtime_state()
         self._init_speculative_config(vllm_config)
         self._init_slots_num_manager(role)
-        if (
-            role == UcmSparseRole.WORKER
-            and IS_OPEN_GSA
-            and self.is_decode_node
-        ):
+        if role == UcmSparseRole.WORKER and IS_OPEN_GSA and self.is_decode_node:
             self._init_worker_shared_tables()
             self._init_worker_logger_and_pools(vllm_config)
             self._init_worker_indexer_state(vllm_config)
@@ -752,8 +746,9 @@ class GSAV2(UcmSparseBase):
         self.cudagraph_capture_sizes = (
             vllm_config.compilation_config.cudagraph_capture_sizes
         )
-        max_graph_bs = max(max(self.cudagraph_capture_sizes),
-            self.max_bs * self.num_spec_tokens)
+        max_graph_bs = max(
+            max(self.cudagraph_capture_sizes), self.max_bs * self.num_spec_tokens
+        )
         self._init_gsa_dsa_buffers(vllm_config, max_graph_bs)
         self._init_gsa_swap_buffers(max_graph_bs)
         if IS_INDEXER_OFFLOAD:
@@ -899,16 +894,14 @@ class GSAV2(UcmSparseBase):
             return False
         self.prefetch_engine.prefetch_engine_c.set_store_v1(store_ptr)
         layout = getattr(connector, "kv_cache_layout", None)
-        tensor_count = (3 if self.enable_sparse_sfa_c8 else 4)
+        tensor_count = 3 if self.enable_sparse_sfa_c8 else 4
         if layout is not None:
             tensor_count = len(layout.tensor_size_list)
             if tensor_count > 0:
                 self.prefetch_engine.prefetch_engine_c.set_store_tensor_count(
                     tensor_count
                 )
-                logger.info(
-                    "[GSA Store Inject] store tensor count=%d", tensor_count
-                )
+                logger.info("[GSA Store Inject] store tensor count=%d", tensor_count)
         actual_store_ptr = self.prefetch_engine.prefetch_engine_c.get_store_v1_ptr()
         cpp_self_ptr = self.prefetch_engine.prefetch_engine_c.get_self_ptr()
         self.ucm_prefetch_engine.store_init(store_ptr, self.layer_num, tensor_count)
@@ -1602,9 +1595,7 @@ class GSAV2(UcmSparseBase):
         # req=DEFAULT_TOPK_LEN、padding req=0（kernel effCount=0 跳过）。req 域
         # 边界为 num_reqs_padded，勿用 token 域的 num_actual_tokens。
         num_reqs_actual = len(self.req_ids_bs)
-        self.actual_sparse_lengths.np[
-            num_reqs_actual : self.num_reqs_padded
-        ] = 0
+        self.actual_sparse_lengths.np[num_reqs_actual : self.num_reqs_padded] = 0
         self.actual_sparse_lengths.copy_to_npu(self.num_reqs_padded)
         indexer_len = 0
         if IS_INDEXER_OFFLOAD:
@@ -1853,7 +1844,9 @@ class GSAV2(UcmSparseBase):
         # num_actual_tokens: 真实调度 token 数（不含图模式 padding）。token 域，
         # 供 token 域 buffer（gsa_swap_index 等）参考；actual_sparse_lengths 是
         # req 域，padding 边界用下面的 num_reqs_padded，勿混用。
-        self.num_actual_tokens = getattr(attn, "num_actual_tokens", attn.num_input_tokens)
+        self.num_actual_tokens = getattr(
+            attn, "num_actual_tokens", attn.num_input_tokens
+        )
         # num_reqs_padded: kernel batchSize = len(actual_seq_lengths_query) =
         # len(cum_query_lens)（req 域，图模式含 pad 到 capture size 的空 req）。
         # actual_sparse_lengths 按此长度切片下发。
@@ -1928,10 +1921,7 @@ class GSAV2(UcmSparseBase):
         indexer_new_blocks_len: list,
     ):
         """从共享内存池分配 block_len 个新块（KV slab 与 indexer 各一套）。"""
-        if (
-            IS_INDEXER_OFFLOAD
-            and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD
-        ):
+        if IS_INDEXER_OFFLOAD and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
             if self.rank == 0:
                 req_meta.new_block_id = self.gsa_cpu_shared_pool.allocate(block_len)
                 req_meta.slab_host_slot += req_meta.new_block_id
@@ -2423,10 +2413,7 @@ class GSAV2(UcmSparseBase):
                 # torch 静默回绕取错 topk）。
                 rec = rec_result[index_in_batch]
                 req_seq_len[index] = (
-                    req_meta.get_seq_len()
-                    - self.num_spec_tokens
-                    + rec
-                    + 1
+                    req_meta.get_seq_len() - self.num_spec_tokens + rec + 1
                 )
                 topk_col = index * self.num_spec_tokens + max(rec, 0)
                 index_list.append(topk_col)
@@ -2506,9 +2493,7 @@ class GSAV2(UcmSparseBase):
             if stats[rid].stage() == SequenceStage.DECODE
         ]
         self.gsa_index = [
-            stats[rid].index_in_batch
-            for rid in req_ids
-            if stats[rid].is_gsa()
+            stats[rid].index_in_batch for rid in req_ids if stats[rid].is_gsa()
         ]
         prefetch_trigger_output = 1 if self.is_pd_mix else 0
         num_output_one = [

@@ -52,6 +52,11 @@ protected:
         CleanupShmFor(dpRank);
         logFile = std::make_unique<TempLogFile>();
         store = std::make_unique<MockStoreV1>();
+        /* Indexer slots are 16 bytes (SeedIndexer: mIndexerSizeBytesBlock=16)
+         * inside 256-byte per-layer buffers; the mock's default 4096-byte
+         * payload would overrun them and corrupt the heap. Match the block
+         * size so each slot write stays in bounds. */
+        store->SetHostBufferPayload(/*bytesPerBlock=*/16, /*kvLayerBytes=*/16);
     }
     void TearDown() override
     {

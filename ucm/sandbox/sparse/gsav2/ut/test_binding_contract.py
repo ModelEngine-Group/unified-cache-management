@@ -48,12 +48,8 @@ KNOWN_MISMATCHES = {
 }
 
 _DEF_RE = re.compile(r'\.def\(\s*"([A-Za-z_][A-Za-z0-9_]*)"')
-_ENGINE_CALL_RE = re.compile(
-    r"prefetch_engine_c\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\("
-)
-_UCM_CALL_RE = re.compile(
-    r"ucm_prefetch_engine\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\("
-)
+_ENGINE_CALL_RE = re.compile(r"prefetch_engine_c\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_UCM_CALL_RE = re.compile(r"ucm_prefetch_engine\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 # FakeEngineC / FakeUCMPrefetch 中认定为"模拟绑定"的方法名前缀
 # （called / init_args 等纯测试辅助设施不属于绑定风格，自动排除）。
@@ -122,9 +118,11 @@ class TestEngineBindingContract:
     def test_no_new_unbound_calls(self):
         """账本之外不允许出现任何"调用了但未导出"的引擎方法。"""
         engine_bindings, _ = parse_bindings()
-        missing = scan_engine_calls() - {
-            (f, n) for f, n in KNOWN_MISMATCHES
-        } - {(f, n) for f, n in scan_engine_calls() if n in engine_bindings}
+        missing = (
+            scan_engine_calls()
+            - {(f, n) for f, n in KNOWN_MISMATCHES}
+            - {(f, n) for f, n in scan_engine_calls() if n in engine_bindings}
+        )
         assert not missing, (
             f"以下 prefetch_engine_c 调用在 pybinds.cpp 中没有对应 .def 绑定，"
             f"运行时会 AttributeError：{sorted(missing)}\n"
@@ -152,12 +150,10 @@ class TestEngineBindingContract:
     def test_ucm_prefetch_calls_have_bindings(self):
         """ucm_prefetch_engine（UCMKVPrefetch）调用点必须有对应绑定。"""
         _, ucm_bindings = parse_bindings()
-        missing = {
-            (f, n) for f, n in scan_ucm_calls() if n not in ucm_bindings
-        }
-        assert not missing, (
-            f"以下 ucm_prefetch_engine 调用没有对应绑定：{sorted(missing)}"
-        )
+        missing = {(f, n) for f, n in scan_ucm_calls() if n not in ucm_bindings}
+        assert (
+            not missing
+        ), f"以下 ucm_prefetch_engine 调用没有对应绑定：{sorted(missing)}"
 
     def test_fake_engine_methods_are_real_bindings(self):
         """FakeEngineC / FakeUCMPrefetch 的绑定风格方法不得超出真实绑定 ∪ 账本。
@@ -171,14 +167,14 @@ class TestEngineBindingContract:
         allowed_engine = engine_bindings | {n for _, n in KNOWN_MISMATCHES}
         engine_fakes = _fake_binding_style_methods(fakes.FakeEngineC)
         unknown = engine_fakes - allowed_engine
-        assert not unknown, (
-            f"FakeEngineC 实现了真实绑定中不存在且未登记账本的方法：{sorted(unknown)}"
-        )
+        assert (
+            not unknown
+        ), f"FakeEngineC 实现了真实绑定中不存在且未登记账本的方法：{sorted(unknown)}"
         ucm_fakes = _fake_binding_style_methods(fakes.FakeUCMPrefetch)
         unknown_ucm = ucm_fakes - ucm_bindings
-        assert not unknown_ucm, (
-            f"FakeUCMPrefetch 实现了真实绑定中不存在的方法：{sorted(unknown_ucm)}"
-        )
+        assert (
+            not unknown_ucm
+        ), f"FakeUCMPrefetch 实现了真实绑定中不存在的方法：{sorted(unknown_ucm)}"
 
     def test_binding_set_nonempty_and_key_names_present(self):
         """解析结果健全性：关键绑定必须在位（防止 pybinds.cpp 结构变化导致空集假绿）。"""
@@ -187,9 +183,13 @@ class TestEngineBindingContract:
             engine_bindings
         )
         assert "set_last_indexer_block" in engine_bindings
-        assert {"store_init", "ucm_lookup", "ucm_load_ssd", "ucm_check", "ucm_wait"} <= (
-            ucm_bindings
-        )
+        assert {
+            "store_init",
+            "ucm_lookup",
+            "ucm_load_ssd",
+            "ucm_check",
+            "ucm_wait",
+        } <= (ucm_bindings)
 
 
 class TestMergeBaselineDocs:
@@ -221,13 +221,9 @@ if __name__ == "__main__":  # 独立运行：py -3 -X utf8 test_binding_contract
         if n not in engine_bindings and (f, n) not in KNOWN_MISMATCHES
     }
     ledger_stale = [
-        e
-        for e in KNOWN_MISMATCHES
-        if e not in discovered or e[1] in engine_bindings
+        e for e in KNOWN_MISMATCHES if e not in discovered or e[1] in engine_bindings
     ]
-    ucm_missing = {
-        (f, n) for f, n in scan_ucm_calls() if n not in ucm_bindings
-    }
+    ucm_missing = {(f, n) for f, n in scan_ucm_calls() if n not in ucm_bindings}
     print(f"[contract] engine bindings: {len(engine_bindings)}")
     print(f"[contract] engine call sites: {len(discovered)} (files: 2)")
     print(f"[contract] 未导出且不在账本: {sorted(missing) or '无'}")

@@ -1,17 +1,17 @@
 import contextlib
+import faulthandler
 import json
+import math
 import os
 import sys
 import time
-import math
-import faulthandler
-import json
 from dataclasses import asdict, fields
-from transformers import AutoTokenizer
 
+from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
 from vllm.engine.arg_utils import EngineArgs
+
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -65,7 +65,7 @@ def create_prompt(sample) -> str:
     options_text = ""
     if sample.get("choice_A"):
         options_text = f"A) {sample.get('choice_A', '')}\nB) {sample.get('choice_B', '')}\nC) {sample.get('choice_C', '')}\nD) {sample.get('choice_D', '')}\n"
-    
+
     prompt = f"""Please read the following context carefully and answer the question based on the it.
 
 Context:
@@ -120,9 +120,7 @@ def build_llm_with_uc(model: str, max_bs: int):
         compilation_config={
             "cudagraph_mode": "FULL_DECODE_ONLY",
             "cudagraph_capture_sizes": [4, 16, 32, 64, 96, 128],
-            "pass_config": {
-                "fuse_minimax_qk_norm": False
-            }
+            "pass_config": {"fuse_minimax_qk_norm": False},
         },
         additional_config={
             "pa_shape_list": [48, 64, 72, 80],
@@ -132,16 +130,19 @@ def build_llm_with_uc(model: str, max_bs: int):
             "enable_mlapo": True,
             "enable_sparse_sfa_c8": True,
             "enable_sparse_li_c8": True,
-            "ascend_fusion_config": {"fusion_ops_gmmswigluquant": False}
+            "ascend_fusion_config": {"fusion_ops_gmmswigluquant": False},
         },
         enable_prefix_caching=True,
         enable_expert_parallel=True,
         quantization="ascend",
-        speculative_config={"method": "mtp", "num_speculative_tokens": 3, "enforce_eager": True}
+        speculative_config={
+            "method": "mtp",
+            "num_speculative_tokens": 3,
+            "enforce_eager": True,
+        },
     )
     llm_kwargs = {
-        field.name: getattr(llm_args, field.name)
-        for field in fields(llm_args)
+        field.name: getattr(llm_args, field.name) for field in fields(llm_args)
     }
     llm = LLM(**llm_kwargs)
     try:

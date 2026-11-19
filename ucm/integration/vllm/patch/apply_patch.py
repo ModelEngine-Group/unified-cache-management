@@ -45,8 +45,7 @@ ENABLE_GSA_PATCH = os.environ.get("ENABLE_GSA_PATCH", "").lower() in ("1", "true
 
 
 def _preflight_gsa_cust_opapi() -> bool:
-    """预检 libcust_opapi.so 提供 GSA aclnn 符号（部署问题前移到启动期）。
-    """
+    """预检 libcust_opapi.so 提供 GSA aclnn 符号（部署问题前移到启动期）。"""
     import ctypes
 
     try:
@@ -85,12 +84,12 @@ def _preflight_gsa_cust_opapi() -> bool:
 
 
 def _ensure_gsa_ops_loaded() -> None:
-    """加载 gsa_ops C++ 扩展，注册 torch.ops._C_gsa 命名空间。
-    """
+    """加载 gsa_ops C++ 扩展，注册 torch.ops._C_gsa 命名空间。"""
     if not ENABLE_GSA_PATCH:
         return
     try:
         import gsa_ops  # noqa: F401  触发 torch.ops._C_gsa 注册
+
         logger.info("gsa_ops C++ extension loaded; torch.ops._C_gsa registered")
         # 注册成功不等于 aclnn 符号可解析：gsa_ops.so 只在首次调用算子时才
         # dlopen libcust_opapi.so，部署问题会晚到首个 decode step 才爆——
