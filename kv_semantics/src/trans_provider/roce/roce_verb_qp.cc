@@ -357,10 +357,12 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
     rtr.dest_qp_num = peerQpn;
     // The receive sequence number is the one the peer announced for its sends.
     rtr.rq_psn = peer.startPsn;
-    // This is the depth this end promises for incoming read and atomic
-    // operations, so it follows the local policy and the adapter limit. The
-    // peer's qp_rd_atom bounds what it posts to us, not what we accept.
-    rtr.max_dest_rd_atomic = LocalReadAtomicDepth(config, device);
+    // A responder has to accept as many outstanding read and atomic operations
+    // as the peer will post, otherwise the difference turns into a steady stream
+    // of RNR NAKs; the adapter limit keeps the modification legal.
+    const std::uint8_t peerDepth = peer.qpRdAtom == 0U ? 1U : peer.qpRdAtom;
+    const std::uint8_t responderCapacity = device.MaxQpRdAtom() == 0U ? 1U : device.MaxQpRdAtom();
+    rtr.max_dest_rd_atomic = peerDepth < responderCapacity ? peerDepth : responderCapacity;
     rtr.min_rnr_timer = peer.rnrTimer;
     rtr.ah_attr.is_global = 1;
     rtr.ah_attr.dlid = peer.lid;

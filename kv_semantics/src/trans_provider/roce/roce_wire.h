@@ -125,6 +125,10 @@ struct Message {
     QpInfo qp{};
     // True when a cmd 0 message carries the reply form (table 2).
     bool capabilityReply{false};
+    // Version of a capability request (table 1); a reply coalesces it into
+    // Capabilities instead.
+    std::uint8_t requestMajorVersion{0};
+    std::uint8_t requestMinorVersion{0};
 };
 
 // Checksum of the header: reflected CRC-32C with a zero initial value and

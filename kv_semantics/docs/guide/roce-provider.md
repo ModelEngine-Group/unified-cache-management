@@ -116,7 +116,7 @@ them into `TransportConfig::attrs` as `roce_*`.
 | `asu_roce_inline_threshold` | `0` | inline data size per send |
 | `asu_roce_sl`, `asu_roce_traffic_class` | `3`, `104` | service level and traffic class |
 | `asu_roce_qp_timeout`, `asu_roce_retry_cnt`, `asu_roce_rnr_retry`, `asu_roce_min_rnr_timer` | `17`, `7`, `7`, `12` | retransmission timers |
-| `asu_roce_qp_rd_atom` | `16` | outstanding read/atomic limit |
+| `asu_roce_qp_rd_atom` | `16` | outstanding read/atomic limit this end posts; the responder side accepts what the peer advertises, capped by the adapter |
 
 Numeric values are range checked against the field widths of the verbs
 attributes and of the protocol tables. A value that is not a number, or that

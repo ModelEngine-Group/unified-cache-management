@@ -35,6 +35,8 @@
 #include <unistd.h>
 #include <vector>
 #include "roce/cpu_kv_over_roce_trans_provider.h"
+#include "roce/roce_tcp_channel.h"
+#include "roce/roce_wire.h"
 #include "roce_test_support.h"
 
 namespace kv::test {
@@ -419,5 +421,84 @@ TEST(CpuKvOverRoceCreateConnectionTest, NeverReturnsMoreHandlesThanRequested)
     server.DeleteConnections(serverHandles);
 }
 
+TEST(CpuKvOverRoceCreateConnectionTest, RejectsATimeoutThatIsNotANumber)
+{
+    // A timeout that does not parse used to fall back to its default, so a typo
+    // looked like a working configuration while every other knob rejected.
+    for (const char* key : {"roce_oob_connect_timeout_ms", "roce_handshake_timeout_ms"}) {
+        TransportConfig config = MakeClientConfig();
+        config.attrs[key] = "soon";
+
+        roce::CpuKvOverRoceTransProvider provider(config);
+        ConnectionHandles handles;
+        const Status status =
+            provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 200, handles);
+
+        EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code) << key << ": " << status.message;
+        EXPECT_NE(std::string::npos, status.message.find(key)) << status.message;
+    }
+}
+
+TEST(CpuKvOverRoceCreateConnectionTest, RejectsATimeoutThatDoesNotFitIn32Bits)
+{
+    TransportConfig config = MakeClientConfig();
+    config.attrs["roce_handshake_timeout_ms"] = "4294967296";
+
+    roce::CpuKvOverRoceTransProvider provider(config);
+    ConnectionHandles handles;
+    const Status status = provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 200, handles);
+
+    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code) << status.message;
+    EXPECT_NE(std::string::npos, status.message.find("does not fit in 32 bits")) << status.message;
+}
+
+TEST(CpuKvOverRoceCreateConnectionTest, RejectsACapabilityRequestFromAnotherMajorVersion)
+{
+    // The responder used to answer any request it could decode; a peer built
+    // against another major version has to be told instead.
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    roce::CpuKvOverRoceTransProvider server(MakeServerConfig());
+    Status serverStatus = Status::Error(StatusCode::INTERNAL_ERROR, "server thread did not run");
+    ConnectionHandles serverHandles;
+    std::thread serverThread([&]() {
+        serverStatus =
+            server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 2000, serverHandles);
+    });
+
+    roce::TcpChannel channel;
+    ASSERT_TRUE(ConnectChannelWithRetry(port, channel).ok());
+
+    roce::CapabilityRequest request;
+    request.majorVersion = 2;
+    std::vector<std::uint8_t> frame;
+    ASSERT_TRUE(roce::EncodeCapabilityRequest(request, frame).ok());
+    ASSERT_TRUE(SendRawFrame(channel, frame).ok());
+
+    serverThread.join();
+    ASSERT_FALSE(serverStatus.ok());
+    EXPECT_NE(std::string::npos, serverStatus.message.find("capability version"))
+        << serverStatus.message;
+}
+
+TEST(RoceTcpChannelTest, ReportsThatAPortIsAlreadyInUse)
+{
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    roce::TcpChannel first;
+    std::string error;
+    ASSERT_TRUE(roce::TcpChannel::Listen("127.0.0.1", port, 1, first, error).ok()) << error;
+
+    roce::TcpChannel second;
+    bool addressInUse = false;
+    const Status status =
+        roce::TcpChannel::Listen("127.0.0.1", port, 1, second, error, &addressInUse);
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_TRUE(addressInUse) << error;
+    EXPECT_NE(std::string::npos, error.find("bind(port")) << error;
+}
 }  // namespace
 }  // namespace kv::test

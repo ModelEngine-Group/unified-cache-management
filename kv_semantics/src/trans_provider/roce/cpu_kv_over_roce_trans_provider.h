@@ -153,6 +153,9 @@ private:
     /// Rejects transport limits that would not fit the capability message fields.
     Status ValidateCapabilityLimits(std::string& error) const;
 
+    /// Rejects timeout knobs that would otherwise be ignored without a word.
+    Status ValidateTimeoutAttrs(std::string& error) const;
+
     // Reads the asu_roce_* knobs into a queue pair configuration.  A value that
     // does not fit the field it configures is rejected instead of being silently
     // truncated into something the caller never asked for.

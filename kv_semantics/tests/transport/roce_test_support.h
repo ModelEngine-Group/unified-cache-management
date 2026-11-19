@@ -109,6 +109,29 @@ inline Status ConnectWithRetry(TransProvider& provider, std::uint16_t port, std:
     return status;
 }
 
+// Connects a raw channel to the server side, retrying while the listener is on
+// its way into accept().
+inline Status ConnectChannelWithRetry(std::uint16_t port, roce::TcpChannel& channel)
+{
+    std::string error;
+    Status status;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        status = roce::TcpChannel::Connect("127.0.0.1", "127.0.0.1", port, 500, channel, error);
+        if (status.ok()) { return status; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return Status::Error(status.code, error);
+}
+
+// Sends one already encoded frame over a raw channel.
+inline Status SendRawFrame(const roce::TcpChannel& channel, const std::vector<std::uint8_t>& frame)
+{
+    std::string error;
+    Status status = channel.SendAll(frame.data(), frame.size(), 2000, error);
+    if (status.ok()) { return status; }
+    return Status::Error(status.code, error);
+}
+
 }  // namespace kv::test
 
 #endif  // KV_SEMANTICS_TESTS_TRANSPORT_ROCE_TEST_SUPPORT_H

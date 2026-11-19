@@ -229,7 +229,7 @@ Status TcpChannel::Connect(const std::string& localIp, const std::string& remote
 }
 
 Status TcpChannel::Listen(const std::string& bindIp, std::uint16_t port, std::uint16_t backlog,
-                          TcpChannel& listener, std::string& error)
+                          TcpChannel& listener, std::string& error, bool* addressInUse)
 {
     error.clear();
     if (port == 0) {
@@ -261,7 +261,9 @@ Status TcpChannel::Listen(const std::string& bindIp, std::uint16_t port, std::ui
     int on = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) {
-        error = "bind(port " + std::to_string(port) + ") failed: " + ErrnoText(errno);
+        const int saved = errno;
+        if (addressInUse != nullptr) { *addressInUse = saved == EADDRINUSE; }
+        error = "bind(port " + std::to_string(port) + ") failed: " + ErrnoText(saved);
         return Status::Error(StatusCode::IO_ERROR, error);
     }
     if (::listen(fd, static_cast<int>(backlog)) != 0) {

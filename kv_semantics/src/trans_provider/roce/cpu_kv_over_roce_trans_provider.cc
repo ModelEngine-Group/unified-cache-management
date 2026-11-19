@@ -281,17 +281,17 @@ Status CpuKvOverRoceTransProvider::OpenLink(const std::string& localIp, const st
     std::string bindIp = Attr(kAttrBindIp);
     if (bindIp.empty()) { bindIp = localIp; }
     TcpChannel listener;
-    Status listened =
-        TcpChannel::Listen(bindIp, static_cast<std::uint16_t>(port), 1, listener, error);
+    bool addressInUse = false;
+    Status listened = TcpChannel::Listen(bindIp, static_cast<std::uint16_t>(port), 1, listener,
+                                         error, &addressInUse);
     if (!listened.ok()) {
         // A listening socket cannot be shared, so a second provider on the same
         // address fails here; say so instead of leaving a bare bind error.
-        const std::string hint = error.find("Address already in use") == std::string::npos
-                                     ? std::string()
-                                     : std::string(
-                                           " (another provider is already listening on"
-                                           " that address; the server side of a link"
-                                           " cannot share the port)");
+        const std::string hint = addressInUse ? std::string(
+                                                    " (another provider is already listening on"
+                                                    " that address; the server side of a link"
+                                                    " cannot share the port)")
+                                              : std::string();
         return Failure(listened.code, "out-of-band TCP listen on " +
                                           (bindIp.empty() ? std::string("*") : bindIp) + ":" +
                                           std::to_string(port) + " failed: " + error + hint);
@@ -461,6 +461,18 @@ Status CpuKvOverRoceTransProvider::ReceiveMessage(const Link& link,
     return Status::OK();
 }
 
+namespace {
+// Both directions of the capability exchange report a version mismatch the same
+// way, so a mixed deployment fails with the same sentence on either side.
+std::string CapabilityMismatch(std::uint8_t peerMajor, std::uint8_t peerMinor,
+                               const Capabilities& local)
+{
+    return "peer speaks capability version " + std::to_string(peerMajor) + "." +
+           std::to_string(peerMinor) + " while this provider speaks " +
+           std::to_string(local.majorVersion) + "." + std::to_string(local.minorVersion);
+}
+}  // namespace
+
 Status CpuKvOverRoceTransProvider::ExchangeCapabilities(Link& link, std::string& error)
 {
     const bool initiator = IsInitiator();
@@ -485,12 +497,8 @@ Status CpuKvOverRoceTransProvider::ExchangeCapabilities(Link& link, std::string&
         }
         link.peerCapabilities = message.capabilities;
         if (message.capabilities.majorVersion != link.localCapabilities.majorVersion) {
-            error = "peer speaks capability version " +
-                    std::to_string(message.capabilities.majorVersion) + "." +
-                    std::to_string(message.capabilities.minorVersion) +
-                    " while this provider speaks " +
-                    std::to_string(link.localCapabilities.majorVersion) + "." +
-                    std::to_string(link.localCapabilities.minorVersion);
+            error = CapabilityMismatch(message.capabilities.majorVersion,
+                                       message.capabilities.minorVersion, link.localCapabilities);
             return Failure(StatusCode::INVALID_ARGUMENT, error);
         }
         link.negotiatedCapabilities =
@@ -504,12 +512,40 @@ Status CpuKvOverRoceTransProvider::ExchangeCapabilities(Link& link, std::string&
         error = "peer answered before sending its capability request";
         return Failure(StatusCode::INVALID_ARGUMENT, error);
     }
+    if (message.requestMajorVersion != link.localCapabilities.majorVersion) {
+        // Answering a peer this end cannot speak to would move the failure to
+        // the far side and hide which end is out of date.
+        error = CapabilityMismatch(message.requestMajorVersion, message.requestMinorVersion,
+                                   link.localCapabilities);
+        return Failure(StatusCode::INVALID_ARGUMENT, error);
+    }
     Status encoded = EncodeCapabilityReply(link.localCapabilities, frame);
     if (!encoded.ok()) {
         error = "failed to encode the capability reply";
         return encoded;
     }
     return SendFrame(link, frame, error);
+}
+
+Status CpuKvOverRoceTransProvider::ValidateTimeoutAttrs(std::string& error) const
+{
+    // These two used to fall back to their default when they did not parse, so a
+    // typo looked like a working configuration while every other knob rejected.
+    const char* keys[] = {kAttrConnectTimeout, kAttrHandshakeTimeout};
+    for (const char* key : keys) {
+        const std::string value = Attr(key);
+        if (value.empty()) { continue; }
+        std::uint64_t parsed = 0;
+        if (!ParseUnsigned(value, parsed)) {
+            error = std::string(key) + " '" + value + "' is not a number";
+            return Status::Error(StatusCode::INVALID_ARGUMENT, error);
+        }
+        if (parsed > 0xFFFFFFFFULL) {
+            error = std::string(key) + " " + std::to_string(parsed) + " does not fit in 32 bits";
+            return Status::Error(StatusCode::INVALID_ARGUMENT, error);
+        }
+    }
+    return Status::OK();
 }
 
 Status CpuKvOverRoceTransProvider::ValidateCapabilityLimits(std::string& error) const
@@ -747,6 +783,9 @@ Status CpuKvOverRoceTransProvider::CreateConnection(
     std::string limitError;
     Status limits = ValidateCapabilityLimits(limitError);
     if (!limits.ok()) { return Failure(limits.code, limitError); }
+    std::string timeoutError;
+    Status timeouts = ValidateTimeoutAttrs(timeoutError);
+    if (!timeouts.ok()) { return Failure(timeouts.code, timeoutError); }
 
     // Validate the queue pair knobs before a TCP connection is opened: a bad
     // value would otherwise only surface on the first real problem, and on the

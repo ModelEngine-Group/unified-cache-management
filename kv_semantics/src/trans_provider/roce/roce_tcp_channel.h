@@ -60,8 +60,10 @@ public:
 
     // Creates a listening socket on bindIp:port.  An empty bindIp listens on all
     // local addresses.
+    // addressInUse, when given, tells a port that is already taken from a bind
+    // that failed for another reason: strerror() text is localised.
     static Status Listen(const std::string& bindIp, std::uint16_t port, std::uint16_t backlog,
-                         TcpChannel& listener, std::string& error);
+                         TcpChannel& listener, std::string& error, bool* addressInUse = nullptr);
 
     // Accepts one connection from a listening channel, waiting at most timeoutMs.
     static Status Accept(const TcpChannel& listener, std::uint32_t timeoutMs, TcpChannel& accepted,

@@ -424,8 +424,14 @@ Status DecodeMessage(const std::uint8_t* frame, std::size_t size, Message& messa
                 return Fail(StatusCode::INVALID_ARGUMENT, error);
             }
             if (privateLength == kRequestPrivateBytes) {
-                // Nothing in a capability request is consumed today; the private
-                // length is what tells the two cmd 0 forms apart.
+                // A responder has to reject a peer it cannot speak to before it
+                // answers, so the request version is kept.
+                Reader privateReader(body + kPrivateOffset, bodyLength - kPrivateOffset);
+                if (!privateReader.U8(message.requestMajorVersion) ||
+                    !privateReader.U8(message.requestMinorVersion)) {
+                    error = "capability request is truncated";
+                    return Fail(StatusCode::INVALID_ARGUMENT, error);
+                }
                 return Status::OK();
             }
             if (privateLength >= kReplyMinPrivateBytes) {
