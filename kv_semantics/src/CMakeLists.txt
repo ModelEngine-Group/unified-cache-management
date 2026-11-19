@@ -14,6 +14,7 @@ file(GLOB KV_TRANSPORT_SOURCES CONFIGURE_DEPENDS
     trans_provider/aicpu/*.cc
     trans_provider/aiv/*.cc
     trans_provider/fake/*.cc
+    trans_provider/roce/roce_wire.cc
     common/logger/*.cc
 )
 list(APPEND KV_TRANSPORT_SOURCES ${KV_COMMON_SOURCES})
@@ -38,6 +39,23 @@ target_link_libraries(kv_transport
     PRIVATE
         kv_buffer_runtime
 )
+
+if(BUILD_KV_CLIENT_PROVIDER_ROCE)
+    file(GLOB KV_ROCE_PROVIDER_SOURCES CONFIGURE_DEPENDS trans_provider/roce/*.cc)
+    # The wire codec is built unconditionally, so drop it from this glob.
+    list(FILTER KV_ROCE_PROVIDER_SOURCES EXCLUDE REGEX "roce_wire\\.cc$")
+    target_sources(kv_transport PRIVATE ${KV_ROCE_PROVIDER_SOURCES})
+
+    find_path(ASU_ROCE_VERBS_INCLUDE_DIR infiniband/verbs.h)
+    find_library(ASU_ROCE_VERBS_LIBRARY NAMES ibverbs)
+    if(NOT ASU_ROCE_VERBS_INCLUDE_DIR OR NOT ASU_ROCE_VERBS_LIBRARY)
+        message(FATAL_ERROR "BUILD_KV_CLIENT_PROVIDER_ROCE is on but libibverbs was not found; "
+                            "install rdma-core (libibverbs-dev) or turn the option off")
+    endif()
+    target_include_directories(kv_transport PRIVATE ${ASU_ROCE_VERBS_INCLUDE_DIR})
+    target_link_libraries(kv_transport PRIVATE ${ASU_ROCE_VERBS_LIBRARY})
+    target_compile_definitions(kv_transport PRIVATE UCM_ASU_ENABLE_ROCE_PROVIDER=1)
+endif()
 
 if(BUILD_KV_CLIENT_PROVIDER_AICPU)
     if(NOT DEFINED ASU_HCOMM_ROOT)
