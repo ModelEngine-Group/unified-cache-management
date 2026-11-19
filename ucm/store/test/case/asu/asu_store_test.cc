@@ -945,6 +945,73 @@ TEST(UCAsuStoreTest, SchedulerUsesNegativeDeviceId)
     EXPECT_EQ(state->initConfigs.back().deviceId, -1);
 }
 
+TEST(UCAsuStoreTest, ParsesHccpBackendAndPropagatesOptions)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"192.168.0.11", "192.168.0.12"});
+    config.Set("asu_ports", std::vector<ssize_t>{19001, 19002});
+    config.Set("asu_trans_provider_backend", std::string{"hccp_kv_over_roce"});
+    config.Set("asu_hccp_kv_roce_lib_path", std::string{"/opt/hccp/libhccp_kv_over_roce.so"});
+    config.SetNumber("asu_hccp_kv_roce_max_connections", std::uint64_t{3072});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{2});
+    for (const auto& transportConfig : asuConfig.transportConfigs) {
+        EXPECT_EQ(transportConfig.providerType, kv::TransProviderType::HCCP_KV_OVER_ROCE);
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_lib_path"),
+                  "/opt/hccp/libhccp_kv_over_roce.so");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_max_connections"), "3072");
+    }
+}
+
+TEST(UCAsuStoreTest, AcceptsHccpBackendAliasWithoutOptions)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+    config.Set("asu_trans_provider_backend", std::string{"hccp"});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.providerType, kv::TransProviderType::HCCP_KV_OVER_ROCE);
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_lib_path"), std::size_t{0});
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_max_connections"), std::size_t{0});
+}
+
+TEST(UCAsuStoreTest, RejectsHccpMaxConnectionsOutOfRange)
+{
+    const std::vector<std::uint64_t> values{
+        0, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1};
+    for (const auto value : values) {
+        UC::AsuStore::AsuStore store;
+        UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+        config.Set("asu_trans_provider_backend", std::string{"hccp"});
+        config.SetNumber("asu_hccp_kv_roce_max_connections", value);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsHccpWithoutAsuIps)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"hccp"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
 TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
 {
     UC::AsuStore::AsuStore store;

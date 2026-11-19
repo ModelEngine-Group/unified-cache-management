@@ -165,6 +165,7 @@ TransProviderType ParseConfigTransProviderType(std::string value)
     if (value == "FAKE") { return TransProviderType::FAKE; }
     if (value == "AIV") { return TransProviderType::AIV; }
     if (value == "AICPU") { return TransProviderType::AICPU; }
+    if (value == "HCCP_KV_OVER_ROCE") { return TransProviderType::HCCP_KV_OVER_ROCE; }
     return TransProviderType::UNSUPPORTED;
 }
 

@@ -41,6 +41,12 @@ ucm_connectors:
       # Set true to bypass fake-backend IO; lookups miss while other requests complete successfully.
       asu_fake_backend_complete_immediately: false
 
+      # HCCP KV-over-RoCE backend: set asu_trans_provider_backend to
+      # "hccp_kv_over_roce" (alias "hccp"), then optionally override the provider
+      # defaults. The provider needs asu_ips/asu_ports for every ASU.
+      # asu_hccp_kv_roce_lib_path: "/usr/local/lib/libhccp_kv_over_roce.so"
+      # asu_hccp_kv_roce_max_connections: 3072
+
       # ASU wait/task timeout and connection recovery.
       asu_wait_timeout_ms: 5000
       asu_query_timeout_ms: 500
