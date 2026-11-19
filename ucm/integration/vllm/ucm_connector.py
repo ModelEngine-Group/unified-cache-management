@@ -35,6 +35,13 @@ try:
 except ImportError:
     KVConnectorTransferResults = None
 
+from vllm.distributed.parallel_state import get_pp_group, get_world_group
+from vllm.model_executor.models.utils import extract_layer_index
+from vllm.platforms import current_platform
+from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.request import RequestStatus
+
 import ucm.integration.vllm.request_hasher as request_hasher_module
 from ucm.integration.vllm.cache_config import (
     cache_rank_count,
@@ -68,12 +75,6 @@ from ucm.shared.metrics import ucmmetrics
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 from ucm.utils import Config
-from vllm.distributed.parallel_state import get_pp_group, get_world_group
-from vllm.model_executor.models.utils import extract_layer_index
-from vllm.platforms import current_platform
-from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.outputs import KVConnectorOutput
-from vllm.v1.request import RequestStatus
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
