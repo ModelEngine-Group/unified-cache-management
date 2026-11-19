@@ -21,24 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <gtest/gtest.h>
-
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <chrono>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <string>
+#include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <stdexcept>
+#include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <vector>
-
 #include "KVClientAgentABI.h"
 #include "view/m800_view_agent_client.h"
 #include "view/view_http_server.h"
@@ -46,8 +43,8 @@
 namespace kv::test {
 namespace {
 
-using GetInByNsAbi = int32_t (*)(kv_client_agent_handle*, const char*,
-                                 kv_client_agent_node_view**, size_t*);
+using GetInByNsAbi = int32_t (*)(kv_client_agent_handle*, const char*, kv_client_agent_node_view**,
+                                 size_t*);
 static_assert(std::is_same<decltype(&kv_client_agent_get_in_by_ns), GetInByNsAbi>::value,
               "the twelfth ABI entry must retain its C signature");
 static_assert(KV_CLIENT_AGENT_ABI_VERSION == 1U, "the M800 ABI must remain v1");
@@ -101,7 +98,8 @@ TEST(M800ViewAgentClientTest, InitializeRejectsEmbeddedNulMonHost)
 }
 
 // 测试场景：通过伪代理库依次注入返回码 6、4 和 0，查询同一命名空间 pool-a。
-// 预期结果：返回码 6 映射为 INTERNAL_ERROR，4 映射为 NOT_FOUND，0 则查询成功且视图列表为空，三种结果保持明确区分。
+// 预期结果：返回码 6 映射为 INTERNAL_ERROR，4 映射为 NOT_FOUND，0
+// 则查询成功且视图列表为空，三种结果保持明确区分。
 TEST(M800ViewAgentClientTest, FakeLibraryPreservesInternalErrorAndEmptyViewDistinction)
 {
     auto factory = CreateM800ViewAgentClientFactory();
@@ -231,9 +229,7 @@ bool RoundTrip(int port, const std::vector<std::string>& requestParts, std::stri
             close(fd);
             return false;
         }
-        if (requestParts.size() > 1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
+        if (requestParts.size() > 1) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
     }
     char buffer[4096];
     while (true) {
@@ -256,8 +252,11 @@ std::string ResponseBody(const std::string& response)
     return split == std::string::npos ? std::string{} : response.substr(split + 4);
 }
 
-// 测试场景：先以空处理器启动服务，再发送完整和分片 GET 请求，并覆盖非法或重复 since_epoch、304、处理器异常、错误路径、POST、损坏请求行及重复 Stop。
-// 预期结果：空处理器启动返回 INVALID_ARGUMENT；正常 GET 返回 200、Connection: close 和 since=12，分片请求返回 since=13；非法或重复参数按 0 处理；304 无响应体；异常、错误路径、POST 和坏请求分别返回 500、404、405（Allow: GET）和 400，Stop 可重复调用。
+// 测试场景：先以空处理器启动服务，再发送完整和分片 GET 请求，并覆盖非法或重复
+// since_epoch、304、处理器异常、错误路径、POST、损坏请求行及重复 Stop。 预期结果：空处理器启动返回
+// INVALID_ARGUMENT；正常 GET 返回 200、Connection: close 和 since=12，分片请求返回
+// since=13；非法或重复参数按 0 处理；304 无响应体；异常、错误路径、POST 和坏请求分别返回
+// 500、404、405（Allow: GET）和 400，Stop 可重复调用。
 TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
 {
     const int port = ReserveLoopbackPort();
@@ -288,17 +287,15 @@ TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
     EXPECT_NE(response.find("Connection: close\r\n"), std::string::npos);
     EXPECT_EQ(ResponseBody(response), "since=12");
 
-    ASSERT_TRUE(RoundTrip(port,
-                          {"GET /v1/vi", "ews?since_epoch=13 HTTP/1.1\r\nHost: local\r\n",
-                           "\r\n"},
-                          response));
+    ASSERT_TRUE(RoundTrip(
+        port, {"GET /v1/vi", "ews?since_epoch=13 HTTP/1.1\r\nHost: local\r\n", "\r\n"}, response));
     EXPECT_EQ(ResponseBody(response), "since=13");
 
     ASSERT_TRUE(RoundTrip(port, {"GET /v1/views?since_epoch=bad HTTP/1.1\r\n\r\n"}, response));
     EXPECT_EQ(ResponseBody(response), "since=0");
 
-    ASSERT_TRUE(RoundTrip(
-        port, {"GET /v1/views?since_epoch=8&since_epoch=9 HTTP/1.1\r\n\r\n"}, response));
+    ASSERT_TRUE(
+        RoundTrip(port, {"GET /v1/views?since_epoch=8&since_epoch=9 HTTP/1.1\r\n\r\n"}, response));
     EXPECT_EQ(ResponseBody(response), "since=0");
 
     ASSERT_TRUE(RoundTrip(port, {"GET /v1/views?since_epoch=7 HTTP/1.1\r\n\r\n"}, response));
@@ -323,8 +320,9 @@ TEST(ViewHttpServerTest, ServesViewsAndHandlesFragmentedAndInvalidRequests)
     server->Stop();
 }
 
-// 测试场景：处理器为 since_epoch=1 生成超过 4MiB 的响应体，随后客户端发送带约 9KiB 查询参数的超长请求行。
-// 预期结果：超大响应体被转换为 500 且不发送响应体，超长请求行被拒绝并返回 400。
+// 测试场景：处理器为 since_epoch=1 生成超过 4MiB 的响应体，随后客户端发送带约 9KiB
+// 查询参数的超长请求行。 预期结果：超大响应体被转换为 500 且不发送响应体，超长请求行被拒绝并返回
+// 400。
 TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
 {
     const int port = ReserveLoopbackPort();
@@ -344,23 +342,24 @@ TEST(ViewHttpServerTest, EnforcesRequestLineAndResponseBodyLimits)
     EXPECT_NE(response.find("HTTP/1.1 500 Internal Server Error\r\n"), std::string::npos);
     EXPECT_TRUE(ResponseBody(response).empty());
 
-    const auto oversizedRequest = "GET /v1/views?ignored=" + std::string(9 * 1024, 'a') +
-                                  " HTTP/1.1\r\n\r\n";
+    const auto oversizedRequest =
+        "GET /v1/views?ignored=" + std::string(9 * 1024, 'a') + " HTTP/1.1\r\n\r\n";
     ASSERT_TRUE(RoundTrip(port, {oversizedRequest}, response));
     EXPECT_NE(response.find("HTTP/1.1 400 Bad Request\r\n"), std::string::npos);
     server->Stop();
 }
 
-// 测试场景：HTTP 服务请求超时为 5000ms，已接受的客户端只发送部分请求行后保持连接，随后调用 server->Stop。
-// 预期结果：Stop 主动关闭慢客户端连接并在 1 秒内返回，不等待完整的 5000ms 请求超时。
+// 测试场景：HTTP 服务请求超时为 5000ms，已接受的客户端只发送部分请求行后保持连接，随后调用
+// server->Stop。 预期结果：Stop 主动关闭慢客户端连接并在 1 秒内返回，不等待完整的 5000ms 请求超时。
 TEST(ViewHttpServerTest, StopShutsDownAcceptedSlowClient)
 {
     const auto port = ReserveLoopbackPort();
     auto server = CreateViewHttpServer(5000);
-    ASSERT_TRUE(server->Start("127.0.0.1:" + std::to_string(port),
-                              [](const ViewHttpRequest&) {
-                                  return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
-                              })
+    ASSERT_TRUE(server
+                    ->Start("127.0.0.1:" + std::to_string(port),
+                            [](const ViewHttpRequest&) {
+                                return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
+                            })
                     .ok());
     const int client = ConnectLoopback(port);
     ASSERT_GE(client, 0);
@@ -381,10 +380,11 @@ TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
 {
     const auto port = ReserveLoopbackPort();
     auto server = CreateViewHttpServer(200);
-    ASSERT_TRUE(server->Start("127.0.0.1:" + std::to_string(port),
-                              [](const ViewHttpRequest&) {
-                                  return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
-                              })
+    ASSERT_TRUE(server
+                    ->Start("127.0.0.1:" + std::to_string(port),
+                            [](const ViewHttpRequest&) {
+                                return ViewHttpReply{ViewHttpReplyKind::FULL_VIEW, "ok"};
+                            })
                     .ok());
     const int client = ConnectLoopback(port);
     ASSERT_GE(client, 0);
@@ -410,8 +410,9 @@ TEST(ViewHttpServerTest, SlowDripRequestIsBoundedByAbsoluteDeadline)
     server->Stop();
 }
 
-// 测试场景：连续 5 轮先停止仍持有半请求客户端连接的服务，再在同一回环端口创建并启动新服务处理 since_epoch=1 请求。
-// 预期结果：每轮端口都能立即重新监听，新客户端收到 200 和正文 since=1，不受上一轮连接或 Stop 状态影响。
+// 测试场景：连续 5 轮先停止仍持有半请求客户端连接的服务，再在同一回环端口创建并启动新服务处理
+// since_epoch=1 请求。 预期结果：每轮端口都能立即重新监听，新客户端收到 200 和正文
+// since=1，不受上一轮连接或 Stop 状态影响。
 TEST(ViewHttpServerTest, StopThenRestartServesNewClient)
 {
     for (int iteration = 0; iteration < 5; ++iteration) {
@@ -473,8 +474,8 @@ TEST(ViewHttpServerTest, OccupiedPortFailsWithoutReusePort)
     auto server = CreateViewHttpServer();
     ASSERT_NE(server, nullptr);
     const auto handler = [](const ViewHttpRequest&) { return ViewHttpReply{}; };
-    const auto status = server->Start("127.0.0.1:" + std::to_string(ntohs(address.sin_port)),
-                                      handler);
+    const auto status =
+        server->Start("127.0.0.1:" + std::to_string(ntohs(address.sin_port)), handler);
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     server->Stop();
     close(blocker);

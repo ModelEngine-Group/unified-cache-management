@@ -21,14 +21,12 @@
  * THE SOFTWARE.
  */
 #include "m800_view_common.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <limits>
 #include <string>
 #include <unordered_map>
-
 #include "logger.h"
 #include "parser_common.h"
 
@@ -48,8 +46,7 @@ std::uint32_t RotateLeft32(std::uint32_t value, unsigned int count)
 
 std::uint32_t Read32LittleEndian(const std::uint8_t* data)
 {
-    return static_cast<std::uint32_t>(data[0]) |
-           (static_cast<std::uint32_t>(data[1]) << 8U) |
+    return static_cast<std::uint32_t>(data[0]) | (static_cast<std::uint32_t>(data[1]) << 8U) |
            (static_cast<std::uint32_t>(data[2]) << 16U) |
            (static_cast<std::uint32_t>(data[3]) << 24U);
 }
@@ -83,8 +80,8 @@ std::uint32_t Xxh32Raw(const std::string& value, std::uint32_t seed)
             v4 = Xxh32Round(v4, Read32LittleEndian(data + index));
             index += 4;
         }
-        hash = RotateLeft32(v1, 1) + RotateLeft32(v2, 7) + RotateLeft32(v3, 12) +
-               RotateLeft32(v4, 18);
+        hash =
+            RotateLeft32(v1, 1) + RotateLeft32(v2, 7) + RotateLeft32(v3, 12) + RotateLeft32(v4, 18);
     } else {
         hash = seed + kXxh32Prime5;
     }
@@ -139,9 +136,7 @@ std::uint64_t ParseTimeoutOrDefault(const std::string& value, std::uint64_t defa
 Protocol ParseEndpointProtocolOrDefault(const std::string& value, Protocol defaultValue)
 {
     const auto normalized = ToLower(TrimConfigValue(value));
-    if (normalized == "ub" || normalized == "uboe" || normalized == "ubg") {
-        return Protocol::UB;
-    }
+    if (normalized == "ub" || normalized == "uboe" || normalized == "ubg") { return Protocol::UB; }
     if (normalized == "roce") { return Protocol::ROCE; }
     if (normalized == "tcp") { return Protocol::TCP; }
     return defaultValue;
@@ -175,10 +170,7 @@ Status ReadKeyring(const std::string& keyringPath, std::string& clientKey)
                          "M800 keyring contains no key: " + keyringPath);
 }
 
-bool HasEmbeddedNul(const std::string& value)
-{
-    return value.find('\0') != std::string::npos;
-}
+bool HasEmbeddedNul(const std::string& value) { return value.find('\0') != std::string::npos; }
 
 Status InvalidConfig(const std::string& message)
 {
@@ -192,8 +184,7 @@ KvNsId M800PoolNameToKvNsId(const std::string& poolName)
     return Xxh32Raw(poolName, kKvNsIdHashSeed);
 }
 
-Status M800ViewServerConfig::Build(const KvClientConfig& config,
-                                   M800ViewServerConfig& m800Config)
+Status M800ViewServerConfig::Build(const KvClientConfig& config, M800ViewServerConfig& m800Config)
 {
     m800Config = M800ViewServerConfig{};
     const auto& attrs = config.attrs;
@@ -212,12 +203,9 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
 
     m800Config.listenAddr = ReadStringAttr(attrs, "view.listen_addr", m800Config.listenAddr);
     m800Config.monHost = ReadStringAttr(attrs, "view.ceph.mon_host", m800Config.monHost);
-    m800Config.clientName =
-        ReadStringAttr(attrs, "view.ceph.client_name", m800Config.clientName);
-    m800Config.keyringPath =
-        ReadStringAttr(attrs, "view.ceph.keyring", m800Config.keyringPath);
-    m800Config.agentLibPath =
-        ReadStringAttr(attrs, "view.ceph.agent_lib", m800Config.agentLibPath);
+    m800Config.clientName = ReadStringAttr(attrs, "view.ceph.client_name", m800Config.clientName);
+    m800Config.keyringPath = ReadStringAttr(attrs, "view.ceph.keyring", m800Config.keyringPath);
+    m800Config.agentLibPath = ReadStringAttr(attrs, "view.ceph.agent_lib", m800Config.agentLibPath);
 
     std::string masterAddrsValue;
     const bool hasMasterAddrs = GetAttr(attrs, "view.master_addrs", masterAddrsValue);
@@ -226,18 +214,15 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
         const auto legacyMasterAddr = ReadStringAttr(attrs, "view.master_addr", "");
         if (!legacyMasterAddr.empty()) { m800Config.masterAddrs.emplace_back(legacyMasterAddr); }
     }
-    if (!m800Config.masterAddrs.empty()) {
-        m800Config.masterAddr = m800Config.masterAddrs.front();
-    }
+    if (!m800Config.masterAddrs.empty()) { m800Config.masterAddr = m800Config.masterAddrs.front(); }
 
     // Prefer correctly spelled keys when both forms are present, while keeping
     // compatibility with the names already deployed by the M800 view prompt.
-    const auto refreshInterval =
-        TrimConfigValue(GetAttr(attrs, {"view.refresh_interval_ms"}));
+    const auto refreshInterval = TrimConfigValue(GetAttr(attrs, {"view.refresh_interval_ms"}));
     m800Config.refreshIntervalMs =
         ParseTimeoutOrDefault(refreshInterval, m800Config.refreshIntervalMs);
-    const auto agentFetchTimeout = TrimConfigValue(GetAttr(
-        attrs, {"view.ceph.agent_fetch_timeout_ms", "view.agent_fetch_timeout_ms"}));
+    const auto agentFetchTimeout = TrimConfigValue(
+        GetAttr(attrs, {"view.ceph.agent_fetch_timeout_ms", "view.agent_fetch_timeout_ms"}));
     m800Config.agentFetchTimeoutMs =
         ParseTimeoutOrDefault(agentFetchTimeout, m800Config.agentFetchTimeoutMs);
     m800Config.httpTimeoutMs = ParseTimeoutOrDefault(
@@ -246,11 +231,12 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
     m800Config.endpointProtocol = ParseEndpointProtocolOrDefault(
         ReadStringAttr(attrs, "view.endpoint_protocol", ""), m800Config.endpointProtocol);
     constexpr std::uint16_t kDefaultEndpointPort = 6000;
-    const auto endpointPort = ParseUint64OrDefault(
-        ReadStringAttr(attrs, "view.endpoint_port", ""), kDefaultEndpointPort);
-    m800Config.endpointPort = endpointPort == 0 || endpointPort > std::numeric_limits<std::uint16_t>::max()
-                                  ? kDefaultEndpointPort
-                                  : static_cast<std::uint16_t>(endpointPort);
+    const auto endpointPort =
+        ParseUint64OrDefault(ReadStringAttr(attrs, "view.endpoint_port", ""), kDefaultEndpointPort);
+    m800Config.endpointPort =
+        endpointPort == 0 || endpointPort > std::numeric_limits<std::uint16_t>::max()
+            ? kDefaultEndpointPort
+            : static_cast<std::uint16_t>(endpointPort);
 
     const auto filter = ToLower(ReadStringAttr(attrs, "view.ceph.filter", "in"));
     if (filter != "in") {
@@ -265,7 +251,8 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
 
     if (m800Config.role == M800ViewRole::SLAVE) {
         if (m800Config.masterAddrs.empty()) {
-            return InvalidConfig("view.master_addrs or view.master_addr is required for worker role");
+            return InvalidConfig(
+                "view.master_addrs or view.master_addr is required for worker role");
         }
         return Status::OK();
     }
@@ -278,10 +265,11 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
         return Status::OK();
     };
     for (const auto& [key, value] : std::vector<std::pair<const char*, const std::string*>>{
-             {"view.ceph.mon_host", &m800Config.monHost},
-             {"view.ceph.client_name", &m800Config.clientName},
-             {"view.ceph.keyring", &m800Config.keyringPath},
-             {"view.ceph.agent_lib", &m800Config.agentLibPath}}) {
+             {"view.ceph.mon_host",    &m800Config.monHost     },
+             {"view.ceph.client_name", &m800Config.clientName  },
+             {"view.ceph.keyring",     &m800Config.keyringPath },
+             {"view.ceph.agent_lib",   &m800Config.agentLibPath}
+    }) {
         const auto status = requireMasterField(key, *value);
         if (!status.ok()) { return status; }
     }

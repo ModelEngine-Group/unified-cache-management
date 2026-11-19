@@ -23,8 +23,8 @@
  * */
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -74,7 +74,7 @@ public:
 };
 
 std::shared_ptr<ViewUniverse> CreateViewUniverse();
-std::shared_ptr<ViewUniverse> CreateViewUniverse(
-    std::unordered_map<KvNsId, GlobalView> views, std::uint64_t globalEpoch);
+std::shared_ptr<ViewUniverse> CreateViewUniverse(std::unordered_map<KvNsId, GlobalView> views,
+                                                 std::uint64_t globalEpoch);
 
 }  // namespace kv

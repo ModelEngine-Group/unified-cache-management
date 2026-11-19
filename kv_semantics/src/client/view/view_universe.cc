@@ -21,7 +21,6 @@
  * THE SOFTWARE.
  */
 #include "view_universe.h"
-
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -31,7 +30,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
 #include "logger.h"
 
 namespace kv {
@@ -81,23 +79,23 @@ bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs)
 std::string BuildViewPublishedLog(KvNsId nsId, std::uint64_t previousEpoch,
                                   const GlobalView& nextView)
 {
-    return "ns=" + std::to_string(nsId) + " view published, epoch=" +
-           std::to_string(previousEpoch) + "->" + std::to_string(nextView.viewEpoch) +
+    return "ns=" + std::to_string(nsId) +
+           " view published, epoch=" + std::to_string(previousEpoch) + "->" +
+           std::to_string(nextView.viewEpoch) +
            ", asu_count=" + std::to_string(nextView.asuMap.size());
 }
 
 std::string BuildViewNotPublishedLog(KvNsId nsId, std::uint64_t currentEpoch)
 {
-    return "ns=" + std::to_string(nsId) + " view not published, epoch unchanged=" +
-           std::to_string(currentEpoch);
+    return "ns=" + std::to_string(nsId) +
+           " view not published, epoch unchanged=" + std::to_string(currentEpoch);
 }
 
 std::string BuildViewPublishedSummaryLog(std::size_t nsChanged, std::size_t nsTotal,
                                          std::size_t changedNs)
 {
     return "ViewUniverse published, ns_changed=" + std::to_string(nsChanged) +
-           ", ns_total=" + std::to_string(nsTotal) +
-           ", changed_ns=" + std::to_string(changedNs);
+           ", ns_total=" + std::to_string(nsTotal) + ", changed_ns=" + std::to_string(changedNs);
 }
 
 }  // namespace detail
@@ -141,7 +139,8 @@ void LogViewsPublished(const std::unordered_map<KvNsId, GlobalView>& currentView
     std::sort(ids.begin(), ids.end());
     for (const auto nsId : ids) {
         const auto currentIt = currentViews.find(nsId);
-        const auto previousEpoch = currentIt == currentViews.end() ? 0 : currentIt->second.viewEpoch;
+        const auto previousEpoch =
+            currentIt == currentViews.end() ? 0 : currentIt->second.viewEpoch;
         const auto& nextView = nextViews.at(nsId);
         KV_INFO_UNLIMITED("{}", detail::BuildViewPublishedLog(nsId, previousEpoch, nextView));
     }
@@ -149,10 +148,7 @@ void LogViewsPublished(const std::unordered_map<KvNsId, GlobalView>& currentView
 
 class ViewUniverseImpl final : public ViewUniverse {
 public:
-    ViewUniverseImpl()
-        : state_(MakeState(std::unordered_map<KvNsId, GlobalView>{}, 0))
-    {
-    }
+    ViewUniverseImpl() : state_(MakeState(std::unordered_map<KvNsId, GlobalView>{}, 0)) {}
 
     ViewUniverseImpl(std::unordered_map<KvNsId, GlobalView> views, std::uint64_t globalEpoch)
         : state_(MakeState(std::move(views), globalEpoch))
@@ -174,10 +170,10 @@ public:
         const auto current = LoadState();
         if (nextEpoch < current->globalEpoch) {
             LogViewsNotPublished(nextViews, current->globalEpoch);
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "ViewUniverse publish rejected: stale globalEpoch=" +
-                                     std::to_string(nextEpoch) + ", currentGlobalEpoch=" +
-                                     std::to_string(current->globalEpoch));
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                "ViewUniverse publish rejected: stale globalEpoch=" + std::to_string(nextEpoch) +
+                    ", currentGlobalEpoch=" + std::to_string(current->globalEpoch));
         }
         if (nextEpoch == current->globalEpoch) {
             LogViewsNotPublished(nextViews, current->globalEpoch);
@@ -211,9 +207,9 @@ public:
         for (const auto nsId : removedNs) {
             KV_INFO("ViewUniverse removed namespace: nsId={}, globalEpoch={}", nsId, nextEpoch);
         }
-        KV_INFO_UNLIMITED("{}", detail::BuildViewPublishedSummaryLog(
-                                    addedNs.size() + removedNs.size(), next->views.size(),
-                                    changedNs.size()));
+        KV_INFO_UNLIMITED(
+            "{}", detail::BuildViewPublishedSummaryLog(addedNs.size() + removedNs.size(),
+                                                       next->views.size(), changedNs.size()));
         return Status::OK();
     }
 
@@ -301,13 +297,10 @@ void ViewUniverse::GetSnapshot(std::unordered_map<KvNsId, GlobalView>& views,
     globalEpoch = GetGlobalEpoch();
 }
 
-std::shared_ptr<ViewUniverse> CreateViewUniverse()
-{
-    return std::make_shared<ViewUniverseImpl>();
-}
+std::shared_ptr<ViewUniverse> CreateViewUniverse() { return std::make_shared<ViewUniverseImpl>(); }
 
-std::shared_ptr<ViewUniverse> CreateViewUniverse(
-    std::unordered_map<KvNsId, GlobalView> views, std::uint64_t globalEpoch)
+std::shared_ptr<ViewUniverse> CreateViewUniverse(std::unordered_map<KvNsId, GlobalView> views,
+                                                 std::uint64_t globalEpoch)
 {
     return std::make_shared<ViewUniverseImpl>(std::move(views), globalEpoch);
 }

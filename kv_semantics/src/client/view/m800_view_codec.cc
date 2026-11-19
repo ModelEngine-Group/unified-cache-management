@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "view/m800_view_codec.h"
-
 #include <algorithm>
 #include <charconv>
 #include <limits>
@@ -249,9 +248,10 @@ Status EncodeEndpoint(const NodeEndpoint& endpoint, std::string& text)
         text += std::to_string(endpoint.hcaPort);
     }
 
-    const std::set<std::string> standardKeys = {
-        "protocol", "port", "local.comm_id", "numa_node", "hca_name", "hca_port"};
-    const std::map<std::string, std::string> orderedAttrs(endpoint.attrs.begin(), endpoint.attrs.end());
+    const std::set<std::string> standardKeys = {"protocol",  "port",     "local.comm_id",
+                                                "numa_node", "hca_name", "hca_port"};
+    const std::map<std::string, std::string> orderedAttrs(endpoint.attrs.begin(),
+                                                          endpoint.attrs.end());
     for (const auto& [key, value] : orderedAttrs) {
         if (standardKeys.find(key) != standardKeys.end()) { continue; }
         status = ValidateScalar(key);
@@ -287,7 +287,9 @@ Status FinalizeBlock(NamespaceBlock& block, std::uint64_t globalEpoch,
     if (block.viewEpoch != globalEpoch) {
         return ProtocolError("namespace viewEpoch differs from globalEpoch");
     }
-    if (block.viewId != block.nsId) { return ProtocolError("namespace viewId differs from KvNsId"); }
+    if (block.viewId != block.nsId) {
+        return ProtocolError("namespace viewId differs from KvNsId");
+    }
     if (block.asuIds.size() != block.asuInfos.size()) {
         return ProtocolError("asuIds and asuInfo entries differ");
     }
@@ -303,7 +305,9 @@ Status FinalizeBlock(NamespaceBlock& block, std::uint64_t globalEpoch,
     view.viewId = block.viewId;
     for (const auto nodeId : block.asuIds) {
         const auto info = block.asuInfos.find(nodeId);
-        if (info == block.asuInfos.end()) { return ProtocolError("missing asuInfo for listed ASU"); }
+        if (info == block.asuInfos.end()) {
+            return ProtocolError("missing asuInfo for listed ASU");
+        }
         if (view.asuMap.size() == kMaxAsusPerNamespace) {
             KV_WARN("M800 namespace {} ASU list exceeds {}, truncating", block.nsId,
                     kMaxAsusPerNamespace);
@@ -311,9 +315,7 @@ Status FinalizeBlock(NamespaceBlock& block, std::uint64_t globalEpoch,
         }
         NodeInfo nodeInfo = info->second;
         const auto localKvNsId = block.localKvNsIds.find(nodeId);
-        if (localKvNsId != block.localKvNsIds.end()) {
-            nodeInfo.localKvNsId = localKvNsId->second;
-        }
+        if (localKvNsId != block.localKvNsIds.end()) { nodeInfo.localKvNsId = localKvNsId->second; }
         view.asuMap.emplace(nodeId, std::move(nodeInfo));
     }
     for (const auto& [nodeId, unused] : block.asuInfos) {
@@ -342,12 +344,13 @@ Status M800ViewCodec::Encode(const ViewUniverse& universe, std::string& text)
         }
         std::sort(nsIds.begin(), nsIds.end());
         if (nsIds.size() > kMaxNamespaces) {
-            KV_WARN("M800 universe has {} namespaces, truncating to {}", nsIds.size(), kMaxNamespaces);
+            KV_WARN("M800 universe has {} namespaces, truncating to {}", nsIds.size(),
+                    kMaxNamespaces);
             nsIds.resize(kMaxNamespaces);
         }
 
-        std::string output = "globalEpoch=" + std::to_string(globalEpoch) + "\nnsCount=" +
-                             std::to_string(nsIds.size()) + "\n";
+        std::string output = "globalEpoch=" + std::to_string(globalEpoch) +
+                             "\nnsCount=" + std::to_string(nsIds.size()) + "\n";
         for (const auto nsId : nsIds) {
             const auto& view = views.at(nsId);
             if (view.viewEpoch != globalEpoch || view.viewId != nsId) {
@@ -438,7 +441,8 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
             eof = true;
             return Status::OK();
         };
-        auto parseField = [](std::string_view line, std::string_view& key, std::string_view& value) {
+        auto parseField = [](std::string_view line, std::string_view& key,
+                             std::string_view& value) {
             const auto equals = line.find('=');
             if (equals == std::string_view::npos) { return false; }
             key = line.substr(0, equals);
@@ -581,7 +585,8 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                 sortedIds.emplace_back(nsId);
             }
             std::sort(sortedIds.begin(), sortedIds.end());
-            KV_WARN("M800 input has {} namespaces, truncating to {}", sortedIds.size(), kMaxNamespaces);
+            KV_WARN("M800 input has {} namespaces, truncating to {}", sortedIds.size(),
+                    kMaxNamespaces);
             for (std::size_t index = kMaxNamespaces; index < sortedIds.size(); ++index) {
                 views.erase(sortedIds[index]);
             }

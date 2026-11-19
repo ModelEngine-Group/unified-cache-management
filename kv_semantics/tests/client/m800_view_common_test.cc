@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "view/m800_view_common.h"
-
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -41,8 +40,9 @@ KvClientConfig MakeWorkerConfig()
     return config;
 }
 
-// 测试场景：使用空串、普通字符串、不同长度输入、内嵌 NUL 及已知冲突池名作为 M800PoolNameToKvNsId 的输入。
-// 预期结果：所有结果逐一等于标准 XXH32 测试向量，包括内嵌 NUL 输入和两个 pool 名称得到相同哈希值的情况。
+// 测试场景：使用空串、普通字符串、不同长度输入、内嵌 NUL 及已知冲突池名作为 M800PoolNameToKvNsId
+// 的输入。 预期结果：所有结果逐一等于标准 XXH32 测试向量，包括内嵌 NUL 输入和两个 pool
+// 名称得到相同哈希值的情况。
 TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
 {
     struct HashVector {
@@ -50,15 +50,15 @@ TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
         std::uint32_t expected;
     };
     const std::vector<HashVector> vectors{
-        {"", 0xA3316A09U},
-        {"a", 0xC55804D1U},
-        {"abc", 0x6E40A53AU},
-        {"123456789012345", 0xC42C867AU},
-        {"1234567890123456", 0xF8EB1468U},
-        {"12345678901234567", 0x096704CDU},
+        {"",                     0xA3316A09U},
+        {"a",                    0xC55804D1U},
+        {"abc",                  0x6E40A53AU},
+        {"123456789012345",      0xC42C867AU},
+        {"1234567890123456",     0xF8EB1468U},
+        {"12345678901234567",    0x096704CDU},
         {std::string{"a\0b", 3}, 0xBE1EDC77U},
-        {"pool-69670", 0x0B33F062U},
-        {"pool-261455", 0x0B33F062U},
+        {"pool-69670",           0x0B33F062U},
+        {"pool-261455",          0x0B33F062U},
     };
 
     for (std::size_t index = 0; index < vectors.size(); ++index) {
@@ -67,8 +67,9 @@ TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
     }
 }
 
-// 测试场景：Master 显式提供 mon_host、client_name、keyring 和 agent_lib，其余角色、监听、超时与端点配置保持默认。
-// 预期结果：构建成功，角色为 MASTER，monHost/clientName/keyringPath/agentLibPath 均取显式值，其余默认参数正确。
+// 测试场景：Master 显式提供 mon_host、client_name、keyring 和
+// agent_lib，其余角色、监听、超时与端点配置保持默认。 预期结果：构建成功，角色为
+// MASTER，monHost/clientName/keyringPath/agentLibPath 均取显式值，其余默认参数正确。
 TEST(M800ViewCommonTest, BuildUsesExplicitMasterConfiguration)
 {
     const std::string keyringPath = "m800_view_common_master_default_keyring.conf";
@@ -104,8 +105,10 @@ TEST(M800ViewCommonTest, BuildUsesExplicitMasterConfiguration)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
-// 测试场景：以混合大小写和空白设置 worker 角色，配置含 IPv4/IPv6 的 master_addrs，并预置旧 clientKey 与 worker keyring 路径。
-// 预期结果：构建成功并识别为 SLAVE，地址去空白后按原顺序解析且首个写入 masterAddr，monHost 为空，不读取 keyring 且 clientKey 被清空。
+// 测试场景：以混合大小写和空白设置 worker 角色，配置含 IPv4/IPv6 的 master_addrs，并预置旧
+// clientKey 与 worker keyring 路径。 预期结果：构建成功并识别为
+// SLAVE，地址去空白后按原顺序解析且首个写入 masterAddr，monHost 为空，不读取 keyring 且 clientKey
+// 被清空。
 TEST(M800ViewCommonTest, BuildWorkerParsesAddressesWithoutReadingKeyring)
 {
     KvClientConfig config;
@@ -119,15 +122,15 @@ TEST(M800ViewCommonTest, BuildWorkerParsesAddressesWithoutReadingKeyring)
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(built.role, M800ViewRole::SLAVE);
-    EXPECT_EQ(built.masterAddrs,
-              (std::vector<std::string>{"127.0.0.1:9100", "[::1]:9100"}));
+    EXPECT_EQ(built.masterAddrs, (std::vector<std::string>{"127.0.0.1:9100", "[::1]:9100"}));
     EXPECT_EQ(built.masterAddr, "127.0.0.1:9100");
     EXPECT_TRUE(built.monHost.empty());
     EXPECT_TRUE(built.clientKey.empty());
 }
 
 // 测试场景：配置 view.role=slave 构建服务端配置，输出对象预置旧角色、地址、密钥和 TCP 端点。
-// 预期结果：返回 INVALID_ARGUMENT，并清除旧输出，恢复 MASTER、0.0.0.0:9100、空 Master 地址/密钥、空 clientName/keyringPath/agentLibPath 及 UB/6000 等默认值。
+// 预期结果：返回 INVALID_ARGUMENT，并清除旧输出，恢复 MASTER、0.0.0.0:9100、空 Master 地址/密钥、空
+// clientName/keyringPath/agentLibPath 及 UB/6000 等默认值。
 TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
 {
     KvClientConfig config;
@@ -154,15 +157,15 @@ TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
-// 测试场景：Master 缺少 legacy 不可替代的 mon_host/client_name/keyring/agent_lib 中任一项，或 client_name 显式为空；Worker 的 master_addrs 仅含逗号和空白。
+// 测试场景：Master 缺少 legacy 不可替代的 mon_host/client_name/keyring/agent_lib 中任一项，或
+// client_name 显式为空；Worker 的 master_addrs 仅含逗号和空白。
 // 预期结果：所有缺少或留空角色必需字段的配置均返回 INVALID_ARGUMENT，不使用隐式默认值补齐。
 TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
 {
     KvClientConfig masterConfig;
     masterConfig.viewServiceAddrs = {"legacy-address-must-not-be-used"};
     M800ViewServerConfig built;
-    EXPECT_EQ(M800ViewServerConfig::Build(masterConfig, built).code,
-              StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(M800ViewServerConfig::Build(masterConfig, built).code, StatusCode::INVALID_ARGUMENT);
 
     const std::string keyringPath = "m800_view_common_required_fields_keyring.conf";
     {
@@ -189,12 +192,12 @@ TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
 
     auto workerConfig = MakeWorkerConfig();
     workerConfig.attrs["view.master_addrs"] = " , ,";
-    EXPECT_EQ(M800ViewServerConfig::Build(workerConfig, built).code,
-              StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(M800ViewServerConfig::Build(workerConfig, built).code, StatusCode::INVALID_ARGUMENT);
 }
 
 // 测试场景：Master 指向含注释、section 和重复 key 行的 keyring，Worker 也配置同一路径。
-// 预期结果：两者构建均成功；Master 仅读取首个 key 的值 AQIDBAU=++== 并忽略后续重复项，Worker 不读取文件且 clientKey 为空。
+// 预期结果：两者构建均成功；Master 仅读取首个 key 的值 AQIDBAU=++== 并忽略后续重复项，Worker
+// 不读取文件且 clientKey 为空。
 TEST(M800ViewCommonTest, BuildReadsFirstKeyValueOnlyForMaster)
 {
     const std::string keyringPath = "m800_view_common_test_keyring.conf";
@@ -295,8 +298,7 @@ TEST(M800ViewCommonTest, BuildPrefersMasterAddrsOverLegacyMasterAddr)
     M800ViewServerConfig built;
 
     ASSERT_TRUE(M800ViewServerConfig::Build(config, built).ok());
-    EXPECT_EQ(built.masterAddrs,
-              (std::vector<std::string>{"127.0.0.2:9100", "127.0.0.3:9100"}));
+    EXPECT_EQ(built.masterAddrs, (std::vector<std::string>{"127.0.0.2:9100", "127.0.0.3:9100"}));
     EXPECT_EQ(built.masterAddr, "127.0.0.2:9100");
 }
 
@@ -313,8 +315,9 @@ TEST(M800ViewCommonTest, BuildMasterAddrsEmptyTakesPrecedenceOverLegacyMasterAdd
     EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT);
 }
 
-// 测试场景：Worker 分别使用标准时间/端点配置键，以及同时设置 view.ceph.agent_fetch_timeout_ms 和标准 agent 超时键。
-// 预期结果：标准键值 42000、12000、2500、TCP、65535 被正确解析；Ceph 前缀键优先，使 agent 获取超时为 13000 ms。
+// 测试场景：Worker 分别使用标准时间/端点配置键，以及同时设置 view.ceph.agent_fetch_timeout_ms
+// 和标准 agent 超时键。 预期结果：标准键值 42000、12000、2500、TCP、65535 被正确解析；Ceph
+// 前缀键优先，使 agent 获取超时为 13000 ms。
 TEST(M800ViewCommonTest, BuildSupportsCanonicalAndCephTimeoutKeys)
 {
     auto normalConfig = MakeWorkerConfig();
@@ -367,7 +370,8 @@ TEST(M800ViewCommonTest, BuildIgnoresMisspelledTimeoutKeys)
 }
 
 // 测试场景：Worker 配置带单位、负数或非数字的超时值，以及未知协议和超范围端口 65536。
-// 预期结果：构建成功，三项时间配置依次回退为 30000、10000、2000 ms，端点回退为 UB 协议和 6000 端口。
+// 预期结果：构建成功，三项时间配置依次回退为 30000、10000、2000 ms，端点回退为 UB 协议和 6000
+// 端口。
 TEST(M800ViewCommonTest, BuildInvalidNumbersAndProtocolFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();
@@ -411,16 +415,18 @@ TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInNumericValues)
 // 预期结果：两种配置均返回 INVALID_ARGUMENT。
 TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInAgentConnectionStrings)
 {
-    for (const auto& key : {std::string("view.ceph.mon_host"), std::string("view.ceph.agent_lib")}) {
+    for (const auto& key :
+         {std::string("view.ceph.mon_host"), std::string("view.ceph.agent_lib")}) {
         auto config = MakeWorkerConfig();
         config.attrs[key] = std::string("bad\0value", 9);
         M800ViewServerConfig built;
-        EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT) << key;
+        EXPECT_EQ(M800ViewServerConfig::Build(config, built).code, StatusCode::INVALID_ARGUMENT)
+            << key;
     }
 }
 
-// 测试场景：Worker 将刷新间隔、agent 获取超时和 HTTP 超时都设为 uint64_t 最大值 18446744073709551615。
-// 预期结果：构建成功，并因超出允许范围分别回退为 30000、10000 和 2000 ms。
+// 测试场景：Worker 将刷新间隔、agent 获取超时和 HTTP 超时都设为 uint64_t 最大值
+// 18446744073709551615。 预期结果：构建成功，并因超出允许范围分别回退为 30000、10000 和 2000 ms。
 TEST(M800ViewCommonTest, BuildOutOfRangeTimeoutsFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();

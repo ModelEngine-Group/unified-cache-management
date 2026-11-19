@@ -4,15 +4,13 @@
  */
 
 #include "KVClientAgentABI.h"
-
+#include <atomic>
 #include <cerrno>
 #include <cstring>
-#include <atomic>
 #include <mutex>
 #include <new>
 #include <string>
 #include <vector>
-
 #include "KVClientAgent.h"
 
 struct kv_client_agent_handle {
@@ -163,9 +161,7 @@ KV_CLIENT_AGENT_EXPORT int32_t kv_client_agent_init(kv_client_agent_handle* hand
                                                     uint32_t abiVersion, size_t configSize)
 {
     if (handle == nullptr || config == nullptr) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
-    if (abiVersion != KV_CLIENT_AGENT_ABI_VERSION) {
-        return KV_CLIENT_AGENT_ABI_VERSION_MISMATCH;
-    }
+    if (abiVersion != KV_CLIENT_AGENT_ABI_VERSION) { return KV_CLIENT_AGENT_ABI_VERSION_MISMATCH; }
     if (configSize != sizeof(kv_client_agent_config)) { return KV_CLIENT_AGENT_INVALID_ARGUMENT; }
     std::lock_guard<std::mutex> lifecycleLock(handle->lifecycleMutex);
     if (handle->initialized.load()) { return KV_CLIENT_AGENT_INTERNAL_ERROR; }

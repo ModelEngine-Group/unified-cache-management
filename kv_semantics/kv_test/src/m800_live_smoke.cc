@@ -34,7 +34,8 @@
 
 namespace {
 
-std::string GetArg(int argc, const char** argv, const std::string& name, const std::string& fallback = {})
+std::string GetArg(int argc, const char** argv, const std::string& name,
+                   const std::string& fallback = {})
 {
     for (int index = 1; index + 1 < argc; ++index) {
         if (name == argv[index]) { return argv[index + 1]; }
@@ -48,7 +49,8 @@ std::vector<std::size_t> ParseCounts(const std::string& text)
     std::size_t begin{0};
     while (begin <= text.size()) {
         const auto end = text.find(',', begin);
-        const auto token = text.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        const auto token =
+            text.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
         if (!token.empty()) { counts.emplace_back(std::strtoull(token.c_str(), nullptr, 10)); }
         if (end == std::string::npos) { break; }
         begin = end + 1;
@@ -91,13 +93,16 @@ int Run(int argc, const char** argv)
     const auto expectedAsuCounts = ParseCounts(GetArg(argc, argv, "--expect-asu-counts"));
     const auto watchSecondsArg = GetArg(argc, argv, "--watch-seconds", "0");
     const auto refreshIntervalMsArg = GetArg(argc, argv, "--refresh-interval-ms", "30000");
-    const auto watchSeconds = static_cast<unsigned>(std::strtoul(watchSecondsArg.c_str(), nullptr, 10));
+    const auto watchSeconds =
+        static_cast<unsigned>(std::strtoul(watchSecondsArg.c_str(), nullptr, 10));
     if (monHost.empty() || clientKey.empty()) {
-        std::cerr << "usage: m800-live-smoke --mon-host <host:port> --client-key <key> "
-                     "[--client-name client.admin] [--agent-lib path] [--listen-addr 127.0.0.1:19100] "
-                     "[--require-pool name] [--forbid-pool name] [--expect-add name] [--expect-remove name] "
-                     "[--watch-seconds N] [--refresh-interval-ms N] "
-                     "[--watch-asu-pool name --expect-asu-counts 3,5,4,5]\n";
+        std::cerr
+            << "usage: m800-live-smoke --mon-host <host:port> --client-key <key> "
+               "[--client-name client.admin] [--agent-lib path] [--listen-addr 127.0.0.1:19100] "
+               "[--require-pool name] [--forbid-pool name] [--expect-add name] [--expect-remove "
+               "name] "
+               "[--watch-seconds N] [--refresh-interval-ms N] "
+               "[--watch-asu-pool name --expect-asu-counts 3,5,4,5]\n";
         return 2;
     }
     if (!expectedAsuCounts.empty() && (watchAsuPool.empty() || watchSeconds == 0)) {
@@ -157,7 +162,8 @@ int Run(int argc, const char** argv)
             if (nodeInfo.localKvNsId != 0) { return Fail("M800 localKvNsId must be zero"); }
             if (nodeInfo.endpoints.empty()) { return Fail("ASU has no endpoint"); }
             const auto& endpoint = nodeInfo.endpoints.front();
-            if (endpoint.ip.empty() || endpoint.protocol != kv::Protocol::UB || endpoint.port != 6000) {
+            if (endpoint.ip.empty() || endpoint.protocol != kv::Protocol::UB ||
+                endpoint.port != 6000) {
                 return Fail("unexpected endpoint protocol/port");
             }
             std::cout << "[VIEW] ns=" << nsId << ", node=" << nodeId << ", ip=" << endpoint.ip
@@ -172,7 +178,8 @@ int Run(int argc, const char** argv)
         if (!requiredStatus.ok()) {
             return Fail("required pool is missing: " + requiredPool, &requiredStatus);
         }
-        std::cout << "[OK] required pool is present: " << requiredPool << ", ns=" << requiredId << '\n';
+        std::cout << "[OK] required pool is present: " << requiredPool << ", ns=" << requiredId
+                  << '\n';
     }
 
     if (!forbiddenPool.empty()) {
@@ -180,7 +187,8 @@ int Run(int argc, const char** argv)
         kv::GlobalView forbiddenView;
         const auto forbiddenStatus = universe->GetView(forbiddenId, forbiddenView);
         if (forbiddenStatus.code != kv::StatusCode::NOT_FOUND) {
-            return Fail("forbidden pool is unexpectedly present: " + forbiddenPool, &forbiddenStatus);
+            return Fail("forbidden pool is unexpectedly present: " + forbiddenPool,
+                        &forbiddenStatus);
         }
         std::cout << "[OK] forbidden pool is absent: " << forbiddenPool << '\n';
     }
@@ -196,13 +204,13 @@ int Run(int argc, const char** argv)
     if (watchSeconds > 0) {
         bool addSeen = expectedAddPool.empty();
         bool removeSeen = expectedRemovePool.empty();
-        const auto expectedAddId = expectedAddPool.empty() ? kv::KvNsId{0}
-                                                            : kv::M800PoolNameToKvNsId(expectedAddPool);
+        const auto expectedAddId =
+            expectedAddPool.empty() ? kv::KvNsId{0} : kv::M800PoolNameToKvNsId(expectedAddPool);
         const auto expectedRemoveId = expectedRemovePool.empty()
                                           ? kv::KvNsId{0}
                                           : kv::M800PoolNameToKvNsId(expectedRemovePool);
-        const auto watchAsuId = watchAsuPool.empty() ? kv::KvNsId{0}
-                                                     : kv::M800PoolNameToKvNsId(watchAsuPool);
+        const auto watchAsuId =
+            watchAsuPool.empty() ? kv::KvNsId{0} : kv::M800PoolNameToKvNsId(watchAsuPool);
         std::size_t asuSequenceIndex{0};
         bool asuSequenceDone = expectedAsuCounts.empty();
         bool hasLastAsuCount{false};
@@ -212,14 +220,20 @@ int Run(int argc, const char** argv)
         while (std::chrono::steady_clock::now() < deadline &&
                !(addSeen && removeSeen && asuSequenceDone)) {
             const auto masterStatus = master->GetAllViews(*universe);
-            if (!masterStatus.ok()) { return Fail("Master refresh failed during watch", &masterStatus); }
+            if (!masterStatus.ok()) {
+                return Fail("Master refresh failed during watch", &masterStatus);
+            }
             const auto workerStatus = worker->GetAllViews(*universe);
-            if (!workerStatus.ok()) { return Fail("Slave refresh failed during watch", &workerStatus); }
+            if (!workerStatus.ok()) {
+                return Fail("Slave refresh failed during watch", &workerStatus);
+            }
 
             std::size_t currentAsuCount{0};
             if (!watchAsuPool.empty()) {
                 kv::GlobalView asuView;
-                if (universe->GetView(watchAsuId, asuView).ok()) { currentAsuCount = asuView.asuMap.size(); }
+                if (universe->GetView(watchAsuId, asuView).ok()) {
+                    currentAsuCount = asuView.asuMap.size();
+                }
             }
             const auto currentEpoch = universe->GetGlobalEpoch();
             std::cout << "[WATCH] epoch=" << currentEpoch
@@ -232,8 +246,9 @@ int Run(int argc, const char** argv)
                     if (currentEpoch <= lastAsuChangeEpoch) {
                         return Fail("ASU count changed without a newer globalEpoch");
                     }
-                    std::cout << "[OK] ASU count changed " << lastAsuCount << "->" << currentAsuCount
-                              << " at epoch " << lastAsuChangeEpoch << "->" << currentEpoch << '\n';
+                    std::cout << "[OK] ASU count changed " << lastAsuCount << "->"
+                              << currentAsuCount << " at epoch " << lastAsuChangeEpoch << "->"
+                              << currentEpoch << '\n';
                     lastAsuCount = currentAsuCount;
                     lastAsuChangeEpoch = currentEpoch;
                 } else if (!hasLastAsuCount) {
@@ -256,9 +271,11 @@ int Run(int argc, const char** argv)
             }
             if (!removeSeen && (expectedAddPool.empty() || addSeen)) {
                 kv::GlobalView removedView;
-                if (universe->GetView(expectedRemoveId, removedView).code == kv::StatusCode::NOT_FOUND) {
+                if (universe->GetView(expectedRemoveId, removedView).code ==
+                    kv::StatusCode::NOT_FOUND) {
                     removeSeen = true;
-                    std::cout << "[OK] expected namespace disappeared: " << expectedRemovePool << '\n';
+                    std::cout << "[OK] expected namespace disappeared: " << expectedRemovePool
+                              << '\n';
                 }
             }
             if (!(addSeen && removeSeen && asuSequenceDone)) {

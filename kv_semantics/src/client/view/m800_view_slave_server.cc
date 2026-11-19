@@ -22,13 +22,12 @@
  * SOFTWARE.
  * */
 #include "view/m800_view_slave_server.h"
-
 #include <algorithm>
 #include <arpa/inet.h>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
-#include <cctype>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
@@ -72,7 +71,9 @@ bool ParsePort(std::string_view text, std::uint16_t& port)
     const char* begin = text.data();
     const char* end = begin + text.size();
     const auto result = std::from_chars(begin, end, value, 10);
-    if (result.ec != std::errc{} || result.ptr != end || value == 0 || value > 65535) { return false; }
+    if (result.ec != std::errc{} || result.ptr != end || value == 0 || value > 65535) {
+        return false;
+    }
     port = static_cast<std::uint16_t>(value);
     return true;
 }
@@ -134,9 +135,13 @@ Status WaitWritable(int fd, std::chrono::steady_clock::time_point deadline,
                     const std::atomic<bool>& stopRequested)
 {
     while (true) {
-        if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "socket operation canceled"); }
+        if (stopRequested.load()) {
+            return SlaveError(StatusCode::CANCELED, "socket operation canceled");
+        }
         const auto remaining = RemainingMs(deadline);
-        if (remaining == 0) { return SlaveError(StatusCode::TIMEOUT, "socket operation timed out"); }
+        if (remaining == 0) {
+            return SlaveError(StatusCode::TIMEOUT, "socket operation timed out");
+        }
         pollfd descriptor{fd, POLLOUT, 0};
         const int result = poll(&descriptor, 1, static_cast<int>(remaining));
         if (result > 0) { return Status::OK(); }
@@ -179,7 +184,8 @@ Status ConnectSocket(const addrinfo& address, std::chrono::steady_clock::time_po
         if (!status.ok()) { return fail(std::move(status)); }
         int socketError{0};
         socklen_t errorSize = sizeof(socketError);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorSize) < 0 || socketError != 0) {
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorSize) < 0 ||
+            socketError != 0) {
             return fail(SlaveError(StatusCode::CONNECTION_ERROR, "connect failed"));
         }
     }
@@ -206,7 +212,9 @@ Status SendAll(int fd, std::string_view data, const std::atomic<bool>& stopReque
 {
     std::size_t sent{0};
     while (sent < data.size()) {
-        if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "HTTP write canceled"); }
+        if (stopRequested.load()) {
+            return SlaveError(StatusCode::CANCELED, "HTTP write canceled");
+        }
         const auto result = send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
         if (result > 0) {
             sent += static_cast<std::size_t>(result);
@@ -216,7 +224,9 @@ Status SendAll(int fd, std::string_view data, const std::atomic<bool>& stopReque
         if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             return SlaveError(StatusCode::TIMEOUT, "HTTP write timed out");
         }
-        if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "HTTP write canceled"); }
+        if (stopRequested.load()) {
+            return SlaveError(StatusCode::CANCELED, "HTTP write canceled");
+        }
         return SlaveError(StatusCode::CONNECTION_ERROR, "HTTP write failed");
     }
     return Status::OK();
@@ -248,7 +258,9 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
             wire.append(buffer, static_cast<std::size_t>(received));
             return Status::OK();
         }
-        if (received == 0) { return SlaveError(StatusCode::CONNECTION_ERROR, "HTTP response closed early"); }
+        if (received == 0) {
+            return SlaveError(StatusCode::CONNECTION_ERROR, "HTTP response closed early");
+        }
         if (errno == EINTR) { return Status::OK(); }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return SlaveError(StatusCode::TIMEOUT, "HTTP read timed out");
@@ -284,7 +296,8 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
     }
     unsigned int statusCode{0};
     const auto codeText = statusLine.substr(statusSpace + 1, 3);
-    const auto codeResult = std::from_chars(codeText.data(), codeText.data() + codeText.size(), statusCode, 10);
+    const auto codeResult =
+        std::from_chars(codeText.data(), codeText.data() + codeText.size(), statusCode, 10);
     if (codeResult.ec != std::errc{} || codeResult.ptr != codeText.data() + codeText.size()) {
         return SlaveError(StatusCode::INTERNAL_ERROR, "invalid HTTP status code");
     }
@@ -345,9 +358,9 @@ Status ParseHttpResponse(std::string& wire, int fd, std::chrono::steady_clock::t
 }
 
 Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
-                       std::chrono::steady_clock::time_point deadline,
-                       std::atomic_int& activeFd, std::mutex& activeFdMutex,
-                       const std::atomic<bool>& stopRequested, HttpResponse& response)
+                       std::chrono::steady_clock::time_point deadline, std::atomic_int& activeFd,
+                       std::mutex& activeFdMutex, const std::atomic<bool>& stopRequested,
+                       HttpResponse& response)
 {
     if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
     if (std::chrono::steady_clock::now() >= deadline) {
@@ -376,23 +389,27 @@ Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
     }
 
     Status lastFailure = SlaveError(StatusCode::CONNECTION_ERROR, "master is unreachable");
-    for (const addrinfo* current = addresses.get(); current != nullptr; current = current->ai_next) {
+    for (const addrinfo* current = addresses.get(); current != nullptr;
+         current = current->ai_next) {
         int fd{-1};
         auto status = ConnectSocket(*current, deadline, activeFd, activeFdMutex, stopRequested, fd);
         if (!status.ok()) {
             lastFailure = std::move(status);
-            if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
+            if (stopRequested.load()) {
+                return SlaveError(StatusCode::CANCELED, "master fetch canceled");
+            }
             continue;
         }
         const auto request = "GET /v1/views?since_epoch=" + std::to_string(sinceEpoch) +
-                             " HTTP/1.1\r\nHost: " + addressText +
-                             "\r\nConnection: close\r\n\r\n";
+                             " HTTP/1.1\r\nHost: " + addressText + "\r\nConnection: close\r\n\r\n";
         const auto remaining = RemainingMs(deadline);
         status = remaining == 0 ? SlaveError(StatusCode::TIMEOUT, "HTTP write timed out")
                                 : SetSocketTimeout(fd, SO_SNDTIMEO, remaining);
         if (status.ok()) { status = SendAll(fd, request, stopRequested); }
         std::string wire;
-        if (status.ok()) { status = ParseHttpResponse(wire, fd, deadline, stopRequested, response); }
+        if (status.ok()) {
+            status = ParseHttpResponse(wire, fd, deadline, stopRequested, response);
+        }
         {
             std::lock_guard<std::mutex> lock(activeFdMutex);
             shutdown(fd, SHUT_RDWR);
@@ -400,7 +417,9 @@ Status FetchFromMaster(const std::string& addressText, std::uint64_t sinceEpoch,
             activeFd.store(-1);
         }
         if (status.ok()) { return Status::OK(); }
-        if (stopRequested.load()) { return SlaveError(StatusCode::CANCELED, "master fetch canceled"); }
+        if (stopRequested.load()) {
+            return SlaveError(StatusCode::CANCELED, "master fetch canceled");
+        }
         lastFailure = std::move(status);
     }
     return lastFailure;
@@ -423,7 +442,9 @@ public:
     Status GetAllViews(ViewUniverse& universe)
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+        if (stopRequested_.load()) {
+            return SlaveError(StatusCode::CANCELED, "worker is stopping");
+        }
         std::vector<std::string> addresses = config_.masterAddrs;
         if (addresses.empty() && !config_.masterAddr.empty()) {
             addresses.emplace_back(config_.masterAddr);
@@ -439,18 +460,23 @@ public:
         // acceptance is decided only by ViewUniverse::PublishAll, not by a
         // second worker-local epoch cache or a slave-side comparison.
         const auto requestEpoch = universe.Empty() ? std::uint64_t{0} : callerEpoch;
-        const auto timeout = config_.httpTimeoutMs == 0 ? std::uint64_t{2000} : config_.httpTimeoutMs;
+        const auto timeout =
+            config_.httpTimeoutMs == 0 ? std::uint64_t{2000} : config_.httpTimeoutMs;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
         for (const auto& address : addresses) {
-            if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+            if (stopRequested_.load()) {
+                return SlaveError(StatusCode::CANCELED, "worker is stopping");
+            }
             if (std::chrono::steady_clock::now() >= deadline) {
                 return SlaveError(StatusCode::TIMEOUT, "worker fetch deadline expired");
             }
             HttpResponse response;
-            auto status = FetchFromMaster(address, requestEpoch, deadline, activeFd_, activeFdMutex_,
-                                          stopRequested_, response);
+            auto status = FetchFromMaster(address, requestEpoch, deadline, activeFd_,
+                                          activeFdMutex_, stopRequested_, response);
             if (!status.ok()) {
-                if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+                if (stopRequested_.load()) {
+                    return SlaveError(StatusCode::CANCELED, "worker is stopping");
+                }
                 lastFailure = std::move(status);
                 continue;
             }
@@ -469,17 +495,22 @@ public:
             }
 
             auto decoded = CreateViewUniverse();
-            if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+            if (stopRequested_.load()) {
+                return SlaveError(StatusCode::CANCELED, "worker is stopping");
+            }
             status = M800ViewCodec::Decode(response.body, *decoded);
             if (!status.ok()) {
                 lastFailure = std::move(status);
                 continue;
             }
             if (decoded->Empty()) {
-                lastFailure = SlaveError(StatusCode::INTERNAL_ERROR, "master returned an empty universe");
+                lastFailure =
+                    SlaveError(StatusCode::INTERNAL_ERROR, "master returned an empty universe");
                 continue;
             }
-            if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+            if (stopRequested_.load()) {
+                return SlaveError(StatusCode::CANCELED, "worker is stopping");
+            }
             if (std::chrono::steady_clock::now() >= deadline) {
                 return SlaveError(StatusCode::TIMEOUT, "worker fetch deadline expired");
             }
@@ -492,7 +523,9 @@ public:
             // complete. Do not report a later timeout/cancellation as failure.
             return Status::OK();
         }
-        if (stopRequested_.load()) { return SlaveError(StatusCode::CANCELED, "worker is stopping"); }
+        if (stopRequested_.load()) {
+            return SlaveError(StatusCode::CANCELED, "worker is stopping");
+        }
         return lastFailure;
     }
 

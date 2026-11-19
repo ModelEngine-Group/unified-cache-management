@@ -4,15 +4,8 @@
  */
 
 #include "view/view_http_server.h"
-
-#include <netdb.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -20,11 +13,15 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <netdb.h>
 #include <new>
 #include <string>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <system_error>
 #include <thread>
-
+#include <unistd.h>
 #include "view/m800_view_common.h"
 
 namespace kv {
@@ -89,8 +86,8 @@ bool SplitListenAddress(const std::string& address, std::string& host, std::stri
     if (port.empty()) { return false; }
     unsigned int numericPort = 0;
     const auto result = std::from_chars(port.data(), port.data() + port.size(), numericPort, 10);
-    return result.ec == std::errc{} && result.ptr == port.data() + port.size() &&
-           numericPort > 0 && numericPort <= 65535;
+    return result.ec == std::errc{} && result.ptr == port.data() + port.size() && numericPort > 0 &&
+           numericPort <= 65535;
 }
 
 std::uint64_t ParseSinceEpoch(const std::string& target)
@@ -103,8 +100,8 @@ std::uint64_t ParseSinceEpoch(const std::string& target)
     std::size_t begin = 0;
     while (begin <= query.size()) {
         const auto end = query.find('&', begin);
-        const auto item = query.substr(begin, end == std::string::npos ? std::string::npos
-                                                                       : end - begin);
+        const auto item =
+            query.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
         const auto equals = item.find('=');
         if (equals != std::string::npos && item.substr(0, equals) == "since_epoch") {
             if (found) { return 0; }
@@ -142,19 +139,16 @@ RequestParseResult ParseRequest(const std::string& request, ViewHttpRequest& par
     }
     const auto line = request.substr(0, lineEnd);
     const auto firstSpace = line.find(' ');
-    const auto secondSpace = firstSpace == std::string::npos
-                                 ? std::string::npos
-                                 : line.find(' ', firstSpace + 1);
-    if (firstSpace == std::string::npos || secondSpace == std::string::npos ||
-        firstSpace == 0 || secondSpace == firstSpace + 1 || secondSpace + 1 >= line.size() ||
+    const auto secondSpace =
+        firstSpace == std::string::npos ? std::string::npos : line.find(' ', firstSpace + 1);
+    if (firstSpace == std::string::npos || secondSpace == std::string::npos || firstSpace == 0 ||
+        secondSpace == firstSpace + 1 || secondSpace + 1 >= line.size() ||
         line.find(' ', secondSpace + 1) != std::string::npos) {
         return RequestParseResult::BAD_REQUEST;
     }
     if (line.substr(0, firstSpace) != "GET") { return RequestParseResult::METHOD_NOT_ALLOWED; }
     const auto version = line.substr(secondSpace + 1);
-    if (version != "HTTP/1.1" && version != "HTTP/1.0") {
-        return RequestParseResult::BAD_REQUEST;
-    }
+    if (version != "HTTP/1.1" && version != "HTTP/1.0") { return RequestParseResult::BAD_REQUEST; }
 
     const auto target = line.substr(firstSpace + 1, secondSpace - firstSpace - 1);
     const auto queryPos = target.find('?');
@@ -256,16 +250,16 @@ public:
         addrinfo* addresses = nullptr;
         const auto gaiResult = getaddrinfo(host.c_str(), port.c_str(), &hints, &addresses);
         if (gaiResult != 0) {
-            return Status::Error(StatusCode::CONNECTION_ERROR,
-                                 "failed to resolve HTTP listen address: " +
-                                     std::string{gai_strerror(gaiResult)});
+            return Status::Error(
+                StatusCode::CONNECTION_ERROR,
+                "failed to resolve HTTP listen address: " + std::string{gai_strerror(gaiResult)});
         }
 
         int listenFd = -1;
         int lastError = 0;
         for (auto* address = addresses; address != nullptr; address = address->ai_next) {
-            const int candidate = socket(address->ai_family, address->ai_socktype,
-                                         address->ai_protocol);
+            const int candidate =
+                socket(address->ai_family, address->ai_socktype, address->ai_protocol);
             if (candidate < 0) {
                 lastError = errno;
                 continue;
@@ -361,7 +355,8 @@ private:
 
     void HandleConnection(int fd)
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs_);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs_);
         ViewHttpReply reply;
         try {
             std::string request;

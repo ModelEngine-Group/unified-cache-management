@@ -4,16 +4,13 @@
  */
 
 #include "view/m800_view_agent_client.h"
-
-#include <dlfcn.h>
-
-#include <limits>
 #include <atomic>
+#include <dlfcn.h>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <string>
 #include <utility>
-
 #include "KVClientAgentABI.h"
 #include "logger.h"
 
@@ -51,10 +48,7 @@ bool LoadSymbol(void* library, const char* name, T& function, std::string& error
     return true;
 }
 
-bool HasEmbeddedNul(const std::string& value)
-{
-    return value.find('\0') != std::string::npos;
-}
+bool HasEmbeddedNul(const std::string& value) { return value.find('\0') != std::string::npos; }
 
 bool LoadApi(void* library, AgentApi& api, std::string& error)
 {
@@ -413,9 +407,8 @@ public:
         std::string loadError;
         if (!LoadApi(library, api, loadError)) {
             dlclose(library);
-            return Status::Error(StatusCode::NOT_FOUND,
-                                 "incompatible agent library " + config.agentLibPath + ": " +
-                                     loadError);
+            return Status::Error(StatusCode::NOT_FOUND, "incompatible agent library " +
+                                                            config.agentLibPath + ": " + loadError);
         }
         const auto version = api.getAbiVersion();
         if (version != KV_CLIENT_AGENT_ABI_VERSION) {

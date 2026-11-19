@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "view/m800_view_master_server.h"
-
 #include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
@@ -58,7 +57,9 @@ bool ParsePort(std::string_view text, std::uint16_t& port)
     const char* begin = text.data();
     const char* end = begin + text.size();
     const auto result = std::from_chars(begin, end, value, 10);
-    if (result.ec != std::errc{} || result.ptr != end || value == 0 || value > 65535) { return false; }
+    if (result.ec != std::errc{} || result.ptr != end || value == 0 || value > 65535) {
+        return false;
+    }
     port = static_cast<std::uint16_t>(value);
     return true;
 }
@@ -89,7 +90,8 @@ bool ParseNodeEndpoint(const std::string& address, const M800ViewServerConfig& c
             }
         }
     } else {
-        const auto colonCount = static_cast<std::size_t>(std::count(address.begin(), address.end(), ':'));
+        const auto colonCount =
+            static_cast<std::size_t>(std::count(address.begin(), address.end(), ':'));
         if (colonCount == 0) {
             ip = address;
         } else if (colonCount == 1) {
@@ -148,13 +150,13 @@ public:
             return status;
         }
 
-        const auto configuredTimeout = config_.agentFetchTimeoutMs == 0
-                                           ? std::uint64_t{10000}
-                                           : config_.agentFetchTimeoutMs;
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(configuredTimeout);
+        const auto configuredTimeout =
+            config_.agentFetchTimeoutMs == 0 ? std::uint64_t{10000} : config_.agentFetchTimeoutMs;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(configuredTimeout);
         std::shared_ptr<ViewUniverse> initial;
-        Status lastFailure = MasterError(StatusCode::CONNECTION_ERROR, "M800 initial view unavailable");
+        Status lastFailure =
+            MasterError(StatusCode::CONNECTION_ERROR, "M800 initial view unavailable");
         while (running_.load()) {
             auto candidate = CreateViewUniverse();
             lastFailure = FetchAndPublish(*candidate, deadline);
@@ -172,7 +174,8 @@ public:
             }
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) { break; }
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            const auto remaining =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto waitTime = std::min(kInitialRetryInterval, remaining);
             if (waitTime <= std::chrono::milliseconds::zero()) { break; }
             std::unique_lock<std::mutex> waitLock(waitMutex_);
@@ -185,9 +188,9 @@ public:
             if (canceled) {
                 return MasterError(StatusCode::CANCELED, "M800 master start was canceled");
             }
-            return MasterError(StatusCode::CONNECTION_ERROR,
-                               "M800 initial view was not ready before timeout: " +
-                                   lastFailure.message);
+            return MasterError(
+                StatusCode::CONNECTION_ERROR,
+                "M800 initial view was not ready before timeout: " + lastFailure.message);
         }
 
         auto httpServer = CreateViewHttpServer(config_.httpTimeoutMs);
@@ -321,9 +324,8 @@ private:
         return agent_;
     }
 
-    Status FetchAndPublish(
-        ViewUniverse& universe,
-        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    Status FetchAndPublish(ViewUniverse& universe, std::chrono::steady_clock::time_point deadline =
+                                                       std::chrono::steady_clock::time_point::max())
     {
         if (!running_.load()) {
             return MasterError(StatusCode::CANCELED, "M800 view publish was canceled");
@@ -363,11 +365,15 @@ private:
     Status FetchUniverse(ViewUniverse& universe)
     {
         auto agent = GetAgent();
-        if (!agent) { return MasterError(StatusCode::NOT_INITIALIZED, "M800 agent is unavailable"); }
+        if (!agent) {
+            return MasterError(StatusCode::NOT_INITIALIZED, "M800 agent is unavailable");
+        }
 
         Status lastStatus = MasterError(StatusCode::INTERNAL_ERROR, "M800 view fetch failed");
         for (int attempt = 0; attempt < 2; ++attempt) {
-            if (!running_.load()) { return MasterError(StatusCode::CANCELED, "M800 view fetch canceled"); }
+            if (!running_.load()) {
+                return MasterError(StatusCode::CANCELED, "M800 view fetch canceled");
+            }
             std::uint64_t epochBefore{0};
             lastStatus = agent->GetEpoch(epochBefore);
             if (!lastStatus.ok()) { return lastStatus; }
@@ -392,8 +398,8 @@ private:
                 const auto nsId = M800PoolNameToKvNsId(name);
                 const auto [iter, inserted] = poolById.emplace(nsId, name);
                 if (!inserted && iter->second != name) {
-                    KV_ERROR("M800 KvNsId collision: pool '{}' and '{}' both map to {}", iter->second,
-                             name, nsId);
+                    KV_ERROR("M800 KvNsId collision: pool '{}' and '{}' both map to {}",
+                             iter->second, name, nsId);
                     collision = true;
                 }
             }
@@ -404,7 +410,9 @@ private:
             std::unordered_map<KvNsId, GlobalView> nextViews;
 
             for (const auto& name : nsNames) {
-                if (!running_.load()) { return MasterError(StatusCode::CANCELED, "M800 view fetch canceled"); }
+                if (!running_.load()) {
+                    return MasterError(StatusCode::CANCELED, "M800 view fetch canceled");
+                }
                 const auto nsId = M800PoolNameToKvNsId(name);
                 std::vector<M800AgentNodeView> nodes;
                 auto status = agent->GetInByNs(name, nodes);
@@ -495,9 +503,7 @@ private:
     ViewHttpReply HandleHttpRequest(const ViewHttpRequest& request)
     {
         const auto snapshot = atomic_load(&lastFetched_);
-        if (!snapshot || snapshot->Empty()) {
-            return {ViewHttpReplyKind::INTERNAL_ERROR, {}};
-        }
+        if (!snapshot || snapshot->Empty()) { return {ViewHttpReplyKind::INTERNAL_ERROR, {}}; }
         if (request.sinceEpoch != 0 && request.sinceEpoch == snapshot->GetGlobalEpoch()) {
             return {ViewHttpReplyKind::NOT_MODIFIED, {}};
         }

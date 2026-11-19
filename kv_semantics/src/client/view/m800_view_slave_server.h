@@ -48,7 +48,6 @@ public:
     virtual void Stop() = 0;
 };
 
-std::shared_ptr<M800ViewSlaveServer> CreateM800ViewSlaveServer(
-    const M800ViewServerConfig& config);
+std::shared_ptr<M800ViewSlaveServer> CreateM800ViewSlaveServer(const M800ViewServerConfig& config);
 
 }  // namespace kv

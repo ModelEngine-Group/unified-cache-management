@@ -36,8 +36,9 @@
 namespace kv::test {
 namespace {
 
-// 测试场景：编译并检查 M800 角色枚举、哈希种子、Agent ABI 版本与状态码，以及默认服务配置、HTTP 和文本协议常量。
-// 预期结果：角色值依次为 0/1 且底层类型为 uint8_t，哈希种子为 5381、ABI 版本为 1，状态码顺序、默认配置及 HTTP/文本协议常量均符合固定契约。
+// 测试场景：编译并检查 M800 角色枚举、哈希种子、Agent ABI 版本与状态码，以及默认服务配置、HTTP
+// 和文本协议常量。 预期结果：角色值依次为 0/1 且底层类型为 uint8_t，哈希种子为 5381、ABI 版本为
+// 1，状态码顺序、默认配置及 HTTP/文本协议常量均符合固定契约。
 TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
 {
     static_assert(M800ViewRole::MASTER == M800ViewRole{0});
@@ -78,8 +79,10 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_STREQ(M800ViewTextContract::kAsuInfoFieldPrefix, "asuInfo.");
 }
 
-// 测试场景：通过编译期类型检查审视 ViewUniverse、Master/Slave Server、RefreshScheduler、AgentClient/Factory 和 ViewHttpServer 的接口及多命名空间方法签名。
-// 预期结果：这些类型均为抽象类，PublishAll、ReplaceAll、GetView 与 Master/Slave 的 GetAllViews 签名严格匹配 ViewUniverse 多命名空间契约。
+// 测试场景：通过编译期类型检查审视 ViewUniverse、Master/Slave
+// Server、RefreshScheduler、AgentClient/Factory 和 ViewHttpServer 的接口及多命名空间方法签名。
+// 预期结果：这些类型均为抽象类，PublishAll、ReplaceAll、GetView 与 Master/Slave 的 GetAllViews
+// 签名严格匹配 ViewUniverse 多命名空间契约。
 TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementation)
 {
     static_assert(std::is_abstract<ViewUniverse>::value);
@@ -103,7 +106,8 @@ TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementatio
 }
 
 // 测试场景：默认构造 M800AgentNodeView、ViewHttpRequest 和 ViewHttpReply。
-// 预期结果：节点 osdId 为 -1、up/in 均为 false 且地址为空；请求 sinceEpoch 为 0；响应类型为 INTERNAL_ERROR 且 body 为空。
+// 预期结果：节点 osdId 为 -1、up/in 均为 false 且地址为空；请求 sinceEpoch 为 0；响应类型为
+// INTERNAL_ERROR 且 body 为空。
 TEST(M800ViewContractsTest, M800AgentAndHTTPContractDefaultsCompile)
 {
     const M800AgentNodeView nodeView;
