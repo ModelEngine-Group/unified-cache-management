@@ -92,6 +92,14 @@ TEST(CpuKvOverRoceSharedStateTest, DeviceBucketsAreKeyedByAdapterAndPort)
     EXPECT_FALSE(first == otherPort);
     EXPECT_FALSE(first == otherAdapter);
     EXPECT_EQ(roce::DeviceKeyHash{}(first), roce::DeviceKeyHash{}(same));
+
+    // The hash has to move with the port and with the GID index, otherwise
+    // two adapters or two GIDs collapse into the same bucket.
+    const roce::DeviceKey otherGid{"mlx5_0", 1, 1};
+    EXPECT_FALSE(first == otherGid);
+    EXPECT_NE(roce::DeviceKeyHash{}(first), roce::DeviceKeyHash{}(otherPort));
+    EXPECT_NE(roce::DeviceKeyHash{}(first), roce::DeviceKeyHash{}(otherAdapter));
+    EXPECT_NE(roce::DeviceKeyHash{}(first), roce::DeviceKeyHash{}(otherGid));
 }
 
 TEST(CpuKvOverRoceSharedStateTest, RejectsRangesRegisteredWithAnotherBackend)

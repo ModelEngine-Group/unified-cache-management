@@ -291,18 +291,39 @@ TEST(CpuKvOverRoceCreateConnectionTest, RejectsCapabilityLimitsThatDoNotFitTheMe
 TEST(CpuKvOverRoceCreateConnectionTest, AcceptsZeroForKnobsWhereItIsMeant)
 {
     // Zero is a legitimate setting, not a missing one: the request has to get
-    // past validation and fail on the network instead of on the knob.
+    // past validation and link up instead of failing on the knob.
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    roce::CpuKvOverRoceTransProvider server(MakeServerConfig());
+    Status serverStatus = Status::Error(StatusCode::INTERNAL_ERROR, "server thread did not run");
+    ConnectionHandles serverHandles;
+    std::thread serverThread([&]() {
+        serverStatus =
+            server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 4000, serverHandles);
+    });
+
     TransportConfig config = MakeClientConfig();
     config.attrs["roce_inline_threshold"] = "0";
     config.attrs["roce_gid_index"] = "0";
     config.attrs["roce_sl"] = "0";
 
-    roce::CpuKvOverRoceTransProvider provider(config);
+    roce::CpuKvOverRoceTransProvider client(config);
     ConnectionHandles handles;
-    const Status status = provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 200, handles);
+    const Status status = ConnectWithRetry(client, port, 1, handles);
+    serverThread.join();
 
-    EXPECT_NE(StatusCode::INVALID_ARGUMENT, status.code) << status.message;
-    EXPECT_TRUE(handles.empty());
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_TRUE(serverStatus.ok()) << serverStatus.message;
+    EXPECT_EQ(1U, handles.size());
+    EXPECT_EQ(1U, client.ConnectionCount());
+
+    const std::vector<Status> deleted = client.DeleteConnections(handles);
+    for (const Status& result : deleted) { EXPECT_TRUE(result.ok()) << result.message; }
+    EXPECT_EQ(0U, client.ConnectionCount());
+
+    const std::vector<Status> serverDeleted = server.DeleteConnections(serverHandles);
+    for (const Status& result : serverDeleted) { EXPECT_TRUE(result.ok()) << result.message; }
 }
 
 TEST(CpuKvOverRoceCreateConnectionTest, FailsCleanlyWhenNobodyListens)

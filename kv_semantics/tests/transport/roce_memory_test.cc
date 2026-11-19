@@ -112,6 +112,9 @@ TEST(CpuKvOverRoceMemoryTest, BindsARegisteredRangeAndCarriesThePeerToken)
     ASSERT_TRUE(provider.RegisterMemory(registerDescs, registrations).ok());
     ASSERT_EQ(1U, registrations.size());
 
+    std::uint32_t registeredToken = 0;
+    ASSERT_TRUE(provider.GetMemTokenId(registrations.front(), registeredToken).ok());
+
     // A sub-range of a registered region is bindable; the store token travels
     // through untouched, because the client compares it after the call.
     std::vector<MRHandle> bindings;
@@ -132,7 +135,8 @@ TEST(CpuKvOverRoceMemoryTest, BindsARegisteredRangeAndCarriesThePeerToken)
     ASSERT_EQ(1U, released.size());
     EXPECT_TRUE(released.front().ok()) << released.front().message;
     std::uint32_t registrationToken = 0;
-    EXPECT_TRUE(provider.GetMemTokenId(registrations.front(), registrationToken).ok());
+    ASSERT_TRUE(provider.GetMemTokenId(registrations.front(), registrationToken).ok());
+    EXPECT_EQ(registeredToken, registrationToken);
 }
 
 TEST(CpuKvOverRoceMemoryTest, RejectsBindingMemoryItDidNotRegister)
