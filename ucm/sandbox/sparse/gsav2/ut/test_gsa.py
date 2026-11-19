@@ -2,9 +2,9 @@
 """ucm/sandbox/sparse/gsav2/gsa.py 单元测试。
 
 覆盖策略：
-- C++ 扩展（GSAPrefetchEngineC / UCMKVPrefetch / torch.ops._C_ascend）使用
+- C++ 扩展（GSAPrefetchEngineC / UCMKVPrefetch / torch.ops._C_gsa）使用
   conftest 注入的 mock；
-- 模块常量（IS_INDEXER_OFFLOAD / PTOPK_PREFETCH_ENABLE / IS_PERFORMANCE_LOG /
+- 模块常量（IS_INDEXER_OFFLOAD / IS_OPEN_GSA / IS_PERFORMANCE_LOG /
   SEG_PREFILL_THRESHOLD 等）通过 monkeypatch 构造分支矩阵；
 - 平台分支（L30-43）由 import 时的 True 侧 + reload 用例的 False 侧共同覆盖。
 """
@@ -32,19 +32,6 @@ class TestModuleLevel:
         assert v1 == v2 and isinstance(v1, int)
         assert gsa_mod.compute_parent_block_hash("m", 2, "bf16", 1) != v1
 
-    def test_inject_store_v1_ptr_without_instance(self, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "GSA_INSTANCE", None)
-        gsa_mod.inject_store_v1_ptr(123)
-        assert gsa_mod._pending_store_ptr == 123
-
-    def test_inject_store_v1_ptr_with_instance(self, monkeypatch):
-        calls = []
-        inst = SimpleNamespace(_inject_store_ptr=lambda p: calls.append(p))
-        monkeypatch.setattr(gsa_mod, "GSA_INSTANCE", inst)
-        gsa_mod.inject_store_v1_ptr(456)
-        assert calls == [456]
-        assert gsa_mod._pending_store_ptr == 456
-
     def test_platform_branch_reload(self, monkeypatch):
         """覆盖 L30-43 两侧：True 侧在 import 时已执行，此处覆盖 False 侧并还原"""
         import torch as _torch
@@ -69,8 +56,6 @@ class TestSmallClasses:
         assert bt.len == 0
         bt.np[0, 0] = 7
         assert bt.cpu[0, 0].item() == 7
-        bt.update_len(4)
-        assert bt.len == 4
 
     def test_gsa_shared_cpu_pool(self):
         pool = gsa_mod.GSASharedCPUPool(5)
@@ -174,15 +159,6 @@ class TestGSAReqStat:
         # 短 prompt → False
         stat = self._stat(num_prompt_tokens=10, num_computed_tokens=10)
         assert stat.is_gsa() is False
-
-    def test_is_indexer_sparse_combinations(self, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "INDEXER_PREFETCH_TOKENS", 64)
-        stat = self._stat(num_prompt_tokens=100, num_computed_tokens=100)
-        assert stat.is_indexer_sparse() is True
-        stat = self._stat(num_prompt_tokens=100, num_computed_tokens=50)
-        assert stat.is_indexer_sparse() is False
-        stat = self._stat(num_prompt_tokens=10, num_computed_tokens=10)
-        assert stat.is_indexer_sparse() is False
 
     def test_is_last_chunk_pd_mix(self):
         cfg = fakes.FakeVllmConfig(producer=True, consumer=True)
@@ -329,22 +305,6 @@ class TestGSAReqStat:
         stat.num_scheduled_tokens = 28
         assert stat.get_indexer_sparse_len() == 128  # 早退：get_seq_len()
 
-    def test_get_indexer_remain_len(self, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
-        monkeypatch.setattr(gsa_mod, "INDEXER_PREFETCH_TOKENS", 64)
-        stat = self._stat(
-            num_prompt_tokens=100,
-            num_computed_tokens=100,
-            num_scheduled_tokens=28,
-            prompt_block_len=4,
-            prompt_sparse_len=2,
-        )
-        # sparse_len = (4 - ceil(2*1.5)) * 128 = 128；seq = 128 → 0
-        assert stat.get_indexer_remain_len() == 0
-        monkeypatch.setattr(gsa_mod, "INDEXER_PREFETCH_TOKENS", 32768)
-        stat.num_prompt_tokens = 100
-        assert stat.get_indexer_remain_len() == 128  # 早退：get_seq_len()
-
 
 # ===========================================================================
 # GSAMetaData
@@ -461,7 +421,7 @@ class TestGSAConstruction:
         assert not hasattr(g, "select_gsa_prefetch_topk")  # 无 speculative
 
     def test_worker_init_ptopk_disabled(self, make_gsa, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         g = make_gsa()
         assert not hasattr(g, "prefetch_engine")
         assert not hasattr(g, "log")
@@ -525,39 +485,36 @@ class TestGSAConstruction:
     def test_bind_cpus_paths(self, monkeypatch):
         monkeypatch.setattr(gsa_mod, "CpuAlloc", fakes.FakeCpuAlloc)
         monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", False)
-        g = object.__new__(gsa_mod.GSA)
+        g = object.__new__(gsa_mod.GSAV2)
         g.local_rank = 0
         # 空 cpu_pool
         fakes.FakeCpuAlloc.cpu_pool = {0: []}
-        assert gsa_mod.GSA.bind_cpus(g) == (None, None)
+        assert gsa_mod.GSAV2.bind_cpus(g) == (None, None)
         # assign_main 充足 → 取尾部 20 个
         fakes.FakeCpuAlloc.cpu_pool = {0: [3]}
         fakes.FakeCpuAlloc.cpu_node = {3: 1}
         fakes.FakeCpuAlloc.assign_main = {0: list(range(30))}
-        numa, cpus = gsa_mod.GSA.bind_cpus(g)
+        numa, cpus = gsa_mod.GSAV2.bind_cpus(g)
         assert numa == 1 and cpus == list(range(10, 30))
         # assign_main 不足 → 取 [1:]
         fakes.FakeCpuAlloc.assign_main = {0: [7, 8, 9]}
-        numa, cpus = gsa_mod.GSA.bind_cpus(g)
+        numa, cpus = gsa_mod.GSAV2.bind_cpus(g)
         assert numa == 1 and cpus == [8, 9]
 
     def test_bind_cpus_indexer_thread_num(self, monkeypatch):
         monkeypatch.setattr(gsa_mod, "CpuAlloc", fakes.FakeCpuAlloc)
         monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
-        g = object.__new__(gsa_mod.GSA)
+        g = object.__new__(gsa_mod.GSAV2)
         g.local_rank = 0
         fakes.FakeCpuAlloc.cpu_pool = {0: [3]}
         fakes.FakeCpuAlloc.cpu_node = {3: 2}
         fakes.FakeCpuAlloc.assign_main = {0: list(range(30))}
-        numa, cpus = gsa_mod.GSA.bind_cpus(g)
+        numa, cpus = gsa_mod.GSAV2.bind_cpus(g)
         assert numa == 2 and len(cpus) == 24  # IS_INDEXER_OFFLOAD → 24 线程
-
-    def test_print_log(self, gsa_worker):
-        gsa_worker.print_log("hello")  # 写入 tmp 下的 normal 日志
 
     def test_init_gsa_metadata_early_return(self, gsa_worker, monkeypatch):
         # 构造路径下该分支不可达（外层已过滤），直接调用覆盖早退
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         gsa_worker.init_gsa_metadata(fakes.FakeVllmConfig())
 
 
@@ -621,7 +578,7 @@ class TestStoreInjection:
         g.prefetch_engine.prefetch_engine_c.store_v1_ptr = 4096
         assert g._inject_store_v1(fakes.make_plain_connector(store_ptr=4096))
         assert g._store_injected is True
-        assert g.ucm_prefetch_engine.calls == [("store_init", 4096, g.layer_num)]
+        assert g.ucm_prefetch_engine.calls == [("store_init", 4096, g.layer_num, 4)]
 
     def test_inject_store_v1_verification_failure(self, gsa_worker):
         g = gsa_worker
@@ -774,15 +731,15 @@ def _register_kvcaches(g, n_blocks=32):
 
 
 def _record_ops(monkeypatch):
-    """把 torch.ops._C_ascend 的 copy op 替换为计数记录器"""
+    """把 torch.ops._C_gsa 的 copy op 替换为计数记录器"""
     rec = {"gather": 0, "scatter": 0}
     monkeypatch.setattr(
-        torch.ops._C_ascend,
+        torch.ops._C_gsa,
         "gsa_gather_copy",
         lambda *a, **k: rec.__setitem__("gather", rec["gather"] + 1),
     )
     monkeypatch.setattr(
-        torch.ops._C_ascend,
+        torch.ops._C_gsa,
         "gsa_scatter_copy",
         lambda *a, **k: rec.__setitem__("scatter", rec["scatter"] + 1),
     )
@@ -839,12 +796,12 @@ class TestInjectBlockHashes:
         monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
         g = make_gsa()
         self._prepare(g)
-        # 源码 _init_indexer_preempt 写的是 indexer_cache_preempt_ptr，
-        # _inject_block_hashes 读的是 *_i_ptr —— 手动补设以覆盖该路径
+        # _i_ptr/_i_offset 由 init_host_slabs_from_kv → _init_indexer_preempt
+        # 运行期赋值（构造流程不含）；此处手动设值以确定性覆盖该路径
         g.indexer_cache_preempt_i_ptr = 3000
         g.indexer_cache_preempt_i_offset = 30
         g._inject_block_hashes("r1", [0], [1], inject_indexer=True)
-        calls = g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_blocks")
+        calls = g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_block")
         assert len(calls) == 1
         assert calls[0][1][2] == [3000 + 30]
 
@@ -853,7 +810,7 @@ class TestInjectBlockHashes:
         g = make_gsa()
         self._prepare(g)
         g._inject_block_hashes("r1", [0], [1], inject_indexer=False)
-        assert not g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_blocks")
+        assert not g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_block")
 
 
 # ===========================================================================
@@ -861,7 +818,7 @@ class TestInjectBlockHashes:
 # ===========================================================================
 class TestAttentionHooks:
     def test_begin_ptopk_disabled(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         out = gsa_worker.attention_begin("q", "k", "v", "model.layers.1.x", None)
         assert out == ("q", "k", "v", None)
 
@@ -1583,7 +1540,7 @@ class TestBuildMetaAndExecute:
         assert not hasattr(g, "slots_num_manager")  # rank≠0 不更新
 
     def test_execute_begin_early_return_ptopk_off(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         gsa_worker.execute_begin(fakes.FakeSchedulerOutput(), {})  # 早退
 
     def test_execute_begin_early_return_not_decode(self, make_gsa):
@@ -1845,9 +1802,8 @@ class TestIndexer:
         g.cal_indexer_topk_blocks()  # bs == 0
 
     def _setup_topk(self, g, stat_kw=None):
-        # 源码疑似问题：_init_worker_indexer_state 中 indexer_last_query 的
-        # None 赋值晚于 init_gsa_metadata 的创建语句，构造完成后恒为 None；
-        # 此处手动重建以覆盖 cal_indexer_topk_blocks 主路径
+        # 已修复（README 问题 #3）：构造期 init_gsa_metadata 保留 TopkIndices；
+        # 此处重建仅为钉住 bs=4 形状，保证断言确定性
         g.indexer_last_query = gsa_mod.TopkIndices(
             (g.layer_num, 4, 32, 128), g.device, g.dtype
         )
@@ -1877,6 +1833,16 @@ class TestIndexer:
         for layer in range(g.layer_num):
             g.indexer_k_repr[layer].normal_()
         return stat
+
+    def test_offload_construction_keeps_topk_indices(self, make_gsa, monkeypatch):
+        """README 问题 #3 回归：offload 构造后 indexer_last_* 必须是 TopkIndices。"""
+        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
+        g = make_gsa()
+        assert isinstance(g.indexer_last_query, gsa_mod.TopkIndices)
+        assert isinstance(g.indexer_last_weight, gsa_mod.TopkIndices)
+        assert g.indexer_last_query.cpu.shape[0] == g.layer_num
+        assert g.indexer_last_query.cpu.shape[2:] == (32, 128)
+        assert g.indexer_last_weight.cpu.shape[2] == 32
 
     def test_topk_blocks_spec1_full(self, make_gsa, monkeypatch):
         g = self._offload_gsa(make_gsa, monkeypatch)
@@ -2033,7 +1999,7 @@ class TestWarmup:
         g = gsa_worker
         g.warmup_topk = []
         g.warmup()  # warmup_topk 空 → 早退
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         g.warmup()  # 开关关闭 → 早退
 
     def test_warmup_full(self, gsa_worker, monkeypatch):
@@ -2073,7 +2039,7 @@ class TestWarmup:
         stat = self._warmup_setup(g, offload=True)
         # offload + inject_indexer：prompt 200 <= 32768 → False 侧
         g._warmup_dump_blocks()
-        assert not g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_blocks")
+        assert not g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_block")
         # prompt > INDEXER_PREFETCH_TOKENS → inject_indexer True 侧
         stat.num_prompt_tokens = 40000
         stat.block_hashes = [bytes([i]) * 16 for i in range(2)]
@@ -2081,7 +2047,7 @@ class TestWarmup:
         g.indexer_cache_preempt_i_ptr = 3000
         g.indexer_cache_preempt_i_offset = 30
         g._warmup_dump_blocks()
-        assert g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_blocks")
+        assert g.prefetch_engine.prefetch_engine_c.called("set_last_indexer_block")
 
     def test_warmup_dump_sfa_c8(self, make_gsa):
         g = make_gsa(additional_config={"enable_sparse_sfa_c8": True})
@@ -2127,11 +2093,13 @@ class TestWarmup:
 # ===========================================================================
 class TestExecuteFinished:
     def test_early_return_ptopk_off(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
-        gsa_worker.execute_finished()
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
+        idx = torch.arange(3)
+        assert gsa_worker.execute_finished(idx) is idx
 
     def test_early_return_not_decode(self, make_gsa):
-        make_gsa(consumer=False).execute_finished()
+        idx = torch.arange(3)
+        assert make_gsa(consumer=False).execute_finished(idx) is idx
 
     def test_no_prefetch_branch(self, gsa_worker):
         g = gsa_worker
@@ -2141,7 +2109,8 @@ class TestExecuteFinished:
         g.need_cal_k_mean = []
         g.need_indexer_sparse_reqs = []
         g.need_indexer_sparse_bs = []
-        g.execute_finished()
+        idx = torch.arange(3)
+        assert g.execute_finished(idx) is idx
         # 非 offload rank0：update_slot_num 已执行（k_num=0）
         assert g.slots_num_manager.update_calls
 
@@ -2152,7 +2121,8 @@ class TestExecuteFinished:
         g.prefetch_topk = [[[0], "r1"]]
         g.warmup_topk = []
         g.is_prefetch_token = True
-        g.execute_finished()
+        idx = torch.arange(3)
+        assert g.execute_finished(idx) is idx
         assert g.prefetch_engine.prefetch_engine_c.called("submit_prefetch_task")
 
     def test_prefetch_token_branch_perf_off(self, gsa_worker, monkeypatch):
@@ -2162,7 +2132,7 @@ class TestExecuteFinished:
         g.prefetch_topk = []
         g.warmup_topk = []
         g.is_prefetch_token = False
-        g.execute_finished()  # 无计时路径
+        assert g.execute_finished(torch.arange(3)) is not None  # 无计时路径
 
     def test_prepare_prefetch_requests_spec1(self, gsa_worker):
         g = gsa_worker
@@ -2257,15 +2227,6 @@ def _fake_kv_cache_manager(coordinator=None, block_pool=None):
     )
 
 
-class _SelfRefNewReq:
-    """build_sparse_meta 把 scheduled_new_reqs 的元素（NewRequestData 对象）
-    原样传给 _load_kv_dram，而后者以 req_id 为键查 gsa_stats —— 疑似源码
-    问题（元素与键类型不一致）。用自引用对象使两者兼容以覆盖该路径。"""
-
-    def __init__(self):
-        self.req_id = self
-
-
 class TestSchedulerSide:
     def _build_setup(self, g, monkeypatch, seg=32768, prompt=0):
         monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", seg)
@@ -2275,9 +2236,9 @@ class TestSchedulerSide:
         stat.num_prompt_tokens = prompt
         md.gsa_stats["r1"] = stat
         g.gsa_stats = md.gsa_stats
-        # 注：build_sparse_meta 会把 scheduled_new_reqs 的元素（NewRequestData
-        # 对象，非 req_id）直接传给 _load_kv_dram —— 疑似源码问题，此处用
-        # cached 路径规避（new-req 路径已在 TestBuildMetaAndExecute 覆盖）
+        # 注：new-req 路径已按 P0-F2 修复为 _load_kv_dram(new_req.req_id)，
+        # 此处仍用 cached 路径构造（new-req 路径在
+        # test_build_sparse_meta_new_reqs_and_has_prefill 覆盖）
         so = fakes.FakeSchedulerOutput(
             num_scheduled_tokens={"r1": 1},
             cached_req_ids=["r1"],
@@ -2293,7 +2254,7 @@ class TestSchedulerSide:
         return so, requests, input_batch
 
     def test_build_sparse_meta_early_return(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         gsa_worker.build_sparse_meta(fakes.FakeSchedulerOutput(), {}, None, {})
 
     def test_build_sparse_meta_full(self, gsa_worker, monkeypatch):
@@ -2325,18 +2286,22 @@ class TestSchedulerSide:
         g = gsa_worker
         monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", 32768)
         g._store_injected = True
-        nr = _SelfRefNewReq()
+        # A2（P0-F2）已修复：scheduled_new_reqs 元素按 new_req.req_id（字符串）
+        # 传 _load_kv_dram —— 还原真实键控，不再使用自引用对象 hack
+        nr = SimpleNamespace(req_id="r_new")
         md = gsa_mod.GSAMetaData(g._vllm_config, 2)
-        md.gsa_stats[nr] = gsa_mod.GSAReqStat(nr, g._vllm_config, 2)
+        md.gsa_stats["r_new"] = gsa_mod.GSAReqStat("r_new", g._vllm_config, 2)
         g.gsa_stats = md.gsa_stats
-        so = fakes.FakeSchedulerOutput(num_scheduled_tokens={nr: 1}, new_reqs=[nr])
+        so = fakes.FakeSchedulerOutput(
+            num_scheduled_tokens={"r_new": 1}, new_reqs=[nr]
+        )
         add = fakes.FakeAddReqState(
             block_ids=[[5]],
             prompt_token_ids=list(range(200)),
             output_token_ids=[],
             num_computed_tokens=0,
         )
-        g.build_sparse_meta(so, {nr: add}, fakes.FakeInputBatch({nr: 0}), {})
+        g.build_sparse_meta(so, {"r_new": add}, fakes.FakeInputBatch({"r_new": 0}), {})
         # prefill 请求（prompt 200 > computed 0）→ has_prefill True
         assert g.has_prefill is True
         assert g.decode_index == []
@@ -2367,11 +2332,11 @@ class TestSchedulerSide:
         g.request_finished_in_scheduler("r1")
         assert "r1" not in g.preempt_req_output_tokens
         g.request_finished_in_scheduler("missing")  # 不存在 → pass
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         g.request_finished_in_scheduler("r1")  # 开关关闭 → 早退
 
     def test_request_finished_in_worker_early_return(self, make_gsa, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         gsa_worker = make_gsa()
         gsa_worker.request_finished_in_worker("r1")
         make_gsa(consumer=False).request_finished_in_worker("r1")
@@ -2444,14 +2409,12 @@ class TestSchedulerSide:
         g.request_finished_in_worker("r1")
         assert len(ec.called("get_indexer_status")) == 2
 
-    def test_begin_sch_flag_and_update(self, gsa_worker):
+    def test_update_scheduler_free_slot(self, gsa_worker):
         g = gsa_worker
         g.update_scheduler_free_slot(7)
         assert g.alloc_block_sch == 7
         g.update_scheduler_free_slot(3)
         assert g.alloc_block_sch == 10
-        g.begin_sch_flag()
-        assert g.alloc_block_sch == 0
         g.update_scheduler_free_slot(0)  # 归零分支
         assert g.alloc_block_sch == 0
 
@@ -2464,7 +2427,7 @@ class TestSchedulerSide:
         g = gsa_worker
         monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", 64)
         req = fakes.FakeRequest(prompt_token_ids=list(range(100)))
-        g.begin_sch_flag()
+        g.update_scheduler_free_slot(0)  # 归零起点
         # free_i 100-0=100：100-50=50 ≥ 20 → False，累计 alloc
         assert g.estimate_free_slots_sparse(req, 50, 0) is False
         assert g.alloc_block_sch == 50
@@ -2484,7 +2447,7 @@ class TestSchedulerSide:
         assert g.estimate_free_slots_sparse(req, 90, 0) is True
 
     def test_estimate_num_slots_invalid_paths(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         req = fakes.FakeRequest(num_output_tokens=5, prompt_token_ids=list(range(100)))
         assert gsa_worker.estimate_num_slots_sparsed(req) == gsa_mod.INVALID_SLOT
 
@@ -2530,7 +2493,7 @@ class TestSchedulerSide:
         assert g.estimate_num_slots_sparsed(req) == gsa_mod.INVALID_SLOT
 
     def test_allocate_slots_early_return(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "PTOPK_PREFETCH_ENABLE", False)
+        monkeypatch.setattr(gsa_mod, "IS_OPEN_GSA", False)
         assert (
             gsa_worker.allocate_slots(_fake_kv_cache_manager(), fakes.FakeRequest(), 10)
             is None
@@ -2585,7 +2548,7 @@ class TestSchedulerSide:
     def test_allocate_slots_sparse_preempted(self, gsa_worker, monkeypatch):
         monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", 64)
         g = gsa_worker
-        g.begin_sch_flag()
+        g.update_scheduler_free_slot(0)  # 归零起点
         mgr = _fake_kv_cache_manager(coordinator=_FakeCoordinator(num_blocks=90))
         req = fakes.FakeRequest(num_output_tokens=5, prompt_token_ids=list(range(100)))
         # num_output > 1 → estimate：free_i(100)-90 < 20 → 判定抢占 → None
@@ -2651,6 +2614,82 @@ class TestSchedulerSide:
         g._load_kv_dram("r1")  # 重试超限 → 记 error 并返回
         assert g.ucm_prefetch_engine.calls == []  # 未提交 ssd 加载
 
+    def test_load_kv_dram_stores_task_handle(self, gsa_worker, monkeypatch):
+        monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", 64)
+        g = gsa_worker
+        md, stat = _prime_metadata(g)
+        stat.block_hashes = [b"a" * 16, b"b" * 16, b"c" * 16]
+        g.ucm_prefetch_engine.ucm_lookup = lambda ids: [True] * (len(ids) // 16)
+        g._load_kv_dram("r1")
+        assert g.ucm_task_id == {"r1": 1000}
+
+    def test_load_kv_dram_rejected_handle_not_stored(self, gsa_worker, monkeypatch):
+        """回归：ucm_load_ssd 返回负数错误码时不得入 ucm_task_id（否则
+        后续 ucm_check(负数) 在 uint64 绑定转换处抛 OverflowError）。"""
+        monkeypatch.setattr(gsa_mod, "SEG_PREFILL_THRESHOLD", 64)
+        g = gsa_worker
+        md, stat = _prime_metadata(g)
+        stat.block_hashes = [b"a" * 16, b"b" * 16, b"c" * 16]
+        g.ucm_prefetch_engine.ucm_lookup = lambda ids: [True] * (len(ids) // 16)
+        g.ucm_prefetch_engine.ucm_load_ssd = lambda ids: -50000
+        errors = []
+        monkeypatch.setattr(g.log, "error", lambda msg: errors.append(msg))
+        g._load_kv_dram("r1")
+        assert g.ucm_task_id == {}
+        assert errors and "ucm_load_ssd" in errors[0]
+
+
+# ===========================================================================
+# _check_and_wait：ucm SSD 任务轮询/收尾
+# ===========================================================================
+class TestCheckAndWait:
+    def test_finished_task_waited_and_removed(self, gsa_worker):
+        g = gsa_worker
+        g.ucm_task_id["r1"] = 1001
+        g._check_and_wait()
+        assert g.ucm_task_id == {}
+        assert ("ucm_check", 1001) in g.ucm_prefetch_engine.calls
+        assert ("ucm_wait", 1001) in g.ucm_prefetch_engine.calls
+
+    def test_running_task_kept(self, gsa_worker):
+        g = gsa_worker
+        g.ucm_prefetch_engine.check_results = [0]
+        g.ucm_task_id["r1"] = 1001
+        g._check_and_wait()
+        assert g.ucm_task_id == {"r1": 1001}
+        assert ("ucm_wait", 1001) not in g.ucm_prefetch_engine.calls
+
+    def test_check_error_removed_without_wait(self, gsa_worker, monkeypatch):
+        """回归：check 返回负数错误码是"真"但不是"完成"，不得走 wait。"""
+        g = gsa_worker
+        errors = []
+        monkeypatch.setattr(g.log, "error", lambda msg: errors.append(msg))
+        g.ucm_prefetch_engine.check_results = [-50005]
+        g.ucm_task_id["r1"] = 1001
+        g._check_and_wait()
+        assert g.ucm_task_id == {}
+        assert ("ucm_wait", 1001) not in g.ucm_prefetch_engine.calls
+        assert errors and "ucm_check" in errors[0]
+
+    def test_wait_failure_logged_and_removed(self, gsa_worker, monkeypatch):
+        """回归：wait 返回负数（加载失败）必须记日志，不能静默吞掉。"""
+        g = gsa_worker
+        errors = []
+        monkeypatch.setattr(g.log, "error", lambda msg: errors.append(msg))
+        g.ucm_prefetch_engine.wait_results = [-50003]
+        g.ucm_task_id["r1"] = 1001
+        g._check_and_wait()
+        assert g.ucm_task_id == {}
+        assert errors and "ucm_wait" in errors[0]
+
+    def test_multiple_finished_no_dict_mutation_error(self, gsa_worker):
+        """回归：修复前在 .items() 迭代中 del，首个任务完成即抛
+        RuntimeError: dictionary changed size during iteration。"""
+        g = gsa_worker
+        g.ucm_task_id = {"r1": 1001, "r2": 1002, "r3": 1003}
+        g._check_and_wait()
+        assert g.ucm_task_id == {}
+
 
 # ===========================================================================
 # host slab / 生命周期
@@ -2679,7 +2718,7 @@ class TestBuffers:
         g.k_dim = 16
         g.init_host_slabs_from_kv(16)
         assert g.indexer_cache_preempt is not None
-        assert g.indexer_cache_preempt_ptr > 0
+        assert g.indexer_cache_preempt_i_ptr > 0
         assert g.indexer_k_repr.shape == (g.layer_num, 16, 1, 1, 128)
 
     def test_init_kvcache_ptrs_first_and_second(self, gsa_worker):
@@ -2718,34 +2757,3 @@ class TestBuffers:
         assert g._slab_preempt_v is g._slab_preempt_k
         assert g._slab_preempt_v_ptr == g._slab_preempt_k_ptr
         assert g._slab_preempt_v_offset == g._slab_preempt_k_offset
-
-    def test_shutdown_non_offload(self, gsa_worker, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", False)
-        gsa_worker.shutdown()  # short-circuit 返回
-
-    def test_shutdown_block_table_none(self, make_gsa, monkeypatch):
-        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
-        g = make_gsa()
-        g.block_table_sm = None
-        g.shutdown()  # block_table_sm None → 早退
-
-    def test_shutdown_success(self, make_gsa, monkeypatch, capsys):
-        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
-        g = make_gsa()
-        g.shutdown()
-        out = capsys.readouterr().out
-        assert "block_table_sm memory" in out
-        assert "indexer_block_table_sm" in out
-
-    def test_shutdown_unlink_error(self, make_gsa, monkeypatch, capsys):
-        monkeypatch.setattr(gsa_mod, "IS_INDEXER_OFFLOAD", True)
-        g = make_gsa()
-
-        def _boom():
-            raise OSError("segment busy")
-
-        g.block_table_sm.unlink = _boom
-        g.indexer_block_table_sm.unlink = _boom
-        g.shutdown()  # 异常被捕获并打印
-        out = capsys.readouterr().out
-        assert "清理失败" in out

@@ -71,6 +71,7 @@ from ucm.sparse.utils import (
     INDEXER_SPARSE_RATE,
     INIT_LOCAL_WINDOWS,
     IS_INDEXER_OFFLOAD,
+    IS_OPEN_GSA,
     IS_PERFORMANCE_LOG,
     IS_SHARED_MEMCPY,
     KVCACHE_BUFFER_SIZE,
@@ -79,11 +80,11 @@ from ucm.sparse.utils import (
     MAX_SLOTS_BLOCK_NUM,
     PREFETCH_SPACE,
     PREFETCH_THREAD_NUM,
-    PTOPK_PREFETCH_ENABLE,
     SPA_TOKENS_LEN,
     STREAM_NUM,
     VLLM_ASCEND_VERSION,
     WARMUP_TOPK_LEN,
+    DEFAULT_TOPK_LEN,
     DSAInputStruct,
     TopkIndices,
     bind_thread_memory_policy,
@@ -96,19 +97,8 @@ SEG_PREFILL_THRESHOLD = int(os.environ.get("UCM_GSA_SEG_PREFILL_THRESHOLD", "327
 
 logger = init_logger(__name__)
 
-GSA_INSTANCE = None
-_pending_store_ptr = 0
 UCM_LOOKUP_MAX_RETRY = 10000
 UCM_LOOKUP_TIME_SPACE = 0.001
-
-
-def inject_store_v1_ptr(store_ptr):
-    global _pending_store_ptr
-
-    _pending_store_ptr = int(store_ptr)
-
-    if GSA_INSTANCE is not None:
-        GSA_INSTANCE._inject_store_ptr(_pending_store_ptr)
 
 
 ReqType = Union[str, int]
@@ -121,9 +111,6 @@ class GSABlockTable:
         ).contiguous()
         self.np = self.cpu.numpy()
         self.len = 0
-
-    def update_len(self, new_len):
-        self.len = new_len
 
 
 class GSASharedCPUPool:
@@ -190,20 +177,7 @@ class GSAReqStat:
             vllm_config.parallel_config
         )
         self.original_prompt_block_len = -1  # 未初始化值为-1
-        ##### 用于记录目前使用的Token table
-        self.use_tokens = GSAReqBlockTable((self.topk_layer_num, SPA_TOKENS_LEN))
-        self.topk_buf_tmp = None
-        ##### 用于记录预取成功后使用的Token table
-        self.prefetch_use_token = GSAReqBlockTable(
-            (self.topk_layer_num, SPA_TOKENS_LEN)
-        )
-        ##### 用于记录预取topk与当前step的step间隔
-        self.last_step = 0
-        self.prefetch_topk_step = 0
-        #### 用于记录上一次用于预取的topk
-        self.last_prefetch_topk = None
-        self.is_gsa_init = False
-
+        self._init_topk_state()
         #### indexer offload
         self.new_block_id = None
         self.add_blocks_len = 0
@@ -211,12 +185,10 @@ class GSAReqStat:
         self.slot_mapping_cal_len = 0
         self._vllm_config = vllm_config
         self.block_hashes = None
-        self._vllm_config = vllm_config
         self.use_mla = vllm_config.model_config.use_mla
 
-        # 判断当前是否为 PD 分离模式（仅 decode 节点）：
-        # PD 混合：kv_transfer_config 为 None，或同时为 consumer 与 producer。
-        # PD 分离：kv_transfer_config 仅 is_kv_consumer 为 True。
+        # PD 混合：kv_transfer_config 为 None，或同时为 consumer 与 producer；
+        # PD 分离：仅 is_kv_consumer 为 True。
         kv_transfer_config = vllm_config.kv_transfer_config
         self.is_pd_mix = kv_transfer_config is None or (
             kv_transfer_config.is_kv_producer and kv_transfer_config.is_kv_consumer
@@ -225,32 +197,48 @@ class GSAReqStat:
         self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
 
         if IS_INDEXER_OFFLOAD:
-            max_block_len = math.ceil(
-                vllm_config.model_config.max_model_len / self.block_size
-            )
-            self.indexer_block_tables_cpu = torch.zeros(
-                (self.layer_num, max_block_len), dtype=torch.int32
-            )
-            self.indexer_block_tables = self.indexer_block_tables_cpu.numpy()
+            self._init_indexer_tables()
 
-            self.prefetch_indexer_block_tables_cpu = torch.zeros(
-                (self.layer_num, max_block_len), dtype=torch.int32
-            )
-            self.prefetch_indexer_block_tables = (
-                self.prefetch_indexer_block_tables_cpu.numpy()
-            )
+    def _init_topk_state(self):
+        """当前使用/预取使用的 Token table 与 topk 采样记录。"""
+        self.use_tokens = GSAReqBlockTable((self.topk_layer_num, SPA_TOKENS_LEN))
+        self.topk_buf_tmp = None
+        self.prefetch_use_token = GSAReqBlockTable(
+            (self.topk_layer_num, SPA_TOKENS_LEN)
+        )
+        self.last_step = 0
+        self.prefetch_topk_step = 0
+        self.last_prefetch_topk = None
+        self.is_gsa_init = False
 
-            self.indexer_topk_blocks_cpu = torch.zeros(
-                (self.layer_num, max_block_len), dtype=torch.int32
-            )
-            self.indexer_topk_blocks = self.indexer_topk_blocks_cpu.numpy()
+    def _init_indexer_tables(self):
+        """indexer offload 所需的块表/掩码常驻 buffer 初始化。"""
+        max_block_len = math.ceil(
+            self._vllm_config.model_config.max_model_len / self.block_size
+        )
+        self.indexer_block_tables_cpu = torch.zeros(
+            (self.layer_num, max_block_len), dtype=torch.int32
+        )
+        self.indexer_block_tables = self.indexer_block_tables_cpu.numpy()
 
-            self.include_mask = []
-            self.exclude_mask = []
+        self.prefetch_indexer_block_tables_cpu = torch.zeros(
+            (self.layer_num, max_block_len), dtype=torch.int32
+        )
+        self.prefetch_indexer_block_tables = (
+            self.prefetch_indexer_block_tables_cpu.numpy()
+        )
 
-            self.prompt_block_len = 0
-            self.prompt_sparse_len = 0
-            self.is_indexer_init = False
+        self.indexer_topk_blocks_cpu = torch.zeros(
+            (self.layer_num, max_block_len), dtype=torch.int32
+        )
+        self.indexer_topk_blocks = self.indexer_topk_blocks_cpu.numpy()
+
+        self.include_mask = []
+        self.exclude_mask = []
+
+        self.prompt_block_len = 0
+        self.prompt_sparse_len = 0
+        self.is_indexer_init = False
 
     def step(self) -> int:
         return self.num_output_tokens
@@ -273,18 +261,8 @@ class GSAReqStat:
             and self.stage() != SequenceStage.PREFILL
         )
 
-    def is_indexer_sparse(self) -> bool:
-        return (
-            self.num_prompt_tokens > INDEXER_PREFETCH_TOKENS
-            and self.stage() != SequenceStage.PREFILL
-        )
-
     def is_last_chunk(self) -> bool:
-        # 区分 PD 分离与 PD 混合模式：
-        # - PD 混合：当前为 prefill 的最后一块
-        #   （num_computed_tokens + num_scheduled_tokens == num_prompt_tokens）。
-        # - PD 分离：decode 节点上请求刚到达，尚未生成任何 output token
-        #   （num_output_tokens == 0）。
+        # PD 混合：prefill 最后一块；PD 分离：decode 节点请求刚到达尚无 output。
         if self.is_pd_mix:
             return (
                 self.num_computed_tokens + self.num_scheduled_tokens
@@ -327,21 +305,7 @@ class GSAReqStat:
         self.num_computed_tokens = add_req_state.num_computed_tokens
         self.num_scheduled_tokens = num_scheduled_tokens
         if self.req_id in preempt_req_output_tokens:
-            self.num_prompt_tokens = (
-                len(add_req_state.prompt_token_ids)
-                + preempt_req_output_tokens[self.req_id]
-            )
-            self.num_output_tokens = (
-                len(add_req_state.output_token_ids)
-                - preempt_req_output_tokens[self.req_id]
-            )
-            self.original_prompt_tokens = len(
-                add_req_state.prompt_token_ids
-            )  # P: 真正的 original prompt 长度。
-            self.non_ucm_block_count = (
-                math.ceil(self.num_prompt_tokens / self.block_size)
-                - (self.original_prompt_tokens - 1) // self.block_size
-            )
+            self._apply_preempt_token_lens(add_req_state, preempt_req_output_tokens)
         else:
             self.num_prompt_tokens = len(add_req_state.prompt_token_ids)
             self.num_output_tokens = len(add_req_state.output_token_ids)
@@ -355,17 +319,37 @@ class GSAReqStat:
         self.set_block_hashes(hash_request)
 
         if IS_INDEXER_OFFLOAD:
-            self.prompt_block_len = (self.num_prompt_tokens - 1) // self.block_size
-            self.prompt_sparse_len = max(
-                math.ceil(
-                    (self.prompt_block_len - LOCAL_WINDOWS_LEN - INIT_LOCAL_WINDOWS)
-                    * INDEXER_SPARSE_RATE
-                    + LOCAL_WINDOWS_LEN
-                    + INIT_LOCAL_WINDOWS
-                ),
-                INDEXER_OFFLOAD_BLOCKS,
-            )
-            self.init_mask()
+            self._calc_prompt_sparse_len()
+
+    def _apply_preempt_token_lens(self, add_req_state, preempt_req_output_tokens):
+        """抢占恢复：以 original prompt 为准重算 token/块计数。"""
+        self.num_prompt_tokens = (
+            len(add_req_state.prompt_token_ids)
+            + preempt_req_output_tokens[self.req_id]
+        )
+        self.num_output_tokens = (
+            len(add_req_state.output_token_ids)
+            - preempt_req_output_tokens[self.req_id]
+        )
+        self.original_prompt_tokens = len(add_req_state.prompt_token_ids)
+        self.non_ucm_block_count = (
+            math.ceil(self.num_prompt_tokens / self.block_size)
+            - (self.original_prompt_tokens - 1) // self.block_size
+        )
+
+    def _calc_prompt_sparse_len(self):
+        """prompt 稀疏窗口长度：局部窗口保底 + 稀疏采样率外推。"""
+        self.prompt_block_len = (self.num_prompt_tokens - 1) // self.block_size
+        self.prompt_sparse_len = max(
+            math.ceil(
+                (self.prompt_block_len - LOCAL_WINDOWS_LEN - INIT_LOCAL_WINDOWS)
+                * INDEXER_SPARSE_RATE
+                + LOCAL_WINDOWS_LEN
+                + INIT_LOCAL_WINDOWS
+            ),
+            INDEXER_OFFLOAD_BLOCKS,
+        )
+        self.init_mask()
 
     def update_req_state(
         self,
@@ -399,15 +383,6 @@ class GSAReqStat:
         if self.num_prompt_tokens <= INDEXER_PREFETCH_TOKENS:
             return self.get_seq_len()
         sparse_len = (self.prompt_block_len - self.prompt_sparse_len) * self.block_size
-        return self.get_seq_len() - sparse_len
-
-    def get_indexer_remain_len(self):
-        if self.num_prompt_tokens <= INDEXER_PREFETCH_TOKENS:
-            return self.get_seq_len()
-        sparse_len = (
-            self.prompt_block_len
-            - math.ceil(self.prompt_sparse_len * INDEXER_PREFETCH_RATIO)
-        ) * self.block_size
         return self.get_seq_len() - sparse_len
 
 
@@ -484,7 +459,7 @@ class GSAMetaData(UcmSparseMetadata):
         return model_input
 
 
-class GSA(UcmSparseBase):
+class GSAV2(UcmSparseBase):
     def __init__(self, vllm_config: VllmConfig, role: UcmSparseRole):
         super().__init__(vllm_config, role)
         self._init_basic_config(vllm_config)
@@ -494,7 +469,7 @@ class GSA(UcmSparseBase):
         self._init_slots_num_manager(role)
         if (
             role == UcmSparseRole.WORKER
-            and PTOPK_PREFETCH_ENABLE
+            and IS_OPEN_GSA
             and self.is_decode_node
         ):
             self._init_worker_shared_tables()
@@ -565,11 +540,15 @@ class GSA(UcmSparseBase):
         self.indexer_sparse_num_all = MAX_INDEXER_BLOCK_NUM
         self.has_prefill = False
         self.num_padding_reqs = 0
+        self.num_actual_tokens = 0
+        self.num_reqs_padded = 0
         self.alloc_block_sch = 0
         self._store_injected = False
         self._store_inject_retries = 0
         self._store_inject_max_retries = 5
         self._block_hash_injected_reqs = set()
+        self.step_cost = 0
+        self.ucm_task_id = {}
 
     def _init_speculative_config(self, vllm_config: VllmConfig):
         self.num_spec_tokens = 1
@@ -583,7 +562,7 @@ class GSA(UcmSparseBase):
         )
 
     def _init_slots_num_manager(self, role: UcmSparseRole):
-        if role == UcmSparseRole.SCHEDULER and PTOPK_PREFETCH_ENABLE:
+        if role == UcmSparseRole.SCHEDULER and IS_OPEN_GSA and self.is_decode_node:
             self.slots_num_manager = SharedTensorManager(
                 "gsa_glm52_slots_num_dp" + str(self.dp_rank), False
             )
@@ -661,6 +640,11 @@ class GSA(UcmSparseBase):
         self.indexer_scale_dim = 1
         self.is_prefetch_token = False
         self.prefetch_space_token = PREFETCH_SPACE
+
+        if IS_INDEXER_OFFLOAD:
+            self.indexer_last_query = None
+            self.indexer_last_weight = None
+
         self.init_gsa_metadata(vllm_config)
         self.swap_index = []
         self.prefetch_topk = []
@@ -673,35 +657,11 @@ class GSA(UcmSparseBase):
         self.indexer_k_cache_sparse = [None] * self.layer_num
         if self.rank == 0:
             self.indexer_cpu_shared_pool = GSASharedCPUPool(self.indexer_sparse_num_all)
-        if IS_INDEXER_OFFLOAD:
-            self.indexer_last_query = None
-            self.indexer_last_weight = None
 
     def _init_prefetch_buffers(self, vllm_config: VllmConfig):
         dump_max_num = math.ceil(self.max_num_scheduled_tokens / self.block_size) * 2
         if self.enable_sparse_li_c8:
-            self.indexer_pc_dump_tmp_c8 = torch.empty(
-                (
-                    math.ceil(self.max_model_len / self.block_size),
-                    self.block_size,
-                    1,
-                    128,
-                ),
-                dtype=torch.int8,
-                device=self.device,
-                pin_memory=False,
-            )
-            self.indexer_pc_dump_scale_tmp = torch.empty(
-                (
-                    math.ceil(self.max_model_len / self.block_size),
-                    self.block_size,
-                    1,
-                    1,
-                ),
-                dtype=torch.float16,
-                device=self.device,
-                pin_memory=False,
-            )
+            self._init_c8_dump_tmps()
         if self.enable_sparse_sfa_c8:
             self.k_dim = get_sfa_qsfa_packed_head_dim(
                 vllm_config.model_config.hf_text_config.kv_lora_rank,
@@ -709,6 +669,42 @@ class GSA(UcmSparseBase):
             )
         else:
             self.k_dim = vllm_config.model_config.hf_text_config.kv_lora_rank
+        self._init_indexer_pc_buffers(vllm_config, dump_max_num)
+        self.init_host_slabs_from_kv(self.num_slots)
+        self.prefetch_engine.prefetch_engine_c.set_kv_buffer(
+            self._buff_host_k,
+            self._buff_host_v,
+            self._buff_device_k,
+            self._buff_device_v,
+            self._load_index_host,
+            self._load_index_device,
+        )
+        self.gsa_swap_topk_cpu_ptr = None
+        self.gsa_swap_topk_npu_ptr = None
+        if vllm_config.speculative_config:
+            self.select_gsa_prefetch_topk = torch.zeros(
+                (self.topk_layer_num, self.max_bs, 1, 2048),
+                dtype=torch.int32,
+                device="cpu",
+                pin_memory=True,
+            ).contiguous()
+
+    def _init_c8_dump_tmps(self):
+        block_num = math.ceil(self.max_model_len / self.block_size)
+        self.indexer_pc_dump_tmp_c8 = torch.empty(
+            (block_num, self.block_size, 1, 128),
+            dtype=torch.int8,
+            device=self.device,
+            pin_memory=False,
+        )
+        self.indexer_pc_dump_scale_tmp = torch.empty(
+            (block_num, self.block_size, 1, 1),
+            dtype=torch.float16,
+            device=self.device,
+            pin_memory=False,
+        )
+
+    def _init_indexer_pc_buffers(self, vllm_config: VllmConfig, dump_max_num: int):
         self.indexer_pc_dump_tmp = torch.empty(
             (math.ceil(self.max_model_len / self.block_size), self.block_size, 1, 128),
             dtype=self.indexer_dtype,
@@ -751,13 +747,19 @@ class GSA(UcmSparseBase):
             ).contiguous()
 
     def init_gsa_metadata(self, vllm_config):
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
         self.cudagraph_capture_sizes = (
             vllm_config.compilation_config.cudagraph_capture_sizes
         )
-        max_graph_bs = max(max(self.cudagraph_capture_sizes), self.max_bs)
+        max_graph_bs = max(max(self.cudagraph_capture_sizes),
+            self.max_bs * self.num_spec_tokens)
+        self._init_gsa_dsa_buffers(vllm_config, max_graph_bs)
+        self._init_gsa_swap_buffers(max_graph_bs)
+        if IS_INDEXER_OFFLOAD:
+            self._init_gsa_indexer_buffers(max_graph_bs)
 
+    def _init_gsa_dsa_buffers(self, vllm_config: VllmConfig, max_graph_bs: int):
         self.dsa_block_table = TopkIndices(  # 78 * bs * 512 * 4
             (
                 self.topk_layer_num,
@@ -773,24 +775,28 @@ class GSA(UcmSparseBase):
             self.device,
             torch.int32,
         )
-
         self.gsa_prefetch_index = DSAInputStruct(
             (max_graph_bs), self.device, torch.int64
         )
         self.gsa_prefetch_topk = TopkIndices(  # 78 * bs * 2048 * 4
             (self.topk_layer_num, max_graph_bs, 1, 2048), self.device, torch.int32
         )
-
         self.gsa_swap_index = DSAInputStruct(
             (max_graph_bs + 2), self.device, torch.int64
         )
 
+    def _init_gsa_swap_buffers(self, max_graph_bs: int):
+        # actual_sparse_lengths：req 域索引（下标 i = batch 内第 i 个请求；swap req
+        # 填 SPA_TOKENS_LEN、真实 req 填 DEFAULT_TOPK_LEN、padding req 填 0），
+        # kernel 按 bIdx 逐 req 读取。容量 max_graph_bs + 2 仅为上界。
+        self.actual_sparse_lengths = DSAInputStruct(
+            (max_graph_bs + 2), self.device, torch.int32
+        )
         self.gsa_swap_topk = TopkIndices(  # 78 * bs * 4096 * 4
             (self.topk_layer_num, (max_graph_bs + 2), 1, SPA_TOKENS_LEN),
             self.device,
             torch.int32,
         )
-
         self.gsa_warmup_index = DSAInputStruct(
             (self.max_bs * WARMUP_TOPK_LEN), self.device, torch.int64
         )
@@ -816,18 +822,17 @@ class GSA(UcmSparseBase):
             device=self.device,
         )
         self.gsa_swap_topk_bs = self.gsa_swap_topk.cpu.shape[1]
-        #### indexer
-        if IS_INDEXER_OFFLOAD:
-            self.indexer_last_query = TopkIndices(  # 78 * bs * 32 * 128 * 2
-                (self.layer_num, max_graph_bs, 32, 128), self.device, self.dtype
-            )
-            self.indexer_last_weight = TopkIndices(  # 78 * bs * 32 * 2
-                (self.layer_num, max_graph_bs, 32), self.device, self.dtype
-            )
 
-            self.indexer_last_q_index = DSAInputStruct(
-                (max_graph_bs), self.device, torch.int64
-            )
+    def _init_gsa_indexer_buffers(self, max_graph_bs: int):
+        self.indexer_last_query = TopkIndices(  # 78 * bs * 32 * 128 * 2
+            (self.layer_num, max_graph_bs, 32, 128), self.device, self.dtype
+        )
+        self.indexer_last_weight = TopkIndices(  # 78 * bs * 32 * 2
+            (self.layer_num, max_graph_bs, 32), self.device, self.dtype
+        )
+        self.indexer_last_q_index = DSAInputStruct(
+            (max_graph_bs), self.device, torch.int64
+        )
 
     def bind_cpus(self):
         binder = CpuAlloc(self.local_rank)
@@ -848,9 +853,6 @@ class GSA(UcmSparseBase):
             return numa_node, binder.assign_main[current_npu][-1 * gsa_thread_num :]
         else:
             return numa_node, binder.assign_main[current_npu][1:]
-
-    def print_log(self, msg):
-        self.log.info(msg)
 
     def _find_store_connector(self, kv_group):
         """定位持有有效 store 的 connector 对象，未找到则返回 None。
@@ -896,9 +898,20 @@ class GSA(UcmSparseBase):
             )
             return False
         self.prefetch_engine.prefetch_engine_c.set_store_v1(store_ptr)
+        layout = getattr(connector, "kv_cache_layout", None)
+        tensor_count = (3 if self.enable_sparse_sfa_c8 else 4)
+        if layout is not None:
+            tensor_count = len(layout.tensor_size_list)
+            if tensor_count > 0:
+                self.prefetch_engine.prefetch_engine_c.set_store_tensor_count(
+                    tensor_count
+                )
+                logger.info(
+                    "[GSA Store Inject] store tensor count=%d", tensor_count
+                )
         actual_store_ptr = self.prefetch_engine.prefetch_engine_c.get_store_v1_ptr()
         cpp_self_ptr = self.prefetch_engine.prefetch_engine_c.get_self_ptr()
-        self.ucm_prefetch_engine.store_init(store_ptr, self.layer_num)
+        self.ucm_prefetch_engine.store_init(store_ptr, self.layer_num, tensor_count)
         logger.info(
             "[GSA Store Inject] C++ verify cpp_self=%s, expected_store=%s, actual_store=%s",
             hex(cpp_self_ptr),
@@ -1021,7 +1034,7 @@ class GSA(UcmSparseBase):
                 + self.indexer_cache_preempt_i_offset * s
                 for s in pool_slots
             ]
-            self.prefetch_engine.prefetch_engine_c.set_last_indexer_blocks(
+            self.prefetch_engine.prefetch_engine_c.set_last_indexer_block(
                 req_id, block_idxs, i_refs
             )
 
@@ -1041,14 +1054,14 @@ class GSA(UcmSparseBase):
         hit_num = self.indexer_pc_hit_num[index_in_batch]
         block_view = self.block_size * vllm_indexer_cache.shape[-1]
         gathered = indexer_tmp[:hit_num].view(-1, block_view)
-        torch.ops._C_ascend.gsa_gather_copy(
+        torch.ops._C_gsa.gsa_gather_copy(
             gathered,
             vllm_indexer_cache.view(-1, block_view),
             self.indexer_pc_hit_index.npu[0][index_in_batch][:hit_num]
             .view(-1, 1)
             .expand((hit_num, block_view)),
         )
-        torch.ops._C_ascend.gsa_scatter_copy(
+        torch.ops._C_gsa.gsa_scatter_copy(
             indexer_cache.view(-1, block_view),
             gathered,
             self.indexer_pc_hit_index.npu[1][index_in_batch][:hit_num]
@@ -1065,14 +1078,14 @@ class GSA(UcmSparseBase):
         """c8 场景：将命中块的 scale gather/scatter 到 indexer 缓存"""
         hit_num = self.indexer_pc_hit_num[index_in_batch]
         gathered = self.indexer_pc_dump_scale_tmp[:hit_num].view(-1, self.block_size)
-        torch.ops._C_ascend.gsa_gather_copy(
+        torch.ops._C_gsa.gsa_gather_copy(
             gathered,
             vllm_indexer_scale.view(-1, self.block_size),
             self.indexer_pc_hit_index.npu[0][index_in_batch][:hit_num]
             .view(-1, 1)
             .expand((hit_num, self.block_size)),
         )
-        torch.ops._C_ascend.gsa_scatter_copy(
+        torch.ops._C_gsa.gsa_scatter_copy(
             indexer_scale.view(-1, self.block_size),
             gathered,
             self.indexer_pc_hit_index.npu[1][index_in_batch][:hit_num]
@@ -1087,19 +1100,20 @@ class GSA(UcmSparseBase):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
-        indexer_cache: Optional[torch.Tensor] = None,
-        indexer_scale: Optional[torch.Tensor] = None,
-        vllm_indexer_cache: Optional[torch.Tensor] = None,
-        vllm_indexer_scale: Optional[torch.Tensor] = None,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
         k_hash: Optional[torch.Tensor] = None,
         decode_ql_nope: Optional[torch.Tensor] = None,
         decode_q_pe: Optional[torch.Tensor] = None,
+        *,
+        indexer_cache: Optional[torch.Tensor] = None,
+        indexer_scale: Optional[torch.Tensor] = None,
+        vllm_indexer_cache: Optional[torch.Tensor] = None,
+        vllm_indexer_scale: Optional[torch.Tensor] = None,
         has_indexer: Optional[bool] = True,
         use_li_c8: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return query, key, value, output
         if IS_PERFORMANCE_LOG:
             start = time.perf_counter()
@@ -1160,7 +1174,7 @@ class GSA(UcmSparseBase):
                     slots[-1]
                 )
                 self.prefetch_engine.prefetch_engine_c.update_indexer_map(
-                    req_id, len(req_meta.slab_host_slot) - 1, slots[-1], "add"
+                    req_id, len(req_meta.slab_host_slot) - 1
                 )
             self.dsa_block_table.np[
                 :, index_in_batch, : req_meta.indexer_sparse_len()
@@ -1248,20 +1262,24 @@ class GSA(UcmSparseBase):
                 )
             req_meta.slot_mapping_cal_len = req_meta.get_seq_len()
         else:
-            self.log.error(
-                f"[GSA] ERROR indexer_slab_host_slot is small than seq len for req_id {req_id}\n"
-            )
-            self.log.error(
-                f"[GSA] ERROR indexer_slab_host_slot len {len(slots)} seq_len {req_meta.get_seq_len()}\n"
-            )
-            self.log.error(
-                f"[GSA] ERROR prompt len {req_meta.num_prompt_tokens}"
-                f"is swap {req_id in self.preempt_req_output_tokens}\n"
-            )
-            self.log.error(
-                f"[GSA] ERROR num_computed_tokens {req_meta.num_computed_tokens}"
-                f"num_output_tokens {req_meta.num_output_tokens}\n"
-            )
+            self._log_prefill_slot_mismatch(req_id, req_meta, slots)
+
+    def _log_prefill_slot_mismatch(self, req_id, req_meta, slots):
+        """prefill slot 映射不匹配（slab 容量 < 序列块数）时的诊断日志。"""
+        self.log.error(
+            f"[GSA] ERROR indexer_slab_host_slot is small than seq len for req_id {req_id}\n"
+        )
+        self.log.error(
+            f"[GSA] ERROR indexer_slab_host_slot len {len(slots)} seq_len {req_meta.get_seq_len()}\n"
+        )
+        self.log.error(
+            f"[GSA] ERROR prompt len {req_meta.num_prompt_tokens}"
+            f"is swap {req_id in self.preempt_req_output_tokens}\n"
+        )
+        self.log.error(
+            f"[GSA] ERROR num_computed_tokens {req_meta.num_computed_tokens}"
+            f"num_output_tokens {req_meta.num_output_tokens}\n"
+        )
 
     def _update_req_slot_mapping(
         self,
@@ -1360,8 +1378,9 @@ class GSA(UcmSparseBase):
 
     def _update_prefetch_status_all(self):
         if len(self.need_prefetch_index) > 0:
+            # 条件变量等待（µs 级唤醒）替代 sleep 轮询；外层 while 为超时兜底。
             while self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
-                time.sleep(0.001)
+                self.prefetch_engine.prefetch_engine_c.wait_prefetch_idle(1000)
             self.is_prefetch_token = True
         elif len(self.gsa_index) > 0:
             is_done = not self.prefetch_engine.prefetch_engine_c.get_prefetch_status()
@@ -1380,6 +1399,11 @@ class GSA(UcmSparseBase):
         self.select_block_index.np[:] = 0
         self.gsa_swap_index.np[:] = 0
         self.gsa_prefetch_index.np[:] = 0
+        # actual_sparse_lengths 默认填充 DEFAULT_TOPK_LEN（per-req 语义）：
+        # 非 swap 真实 req 的有效 topk 长度。swap req 的位置在 _collect_gsa_tokens
+        # 中按 index_in_batch 覆写为 SPA_TOKENS_LEN；图模式 padding req 区域在
+        # _copy_gsa_buffers_to_npu 中清 0。
+        self.actual_sparse_lengths.np[:] = DEFAULT_TOPK_LEN
 
     def _init_indexer_offload_all(self):
         if not IS_INDEXER_OFFLOAD:
@@ -1529,6 +1553,10 @@ class GSA(UcmSparseBase):
         )
         use_req_ids.append(req_id)
         self.select_block_index.np[req_cnt] = index_in_batch
+        # actual_sparse_lengths（per-req）：swap req 的稀疏窗口是完整的
+        # SPA_TOKENS_LEN（上一步保存的 5120 宽表），按 index_in_batch 写 req 域位置。
+        # kernel 按 bIdx=req 索引读取，与本写入语义一致。
+        self.actual_sparse_lengths.np[index_in_batch] = SPA_TOKENS_LEN
         req_cnt += 1
         for i in range(query_local[index_in_batch], query_local[index_in_batch + 1]):
             self.swap_index.append(i)
@@ -1570,6 +1598,14 @@ class GSA(UcmSparseBase):
         self.gsa_swap_index.copy_to_npu(-1)
         self.gsa_prefetch_index.copy_to_npu(self.num_padding_reqs)
         self.gsa_warmup_index.copy_to_npu(len(warmup_index))
+        # actual_sparse_lengths（per-req 域）：swap req=SPA_TOKENS_LEN、真实
+        # req=DEFAULT_TOPK_LEN、padding req=0（kernel effCount=0 跳过）。req 域
+        # 边界为 num_reqs_padded，勿用 token 域的 num_actual_tokens。
+        num_reqs_actual = len(self.req_ids_bs)
+        self.actual_sparse_lengths.np[
+            num_reqs_actual : self.num_reqs_padded
+        ] = 0
+        self.actual_sparse_lengths.copy_to_npu(self.num_reqs_padded)
         indexer_len = 0
         if IS_INDEXER_OFFLOAD:
             flattened = [
@@ -1598,6 +1634,15 @@ class GSA(UcmSparseBase):
             if IS_INDEXER_OFFLOAD:
                 attn.indexer_last_query_len = indexer_len
             attn.select_block_index = self.select_block_index.npu[:req_cnt]
+            # actual_sparse_lengths（per-req）仅 decode 分支下发（merged topk 的
+            # 行含 -1 padding 与 padding req，kernel 按长度跳过）；prefill 两次
+            # SFA 的 topk 全宽有效且 swap 子批 bIdx 与全量数组行号不对应，置 None。
+            if getattr(attn, "has_prefill", False):
+                attn.actual_sparse_lengths = None
+            else:
+                attn.actual_sparse_lengths = self.actual_sparse_lengths.npu[
+                    : self.num_reqs_padded
+                ]
         self.log.info(
             f"[GSA] gsa_prefetch_len {gsa_prefetch_len} gsa_swap_len {gsa_swap_len}"
             f"gsa_warmup_len {gsa_warmup_len} attn.gsa_slot_len {gsa_slot_len}"
@@ -1654,10 +1699,11 @@ class GSA(UcmSparseBase):
         layer_name: str,
         forward_context: ForwardContext,
         phase: Optional[str] = None,
+        *,
         has_indexer: Optional[bool] = True,
         use_li_c8: Optional[bool] = False,
     ) -> None:
-        if not PTOPK_PREFETCH_ENABLE or not self.is_pd_mix:
+        if not IS_OPEN_GSA or not self.is_pd_mix:
             return
         if IS_PERFORMANCE_LOG:
             start = time.perf_counter()
@@ -1666,18 +1712,22 @@ class GSA(UcmSparseBase):
             return
         if not has_indexer or self.indexer_pc_dump_num <= 0:
             return
+        self._dump_indexer_blocks(layer_id, use_li_c8)
+
+    def _dump_indexer_blocks(self, layer_id: int, use_li_c8: bool):
+        """本步 dump 的 indexer 块 gather 到临时区、scatter 回填 kv_caches。"""
         if use_li_c8:
             indexer_tmp = self.indexer_pc_dump_tmp_c8
         else:
             indexer_tmp = self.indexer_pc_dump_tmp
-        torch.ops._C_ascend.gsa_gather_copy(
+        torch.ops._C_gsa.gsa_gather_copy(
             indexer_tmp[: self.indexer_pc_dump_num].view(-1, self.block_size * 128),
             self.indexer_k_cache_sparse[layer_id].view(-1, self.block_size * 128),
             self.indexer_pc_dump_index.npu[1][: self.indexer_pc_dump_num]
             .view(-1, 1)
             .expand((self.indexer_pc_dump_num, self.block_size * 128)),
         )
-        torch.ops._C_ascend.gsa_scatter_copy(
+        torch.ops._C_gsa.gsa_scatter_copy(
             self.kv_caches[layer_id][2].view(-1, self.block_size * 128),
             indexer_tmp[: self.indexer_pc_dump_num].view(-1, self.block_size * 128),
             self.indexer_pc_dump_index.npu[0][: self.indexer_pc_dump_num]
@@ -1685,7 +1735,7 @@ class GSA(UcmSparseBase):
             .expand((self.indexer_pc_dump_num, self.block_size * 128)),
         )
         if use_li_c8:
-            torch.ops._C_ascend.gsa_gather_copy(
+            torch.ops._C_gsa.gsa_gather_copy(
                 self.indexer_pc_dump_scale_tmp[: self.indexer_pc_dump_num].view(
                     -1, self.block_size
                 ),
@@ -1694,7 +1744,7 @@ class GSA(UcmSparseBase):
                 .view(-1, 1)
                 .expand((self.indexer_pc_dump_num, self.block_size)),
             )
-            torch.ops._C_ascend.gsa_scatter_copy(
+            torch.ops._C_gsa.gsa_scatter_copy(
                 self.kv_caches[layer_id][3].view(-1, self.block_size),
                 self.indexer_pc_dump_scale_tmp[: self.indexer_pc_dump_num].view(
                     -1, self.block_size
@@ -1725,10 +1775,10 @@ class GSA(UcmSparseBase):
         for req_id in scheduler_output.preempted_req_ids:
             self._release_preempted_gsa_stats(req_id)
             while self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
-                time.sleep(0.001)
+                self.prefetch_engine.prefetch_engine_c.wait_prefetch_idle(1000)
             if IS_INDEXER_OFFLOAD:
                 while self.prefetch_engine.prefetch_engine_c.get_indexer_status():
-                    time.sleep(0.001)
+                    self.prefetch_engine.prefetch_engine_c.wait_indexer_idle(1000)
             self.prefetch_engine.del_finish_meta(req_id)
             self._block_hash_injected_reqs.discard(req_id)
             self.preempt_req_output_tokens[req_id] = len(
@@ -1760,7 +1810,7 @@ class GSA(UcmSparseBase):
     # @time_us
     def execute_begin(self, scheduler_output: SchedulerOutput, attn_metadata):
         """每步推理前的 GSA 预取准备：注入 store、处理请求、同步块表、构造输入"""
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
         if IS_PERFORMANCE_LOG:
             start_total = time.perf_counter()
@@ -1791,11 +1841,27 @@ class GSA(UcmSparseBase):
         self.gsa_stats = self.gsa_metadata.gsa_stats
         attn = next(iter(attn_metadata.values()))
         self.num_padding_reqs = attn.num_input_tokens
+        self._resolve_batch_dims(attn, req_ids)
         gsa_slot_len = self.get_dsa_input()
         self.get_model_input_all(attn_metadata, gsa_slot_len)
         if IS_PERFORMANCE_LOG:
             time_total = (time.perf_counter() - start_total) * 1_000_000
             self.log.info(f"[GSA Time] execute_begin time_total {time_total}")
+
+    def _resolve_batch_dims(self, attn, req_ids: list):
+        """解析本步 token 域/req 域的批维度（图模式 padding 语义见注释）。"""
+        # num_actual_tokens: 真实调度 token 数（不含图模式 padding）。token 域，
+        # 供 token 域 buffer（gsa_swap_index 等）参考；actual_sparse_lengths 是
+        # req 域，padding 边界用下面的 num_reqs_padded，勿混用。
+        self.num_actual_tokens = getattr(attn, "num_actual_tokens", attn.num_input_tokens)
+        # num_reqs_padded: kernel batchSize = len(actual_seq_lengths_query) =
+        # len(cum_query_lens)（req 域，图模式含 pad 到 capture size 的空 req）。
+        # actual_sparse_lengths 按此长度切片下发。
+        cum_query_lens = getattr(attn, "cum_query_lens", None)
+        if cum_query_lens is not None:
+            self.num_reqs_padded = int(cum_query_lens.shape[0])
+        else:
+            self.num_reqs_padded = len(req_ids)
 
     def _process_scheduled_req(
         self,
@@ -1809,46 +1875,74 @@ class GSA(UcmSparseBase):
         """处理单个调度请求：GSA 初始化、索引登记、块长计算与共享内存分配"""
         req_meta = self.gsa_metadata.gsa_stats[req_id]
         if self.get_num_output_tokens(req_id) == 1 and req_meta.is_gsa():
-            self.prefetch_engine.prefetch_engine_c.set_topk_indices(
-                req_id, req_meta.prefetch_use_token.cpu
-            )
-            for layer_id in range(self.layer_num):
-                self.last_chunk_init(req_meta, layer_id, req_id)
-            req_meta.use_tokens.np[:] = req_meta.prefetch_use_token.cpu
-            req_meta.last_step = self.prefetch_engine.step_time - 1
-            req_meta.prefetch_topk_step = self.prefetch_engine.step_time - 1
-            req_meta.is_gsa_init = True
+            self._apply_prefetch_to_req(req_id, req_meta)
         req_in_batch = req_meta.index_in_batch
         req_ids[req_in_batch] = req_id
-        if IS_INDEXER_OFFLOAD and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
-            block_len = math.ceil(req_meta.get_seq_len() / self.block_size) - len(
-                req_meta.slab_host_slot
-            )
-        else:
-            block_len = math.ceil(req_meta.get_seq_len() / self.block_size) - len(
-                req_meta.indexer_slab_host_slot
-            )
+        block_len = self._calc_new_block_len(req_meta)
         add_blocks[req_in_batch] = []
         new_blocks_len[req_in_batch] = 0
         indexer_add_blocks[req_in_batch] = []
         indexer_new_blocks_len[req_in_batch] = 0
         if block_len != 0:
-            if (
-                IS_INDEXER_OFFLOAD
-                and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD
-            ):
-                if self.rank == 0:
-                    req_meta.new_block_id = self.gsa_cpu_shared_pool.allocate(block_len)
-                    req_meta.slab_host_slot += req_meta.new_block_id
-                    add_blocks[req_in_batch] = [x for x in req_meta.new_block_id]
-                new_blocks_len[req_in_batch] = block_len
-                req_meta.new_block_id = [1]
-            if self.rank == 0:
-                new_indexer_id = self.indexer_cpu_shared_pool.allocate(block_len)
-                req_meta.indexer_slab_host_slot += new_indexer_id
-                indexer_add_blocks[req_in_batch] = [x for x in new_indexer_id]
-            indexer_new_blocks_len[req_in_batch] = block_len
+            self._alloc_new_blocks(
+                req_meta,
+                req_in_batch,
+                block_len,
+                add_blocks,
+                new_blocks_len,
+                indexer_add_blocks,
+                indexer_new_blocks_len,
+            )
         req_meta.add_blocks_len = block_len
+
+    def _apply_prefetch_to_req(self, req_id: int, req_meta):
+        """首个 decode step：下发预取 topk，重建 last chunk，切换 use_tokens。"""
+        self.prefetch_engine.prefetch_engine_c.set_topk_indices(
+            req_id, req_meta.prefetch_use_token.cpu
+        )
+        for layer_id in range(self.layer_num):
+            self.last_chunk_init(req_meta, layer_id, req_id)
+        req_meta.use_tokens.np[:] = req_meta.prefetch_use_token.cpu
+        req_meta.last_step = self.prefetch_engine.step_time - 1
+        req_meta.prefetch_topk_step = self.prefetch_engine.step_time - 1
+        req_meta.is_gsa_init = True
+
+    def _calc_new_block_len(self, req_meta) -> int:
+        """本步新增块数：序列块数减去已登记的 slab/共享内存块数。"""
+        if IS_INDEXER_OFFLOAD and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD:
+            return math.ceil(req_meta.get_seq_len() / self.block_size) - len(
+                req_meta.slab_host_slot
+            )
+        return math.ceil(req_meta.get_seq_len() / self.block_size) - len(
+            req_meta.indexer_slab_host_slot
+        )
+
+    def _alloc_new_blocks(
+        self,
+        req_meta,
+        req_in_batch: int,
+        block_len: int,
+        add_blocks: list,
+        new_blocks_len: list,
+        indexer_add_blocks: list,
+        indexer_new_blocks_len: list,
+    ):
+        """从共享内存池分配 block_len 个新块（KV slab 与 indexer 各一套）。"""
+        if (
+            IS_INDEXER_OFFLOAD
+            and req_meta.num_prompt_tokens > SEG_PREFILL_THRESHOLD
+        ):
+            if self.rank == 0:
+                req_meta.new_block_id = self.gsa_cpu_shared_pool.allocate(block_len)
+                req_meta.slab_host_slot += req_meta.new_block_id
+                add_blocks[req_in_batch] = [x for x in req_meta.new_block_id]
+            new_blocks_len[req_in_batch] = block_len
+            req_meta.new_block_id = [1]
+        if self.rank == 0:
+            new_indexer_id = self.indexer_cpu_shared_pool.allocate(block_len)
+            req_meta.indexer_slab_host_slot += new_indexer_id
+            indexer_add_blocks[req_in_batch] = [x for x in new_indexer_id]
+        indexer_new_blocks_len[req_in_batch] = block_len
 
     def _sync_block_tables(
         self,
@@ -1897,6 +1991,7 @@ class GSA(UcmSparseBase):
         model_runner.gsa_swap_index = self.gsa_swap_index
         model_runner.gsa_prefetch_index = self.gsa_prefetch_index
         model_runner.gsa_warmup_index = self.gsa_warmup_index
+        model_runner.actual_sparse_lengths = self.actual_sparse_lengths
 
         model_runner.dsa_slot_mapping = self.dsa_slot_mapping
         model_runner.dsa_block_table = self.dsa_block_table
@@ -2019,7 +2114,9 @@ class GSA(UcmSparseBase):
 
         if self.num_spec_tokens != 1 and rec_result is not None:
             last_q_index_fb = list(accumulate(self.indexer_last_q_index_fb))
-            result = [rec_result[i] for i in self.need_indexer_sparse_bs]
+            # 被拒请求 rec_result=-1（哨兵），参与列索引会负下标回绕取错 query；
+            # 钳到 0 = 该请求首个候选位置，优雅降级。
+            result = [max(rec_result[i], 0) for i in self.need_indexer_sparse_bs]
             index_list = []
             result_num = len(result)
             for i in range(result_num):
@@ -2218,7 +2315,7 @@ class GSA(UcmSparseBase):
                     )
 
     def warmup(self):
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
         if len(self.warmup_topk) == 0:
             return
@@ -2244,10 +2341,14 @@ class GSA(UcmSparseBase):
             )
 
     # @time_us
-    def execute_finished(self, rec_result=None):
-        """rec_result 代表当前每个 req 接受了多少个 token"""
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
-            return
+    def execute_finished(self, logits_indices: torch.Tensor, rec_result=None):
+        """rec_result 代表当前每个 req 接受了多少个 token。
+
+        契约同 UcmSparseBase.execute_finished：所有路径均返回（可能被修改的）
+        logits_indices。
+        """
+        if not IS_OPEN_GSA or not self.is_decode_node:
+            return logits_indices
         if IS_PERFORMANCE_LOG:
             time_prepare = 0
             time_submit = 0
@@ -2255,36 +2356,16 @@ class GSA(UcmSparseBase):
             start = time.perf_counter()
             start_total = time.perf_counter()
         if len(self.prefetch_topk) == 0 and len(self.warmup_topk) == 0:
-            self.cal_indexer_k_repr_mean_decode(rec_result)
-            self.cal_indexer_topk_blocks(rec_result)
-            self.set_indexer_topk_blocks_prefill()
-            self.set_indexer_topk_blocks_decode()
-            self.update_slot_num()
+            self._refresh_indexer_state(rec_result)
             if IS_PERFORMANCE_LOG and self.rank == 0:
                 elapsed = (time.perf_counter() - start) * 1_000_000
                 self.log.info(f"[GSA] no prefetch time {elapsed}")
-            return
+            return logits_indices
         if self.is_prefetch_token:
-            if IS_PERFORMANCE_LOG:
-                start = time.perf_counter()
-            topk_len_list, req_id_list, is_index_offload, req_seq_len = (
-                self._prepare_prefetch_requests(rec_result)
-            )
-            if IS_PERFORMANCE_LOG:
-                time_prepare = (time.perf_counter() - start) * 1_000_000
-                start = time.perf_counter()
-            self._submit_prefetch_task(
-                topk_len_list, req_id_list, is_index_offload, req_seq_len
-            )
-            if IS_PERFORMANCE_LOG:
-                time_submit = (time.perf_counter() - start) * 1_000_000
+            time_prepare, time_submit = self._submit_prefetch_with_timing(rec_result)
         if IS_PERFORMANCE_LOG:
             start = time.perf_counter()
-        self.cal_indexer_k_repr_mean_decode(rec_result)
-        self.cal_indexer_topk_blocks(rec_result)
-        self.set_indexer_topk_blocks_prefill()
-        self.set_indexer_topk_blocks_decode()
-        self.update_slot_num()
+        self._refresh_indexer_state(rec_result)
         if self.rank == 0:
             elapsed = (time.perf_counter() - start) * 1_000_000
         if IS_PERFORMANCE_LOG:
@@ -2295,6 +2376,34 @@ class GSA(UcmSparseBase):
                 f"time_total {time_total} time_prepare {time_prepare} "
                 f"time_submit {time_submit} time_deal_indexer {time_deal_indexer}"
             )
+        return logits_indices
+
+    def _refresh_indexer_state(self, rec_result):
+        """重算本步 indexer 表示、topk 块与 slot 记账（两站点共用）。"""
+        self.cal_indexer_k_repr_mean_decode(rec_result)
+        self.cal_indexer_topk_blocks(rec_result)
+        self.set_indexer_topk_blocks_prefill()
+        self.set_indexer_topk_blocks_decode()
+        self.update_slot_num()
+
+    def _submit_prefetch_with_timing(self, rec_result):
+        """预取提交路径（带计时），返回 prepare/submit 微秒数。"""
+        if IS_PERFORMANCE_LOG:
+            start = time.perf_counter()
+        topk_len_list, req_id_list, is_index_offload, req_seq_len = (
+            self._prepare_prefetch_requests(rec_result)
+        )
+        time_prepare = 0
+        if IS_PERFORMANCE_LOG:
+            time_prepare = (time.perf_counter() - start) * 1_000_000
+            start = time.perf_counter()
+        self._submit_prefetch_task(
+            topk_len_list, req_id_list, is_index_offload, req_seq_len
+        )
+        time_submit = 0
+        if IS_PERFORMANCE_LOG:
+            time_submit = (time.perf_counter() - start) * 1_000_000
+        return time_prepare, time_submit
 
     def _prepare_prefetch_requests(self, rec_result):
         """拷回预取结果，并准备每个请求的序列长度/索引/offload 标记"""
@@ -2309,19 +2418,20 @@ class GSA(UcmSparseBase):
             index_in_batch = req_meta.index_in_batch
             req_meta.prefetch_topk_step = self.prefetch_engine.step_time
             if self.num_spec_tokens != 1 and rec_result is not None:
+                # rec_result 哨兵 -1：req_seq_len 公式对 -1 退化为"本步提交 0
+                # token"，语义正确保留原值；张量列索引必须钳 0（负列下标会被
+                # torch 静默回绕取错 topk）。
+                rec = rec_result[index_in_batch]
                 req_seq_len[index] = (
                     req_meta.get_seq_len()
                     - self.num_spec_tokens
-                    + rec_result[index_in_batch]
+                    + rec
                     + 1
                 )
-                index_list.append(
-                    index * self.num_spec_tokens + rec_result[index_in_batch]
-                )
+                topk_col = index * self.num_spec_tokens + max(rec, 0)
+                index_list.append(topk_col)
                 self.select_gsa_prefetch_topk[:, index].copy_(
-                    self.gsa_prefetch_topk.cpu[
-                        :, index * self.num_spec_tokens + rec_result[index_in_batch]
-                    ]
+                    self.gsa_prefetch_topk.cpu[:, topk_col]
                 )
             else:
                 req_seq_len[index] = req_meta.get_seq_len()
@@ -2360,29 +2470,46 @@ class GSA(UcmSparseBase):
     def build_sparse_meta(
         self, scheduler_output: SchedulerOutput, requests, input_batch, attn_metadata
     ) -> None:
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
+        if IS_PERFORMANCE_LOG:
+            if self.step_cost != 0:
+                self.log.info(
+                    f"[GSA Time] one step time: "
+                    f"{(time.perf_counter() - self.step_cost) * 1_000_000}\n"
+                )
+            self.step_cost = time.perf_counter()
         self.gsa_metadata = self.build_gsa_metadata(
             scheduler_output, requests, input_batch
         )
         req_ids = list(getattr(input_batch, "req_ids", []))
-        self.decode_index = [
-            self.gsa_metadata.gsa_stats[rid].index_in_batch
-            for rid in req_ids
-            if self.gsa_metadata.gsa_stats[rid].stage() == SequenceStage.DECODE
-        ]
-        self.gsa_index = [
-            self.gsa_metadata.gsa_stats[rid].index_in_batch
-            for rid in req_ids
-            if self.gsa_metadata.gsa_stats[rid].is_gsa()
-        ]
-        stats = self.gsa_metadata.gsa_stats
+        self._rebuild_batch_indexes(req_ids)
         self._ensure_store_injected()
         for req_id in scheduler_output.scheduled_cached_reqs.resumed_req_ids:
             self._load_kv_dram(req_id)
-        for req_id in scheduler_output.scheduled_new_reqs:
-            self._load_kv_dram(req_id)
+        for new_req in scheduler_output.scheduled_new_reqs:
+            self._load_kv_dram(new_req.req_id)
+        if not self.is_pd_mix:
+            self._check_and_wait()
+        self.is_all_gsa = len(self.gsa_index) == len(req_ids)
+        if len(self.decode_index) == len(req_ids):
+            self.has_prefill = False
+        else:
+            self.has_prefill = True
 
+    def _rebuild_batch_indexes(self, req_ids: list):
+        """重建本步各类批索引：decode/gsa 成员、预取触发 req 与 indexer offload req。"""
+        stats = self.gsa_metadata.gsa_stats
+        self.decode_index = [
+            stats[rid].index_in_batch
+            for rid in req_ids
+            if stats[rid].stage() == SequenceStage.DECODE
+        ]
+        self.gsa_index = [
+            stats[rid].index_in_batch
+            for rid in req_ids
+            if stats[rid].is_gsa()
+        ]
         prefetch_trigger_output = 1 if self.is_pd_mix else 0
         num_output_one = [
             rid
@@ -2394,30 +2521,25 @@ class GSA(UcmSparseBase):
             for rid in num_output_one
             if stats[rid].num_prompt_tokens > SEG_PREFILL_THRESHOLD
         ]
-        self.is_all_gsa = len(self.gsa_index) == len(req_ids)
-        if len(self.decode_index) == len(req_ids):
-            self.has_prefill = False
-        else:
-            self.has_prefill = True
 
     def request_begin(self, request_id: ReqType, prompt_token_ids: List[int]):
         pass
 
     def request_finished_in_scheduler(self, request_id: ReqType):
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
         if request_id in self.preempt_req_output_tokens:
             del self.preempt_req_output_tokens[request_id]
         pass
 
     def request_finished_in_worker(self, request_id: ReqType):
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return
         while self.prefetch_engine.prefetch_engine_c.get_prefetch_status():
-            time.sleep(0.001)
+            self.prefetch_engine.prefetch_engine_c.wait_prefetch_idle(1000)
         if IS_INDEXER_OFFLOAD:
             while self.prefetch_engine.prefetch_engine_c.get_indexer_status():
-                time.sleep(0.001)
+                self.prefetch_engine.prefetch_engine_c.wait_indexer_idle(1000)
         if request_id in self.gsa_stats:
             stats = self.gsa_stats.pop(request_id)
             if self.rank == 0:
@@ -2433,9 +2555,6 @@ class GSA(UcmSparseBase):
 
     def update_state_after_alloc(self, request: Request, num_blocks: int):
         pass
-
-    def begin_sch_flag(self):
-        self.alloc_block_sch = 0
 
     def update_scheduler_free_slot(self, num):
         if num == 0:
@@ -2470,7 +2589,7 @@ class GSA(UcmSparseBase):
         return gsa_preempted_flag
 
     def estimate_num_slots_sparsed(self, request: Request, num_spec_slots=3) -> int:
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return INVALID_SLOT
         if request.status == RequestStatus.PREEMPTED:
             self.preempt_req_output_tokens[request.request_id] = (
@@ -2492,44 +2611,21 @@ class GSA(UcmSparseBase):
         return num_tokens_sparsed
 
     def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
-        if not PTOPK_PREFETCH_ENABLE or not self.is_decode_node:
+        if not IS_OPEN_GSA or not self.is_decode_node:
             return None
         coordinator = kv_cache_manager.coordinator
         block_pool = kv_cache_manager.block_pool
         kv_cache_groups = kv_cache_manager.kv_cache_config.kv_cache_groups
 
-        if request.request_id in self.preempt_req_output_tokens:
-            # handle preempt: get the TRUE output_len
-            num_output_tokens = (
-                request.num_output_tokens
-                - self.preempt_req_output_tokens[request.request_id]
-            )
-        else:
-            num_output_tokens = request.num_output_tokens
-
+        num_output_tokens = self._resolve_output_tokens(request)
         if num_output_tokens == 1:
             kv_cache_manager.free(request)
             request.cache_salt = "gsa" + uuid.uuid4().hex
 
-        new_computed_block_list = tuple([] for _ in range(len(kv_cache_groups)))
-        if VLLM_ASCEND_VERSION == "0.18":
-            num_blocks_to_allocate = coordinator.get_num_blocks_to_allocate(
-                request_id=request.request_id,
-                num_tokens=num_slots_sparsed,
-                new_computed_blocks=new_computed_block_list,
-                num_encoder_tokens=0,
-                total_computed_tokens=0,
-                num_tokens_main_model=num_slots_sparsed,
-            )
-
-        elif VLLM_ASCEND_VERSION == "0.13":
-            num_blocks_to_allocate = coordinator.get_num_blocks_to_allocate(
-                request_id=request.request_id,
-                num_tokens=num_slots_sparsed,
-                new_computed_blocks=new_computed_block_list,
-                num_encoder_tokens=0,
-            )
-        else:
+        num_blocks_to_allocate = self._get_num_blocks_to_allocate(
+            coordinator, request, num_slots_sparsed, kv_cache_groups
+        )
+        if num_blocks_to_allocate is None:
             return None
         manual_preempt = False
         gsa_preempted_flag = False
@@ -2547,6 +2643,40 @@ class GSA(UcmSparseBase):
         blocks = coordinator.single_type_managers[0].req_to_blocks[request.request_id]
         return KVCacheBlocks(tuple([blocks]))
 
+    def _resolve_output_tokens(self, request) -> int:
+        """抢占请求按原始记账还原真实 output_len。"""
+        if request.request_id in self.preempt_req_output_tokens:
+            # handle preempt: get the TRUE output_len
+            return (
+                request.num_output_tokens
+                - self.preempt_req_output_tokens[request.request_id]
+            )
+        return request.num_output_tokens
+
+    def _get_num_blocks_to_allocate(
+        self, coordinator, request, num_slots_sparsed, kv_cache_groups
+    ):
+        """按 vllm-ascend 版本分派块数计算；版本不识别返回 None。"""
+        new_computed_block_list = tuple([] for _ in range(len(kv_cache_groups)))
+        if VLLM_ASCEND_VERSION == "0.18":
+            return coordinator.get_num_blocks_to_allocate(
+                request_id=request.request_id,
+                num_tokens=num_slots_sparsed,
+                new_computed_blocks=new_computed_block_list,
+                num_encoder_tokens=0,
+                total_computed_tokens=0,
+                num_tokens_main_model=num_slots_sparsed,
+            )
+
+        if VLLM_ASCEND_VERSION == "0.13":
+            return coordinator.get_num_blocks_to_allocate(
+                request_id=request.request_id,
+                num_tokens=num_slots_sparsed,
+                new_computed_blocks=new_computed_block_list,
+                num_encoder_tokens=0,
+            )
+        return None
+
     def _get_rank_load_hash(self, req_id):
         req_meta = self.gsa_metadata.gsa_stats[req_id]
         block_hashes = req_meta.block_hashes
@@ -2555,10 +2685,30 @@ class GSA(UcmSparseBase):
         end = min(num_per_rank * (self.rank + 1), len(block_hashes))
         return block_hashes[start:end]
 
+    def _check_and_wait(self):
+        for req_id, task_id in list(self.ucm_task_id.items()):
+            status = self.ucm_prefetch_engine.ucm_check(task_id)
+            if status < 0:
+                self.log.error(
+                    f"[GSA] ERROR ucm_check for req_id {req_id}, "
+                    f"task {task_id}: {status}\n"
+                )
+                del self.ucm_task_id[req_id]
+                continue
+            if status != 1:
+                continue
+            ret = self.ucm_prefetch_engine.ucm_wait(task_id)
+            if ret != 0:
+                self.log.error(
+                    f"[GSA] ERROR ucm_wait for req_id {req_id}, "
+                    f"task {task_id}: {ret}\n"
+                )
+            del self.ucm_task_id[req_id]
+
     def _load_kv_dram(self, req_id):
         # PD 分离模式下，decode 节点在请求到达时按 rank 分片做 UCM lookup，
         # 命中部分提交 DRAM 加载任务；PD 混合模式无需此路径。
-        if not PTOPK_PREFETCH_ENABLE or self.is_pd_mix:
+        if not IS_OPEN_GSA or self.is_pd_mix:
             return
         if not self.is_decode_node:
             return
@@ -2591,7 +2741,13 @@ class GSA(UcmSparseBase):
                 f"{(time.perf_counter() - start) * 1_000_000}\n"
             )
             start = time.perf_counter()
-        _ = self.ucm_prefetch_engine.ucm_load_ssd(ids)
+        task_id = self.ucm_prefetch_engine.ucm_load_ssd(ids)
+        if task_id <= 0:
+            self.log.error(
+                f"[GSA] ERROR ucm_load_ssd rejected for req_id {req_id}: {task_id}\n"
+            )
+            return
+        self.ucm_task_id[req_id] = task_id
         if IS_PERFORMANCE_LOG:
             self.log.info(
                 f"[GSA] submit load task for req_id {req_id}: "
@@ -2662,8 +2818,10 @@ class GSA(UcmSparseBase):
                 device=torch.device("cpu"),
                 pin_memory=True,
             )
-            self.indexer_cache_preempt_ptr = int(self.indexer_cache_preempt.data_ptr())
-            self.indexer_cache_preempt_offset = (
+            self.indexer_cache_preempt_i_ptr = int(
+                self.indexer_cache_preempt.data_ptr()
+            )
+            self.indexer_cache_preempt_i_offset = (
                 self.layer_num
                 * self.block_size
                 * 128
@@ -2678,6 +2836,12 @@ class GSA(UcmSparseBase):
             )
 
     def _init_kv_load_buffers(self):
+        self._init_k_load_buffers()
+        self._init_v_load_buffers()
+        self._init_load_index_buffers()
+
+    def _init_k_load_buffers(self):
+        """KV 加载 staging 的 K 腿：共享 host/device buffer + per-layer last chunk。"""
         k_buffer_shape = (
             STREAM_NUM,
             KVCACHE_BUFFER_SIZE * self.block_size * self.num_head * self.max_bs,
@@ -2707,40 +2871,47 @@ class GSA(UcmSparseBase):
             )
             for _ in range(self.layer_num)
         ]
-        if not self.enable_sparse_sfa_c8:
-            v_buffer_shape = (
-                STREAM_NUM,
-                KVCACHE_BUFFER_SIZE * self.block_size * self.num_head * self.max_bs,
-                self._vllm_config.model_config.hf_text_config.qk_rope_head_dim,
-            )
-            self._buff_host_v = torch.empty(
+
+    def _init_v_load_buffers(self):
+        """V 腿：mla/耦合布局下与 K 别名复用，否则独立分配。"""
+        if self.enable_sparse_sfa_c8:
+            self._buff_host_v = self._buff_host_k
+            self._buff_device_v = self._buff_device_k
+            self.last_chunk_v_buffer = self.last_chunk_k_buffer
+            return
+        v_dim = self._vllm_config.model_config.hf_text_config.qk_rope_head_dim
+        v_buffer_shape = (
+            STREAM_NUM,
+            KVCACHE_BUFFER_SIZE * self.block_size * self.num_head * self.max_bs,
+            v_dim,
+        )
+        self._buff_host_v = torch.empty(
+            v_buffer_shape,
+            dtype=self.dtype,
+            device=torch.device("cpu"),
+            pin_memory=True,
+        )
+        self._buff_device_v = torch.empty(
+            v_buffer_shape, dtype=self.dtype, device=self.device, pin_memory=False
+        )
+        v_buffer_shape = (
+            GSA_SPARSE_LEN // self.block_size,
+            self.num_head,
+            self.block_size,
+            v_dim,
+        )
+        self.last_chunk_v_buffer = [
+            torch.empty(
                 v_buffer_shape,
                 dtype=self.dtype,
                 device=torch.device("cpu"),
                 pin_memory=True,
             )
-            self._buff_device_v = torch.empty(
-                v_buffer_shape, dtype=self.dtype, device=self.device, pin_memory=False
-            )
-            v_buffer_shape = (
-                GSA_SPARSE_LEN // self.block_size,
-                self.num_head,
-                self.block_size,
-                self._vllm_config.model_config.hf_text_config.qk_rope_head_dim,
-            )
-            self.last_chunk_v_buffer = [
-                torch.empty(
-                    v_buffer_shape,
-                    dtype=self.dtype,
-                    device=torch.device("cpu"),
-                    pin_memory=True,
-                )
-                for _ in range(self.layer_num)
-            ]
-        else:
-            self._buff_host_v = self._buff_host_k
-            self._buff_device_v = self._buff_device_k
-            self.last_chunk_v_buffer = self.last_chunk_k_buffer
+            for _ in range(self.layer_num)
+        ]
+
+    def _init_load_index_buffers(self):
+        """加载目的索引 buffer（host pin + device 镜像）。"""
         dst_index_shape = (
             STREAM_NUM,
             2048 * self.max_bs,
@@ -2782,20 +2953,6 @@ class GSA(UcmSparseBase):
             )
             if IS_INDEXER_OFFLOAD:
                 self.prefetch_engine.prefetch_engine_c.set_kvTensor_Index(
+                    layer_id,
                     indexer_cache,
                 )
-
-    def shutdown(self):
-        if not IS_INDEXER_OFFLOAD or self.block_table_sm is None:
-            return
-        try:
-            self.block_table_sm.unlink()
-            print(f"✅ 成功清理: block_table_sm memory", flush=True)
-        except Exception as e:
-            print(f"❌ block_table_sm 清理失败: {e}", flush=True)
-
-        try:
-            self.indexer_block_table_sm.unlink()
-            print(f"✅ 成功清理: indexer_block_table_sm", flush=True)
-        except Exception as e:
-            print(f"❌ indexer_block_table_sm 清理失败: {e}", flush=True)

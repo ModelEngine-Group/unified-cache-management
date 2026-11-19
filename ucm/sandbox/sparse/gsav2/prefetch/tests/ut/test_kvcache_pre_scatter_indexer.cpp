@@ -430,7 +430,6 @@ TEST_F(ScatterIndexerTest, RunOneBsPrefetchEndToEndWithHits)
         engine->allMissIdxs[reqID].push_back({});
         engine->mPrefetchBlockTableIdx[reqID].push_back(std::vector<int>(4, -1));
     }
-    engine->mIndexerSlot[reqID].assign(2, 0);
     engine->mIndexerLoadResultT[reqID] = torch::full({2, 4}, -1, torch::dtype(torch::kInt32));
     // topkList: [layer 0] = [0,1], [layer 1] = [0,1] (both hits).
     auto topkList = torch::tensor({0, 1, 0, 1}, torch::dtype(torch::kInt32)).reshape({2, 1, 2});
@@ -503,9 +502,12 @@ TEST_F(ScatterIndexerTest, CopyPreSwapTokensCopiesRange)
     std::vector<int32_t> useBuf = {10, 11, 12, 13};
     std::vector<int32_t> spaBuf(spaMaxBs * sparseLen, -1);
     std::vector<int> needAppend = {99};
+    // Lru path: appendEnd == sparseLen (full-length copy + tail append).
+    std::vector<int> appendEnds = {sparseLen};
     engine->CopyPreSwapTokens(reinterpret_cast<uintptr_t>(useBuf.data()),
                               reinterpret_cast<uintptr_t>(spaBuf.data()), /*swapRange=*/{0, 2},
-                              needAppend, sparseLen, spaMaxBs, mtpToken, /*changeLen=*/1);
+                              needAppend, sparseLen, spaMaxBs, mtpToken, /*changeLen=*/1,
+                              appendEnds);
     // index 0: spaBuf[0..4) = useBuf, then needAppend at offset
     //   sparseLen - changeLen + mtpToken - 1 - 0%1 = 4-1+1-1-0 = 3 -> spaBuf[3] = 99.
     // index 1: spaCpuPtr at spaBuf[(0*4+1)*4] = spaBuf[4]; copy useBuf to spaBuf[4..8),
@@ -515,4 +517,71 @@ TEST_F(ScatterIndexerTest, CopyPreSwapTokensCopiesRange)
     EXPECT_EQ(spaBuf[4], 10);
     EXPECT_EQ(spaBuf[5], 11);
     EXPECT_EQ(spaBuf[7], 99);
+}
+
+/* decay 分层窗口：appendEnd < sparseLen 时前对齐窗口拷贝 [0, W)、尾部恒为
+ * -1 padding、最近 token 追加在窗口末尾 [W-x, W)（如 sparseLen=5120 时
+ * layer0 窗口 4096 => 追加 [4096-x, 4096)，[4096, 5120) 保持 -1）。 */
+TEST_F(ScatterIndexerTest, CopyPreSwapTokensDecayWindowAppendsWithinWindow)
+{
+    engine = MakeEngine(/*layerNum=*/1);
+    engine->mTopkIndexerNum = 2;
+    const int sparseLen = 8;
+    const int spaMaxBs = 2;
+    const int mtpToken = 1;
+    // use buffer: layer0 = {10..17}, layer1 = {20..27}.
+    std::vector<int32_t> useBuf(sparseLen * 2);
+    for (int i = 0; i < sparseLen; ++i) {
+        useBuf[i] = 10 + i;
+        useBuf[sparseLen + i] = 20 + i;
+    }
+    std::vector<int32_t> spaBuf(spaMaxBs * sparseLen * 2, -1);
+    std::vector<int> needAppend = {31, 32};
+    // layer0 window 5 < sparseLen (decay), layer1 full length (lru/missing).
+    std::vector<int> appendEnds = {5, sparseLen};
+    engine->CopyPreSwapTokens(reinterpret_cast<uintptr_t>(useBuf.data()),
+                              reinterpret_cast<uintptr_t>(spaBuf.data()), /*swapRange=*/{0, 1},
+                              needAppend, sparseLen, spaMaxBs, mtpToken, /*changeLen=*/2,
+                              appendEnds);
+    // layer0 slot0: [0,5) = {10,11,12,31,32} (window copy + newest 2 at
+    // [W-x, W)), [5,8) stays -1 padding.
+    EXPECT_EQ(spaBuf[0], 10);
+    EXPECT_EQ(spaBuf[1], 11);
+    EXPECT_EQ(spaBuf[2], 12);
+    EXPECT_EQ(spaBuf[3], 31);  // appended at W-x = 5-2
+    EXPECT_EQ(spaBuf[4], 32);
+    EXPECT_EQ(spaBuf[5], -1);
+    EXPECT_EQ(spaBuf[6], -1);
+    EXPECT_EQ(spaBuf[7], -1);
+    // layer1 slot0: full copy + tail append, no padding.
+    const int layer1Off = (1 * spaMaxBs + 0) * sparseLen;  // = 16 with spaMaxBs=2
+    EXPECT_EQ(spaBuf[layer1Off + 0], 20);
+    EXPECT_EQ(spaBuf[layer1Off + 5], 25);
+    EXPECT_EQ(spaBuf[layer1Off + 6], 31);
+    EXPECT_EQ(spaBuf[layer1Off + 7], 32);
+}
+
+/* decay 窗口装不下全部增量时截尾保留最新 W 个 token（防负偏移越界）。 */
+TEST_F(ScatterIndexerTest, CopyPreSwapTokensDecayWindowClampsOversizedAppend)
+{
+    engine = MakeEngine(/*layerNum=*/1);
+    engine->mTopkIndexerNum = 1;
+    const int sparseLen = 8;
+    const int spaMaxBs = 1;
+    const int mtpToken = 1;
+    std::vector<int32_t> useBuf(sparseLen, 7);
+    std::vector<int32_t> spaBuf(spaMaxBs * sparseLen, -1);
+    std::vector<int> needAppend = {40, 41, 42, 43, 44, 45};
+    std::vector<int> appendEnds = {4};
+    engine->CopyPreSwapTokens(reinterpret_cast<uintptr_t>(useBuf.data()),
+                              reinterpret_cast<uintptr_t>(spaBuf.data()), /*swapRange=*/{0, 1},
+                              needAppend, sparseLen, spaMaxBs, mtpToken, /*changeLen=*/6,
+                              appendEnds);
+    // Only the newest 4 tokens fit: {42, 43, 44, 45} at [0, 4); [4, 8) padding.
+    EXPECT_EQ(spaBuf[0], 42);
+    EXPECT_EQ(spaBuf[1], 43);
+    EXPECT_EQ(spaBuf[2], 44);
+    EXPECT_EQ(spaBuf[3], 45);
+    EXPECT_EQ(spaBuf[4], -1);
+    EXPECT_EQ(spaBuf[7], -1);
 }

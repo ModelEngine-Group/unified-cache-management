@@ -37,43 +37,6 @@
 
 namespace ucmprefetch {
 
-std::uintptr_t GetTensorDataPtr(const pybind11::object& tensor, const char* tensorName)
-{
-    if (tensor.is_none()) {
-        throw pybind11::value_error(std::string(tensorName) + " must not be None");
-    }
-
-    if (!pybind11::hasattr(tensor, "data_ptr")) {
-        throw pybind11::type_error(std::string(tensorName) + " must be a torch.Tensor");
-    }
-
-    if (!pybind11::hasattr(tensor, "dim") || !pybind11::hasattr(tensor, "numel") ||
-        !pybind11::hasattr(tensor, "is_contiguous")) {
-        throw pybind11::type_error(std::string(tensorName) +
-                                   " does not provide required Tensor interfaces");
-    }
-
-    const std::int64_t ndim = tensor.attr("dim")().cast<std::int64_t>();
-    if (ndim != 1) {
-        throw pybind11::value_error(std::string(tensorName) + " must be a one-dimensional Tensor");
-    }
-
-    const std::int64_t numel = tensor.attr("numel")().cast<std::int64_t>();
-    if (numel <= 0) { throw pybind11::value_error(std::string(tensorName) + " must not be empty"); }
-
-    const bool is_contiguous = tensor.attr("is_contiguous")().cast<bool>();
-    if (!is_contiguous) {
-        throw pybind11::value_error(std::string(tensorName) + " must be contiguous");
-    }
-
-    const std::uintptr_t address = tensor.attr("data_ptr")().cast<std::uintptr_t>();
-    if (address == 0) {
-        throw pybind11::value_error(std::string(tensorName) + " data_ptr is null");
-    }
-
-    return address;
-}
-
 std::vector<BlockId> BlockIdsFromBuffer(const pybind11::buffer& ids)
 {
     pybind11::buffer_info ids_info = ids.request();
@@ -114,10 +77,20 @@ void SetBlocksMapFromBuffer(GSAPrefetchEngineC& engine, const std::string& reqID
     engine.SetBlocksMap(reqID, blocksHash, maxIdx, blockIdxs, kAddrs, vAddrs);
 }
 
-int32_t UCMLoadSSDFromBuffer(UCMKVPrefetch& ucmPrefetch, const pybind11::buffer& ids)
+int64_t UCMLoadSSDFromBuffer(UCMKVPrefetch& ucmPrefetch, const pybind11::buffer& ids)
 {
     std::vector<BlockId> blocksHash = BlockIdsFromBuffer(ids);
     return ucmPrefetch.UCMLoadSSD(blocksHash);
+}
+
+int32_t UCMCheckTask(UCMKVPrefetch& ucmPrefetch, std::uint64_t taskId)
+{
+    return ucmPrefetch.UCMCheck(taskId);
+}
+
+int32_t UCMWaitTask(UCMKVPrefetch& ucmPrefetch, std::uint64_t taskId)
+{
+    return ucmPrefetch.UCMWait(taskId);
 }
 
 std::vector<uint8_t> UCMLookupFromBuffer(UCMKVPrefetch& ucmPrefetch, const pybind11::buffer& ids)
@@ -126,32 +99,44 @@ std::vector<uint8_t> UCMLookupFromBuffer(UCMKVPrefetch& ucmPrefetch, const pybin
     return ucmPrefetch.UCMLookup(blocksHash);
 }
 
-PYBIND11_MODULE(gsa_prefetch, m)
+namespace {
+
+// UCMKVPrefetch 绑定。
+void registerUcmKvPrefetch(pybind11::module_& m)
 {
     pybind11::class_<ucmprefetch::UCMKVPrefetch>(m, "UCMKVPrefetch")
         .def(pybind11::init<>())
         .def("store_init", &ucmprefetch::UCMKVPrefetch::StoreInit, pybind11::arg("store_ptr"),
-             pybind11::arg("layer_num"))
+             pybind11::arg("layer_num"), pybind11::arg("tensor_count"))
         .def("ucm_load_ssd", &ucmprefetch::UCMLoadSSDFromBuffer,
              pybind11::arg("block_ids").noconvert())
+        .def("ucm_check", &ucmprefetch::UCMCheckTask, pybind11::arg("task_id"))
+        .def("ucm_wait", &ucmprefetch::UCMWaitTask, pybind11::arg("task_id"),
+             pybind11::call_guard<pybind11::gil_scoped_release>())
         .def("ucm_lookup", &ucmprefetch::UCMLookupFromBuffer,
              pybind11::arg("block_ids").noconvert());
+}
 
+// GSAPrefetchEngineC 绑定。
+void registerPrefetchEngine(pybind11::module_& m)
+{
     pybind11::class_<ucmprefetch::GSAPrefetchEngineC>(m, "GSAPrefetchEngineC")
         .def(pybind11::init<std::vector<int>&, std::vector<int>&, bool, int, int, std::vector<int>,
                             std::vector<int>, std::string>())
         // NOTE: get_self_ptr / set_store_v1 pass raw pointers across the Python
-        // boundary as uintptr_t. The caller MUST guarantee that the engine
-        // (get_self_ptr) and the UCM store (set_store_v1) outlive every use on
-        // the Python side: any use after the C++ object/store is destroyed is a
-        // dangling-pointer use-after-free. A pybind11 owning wrapper that holds
-        // the pointer is the long-term fix.
+        // boundary as uintptr_t: the engine and the UCM store MUST outlive every
+        // Python-side use (else use-after-free); owning wrapper is the long-term fix.
         .def("set_blocks_map", &ucmprefetch::SetBlocksMapFromBuffer, pybind11::arg("req_id"),
              pybind11::arg("ids").noconvert(), pybind11::arg("max_idx"),
              pybind11::arg("block_idxs"), pybind11::arg("k_addrs"), pybind11::arg("v_addrs"))
         .def("set_last_indexer_block", &ucmprefetch::GSAPrefetchEngineC::SetLastIndexerBlock,
              pybind11::arg("req_id"), pybind11::arg("block_idxs"), pybind11::arg("indexer_addrs"))
         .def("set_tokens_map", &ucmprefetch::GSAPrefetchEngineC::SetTokensMap)
+        // HBM 驱逐模式：mode 1 = decay（全部层启用衰减驱逐 + Budget5120 分层窗口），
+        // 其他值 = lru（默认，与原实现一致）。需在首个 set_tokens_map 之前调用。
+        .def("set_hbm_evict_mode", &ucmprefetch::GSAPrefetchEngineC::SetHbmEvictMode,
+             pybind11::arg("mode"))
+        .def("get_hbm_evict_mode", &ucmprefetch::GSAPrefetchEngineC::GetHbmEvictMode)
         .def("del_blocks_map", &ucmprefetch::GSAPrefetchEngineC::DelBlocksMap)
         .def("set_topk_indices", &ucmprefetch::GSAPrefetchEngineC::SetTopkIndices)
         .def("pre_swap_tokens", &ucmprefetch::GSAPrefetchEngineC::PreSwapTokens)
@@ -160,20 +145,29 @@ PYBIND11_MODULE(gsa_prefetch, m)
         .def("set_kvTensor_Index", &ucmprefetch::GSAPrefetchEngineC::SetKvTensorIndex)
         .def("set_kv_buffer", &ucmprefetch::GSAPrefetchEngineC::SetKvBuffer)
         .def("get_prefetch_status", &ucmprefetch::GSAPrefetchEngineC::GetPrefetchStatus)
-        .def("set_modelrunning_status", &ucmprefetch::GSAPrefetchEngineC::SetModelRunningStatus)
-        .def("get_token_map", &ucmprefetch::GSAPrefetchEngineC::GetTokenBlockMap)
-        .def("get_block_map", &ucmprefetch::GSAPrefetchEngineC::GetBlockTokenMap)
-        .def("get_block_table", &ucmprefetch::GSAPrefetchEngineC::GetReqUseBlockTable)
-        .def("get_sparse_len", &ucmprefetch::GSAPrefetchEngineC::GetSparseSeqLen)
         .def("set_indexer_map", &ucmprefetch::GSAPrefetchEngineC::SetIndexerMap)
         .def("update_indexer_map", &ucmprefetch::GSAPrefetchEngineC::UpdateIndexerMap)
         .def("submit_task_indexer", &ucmprefetch::GSAPrefetchEngineC::SubmitTaskIndexer)
         .def("get_indexer_status", &ucmprefetch::GSAPrefetchEngineC::GetIndexerStatus)
+        // 事件等待必须 gil_scoped_release：pybind 默认持 GIL 进 C++，阻塞等待
+        // 会卡死所有 Python 线程（time.sleep 本身是释放 GIL 的）。
+        .def("wait_prefetch_idle", &ucmprefetch::GSAPrefetchEngineC::WaitPrefetchIdle,
+             pybind11::arg("timeout_ms"), pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("wait_indexer_idle", &ucmprefetch::GSAPrefetchEngineC::WaitIndexerIdle,
+             pybind11::arg("timeout_ms"), pybind11::call_guard<pybind11::gil_scoped_release>())
         .def("indexer_init_load", &ucmprefetch::GSAPrefetchEngineC::IndexerInitLoad)
-        .def("indexer_block_map", &ucmprefetch::GSAPrefetchEngineC::GetIndexerBlockMap)
-        .def("indexer_token_map", &ucmprefetch::GSAPrefetchEngineC::GetIndexerTokensMap)
         .def("set_store_v1", &ucmprefetch::GSAPrefetchEngineC::SetStoreV1Raw)
         .def("get_store_v1_ptr", &ucmprefetch::GSAPrefetchEngineC::GetStoreV1Raw)
+        .def("set_store_tensor_count", &ucmprefetch::GSAPrefetchEngineC::SetStoreTensorCount)
+        .def("get_store_tensor_count", &ucmprefetch::GSAPrefetchEngineC::GetStoreTensorCount)
         .def("get_self_ptr", &ucmprefetch::GSAPrefetchEngineC::GetSelfRaw);
+}
+
+}  // namespace
+
+PYBIND11_MODULE(gsa_prefetch, m)
+{
+    registerUcmKvPrefetch(m);
+    registerPrefetchEngine(m);
 }
 }  // namespace ucmprefetch
