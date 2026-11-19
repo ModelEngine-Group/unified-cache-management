@@ -29,7 +29,7 @@ class TopologyTests(unittest.TestCase):
         partitions = [topology.local_keys(keys, r, [10, 20, 30]) for r in range(32)]
         self.assertEqual(sorted(sum(partitions, [])), keys)
         self.assertEqual(partitions[31], [31, 63, 95])
-        self.assertEqual(topology.head_partitions, 1)
+        self.assertEqual(topology.head_partition_count, 1)
 
     def test_pcp_replicas_read_same_full_cache(self):
         topology = CPTopology(16, 2, 1, True)
@@ -44,7 +44,7 @@ class TopologyTests(unittest.TestCase):
         ]:
             topology = CPTopology(tp, pcp, dcp, False)
             self.assertEqual([topology.head_partition(r) for r in range(tp)], expected)
-            self.assertEqual(topology.head_partitions, len(set(expected)))
+            self.assertEqual(topology.head_partition_count, len(set(expected)))
 
     def test_pure_dcp_mapping_preserved(self):
         topology = CPTopology(16, 1, 16, True)
@@ -59,6 +59,39 @@ class TopologyTests(unittest.TestCase):
             topology.local_keys(list(range(63)), 0, [1, 2])
         with self.assertRaises(ValueError):
             topology.local_keys(list(range(64)), 32, [1, 2])
+
+
+class HashNamespaceTests(unittest.TestCase):
+    def test_interleave_isolates_pure_dcp_and_pcp_namespaces(self):
+        node = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "build_kv_hash_meta"
+        )
+        ns = {
+            "_get_sparse_c8_flags": lambda config: (False, False),
+            "request_hasher_module": SimpleNamespace(
+                _layout_source_digest=lambda: "layout"
+            ),
+        }
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(MODULE), "exec"), ns)
+
+        def meta(pcp, dcp, interleave):
+            config = SimpleNamespace(
+                parallel_config=SimpleNamespace(
+                    tensor_parallel_size=4,
+                    prefill_context_parallel_size=pcp,
+                    decode_context_parallel_size=dcp,
+                    cp_kv_cache_interleave_size=interleave,
+                ),
+                model_config=SimpleNamespace(model="model", dtype="float16"),
+            )
+            return ns["build_kv_hash_meta"](config, 0)
+
+        for pcp, dcp in [(1, 2), (2, 1), (2, 2)]:
+            self.assertNotEqual(meta(pcp, dcp, 1), meta(pcp, dcp, 2))
+        self.assertIn(":cp_v2:pcp=2:interleave=2:", meta(2, 2, 2))
+        self.assertEqual(meta(1, 1, 1), meta(1, 1, 2))
 
 
 class ConnectorMethodsTests(unittest.TestCase):
@@ -131,8 +164,16 @@ class ConnectorMethodsTests(unittest.TestCase):
                 )
             }
         )
+        import threading
+
+        metadata.opaque = threading.Lock()  # Must not require deep-copy support.
+        metadata.request_meta["r"].opaque = metadata.opaque
         for _ in range(2):
             worker.bind_connector_metadata(metadata)
+            self.assertIsNot(worker.bound, metadata)
+            self.assertIsNot(worker.bound.request_meta, metadata.request_meta)
+            self.assertIsNot(worker.bound.request_meta["r"], metadata.request_meta["r"])
+            self.assertIs(worker.bound.request_meta["r"].opaque, metadata.opaque)
             self.assertEqual(
                 worker.bound.request_meta["r"].load_block_ids, ([17, 49], [7, 8])
             )
@@ -264,6 +305,29 @@ class PPCombinationTests(unittest.TestCase):
             worker.set_xfer_handshake_metadata_pp_aware(
                 {(0, 0): stage, (0, 4): dict(stage, block_size=256)}
             )
+
+    def test_handshake_reports_missing_fields_before_geometry_comparison(self):
+        worker = self.worker()
+        worker._is_pp = True
+        worker.connector_configs = [
+            {"ucm_connector_name": "fake", "ucm_connector_config": {}}
+        ]
+        worker._set_default_shm_buffer_capacity = lambda config: None
+        stage = dict(layer_start=0, layer_count=20, block_size=128, shard_size=64)
+        for coordinate in [(0, 0), (0, 1)]:
+            for field in stage:
+                for absent in [True, False]:
+                    incomplete = dict(stage)
+                    if absent:
+                        incomplete.pop(field)
+                    else:
+                        incomplete[field] = None
+                    metadata = {(0, 0): dict(stage), (0, 1): dict(stage)}
+                    metadata[coordinate] = incomplete
+                    with self.assertRaisesRegex(
+                        ValueError, f"missing required fields:.*{field}"
+                    ):
+                        worker.set_xfer_handshake_metadata_pp_aware(metadata)
 
     def test_handshake_builds_all_stage_stores_with_unequal_layers(
         self, three_dimensional=False

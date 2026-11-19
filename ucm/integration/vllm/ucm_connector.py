@@ -166,10 +166,12 @@ def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
     pcp_size = getattr(vllm_config.parallel_config, "prefill_context_parallel_size", 1)
     if pcp_size > 1:
         # Never reuse objects written with the old PCP*DCP ownership scheme.
+        dcp_info += f":cp_v2:pcp={pcp_size}"
+    if pcp_size > 1 or dcp_size > 1:
         interleave = getattr(
             vllm_config.parallel_config, "cp_kv_cache_interleave_size", 1
         )
-        dcp_info += f":cp_v2:pcp={pcp_size}:interleave={interleave}"
+        dcp_info += f":interleave={interleave}"
     layout_info = f":layout={request_hasher_module._layout_source_digest()}"
     return (
         f"{model_name}:"
@@ -2593,8 +2595,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             if stats:
                 ucmmetrics.update_stats(stats)
-        except Exception as exc:
-            raise
         finally:
             self._release_dump_event_handle(pending_dump_task)
 
@@ -2939,6 +2939,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     ) -> None:
         pp_size = self._vllm_config.parallel_config.pipeline_parallel_size
         local_ranks = self._get_world_size()
+        # DCP reuses the TP/PCP worker grid; it adds no worker axis.
         stage_width = self.tp_size * getattr(
             self._vllm_config.parallel_config, "prefill_context_parallel_size", 1
         )
@@ -3018,23 +3019,26 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             stage_meta = dict(stage_meta)
             geometry_keys = ("block_size", "shard_size", "layer_start", "layer_count")
             for key, candidate in metadata.items():
+                if key[0] != pp_rank:
+                    continue
+                missing = [
+                    field for field in geometry_keys if candidate.get(field) is None
+                ]
+                if missing:
+                    raise ValueError(
+                        f"PP stage {pp_rank} handshake metadata at {key} "
+                        f"is missing required fields: {missing}"
+                    )
+            for key, candidate in metadata.items():
                 if key[0] == pp_rank and any(
-                    candidate.get(field) != stage_meta.get(field)
-                    for field in geometry_keys
+                    candidate[field] != stage_meta[field] for field in geometry_keys
                 ):
                     raise ValueError(
                         f"PP stage {pp_rank} has heterogeneous KV geometry at {key}; "
                         "UCM requires uniform geometry within each stage"
                     )
-            layer_start = stage_meta.pop("layer_start", None)
-            layer_count = stage_meta.pop("layer_count", None)
-            if layer_start is None or layer_count is None:
-                raise ValueError(
-                    f"PP stage {pp_rank} handshake metadata has no layer "
-                    f"allocation; every worker must publish layer_start and "
-                    f"layer_count so stage directories stay layer-scoped. "
-                    f"Received keys: {sorted(stage_meta)}."
-                )
+            layer_start = stage_meta.pop("layer_start")
+            layer_count = stage_meta.pop("layer_count")
             self._configure_pp_store(config, pp_rank, layer_start, layer_count)
             config.update(stage_meta)
             config.update(
@@ -3384,6 +3388,15 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
 @dataclass(frozen=True)
 class CPTopology:
+    """Map the TP/PCP worker grid to KV content and replica coordinates.
+
+    DCP partitions sequence KV within this grid; PCP is not an additional
+    sequence partition axis. Non-MLA KV also has head partitions, whereas
+    MLA latent KV is shared by TP replicas. For every key, exactly one writer
+    is selected per (head partition, DCP content partition), consistently
+    across all layers. PP stage isolation is handled by the connector.
+    """
+
     tp_size: int
     pcp_size: int
     dcp_size: int
@@ -3391,16 +3404,27 @@ class CPTopology:
 
     def __post_init__(self):
         if min(self.tp_size, self.pcp_size, self.dcp_size) < 1:
-            raise ValueError("TP, PCP and DCP must be positive")
+            raise ValueError(
+                f"TP, PCP and DCP must be positive; got "
+                f"TP={self.tp_size}, PCP={self.pcp_size}, DCP={self.dcp_size}"
+            )
         if self.pcp_size == 1:
             valid = self.tp_size % self.dcp_size == 0
         else:
             valid = self.dcp_size in (1, self.pcp_size, self.tp_size * self.pcp_size)
         if not valid:
-            raise ValueError("Unsupported TP/PCP/DCP topology for UCM")
+            rule = (
+                f"DCP must divide TP={self.tp_size} when PCP=1"
+                if self.pcp_size == 1
+                else f"DCP must be one of {sorted({1, self.pcp_size, self.tp_size * self.pcp_size})}"
+            )
+            raise ValueError(
+                f"Unsupported UCM topology: TP={self.tp_size}, "
+                f"PCP={self.pcp_size}, DCP={self.dcp_size}; {rule}"
+            )
 
     @property
-    def head_partitions(self):
+    def head_partition_count(self):
         if self.is_mla:
             return 1
         if self.pcp_size == 1:
@@ -3412,7 +3436,7 @@ class CPTopology:
     def head_partition(self, tp_rank):
         if not 0 <= tp_rank < self.tp_size:
             raise ValueError("TP rank outside TP group")
-        if self.is_mla or self.head_partitions == 1:
+        if self.is_mla or self.head_partition_count == 1:
             return 0
         if self.pcp_size == 1:
             return tp_rank // self.dcp_size
@@ -3423,13 +3447,17 @@ class CPTopology:
         if not 0 <= tp_rank < self.tp_size or not 0 <= pcp_rank < self.pcp_size:
             raise ValueError("Dump replica coordinates outside TP/PCP grid")
         if self.dcp_size == 1:
+            # Without sequence partitioning, MLA replicates across the whole
+            # grid; non-MLA replicates only across PCP for each head key.
             if self.is_mla:
                 return pcp_rank * self.tp_size + tp_rank, self.tp_size * self.pcp_size
             return pcp_rank, self.pcp_size
         if self.is_mla:
             if self.pcp_size == 1:
+                # Each TP/DCP group repeats the same latent DCP content.
                 return tp_rank // self.dcp_size, self.tp_size // self.dcp_size
             if self.dcp_size == self.pcp_size:
+                # PCP supplies the DCP coordinate; TP repeats latent content.
                 return tp_rank, self.tp_size
         # Full-grid DCP has no replicas. Non-MLA head partitions already
         # have separate keys, so they must never be deduplicated together.
@@ -3527,7 +3555,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
         hash_config.parallel_config = copy.copy(parallel)
         if not self.is_mla:
             hash_config.parallel_config.tensor_parallel_size = (
-                self.cp_topology.head_partitions
+                self.cp_topology.head_partition_count
             )
 
         if role == KVConnectorRole.SCHEDULER:
@@ -3569,7 +3597,11 @@ class UCMCPConnector(UCMLayerWiseConnector):
         import copy
 
         # Metadata may be reused by workers/steps. Never slice shared plans in-place.
-        connector_metadata = copy.deepcopy(connector_metadata)
+        connector_metadata = copy.copy(connector_metadata)
+        connector_metadata.request_meta = {
+            request_id: copy.copy(request)
+            for request_id, request in connector_metadata.request_meta.items()
+        }
         # PCP contributes compute replicas, not another sequence shard axis.
         for _, request in connector_metadata.request_meta.items():
             if len(request.load_block_ids[0]) > 0:

@@ -443,7 +443,7 @@ def test_handshake_requires_layer_allocation():
     conn._is_pp = True
     metadata = {(0, 0): {"block_size": 12288, "shard_size": 4096}}
 
-    with pytest.raises(ValueError, match="no layer allocation"):
+    with pytest.raises(ValueError, match="missing required fields:.*layer_start"):
         conn.set_xfer_handshake_metadata_pp_aware(metadata)
 
     assert factory.call_count == 0
