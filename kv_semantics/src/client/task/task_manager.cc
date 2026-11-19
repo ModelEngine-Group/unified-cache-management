@@ -28,6 +28,7 @@
 #include <utility>
 #include "kv_client_impl.h"
 #include "kv_metrics/metrics.h"
+#include "kv_transport.h"
 #include "logger.h"
 #include "router/router.h"
 
@@ -63,6 +64,26 @@ std::vector<kv::Key> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;
+}
+
+// Collects the nodes whose transport reports an unhealthy state. Transports without a
+// health probe report OK and are therefore treated as available, as required by the
+// M800 design: an unimplemented probe must not be mistaken for a fault.
+UnavailableNodeSet CollectUnavailableNodes(const std::shared_ptr<ViewSnapshot>& snapshot)
+{
+    UnavailableNodeSet unavailableNodes;
+    for (const auto& [nodeId, transport] : snapshot->transports) {
+        if (!transport) {
+            unavailableNodes.emplace(nodeId);
+            continue;
+        }
+        const auto status = transport->CheckHealth();
+        if (status.ok()) { continue; }
+        unavailableNodes.emplace(nodeId);
+        KV_WARN("ASU transport is unhealthy, routing will avoid it: nodeId={} code={} message={}.",
+                nodeId, static_cast<int>(status.code), status.message);
+    }
+    return unavailableNodes;
 }
 
 Status AddContext(Status status, const std::string& context)
@@ -251,9 +272,17 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
             itemCount, static_cast<int>(transportTask->finalStatus.code),
             transportTask->finalStatus.message);
     }
-    task->finalStatus = failedTransportTasks == 0 ? Status::OK()
-                                                  : Status::Error(StatusCode::PARTIAL_FAILED,
-                                                                  "client task partially failed");
+    if (failedTransportTasks == 0 && task->routingFailedEntries == 0) {
+        task->finalStatus = Status::OK();
+    } else if (failedTransportTasks == 0 && task->entryStatus.size() != 0 &&
+               task->routingFailedEntries == task->entryStatus.size()) {
+        // Nothing was routable: report the routing failure itself instead of a partial one.
+        task->finalStatus =
+            Status::Error(StatusCode::NO_AVAILABLE_NODE, "no available node for any entry");
+    } else {
+        task->finalStatus =
+            Status::Error(StatusCode::PARTIAL_FAILED, "client task partially failed");
+    }
     RecordClientTaskCompletion(*task);
     if (task->finalStatus.ok()) {
         KV_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
@@ -270,9 +299,10 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    const auto routes = task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE
-                            ? snapshot->router->RouteKeys(ToRouterKeys(task->keys))
-                            : snapshot->router->RouteKeys(ExtractEntryKeys(task->entries));
+    const bool keyBased = task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE;
+    const auto keys = keyBased ? ToRouterKeys(task->keys) : ExtractEntryKeys(task->entries);
+    const auto unavailableNodes = CollectUnavailableNodes(snapshot);
+    const auto routes = snapshot->router->RouteKeys(keys, unavailableNodes);
     for (const auto& [nodeId, indices] : routes) {
         if (snapshot->transports.find(nodeId) == snapshot->transports.end()) {
             return AddContext(
@@ -281,13 +311,42 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         }
     }
 
+    // Entries omitted from the routing result have no healthy owner on either ring:
+    // they fail individually instead of failing the whole batch.
+    std::vector<bool> routed(keys.size(), false);
+    for (const auto& route : routes) {
+        for (auto index : route.second) {
+            if (index < routed.size()) { routed[index] = true; }
+        }
+    }
+    std::size_t routingFailedEntries = 0;
+    for (std::size_t index = 0; index < routed.size(); ++index) {
+        if (routed[index]) { continue; }
+        ++routingFailedEntries;
+        if (index < task->entryStatus.size()) {
+            task->entryStatus[index] =
+                Status::Error(StatusCode::NO_AVAILABLE_NODE,
+                              "no available node for key index " + std::to_string(index));
+        }
+    }
+    task->routingFailedEntries = routingFailedEntries;
+    if (routingFailedEntries != 0) {
+        KV_WARN(
+            "ASU client task has unroutable entries: client_task_id={} op={} failed={}/{} "
+            "unavailable_nodes={}.",
+            task->taskId, AsuOpTypeName(task->opType), routingFailedEntries, routed.size(),
+            unavailableNodes.size());
+    }
+
     task->transportTasks.reserve(routes.size());
     for (const auto& [nodeId, indices] : routes) {
         auto transportTask = std::make_shared<TransportTask>();
         transportTask->nodeId = nodeId;
+        // M800 carries the namespace derived from the Ceph pool name on the wire.
+        transportTask->nsId = task->nsId;
         transportTask->transport = snapshot->transports.at(nodeId);
         transportTask->originalIndices.reserve(indices.size());
-        if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {
+        if (keyBased) {
             transportTask->keys.reserve(indices.size());
             for (auto index : indices) {
                 transportTask->keys.push_back(std::move(task->keys[index]));

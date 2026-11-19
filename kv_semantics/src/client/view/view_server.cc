@@ -133,6 +133,7 @@ bool ViewServer::ShouldRefreshView(const Status& status) const
         case StatusCode::IO_ERROR:
         case StatusCode::TIMEOUT:
         case StatusCode::NOT_FOUND:
+        case StatusCode::NO_AVAILABLE_NODE:
         case StatusCode::BUFFER_NOT_REGISTERED: return true;
         default: return false;
     }
