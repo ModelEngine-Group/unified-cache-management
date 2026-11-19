@@ -44,7 +44,7 @@ TEST(UCPosixConfigTest, KeepsPsyncAsDefaultWithOptionalAioSettings)
     const UC::PosixStore::Config config;
     EXPECT_EQ(config.ioEngine, "psync");
     EXPECT_EQ(config.aioQueueDepth, 1024);
-    EXPECT_EQ(config.loadHandleCacheSize, 8192);
+    EXPECT_EQ(config.loadHandleCacheSize, 0);
 }
 
 namespace {
