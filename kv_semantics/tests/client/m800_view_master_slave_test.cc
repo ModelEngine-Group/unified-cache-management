@@ -682,7 +682,7 @@ TEST(M800ViewSlaveTest, SuccessfulPublishAfterDeadlineReturnsSuccess)
 }
 
 // 测试场景：从节点已缓存 epoch 10 后，主节点依次返回 epoch 9 全量文本、非法文本、空全量响应及空 304 NOT_MODIFIED。
-// 预期结果：旧 epoch 和 304 返回 OK，非法或空全量响应返回 INTERNAL_ERROR，所有情况下现有全局 epoch 均保持 10。
+// 预期结果：lower epoch 返回 INVALID_ARGUMENT，非法或空全量响应返回 INTERNAL_ERROR，304 返回 OK，所有情况下现有全局 epoch 均保持 10。
 TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
 {
     std::mutex responseMutex;
@@ -712,7 +712,7 @@ TEST(M800ViewSlaveTest, EmptyMalformedAndOlderResponsesPreserveNewerView)
         responseBody = body;
     };
     setResponse(ViewHttpReplyKind::FULL_VIEW, MakeViewTextEpoch(9));
-    EXPECT_TRUE(worker->GetAllViews(*universe).ok());
+    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
     setResponse(ViewHttpReplyKind::FULL_VIEW, "not-a-view");
     EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INTERNAL_ERROR);
@@ -839,9 +839,9 @@ TEST(M800ViewSlaveTest, ZeroEpoch304IsRejectedAndFallsBackToFullView)
     serverB->Stop();
 }
 
-// 测试场景：从节点已从首选主节点缓存 epoch 10，首选与备用主节点随后都改为 epoch 9，并统计备用节点请求数。
-// 预期结果：首选的旧快照在 PublishAll 中作为无操作处理并返回 OK，全局 epoch 保持 10，备用主节点始终未被请求。
-TEST(M800ViewSlaveTest, StaleResponseIsNoOpInsidePublishAllWithoutSecondMaster)
+// 测试场景：从节点已从首选主节点获得 epoch 10，首选与备用主节点随后都改为 epoch 9，并统计备用节点请求数。
+// 预期结果：两个 lower epoch 都被 PublishAll 拒绝并返回 INVALID_ARGUMENT；备用主节点被请求一次，原 epoch 10 和旧视图保持不变。
+TEST(M800ViewSlaveTest, StaleResponsesFailWithoutChangingUniverseAndTryBackup)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(10));
@@ -870,17 +870,17 @@ TEST(M800ViewSlaveTest, StaleResponseIsNoOpInsidePublishAllWithoutSecondMaster)
         *bodyA = MakeViewTextEpoch(9);
         *bodyB = MakeViewTextEpoch(9);
     }
-    EXPECT_TRUE(worker->GetAllViews(*universe).ok());
+    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
-    EXPECT_EQ(requestsB.load(), 0);
+    EXPECT_EQ(requestsB.load(), 1);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
 }
 
-// 测试场景：从节点已从首选主节点缓存 epoch 10，备用地址无服务，首选主节点随后返回 epoch 9 的旧快照。
-// 预期结果：旧快照按成功无操作处理，不继续访问不可用备用地址，GetAllViews 返回 OK 且全局 epoch 保持 10。
-TEST(M800ViewSlaveTest, StaleResponseReturnsOkWithoutTryingFailedBackup)
+// 测试场景：从节点已从首选主节点获得 epoch 10，备用地址无服务，首选主节点随后返回 epoch 9 的旧快照。
+// 预期结果：lower epoch 被 PublishAll 拒绝后继续尝试备用地址，最终返回备用连接错误，原 epoch 10 和旧视图保持不变。
+TEST(M800ViewSlaveTest, StaleResponseFailsAndTriesUnavailableBackup)
 {
     auto body = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyMutex = std::make_shared<std::mutex>();
@@ -901,15 +901,15 @@ TEST(M800ViewSlaveTest, StaleResponseReturnsOkWithoutTryingFailedBackup)
         std::lock_guard<std::mutex> guard(*bodyMutex);
         *body = MakeViewTextEpoch(9);
     }
-    EXPECT_TRUE(worker->GetAllViews(*universe).ok());
+    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::CONNECTION_ERROR);
     EXPECT_EQ(universe->GetGlobalEpoch(), 10);
     worker->Stop();
     server->Stop();
 }
 
 // 测试场景：首选主节点先提供 epoch 10、备用主节点已准备 epoch 11；缓存建立后首选改发 epoch 9，并统计备用请求数。
-// 预期结果：首选旧响应直接返回 OK，不回退获取更新的备用快照，全局 epoch 保持 10 且备用主节点请求数为 0。
-TEST(M800ViewSlaveTest, StaleFirstMasterDoesNotFallThroughToNewerBackup)
+// 预期结果：首选 lower epoch 被拒绝后回退到备用主节点，备用 epoch 11 成功发布且请求数为 1。
+TEST(M800ViewSlaveTest, StaleFirstMasterFallsThroughToNewerBackup)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(10));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(11));
@@ -937,16 +937,16 @@ TEST(M800ViewSlaveTest, StaleFirstMasterDoesNotFallThroughToNewerBackup)
         *bodyA = MakeViewTextEpoch(9);
     }
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 10);
-    EXPECT_EQ(requestsB.load(), 0);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 11);
+    EXPECT_EQ(requestsB.load(), 1);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
 }
 
 // 测试场景：输出 ViewUniverse 已含 viewId=999、全局 epoch 20 的视图，首选主节点仅提供 epoch 15，备用主节点提供 epoch 25。
-// 预期结果：PublishAll 自身拒绝更旧快照，拉取返回 OK、全局 epoch 保持 20，且不请求备用主节点。
-TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
+// 预期结果：首选 lower epoch 被 PublishAll 拒绝后请求备用主节点，备用 epoch 25 成功发布且请求数为 1。
+TEST(M800ViewSlaveTest, OlderMasterSnapshotFailsAndFallsThroughToNewerBackup)
 {
     auto bodyA = std::make_shared<std::string>(MakeViewTextEpoch(15));
     auto bodyB = std::make_shared<std::string>(MakeViewTextEpoch(25));
@@ -970,8 +970,8 @@ TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
     config.httpTimeoutMs = 300;
     auto worker = CreateM800ViewSlaveServer(config);
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 20);
-    EXPECT_EQ(requestsB.load(), 0);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 25);
+    EXPECT_EQ(requestsB.load(), 1);
     worker->Stop();
     serverA->Stop();
     serverB->Stop();
@@ -1052,9 +1052,9 @@ TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRejectWholeRefreshAndReturnFir
     master->Stop();
 }
 
-// 测试场景：主节点 Agent 仅持有 epoch 100，但传给 GetAllViews 的输出 ViewUniverse 已含 epoch 200、viewId=999、地址 10.0.0.9 的更新视图，随后从节点经 HTTP 拉取。
-// 预期结果：HTTP 快照取实际发布后的状态而非 Agent 旧快照，从节点获得 viewId 999 和地址 10.0.0.9，且全局 epoch 与视图 epoch 均为 200。
-TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
+// 测试场景：主节点 Agent 仅持有 epoch 100，但传给 GetAllViews 的输出 ViewUniverse 已含 epoch 200、viewId=999 的更新视图。
+// 预期结果：Agent 的 lower epoch 被 PublishAll 拒绝，调用方输出仍保持 epoch 200；HTTP 不提供伪更新，Worker 获得 Master 首图 epoch 100 和原 pool-a 节点。
+TEST(M800ViewMasterSlaveTest, LowerAgentEpochRejectsPublishAndPreservesHttpSnapshot)
 {
     auto state = std::make_shared<FakeAgentState>();
     SetNamespaces(state, 100, {{"pool-a", {MakeNode(1, "10.0.0.1")}}});
@@ -1067,7 +1067,7 @@ TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
     newerView.viewId = 999;
     newerView.asuMap.emplace(1, MakeNodeInfo("10.0.0.9"));
     auto newerUniverse = CreateViewUniverse({{999, newerView}}, 200);
-    ASSERT_TRUE(master->GetAllViews(*newerUniverse).ok());
+    EXPECT_EQ(master->GetAllViews(*newerUniverse).code, StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(newerUniverse->GetGlobalEpoch(), 200);
 
     M800ViewServerConfig workerConfig;
@@ -1077,13 +1077,15 @@ TEST(M800ViewMasterSlaveTest, HttpSnapshotUsesActualPostPublishState)
     auto worker = CreateM800ViewSlaveServer(workerConfig);
     auto fetched = CreateViewUniverse();
     ASSERT_TRUE(worker->GetAllViews(*fetched).ok());
-    EXPECT_EQ(fetched->GetGlobalEpoch(), 200);
+    EXPECT_EQ(fetched->GetGlobalEpoch(), 100);
     GlobalView actualView;
-    ASSERT_TRUE(fetched->GetView(999, actualView).ok());
-    EXPECT_EQ(actualView.viewEpoch, 200);
-    EXPECT_EQ(actualView.viewId, 999);
+    const auto nsA = M800PoolNameToKvNsId("pool-a");
+    ASSERT_TRUE(fetched->GetView(nsA, actualView).ok());
+    EXPECT_EQ(actualView.viewEpoch, 100);
+    EXPECT_EQ(actualView.viewId, nsA);
     ASSERT_EQ(actualView.asuMap.size(), 1);
-    EXPECT_EQ(actualView.asuMap.at(1).endpoints.front().ip, "10.0.0.9");
+    EXPECT_EQ(actualView.asuMap.at(1).endpoints.front().ip, "10.0.0.1");
+    EXPECT_EQ(fetched->GetView(999, actualView).code, StatusCode::NOT_FOUND);
     worker->Stop();
     master->Stop();
 }

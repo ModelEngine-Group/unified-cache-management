@@ -147,12 +147,13 @@ Protocol ParseEndpointProtocolOrDefault(const std::string& value, Protocol defau
     return defaultValue;
 }
 
-std::string ReadKeyring(const std::string& keyringPath)
+Status ReadKeyring(const std::string& keyringPath, std::string& clientKey)
 {
+    clientKey.clear();
     std::ifstream keyringFile{keyringPath};
     if (!keyringFile.is_open()) {
-        KV_WARN("Failed to open M800 keyring; clientKey will be empty, path={}", keyringPath);
-        return {};
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "failed to open M800 keyring: " + keyringPath);
     }
 
     std::string line;
@@ -164,11 +165,14 @@ std::string ReadKeyring(const std::string& keyringPath)
         const auto separator = line.find('=');
         if (separator == std::string::npos) { continue; }
         if (TrimConfigValue(line.substr(0, separator)) != "key") { continue; }
-        return TrimConfigValue(line.substr(separator + 1));
+        const auto value = TrimConfigValue(line.substr(separator + 1));
+        if (value.empty()) { continue; }
+        clientKey = value;
+        return Status::OK();
     }
 
-    KV_WARN("M800 keyring contains no key; clientKey will be empty, path={}", keyringPath);
-    return {};
+    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                         "M800 keyring contains no key: " + keyringPath);
 }
 
 bool HasEmbeddedNul(const std::string& value)
@@ -266,10 +270,23 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
         return Status::OK();
     }
 
-    if (m800Config.monHost.empty()) {
-        return InvalidConfig("view.ceph.mon_host is required for master role");
+    const auto requireMasterField = [&](const char* key, const std::string& value) {
+        std::string ignored;
+        if (!GetAttr(attrs, key, ignored) || value.empty()) {
+            return InvalidConfig(std::string(key) + " is required for master role");
+        }
+        return Status::OK();
+    };
+    for (const auto& [key, value] : std::vector<std::pair<const char*, const std::string*>>{
+             {"view.ceph.mon_host", &m800Config.monHost},
+             {"view.ceph.client_name", &m800Config.clientName},
+             {"view.ceph.keyring", &m800Config.keyringPath},
+             {"view.ceph.agent_lib", &m800Config.agentLibPath}}) {
+        const auto status = requireMasterField(key, *value);
+        if (!status.ok()) { return status; }
     }
-    m800Config.clientKey = ReadKeyring(m800Config.keyringPath);
+    const auto keyringStatus = ReadKeyring(m800Config.keyringPath, m800Config.clientKey);
+    if (!keyringStatus.ok()) { return keyringStatus; }
     if (HasEmbeddedNul(m800Config.clientKey)) {
         return InvalidConfig("M800 C ABI string contains embedded NUL");
     }

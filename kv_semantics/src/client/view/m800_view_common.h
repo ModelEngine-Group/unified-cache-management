@@ -49,11 +49,12 @@ struct M800ViewServerConfig {
     Protocol endpointProtocol{Protocol::UB};
     std::uint16_t endpointPort{6000};
 
+    // Master Ceph/Agent fields are mandatory and have no implicit defaults.
     std::string monHost;
-    std::string clientName{"admin"};
-    std::string keyringPath{"/etc/ceph/ceph.client.admin.keyring"};
+    std::string clientName;
+    std::string keyringPath;
     std::string clientKey;
-    std::string agentLibPath{"/usr/lib/libkv_agent.so"};
+    std::string agentLibPath;
 
     // Timeout and interval values are milliseconds. The Agent C ABI accepts
     // seconds; convert explicitly before setting its view timeout/interval

@@ -37,7 +37,8 @@ private:
 };
 
 // 测试场景：通过 Shard 1 的 unavailableNodes 重载路由两个 key，且不可用集合包含固定目标节点。
-// 预期结果：默认实现保持旧行为并委托 RouteKeys(keys)，节点 7 仍返回索引 0 和 1，不提前实现 Shard 7 fallback。
+// 预期结果：默认实现保持旧行为并委托 RouteKeys(keys)，节点 7 仍返回索引 0 和 1，不提前实现 Shard 7
+// fallback。
 TEST(RouterContractTest, UnavailableNodesOverloadPreservesLegacyRouting)
 {
     FixedNodeRouter router;

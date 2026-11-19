@@ -50,10 +50,11 @@ class ViewUniverse {
 public:
     virtual ~ViewUniverse() = default;
 
-    // Atomically publishes a non-empty complete universe. Once the current
-    // globalEpoch is non-zero, a zero or non-increasing next globalEpoch is a
-    // whole-universe no-op. A newer snapshot replaces every namespace; there
-    // are no per-namespace epoch decisions.
+    // Atomically publishes a non-empty complete universe only when nextEpoch is
+    // newer than the current globalEpoch. Empty snapshots and lower epochs fail
+    // without changing state; an equal epoch returns OK as a whole-universe
+    // no-op. A newer snapshot replaces every namespace; there are no
+    // per-namespace epoch decisions.
     virtual Status PublishAll(const ViewUniverse& nextUniverse) = 0;
     // Unconditionally replaces the complete contents and globalEpoch, including
     // with an empty or older snapshot.

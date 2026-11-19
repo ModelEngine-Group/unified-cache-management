@@ -165,30 +165,24 @@ public:
         std::uint64_t nextEpoch{0};
         nextUniverse.GetSnapshot(nextViews, nextEpoch);
         if (nextViews.empty()) {
-            KV_DEBUG("ViewUniverse publish no-op: empty snapshot, globalEpoch={}", nextEpoch);
-            return Status::OK();
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "ViewUniverse publish rejected: empty snapshot");
         }
         // Publish decisions and stores are serialized. Readers do not acquire
         // writeMutex_ and always acquire one complete immutable State.
         std::lock_guard<std::mutex> lock{writeMutex_};
         const auto current = LoadState();
-        if (current->globalEpoch == 0 && !current->views.empty() && nextEpoch == 0) {
+        if (nextEpoch < current->globalEpoch) {
             LogViewsNotPublished(nextViews, current->globalEpoch);
-            KV_DEBUG("ViewUniverse publish no-op: equal zero globalEpoch with existing views");
-            return Status::OK();
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "ViewUniverse publish rejected: stale globalEpoch=" +
+                                     std::to_string(nextEpoch) + ", currentGlobalEpoch=" +
+                                     std::to_string(current->globalEpoch));
         }
-        if (current->globalEpoch != 0) {
-            if (nextEpoch == current->globalEpoch) {
-                LogViewsNotPublished(nextViews, current->globalEpoch);
-                KV_DEBUG("ViewUniverse publish no-op: equal globalEpoch={}", nextEpoch);
-                return Status::OK();
-            }
-            if (nextEpoch == 0 || nextEpoch < current->globalEpoch) {
-                LogViewsNotPublished(nextViews, current->globalEpoch);
-                KV_DEBUG("ViewUniverse publish no-op: stale globalEpoch={}, currentGlobalEpoch={}",
-                         nextEpoch, current->globalEpoch);
-                return Status::OK();
-            }
+        if (nextEpoch == current->globalEpoch) {
+            LogViewsNotPublished(nextViews, current->globalEpoch);
+            KV_DEBUG("ViewUniverse publish no-op: equal globalEpoch={}", nextEpoch);
+            return Status::OK();
         }
 
         const auto next = MakeState(std::move(nextViews), nextEpoch);

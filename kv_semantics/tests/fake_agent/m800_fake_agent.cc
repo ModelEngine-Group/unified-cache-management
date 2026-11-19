@@ -21,12 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "KVClientAgentABI.h"
-
+#include <chrono>
 #include <cstdlib>
 #include <new>
-#include <chrono>
 #include <thread>
+#include "KVClientAgentABI.h"
 
 struct kv_client_agent_handle {
     int placeholder{0};
@@ -61,15 +60,11 @@ extern "C" {
 uint32_t kv_client_agent_get_abi_version(void) { return KV_CLIENT_AGENT_ABI_VERSION; }
 
 kv_client_agent_handle* kv_client_agent_create(void)
-{
-    return new (std::nothrow) kv_client_agent_handle{};
-}
+{ return new (std::nothrow) kv_client_agent_handle{}; }
 
 int32_t kv_client_agent_init(kv_client_agent_handle*, const kv_client_agent_config*, uint32_t,
                              size_t)
-{
-    return KV_CLIENT_AGENT_OK;
-}
+{ return KV_CLIENT_AGENT_OK; }
 
 int32_t kv_client_agent_start(kv_client_agent_handle*) { return KV_CLIENT_AGENT_OK; }
 int32_t kv_client_agent_stop(kv_client_agent_handle*)

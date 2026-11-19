@@ -22,10 +22,10 @@ The Shard 1 Router overload accepting unavailable nodes is retained. Its default
 | `view.listen_addr` | `0.0.0.0:9100` | Master HTTP listen address |
 | `view.master_addrs` | empty | Comma-separated Worker Master list; takes precedence even when empty |
 | `view.master_addr` | empty | Legacy single address, read only when `master_addrs` is absent |
-| `view.ceph.mon_host` | empty | MON address required by Master |
-| `view.ceph.client_name` | `admin` | Ceph client name |
-| `view.ceph.keyring` | `/etc/ceph/ceph.client.admin.keyring` | Ceph keyring file |
-| `view.ceph.agent_lib` | `/usr/lib/libkv_agent.so` | Agent shared library |
+| `view.ceph.mon_host` | none | Required explicitly for Master |
+| `view.ceph.client_name` | none | Required explicitly for Master |
+| `view.ceph.keyring` | none | Required explicitly for Master; unreadable files or missing keys return `INVALID_ARGUMENT` |
+| `view.ceph.agent_lib` | none | Required explicitly for Master |
 | `view.ceph.agent_fetch_timeout_ms` | `10000` | Agent fetch timeout; preferred over the compatibility key |
 | `view.agent_fetch_timeout_ms` | `10000` | Compatibility form of the Agent timeout |
 | `view.http_timeout_ms` | `2000` | Whole Worker fetch and per-connection Master deadline |
@@ -47,7 +47,7 @@ See `examples/m800_view_master.conf` and `examples/m800_view_worker.conf` for de
 - `405`: non-GET method, with `Allow: GET`;
 - `500`: handler or response-generation failure.
 
-An empty output object always sends `since_epoch=0`, even if the Worker previously fetched a view for another object. A non-empty object uses its own epoch. The Worker keeps no `cachedEpoch_` and performs no local epoch comparison. Every complete, decodable, non-empty Master response is passed directly to `ViewUniverse::PublishAll`, which alone decides whether to publish or return an empty/stale/equal no-op.
+An empty output object always sends `since_epoch=0`, even if the Worker previously fetched a view for another object. A non-empty object uses its own epoch. The Worker keeps no `cachedEpoch_` and performs no local epoch comparison. Every complete, decodable, non-empty Master response is passed directly to `ViewUniverse::PublishAll`, which alone decides whether to publish, reject an empty/lower-epoch snapshot, or return OK for an equal-epoch no-op.
 
 The text protocol uses a unified global epoch, `viewEpoch == globalEpoch`, `viewId = nsId`, and `KvNsId = XXH32(poolName, len, 5381)`. Optional `localKvNsId.N` immediately follows `asuInfo.N`; zero is omitted. Every text snapshot must end with LF; any CR or unknown field is rejected. Decoding is deterministic and transactional, and malformed numeric fields, truncation and oversized input are rejected without modifying the output. `PublishAll` emits per-namespace, unlimited INFO logs: `ns={} view published, epoch={}->{}, asu_count={}` or `ns={} view not published, epoch unchanged={}`. The summary is `ViewUniverse published, ns_changed={added+removed}, ns_total={snapshot namespace count}, changed_ns={changed retained namespaces}`.
 
@@ -65,7 +65,7 @@ A third-party ABI implementation must respond to Stop. Permanent ABI calls that 
 - Each connection has an absolute deadline, **2 seconds by default**; Stop shuts down active sockets.
 - Slow clients therefore consume the single service slot. Large deployments must bound Worker count/poll rate per Master and distribute Workers across Masters. Higher concurrency requires a bounded thread pool and queue, not unbounded thread creation.
 
-Multi-Master selection is sequential primary/backup, not a maximum-epoch election. Empty/stale/equal publication follows the documented no-op rules. All addresses and socket operations share one Worker fetch deadline.
+Multi-Master selection is sequential primary/backup, not a maximum-epoch election. Empty and lower-epoch publication fails without changing state; only an equal epoch is an OK no-op. All addresses and socket operations share one Worker fetch deadline.
 
 ## Verification
 

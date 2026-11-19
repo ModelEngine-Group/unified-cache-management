@@ -37,8 +37,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
-// 测试场景：分别以零或负 interval、空 callback 调用 Start，并在合法启动后重复 Start、Stop 后重启及重复 Stop。
-// 预期结果：非法参数返回 INVALID_ARGUMENT，运行中重复启动返回 RESOURCE_BUSY，停止后可成功重启且重复停止安全。
+// 测试场景：分别以零或负 interval、空 callback 调用 Start，并在合法启动后重复 Start、Stop
+// 后重启及重复 Stop。 预期结果：非法参数返回 INVALID_ARGUMENT，运行中重复启动返回
+// RESOURCE_BUSY，停止后可成功重启且重复停止安全。
 TEST(ThreadedRefreshScheduler, ValidatesStartAndSupportsRestart)
 {
     ThreadedRefreshScheduler scheduler;
@@ -260,7 +261,8 @@ TEST(ThreadedRefreshScheduler, StopWaitsForActiveRefresh)
 }
 
 // 测试场景：活动刷新期间两个线程并发 Stop，首个 Stop 清理后另一线程立即重新 Start，最后释放原回调。
-// 预期结果：两个 Stop 均能完成，等待中的 Stop 不会被新一轮 running 状态卡住，调度器可成功重启并再次停止。
+// 预期结果：两个 Stop 均能完成，等待中的 Stop 不会被新一轮 running
+// 状态卡住，调度器可成功重启并再次停止。
 TEST(ThreadedRefreshScheduler, ConcurrentStopDoesNotWaitForRestartedScheduler)
 {
     ThreadedRefreshScheduler scheduler;

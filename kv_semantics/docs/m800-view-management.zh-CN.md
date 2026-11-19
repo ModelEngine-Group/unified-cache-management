@@ -36,10 +36,10 @@ Worker/Slave：顺序尝试多个 Master，校验文本协议并发布到 ViewUn
 | `view.listen_addr` | `0.0.0.0:9100` | Master HTTP 监听地址 |
 | `view.master_addrs` | 空 | Worker 的 Master 地址列表，逗号分隔；键存在时优先，即使值为空 |
 | `view.master_addr` | 空 | 单地址兼容键，仅在未配置 `master_addrs` 时读取 |
-| `view.ceph.mon_host` | 空 | Master 连接 MON 的地址，Master 必填 |
-| `view.ceph.client_name` | `admin` | Ceph 客户端名 |
-| `view.ceph.keyring` | `/etc/ceph/ceph.client.admin.keyring` | 仅 Master 读取；打不开或无 key 时 WARN 并保留空 secret，由 Agent init 拒绝 |
-| `view.ceph.agent_lib` | `/usr/lib/libkv_agent.so` | Agent 动态库路径 |
+| `view.ceph.mon_host` | 无 | Master 必填，必须显式配置 MON 地址 |
+| `view.ceph.client_name` | 无 | Master 必填，必须显式配置 Ceph 客户端名 |
+| `view.ceph.keyring` | 无 | Master 必填，必须显式配置；打不开或无 key 返回 `INVALID_ARGUMENT` |
+| `view.ceph.agent_lib` | 无 | Master 必填，必须显式配置 Agent 动态库路径 |
 | `view.ceph.agent_fetch_timeout_ms` | `10000` | Agent 拉取超时，毫秒；优先于非 Ceph 命名空间键 |
 | `view.agent_fetch_timeout_ms` | `10000` | 上述超时的兼容键 |
 | `view.http_timeout_ms` | `2000` | Worker 整轮拉取和 Master 单连接请求的超时 |
@@ -66,7 +66,7 @@ Connection: close
 - `405`：方法不是 GET，并返回 `Allow: GET`。
 - `500`：handler 或响应体生成失败。
 
-空输出对象始终使用 `since_epoch=0` 全量拉取，即使该 Worker 之前已为另一个对象获取过视图。非空对象使用自己的 epoch 发送条件请求。Worker 不维护 `cachedEpoch_`，也不与本地缓存做 epoch 比较；Master 的完整、可解码、非空响应直接交给 `ViewUniverse::PublishAll`，由它统一决定发布、旧快照 no-op 或相等 no-op。
+空输出对象始终使用 `since_epoch=0` 全量拉取，即使该 Worker 之前已为另一个对象获取过视图。非空对象使用自己的 epoch 发送条件请求。Worker 不维护 `cachedEpoch_`，也不与本地缓存做 epoch 比较；Master 的完整、可解码、非空响应直接交给 `ViewUniverse::PublishAll`，由它统一决定发布或返回 empty/lower epoch 失败、equal epoch 的 OK/no-op。
 
 ### 文本快照
 
@@ -107,11 +107,11 @@ Connection: close
 
 ## 7. 失败与生命周期语义
 
-- Master 首图超时、Agent 错误、任一 namespace 失败的 all-or-nothing 处理、空/旧/相等快照 no-op 均有明确处理。
+- Master 首图超时、Agent 错误、任一 namespace 失败的 all-or-nothing 处理、空快照/lower epoch 失败和 equal epoch no-op 均有明确处理。
 - Worker 先启动时返回连接错误；无效 Master 地址失败后尝试下一个地址。
 - 所有 Master/地址/connect/send/read 共用一轮 deadline；Stop 可中断活动 socket。
 - 空输出强制全量拉取，避免“缓存 epoch 非零但新输出为空却接受 304”。
-- 旧 Master 结果不会覆盖较新的调用方/Worker epoch；全部有效但过旧时按既定约定 `OK + no-op`。
+- 旧 Master 的 lower epoch 会被 `PublishAll` 拒绝并保留旧状态，Worker 可继续尝试备用 Master；equal epoch 才是 `OK/no-op`。
 
 ## 8. 验证
 

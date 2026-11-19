@@ -67,15 +67,25 @@ TEST(M800ViewCommonTest, PoolNameHashMatchesStandardXxh32Vectors)
     }
 }
 
-// 测试场景：仅设置 view.ceph.mon_host，未指定角色及其余配置时构建服务端配置。
-// 预期结果：构建成功，角色为 MASTER，监听 0.0.0.0:9100，Master 地址为空，monHost 为 127.0.0.1:6789，其余 Ceph/agent 默认值、10000/2000/30000 ms 时间参数及 UB/6000 端点均正确。
-TEST(M800ViewCommonTest, BuildUsesMasterDefaults)
+// 测试场景：Master 显式提供 mon_host、client_name、keyring 和 agent_lib，其余角色、监听、超时与端点配置保持默认。
+// 预期结果：构建成功，角色为 MASTER，monHost/clientName/keyringPath/agentLibPath 均取显式值，其余默认参数正确。
+TEST(M800ViewCommonTest, BuildUsesExplicitMasterConfiguration)
 {
+    const std::string keyringPath = "m800_view_common_master_default_keyring.conf";
+    {
+        std::ofstream keyring{keyringPath};
+        ASSERT_TRUE(keyring.is_open());
+        keyring << "key = explicit-test-key\n";
+    }
     KvClientConfig config;
     config.attrs["view.ceph.mon_host"] = "127.0.0.1:6789";
+    config.attrs["view.ceph.client_name"] = "admin";
+    config.attrs["view.ceph.keyring"] = keyringPath;
+    config.attrs["view.ceph.agent_lib"] = "/usr/lib/libkv_agent.so";
     M800ViewServerConfig built;
 
     const auto status = M800ViewServerConfig::Build(config, built);
+    std::remove(keyringPath.c_str());
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(built.role, M800ViewRole::MASTER);
@@ -84,8 +94,9 @@ TEST(M800ViewCommonTest, BuildUsesMasterDefaults)
     EXPECT_TRUE(built.masterAddrs.empty());
     EXPECT_EQ(built.monHost, "127.0.0.1:6789");
     EXPECT_EQ(built.clientName, "admin");
-    EXPECT_EQ(built.keyringPath, "/etc/ceph/ceph.client.admin.keyring");
+    EXPECT_EQ(built.keyringPath, keyringPath);
     EXPECT_EQ(built.agentLibPath, "/usr/lib/libkv_agent.so");
+    EXPECT_EQ(built.clientKey, "explicit-test-key");
     EXPECT_EQ(built.agentFetchTimeoutMs, std::uint64_t{10000});
     EXPECT_EQ(built.httpTimeoutMs, std::uint64_t{2000});
     EXPECT_EQ(built.refreshIntervalMs, std::uint64_t{30000});
@@ -116,7 +127,7 @@ TEST(M800ViewCommonTest, BuildWorkerParsesAddressesWithoutReadingKeyring)
 }
 
 // 测试场景：配置 view.role=slave 构建服务端配置，输出对象预置旧角色、地址、密钥和 TCP 端点。
-// 预期结果：返回 INVALID_ARGUMENT，并清除旧输出，恢复 MASTER、0.0.0.0:9100、空 Master 地址/密钥、admin 及 UB/6000 等默认值。
+// 预期结果：返回 INVALID_ARGUMENT，并清除旧输出，恢复 MASTER、0.0.0.0:9100、空 Master 地址/密钥、空 clientName/keyringPath/agentLibPath 及 UB/6000 等默认值。
 TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
 {
     KvClientConfig config;
@@ -138,13 +149,13 @@ TEST(M800ViewCommonTest, BuildRejectsInvalidRoleAndClearsPreviousOutput)
     EXPECT_TRUE(built.masterAddr.empty());
     EXPECT_TRUE(built.masterAddrs.empty());
     EXPECT_TRUE(built.clientKey.empty());
-    EXPECT_EQ(built.clientName, "admin");
+    EXPECT_TRUE(built.clientName.empty());
     EXPECT_EQ(built.endpointProtocol, Protocol::UB);
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
-// 测试场景：Master 只有 legacy viewServiceAddrs 而缺少必需 Ceph 配置，以及 Worker 的 master_addrs 仅含逗号和空白时分别构建配置。
-// 预期结果：两种缺少角色必需字段的配置均返回 INVALID_ARGUMENT，legacy viewServiceAddrs 不能替代 Master 必需配置。
+// 测试场景：Master 缺少 legacy 不可替代的 mon_host/client_name/keyring/agent_lib 中任一项，或 client_name 显式为空；Worker 的 master_addrs 仅含逗号和空白。
+// 预期结果：所有缺少或留空角色必需字段的配置均返回 INVALID_ARGUMENT，不使用隐式默认值补齐。
 TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
 {
     KvClientConfig masterConfig;
@@ -152,6 +163,29 @@ TEST(M800ViewCommonTest, BuildEnforcesRoleSpecificRequiredFields)
     M800ViewServerConfig built;
     EXPECT_EQ(M800ViewServerConfig::Build(masterConfig, built).code,
               StatusCode::INVALID_ARGUMENT);
+
+    const std::string keyringPath = "m800_view_common_required_fields_keyring.conf";
+    {
+        std::ofstream keyring{keyringPath};
+        ASSERT_TRUE(keyring.is_open());
+        keyring << "key = required-fields-key\n";
+    }
+    KvClientConfig validMaster;
+    validMaster.attrs["view.ceph.mon_host"] = "mon1:6789";
+    validMaster.attrs["view.ceph.client_name"] = "admin";
+    validMaster.attrs["view.ceph.keyring"] = keyringPath;
+    validMaster.attrs["view.ceph.agent_lib"] = "/usr/lib/libkv_agent.so";
+    for (const auto& key : {std::string("view.ceph.mon_host"), std::string("view.ceph.client_name"),
+                            std::string("view.ceph.keyring"), std::string("view.ceph.agent_lib")}) {
+        auto missing = validMaster;
+        missing.attrs.erase(key);
+        EXPECT_EQ(M800ViewServerConfig::Build(missing, built).code, StatusCode::INVALID_ARGUMENT)
+            << key;
+    }
+    auto emptyName = validMaster;
+    emptyName.attrs["view.ceph.client_name"] = "";
+    EXPECT_EQ(M800ViewServerConfig::Build(emptyName, built).code, StatusCode::INVALID_ARGUMENT);
+    std::remove(keyringPath.c_str());
 
     auto workerConfig = MakeWorkerConfig();
     workerConfig.attrs["view.master_addrs"] = " , ,";
@@ -176,7 +210,9 @@ TEST(M800ViewCommonTest, BuildReadsFirstKeyValueOnlyForMaster)
 
     KvClientConfig masterConfig;
     masterConfig.attrs["view.ceph.mon_host"] = "mon1:6789";
+    masterConfig.attrs["view.ceph.client_name"] = "admin";
     masterConfig.attrs["view.ceph.keyring"] = keyringPath;
+    masterConfig.attrs["view.ceph.agent_lib"] = "/usr/lib/libkv_agent.so";
     M800ViewServerConfig master;
     const auto masterStatus = M800ViewServerConfig::Build(masterConfig, master);
 
@@ -192,19 +228,45 @@ TEST(M800ViewCommonTest, BuildReadsFirstKeyValueOnlyForMaster)
     EXPECT_TRUE(worker.clientKey.empty());
 }
 
-// 测试场景：Master 配置不存在的 keyring 文件，且输出对象预置 clientKey 为 stale-secret。
-// 预期结果：构建仍返回成功，旧 clientKey 被清空。
-TEST(M800ViewCommonTest, BuildUnreadableKeyringReturnsOkWithEmptyClientKey)
+// 测试场景：Master 显式配置不存在的 keyring 文件，且输出对象预置 clientKey 为 stale-secret。
+// 预期结果：Build 返回 INVALID_ARGUMENT，旧 clientKey 被清空，不以空 secret 继续启动。
+TEST(M800ViewCommonTest, BuildUnreadableKeyringReturnsInvalidArgument)
 {
     KvClientConfig config;
     config.attrs["view.ceph.mon_host"] = "mon1:6789";
+    config.attrs["view.ceph.client_name"] = "admin";
     config.attrs["view.ceph.keyring"] = "m800-view-common-file-that-does-not-exist";
+    config.attrs["view.ceph.agent_lib"] = "/usr/lib/libkv_agent.so";
     M800ViewServerConfig built;
     built.clientKey = "stale-secret";
 
     const auto status = M800ViewServerConfig::Build(config, built);
 
-    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_TRUE(built.clientKey.empty());
+}
+
+// 测试场景：Master 的 keyring 文件可以打开，但只包含 section 和非 key 字段，没有任何非空 key。
+// 预期结果：Build 返回 INVALID_ARGUMENT，明确 keyring 解析失败，不生成空 clientKey 配置。
+TEST(M800ViewCommonTest, BuildRejectsKeyringWithoutKey)
+{
+    const std::string keyringPath = "m800_view_common_no_key.conf";
+    {
+        std::ofstream keyring{keyringPath};
+        ASSERT_TRUE(keyring.is_open());
+        keyring << "[client.admin]\nname = admin\nkey =   \n";
+    }
+    KvClientConfig config;
+    config.attrs["view.ceph.mon_host"] = "mon1:6789";
+    config.attrs["view.ceph.client_name"] = "admin";
+    config.attrs["view.ceph.keyring"] = keyringPath;
+    config.attrs["view.ceph.agent_lib"] = "/usr/lib/libkv_agent.so";
+    M800ViewServerConfig built;
+
+    const auto status = M800ViewServerConfig::Build(config, built);
+    std::remove(keyringPath.c_str());
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
     EXPECT_TRUE(built.clientKey.empty());
 }
 
