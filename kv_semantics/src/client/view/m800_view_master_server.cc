@@ -348,9 +348,10 @@ private:
         status = universe.PublishAll(*next);
         if (!status.ok()) { return status; }
 
-        // PublishAll returns OK for both a real publish and a no-op. Read back
-        // the caller's actual state instead of exposing the candidate as the
-        // authoritative HTTP snapshot.
+        // PublishAll returns OK only for a real publish or an equal-epoch
+        // no-op. Empty or lower-epoch snapshots fail above and preserve the
+        // last-known-good snapshot. Read back the caller's actual state instead
+        // of exposing the candidate as the authoritative HTTP snapshot.
         std::unordered_map<KvNsId, GlobalView> publishedViews;
         std::uint64_t publishedEpoch{0};
         universe.GetSnapshot(publishedViews, publishedEpoch);

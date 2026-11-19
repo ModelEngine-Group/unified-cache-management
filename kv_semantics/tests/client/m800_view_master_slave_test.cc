@@ -35,7 +35,6 @@
 #include "view/m800_view_master_server.h"
 #include "view/m800_view_slave_server.h"
 
-
 namespace kv::test {
 namespace {
 
@@ -231,7 +230,9 @@ std::unique_ptr<ViewHttpServer> StartTextServer(std::uint16_t port,
 
 std::shared_ptr<M800ViewMasterServer> MakeMaster(const M800ViewServerConfig& config,
                                                  const std::shared_ptr<FakeAgentState>& state)
-{ return CreateM800ViewMasterServer(config, std::make_unique<FakeAgentFactory>(state)); }
+{
+    return CreateM800ViewMasterServer(config, std::make_unique<FakeAgentFactory>(state));
+}
 
 void SetNamespaces(const std::shared_ptr<FakeAgentState>& state, std::uint64_t epoch,
                    const std::map<std::string, std::vector<M800AgentNodeView>>& namespaces)
@@ -256,12 +257,18 @@ public:
     }
     Status ReplaceAll(const ViewUniverse& next) override { return inner_->ReplaceAll(next); }
     Status GetView(KvNsId nsId, GlobalView& view) const override
-    { return inner_->GetView(nsId, view); }
+    {
+        return inner_->GetView(nsId, view);
+    }
     void GetSnapshot(std::unordered_map<KvNsId, GlobalView>& views,
                      std::uint64_t& globalEpoch) const override
-    { inner_->GetSnapshot(views, globalEpoch); }
+    {
+        inner_->GetSnapshot(views, globalEpoch);
+    }
     std::unordered_map<KvNsId, GlobalView> GetAllViews() const override
-    { return inner_->GetAllViews(); }
+    {
+        return inner_->GetAllViews();
+    }
     std::vector<KvNsId> GetAllNsIds() const override { return inner_->GetAllNsIds(); }
     std::uint64_t GetGlobalEpoch() const override { return inner_->GetGlobalEpoch(); }
     bool Empty() const override { return inner_->Empty(); }

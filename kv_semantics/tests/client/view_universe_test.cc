@@ -73,7 +73,9 @@ void ExpectView(const GlobalView& view, std::uint64_t viewEpoch, std::uint64_t v
 
 std::shared_ptr<ViewUniverse> MakeUniverse(std::unordered_map<KvNsId, GlobalView> views,
                                            std::uint64_t globalEpoch)
-{ return CreateViewUniverse(std::move(views), globalEpoch); }
+{
+    return CreateViewUniverse(std::move(views), globalEpoch);
+}
 
 // 测试场景：由现有视图集合和默认参数分别创建 ViewUniverse，并修改源集合及 GetAllViews 返回的快照。
 // 预期结果：实例保存独立且完整的视图与全局 epoch，外部修改不影响内部状态，默认实例为空且 epoch 为

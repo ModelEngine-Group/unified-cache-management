@@ -34,7 +34,6 @@
 #include <vector>
 #include "view/m800_view_slave_server.h"
 
-
 namespace kv::test {
 namespace {
 
