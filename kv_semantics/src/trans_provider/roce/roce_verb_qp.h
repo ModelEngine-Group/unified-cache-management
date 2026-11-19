@@ -23,14 +23,31 @@
  * */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <infiniband/verbs.h>
 #include <string>
 #include "kv_types.h"
 #include "roce_wire.h"
 
+// The verbs types are only used through pointers here, so this header stays
+// free of <infiniband/verbs.h>: the provider, its tests and the store build do
+// not need rdma-core, and only roce_verb_qp.cc may include the real header.
+struct ibv_context;
+struct ibv_pd;
+struct ibv_cq;
+struct ibv_qp;
+struct ibv_mr;
+
 namespace kv {
 namespace roce {
+
+// Access flags accepted by RegisterMemory.  The values match the verbs ones,
+// so the implementation can pass them straight to ibv_reg_mr.
+enum MemoryAccess : int {
+    kMemoryAccessLocalWrite = 1,
+    kMemoryAccessRemoteWrite = 2,
+    kMemoryAccessRemoteRead = 4,
+};
 
 // Settings that come from the ASU configuration (asu_roce_*) and describe how
 // the local HCA and its queue pairs are brought up.
@@ -86,8 +103,13 @@ public:
     std::uint8_t MaxQpRdAtom() const noexcept;
 
     std::uint32_t GidIndex() const noexcept;
-
     const std::uint8_t* Gid() const noexcept;
+    // Registers a memory region for the queue pairs of this device.  The
+    // returned region is opaque to callers and rkey is what a peer needs to
+    // reach it; both stay valid until UnregisterMemory.
+    Status RegisterMemory(void* addr, std::size_t size, int access, void*& region,
+                          std::uint32_t& rkey, std::string& error);
+    Status UnregisterMemory(void* region, std::string& error) const;
 
 private:
     ibv_context* context_{nullptr};

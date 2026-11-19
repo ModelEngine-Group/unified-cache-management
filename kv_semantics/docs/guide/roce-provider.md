@@ -146,8 +146,14 @@ ctest --test-dir build -j8
 
 `BUILD_KV_CLIENT_PROVIDER_ROCE=ON` requires `infiniband/verbs.h` and
 `libibverbs` (package `libibverbs-dev`); configuration fails with a clear
-message when they are missing. The provider sources are only compiled when the
-option is on, so other builds are unaffected.
+message when they are missing.
+
+The provider itself is always compiled. Only its device half has two
+implementations: `roce_verb_qp.cc` when the option is on, and
+`roce_verb_qp_null.cc` when it is off. The stub refuses to open an adapter
+("the CPU-over-RoCE provider was built without BUILD_KV_CLIENT_PROVIDER_ROCE")
+but keeps the link protocol, so the unit tests run everywhere and no other part
+of UCM depends on rdma-core.
 
 ## Memory registration
 
@@ -225,9 +231,10 @@ server links one after another, or give each provider its own bind address.
 
 ## Verification status
 
-The `lint-and-unit-tests / cpp_gtest` job installs `libibverbs-dev` and
-configures with `-DBUILD_KV_CLIENT_PROVIDER_ROCE=ON`, so everything below runs
-on every pull request. No RDMA hardware is required: the handshake tests set
+The `lint-and-unit-tests / cpp_gtest` job builds and runs everything below on
+every pull request without installing rdma-core: it uses the stub device half.
+The `cpp_roce_compile` job installs `libibverbs-dev` and configures with
+`-DBUILD_KV_CLIENT_PROVIDER_ROCE=ON` to keep the real implementation compiling. No RDMA hardware is required: the handshake tests set
 `asu_roce_qp_backend: simulated` explicitly and talk over loopback TCP, while a
 provider without that key uses the `verbs` backend, which does need an HCA.
 

@@ -57,7 +57,7 @@ constexpr const char* kBackendSimulated = "simulated";
 // Every region is reachable from the peer, so local and remote writes are both
 // allowed on it.
 constexpr int kRegistrationAccess =
-    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+    kMemoryAccessLocalWrite | kMemoryAccessRemoteWrite | kMemoryAccessRemoteRead;
 constexpr std::uint32_t kSimulatedRkeyBase = 0x1000;
 
 Status NotImplemented(const std::string& operation)
@@ -195,7 +195,10 @@ CpuKvOverRoceTransProvider::~CpuKvOverRoceTransProvider()
     // Regions the client never unregistered still have to be released, but the
     // protection domain itself now outlives this provider.
     for (Registration& registration : owned) {
-        if (registration.mr != nullptr) { ibv_dereg_mr(registration.mr); }
+        if (registration.mr != nullptr && registration.device != nullptr) {
+            std::string ignored;
+            static_cast<void>(registration.device->UnregisterMemory(registration.mr, ignored));
+        }
     }
 }
 
@@ -957,23 +960,28 @@ Status CpuKvOverRoceTransProvider::RegisterMemory(
         MRHandle handle = 0;
         if (verbs) {
             registration.device = device_.load(std::memory_order_acquire);
-            registration.mr = ibv_reg_mr(Device().Pd(), reinterpret_cast<void*>(desc.addr),
-                                         desc.size, kRegistrationAccess);
-            if (registration.mr == nullptr) {
+            std::uint32_t rkey = 0;
+            std::string registerError;
+            const Status registered =
+                Device().RegisterMemory(reinterpret_cast<void*>(desc.addr), desc.size,
+                                        kRegistrationAccess, registration.mr, rkey, registerError);
+            if (!registered.ok()) {
                 std::string hint;
                 if (desc.memoryType == MemType::MEM_DEVICE) {
                     hint =
                         "; device memory needs peer-memory support on the HCA, check "
                         "nvidia-peermem or the dmabuf support of the driver";
                 }
+                std::string ignored;
                 for (const Registration& done : staged) {
-                    if (done.mr != nullptr) { ibv_dereg_mr(done.mr); }
+                    if (done.mr != nullptr && done.device != nullptr) {
+                        static_cast<void>(done.device->UnregisterMemory(done.mr, ignored));
+                    }
                 }
-                return Failure(StatusCode::IO_ERROR, "ibv_reg_mr of " + std::to_string(desc.size) +
-                                                         " bytes failed: " + std::strerror(errno) +
-                                                         hint);
+                return Failure(registered.code, "registering " + std::to_string(desc.size) +
+                                                    " bytes failed: " + registerError + hint);
             }
-            registration.tokenId = registration.mr->rkey;
+            registration.tokenId = rkey;
             handle = static_cast<MRHandle>(reinterpret_cast<std::uintptr_t>(registration.mr));
         } else {
             std::lock_guard<std::mutex> guard(state.memoryMutex);
@@ -1151,14 +1159,21 @@ std::vector<Status> CpuKvOverRoceTransProvider::UnregisterMemory(
             // of deregistering the same memory twice.
             state.registrations.erase(entry);
         }
-        if (registration.mr != nullptr && ibv_dereg_mr(registration.mr) != 0) {
-            const int savedErrno = errno;
-            std::lock_guard<std::mutex> guard(state.memoryMutex);
-            // Roll the claim back so the caller can retry the release.
-            state.registrations[desc.mrHandle] = registration;
-            results.push_back(Failure(StatusCode::IO_ERROR, std::string("ibv_dereg_mr failed: ") +
-                                                                std::strerror(savedErrno)));
-            continue;
+        if (registration.mr != nullptr) {
+            std::string releaseError;
+            const Status released =
+                registration.device == nullptr
+                    ? Status::Error(StatusCode::INVALID_ARGUMENT,
+                                    "the memory region does not belong to a device")
+                    : registration.device->UnregisterMemory(registration.mr, releaseError);
+            if (!released.ok()) {
+                std::lock_guard<std::mutex> guard(state.memoryMutex);
+                // Roll the claim back so the caller can retry the release.
+                state.registrations[desc.mrHandle] = registration;
+                results.push_back(
+                    Failure(released.code, "unregistering the memory failed: " + releaseError));
+                continue;
+            }
         }
         {
             std::lock_guard<std::mutex> guard(state.memoryMutex);

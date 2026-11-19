@@ -22,6 +22,17 @@
  * SOFTWARE.
  * */
 #include "roce_verb_qp.h"
+#include <infiniband/verbs.h>
+
+static_assert(static_cast<int>(kv::roce::kMemoryAccessLocalWrite) ==
+                  static_cast<int>(IBV_ACCESS_LOCAL_WRITE),
+              "the access flags are handed straight to ibv_reg_mr");
+static_assert(static_cast<int>(kv::roce::kMemoryAccessRemoteWrite) ==
+                  static_cast<int>(IBV_ACCESS_REMOTE_WRITE),
+              "the access flags are handed straight to ibv_reg_mr");
+static_assert(static_cast<int>(kv::roce::kMemoryAccessRemoteRead) ==
+                  static_cast<int>(IBV_ACCESS_REMOTE_READ),
+              "the access flags are handed straight to ibv_reg_mr");
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -401,6 +412,39 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
         return Fail(StatusCode::CONNECTION_ERROR, error);
     }
 
+    return Status::OK();
+}
+
+Status VerbDevice::RegisterMemory(void* addr, std::size_t size, int access, void*& region,
+                                  std::uint32_t& rkey, std::string& error)
+{
+    error.clear();
+    region = nullptr;
+    if (pd_ == nullptr) {
+        error = "memory registration needs an opened device";
+        return Status::Error(StatusCode::INVALID_ARGUMENT, error);
+    }
+    ibv_mr* registered = ibv_reg_mr(pd_, addr, size, access);
+    if (registered == nullptr) {
+        error = strerror(errno);
+        return Status::Error(StatusCode::IO_ERROR, error);
+    }
+    region = registered;
+    rkey = registered->rkey;
+    return Status::OK();
+}
+
+Status VerbDevice::UnregisterMemory(void* region, std::string& error) const
+{
+    error.clear();
+    if (region == nullptr) {
+        error = "memory region is null";
+        return Status::Error(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (ibv_dereg_mr(static_cast<ibv_mr*>(region)) != 0) {
+        error = strerror(errno);
+        return Status::Error(StatusCode::IO_ERROR, error);
+    }
     return Status::OK();
 }
 

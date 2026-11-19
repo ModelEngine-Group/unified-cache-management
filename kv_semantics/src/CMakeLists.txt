@@ -40,11 +40,17 @@ target_link_libraries(kv_transport
         kv_buffer_runtime
 )
 
+# The provider, its out of band channel and the process wide device table reach
+# the NIC only through roce_verb_qp.h, which forward declares the verbs types, so
+# they build without rdma-core; only the file behind that header needs the real
+# <infiniband/verbs.h>.
+target_sources(kv_transport PRIVATE
+    trans_provider/roce/cpu_kv_over_roce_trans_provider.cc
+    trans_provider/roce/roce_process_state.cc
+    trans_provider/roce/roce_tcp_channel.cc
+)
 if(BUILD_KV_CLIENT_PROVIDER_ROCE)
-    file(GLOB KV_ROCE_PROVIDER_SOURCES CONFIGURE_DEPENDS trans_provider/roce/*.cc)
-    # The wire codec is built unconditionally, so drop it from this glob.
-    list(FILTER KV_ROCE_PROVIDER_SOURCES EXCLUDE REGEX "roce_wire\\.cc$")
-    target_sources(kv_transport PRIVATE ${KV_ROCE_PROVIDER_SOURCES})
+    target_sources(kv_transport PRIVATE trans_provider/roce/roce_verb_qp.cc)
 
     find_path(ASU_ROCE_VERBS_INCLUDE_DIR infiniband/verbs.h)
     find_library(ASU_ROCE_VERBS_LIBRARY NAMES ibverbs)
@@ -55,6 +61,11 @@ if(BUILD_KV_CLIENT_PROVIDER_ROCE)
     target_include_directories(kv_transport PRIVATE ${ASU_ROCE_VERBS_INCLUDE_DIR})
     target_link_libraries(kv_transport PRIVATE ${ASU_ROCE_VERBS_LIBRARY})
     target_compile_definitions(kv_transport PRIVATE UCM_ASU_ENABLE_ROCE_PROVIDER=1)
+else()
+    # The provider is still compiled, against an implementation that refuses to
+    # open a device.  The tests keep running without libibverbs and the store
+    # never depends on it.
+    target_sources(kv_transport PRIVATE trans_provider/roce/roce_verb_qp_null.cc)
 endif()
 
 if(BUILD_KV_CLIENT_PROVIDER_AICPU)

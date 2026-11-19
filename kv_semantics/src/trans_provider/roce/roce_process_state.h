@@ -52,7 +52,7 @@ struct DeviceEntry {
 // (mr stays null, so releasing it never touches the device) and points back at
 // the registration it was bound to.
 struct Registration {
-    ibv_mr* mr{nullptr};
+    void* mr{nullptr};
     std::uintptr_t addr{0};
     std::size_t size{0};
     std::uint32_t tokenId{0};
