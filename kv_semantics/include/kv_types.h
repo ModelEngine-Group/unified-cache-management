@@ -169,6 +169,7 @@ struct NodeEndpoint {
 
 struct NodeInfo {
     std::vector<NodeEndpoint> endpoints;
+    KvNsId localKvNsId{0};
 };
 
 struct TransportConfig {

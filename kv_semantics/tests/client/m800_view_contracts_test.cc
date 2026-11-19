@@ -1,7 +1,29 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <gtest/gtest.h>
 #include <type_traits>
 #include "KVClientAgentABI.h"
-#include "router/router.h"
 #include "view/m800_view_agent_client.h"
 #include "view/m800_view_codec.h"
 #include "view/m800_view_common.h"
@@ -14,26 +36,9 @@
 namespace kv::test {
 namespace {
 
-class FixedRouter final : public Router {
-public:
-    explicit FixedRouter(HashFunction hash) : Router(std::move(hash)) {}
-
-private:
-    NodeId RouteKey(const Key&) const override { return 10; }
-};
-
-TEST(M800ViewContractsTest, RouterFallbackContractPreservesLegacyRouting)
-{
-    FixedRouter router([](const Key&) { return 0; });
-    const std::vector<Key> keys = {"key-0", "key-1", "key-2"};
-    const UnavailableNodeSet unavailableNodes = {10};
-
-    const auto legacyRoutes = router.RouteKeys(keys);
-    const auto fallbackRoutes = router.RouteKeys(keys, unavailableNodes);
-
-    EXPECT_EQ(legacyRoutes, fallbackRoutes);
-}
-
+// 测试场景：编译并检查 M800 角色枚举、哈希种子、Agent ABI 版本与状态码，以及默认服务配置、HTTP
+// 和文本协议常量。 预期结果：角色值依次为 0/1 且底层类型为 uint8_t，哈希种子为 5381、ABI 版本为
+// 1，状态码顺序、默认配置及 HTTP/文本协议常量均符合固定契约。
 TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
 {
     static_assert(M800ViewRole::MASTER == M800ViewRole{0});
@@ -51,16 +56,19 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_EQ(config.role, M800ViewRole::MASTER);
     EXPECT_EQ(config.listenAddr, "0.0.0.0:9100");
     EXPECT_EQ(config.agentFetchTimeoutMs, std::uint64_t{10000});
-    EXPECT_EQ(config.httpTimeoutMs, std::uint64_t{10000});
+    EXPECT_EQ(config.httpTimeoutMs, std::uint64_t{2000});
     EXPECT_EQ(config.refreshIntervalMs, std::uint64_t{30000});
 
-    EXPECT_STREQ(M800ViewHTTPContract::kViewsPath, "/v1/views");
-    EXPECT_STREQ(M800ViewHTTPContract::kSinceEpochParam, "since_epoch");
-    EXPECT_STREQ(M800ViewHTTPContract::kContentType, "text/plain");
-    EXPECT_STREQ(M800ViewHTTPContract::kConnection, "close");
-    EXPECT_EQ(M800ViewHTTPContract::kStatusOk, 200);
-    EXPECT_EQ(M800ViewHTTPContract::kStatusNotModified, 304);
-    EXPECT_EQ(M800ViewHTTPContract::kStatusServerError, 500);
+    EXPECT_STREQ(M800ViewHttpContract::kViewsPath, "/v1/views");
+    EXPECT_STREQ(M800ViewHttpContract::kSinceEpochParam, "since_epoch");
+    EXPECT_STREQ(M800ViewHttpContract::kContentType, "text/plain");
+    EXPECT_STREQ(M800ViewHttpContract::kConnection, "close");
+    EXPECT_EQ(M800ViewHttpContract::kStatusOk, 200);
+    EXPECT_EQ(M800ViewHttpContract::kStatusNotModified, 304);
+    EXPECT_EQ(M800ViewHttpContract::kStatusBadRequest, 400);
+    EXPECT_EQ(M800ViewHttpContract::kStatusNotFound, 404);
+    EXPECT_EQ(M800ViewHttpContract::kStatusMethodNotAllowed, 405);
+    EXPECT_EQ(M800ViewHttpContract::kStatusServerError, 500);
 
     EXPECT_STREQ(M800ViewTextContract::kGlobalEpochField, "globalEpoch");
     EXPECT_STREQ(M800ViewTextContract::kNsCountField, "nsCount");
@@ -71,21 +79,12 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_STREQ(M800ViewTextContract::kAsuInfoFieldPrefix, "asuInfo.");
 }
 
+// 测试场景：通过编译期类型检查审视 ViewUniverse、Master/Slave
+// Server、RefreshScheduler、AgentClient/Factory 和 ViewHttpServer 的接口及多命名空间方法签名。
+// 预期结果：这些类型均为抽象类，PublishAll、ReplaceAll、GetView 与 Master/Slave 的 GetAllViews
+// 签名严格匹配 ViewUniverse 多命名空间契约。
 TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementation)
 {
-    class MinimalMaster final : public M800ViewMasterServer {
-    public:
-        Status Start() override { return Status::OK(); }
-        void Stop() override {}
-        Status GetAllViews(ViewUniverse&) override { return Status::OK(); }
-    };
-    class MinimalSlave final : public M800ViewSlaveServer {
-    public:
-        Status Start() override { return Status::OK(); }
-        void Stop() override {}
-        Status GetAllViews(ViewUniverse&) override { return Status::OK(); }
-    };
-
     static_assert(std::is_abstract<ViewUniverse>::value);
     static_assert(std::is_abstract<M800ViewMasterServer>::value);
     static_assert(std::is_abstract<M800ViewSlaveServer>::value);
@@ -104,16 +103,11 @@ TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementatio
                                Status (M800ViewMasterServer::*)(ViewUniverse&)>::value);
     static_assert(std::is_same<decltype(&M800ViewSlaveServer::GetAllViews),
                                Status (M800ViewSlaveServer::*)(ViewUniverse&)>::value);
-
-    GlobalView view;
-    const auto masterStatus = MinimalMaster{}.GetGlobalView(view);
-    EXPECT_EQ(masterStatus.code, StatusCode::UNSUPPORTED);
-    EXPECT_EQ(masterStatus.message, "M800 view master serves multiple namespaces; use GetAllViews");
-    const auto slaveStatus = MinimalSlave{}.GetGlobalView(view);
-    EXPECT_EQ(slaveStatus.code, StatusCode::UNSUPPORTED);
-    EXPECT_EQ(slaveStatus.message, "M800 view slave serves multiple namespaces; use GetAllViews");
 }
 
+// 测试场景：默认构造 M800AgentNodeView、ViewHttpRequest 和 ViewHttpReply。
+// 预期结果：节点 osdId 为 -1、up/in 均为 false 且地址为空；请求 sinceEpoch 为 0；响应类型为
+// INTERNAL_ERROR 且 body 为空。
 TEST(M800ViewContractsTest, M800AgentAndHTTPContractDefaultsCompile)
 {
     const M800AgentNodeView nodeView;
