@@ -25,8 +25,8 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <iterator>
-#include <limits>
 #include <thread>
 #include <utility>
 #include "device.h"
@@ -35,6 +35,7 @@
 #include "logger.h"
 #include "router/config.h"
 #include "router/router.h"
+#include "trans_types.h"
 #include "utils/config_utils.h"
 
 namespace kv {
@@ -117,6 +118,7 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     }
 
     config_ = config;
+    keyResolver_ = CreateDefaultKeyResolver(config.keyResolution);
     viewServer_ = viewServerFactory_(config);
     if (viewServer_ == nullptr) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "view server factory returned null");
@@ -163,6 +165,11 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     worker_ = std::thread(&KvClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
+    const auto& resolution = config_.keyResolution;
+    const char* engine = resolution.engine == InferenceEngine::VLLM_ASCEND ? "vllm_ascend"
+                         : resolution.engine == InferenceEngine::SGLANG    ? "sglang"
+                                                                           : "generic";
+    KV_INFO("KVClient initialized: engine={}", engine);
     return Status::OK();
 }
 
@@ -225,38 +232,41 @@ Status KvClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                const IoOptions& options)
 {
-    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId, options);
     RecordSubmit(AsuOpType::QUERY, keys.size(), status);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
 
-Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                               const IoOptions& options)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_LOAD : AsuOpType::LOAD;
-    auto status = SubmitAsync(opType, entries, taskId);
+    auto status = SubmitAsync(opType, entries, taskId, options);
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                std::function<Status()> prerequisite)
+                                const IoOptions& options)
 {
     const auto useBatchIo =
         entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
     const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
-    auto status = SubmitAsync(opType, entries, taskId, std::move(prerequisite));
+    auto status = SubmitAsync(opType, entries, taskId, options);
     RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
-Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                 const IoOptions& options)
 {
-    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId, options);
     RecordSubmit(AsuOpType::DELETE, keys.size(), status);
     return status;
 }
@@ -391,7 +401,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId, std::function<Status()> prerequisite)
+                                 TaskId& taskId, const IoOptions& options)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -410,9 +420,20 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     auto ctx = std::make_unique<ClientTask>();
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
-    ctx->prerequisite = std::move(prerequisite);
+    ctx->prerequisite = options.prerequisite;
     ctx->viewSnapshot = snapshot;
-    ctx->entries = entries;
+    ctx->entries.reserve(entries.size());
+    for (const auto& entry : entries) {
+        ResolvedKVBuffer resolvedKVBuffer;
+        auto status = keyResolver_->Resolve(entry.key, options.kvns, resolvedKVBuffer.key);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+        resolvedKVBuffer.buffer = entry.buffer;
+        resolvedKVBuffer.offset = entry.offset;
+        ctx->entries.push_back(std::move(resolvedKVBuffer));
+    }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
         for (auto& entry : ctx->entries) {
@@ -456,7 +477,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
-                                 TaskId& taskId)
+                                 TaskId& taskId, const IoOptions& options)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -475,7 +496,17 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
-    ctx->keys = keys;
+    ctx->prerequisite = options.prerequisite;
+    ctx->keys.reserve(keys.size());
+    for (const auto& key : keys) {
+        ResolvedCacheKey resolvedKey;
+        auto status = keyResolver_->Resolve(key, options.kvns, resolvedKey);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+        ctx->keys.push_back(std::move(resolvedKey));
+    }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
 

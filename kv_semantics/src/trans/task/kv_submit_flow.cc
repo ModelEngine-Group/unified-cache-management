@@ -60,7 +60,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
             KV_ERROR("Submit entry batch failed: entry batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
         }
-        const auto entries = BatchView<KVBuffer>{ctx.entries.data(), ctx.entries.size()};
+        const auto entries = BatchView<ResolvedKVBuffer>{ctx.entries.data(), ctx.entries.size()};
         const auto subBatches = ioScheduler_.SplitForAsu(entries, opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
@@ -82,7 +82,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
             KV_ERROR("Submit key batch failed: key batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "key batch is empty");
         }
-        const auto keys = BatchView<CacheKey>{ctx.keys.data(), ctx.keys.size()};
+        const auto keys = BatchView<ResolvedCacheKey>{ctx.keys.data(), ctx.keys.size()};
         const auto subBatches = ioScheduler_.SplitForAsu(keys, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
