@@ -131,6 +131,27 @@ Status ResolveProtocol(const TransportConfig& config, CommProtocol& protocol)
                              value + "'; supported values are UBG and UBC_CTP");
 }
 
+Status ResolveAicpuJfcMode(const TransportConfig& config, AicpuJfcMode& mode)
+{
+    // Configuration files are the sole UCM mode source; absence means USER_CTL.
+    const auto attr = config.attrs.find("aicpu_jfc_mode");
+    std::string value = "user_ctl";
+    if (attr != config.attrs.end()) {
+        value = ToLower(attr->second);
+    }
+    if (value == "user_ctl") {
+        mode = AicpuJfcMode::USER_CTL;
+        return Status::OK();
+    }
+    if (value == "stars_poll") {
+        mode = AicpuJfcMode::STARS_POLL;
+        return Status::OK();
+    }
+    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                         "AICPUTransProvider: aicpu_jfc_mode must be USER_CTL or STARS_POLL; got '" +
+                             value + "'");
+}
+
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
 std::string ResolveStagedOobHost(const TransportConfig& config, const NodeEndpoint* endpoint,
                                  const std::string& remoteIp)

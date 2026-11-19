@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -42,6 +43,8 @@ namespace {
 using aicpu_config::CommAddrTypeName;
 using aicpu_config::CommProtocolName;
 using aicpu_config::IsUbProtocol;
+using aicpu_config::AicpuJfcMode;
+using aicpu_config::ResolveAicpuJfcMode;
 using aicpu_config::ResolveLocalEndpointAddress;
 using aicpu_config::ResolveProtocol;
 using aicpu_config::ResolveRemoteDeviceId;
@@ -56,7 +59,7 @@ using aicpu_config::ResolveLocType;
 
 constexpr std::uint32_t kDefaultNotifyNum = 1;
 constexpr std::uint32_t kDefaultUbSqDepth = 0xFFFFFFFFU;
-constexpr std::uint32_t kDefaultQos = 0xFFFFFFFFU;
+constexpr std::uint32_t kDefaultQoS = 0xFFFFFFFFU;
 constexpr std::uint32_t kDefaultSendTimeoutMs = 1836U * 1000U;
 constexpr std::uint32_t kAclSyncGraceMs = 5000U;
 constexpr std::uint32_t kCpuKernelMode = 0U;
@@ -64,8 +67,50 @@ constexpr std::uint32_t kKernelBlockDim = 1U;
 constexpr std::uint32_t kChannelStatusPollIntervalMs = 2U;
 constexpr std::uintptr_t kHostRegisterAlignment = 4096U;
 constexpr const char* kDefaultChannelName = "ucm_asu_aicpu";
-constexpr const char* kProviderSignature = "UCM_ASU_AICPU_PROVIDER_UBC_CTP_UBG_HCOMM_HIXL_V10";
+constexpr const char* kProviderSignature =
+    "UCM_ASU_AICPU_PROVIDER_UBC_CTP_UBG_HCOMM_HIXL_ASYNC_SEND_V14";
 constexpr const char* kBatchSendKernelName = "HixlBatchSend";
+
+#if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
+// HCOMM currently accepts staged JFC mode through an environment setting.
+// Serialize our channel creations and restore the previous process setting so
+// independent providers cannot overwrite each other's mode during creation.
+class ScopedStagedJfcMode {
+public:
+    explicit ScopedStagedJfcMode(AicpuJfcMode mode) : lock_(Mutex())
+    {
+        const char* previous = std::getenv(kEnv);
+        hadPrevious_ = previous != nullptr;
+        if (previous != nullptr) { previous_ = previous; }
+        const char* selected = mode == AicpuJfcMode::USER_CTL ? "USER_CTL" : "STARS_POLL";
+        if (::setenv(kEnv, selected, 1) != 0) {
+            status_ = Status::Error(StatusCode::INVALID_ARGUMENT,
+                                    "Cannot set HCOMM_AICPU_STAGED_JFC_MODE");
+        }
+    }
+
+    ~ScopedStagedJfcMode()
+    {
+        if (!status_.ok()) { return; }
+        const int ret = hadPrevious_ ? ::setenv(kEnv, previous_.c_str(), 1) : ::unsetenv(kEnv);
+        if (ret != 0) { KV_WARN("Cannot restore {} after staged channel creation", kEnv); }
+    }
+
+    const Status& status() const { return status_; }
+
+private:
+    static std::mutex& Mutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+    static constexpr const char* kEnv = "HCOMM_AICPU_STAGED_JFC_MODE";
+    std::unique_lock<std::mutex> lock_;
+    std::string previous_;
+    bool hadPrevious_{false};
+    Status status_{Status::OK()};
+};
+#endif
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
 constexpr const char* kChannelApiMode = "HcommChannelCreateStaged";
 #else
@@ -528,7 +573,7 @@ struct AICPUTransProvider::Impl {
                                       kDefaultNotifyNum)),
           ubSqDepth(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_ub_sq_depth", "ub_sq_depth"}),
                                       kDefaultUbSqDepth)),
-          qos(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), kDefaultQos)),
+          qos(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), kDefaultQoS)),
           sendTimeoutMs(ParseConfigUint32(
               GetConfigAttr(configIn, {"aicpu_send_timeout_ms", "send_timeout_ms", "timeout"}),
               kDefaultSendTimeoutMs)),
@@ -541,6 +586,13 @@ struct AICPUTransProvider::Impl {
           stagedMamiTag(ParseConfigUint64(
               GetConfigAttr(configIn, {"aicpu_staged_mami_tag", "staged_mami_tag"}), 0))
     {
+        channelModeStatus = ResolveAicpuJfcMode(configIn, jfcMode);
+#if !UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
+        if (channelModeStatus.ok() && jfcMode != AicpuJfcMode::STARS_POLL) {
+            channelModeStatus = Status::Error(StatusCode::INVALID_ARGUMENT,
+                "USER_CTL requires the staged channel API; rebuild with the default staged API");
+        }
+#endif
         auto selection = ResolveLocalDevice(configIn);
         localDeviceId = selection.deviceId;
         providerContext = selection.context;
@@ -1011,14 +1063,20 @@ struct AICPUTransProvider::Impl {
             aclrtBinaryLoadOptions options{};
             options.options = &option;
             options.numOpt = 1U;
+            std::fprintf(stderr, "[UCM_HIXL_LOAD] stage=BINARY_BEGIN json=%s\n", hixlKernelJsonPath.c_str());
             const auto ret =
                 aclrtBinaryLoadFromFile(hixlKernelJsonPath.c_str(), &options, &hixlBin);
+            std::fprintf(stderr, "[UCM_HIXL_LOAD] stage=BINARY_RETURN ret=%d bin=%p\n",
+                         static_cast<int>(ret), static_cast<void*>(hixlBin));
             if (ret != ACL_SUCCESS) {
                 return AclError("aclrtBinaryLoadFromFile " + hixlKernelJsonPath, ret);
             }
         }
 
         const auto getRet = aclrtBinaryGetFunction(hixlBin, kBatchSendKernelName, &func);
+        std::fprintf(stderr, "[UCM_HIXL_LOAD] stage=FUNCTION_RETURN kernel=%s ret=%d bin=%p func=%p\n",
+                     kBatchSendKernelName, static_cast<int>(getRet), static_cast<void*>(hixlBin),
+                     static_cast<void*>(func));
         if (getRet != ACL_SUCCESS) {
             return AclError("aclrtBinaryGetFunction HixlBatchSend", getRet);
         }
@@ -1084,9 +1142,8 @@ struct AICPUTransProvider::Impl {
         param.status_array = workspace.DeviceStatuses();
         param.timeout_ms = sendTimeoutMs;
         param.stats = nullptr;
-        // Staged Hcomm channels use USER_CTL sender CQs. The paired HixlBatchSend
-        // consumes one sender CQE and advances CQ/SQ CI before HcommThreadJoin.
-        param.complete_sender_cqe = 1U;
+        // USER_CTL consumes CQEs in software; STARS_POLL leaves completion to STARS.
+        param.complete_sender_cqe = jfcMode == AicpuJfcMode::USER_CTL ? 1U : 0U;
 
         aclrtArgsHandle args = nullptr;
         aclrtParamHandle paramHandle = nullptr;
@@ -1138,6 +1195,8 @@ struct AICPUTransProvider::Impl {
     }
 
     TransportConfig config;
+    AicpuJfcMode jfcMode{AicpuJfcMode::USER_CTL};
+    Status channelModeStatus{Status::OK()};
     std::uint32_t localDeviceId{0};
     aclrtContext providerContext{nullptr};
     std::string deviceSelectionSource{"default"};
@@ -1179,12 +1238,14 @@ AICPUTransProvider::AICPUTransProvider(const TransportConfig& config)
 {
     KV_INFO(
         "AICPU_TRANSPORT_PROVIDER_SIGNATURE={} pid={} asu_id={} logical_device_id={} "
-        "device_source={} provider_context={} protocol=ubg channel_api={} "
-        "send_with_imm=1 complete_sender_cqe=1 publish_mrs=1 mapped_batch_io=1 "
-        "channel_name={}",
+        "device_source={} provider_context={} jfc_mode={} channel_api={} "
+        "send_with_imm=1 complete_sender_cqe={} publish_mrs=1 mapped_batch_io=1 "
+        "async_send=1 async_workspace_pool=1 channel_name={}",
         kProviderSignature, static_cast<long>(::getpid()), impl_->config.nodeId,
         impl_->localDeviceId, impl_->deviceSelectionSource,
-        static_cast<const void*>(impl_->providerContext), kChannelApiMode, impl_->channelName);
+        static_cast<const void*>(impl_->providerContext),
+        impl_->jfcMode == AicpuJfcMode::USER_CTL ? "USER_CTL" : "STARS_POLL",
+        kChannelApiMode, impl_->jfcMode == AicpuJfcMode::USER_CTL ? 1U : 0U, impl_->channelName);
 }
 
 AICPUTransProvider::~AICPUTransProvider()
@@ -1217,6 +1278,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
 {
     connectionHandles.clear();
     if (qpNum == 0) { return Status::OK(); }
+    if (!impl_->channelModeStatus.ok()) { return impl_->channelModeStatus; }
 
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
     auto status = impl_->RefreshLocalDeviceFromCaller();
@@ -1271,17 +1333,18 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
     const std::uint16_t stagedOobPort = ResolveStagedOobPort(impl_->config, endpoint, port);
     const std::uint32_t stagedClientId = ResolveStagedClientId(impl_->config, endpoint);
     KV_INFO(
-        "AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
+        "AICPUTransProvider: CreateConnection resolved protocol={} channel_api={} "
         "staged_oob={}:{} staged_client_id={} notify_num={} ub_sq_depth={} qos={} "
         "send_with_imm={} complete_sender_cqe={}",
         CommProtocolName(protocol), kChannelApiMode, stagedOobHost, stagedOobPort, stagedClientId,
-        impl_->notifyNum, impl_->ubSqDepth, impl_->qos, 1, 0);
+        impl_->notifyNum, impl_->ubSqDepth, impl_->qos, 1,
+        impl_->jfcMode == AicpuJfcMode::USER_CTL ? 1U : 0U);
 #else
     KV_INFO(
-        "AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
+        "AICPUTransProvider: CreateConnection resolved protocol={} channel_api={} "
         "notify_num={} ub_sq_depth={} qos={} send_with_imm={} complete_sender_cqe={}",
         CommProtocolName(protocol), kChannelApiMode, impl_->notifyNum, impl_->ubSqDepth, impl_->qos,
-        1, 0);
+        1, impl_->jfcMode == AicpuJfcMode::USER_CTL ? 1U : 0U);
 #endif
 
     for (std::uint32_t remaining = qpNum; remaining > 0; --remaining) {
@@ -1358,12 +1421,17 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
             "mami_tag={} channel_port={}",
             qpIndex, stagedOobHost, stagedOobPort, stagedClientId, stagedDesc.timeoutMs,
             stagedDesc.rmUasid, stagedDesc.mamiTag, desc.port);
-        const auto chanRet = HcommChannelCreateStaged(hcommEndpoint, COMM_ENGINE_AICPU, &stagedDesc,
-                                                      1U, &record->channel);
-        if (chanRet != 0) {
+        const auto channelStatus = [&]() -> Status {
+            ScopedStagedJfcMode mode(impl_->jfcMode);
+            if (!mode.status().ok()) { return mode.status(); }
+            const auto ret = HcommChannelCreateStaged(hcommEndpoint, COMM_ENGINE_AICPU, &stagedDesc,
+                                                       1U, &record->channel);
+            return ret == 0 ? Status::OK() : HcommConnectionError("HcommChannelCreateStaged", ret);
+        }();
+        if (!channelStatus.ok()) {
             cleanupRecord();
             if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
-            return HcommConnectionError("HcommChannelCreateStaged", chanRet);
+            return channelStatus;
         }
         KV_INFO("AICPUTransProvider: staged channel created qp_index={} channel={} thread={}",
                 qpIndex, record->channel, record->thread);
@@ -1837,9 +1905,17 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
                 return Status::Error(StatusCode::BUFFER_NOT_SUPPORTED,
                                      "AICPUTransProvider: HCOMM token range mismatch");
             }
-            if (tokenInfo.type == HCOMM_MEM_TOKEN_TYPE_UB && tokenInfo.tokenValue != 0U) {
-                record->tokenId = tokenInfo.tokenId;
-                record->hasToken = true;
+            if (tokenInfo.type == HCOMM_MEM_TOKEN_TYPE_UB) {
+                if (tokenInfo.tokenId != 0U) {
+#if defined(ASU_DEBUG_HOTFIX) && ASU_DEBUG_HOTFIX
+                    // Temporary integration behavior; remove this branch after validation.
+                    record->tokenId = tokenInfo.tokenId;
+#else
+                    // HCOMM exposes the UB token ID shifted right by 8 bits.
+                    record->tokenId = tokenInfo.tokenId << 8U;
+#endif
+                    record->hasToken = true;
+                }
             } else if (tokenInfo.type == HCOMM_MEM_TOKEN_TYPE_RDMA && tokenInfo.rkey != 0U) {
                 record->tokenId = tokenInfo.rkey;
                 record->hasToken = true;

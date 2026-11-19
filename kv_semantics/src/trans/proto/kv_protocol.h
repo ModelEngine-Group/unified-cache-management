@@ -47,7 +47,12 @@ enum class KvOpcode : std::uint8_t {
 enum class DptrType : std::uint8_t { Standard = 0x40, Batch = 0x1 };
 
 constexpr std::size_t kSqeDwordCount = 16;
+#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
+// AICPU ASU wire format; other providers retain the original fixed bits below.
 constexpr std::uint32_t kFixedBits = 0x1;
+#else
+constexpr std::uint32_t kFixedBits = 0x3;
+#endif
 constexpr std::size_t kBatchEntrySizeBytes = 36;
 constexpr std::size_t kBatchEntryDwordCount = 9;
 constexpr std::size_t kKeyEntrySizeBytes = 16;
