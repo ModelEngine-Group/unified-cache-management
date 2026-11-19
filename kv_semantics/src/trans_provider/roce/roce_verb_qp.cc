@@ -376,7 +376,10 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
     rtr.max_dest_rd_atomic = peerDepth < responderCapacity ? peerDepth : responderCapacity;
     rtr.min_rnr_timer = peer.rnrTimer;
     rtr.ah_attr.is_global = 1;
-    rtr.ah_attr.dlid = peer.lid;
+    // RoCEv2 routes through the GRH and reports a zero LID; some drivers still
+    // validate the destination LID on Ethernet ports, where 0xffff is the
+    // conventional "not used" value.
+    rtr.ah_attr.dlid = peer.lid == 0U ? 0xFFFFU : peer.lid;
     rtr.ah_attr.sl = peer.sl;
     rtr.ah_attr.src_path_bits = 0;
     rtr.ah_attr.port_num = config.port;

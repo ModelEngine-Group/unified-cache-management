@@ -111,7 +111,7 @@ them into `TransportConfig::attrs` as `roce_*`.
 | `asu_roce_handshake_timeout_ms` | `5000` | timeout of every message exchange |
 | `asu_roce_hca_name` | first device | HCA to open, for example `mlx5_0` |
 | `asu_roce_hca_port` | `1` | port of the HCA |
-| `asu_roce_gid_index` | required | GID table index to use; there is no automatic selection |
+| `asu_roce_gid_index` | required | GID table index to use; there is no automatic selection. Ask the fabric owner for the index whose GID carries the store address. |
 | `asu_roce_sq_depth` / `asu_roce_rq_depth` / `asu_roce_cq_depth` | `256` / `64` / `512` | queue sizes |
 | `asu_roce_inline_threshold` | `0` | inline data size per send |
 | `asu_roce_sl`, `asu_roce_traffic_class` | `3`, `104` | service level and traffic class |
@@ -230,6 +230,10 @@ the same address at the same time: the second `CreateConnection` fails with
 server links one after another, or give each provider its own bind address.
 
 ## Verification status
+
+A build without `BUILD_KV_CLIENT_PROVIDER_ROCE` still compiles the provider but rejects a
+`verbs` queue pair backend in `CreateConnection` before the TCP handshake starts, so a
+mis-built deployment fails immediately instead of per request.
 
 The `lint-and-unit-tests / cpp_gtest` job builds and runs everything below on
 every pull request without installing rdma-core: it uses the stub device half.

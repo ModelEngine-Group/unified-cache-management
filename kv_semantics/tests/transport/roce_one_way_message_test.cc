@@ -41,22 +41,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// A failing ASSERT returns from the test body before the explicit join, and
-// the destructor of a joinable std::thread terminates the whole binary.
-class ThreadJoiner {
-public:
-    explicit ThreadJoiner(std::thread& thread) : thread_(thread) {}
-    ~ThreadJoiner()
-    {
-        if (thread_.joinable()) { thread_.join(); }
-    }
-    ThreadJoiner(const ThreadJoiner&) = delete;
-    ThreadJoiner& operator=(const ThreadJoiner&) = delete;
-
-private:
-    std::thread& thread_;
-};
-
 // Reads one complete frame: the 16 byte header announces the body length.
 bool ReadFrame(const roce::TcpChannel& channel, std::vector<std::uint8_t>& frame,
                std::string& error)

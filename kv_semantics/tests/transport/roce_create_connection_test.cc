@@ -57,6 +57,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, RunsTheHandshakeOnBothSides)
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 2, 4000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
     ConnectionHandles clientHandles;
@@ -103,6 +104,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, AdoptsTheQueuePairCountOfTheStore)
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 4000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
     ConnectionHandles clientHandles;
@@ -304,6 +306,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, AcceptsZeroForKnobsWhereItIsMeant)
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 4000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     TransportConfig config = MakeClientConfig();
     config.attrs["roce_inline_threshold"] = "0";
@@ -373,6 +376,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, AdvertisesTheConfiguredDeleteBatch)
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 4000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
     ConnectionHandles clientHandles;
@@ -402,6 +406,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, NeverReturnsMoreHandlesThanRequested)
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 4, 4000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
     ConnectionHandles clientHandles;
@@ -466,6 +471,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, RejectsACapabilityRequestFromAnotherMajo
         serverStatus =
             server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 2000, serverHandles);
     });
+    ThreadJoiner serverJoiner(serverThread);
 
     roce::TcpChannel channel;
     ASSERT_TRUE(ConnectChannelWithRetry(port, channel).ok());

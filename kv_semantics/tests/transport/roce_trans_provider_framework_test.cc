@@ -66,7 +66,11 @@ TEST(CpuKvOverRoceTransProviderTest, ExposesItsNameAndConfiguration)
 
 TEST(CpuKvOverRoceTransProviderTest, CreateConnectionFailsWhenThePeerIsUnreachable)
 {
-    roce::CpuKvOverRoceTransProvider provider(MakeRoceConfig());
+    TransportConfig config = MakeRoceConfig();
+    // The simulated backend keeps this test about the TCP handshake: a verbs
+    // build without rdma-core rejects that backend before the connect runs.
+    config.attrs["roce_qp_backend"] = "simulated";
+    roce::CpuKvOverRoceTransProvider provider(config);
     std::vector<TransProvider::ConnectionHandle> handles(3, FakeHandle(1));
 
     // Port 1 on loopback has no listener, so the out-of-band connect fails fast
@@ -78,6 +82,23 @@ TEST(CpuKvOverRoceTransProviderTest, CreateConnectionFailsWhenThePeerIsUnreachab
     EXPECT_TRUE(handles.empty());
     EXPECT_EQ(0U, provider.ConnectionCount());
 }
+
+#if !defined(UCM_ASU_ENABLE_ROCE_PROVIDER)
+TEST(CpuKvOverRoceTransProviderTest, RejectsTheVerbsBackendInAStubBuild)
+{
+    roce::CpuKvOverRoceTransProvider provider(MakeRoceConfig());
+    std::vector<TransProvider::ConnectionHandle> handles(2, FakeHandle(1));
+
+    // A build without rdma-core still exposes the provider, but it must say so
+    // before it opens a socket instead of failing once per request.
+    const Status status = provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 500, handles);
+
+    EXPECT_EQ(StatusCode::UNSUPPORTED, status.code) << status.message;
+    EXPECT_NE(std::string::npos, status.message.find("BUILD_KV_CLIENT_PROVIDER_ROCE"))
+        << status.message;
+    EXPECT_TRUE(handles.empty());
+}
+#endif
 
 TEST(CpuKvOverRoceTransProviderTest, CapabilityCallsRejectUnknownHandles)
 {

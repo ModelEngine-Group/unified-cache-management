@@ -45,6 +45,10 @@ constexpr std::uint32_t kDefaultHandshakeTimeoutMs = 5000;
 // a handshake would.
 constexpr std::uint32_t kDisconnectTimeoutMs = 200;
 
+// The key this provider speaks on the wire is the eight byte block hash; the
+// eighty bit keys of the NDS path belong to a different provider layer.
+constexpr std::uint8_t kKeyLengthBytes = 8;
+
 constexpr const char* kAttrRole = "roce_oob_role";
 constexpr const char* kAttrBindIp = "roce_oob_bind_ip";
 constexpr const char* kAttrConnectTimeout = "roce_oob_connect_timeout_ms";
@@ -593,7 +597,7 @@ Capabilities CpuKvOverRoceTransProvider::LocalCapabilities(std::uint32_t qpNum) 
     local.retrieveKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.batchLoadIoNum));
     local.deleteKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.deleteIoNum));
     local.existKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.queryIoNum));
-    local.keyLength = 8;
+    local.keyLength = kKeyLengthBytes;
     return local;
 }
 
@@ -783,6 +787,16 @@ Status CpuKvOverRoceTransProvider::CreateConnection(
         return InvalidArgument("unsupported " + std::string(kAttrQpBackend) + " '" + backend +
                                "', expected 'verbs' or 'simulated'");
     }
+#if !defined(UCM_ASU_ENABLE_ROCE_PROVIDER)
+    if (UseVerbsBackend()) {
+        // The stub device layer cannot open a real adapter. Failing here rather
+        // than in CreateQueuePairs keeps a mis-built deployment from paying for a
+        // TCP handshake and a capability exchange before it hears about it.
+        return Failure(
+            StatusCode::UNSUPPORTED,
+            "the CPU-over-RoCE provider was built without BUILD_KV_CLIENT_PROVIDER_ROCE");
+    }
+#endif
     std::string limitError;
     Status limits = ValidateCapabilityLimits(limitError);
     if (!limits.ok()) { return Failure(limits.code, limitError); }
@@ -900,7 +914,10 @@ Status CpuKvOverRoceTransProvider::GetServerCapabilities(ConnectionHandle connec
         return InvalidArgument("connection handle refers to a closed link");
     }
     const Link& link = **position;
-    const Capabilities& peer = link.peerCapabilities;
+    // Report what the link settled on rather than the raw advertisement: a zero
+    // field means the store did not advertise it, and the negotiated copy carries
+    // the local value that is actually in force.
+    const Capabilities& peer = link.negotiatedCapabilities;
     // The negotiated count, not what the store advertised: it is what the link
     // actually carries, and the caller sizes its channels from the handles.
     capabilities.queueNum = static_cast<std::uint16_t>(link.linkQpCount);

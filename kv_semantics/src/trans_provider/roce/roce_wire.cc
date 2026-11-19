@@ -492,6 +492,12 @@ Status DecodeMessage(const std::uint8_t* frame, std::size_t size, Message& messa
                 error = "connect request carries too many queue pairs";
                 return Fail(StatusCode::INVALID_ARGUMENT, error);
             }
+            // Reject an unknown MTU here instead of letting the verbs layer map it
+            // to a default: a peer that sends 6..255 is not speaking this protocol.
+            if (info.mtu > kMaxMtuCode) {
+                error = "connect request carries an unknown mtu code " + std::to_string(info.mtu);
+                return Fail(StatusCode::INVALID_ARGUMENT, error);
+            }
             for (std::size_t index = 0; index < info.totalQpNum; ++index) {
                 if (!reader.U32(info.qpn[index])) {
                     error = "connect request queue pair table is truncated";

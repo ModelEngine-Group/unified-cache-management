@@ -72,6 +72,10 @@ constexpr std::uint8_t kWireCapabilityMajorVersion = 1;
 constexpr std::uint8_t kWireCapabilityMinorVersion = 0;
 
 // table 3 carries qpn[32].
+// Largest MTU code the IB specification defines (5 == 4096 bytes). Zero means
+// "unset" and is accepted as such.
+constexpr std::uint8_t kMaxMtuCode = 5;
+
 constexpr std::size_t kMaxQpPerLink = 32;
 
 // table 1 private payload: major/minor/kato.
