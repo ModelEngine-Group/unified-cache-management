@@ -26,7 +26,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <utility>
 #include "conn/connection_internal.h"
 #include "kv_metrics/metrics.h"
@@ -34,6 +38,28 @@
 #include "utils/trans_task_utils.h"
 
 namespace kv {
+
+std::uint32_t TransportTaskExecutor::GetSendCountAttr(
+    const std::unordered_map<std::string, std::string>& attrs, const std::string& name)
+{
+    const auto it = attrs.find(name);
+    if (it == attrs.end()) { return 0; }
+    try {
+        std::size_t consumed = 0;
+        const auto value = std::stoull(it->second, &consumed, 0);
+        if (it->second.find('-') != std::string::npos || consumed != it->second.size() ||
+            value > std::numeric_limits<std::uint32_t>::max()) {
+            KV_WARN("Invalid send count {}={}; using 0", name, it->second);
+            return 0;
+        }
+        return static_cast<std::uint32_t>(value);
+    } catch (const std::invalid_argument&) {
+        KV_WARN("Invalid send count {}={}; using 0", name, it->second);
+    } catch (const std::out_of_range&) {
+        KV_WARN("Out-of-range send count {}={}; using 0", name, it->second);
+    }
+    return 0;
+}
 
 TransportTaskExecutor::TransportTaskExecutor(
     const TransportConfig& config, const std::shared_ptr<TransProvider>& transProvider,
@@ -261,6 +287,10 @@ bool TransportTaskExecutor::Cancel(const TransportTaskPtr& task)
 
     std::lock_guard<std::mutex> lock(task->mutex);
     if (task->Done()) { return false; }
+    if (task->sendInProgress.load(std::memory_order_acquire)) {
+        task->cancelRequested.store(true, std::memory_order_release);
+        return false;
+    }
     const auto canceledStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
     std::fill(task->entryStatus.begin(), task->entryStatus.end(), canceledStatus);
     for (auto& subBatchContext : *task->subBatchContexts) {
@@ -376,9 +406,160 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     return done;
 }
 
+void TransportTaskExecutor::RecordSendComplete(const TransportTaskPtr& task)
+{
+    task->sendCompletedAt = std::chrono::steady_clock::now();
+    const metrics::MetricUpdate sendUpdates[] = {
+        {KV_METRIC("kv_transport_task_send_duration_seconds"),
+         std::chrono::duration<double>(task->sendCompletedAt - task->submittedAt).count()},
+        {asuSendMetric_,
+         std::chrono::duration<double>(task->sendCompletedAt - task->submittedAt).count()},
+    };
+    metrics::UpdateStats(sendUpdates, std::size(sendUpdates));
+    task->sendReturned.store(true, std::memory_order_release);
+    if (task->onSendComplete) { task->onSendComplete(); }
+}
+
+bool TransportTaskExecutor::ExecuteAsync(const TransportTaskPtr& task,
+                                         TransProvider::SendOperationPtr& operation)
+{
+    operation.reset();
+    {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        TransportTaskState expected = TransportTaskState::PENDING;
+        if (!task->state.compare_exchange_strong(expected, TransportTaskState::INFLIGHT,
+                                                 std::memory_order_acq_rel)) {
+            return false;
+        }
+        task->sendInProgress.store(true, std::memory_order_release);
+    }
+    const auto processingStartedAt = std::chrono::steady_clock::now();
+    task->asuCompletionMetric = &asuCompletionMetric_;
+
+    std::vector<TransportSubBatchContext> subBatchContexts;
+    auto status = PrepareTaskSubBatches(*task, subBatchContexts);
+    if (status.ok()) { status = AssignSubBatchConnections(subBatchContexts); }
+
+    std::vector<TransProvider::SendIoBatch> ioBatches;
+    if (status.ok()) { BuildSubBatchSendBuffers(subBatchContexts, ioBatches); }
+    if (status.ok() && task->cancelRequested.load(std::memory_order_acquire)) {
+        status = Status::Error(StatusCode::CANCELED,
+                               "transport task canceled before asynchronous send");
+    }
+
+    if (!status.ok()) {
+        KV_ERROR("Abort async transport task before send task_id={} code={} message={}",
+                 task->taskId, static_cast<int>(status.code), status.message);
+    } else if (!ioBatches.empty()) {
+        const auto preSendAt = std::chrono::steady_clock::now();
+        const metrics::MetricUpdate preSendUpdates[] = {
+            {KV_METRIC("kv_transport_task_pre_send_duration_seconds"),
+             std::chrono::duration<double>(preSendAt - task->submittedAt).count()},
+            {KV_METRIC("kv_transport_task_queue_duration_seconds"),
+             std::chrono::duration<double>(processingStartedAt - task->submittedAt).count()},
+            {KV_METRIC("kv_transport_task_process_duration_seconds"),
+             std::chrono::duration<double>(preSendAt - processingStartedAt).count()},
+        };
+        metrics::UpdateStats(preSendUpdates, std::size(preSendUpdates));
+
+        const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
+        const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
+        const auto sendStartedAt = std::chrono::steady_clock::now();
+        auto sendStatuses =
+            transProvider_->AsyncSend(ioBatches, kernelCount, quietCount, operation);
+        metrics::UpdateStats(
+            KV_METRIC("kv_transport_task_send_call_duration_seconds"),
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - sendStartedAt)
+                .count());
+
+        if (sendStatuses.size() != ioBatches.size() && operation) {
+            do {
+                (void)transProvider_->WaitSend(operation);
+                if (operation) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            } while (operation);
+        }
+        if (!operation) {
+            const auto missingOperation =
+                Status::Error(StatusCode::INTERNAL_ERROR,
+                              "provider completed AsyncSend without a wait operation");
+            for (auto& sendStatus : sendStatuses) {
+                if (sendStatus.ok()) { sendStatus = missingOperation; }
+            }
+        }
+        ApplySubBatchSendStatuses(subBatchContexts, sendStatuses, ioBatches.size());
+    }
+
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (!status.ok()) { AbortSubBatchesBeforeSend(*task, subBatchContexts); }
+        *task->subBatchContexts = std::move(subBatchContexts);
+        task->InitializeRemainingSubBatchCount();
+
+        if (!operation) {
+            if (task->cancelRequested.load(std::memory_order_acquire)) {
+                const auto canceledStatus =
+                    Status::Error(StatusCode::CANCELED, "transport task canceled");
+                std::fill(task->entryStatus.begin(), task->entryStatus.end(), canceledStatus);
+                ReleaseAllSubBatchResources(*task->subBatchContexts);
+                task->finalStatus = canceledStatus;
+                task->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
+            } else {
+                task->TryFinalizeFromSubBatches();
+            }
+            RecordSendComplete(task);
+            task->sendInProgress.store(false, std::memory_order_release);
+        }
+        done = task->Done();
+    }
+
+    KV_DEBUG(
+        "TransportTaskExecutor::ExecuteAsync launched task_id={} sub_batches={} pending_wait={} "
+        "done={}",
+        task->taskId, task->subBatchContexts->size(), operation != nullptr, done);
+    return done;
+}
+
+bool TransportTaskExecutor::WaitAsync(const TransportTaskPtr& task,
+                                      TransProvider::SendOperationPtr& operation)
+{
+    if (!task || !operation) { return false; }
+    const auto sendStatuses = transProvider_->WaitSend(operation);
+    if (operation) { return false; }
+
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        ApplySubBatchSendStatuses(*task->subBatchContexts, sendStatuses,
+                                  task->subBatchContexts->size());
+        task->InitializeRemainingSubBatchCount();
+        if (task->cancelRequested.load(std::memory_order_acquire)) {
+            const auto canceledStatus =
+                Status::Error(StatusCode::CANCELED, "transport task canceled");
+            std::fill(task->entryStatus.begin(), task->entryStatus.end(), canceledStatus);
+            for (auto& subBatchContext : *task->subBatchContexts) {
+                std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                          canceledStatus);
+                subBatchContext.status = canceledStatus;
+                subBatchContext.state = TransportSubBatchState::COMPLETED;
+            }
+            ReleaseAllSubBatchResources(*task->subBatchContexts);
+            task->finalStatus = canceledStatus;
+            task->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
+        } else {
+            task->TryFinalizeFromSubBatches();
+        }
+        RecordSendComplete(task);
+        task->sendInProgress.store(false, std::memory_order_release);
+        done = task->Done();
+    }
+    return done;
+}
+
 bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
 {
     if (!task) { return false; }
+    if (task->sendInProgress.load(std::memory_order_acquire)) { return false; }
 
     bool done = false;
     {
@@ -396,6 +577,17 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
             for (auto& subBatchContext : *task->subBatchContexts) {
                 if (subBatchContext.state == TransportSubBatchState::COMPLETED) { continue; }
 
+                const auto& flag = subBatchContext.flagBuffer;
+                if (flag.local_addr != 0 && flag.length >= 4 * sizeof(std::uint32_t)) {
+                    const auto* header = reinterpret_cast<const std::uint32_t*>(flag.local_addr);
+                    const auto cidWord = __atomic_load_n(header + 3, __ATOMIC_ACQUIRE);
+                    KV_ERROR("UCM_CQE_TIMEOUT task_id={} expected_cid={} observed_cid={} "
+                             "host_va=0x{:x} device_va=0x{:x} header=[{:08x},{:08x},{:08x},{:08x}]",
+                             task->taskId, subBatchContext.cid, cidWord & 0xFFFFU, flag.local_addr,
+                             flag.device_addr, __atomic_load_n(header, __ATOMIC_RELAXED),
+                             __atomic_load_n(header + 1, __ATOMIC_RELAXED),
+                             __atomic_load_n(header + 2, __ATOMIC_RELAXED), cidWord);
+                }
                 std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
                           timeoutStatus);
                 connManager_->ReportFailure(subBatchContext.channel);

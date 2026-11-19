@@ -106,6 +106,8 @@ struct TransportTask {
     std::chrono::steady_clock::time_point sendCompletedAt{};
     std::function<void()> onSendComplete;
     std::atomic<bool> sendReturned{false};
+    std::atomic<bool> sendInProgress{false};
+    std::atomic<bool> cancelRequested{false};
     metrics::CachedMetric* asuCompletionMetric{nullptr};
 
     std::atomic<TransportTaskState> state{TransportTaskState::PENDING};

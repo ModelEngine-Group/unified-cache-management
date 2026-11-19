@@ -25,6 +25,14 @@ public:
     std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, uint32_t kernelCount,
                              uint32_t quietCount) override;
 
+    bool SupportsAsyncSend() const override { return true; }
+
+    std::vector<Status> AsyncSend(const std::vector<SendIoBatch>& ioBatches,
+                                  uint32_t kernelCount, uint32_t quietCount,
+                                  SendOperationPtr& operation) override;
+
+    std::vector<Status> WaitSend(SendOperationPtr& operation) override;
+
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& mrHandles) override;
 

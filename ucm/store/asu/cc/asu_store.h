@@ -46,6 +46,7 @@ struct Config {
     std::string aicpuHcommProtocol;
     std::vector<std::string> aicpuLocalAddrs;
     std::optional<std::uint64_t> aicpuSendTimeoutMs;
+    std::string aicpuSendMode{"sync"};
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};

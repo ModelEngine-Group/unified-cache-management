@@ -43,6 +43,13 @@ constexpr std::size_t kTestBufferSlotNum = 16;
 
 class StubTransProvider : public TransProvider {
 public:
+    std::vector<Status> waitStatuses;
+    bool retainOperation{false};
+    std::vector<Status> WaitSend(SendOperationPtr& operation) override
+    {
+        if (!retainOperation) { operation.reset(); }
+        return waitStatuses;
+    }
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
     {
@@ -113,6 +120,21 @@ protected:
     std::unique_ptr<AsuTransportImpl> transport_;
 };
 
+TEST_F(TransportTaskCompletionTest, SendCountsRejectInvalidValuesWithoutThrowing)
+{
+    for (const auto* key : {"kernel_count", "quiet_count"}) {
+        for (const auto* value : {"", "bad", "-1", " -1", "3junk", "4294967296",
+                                  "18446744073709551616"}) {
+            SCOPED_TRACE(value);
+            EXPECT_EQ(TransportTaskExecutor::GetSendCountAttr({{key, value}}, key), 0U);
+        }
+        EXPECT_EQ(TransportTaskExecutor::GetSendCountAttr({}, key), 0U);
+        EXPECT_EQ(TransportTaskExecutor::GetSendCountAttr({{key, "7"}}, key), 7U);
+        EXPECT_EQ(TransportTaskExecutor::GetSendCountAttr({{key, "0x10"}}, key), 16U);
+        EXPECT_EQ(TransportTaskExecutor::GetSendCountAttr({{key, "4294967295"}}, key), UINT32_MAX);
+    }
+}
+
 TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
 {
     TransportConfig config;
@@ -121,6 +143,18 @@ TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
     const auto status = transport_->Init(config, transport_->transProvider_);
 
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(TransportTaskCompletionTest, InitRejectsAsyncModeForUnsupportedProvider)
+{
+    TransportConfig config;
+    config.attrs["aicpu_send_mode"] = "async";
+    config.maxInflightTasks = 2;
+
+    const auto status = transport_->Init(config, transport_->transProvider_);
+
+    EXPECT_EQ(status.code, StatusCode::UNSUPPORTED);
+    EXPECT_EQ(transport_->asyncSendMaxInflight_, 2U);
 }
 
 TEST_F(TransportTaskCompletionTest, TaskExecutorSupportsExplicitLifecycle)
@@ -136,6 +170,69 @@ TEST_F(TransportTaskCompletionTest, TaskExecutorSupportsExplicitLifecycle)
     EXPECT_TRUE(transport.taskExecutor_->Shutdown().ok());
     transport.taskExecutor_.reset();
     EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(TransportTaskCompletionTest, AsyncWaitFailureUpdatesRemainingCount)
+{
+    auto* provider = static_cast<StubTransProvider*>(transport_->transProvider_.get());
+    transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 3);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(NodeEndpoint{}, 1).ok());
+    auto task = std::make_shared<TransportTask>();
+    task->state.store(TransportTaskState::INFLIGHT);
+    task->sendInProgress.store(true);
+    task->subBatchContexts->resize(2);
+    for (auto& batch : *task->subBatchContexts) {
+        batch.channel = transport_->connManager_->SelectConnection();
+        ASSERT_NE(batch.channel, nullptr);
+        batch.entryStatus.assign(1, Status::OK());
+    }
+    task->InitializeRemainingSubBatchCount();
+    provider->waitStatuses = {Status::Error(StatusCode::IO_ERROR, "wait failed"), Status::OK()};
+    TransProvider::SendOperationPtr operation = std::make_unique<TransProvider::SendOperation>();
+    EXPECT_FALSE(transport_->taskExecutor_->WaitAsync(task, operation));
+    EXPECT_EQ(task->remainingSubBatchCount, 1U);
+    EXPECT_EQ((*task->subBatchContexts)[0].state, TransportSubBatchState::COMPLETED);
+    auto& remaining = (*task->subBatchContexts)[1];
+    transport_->taskExecutor_->CompleteSubBatch(*task, remaining, Status::OK());
+    task->TryFinalizeFromSubBatches();
+    EXPECT_TRUE(task->Done());
+}
+
+TEST_F(TransportTaskCompletionTest, PendingAsyncWaitRetainsTaskResources)
+{
+    auto* provider = static_cast<StubTransProvider*>(transport_->transProvider_.get());
+    provider->retainOperation = true;
+    provider->waitStatuses = {Status::Error(StatusCode::IO_ERROR, "still accessing buffers")};
+    auto task = std::make_shared<TransportTask>();
+    task->state.store(TransportTaskState::INFLIGHT);
+    task->sendInProgress.store(true);
+    task->subBatchContexts->resize(1);
+    auto& batch = task->subBatchContexts->front();
+    ASSERT_TRUE(transport_->taskExecutor_->sendBufferManager_.Allocate(64, batch.sendSge).ok());
+    ASSERT_TRUE(transport_->taskExecutor_->flagBufferManager_.Allocate(64, batch.flagBuffer).ok());
+    const auto sendSlot = batch.sendSge.slot_index;
+    const auto flagSlot = batch.flagBuffer.slot_index;
+    task->InitializeRemainingSubBatchCount();
+    TransProvider::SendOperationPtr operation = std::make_unique<TransProvider::SendOperation>();
+    EXPECT_FALSE(transport_->taskExecutor_->WaitAsync(task, operation));
+    EXPECT_NE(operation, nullptr);
+    EXPECT_TRUE(task->sendInProgress.load());
+    EXPECT_EQ(task->remainingSubBatchCount, 1U);
+    EXPECT_EQ(batch.sendSge.slot_index, sendSlot);
+    EXPECT_EQ(batch.flagBuffer.slot_index, flagSlot);
+    EXPECT_FALSE(transport_->taskExecutor_->Cancel(task));
+    EXPECT_TRUE(task->cancelRequested.load());
+    transport_->taskExecutor_->ReleaseSubBatchResources(batch);
+}
+
+TEST_F(TransportTaskCompletionTest, CanceledTaskDoesNotStartAsyncSend)
+{
+    auto task = std::make_shared<TransportTask>();
+    ASSERT_TRUE(transport_->taskExecutor_->Cancel(task));
+    TransProvider::SendOperationPtr operation;
+    EXPECT_FALSE(transport_->taskExecutor_->ExecuteAsync(task, operation));
+    EXPECT_FALSE(task->sendInProgress.load());
+    EXPECT_EQ(operation, nullptr);
 }
 
 TEST_F(TransportTaskCompletionTest, InitializeCountsOnlyPendingSubBatches)
