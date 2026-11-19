@@ -71,6 +71,11 @@ enum class StatusCode {
     IN_PROGRESS,
     INTERNAL_ERROR,
     CANCELED,
+    // No healthy node owns the key: the primary ring owner is unavailable and the
+    // secondary ring owner is unavailable as well (or is the same node).
+    NO_AVAILABLE_NODE,
+    // A pooled connection already exists for the node but its endpoints changed.
+    ENDPOINT_CHANGED,
 
     // Entry status codes keep raw entry result values in the low byte.
     ENTRY_RETRY_ADVISED = 0x0100 | 0x01,

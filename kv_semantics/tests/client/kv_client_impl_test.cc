@@ -16,12 +16,17 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "kv_metrics/metrics.h"
 #include "router/router.h"
+#include "transport/asu_transport_pool.h"
 #include "utils/config_utils.h"
+#include "view/m800_view_slave_server.h"
+#include "view/view_universe.h"
 
 namespace kv::test {
 
@@ -70,6 +75,11 @@ struct TestState {
     std::unordered_map<NodeId, Status> deleteFailures;
     std::unordered_map<NodeId, std::vector<Status>> checkEntryStatus;
     std::unordered_map<NodeId, Status> checkResultStatus;
+    std::unordered_set<NodeId> unhealthyNodes;
+    std::unordered_set<NodeId> failInitNodes;
+    std::vector<NodeId> shutdownCalls;
+    // Records (nodeId, nsId) for every submitted transport task.
+    std::vector<std::pair<NodeId, KvNsId>> submittedNamespaces;
     std::vector<NodeId> registerCalls;
     std::vector<NodeId> providerBindCalls;
     std::vector<KVBuffer> submittedEntries;
@@ -188,11 +198,15 @@ private:
 class FakeTransport : public AsuTransport {
 public:
     explicit FakeTransport(std::shared_ptr<TestState> state) : state_(std::move(state)) {}
+    ~FakeTransport() override { (void)Shutdown(); }
 
     Status Init(const TransportConfig& config,
                 std::shared_ptr<TransProvider> transProvider) override
     {
         (void)transProvider;
+        if (state_->failInitNodes.count(config.nodeId) != 0) {
+            return Status::Error(StatusCode::IO_ERROR, "fake transport init failure");
+        }
         config_ = config;
         state_->initConfigs[config_.nodeId] = config_;
         state_->initProviders[config_.nodeId] = transProvider.get();
@@ -210,11 +224,20 @@ public:
 
     Status Shutdown() override
     {
+        if (shutdownCalled_) { return Status::OK(); }
+        shutdownCalled_ = true;
+        state_->shutdownCalls.emplace_back(config_.nodeId);
         initialized_ = false;
         return Status::OK();
     }
 
-    Status CheckHealth() override { return initialized_ ? Status::OK() : NotInitialized(); }
+    Status CheckHealth() override
+    {
+        if (state_->unhealthyNodes.count(config_.nodeId) != 0) {
+            return Status::Error(StatusCode::CONNECTION_ERROR, "fake transport is unhealthy");
+        }
+        return initialized_ ? Status::OK() : NotInitialized();
+    }
 
     virtual Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
     {
@@ -250,6 +273,7 @@ public:
             return Status::Error(StatusCode::INVALID_ARGUMENT, "fake transport task is null");
         }
         state_->submittedEntries = task->entries;
+        state_->submittedNamespaces.emplace_back(config_.nodeId, task->nsId);
         state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
             case AsuOpType::QUERY: {
@@ -380,6 +404,8 @@ private:
     std::shared_ptr<TestState> state_;
     TransportConfig config_;
     bool initialized_{false};
+
+    bool shutdownCalled_{false};
 };
 
 bool InvokePendingCompletion(const std::shared_ptr<TestState>& state, NodeId nodeId,
@@ -463,6 +489,143 @@ bool WaitForFetchCount(const std::shared_ptr<FakeViewServer>& viewServer,
     return false;
 }
 
+// Serves prepared GlobalView values in order; the last one repeats. Used by the transport
+// pool tests, which need view epochs and per-node endpoints.
+class ScriptedViewServer final : public ViewServer {
+public:
+    explicit ScriptedViewServer(std::vector<GlobalView> views) : views_(std::move(views)) {}
+
+    Status GetGlobalView(GlobalView& view) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        auto index = std::min(fetchCount_, views_.size() - 1);
+        ++fetchCount_;
+        view = views_[index];
+        return Status::OK();
+    }
+
+    std::size_t FetchCount() const
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        return fetchCount_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::size_t fetchCount_{0};
+    std::vector<GlobalView> views_;
+};
+
+GlobalView MakeEndpointView(std::uint64_t epoch, const std::vector<NodeId>& nodes,
+                            const std::string& ip = "10.0.0.1")
+{
+    GlobalView view;
+    view.viewEpoch = epoch;
+    for (auto nodeId : nodes) {
+        NodeEndpoint endpoint;
+        endpoint.ip = ip;
+        endpoint.port = 1000;
+        NodeInfo info;
+        info.endpoints.push_back(endpoint);
+        view.asuMap.emplace(nodeId, info);
+    }
+    return view;
+}
+
+KvClientConfig MakePooledConfig(const std::vector<NodeId>& asuIds);
+
+Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+                    std::uint64_t timeoutMs = 0);
+
+bool WaitFor(std::function<bool()> predicate,
+             std::chrono::milliseconds timeout = std::chrono::milliseconds(3000))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return predicate();
+}
+
+// Forces one refreshable failure so the resident scheduler picks up the trigger.
+void TriggerRefreshByIoFailure(KvClientImpl& client, const std::shared_ptr<TestState>& state,
+                               KvNsId nsId = kDefaultKvNsId)
+{
+    const bool deferCompletion = state->deferCompletionCallbacks;
+    state->deferCompletionCallbacks = false;
+    state->failFirstQuery = true;
+    state->firstQueryFailed = false;
+    const std::vector<CacheKey> keys{MakeCacheKey("refresh-trigger")};
+    TaskId taskId = kInvalidTaskId;
+    if (nsId == kDefaultKvNsId) {
+        QueryResult result;
+        (void)QueryAndWait(client, keys, result);
+    } else if (client.QueryAsync(nsId, keys, taskId).ok()) {
+        TaskResult taskResult;
+        (void)client.Wait(taskId, 1000, taskResult);
+    }
+    state->deferCompletionCallbacks = deferCompletion;
+}
+
+template <typename ViewServerT>
+bool WaitForFetchCount(const std::shared_ptr<ViewServerT>& viewServer,
+                       std::size_t expectedFetchCount)
+{
+    for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
+        if (viewServer->FetchCount() >= expectedFetchCount) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+// Produces one failing query so the client requests a background view refresh.
+void TriggerViewRefresh(KvClient& client, const std::shared_ptr<TestState>& state);
+
+// Serves a multi-namespace view universe; each entry in views_ is one publication.
+class MultiNsViewServer final : public M800ViewSlaveServer {
+public:
+    explicit MultiNsViewServer(std::vector<std::unordered_map<KvNsId, GlobalView>> views)
+        : views_(std::move(views))
+    {
+    }
+
+    Status Start() override { return Status::OK(); }
+    void Stop() override {}
+
+    Status GetGlobalView(GlobalView& view) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        const auto& current = views_[std::min(fetchCount_, views_.size() - 1)];
+        auto iter = current.find(kDefaultKvNsId);
+        if (iter == current.end()) {
+            return Status::Error(StatusCode::NOT_FOUND, "no default namespace view");
+        }
+        view = iter->second;
+        return Status::OK();
+    }
+
+    Status GetAllViews(ViewUniverse& universe) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        auto index = std::min(fetchCount_, views_.size() - 1);
+        ++fetchCount_;
+        auto next = CreateViewUniverse(views_[index], static_cast<std::uint64_t>(index + 1));
+        return universe.ReplaceAll(*next);
+    }
+
+    std::size_t FetchCount() const
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        return fetchCount_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::size_t fetchCount_{0};
+    std::vector<std::unordered_map<KvNsId, GlobalView>> views_;
+};
+
 bool CheckUntilComplete(KvClient& client, TaskId taskId)
 {
     for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
@@ -514,7 +677,7 @@ void ExpectSameAsuSet(std::vector<NodeId> actual, std::vector<NodeId> expected)
 }
 
 Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
-                    std::uint64_t timeoutMs = 0)
+                    std::uint64_t timeoutMs)
 {
     TaskId taskId{kInvalidTaskId};
     auto status = client.QueryAsync(keys, taskId);
@@ -530,6 +693,22 @@ Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryRe
     return status;
 }
 
+KvClientConfig MakePooledConfig(const std::vector<NodeId>& asuIds)
+{
+    auto config = MakeConfig(asuIds);
+    config.attrs["view.provider"] = "m800";
+    return config;
+}
+
+// Produces one failing query so the client requests a background view refresh.
+void TriggerViewRefresh(KvClient& client, const std::shared_ptr<TestState>& state)
+{
+    state->failFirstQuery = true;
+    state->firstQueryFailed = false;
+    QueryResult result;
+    (void)QueryAndWait(client, {MakeCacheKey("refresh-trigger")}, result);
+}
+
 CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
 {
     std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
@@ -543,6 +722,30 @@ CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
         if (routes.size() == 1 && routes.begin()->first == targetAsuId) { return cacheKey; }
     }
     return {};
+}
+
+// Returns keys whose primary owner is unavailableNode and whose failover result either has
+// no owner (expectNoOwner) or has another owner. Uses the same router contract as the
+// client, so the expectation is deterministic for the produced keys.
+std::vector<CacheKey> FindKeysByFailover(const std::vector<NodeId>& asuIds, NodeId unavailableNode,
+                                         bool expectNoOwner, std::size_t count)
+{
+    std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
+    auto router = kv::CreateRouter(nodeIds, kv::HashFunction{}, kv::RouterConfig{});
+    std::vector<CacheKey> keys;
+    keys.reserve(count);
+    for (std::uint32_t index = 1; keys.size() < count && index < 1000000; ++index) {
+        std::uint64_t combined = (static_cast<std::uint64_t>(unavailableNode) << 32) | index;
+        CacheKey cacheKey{};
+        std::memcpy(cacheKey.data(), &combined, sizeof(combined));
+        auto routeKey = std::string(CacheKeyView(cacheKey));
+        auto primary = router->RouteKeys({routeKey});
+        if (primary.size() != 1 || primary.begin()->first != unavailableNode) { continue; }
+        const auto failover =
+            router->RouteKeys({routeKey}, kv::UnavailableNodeSet{unavailableNode});
+        if (failover.empty() == expectNoOwner) { keys.push_back(cacheKey); }
+    }
+    return keys;
 }
 
 std::vector<KVBuffer> BuildRoutedEntries(const std::vector<NodeId>& routeOrder)
@@ -1175,8 +1378,10 @@ TEST(KvClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
     EXPECT_EQ(state->storeCalls, std::vector<NodeId>({10}));
 }
 
-TEST(KvClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)
+TEST(KvClientImplTest, ViewServer_InitClonesTemplateConfigForUnconfiguredNode)
 {
+    // The pool serves every node of a view: a node without an exact transport config is
+    // configured from the first template entry instead of failing the initialization.
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10});
     auto viewServer = std::make_shared<FakeViewServer>(
@@ -1189,8 +1394,12 @@ TEST(KvClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportCon
 
     auto status = client->Init(config);
 
-    EXPECT_EQ(status.code, StatusCode::NOT_FOUND);
-    EXPECT_NE(status.message.find("nodeId=20"), std::string::npos);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
 }
 
 TEST(KvClientImplTest, Query_PerKeyKeepsOriginalOrder)
@@ -1379,6 +1588,7 @@ TEST(KvClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
     auto status = QueryAndWait(*client, {MakeCacheKey("k05")}, result);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
@@ -1404,6 +1614,7 @@ TEST(KvClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
     auto status = QueryAndWait(*client, {MakeCacheKey("k05")}, result);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
@@ -1461,6 +1672,7 @@ TEST(KvClientImplTest, BackgroundRefresh_LoadRecordsDispatchErrorWithoutRetry)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
     EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->loadCalls.empty());
@@ -1495,6 +1707,7 @@ TEST(KvClientImplTest, BackgroundRefresh_StoreRecordsDispatchErrorWithoutRetry)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
     EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->storeCalls.empty());
@@ -1525,6 +1738,7 @@ TEST(KvClientImplTest, BackgroundRefresh_DeleteRecordsDispatchErrorWithoutRetry)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
     EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->deleteCalls.empty());
@@ -1557,6 +1771,8 @@ TEST(KvClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
+    // The refreshed view only contains node 20, whose transport cannot be created.
+    state->failInitNodes.insert(20);
     auto config = MakeConfig({10});
     auto viewServer = std::make_shared<FakeViewServer>(std::vector<std::vector<NodeId>>{{10}, {20}},
                                                        std::vector<std::uint64_t>{1, 2});
@@ -1568,11 +1784,13 @@ TEST(KvClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
     auto status = QueryAndWait(*client, {MakeCacheKey("k05")}, result);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    ASSERT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
 
     status = QueryAndWait(*client, {MakeCacheKey("k05")}, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+    // Node 20 failed to build; the published snapshot with node 10 still serves IO.
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_EQ(state->queryCalls, std::vector<NodeId>({10}));
 }
 
@@ -1676,6 +1894,7 @@ TEST(KvClientImplTest, MemoryRegister_RegisterFailureDoesNotBindProviders)
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
@@ -1732,6 +1951,7 @@ TEST(KvClientImplTest, MemoryRegister_ProviderBindFailureDoesNotCacheResource)
     status = QueryAndWait(*client, {MakeCacheKey("k05")}, queryResult);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 3; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{3});
     EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10}));
@@ -1798,6 +2018,8 @@ TEST(KvClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutur
     status = QueryAndWait(*client, {MakeCacheKey("k05")}, queryResult);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->providerBindCalls.empty());
@@ -2031,6 +2253,7 @@ TEST(KvClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
@@ -2248,6 +2471,8 @@ TEST(KvClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedAs
     status = QueryAndWait(*client, {MakeCacheKey("k05")}, result);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(WaitFor([&] { return state->providerBindCalls.size() >= 2; }));
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10, 20}));
@@ -2320,6 +2545,919 @@ TEST(KvClientImplTest,
     TaskResult secondTaskResult;
     EXPECT_TRUE(client->Wait(taskId, 100, secondTaskResult).ok());
     EXPECT_EQ(state->storeCalls, std::vector<NodeId>({20, 10}));
+}
+
+TEST(KvClientImplTest, TaskBuild_ExcludesUnhealthyNodeFromRouting)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    state->unhealthyNodes.insert(10);
+
+    const auto keys = FindKeysByFailover({10, 20}, 10, false, 2);
+    ASSERT_EQ(keys.size(), std::size_t{2});
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(keys, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    for (const auto& entryStatus : result.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({20}));
+}
+
+TEST(KvClientImplTest, TaskBuild_UnroutableEntriesReportNoAvailableNode)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+    state->unhealthyNodes.insert(10);
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({MakeCacheKey("k05"), MakeCacheKey("k15")}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::NO_AVAILABLE_NODE);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{2});
+    for (const auto& entryStatus : result.entryStatus) {
+        EXPECT_EQ(entryStatus.code, StatusCode::NO_AVAILABLE_NODE);
+    }
+    EXPECT_TRUE(state->queryCalls.empty());
+    EXPECT_TRUE(state->submittedOpTypes.empty());
+}
+
+TEST(KvClientImplTest, TaskBuild_PartialFailureKeepsRoutableEntries)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    state->unhealthyNodes.insert(10);
+
+    const auto noOwnerKeys = FindKeysByFailover({10, 20}, 10, true, 1);
+    ASSERT_EQ(noOwnerKeys.size(), std::size_t{1});
+    const auto failoverKeys = FindKeysByFailover({10, 20}, 10, false, 1);
+    ASSERT_EQ(failoverKeys.size(), std::size_t{1});
+    const auto healthyKey = FindKeyForAsu({10, 20}, 20);
+    ASSERT_NE(healthyKey, CacheKey{});
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({noOwnerKeys[0], failoverKeys[0], healthyKey}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::NO_AVAILABLE_NODE);
+    EXPECT_TRUE(result.entryStatus[1].ok());
+    EXPECT_TRUE(result.entryStatus[2].ok());
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({20}));
+}
+
+TEST(KvClientImplTest, TransportPool_ReusesTransportAcrossViews)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10, 20}),
+        MakeEndpointView(2, {10, 20}),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10, 20})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    TriggerViewRefresh(*client, state);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+    EXPECT_TRUE(state->shutdownCalls.empty());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, TransportPool_KeepsTransportWhenNodeLeavesView)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10, 20}),
+        MakeEndpointView(2, {10}),
+        MakeEndpointView(3, {10, 20}),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10, 20})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    TriggerViewRefresh(*client, state);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+    EXPECT_TRUE(state->shutdownCalls.empty());
+
+    TriggerViewRefresh(*client, state);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    ASSERT_TRUE(client->Shutdown().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+}
+
+TEST(KvClientImplTest, TransportPool_RebuildsOnEndpointChange)
+{
+    // The same node moves to a new address: the refresh rebuilds the connection instead
+    // of failing forever with the stale one.
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10}, "10.0.0.1"),
+        MakeEndpointView(2, {10}, "10.0.0.2"),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    TriggerViewRefresh(*client, state);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    ASSERT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+
+    ASSERT_EQ(state->initConfigs.count(NodeId{10}), std::size_t{1});
+    ASSERT_EQ(state->initConfigs.at(NodeId{10}).endpoints.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.at(NodeId{10}).endpoints[0].ip, "10.0.0.2");
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, TransportPool_ClonesTemplateForDynamicNode)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10, 20}),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    auto config = MakePooledConfig({999});
+    config.transportConfigs[0].attrs["kv_ns_id"] = "7";
+    config.transportConfigs[0].attrs["dtype"] = "1";
+    ASSERT_TRUE(client->Init(config).ok());
+
+    ASSERT_EQ(state->initConfigs.count(10), std::size_t{1});
+    const auto& created = state->initConfigs.at(10);
+    EXPECT_EQ(created.nodeId, NodeId{10});
+    ASSERT_EQ(created.endpoints.size(), std::size_t{1});
+    EXPECT_EQ(created.endpoints[0].ip, "10.0.0.1");
+    EXPECT_EQ(created.attrs.count("kv_ns_id"), std::size_t{0});
+    EXPECT_EQ(created.attrs.at("dtype"), "1");
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, TransportPool_DoesNotPoolFailedInit)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10}),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+
+    state->failInitNodes.insert(10);
+    EXPECT_FALSE(client->Init(MakePooledConfig({10})).ok());
+
+    state->failInitNodes.clear();
+    ASSERT_TRUE(client->Init(MakePooledConfig({10})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, TransportPool_ShutdownClosesEachTransportOnce)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedViewServer>(std::vector<GlobalView>{
+        MakeEndpointView(1, {10, 20}),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10, 20})).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+
+    std::sort(state->shutdownCalls.begin(), state->shutdownCalls.end());
+    EXPECT_EQ(state->shutdownCalls, std::vector<NodeId>({10, 20}));
+}
+
+TEST(KvClientImplTest, MultiNs_SelectsSnapshotByNsId)
+{
+    auto state = std::make_shared<TestState>();
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(KvNsId{100}, MakeEndpointView(1, {10}));
+    views.emplace(KvNsId{200}, MakeEndpointView(1, {20}));
+    auto viewServer = std::make_shared<MultiNsViewServer>(
+        std::vector<std::unordered_map<KvNsId, GlobalView>>{views});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    const auto key = MakeCacheKey("k05");
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{100}, {key}, taskId).ok());
+    TaskResult result;
+    EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
+
+    taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{200}, {key}, taskId).ok());
+    EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
+
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({10, 20}));
+    ASSERT_EQ(state->submittedNamespaces.size(), std::size_t{2});
+    EXPECT_EQ(std::get<0>(state->submittedNamespaces[0]), NodeId{10});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[0]), KvNsId{100});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[1]), KvNsId{200});
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, MultiNs_UnknownNsReturnsNotFound)
+{
+    auto state = std::make_shared<TestState>();
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(KvNsId{100}, MakeEndpointView(1, {10}));
+    auto viewServer = std::make_shared<MultiNsViewServer>(
+        std::vector<std::unordered_map<KvNsId, GlobalView>>{views});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    const auto status = client->QueryAsync(KvNsId{999}, {MakeCacheKey("k05")}, taskId);
+    EXPECT_EQ(status.code, StatusCode::NOT_FOUND);
+    EXPECT_NE(status.message.find("999"), std::string::npos);
+    EXPECT_TRUE(state->queryCalls.empty());
+    // A caller error must not be turned into refresh traffic.
+    EXPECT_EQ(viewServer->FetchCount(), std::size_t{1});
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, MultiNs_DefaultNsUnchanged)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+
+    ASSERT_EQ(state->submittedNamespaces.size(), std::size_t{1});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[0]), kDefaultKvNsId);
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, MultiNs_SharedTransportServesMultipleNs)
+{
+    auto state = std::make_shared<TestState>();
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(KvNsId{100}, MakeEndpointView(1, {10}));
+    views.emplace(KvNsId{200}, MakeEndpointView(1, {10}));
+    auto viewServer = std::make_shared<MultiNsViewServer>(
+        std::vector<std::unordered_map<KvNsId, GlobalView>>{views});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    const auto key = MakeCacheKey("k05");
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{100}, {key}, taskId).ok());
+    TaskResult result;
+    EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
+
+    taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{200}, {key}, taskId).ok());
+    EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
+
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+    ASSERT_EQ(state->submittedNamespaces.size(), std::size_t{2});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[0]), KvNsId{100});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[1]), KvNsId{200});
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, MultiNs_NsLessCallUsesPublishedNs)
+{
+    auto state = std::make_shared<TestState>();
+    const KvNsId nsId{1009323};
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(nsId, MakeEndpointView(1, {10}));
+    auto viewServer = std::make_shared<MultiNsViewServer>(
+        std::vector<std::unordered_map<KvNsId, GlobalView>>{views});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10})).ok());
+
+    QueryResult result;
+    ASSERT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+
+    ASSERT_EQ(state->submittedNamespaces.size(), std::size_t{1});
+    EXPECT_EQ(std::get<1>(state->submittedNamespaces[0]), nsId);
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, MultiNs_NsLessCallRejectedWhenMultipleNamespaces)
+{
+    auto state = std::make_shared<TestState>();
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(KvNsId{100}, MakeEndpointView(1, {10}));
+    views.emplace(KvNsId{200}, MakeEndpointView(1, {20, 30}));
+    auto viewServer = std::make_shared<MultiNsViewServer>(
+        std::vector<std::unordered_map<KvNsId, GlobalView>>{views});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakePooledConfig({10, 20, 30})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    const auto status = client->QueryAsync({MakeCacheKey("k05")}, taskId);
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_TRUE(state->queryCalls.empty());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+// Serves explicitly scripted universes: one entry per GetAllViews call.
+struct UniverseScript {
+    std::uint64_t globalEpoch{0};
+    std::unordered_map<KvNsId, GlobalView> views;
+};
+
+class ScriptedUniverseViewServer final : public M800ViewSlaveServer {
+public:
+    explicit ScriptedUniverseViewServer(std::vector<UniverseScript> scripts)
+        : scripts_(std::move(scripts))
+    {
+    }
+
+    Status Start() override { return Status::OK(); }
+    void Stop() override {}
+
+    Status GetGlobalView(GlobalView& view) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        const auto& current = scripts_[std::min(index_, scripts_.size() - 1)];
+        if (current.views.empty()) {
+            return Status::Error(StatusCode::NOT_FOUND, "no published view");
+        }
+        view = current.views.begin()->second;
+        return Status::OK();
+    }
+
+    Status GetAllViews(ViewUniverse& universe) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        const auto& current = scripts_[std::min(index_, scripts_.size() - 1)];
+        ++index_;
+        auto next = CreateViewUniverse(current.views, current.globalEpoch);
+        return universe.ReplaceAll(*next);
+    }
+
+    std::size_t FetchCount() const
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        return index_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::size_t index_{0};
+    std::vector<UniverseScript> scripts_;
+};
+
+GlobalView MakeView(std::uint64_t viewEpoch, const std::vector<NodeId>& nodes)
+{
+    GlobalView view = MakeEndpointView(viewEpoch, nodes);
+    view.viewEpoch = viewEpoch;
+    return view;
+}
+
+UniverseScript MakeScript(std::uint64_t globalEpoch, std::unordered_map<KvNsId, GlobalView> views)
+{
+    UniverseScript script;
+    script.globalEpoch = globalEpoch;
+    script.views = std::move(views);
+    return script;
+}
+
+// ---------------------------------------------------------------- refresh pipeline
+
+TEST(KvClientImplTest, Refresh_PullsNewViewOnIoFailure)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}    }
+         ),
+        MakeScript(2, {{100, MakeView(2, {10, 20})}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_EqualEpochReplayKeepsSnapshot)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}}
+         ),
+        MakeScript(1, {{100, MakeView(1, {10})}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return viewServer->FetchCount() >= 2; }));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_RejectsEmptyUniverse)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}}
+         ),
+        MakeScript(2, {                       }
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return viewServer->FetchCount() >= 2; }));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_RejectsOlderGlobalEpoch)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(5, {{100, MakeView(5, {10})}    }
+         ),
+        MakeScript(4, {{100, MakeView(4, {10, 20})}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return viewServer->FetchCount() >= 2; }));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_RejectsInvalidNamespaceEpoch)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}    }
+         ),
+        MakeScript(2, {{100, MakeView(5, {10, 20})}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return viewServer->FetchCount() >= 2; }));
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_RebuildsChangedAndRemovesVanishedNamespace)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1,
+                   {
+                       {100, MakeView(1, {10})},
+                       {200, MakeView(1, {20})},
+                       }
+                   ),
+        MakeScript(2, {{100, MakeView(2, {10, 30})}                       }
+                   ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    TriggerRefreshByIoFailure(*client, state, KvNsId{100});
+
+    // Only namespace 100 is rebuilt and only for the new node 30.
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 3; }));
+    EXPECT_TRUE(WaitFor([&] {
+        TaskId taskId = kInvalidTaskId;
+        return client->QueryAsync(KvNsId{200}, {MakeCacheKey("k05")}, taskId).code ==
+               StatusCode::NOT_FOUND;
+    }));
+    EXPECT_TRUE(state->shutdownCalls.empty());
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_ReusesUnchangedNamespaceSnapshot)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1,
+                   {
+                       {100, MakeView(1, {10})},
+                       {200, MakeView(1, {20})},
+                       }
+                   ),
+        MakeScript(2,
+                   {
+                       {100, MakeView(2, {10, 30})},
+                       {200, MakeView(1, {20})},
+                       }
+                   ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+
+    TriggerRefreshByIoFailure(*client, state, KvNsId{100});
+
+    // Namespace 200 keeps its published snapshot, so node 20 is not rebuilt.
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 3; }));
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{200}, {MakeCacheKey("k05")}, taskId).ok());
+    TaskResult taskResult;
+    EXPECT_TRUE(client->Wait(taskId, 1000, taskResult).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_KeepsPublishedStateWhenBuildFails)
+{
+    auto state = std::make_shared<TestState>();
+    state->failInitNodes.insert(20);
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}}
+         ),
+        MakeScript(2,
+                   {
+                       {100, MakeView(2, {10})},
+                       {200, MakeView(2, {20})},
+                       }
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+
+    state->failInitNodes.clear();
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 3; }));
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_InFlightTaskKeepsOldSnapshot)
+{
+    auto state = std::make_shared<TestState>();
+    state->deferCompletionCallbacks = true;
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeView(1, {10})}}
+         ),
+        MakeScript(2, {{100, MakeView(2, {11})}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 11})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync(KvNsId{100}, {MakeCacheKey("k05")}, taskId).ok());
+    ASSERT_TRUE(WaitForPendingCompletion(state, 10));
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+
+    TaskResult completionResult;
+    completionResult.status = Status::OK();
+    completionResult.entryStatus.assign(1, Status::OK());
+    QueryResult completionQuery;
+    completionQuery.exists.assign(1, 0);
+    completionResult.queryResult = std::move(completionQuery);
+    ASSERT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
+
+    TaskResult result;
+    EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
+
+    state->deferCompletionCallbacks = false;
+    QueryResult nextQuery;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, nextQuery).ok());
+    ASSERT_FALSE(state->queryCalls.empty());
+    EXPECT_TRUE(WaitFor([&] { return state->queryCalls.back() == NodeId{11}; }));
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(KvClientImplTest, Refresh_DefaultSchedulerRefreshesOnTimer)
+{
+    // No scheduler is injected: the client builds the resident ThreadedRefreshScheduler
+    // itself, so a configured interval must pull the newer view by itself. The configured
+    // value is clamped to the 1 second floor, which is what this test waits for.
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<FakeViewServer>(
+        std::vector<std::vector<NodeId>>{
+            {10},
+            {10, 20}
+    },
+        std::vector<std::uint64_t>{1, 2});
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    auto config = MakeConfig({10, 20});
+    config.attrs["view.refresh_interval_ms"] = "20";
+    ASSERT_TRUE(client->Init(config).ok());
+    ASSERT_EQ(state->createdTransports, std::uint32_t{1});
+
+    EXPECT_TRUE(
+        WaitFor([&] { return state->createdTransports == 2; }, std::chrono::milliseconds(3000)));
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(AsuTransportPoolTest, ReusesTransportPerNode)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool([state](const TransportConfig&, std::shared_ptr<AsuTransport>& out) {
+        ++state->createdTransports;
+        out = std::make_shared<FakeTransport>(state);
+        return Status::OK();
+    });
+
+    TransportConfig config;
+    config.nodeId = 10;
+    std::shared_ptr<AsuTransport> first;
+    std::shared_ptr<AsuTransport> second;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+    ASSERT_TRUE(pool.GetOrCreate(config, second).ok());
+
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(state->createdTransports, 1U);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+    EXPECT_EQ(pool.Find(NodeId{10}), first);
+    EXPECT_EQ(pool.GetTransports().size(), std::size_t{1});
+    EXPECT_EQ(pool.Find(NodeId{99}), nullptr);
+
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(pool.Size(), std::size_t{0});
+}
+
+TEST(AsuTransportPoolTest, RebuildsConnectionOnEndpointChange)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(
+        [state](const TransportConfig& config, std::shared_ptr<AsuTransport>& out) {
+            ++state->createdTransports;
+            auto transport = std::make_shared<FakeTransport>(state);
+            auto status = transport->Init(config, nullptr);
+            if (!status.ok()) { return status; }
+            out = transport;
+            return Status::OK();
+        });
+
+    NodeEndpoint endpoint;
+    endpoint.ip = "10.0.0.1";
+    endpoint.port = 1000;
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {endpoint};
+
+    std::shared_ptr<AsuTransport> original;
+    ASSERT_TRUE(pool.GetOrCreate(config, original).ok());
+
+    TransportConfig moved = config;
+    moved.endpoints[0].ip = "10.0.0.2";
+    std::shared_ptr<AsuTransport> rebuilt;
+    EXPECT_EQ(pool.GetOrCreate(moved, rebuilt).code, StatusCode::ENDPOINT_CHANGED);
+    ASSERT_TRUE(pool.Replace(moved, rebuilt).ok());
+    EXPECT_NE(rebuilt, original);
+    EXPECT_EQ(state->createdTransports, 2U);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+    EXPECT_EQ(pool.Find(NodeId{10}), rebuilt);
+
+    // The new endpoints are recorded: the same config is reused, not rebuilt again.
+    std::shared_ptr<AsuTransport> reused;
+    ASSERT_TRUE(pool.GetOrCreate(moved, reused).ok());
+    EXPECT_EQ(reused, rebuilt);
+    EXPECT_EQ(state->createdTransports, 2U);
+
+    // The previous transport is released, not shut down: it closes when its last
+    // reference drops, which keeps in-flight tasks safe.
+    EXPECT_TRUE(state->shutdownCalls.empty());
+    original.reset();
+    ASSERT_EQ(state->shutdownCalls.size(), std::size_t{1});
+    EXPECT_EQ(state->shutdownCalls[0], NodeId{10});
+
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+}
+
+TEST(AsuTransportPoolTest, ShutdownAllShutsEveryTransportOnce)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool([state](const TransportConfig&, std::shared_ptr<AsuTransport>& out) {
+        out = std::make_shared<FakeTransport>(state);
+        return Status::OK();
+    });
+
+    for (NodeId nodeId : {NodeId{10}, NodeId{20}}) {
+        TransportConfig config;
+        config.nodeId = nodeId;
+        std::shared_ptr<AsuTransport> transport;
+        ASSERT_TRUE(pool.GetOrCreate(config, transport).ok());
+    }
+
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+
+    // Closing an empty pool is a no-op, not a second shutdown of the same transports.
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+}
+
+TEST(AsuTransportPoolTest, CannotBeCopiedOrMoved)
+{
+    static_assert(!std::is_copy_constructible_v<AsuTransportPool>);
+    static_assert(!std::is_copy_assignable_v<AsuTransportPool>);
+    static_assert(!std::is_move_constructible_v<AsuTransportPool>);
+    static_assert(!std::is_move_assignable_v<AsuTransportPool>);
+}
+
+TEST(AsuTransportPoolTest, ComparesEndpointsAsSet)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool([state](const TransportConfig&, std::shared_ptr<AsuTransport>& out) {
+        out = std::make_shared<FakeTransport>(state);
+        return Status::OK();
+    });
+
+    NodeEndpoint firstEndpoint;
+    firstEndpoint.ip = "10.0.0.1";
+    firstEndpoint.port = 1000;
+    NodeEndpoint secondEndpoint;
+    secondEndpoint.ip = "10.0.0.2";
+    secondEndpoint.port = 2000;
+
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {firstEndpoint, secondEndpoint};
+
+    std::shared_ptr<AsuTransport> transport;
+    ASSERT_TRUE(pool.GetOrCreate(config, transport).ok());
+
+    // The same addresses in a different order are the same endpoint set.
+    TransportConfig reordered = config;
+    reordered.endpoints = {secondEndpoint, firstEndpoint};
+    std::shared_ptr<AsuTransport> reused;
+    ASSERT_TRUE(pool.GetOrCreate(reordered, reused).ok());
+    EXPECT_EQ(reused, transport);
+
+    // A genuinely different address is reported, and Replace rebuilds it.
+    TransportConfig changed = config;
+    changed.endpoints[0].port = 3000;
+    std::shared_ptr<AsuTransport> rejected;
+    EXPECT_EQ(pool.GetOrCreate(changed, rejected).code, StatusCode::ENDPOINT_CHANGED);
+    std::shared_ptr<AsuTransport> rebuilt;
+    ASSERT_TRUE(pool.Replace(changed, rebuilt).ok());
+    EXPECT_NE(rebuilt, reused);
+}
+
+TEST(KvClientImplTest, Refresh_AdoptsChangedEndpoints)
+{
+    // The same node reports a new address in the newer view: the refresh must rebuild
+    // that connection instead of failing and keeping the stale one forever.
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<ScriptedUniverseViewServer>(std::vector<UniverseScript>{
+        MakeScript(1, {{100, MakeEndpointView(1, {10}, "10.0.0.1")}}
+         ),
+        MakeScript(2, {{100, MakeEndpointView(2, {10}, "10.0.0.2")}}
+         ),
+    });
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+    EXPECT_EQ(state->createdTransports, std::uint32_t{1});
+
+    TriggerRefreshByIoFailure(*client, state);
+    EXPECT_TRUE(WaitFor([&] { return state->createdTransports == 2; }));
+
+    // The rebuilt transport carries the new endpoint.
+    ASSERT_EQ(state->initConfigs.count(NodeId{10}), std::size_t{1});
+    ASSERT_EQ(state->initConfigs.at(NodeId{10}).endpoints.size(), std::size_t{1});
+    EXPECT_EQ(state->initConfigs.at(NodeId{10}).endpoints[0].ip, "10.0.0.2");
+
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+// Fails exactly the first GetAllViews call, so a retried Init can succeed afterwards.
+class FailingOnceViewServer final : public M800ViewSlaveServer {
+public:
+    Status Start() override { return Status::OK(); }
+    void Stop() override {}
+
+    Status GetGlobalView(GlobalView& view) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        if (failFirst_) {
+            failFirst_ = false;
+            return Status::Error(StatusCode::IO_ERROR, "injected view fetch failure");
+        }
+        view = MakeView(1);
+        return Status::OK();
+    }
+
+    Status GetAllViews(ViewUniverse& universe) override
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        if (failFirst_) {
+            failFirst_ = false;
+            return Status::Error(StatusCode::IO_ERROR, "injected view fetch failure");
+        }
+        std::unordered_map<KvNsId, GlobalView> views;
+        views.emplace(kDefaultKvNsId, MakeView(1));
+        auto next = CreateViewUniverse(views, 1);
+        return universe.ReplaceAll(*next);
+    }
+
+private:
+    static GlobalView MakeView(std::uint64_t viewEpoch)
+    {
+        GlobalView view;
+        view.viewEpoch = viewEpoch;
+        view.asuMap.emplace(NodeId{10}, NodeInfo{});
+        return view;
+    }
+
+    mutable std::mutex mutex_;
+    bool failFirst_{true};
+};
+
+TEST(KvClientImplTest, Lifecycle_InitFailureRollsBackAndAllowsRetry)
+{
+    auto state = std::make_shared<TestState>();
+    auto viewServer = std::make_shared<FailingOnceViewServer>();
+    auto client =
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+
+    // The first Init fails while fetching the view.
+    EXPECT_EQ(client->Init(MakeConfig({10})).code, StatusCode::IO_ERROR);
+
+    // The failed Init rolled everything back: the retry initializes normally.
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+    QueryResult result;
+    EXPECT_TRUE(QueryAndWait(*client, {MakeCacheKey("k05")}, result).ok());
+    ASSERT_TRUE(client->Shutdown().ok());
 }
 
 }  // namespace kv::test
