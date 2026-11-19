@@ -46,12 +46,7 @@ public:
     }
     void Generate()
     {
-        // The posix store opens its files with O_DIRECT by default, and such a
-        // file rejects a write whose buffer or length is not block aligned. The
-        // heap only guarantees max_align_t, so the buffer is aligned here.
-        constexpr size_t alignment = 4096;
-        const size_t size = (this->Size() + alignment - 1) / alignment * alignment;
-        this->data_ = std::aligned_alloc(alignment, size);
+        this->data_ = malloc(this->Size());
         assert(this->data_ != nullptr);
     }
     void GenerateRandom()
