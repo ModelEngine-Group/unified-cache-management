@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <arpa/inet.h>
@@ -270,7 +293,7 @@ TEST(M800ViewMasterTest, StartWaitsForInitialOsdMap)
 }
 
 // 测试场景：Agent 始终无初始命名空间数据且获取超时配置为 5000ms，主节点启动等待 250ms 后并发调用 Stop。
-// 预期结果：Stop 在 1500ms 内结束等待，Start 返回 CANCELED，且错误消息包含 canceled。
+// 预期结果：Stop 与启动线程汇合在 1500ms 内完成，Start 返回 CANCELED，且错误消息包含 canceled。
 TEST(M800ViewMasterTest, StopInterruptsInitialReadinessWait)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -289,7 +312,7 @@ TEST(M800ViewMasterTest, StopInterruptsInitialReadinessWait)
 }
 
 // 测试场景：主节点启动读取已有 pool-a 时 Agent 的 GetInByNs 被持续阻塞，确认进入查询后并发调用 Stop。
-// 预期结果：Stop 在 1 秒内解除查询阻塞，启动以 CANCELED 返回而不等待初始拉取完成。
+// 预期结果：Stop 与启动线程汇合在 1 秒内完成，被阻塞的查询解除，Start 以 CANCELED 返回。
 TEST(M800ViewMasterTest, StopInterruptsBlockedNamespaceQuery)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -334,7 +357,7 @@ TEST(M800ViewMasterTest, ConcurrentStartStopDoesNotSelfDeadlock)
 }
 
 // 测试场景：主节点已启动且 HTTP 连接只发送部分请求，停止过程同时被阻塞在 Agent::Stop，期间再次调用 Start。
-// 预期结果：停止中的并发 Start 返回 CANCELED；解除 HTTP 连接与 Agent 停止阻塞后可完成清理。
+// 预期结果：停止中的并发 Start 返回 CANCELED；关闭不完整请求的 HTTP 连接并解除 Agent 停止阻塞后，可完成停止与清理。
 TEST(M800ViewMasterTest, StartWhileHttpStopIsBlockedReturnsCanceled)
 {
     auto state = std::make_shared<FakeAgentState>();
@@ -530,9 +553,9 @@ TEST(M800ViewMasterTest, InitialTimeoutReturnsConnectionError)
     master->Stop();
 }
 
-// 测试场景：主从同步 epoch 123 的 pool-a（节点 10 up/in、11 down/in）和 pool-b（节点 20 地址带 :7000），再于 epoch 124 替换 pool-a 并置空 pool-b，最后置空所有命名空间。
-// 预期结果：从节点获得两个命名空间和 epoch 123，pool-a 保留两节点且 UB 端点默认端口为 6000；epoch 124 中 pool-a 仅含节点 12、pool-b 沿用节点 20，最终全空查询返回 NOT_FOUND 时从节点仍保留 epoch 124 双视图。
-TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndPreservesFailedNamespace)
+// 测试场景：主从先同步两个命名空间，再将 pool-b 置空、将全部命名空间置空，并在 Master 停止后调用 legacy GetGlobalView。
+// 预期结果：任一 namespace 失败都使本轮返回 NOT_FOUND 且不发布候选，Worker 始终保留 epoch 123 的完整旧视图；GetGlobalView 固定返回 UNSUPPORTED、输出不变且不触发网络或 Agent 查询。
+TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndRejectsPartialFailure)
 {
     auto state = std::make_shared<FakeAgentState>();
     SetNamespaces(state, 123,
@@ -569,33 +592,35 @@ TEST(M800ViewMasterSlaveTest, SynchronizesMultipleNamespacesAndPreservesFailedNa
     SetNamespaces(state, 124,
                   {{"pool-a", {MakeNode(12, "10.0.0.12")}}, {"pool-b", {}}});
     auto refreshed = CreateViewUniverse();
-    ASSERT_TRUE(master->GetAllViews(*refreshed).ok());
+    EXPECT_EQ(master->GetAllViews(*refreshed).code, StatusCode::NOT_FOUND);
+    EXPECT_TRUE(refreshed->Empty());
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 124);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 123);
     EXPECT_EQ(universe->GetAllNsIds().size(), 2);
     ASSERT_TRUE(universe->GetView(nsA, viewA).ok());
-    EXPECT_EQ(viewA.asuMap.count(12), 1);
-    EXPECT_EQ(viewA.asuMap.count(10), 0);
+    EXPECT_EQ(viewA.asuMap.count(12), 0);
+    EXPECT_EQ(viewA.asuMap.count(10), 1);
     GlobalView viewB;
     ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-b"), viewB).ok());
     EXPECT_EQ(viewB.asuMap.count(20), 1);
-    EXPECT_EQ(viewB.viewEpoch, 124);
-
-    GlobalView legacyMasterView;
-    GlobalView legacyWorkerView;
-    ASSERT_TRUE(master->GetGlobalView(legacyMasterView).ok());
-    ASSERT_TRUE(worker->GetGlobalView(legacyWorkerView).ok());
-    EXPECT_EQ(legacyMasterView.viewId, universe->GetAllNsIds().front());
-    EXPECT_EQ(legacyWorkerView.viewId, universe->GetAllNsIds().front());
+    EXPECT_EQ(viewB.viewEpoch, 123);
 
     SetNamespaces(state, 125, {{"pool-a", {}}, {"pool-b", {}}});
     EXPECT_EQ(master->GetAllViews(*refreshed).code, StatusCode::NOT_FOUND);
     ASSERT_TRUE(worker->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 124);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 123);
     EXPECT_EQ(universe->GetAllNsIds().size(), 2);
 
-    worker->Stop();
     master->Stop();
+    GlobalView legacyMasterView;
+    legacyMasterView.viewId = 999;
+    GlobalView legacyWorkerView;
+    legacyWorkerView.viewId = 999;
+    EXPECT_EQ(master->GetGlobalView(legacyMasterView).code, StatusCode::UNSUPPORTED);
+    EXPECT_EQ(worker->GetGlobalView(legacyWorkerView).code, StatusCode::UNSUPPORTED);
+    EXPECT_EQ(legacyMasterView.viewId, 999);
+    EXPECT_EQ(legacyWorkerView.viewId, 999);
+    worker->Stop();
 }
 
 // 测试场景：主节点视图先从 pool-a/pool-b 变为仅 pool-a，再新增 pool-c，最后同时下发哈希冲突的 pool-69670 与 pool-261455。
@@ -953,8 +978,8 @@ TEST(M800ViewSlaveTest, PublishAllAloneRejectsOlderMasterSnapshot)
 }
 
 // 测试场景：主节点已有 epoch 100 的 pool-a/pool-b，Agent 在 epoch 110 将 pool-a 改为节点 3，并把 pool-b 节点 2 的地址改为非法 not-an-ip。
-// 预期结果：整体刷新仍成功且全局 epoch 为 110，pool-a 使用节点 3，pool-b 回填旧节点 2 并把自己的 viewEpoch 更新为 110。
-TEST(M800ViewMasterTest, InvalidNamespaceIsBackfilledWhileOtherNamespacesRefresh)
+// 预期结果：pool-a 虽可生成新视图，pool-b 的永久非法数据仍使整轮返回 NOT_FOUND；输出和 HTTP 旧快照完整保持 epoch 100 与旧节点，不发生部分更新或回填。
+TEST(M800ViewMasterTest, InvalidNamespaceRejectsWholeRefreshAndRetainsOldView)
 {
     auto state = std::make_shared<FakeAgentState>();
     SetNamespaces(state, 100,
@@ -962,26 +987,28 @@ TEST(M800ViewMasterTest, InvalidNamespaceIsBackfilledWhileOtherNamespacesRefresh
                    {"pool-b", {MakeNode(2, "10.0.0.2")}}});
     auto master = MakeMaster(MasterConfig(AllocatePort()), state);
     ASSERT_TRUE(master->Start().ok());
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(master->GetAllViews(*universe).ok());
 
     SetNamespaces(state, 110,
                   {{"pool-a", {MakeNode(3, "10.0.0.3")}},
                    {"pool-b", {MakeNode(2, "not-an-ip")}}});
-    auto universe = CreateViewUniverse();
-    ASSERT_TRUE(master->GetAllViews(*universe).ok());
-    EXPECT_EQ(universe->GetGlobalEpoch(), 110);
+    EXPECT_EQ(master->GetAllViews(*universe).code, StatusCode::NOT_FOUND);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 100);
     GlobalView viewA;
     GlobalView viewB;
     ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-a"), viewA).ok());
     ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-b"), viewB).ok());
-    EXPECT_EQ(viewA.asuMap.count(3), 1);
+    EXPECT_EQ(viewA.asuMap.count(1), 1);
+    EXPECT_EQ(viewA.asuMap.count(3), 0);
     EXPECT_EQ(viewB.asuMap.count(2), 1);
-    EXPECT_EQ(viewB.viewEpoch, 110);
+    EXPECT_EQ(viewB.viewEpoch, 100);
     master->Stop();
 }
 
 // 测试场景：基于 epoch 100 旧视图，epoch 110 刷新时 pool-b 查询超时、pool-a 更新为节点 3；epoch 111 再让 pool-a 先返回 TIMEOUT、pool-b 返回 INTERNAL_ERROR。
-// 预期结果：单命名空间失败时其余视图可刷新，pool-b 保留旧节点 2 且 viewEpoch 为 110；两者均失败时返回首个 TIMEOUT，全局 epoch 保持 110。
-TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFailure)
+// 预期结果：任一命名空间查询失败都使整轮失败，输出和 HTTP 快照始终保留 epoch 100 的完整旧视图；两者均失败时返回按名称排序首先遇到的 TIMEOUT。
+TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRejectWholeRefreshAndReturnFirstFailure)
 {
     auto state = std::make_shared<FakeAgentState>();
     SetNamespaces(state, 100,
@@ -989,6 +1016,8 @@ TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFai
                    {"pool-b", {MakeNode(2, "10.0.0.2")}}});
     auto master = MakeMaster(MasterConfig(AllocatePort()), state);
     ASSERT_TRUE(master->Start().ok());
+    auto universe = CreateViewUniverse();
+    ASSERT_TRUE(master->GetAllViews(*universe).ok());
 
     SetNamespaces(state, 110,
                   {{"pool-a", {MakeNode(3, "10.0.0.3")}},
@@ -997,15 +1026,16 @@ TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFai
         std::lock_guard<std::mutex> guard(state->mutex);
         state->namespaceStatus["pool-b"] = Status::Error(StatusCode::TIMEOUT, "pool-b timed out");
     }
-    auto universe = CreateViewUniverse();
-    ASSERT_TRUE(master->GetAllViews(*universe).ok());
+    EXPECT_EQ(master->GetAllViews(*universe).code, StatusCode::TIMEOUT);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 100);
     GlobalView viewA;
     GlobalView viewB;
     ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-a"), viewA).ok());
     ASSERT_TRUE(universe->GetView(M800PoolNameToKvNsId("pool-b"), viewB).ok());
-    EXPECT_EQ(viewA.asuMap.count(3), 1);
+    EXPECT_EQ(viewA.asuMap.count(1), 1);
+    EXPECT_EQ(viewA.asuMap.count(3), 0);
     EXPECT_EQ(viewB.asuMap.count(2), 1);
-    EXPECT_EQ(viewB.viewEpoch, 110);
+    EXPECT_EQ(viewB.viewEpoch, 100);
 
     SetNamespaces(state, 111,
                   {{"pool-a", {MakeNode(4, "10.0.0.4")}},
@@ -1017,7 +1047,7 @@ TEST(M800ViewMasterSlaveTest, NamespaceQueryErrorsRetainOldViewAndReturnFirstFai
             Status::Error(StatusCode::INTERNAL_ERROR, "pool-b internal error");
     }
     EXPECT_EQ(master->GetAllViews(*universe).code, StatusCode::TIMEOUT);
-    EXPECT_EQ(universe->GetGlobalEpoch(), 110);
+    EXPECT_EQ(universe->GetGlobalEpoch(), 100);
     EXPECT_EQ(viewB.asuMap.count(2), 1);
     master->Stop();
 }

@@ -47,7 +47,8 @@ public:
 
     // M800 masters must return a real multi-namespace universe.
     virtual Status GetAllViews(ViewUniverse& universe) = 0;
-    // Returns the first namespace as the legacy single global view.
+    // M800 serves multiple namespaces; the legacy single-view entry point is
+    // intentionally unsupported. Callers must use GetAllViews.
     virtual Status GetGlobalView(GlobalView& view) override = 0;
 };
 

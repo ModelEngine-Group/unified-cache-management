@@ -10,9 +10,9 @@ Ceph MON / DPU Agent -> Master -> HTTP /v1/views -> Worker/Slave -> ViewUniverse
 
 The Master reads namespaces, in-state OSDs and epochs from the Agent and builds immutable multi-namespace snapshots. The Worker tries configured Masters sequentially, decodes the deterministic text protocol and publishes a complete snapshot through `ViewUniverse::PublishAll`. Permanent scheduling, KvClientImpl/IO routing and final `view.provider` factory integration are outside the current Shard 2/3/4/5 scope.
 
-The previous Router overload that silently ignored unavailable nodes has been removed. A fallback-routing API must not be exposed until its failover semantics are implemented.
+The Shard 1 Router overload accepting unavailable nodes is retained. Its default implementation preserves legacy routing by delegating to `RouteKeys(keys)`; real secondary-hash failover remains a later Shard 7 responsibility.
 
-`ViewServer` remains unchanged with its original pure-virtual `GetGlobalView`; no base `GetAllViews` or default adapter is added. M800 Master and Slave implement `GetGlobalView` in their derived classes by calling their own `GetAllViews` and selecting the smallest nsId; an empty Universe returns `NOT_FOUND`. Worker Master addresses are restricted to numeric IPv4/IPv6 through `inet_pton` and `AI_NUMERICHOST`; hostnames and embedded NULs are rejected. `GetAllNsIds` is sorted by nsId, so first-namespace selection never depends on hash iteration order.
+`ViewServer` remains unchanged with its original pure-virtual `GetGlobalView`; no base `GetAllViews` or default adapter is added. M800 Master and Slave return `UNSUPPORTED` from the legacy `GetGlobalView`; callers must use `GetAllViews`, and this method performs no Agent/HTTP fetch and does not modify the output view. Worker Master addresses are restricted to numeric IPv4/IPv6 through `inet_pton` and `AI_NUMERICHOST`; hostnames and embedded NULs are rejected.
 
 ## Configuration
 
@@ -34,7 +34,7 @@ The previous Router overload that silently ignored unavailable nodes has been re
 | `view.endpoint_port` | `6000` | Published ASU endpoint port |
 | `view.ceph.filter` | `in` | Only in-state filtering is supported |
 
-See `examples/m800_view.conf` for a deployment example.
+See `examples/m800_view_master.conf` and `examples/m800_view_worker.conf` for deployment examples.
 
 ## HTTP and text protocol
 
@@ -49,11 +49,11 @@ See `examples/m800_view.conf` for a deployment example.
 
 An empty output object always sends `since_epoch=0`, even if the Worker previously fetched a view for another object. A non-empty object uses its own epoch. The Worker keeps no `cachedEpoch_` and performs no local epoch comparison. Every complete, decodable, non-empty Master response is passed directly to `ViewUniverse::PublishAll`, which alone decides whether to publish or return an empty/stale/equal no-op.
 
-The text protocol uses a unified global epoch, `viewEpoch == globalEpoch`, `viewId = nsId`, and `KvNsId = XXH32(poolName, len, 5381)`. Optional `localKvNsId.N` immediately follows `asuInfo.N`; zero is omitted. Decoding is deterministic, transactional and rejects malformed numeric fields, CR/LF, truncation and oversized input. `PublishAll` emits per-namespace, unlimited INFO logs: `ns={} view published, epoch={}->{}, asu_count={}` or `ns={} view not published, epoch unchanged={}`. The summary is `ViewUniverse published, ns_changed={added+removed}, ns_total={snapshot namespace count}, changed_ns={changed retained namespaces}`.
+The text protocol uses a unified global epoch, `viewEpoch == globalEpoch`, `viewId = nsId`, and `KvNsId = XXH32(poolName, len, 5381)`. Optional `localKvNsId.N` immediately follows `asuInfo.N`; zero is omitted. Every text snapshot must end with LF; any CR or unknown field is rejected. Decoding is deterministic and transactional, and malformed numeric fields, truncation and oversized input are rejected without modifying the output. `PublishAll` emits per-namespace, unlimited INFO logs: `ns={} view published, epoch={}->{}, asu_count={}` or `ns={} view not published, epoch unchanged={}`. The summary is `ViewUniverse published, ns_changed={added+removed}, ns_total={snapshot namespace count}, changed_ns={changed retained namespaces}`.
 
 ## Agent ABI compatibility
 
-ABI v1 exports 12 `kv_client_agent_*` symbols. The loader uses `RTLD_NOW | RTLD_LOCAL`, resolves every required symbol, checks `kv_client_agent_get_abi_version`, and passes both the ABI version and `sizeof(kv_client_agent_config)` to init. Missing libraries/symbols, version mismatch and init failure prevent Master startup; there is no silent fallback to an incompatible implementation. Refresh failures preserve the last-known-good snapshot. Output buffers are released before destroy and dlclose.
+ABI v1 exports 12 `kv_client_agent_*` symbols. The loader uses `RTLD_NOW | RTLD_LOCAL`, resolves every required symbol, checks `kv_client_agent_get_abi_version`, and passes both the ABI version and `sizeof(kv_client_agent_config)` to init. Missing libraries/symbols, version mismatch and init failure prevent Master startup; there is no silent fallback to an incompatible implementation. Master refresh is all-or-nothing: any namespace fetch failure or unusable endpoint rejects the entire candidate and preserves the complete last-known-good snapshot without backfilling failed namespaces. Output buffers are released before destroy and dlclose.
 
 A third-party ABI implementation must respond to Stop. Permanent ABI calls that ignore cancellation require a supplier contract or process isolation; forcefully unloading the library would be unsafe.
 

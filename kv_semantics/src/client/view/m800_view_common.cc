@@ -270,9 +270,7 @@ Status M800ViewServerConfig::Build(const KvClientConfig& config,
         return InvalidConfig("view.ceph.mon_host is required for master role");
     }
     m800Config.clientKey = ReadKeyring(m800Config.keyringPath);
-    if (HasEmbeddedNul(m800Config.monHost) || HasEmbeddedNul(m800Config.clientName) ||
-        HasEmbeddedNul(m800Config.keyringPath) || HasEmbeddedNul(m800Config.agentLibPath) ||
-        HasEmbeddedNul(m800Config.clientKey)) {
+    if (HasEmbeddedNul(m800Config.clientKey)) {
         return InvalidConfig("M800 C ABI string contains embedded NUL");
     }
     return Status::OK();

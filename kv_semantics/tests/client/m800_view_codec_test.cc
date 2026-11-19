@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <gtest/gtest.h>
 #include <limits>
 #include <string>
@@ -252,20 +275,40 @@ TEST(M800ViewCodecTest, EncodeIsDeterministicAndRoundTripsEndpoints)
     EXPECT_EQ(reencoded, encoded);
 }
 
-// 测试场景：将合法文本转换为 CRLF 换行，添加开头空行并去掉末尾换行后解码。
-// 预期结果：解码成功且得到一个命名空间。
-TEST(M800ViewCodecTest, DecodeAcceptsCrlfBlankLinesAndMissingFinalNewline)
+// 测试场景：分别将合法文本转换为 CRLF，以及删除最后一个 LF，并在已有 epoch 55、namespace 7 的输出对象上解码。
+// 预期结果：两种输入均返回 INTERNAL_ERROR，原 epoch 和 namespace 完整保持不变。
+TEST(M800ViewCodecTest, DecodeRejectsCrlfAndMissingFinalNewlineWithoutChangingOutput)
 {
-    std::string text = ValidText();
-    text.erase(text.size() - 1);
-    for (std::size_t pos = 0; (pos = text.find('\n', pos)) != std::string::npos; pos += 2) {
-        text.replace(pos, 1, "\r\n");
+    std::string crlf;
+    for (const char ch : ValidText()) {
+        if (ch == '\n') {
+            crlf += "\r\n";
+        } else {
+            crlf.push_back(ch);
+        }
     }
-    text.insert(0, "\r\n");
+    auto missingFinalLf = ValidText();
+    missingFinalLf.pop_back();
 
-    auto decoded = CreateViewUniverse();
-    ASSERT_TRUE(M800ViewCodec::Decode(text, *decoded).ok()) << text;
-    EXPECT_EQ(decoded->GetAllNsIds().size(), 1);
+    for (const auto& input : {crlf, missingFinalLf}) {
+        auto baseline = CreateViewUniverse({{7, MakeView(7, 55)}}, 55);
+        EXPECT_EQ(M800ViewCodec::Decode(input, *baseline).code, StatusCode::INTERNAL_ERROR);
+        EXPECT_EQ(baseline->GetGlobalEpoch(), 55);
+        ASSERT_EQ(baseline->GetAllNsIds().size(), 1);
+        EXPECT_EQ(baseline->GetAllNsIds().front(), 7);
+    }
+}
+
+// 测试场景：在已有 epoch 55、namespace 7 的 Universe 上解码 `globalEpoch=1, nsCount=0` 文本。
+// 预期结果：Codec 按纯解析和 ReplaceAll 契约成功清空视图并把 epoch 设为 1；Slave 发布前另行拒绝空快照。
+TEST(M800ViewCodecTest, DecodeZeroNamespaceSnapshotUsesReplaceAllSemantics)
+{
+    auto universe = CreateViewUniverse({{7, MakeView(7, 55)}}, 55);
+
+    ASSERT_TRUE(M800ViewCodec::Decode("globalEpoch=1\nnsCount=0\n", *universe).ok());
+
+    EXPECT_TRUE(universe->Empty());
+    EXPECT_EQ(universe->GetGlobalEpoch(), 1);
 }
 
 // 测试场景：解码空文本、非法 epoch、字段或 ID 不一致、非法端口或协议、未知外层字段及异常控制字符等多组畸形输入，输出对象预置 epoch 55 和命名空间 7。
@@ -329,19 +372,21 @@ TEST(M800ViewCodecTest, DecodeRejectsMalformedInputWithoutChangingOutput)
 }
 
 // 测试场景：分别在命名空间块内的 asuIds 前和命名空间块外的 ns=1 前插入 futureField 未知字段后解码。
-// 预期结果：块内未知字段被忽略且解码成功；块外未知字段返回 INTERNAL_ERROR，已有输出的 global epoch 55 保持不变。
-TEST(M800ViewCodecTest, UnknownBlockFieldIsIgnoredButOutsideFieldIsRejected)
+// 预期结果：块内和块外未知字段均返回 INTERNAL_ERROR，已有 epoch 55 和 namespace 7 均保持不变。
+TEST(M800ViewCodecTest, UnknownFieldsAreRejectedInsideAndOutsideNamespace)
 {
-    auto input = ValidText();
-    input.insert(input.find("asuIds="), "futureField=anything\n");
-    auto decoded = CreateViewUniverse();
-    EXPECT_TRUE(M800ViewCodec::Decode(input, *decoded).ok());
+    auto insideBlock = ValidText();
+    insideBlock.insert(insideBlock.find("asuIds="), "futureField=anything\n");
+    auto outsideBlock = ValidText();
+    outsideBlock.insert(outsideBlock.find("ns=1\n"), "futureField=anything\n");
 
-    input = ValidText();
-    input.insert(input.find("ns=1\n"), "futureField=anything\n");
-    auto unchanged = CreateViewUniverse({{7, MakeView(7, 55)}}, 55);
-    EXPECT_EQ(M800ViewCodec::Decode(input, *unchanged).code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(unchanged->GetGlobalEpoch(), 55);
+    for (const auto& input : {insideBlock, outsideBlock}) {
+        auto unchanged = CreateViewUniverse({{7, MakeView(7, 55)}}, 55);
+        EXPECT_EQ(M800ViewCodec::Decode(input, *unchanged).code, StatusCode::INTERNAL_ERROR);
+        EXPECT_EQ(unchanged->GetGlobalEpoch(), 55);
+        ASSERT_EQ(unchanged->GetAllNsIds().size(), 1);
+        EXPECT_EQ(unchanged->GetAllNsIds().front(), 7);
+    }
 }
 
 // 测试场景：分别编码 viewEpoch 与全局 epoch 不一致的视图，以及端点属性值含逗号的视图，输出字符串预置为 unchanged。
@@ -392,6 +437,8 @@ TEST(M800ViewCodecTest, NamespaceAndEndpointLimitsAreTruncatedDeterministically)
     EXPECT_EQ(view.asuMap.at(1).endpoints.size(), 4);
 }
 
+// 测试场景：直接解码分别包含 65 个命名空间、单 ASU 5 个端点、4097 个 ASU 的三种超限文本。
+// 预期结果：依次仅保留 64 个命名空间、前 4 个端点及前 4096 个 ASU；第 64 个命名空间、端点 10.0.0.4 和 ASU 4096 的 localKvNsId 均正确保留，超限项被丢弃。
 TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
 {
     const std::string endpoint = "protocol=uboe,port=6000,local.comm_id=10.0.0.1";
@@ -445,6 +492,8 @@ TEST(M800ViewCodecTest, DecodeDirectlyTruncatesOversizedWireInput)
     EXPECT_EQ(view.asuMap.count(4097), 0);
 }
 
+// 测试场景：编码含 4097 个 ASU 且每个 ASU 都带 localKvNsId 的视图，再解码编码结果。
+// 预期结果：仅编码并保留前 4096 个 ASU；ASU 4096 的 localKvNsId 为 4096，ASU 4097 的 asuInfo 和 localKvNsId 均不输出。
 TEST(M800ViewCodecTest, EncodeTruncatesLocalKvNsIdTogetherWithItsAsu)
 {
     auto view = MakeView(1, 99);

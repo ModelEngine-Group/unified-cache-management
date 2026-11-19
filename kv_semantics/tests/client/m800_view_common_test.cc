@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include "view/m800_view_common.h"
 
 #include <cstdint>
@@ -281,6 +304,8 @@ TEST(M800ViewCommonTest, BuildIgnoresMisspelledTimeoutKeys)
     EXPECT_EQ(built.refreshIntervalMs, std::uint64_t{30000});
 }
 
+// 测试场景：Worker 配置带单位、负数或非数字的超时值，以及未知协议和超范围端口 65536。
+// 预期结果：构建成功，三项时间配置依次回退为 30000、10000、2000 ms，端点回退为 UB 协议和 6000 端口。
 TEST(M800ViewCommonTest, BuildInvalidNumbersAndProtocolFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();
@@ -302,6 +327,8 @@ TEST(M800ViewCommonTest, BuildInvalidNumbersAndProtocolFallbackToDefaults)
     EXPECT_EQ(built.endpointPort, std::uint16_t{6000});
 }
 
+// 测试场景：Worker 的刷新间隔、agent/HTTP 超时和端点端口字符串均在合法数字后内嵌 NUL 与 junk。
+// 预期结果：构建成功但不接受被 NUL 污染的数值，四项分别回退为 30000、10000、2000 ms 和 6000 端口。
 TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInNumericValues)
 {
     auto config = MakeWorkerConfig();
@@ -318,6 +345,8 @@ TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInNumericValues)
     EXPECT_EQ(built.endpointPort, 6000);
 }
 
+// 测试场景：分别向 view.ceph.mon_host 和 view.ceph.agent_lib 写入包含内嵌 NUL 的连接或路径字符串。
+// 预期结果：两种配置均返回 INVALID_ARGUMENT。
 TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInAgentConnectionStrings)
 {
     for (const auto& key : {std::string("view.ceph.mon_host"), std::string("view.ceph.agent_lib")}) {
@@ -328,6 +357,8 @@ TEST(M800ViewCommonTest, BuildRejectsEmbeddedNulInAgentConnectionStrings)
     }
 }
 
+// 测试场景：Worker 将刷新间隔、agent 获取超时和 HTTP 超时都设为 uint64_t 最大值 18446744073709551615。
+// 预期结果：构建成功，并因超出允许范围分别回退为 30000、10000 和 2000 ms。
 TEST(M800ViewCommonTest, BuildOutOfRangeTimeoutsFallbackToDefaults)
 {
     auto config = MakeWorkerConfig();

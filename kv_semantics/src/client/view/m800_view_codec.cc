@@ -414,6 +414,12 @@ Status M800ViewCodec::Encode(const ViewUniverse& universe, std::string& text)
 Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
 {
     try {
+        if (text.empty() || text.back() != '\n') {
+            return ProtocolError("M800 view text must end with LF");
+        }
+        if (text.find('\r') != std::string::npos) {
+            return ProtocolError("CR is not allowed in M800 view text");
+        }
         if (text.find('\0') != std::string::npos) { return ProtocolError("NUL in M800 view text"); }
         std::uint64_t globalEpoch{0};
         std::uint64_t declaredNsCount{0};
@@ -425,14 +431,7 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
         auto nextContentLine = [&](std::string_view& line, bool& eof) {
             eof = false;
             while (lineIndex < lines.size()) {
-                const bool hasLfTerminator = lineIndex + 1 < lines.size();
                 line = lines[lineIndex++];
-                if (hasLfTerminator && !line.empty() && line.back() == '\r') {
-                    line.remove_suffix(1);
-                }
-                if (line.find('\r') != std::string_view::npos) {
-                    return ProtocolError("unexpected CR in M800 view text");
-                }
                 if (!line.empty()) { return Status::OK(); }
             }
             line = {};
@@ -563,11 +562,7 @@ Status M800ViewCodec::Decode(const std::string& text, ViewUniverse& universe)
                     return ProtocolError("duplicate localKvNsId entry");
                 }
             } else {
-                hasImmediateAsuInfo = false;
-                status = ValidateScalar(key);
-                if (!status.ok()) { return status; }
-                status = ValidateScalar(value);
-                if (!status.ok()) { return status; }
+                return ProtocolError("unknown namespace field: " + std::string(key));
             }
         }
         if (inBlock) {

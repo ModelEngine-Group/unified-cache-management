@@ -498,15 +498,9 @@ public:
 
     Status GetGlobalView(GlobalView& view) override
     {
-        auto universe = CreateViewUniverse();
-        if (!universe) {
-            return SlaveError(StatusCode::INTERNAL_ERROR, "failed to create ViewUniverse");
-        }
-        const auto status = GetAllViews(*universe);
-        if (!status.ok()) { return status; }
-        const auto nsIds = universe->GetAllNsIds();
-        if (nsIds.empty()) { return SlaveError(StatusCode::NOT_FOUND, "M800 worker has no namespace view"); }
-        return universe->GetView(*std::min_element(nsIds.begin(), nsIds.end()), view);
+        (void)view;
+        return SlaveError(StatusCode::UNSUPPORTED,
+                          "M800 view slave serves multiple namespaces; use GetAllViews");
     }
 
     void Stop() override

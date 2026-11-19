@@ -31,7 +31,6 @@
 #include <condition_variable>
 #include <limits>
 #include <map>
-#include <set>
 #include <unordered_map>
 #include <utility>
 #include "logger.h"
@@ -273,15 +272,9 @@ public:
 
     Status GetGlobalView(GlobalView& view) override
     {
-        auto universe = CreateViewUniverse();
-        if (!universe) {
-            return MasterError(StatusCode::INTERNAL_ERROR, "failed to create ViewUniverse");
-        }
-        const auto status = GetAllViews(*universe);
-        if (!status.ok()) { return status; }
-        const auto nsIds = universe->GetAllNsIds();
-        if (nsIds.empty()) { return MasterError(StatusCode::NOT_FOUND, "M800 master has no namespace view"); }
-        return universe->GetView(*std::min_element(nsIds.begin(), nsIds.end()), view);
+        (void)view;
+        return MasterError(StatusCode::UNSUPPORTED,
+                           "M800 view master serves multiple namespaces; use GetAllViews");
     }
 
 private:
@@ -407,14 +400,7 @@ private:
                 return MasterError(StatusCode::INTERNAL_ERROR, kHashCollisionMessage);
             }
 
-            const auto previous = atomic_load(&lastFetched_);
-            const auto previousViews = previous ? previous->GetAllViews()
-                                                : std::unordered_map<KvNsId, GlobalView>{};
             std::unordered_map<KvNsId, GlobalView> nextViews;
-            std::set<KvNsId> failedNamespaces;
-            Status firstFailure = Status::OK();
-            Status permanentFailure = Status::OK();
-            std::size_t successCount{0};
 
             for (const auto& name : nsNames) {
                 if (!running_.load()) { return MasterError(StatusCode::CANCELED, "M800 view fetch canceled"); }
@@ -426,10 +412,8 @@ private:
                         status = MasterError(StatusCode::NOT_FOUND,
                                              "namespace has no in-state OSDs: " + name);
                     }
-                    if (firstFailure.ok()) { firstFailure = status; }
-                    failedNamespaces.emplace(nsId);
                     KV_WARN("M800 namespace '{}' fetch failed: {}", name, status.message);
-                    continue;
+                    return status;
                 }
 
                 GlobalView view;
@@ -470,28 +454,14 @@ private:
                             kMaxAsusPerNamespace);
                 }
                 if (view.asuMap.empty()) {
-                    auto statusEmpty = MasterError(StatusCode::NOT_FOUND,
-                                                   "namespace has no usable endpoint: " + name);
-                    if (!nodes.empty()) {
-                        // Invalid endpoint data is permanent for this namespace,
-                        // but other namespaces may still be usable and backfilled.
-                        if (permanentFailure.ok()) { permanentFailure = statusEmpty; }
-                        if (firstFailure.ok()) { firstFailure = statusEmpty; }
-                        failedNamespaces.emplace(nsId);
-                        continue;
-                    }
                     KV_WARN("ns={} view empty, no ASU endpoints", name);
-                    if (firstFailure.ok()) { firstFailure = statusEmpty; }
-                    failedNamespaces.emplace(nsId);
-                    continue;
+                    return MasterError(StatusCode::NOT_FOUND,
+                                       "namespace has no usable endpoint: " + name);
                 }
                 KV_DEBUG("ns={} view built, epoch={}, asu_count={}", name, epochBefore,
                          view.asuMap.size());
                 nextViews.emplace(nsId, std::move(view));
-                ++successCount;
             }
-
-            if (successCount == 0 && !permanentFailure.ok()) { return permanentFailure; }
 
             std::uint64_t epochAfter{0};
             lastStatus = agent->GetEpoch(epochAfter);
@@ -500,21 +470,6 @@ private:
                 lastStatus = MasterError(StatusCode::IN_PROGRESS,
                                          "OSDMap epoch changed during M800 view fetch");
                 continue;
-            }
-            if (successCount == 0) {
-                lastStatus = firstFailure.ok()
-                                 ? MasterError(StatusCode::NOT_FOUND, "no valid M800 namespace view")
-                                 : firstFailure;
-                continue;
-            }
-
-            for (const auto nsId : failedNamespaces) {
-                const auto old = previousViews.find(nsId);
-                if (old == previousViews.end()) { continue; }
-                auto retained = old->second;
-                retained.viewEpoch = epochBefore;
-                retained.viewId = nsId;
-                nextViews.emplace(nsId, std::move(retained));
             }
             if (nextViews.size() > kMaxNamespaces) {
                 std::vector<KvNsId> ids;
