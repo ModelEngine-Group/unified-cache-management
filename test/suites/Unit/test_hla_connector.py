@@ -88,6 +88,7 @@ def hla():
         "state_group_ids",
         "blnhc_layer_role",
         "blnhc_group_role",
+        "_is_embedded_mtp_layer",
     }
     methods = {
         "KVCacheGroupManager": {
@@ -1376,6 +1377,116 @@ def test_flash_next_layer_order_keeps_ple_before_checkpoint_and_mtp_last(hla):
     assert connector.layer_order == ["linear2", "ple2", "full3", "mtp_full"]
 
 
+def test_flash_next_layer_order_keeps_target_layers_in_a_mixed_mtp_group(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    linear_names = [
+        "linear0",
+        "linear1",
+        "linear2",
+        "linear4",
+        "linear5",
+        "linear6",
+    ]
+    names = [*linear_names, "full3", "full7", "mtp_full"]
+    layout = SimpleNamespace(
+        slot_shard_size=16,
+        tensor_size_list=[16],
+        num_slots=1,
+        num_hidden_layers=8,
+        layer_anchors={name: object() for name in names},
+        layer_name_to_id={
+            "linear0": 0,
+            "linear1": 1,
+            "linear2": 2,
+            "full3": 3,
+            "linear4": 4,
+            "linear5": 5,
+            "linear6": 6,
+            "full7": 7,
+            "mtp_full": 8,
+            # Mixed-group member that never gets anchored.
+            "mtp_index": 8,
+        },
+        layer_name_to_slot={name: 0 for name in names},
+    )
+    # The eagle flag covers the target attention layers too.
+    mixed_group = group(FullAttentionSpec(), "full3", "full7", "mtp_full", "mtp_index")
+    mixed_group.is_eagle_group = True
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            *[
+                group(MambaSpec(mamba_cache_mode="align"), name)
+                for name in linear_names
+            ],
+            mixed_group,
+        ]
+    )
+
+    def register_common(_kv_caches):
+        connector.layer_to_group = {name: 0 for name in linear_names}
+        connector.layer_to_group.update({"full3": 1, "full7": 1, "mtp_full": 1})
+        connector.layer_to_slot = layout.layer_name_to_slot
+        return layout, None, None
+
+    connector._register_common = register_common
+    connector._create_store_bound = MagicMock()
+
+    connector.register_kv_caches({})
+
+    assert connector.layer_order == [
+        "linear0",
+        "linear1",
+        "linear2",
+        "full3",
+        "linear4",
+        "linear5",
+        "linear6",
+        "full7",
+        "mtp_full",
+    ]
+    # full3's save hook batches only the layers before it.
+    assert connector.checkpoint_windows == [
+        ["linear0", "linear1", "linear2", "full3"],
+        ["linear4", "linear5", "linear6", "full7"],
+        ["mtp_full"],
+    ]
+
+
+def test_layer_hook_submits_own_load_before_waiting(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector._connector_metadata = object()
+    connector.kv_cache_layout = SimpleNamespace(ple_layer_name=None)
+    connector.layer_order = ["linear0", "linear1", "linear2", "full3"]
+    connector.layer_pos = {name: pos for pos, name in enumerate(connector.layer_order)}
+    connector.layer_to_group = {name: 0 for name in connector.layer_order}
+    connector.layer_to_group["full3"] = 1
+    connector.layer_to_slot = {name: 0 for name in connector.layer_order}
+    connector._waited_layers = set()
+    connector._waited_group_slots = set()
+    connector._record_load_bytes = MagicMock()
+    events = []
+    submitted = set()
+
+    def submit(pos):
+        if 0 <= pos < len(connector.layer_order) and pos not in submitted:
+            submitted.add(pos)
+            events.append(("submit", pos))
+
+    connector._submit_layer_load = submit
+
+    def record_wait(pair):
+        events.append(("wait", pair))
+
+    connector._wait_layer_load_pair = record_wait
+
+    # A hook-order gap left full3's position unsubmitted when its wait fires.
+    connector.wait_for_layer_load("full3")
+
+    assert events == [("submit", 3), ("wait", (1, 0))]
+    connector._record_load_bytes.assert_called_once()
+
+
 def test_layer_hook_waits_same_layer_ple_once(hla):
     connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
     connector.need_load = True
@@ -1402,7 +1513,13 @@ def test_layer_hook_waits_same_layer_ple_once(hla):
     connector.wait_for_layer_load("linear2")
     connector.wait_for_layer_load("linear2")
 
-    assert events == [("wait", (0, 0)), ("submit", 1), ("wait", (1, 0))]
+    # Position 0 was never submitted; the hook must submit before waiting.
+    assert events == [
+        ("submit", 0),
+        ("wait", (0, 0)),
+        ("submit", 1),
+        ("wait", (1, 0)),
+    ]
     assert connector._waited_layers == {"linear2", "ple2"}
 
 
