@@ -67,7 +67,7 @@ bool SendFrame(const roce::TcpChannel& channel, const std::vector<std::uint8_t>&
 // then reads the connect done and the disconnect announcement without ever
 // answering either of them.  A provider that waits for a reply would hang until
 // its handshake timeout instead of finishing the call.
-void RunSilentStore(std::uint16_t port, std::uint32_t queueNum)
+void RunSilentStore(std::uint16_t port, std::uint32_t queueNum, std::uint8_t majorVersion)
 {
     std::string error;
     roce::TcpChannel listener;
@@ -80,6 +80,7 @@ void RunSilentStore(std::uint16_t port, std::uint32_t queueNum)
 
     // Table 2: what this store can do.  Only queueNum matters here.
     roce::Capabilities capabilities;
+    capabilities.majorVersion = majorVersion;
     capabilities.queueNum = static_cast<std::uint16_t>(queueNum);
     capabilities.adminqDepth = 32;
     capabilities.ioqDepth = 256;
@@ -122,7 +123,7 @@ TEST(CpuKvOverRoceOneWayMessageTest, ConnectDoneIsSentOnceAndNotAwaited)
     const std::uint16_t port = ReserveTcpPort();
     ASSERT_NE(0, port);
 
-    std::thread store(RunSilentStore, port, 2U);
+    std::thread store(RunSilentStore, port, 2U, 1U);
 
     roce::CpuKvOverRoceTransProvider provider(MakeClientConfig(3000));
     std::vector<TransProvider::ConnectionHandle> handles;
@@ -148,7 +149,7 @@ TEST(CpuKvOverRoceOneWayMessageTest, DisconnectReturnsWithoutWaitingForAnAnswer)
     const std::uint16_t port = ReserveTcpPort();
     ASSERT_NE(0, port);
 
-    std::thread store(RunSilentStore, port, 1U);
+    std::thread store(RunSilentStore, port, 1U, 1U);
 
     roce::CpuKvOverRoceTransProvider provider(MakeClientConfig(3000));
     std::vector<TransProvider::ConnectionHandle> handles;
@@ -164,6 +165,23 @@ TEST(CpuKvOverRoceOneWayMessageTest, DisconnectReturnsWithoutWaitingForAnAnswer)
     EXPECT_LT(elapsed, 500) << "the disconnect request appears to be awaited";
     EXPECT_EQ(0U, provider.ConnectionCount());
     EXPECT_EQ(0U, provider.HandleCount());
+    store.join();
+}
+
+TEST(CpuKvOverRoceOneWayMessageTest, RejectsAPeerOnAnotherCapabilityMajorVersion)
+{
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    std::thread store(RunSilentStore, port, 1U, 2U);
+
+    roce::CpuKvOverRoceTransProvider provider(MakeClientConfig(3000));
+    std::vector<TransProvider::ConnectionHandle> handles;
+    const Status status = ConnectWithRetry(provider, port, 1U, handles);
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(std::string::npos, status.message.find("capability version")) << status.message;
+    EXPECT_TRUE(handles.empty());
+    EXPECT_EQ(0U, provider.ConnectionCount());
     store.join();
 }
 

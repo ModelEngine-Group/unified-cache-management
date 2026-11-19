@@ -268,42 +268,15 @@ Status TcpChannel::Listen(const std::string& bindIp, std::uint16_t port, std::ui
         error = "listen() failed: " + ErrnoText(errno);
         return Status::Error(StatusCode::IO_ERROR, error);
     }
-
-    listener = std::move(socket);
-    return Status::OK();
-}
-
-Status TcpChannel::Accept(const TcpChannel& listener, std::uint32_t timeoutMs, TcpChannel& accepted,
-                          std::string& error)
-{
-    error.clear();
-    if (!listener.Valid()) {
-        error = "accept() on an invalid listening socket";
-        return Status::Error(StatusCode::INVALID_ARGUMENT, error);
-    }
-
-    std::string waitError;
-    Status waited = WaitForFd(listener.fd_, POLLIN, timeoutMs, waitError);
-    if (!waited.ok()) {
-        error = "accept() " + waitError;
-        const StatusCode code =
-            waited.code == StatusCode::TIMEOUT ? StatusCode::TIMEOUT : StatusCode::CONNECTION_ERROR;
-        return Status::Error(code, error);
-    }
-
-    const int fd = ::accept4(listener.fd_, nullptr, nullptr, SOCK_CLOEXEC);
-    if (fd < 0) {
-        error = "accept4() failed: " + ErrnoText(errno);
-        return Status::Error(StatusCode::CONNECTION_ERROR, error);
-    }
-    TcpChannel connection(fd);
-    if (Status tuned = ApplyTuning(fd, true, error); !tuned.ok()) { return tuned; }
+    // A non-blocking listener turns the race between poll() and accept4() -- the
+    // connection is reset before accept4() runs -- into EAGAIN instead of a call
+    // that blocks past its timeout.
     if (!SetNonBlocking(fd, true)) {
         error = "fcntl(O_NONBLOCK) failed: " + ErrnoText(errno);
         return Status::Error(StatusCode::IO_ERROR, error);
     }
-    TuneConnectedSocket(fd);
-    accepted = std::move(connection);
+
+    listener = std::move(socket);
     return Status::OK();
 }
 
@@ -323,6 +296,53 @@ int RemainingMs(const std::chrono::steady_clock::time_point& deadline)
 }
 
 }  // namespace
+
+Status TcpChannel::Accept(const TcpChannel& listener, std::uint32_t timeoutMs, TcpChannel& accepted,
+                          std::string& error)
+{
+    error.clear();
+    if (!listener.Valid()) {
+        error = "accept() on an invalid listening socket";
+        return Status::Error(StatusCode::INVALID_ARGUMENT, error);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    int fd = -1;
+    while (fd < 0) {
+        std::string waitError;
+        Status waited = WaitForFd(listener.fd_, POLLIN, RemainingMs(deadline), waitError);
+        if (!waited.ok()) {
+            error = "accept() " + waitError;
+            const StatusCode code = waited.code == StatusCode::TIMEOUT
+                                        ? StatusCode::TIMEOUT
+                                        : StatusCode::CONNECTION_ERROR;
+            return Status::Error(code, error);
+        }
+        fd = ::accept4(listener.fd_, nullptr, nullptr, SOCK_CLOEXEC);
+        if (fd >= 0) { break; }
+        if (errno == EINTR) { continue; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // The connection that woke poll() was reset before it could be
+            // accepted; wait for the rest of the budget instead of failing.
+            if (RemainingMs(deadline) == 0) {
+                error = "accept() timed out after " + std::to_string(timeoutMs) + " ms";
+                return Status::Error(StatusCode::TIMEOUT, error);
+            }
+            continue;
+        }
+        error = "accept4() failed: " + ErrnoText(errno);
+        return Status::Error(StatusCode::CONNECTION_ERROR, error);
+    }
+    TcpChannel connection(fd);
+    if (Status tuned = ApplyTuning(fd, true, error); !tuned.ok()) { return tuned; }
+    if (!SetNonBlocking(fd, true)) {
+        error = "fcntl(O_NONBLOCK) failed: " + ErrnoText(errno);
+        return Status::Error(StatusCode::IO_ERROR, error);
+    }
+    TuneConnectedSocket(fd);
+    accepted = std::move(connection);
+    return Status::OK();
+}
 
 namespace {
 

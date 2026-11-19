@@ -1,3 +1,27 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+
 #include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
@@ -310,6 +334,68 @@ TEST(CpuKvOverRoceCreateConnectionTest, DeleteReportsUnknownHandles)
 
     ASSERT_EQ(1U, results.size());
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT, results.front().code);
+}
+
+TEST(CpuKvOverRoceCreateConnectionTest, AdvertisesTheConfiguredDeleteBatch)
+{
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    TransportConfig serverConfig = MakeServerConfig();
+    serverConfig.deleteIoNum = 254;
+    roce::CpuKvOverRoceTransProvider server(serverConfig);
+    Status serverStatus = Status::Error(StatusCode::INTERNAL_ERROR, "server thread did not run");
+    ConnectionHandles serverHandles;
+    std::thread serverThread([&]() {
+        serverStatus =
+            server.CreateConnection("127.0.0.1", "127.0.0.1", port, 1, 4000, serverHandles);
+    });
+
+    roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
+    ConnectionHandles clientHandles;
+    const Status clientStatus = ConnectWithRetry(client, port, 1, clientHandles);
+
+    serverThread.join();
+    ASSERT_TRUE(clientStatus.ok()) << clientStatus.message;
+    ASSERT_TRUE(serverStatus.ok()) << serverStatus.message;
+
+    // The delete batch travels in the capability reply; a provider that never
+    // filled the field would report the struct default of one.
+    ServerKvCapabilities capabilities{};
+    ASSERT_TRUE(client.GetServerCapabilities(clientHandles.front(), capabilities).ok());
+    EXPECT_EQ(254U, capabilities.deleteKeys);
+}
+
+TEST(CpuKvOverRoceCreateConnectionTest, NeverReturnsMoreHandlesThanRequested)
+{
+    const std::uint16_t port = ReserveTcpPort();
+    ASSERT_NE(0, port);
+
+    // This store side offers four queue pairs while the client asks for two.
+    roce::CpuKvOverRoceTransProvider server(MakeServerConfig());
+    Status serverStatus = Status::Error(StatusCode::INTERNAL_ERROR, "server thread did not run");
+    ConnectionHandles serverHandles;
+    std::thread serverThread([&]() {
+        serverStatus =
+            server.CreateConnection("127.0.0.1", "127.0.0.1", port, 4, 4000, serverHandles);
+    });
+
+    roce::CpuKvOverRoceTransProvider client(MakeClientConfig());
+    ConnectionHandles clientHandles;
+    const Status clientStatus = ConnectWithRetry(client, port, 2, clientHandles);
+
+    serverThread.join();
+    ASSERT_TRUE(clientStatus.ok()) << clientStatus.message;
+    ASSERT_TRUE(serverStatus.ok()) << serverStatus.message;
+
+    // The caller asked for two handles and must not receive more.
+    EXPECT_EQ(2U, clientHandles.size());
+    ServerKvCapabilities capabilities{};
+    ASSERT_TRUE(client.GetServerCapabilities(clientHandles.front(), capabilities).ok());
+    EXPECT_EQ(2U, capabilities.queueNum);
+
+    client.DeleteConnections(clientHandles);
+    server.DeleteConnections(serverHandles);
 }
 
 }  // namespace

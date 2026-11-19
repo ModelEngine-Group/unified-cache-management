@@ -219,15 +219,18 @@ record for a `verbs` provider to address, and a real region must not have its
 
 The `lint-and-unit-tests / cpp_gtest` job installs `libibverbs-dev` and
 configures with `-DBUILD_KV_CLIENT_PROVIDER_ROCE=ON`, so everything below runs
-on every pull request. No RDMA hardware is required: the queue pair backend
-defaults to `simulated`, and the handshake tests talk over loopback TCP.
+on every pull request. No RDMA hardware is required: the handshake tests set
+`asu_roce_qp_backend: simulated` explicitly and talk over loopback TCP, while a
+provider without that key uses the `verbs` backend, which does need an HCA.
 
 Verified:
 
 - the frame codec, including the checksum covering header and body and the
   check vector of the zero based CRC-32C (`RoceWireTest`, fourteen cases);
 - the full link handshake against a peer provider in the same process using the
-  `simulated` queue pair backend (`CpuKvOverRoceCreateConnectionTest`);
+  `simulated` queue pair backend (`CpuKvOverRoceCreateConnectionTest`), including
+  the refusal of a peer that advertises another capability major version
+  (`CpuKvOverRoceOneWayMessageTest`);
 - capability reporting, adoption of the store limits, and the queue pair
   count taken from the store;
 - the disconnect sequence, including teardown of the socket and the queue

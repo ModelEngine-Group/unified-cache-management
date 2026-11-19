@@ -54,8 +54,8 @@ namespace roce {
 //   4. connect  table 3 exchange carrying gid/lid/mtu/qpn/psn, then table 4
 //   5. teardown table 5 disconnect followed by queue pair destruction
 //
-// Operations that need a live queue pair (Send, memory registration) report
-// UNSUPPORTED until their layers land.
+// Only Send still reports UNSUPPORTED: link establishment, teardown and the
+// memory registration path are implemented.
 class CpuKvOverRoceTransProvider final : public TransProvider {
 public:
     explicit CpuKvOverRoceTransProvider(const TransportConfig& config);

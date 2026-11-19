@@ -455,6 +455,15 @@ Status CpuKvOverRoceTransProvider::ExchangeCapabilities(Link& link, std::string&
             return Failure(StatusCode::INVALID_ARGUMENT, error);
         }
         link.peerCapabilities = message.capabilities;
+        if (message.capabilities.majorVersion != link.localCapabilities.majorVersion) {
+            error = "peer speaks capability version " +
+                    std::to_string(message.capabilities.majorVersion) + "." +
+                    std::to_string(message.capabilities.minorVersion) +
+                    " while this provider speaks " +
+                    std::to_string(link.localCapabilities.majorVersion) + "." +
+                    std::to_string(link.localCapabilities.minorVersion);
+            return Failure(StatusCode::INVALID_ARGUMENT, error);
+        }
         link.negotiatedCapabilities =
             AdoptCapabilities(link.localCapabilities, link.peerCapabilities);
         return Status::OK();
@@ -489,6 +498,7 @@ Status CpuKvOverRoceTransProvider::ValidateCapabilityLimits(std::string& error) 
         {"asu_batch_store_io_num", config_.batchStoreIoNum },
         {"asu_batch_load_io_num",  config_.batchLoadIoNum  },
         {"asu_query_io_num",       config_.queryIoNum      },
+        {"asu_delete_io_num",      config_.deleteIoNum     },
     };
     for (const Limit& limit : limits) {
         if (limit.value > kMaxCapabilityValue) {
@@ -506,11 +516,14 @@ Capabilities CpuKvOverRoceTransProvider::LocalCapabilities(std::uint32_t qpNum) 
     // Every value below fits: the queue pair count is capped by kMaxQpPerLink and
     // CreateConnection rejects limits that do not fit a capability field.
     Capabilities local;
+    local.majorVersion = kWireCapabilityMajorVersion;
+    local.minorVersion = kWireCapabilityMinorVersion;
     local.queueNum = static_cast<std::uint16_t>(qpNum);
     local.ioqKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.maxInflightTasks));
     local.totalKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.maxInflightTasks));
     local.storeKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.batchStoreIoNum));
     local.retrieveKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.batchLoadIoNum));
+    local.deleteKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.deleteIoNum));
     local.existKeyBatch = static_cast<std::uint16_t>(AtLeastOne(config_.queryIoNum));
     local.keyLength = 8;
     return local;
@@ -642,6 +655,10 @@ Capabilities CpuKvOverRoceTransProvider::AdoptCapabilities(const Capabilities& l
     // The values the store side reported become the connection's operating point.
     Capabilities adopted = peer;
     PreferAdvertised(adopted.queueNum, local.queueNum);
+    // The contract hands back at most the requested number of handles, so a
+    // store that offers more queue pairs than we asked for is pulled down to
+    // the request instead of widening the connection.
+    if (adopted.queueNum > local.queueNum) { adopted.queueNum = local.queueNum; }
     PreferAdvertised(adopted.adminqDepth, local.adminqDepth);
     PreferAdvertised(adopted.ioqDepth, local.ioqDepth);
     PreferAdvertised(adopted.ioqKeyBatch, local.ioqKeyBatch);
@@ -1065,18 +1082,22 @@ std::vector<Status> CpuKvOverRoceTransProvider::UnregisterMemory(
                 continue;
             }
             registration = entry->second;
+            // Claim the entry before dropping the lock: a second thread that
+            // unregisters the same handle then sees an unknown handle instead
+            // of deregistering the same memory twice.
+            state.registrations.erase(entry);
         }
-        // The access record goes first: if the device refuses to release it the
-        // region is still registered, and dropping the entry first would both
-        // leak the memory and hide it from the caller that has to retry.
         if (registration.mr != nullptr && ibv_dereg_mr(registration.mr) != 0) {
-            results.push_back(Failure(StatusCode::IO_ERROR,
-                                      std::string("ibv_dereg_mr failed: ") + std::strerror(errno)));
+            const int savedErrno = errno;
+            std::lock_guard<std::mutex> guard(state.memoryMutex);
+            // Roll the claim back so the caller can retry the release.
+            state.registrations[desc.mrHandle] = registration;
+            results.push_back(Failure(StatusCode::IO_ERROR, std::string("ibv_dereg_mr failed: ") +
+                                                                std::strerror(savedErrno)));
             continue;
         }
         {
             std::lock_guard<std::mutex> guard(state.memoryMutex);
-            state.registrations.erase(desc.mrHandle);
             // A binding is only meaningful while the registration it points at
             // exists, so it retires together with it.
             for (auto binding = state.registrations.begin();

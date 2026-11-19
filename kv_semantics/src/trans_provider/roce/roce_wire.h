@@ -66,6 +66,11 @@ constexpr std::uint8_t kWireCmdConnectResponse = 2;
 constexpr std::uint8_t kWireCmdConnectDone = 3;
 constexpr std::uint8_t kWireCmdDisconnect = 4;
 
+// Capability messages carry the sender's protocol version in their private area.
+// A peer on another major version is rejected instead of being guessed at.
+constexpr std::uint8_t kWireCapabilityMajorVersion = 1;
+constexpr std::uint8_t kWireCapabilityMinorVersion = 0;
+
 // table 3 carries qpn[32].
 constexpr std::size_t kMaxQpPerLink = 32;
 
