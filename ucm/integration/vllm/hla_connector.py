@@ -244,6 +244,14 @@ def npu_flash_next_column_owners(
     return owned
 
 
+def _is_embedded_mtp_layer(layout, name: str, num_hidden_layers: int) -> bool:
+    """MTP draft modules register as model.layers.<num_hidden_layers>."""
+    return (
+        num_hidden_layers > 0
+        and layout.layer_name_to_id.get(name, -1) >= num_hidden_layers
+    )
+
+
 def _layer_ordinal(layer_name: str) -> Optional[int]:
     parts = layer_name.split(".")
     if "layers" not in parts:
@@ -3195,15 +3203,26 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             worker_cores,
             store_cores,
         )
-        # Physical layouts may create anchors by cache type rather than model
-        # execution order. Draft groups run after all target layers despite
-        # having an independent numeric layer-id space.
-        eagle_layers = {
-            name
-            for cache_group in self._kv_cache_config.kv_cache_groups
-            if getattr(cache_group, "is_eagle_group", False)
-            for name in cache_group.layer_names
-        }
+        # Draft layers run last despite their independent layer-id space. An
+        # embedded MTP draft shares the target's composite group, so only true
+        # draft layers move; an eagle group with no draft signal is an
+        # external draft model and moves as a whole.
+        specs = layer_name_to_kv_cache_spec(self._kv_cache_config)
+        num_hidden_layers = getattr(layout, "num_hidden_layers", 0)
+        eagle_layers: set[str] = set()
+        for cache_group in self._kv_cache_config.kv_cache_groups:
+            if not getattr(cache_group, "is_eagle_group", False):
+                continue
+            draft_layers = {
+                name
+                for name in cache_group.layer_names
+                if any(
+                    getattr(spec, "non_causal_multi_token_decode", False)
+                    for spec in specs.get(name, [])
+                )
+                or _is_embedded_mtp_layer(layout, name, num_hidden_layers)
+            }
+            eagle_layers |= draft_layers or set(cache_group.layer_names)
         ordered_layers = sorted(
             layout.layer_anchors,
             key=lambda name: (layout.layer_name_to_id[name], name),
@@ -3657,6 +3676,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self.layer_to_slot[layer_name],
         )
         if pair_key not in self._waited_group_slots:
+            # Idempotent; a hook-order gap can leave this pair unsubmitted.
+            self._submit_layer_load(pos)
             self._waited_group_slots.add(pair_key)
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
