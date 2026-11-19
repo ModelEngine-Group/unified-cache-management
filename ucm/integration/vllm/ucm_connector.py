@@ -2367,6 +2367,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
+        # Workers drain the old saves before executing this step. Retire only
+        # that generation's notification; dispatch below may register new saves.
+        self._async_dump_req_ids.difference_update(
+            scheduler_output.preempted_req_ids or set()
+        )
         requests_dispatch_meta = {}
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
@@ -2650,6 +2655,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         if preempted_req_ids:
             self._flush_pending_dump_tasks(preempted_req_ids)
+            # These saves no longer need a request-finished notification. Keep
+            # this in sync with build_connector_meta on the scheduler, otherwise
+            # a resumed async load can report both receive and send completion.
+            self._rank_consistency.finish_dump(preempted_req_ids)
+            self._async_dump_req_ids.difference_update(preempted_req_ids)
 
     def wait_for_save(self) -> None:
         # TODO support PP
