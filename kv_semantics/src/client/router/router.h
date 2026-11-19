@@ -54,11 +54,10 @@ public:
         const std::vector<Key>& keys) const;
     // Routes cache keys while allowing a router implementation to exclude a
     // set of nodes. The default contract preserves legacy behavior by ignoring
-    // unavailableNodes; RingHashRouter will implement secondary-hash fallback.
-    // When primary and fallback candidates are all unavailable, affected entries
-    // are grouped under kInvalidNodeId. Task construction must not dispatch to
-    // kInvalidNodeId; it returns a routing failure and enters the refresh/error
-    // path instead.
+    // unavailableNodes; RingHashRouter implements secondary-hash fallback.
+    // A router that cannot find any available owner omits the key from the result
+    // instead of grouping it under kInvalidNodeId. Task construction treats an
+    // omitted key as unroutable and reports it per entry as NO_AVAILABLE_NODE.
     virtual std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
         const std::vector<Key>& keys, const UnavailableNodeSet& unavailableNodes) const;
 

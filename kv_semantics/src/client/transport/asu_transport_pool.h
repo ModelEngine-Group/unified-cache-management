@@ -49,6 +49,8 @@ class AsuTransport;
 class AsuTransportPool final {
 public:
     // Creates one transport from a ready config. The pool never builds configs itself.
+    // The creator runs while the pool mutex is held (connection setup included), so it must
+    // not call back into this pool. Slow creation blocks GetOrCreate/Find/GetTransports.
     using Creator = std::function<Status(const TransportConfig&, std::shared_ptr<AsuTransport>&)>;
 
     explicit AsuTransportPool(Creator creator);

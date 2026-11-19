@@ -68,6 +68,11 @@ std::vector<kv::Key> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 // Collects the nodes whose transport reports an unhealthy state. Transports without a
 // health probe report OK and are therefore treated as available: an unimplemented probe
 // must not be mistaken for a fault.
+//
+// Note: AsuTransportImpl::CheckHealth() currently only reports whether its worker threads
+// are running, so a broken connection or a dead peer keeps returning OK here. Routing
+// failover therefore reacts to a stopped transport only; connection-level detection needs
+// a follow-up probe (recent IO error / heartbeat) in the transport layer.
 UnavailableNodeSet CollectUnavailableNodes(const std::shared_ptr<ViewSnapshot>& snapshot)
 {
     UnavailableNodeSet unavailableNodes;
@@ -315,6 +320,10 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
     // individually instead of dropping them silently.
     std::vector<bool> routed(keys.size(), false);
     for (const auto& route : routes) {
+        // Routers without their own unavailable-node handling (Maglev, affinity routers)
+        // keep their affinity and still return unavailable owners. Skip those groups here so
+        // the keys follow the unroutable path instead of being sent to a known-bad node.
+        if (unavailableNodes.count(route.first) != 0) { continue; }
         for (auto index : route.second) {
             if (index < routed.size()) { routed[index] = true; }
         }
@@ -340,6 +349,7 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
 
     task->transportTasks.reserve(routes.size());
     for (const auto& [nodeId, indices] : routes) {
+        if (unavailableNodes.count(nodeId) != 0) { continue; }
         auto transportTask = std::make_shared<TransportTask>();
         transportTask->nodeId = nodeId;
         transportTask->transport = snapshot->transports.at(nodeId);
