@@ -129,8 +129,9 @@ TEST(ViewUniverseTest, MissingViewReturnsNotFoundWithoutChangingOutput)
     ExpectView(output, 88, 99, 77);
 }
 
-// 测试场景：向全局 epoch 为 100 且已有视图的实例发布空快照、epoch 0/99 的旧快照，以及 epoch 100 的相等快照。
-// 预期结果：空 map 和 lower epoch 均返回 INVALID_ARGUMENT 并保留旧状态；equal epoch 返回 OK/no-op，不加入 namespace 2。
+// 测试场景：向全局 epoch 为 100 且已有视图的实例发布空快照、epoch 0/99 的旧快照，以及 epoch 100
+// 的相等快照。 预期结果：空 map 和 lower epoch 均返回 INVALID_ARGUMENT 并保留旧状态；equal epoch
+// 返回 OK/no-op，不加入 namespace 2。
 TEST(ViewUniverseTest, PublishAllRejectsEmptyAndLowerEpochsButEqualIsNoOp)
 {
     auto universe = MakeUniverse(
@@ -166,7 +167,8 @@ TEST(ViewUniverseTest, PublishAllRejectsEmptyAndLowerEpochsButEqualIsNoOp)
 }
 
 // 测试场景：默认空实例首次发布一个全局 epoch 为 0、包含命名空间 7 的非空快照。
-// 预期结果：nextEpoch 与当前 epoch 相等，因此返回 OK/no-op；实例仍为空且 epoch 为 0，不发布 namespace 7。
+// 预期结果：nextEpoch 与当前 epoch 相等，因此返回 OK/no-op；实例仍为空且 epoch 为 0，不发布
+// namespace 7。
 TEST(ViewUniverseTest, PublishAllInitialZeroEpochIsEqualNoOp)
 {
     auto universe = CreateViewUniverse();
