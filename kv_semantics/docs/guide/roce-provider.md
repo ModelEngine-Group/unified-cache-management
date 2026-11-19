@@ -215,6 +215,14 @@ record for a `verbs` provider to address, and a real region must not have its
 `rkey` replaced by a synthetic token, so a mismatch is refused with
 `UNSUPPORTED` as well.
 
+## Server side concurrency
+
+A link listens on `asu_roce_oob_bind_ip` (or `asu_local_ip`) and the control
+port while it waits for its peer, so two server side providers cannot listen on
+the same address at the same time: the second `CreateConnection` fails with
+`Address already in use` and the message names the reason. Either establish the
+server links one after another, or give each provider its own bind address.
+
 ## Verification status
 
 The `lint-and-unit-tests / cpp_gtest` job installs `libibverbs-dev` and

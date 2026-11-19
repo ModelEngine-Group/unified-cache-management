@@ -146,7 +146,14 @@ CpuKvOverRoceTransProvider::~CpuKvOverRoceTransProvider()
 {
     std::lock_guard<std::mutex> guard(mutex_);
     for (const auto& link : links_) {
-        if (link != nullptr) { TeardownLink(*link); }
+        if (link == nullptr) { continue; }
+        // Announce the teardown exactly like DeleteConnections does, but ignore a
+        // failure: a destructor cannot report one, and the peer still notices the
+        // closed socket.
+        std::vector<std::uint8_t> frame;
+        std::string ignored;
+        if (EncodeDisconnect(frame).ok()) { static_cast<void>(SendFrame(*link, frame, ignored)); }
+        TeardownLink(*link);
     }
     links_.clear();
     handleToLink_.clear();
@@ -270,9 +277,17 @@ Status CpuKvOverRoceTransProvider::OpenLink(const std::string& localIp, const st
     Status listened =
         TcpChannel::Listen(bindIp, static_cast<std::uint16_t>(port), 1, listener, error);
     if (!listened.ok()) {
+        // A listening socket cannot be shared, so a second provider on the same
+        // address fails here; say so instead of leaving a bare bind error.
+        const std::string hint = error.find("Address already in use") == std::string::npos
+                                     ? std::string()
+                                     : std::string(
+                                           " (another provider is already listening on"
+                                           " that address; the server side of a link"
+                                           " cannot share the port)");
         return Failure(listened.code, "out-of-band TCP listen on " +
                                           (bindIp.empty() ? std::string("*") : bindIp) + ":" +
-                                          std::to_string(port) + " failed: " + error);
+                                          std::to_string(port) + " failed: " + error + hint);
     }
     Status accepted = TcpChannel::Accept(listener, effectiveTimeout, channel, error);
     if (!accepted.ok()) {
