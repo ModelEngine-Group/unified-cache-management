@@ -101,6 +101,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
             coordinated_puts=self._coordinated_puts,
         )
         install_request_hooks(type(self), coordinated_puts=self._coordinated_puts)
+        # CP uses separate cache domains. Within an attention-TP cache domain,
+        # a committed Mamba object already includes every rank's state shard.
+        self._lookup_owner = not (
+            params.attn_cp_size == 1 and worker_number > 1 and worker_index != 0
+        )
         self._registered_requests = set()
         self._request_pages = {}
         self._page_requests = {}
@@ -218,11 +223,36 @@ class UcmDirectLinker(UnifiedCacheLinker):
         candidates = list(range(1, len(page_keys) + 1))
         with self._scheduler_lock:
             self._associate_pages(rid, page_keys)
+            if not self._lookup_owner:
+                # SGLang intersects boundaries across ranks: all boundaries
+                # are neutral. Keep local request registration for Get/Put.
+                return candidates
             for section, section_transfers in expanded:
-                keys = b"".join(section.block_ids(page_keys[: candidates[-1]]))
-                hits, _prefetchable = self.runtime.lookup(rid, keys)
+                block_ids = section.block_ids(page_keys[: candidates[-1]])
+                keys = b"".join(block_ids)
                 transfer = section_transfers[0]
-                if transfer.hit_policy == "trailing_pages":
+                if transfer.hit_policy != "trailing_pages":
+                    index, _prefetchable = self.runtime.lookup_on_prefix(rid, keys)
+                    candidates = [end for end in candidates if end <= index + 1]
+                elif len(transfer.keys) == 1:
+                    # State snapshots may have sparse boundaries. Enumerate all
+                    # hits, not just the latest: another section/rank may need
+                    # an earlier boundary when SGLang intersects the results.
+                    boundaries = set()
+                    remaining = len(block_ids)
+                    while remaining:
+                        index, _prefetchable = self.runtime.lookup_on_reverse(
+                            rid, b"".join(block_ids[:remaining])
+                        )
+                        if index < 0:
+                            break
+                        boundaries.add(index + 1)
+                        remaining = index
+                    candidates = [end for end in candidates if end in boundaries]
+                else:
+                    # A multi-page tail requires every page in its window;
+                    # a rightmost-hit index alone cannot establish that.
+                    hits, _prefetchable = self.runtime.lookup(rid, keys)
                     prefix = [0]
                     for hit in hits:
                         prefix.append(prefix[-1] + int(not hit))
@@ -233,11 +263,6 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         if end < len(prefix)
                         and prefix[end] == prefix[max(0, end - window)]
                     ]
-                else:
-                    prefix_pages = next(
-                        (i for i, hit in enumerate(hits) if not hit), len(hits)
-                    )
-                    candidates = [end for end in candidates if end <= prefix_pages]
                 if not candidates:
                     break
         logger.info(

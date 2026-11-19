@@ -108,6 +108,9 @@ class Store:
     def lookup(self, rid, keys):
         return [True], False
 
+    def lookup_on_prefix(self, rid, keys):
+        return 0, False
+
     def prepare_put(self, rid, keys):
         token = types.SimpleNamespace(
             keys=[types.SimpleNamespace(to_bytes=lambda: keys)]
@@ -340,6 +343,16 @@ class OffloadTest(unittest.TestCase):
         self.assertTrue(node.result(timeout=2))
         self.linker.reset()
         self.assertEqual([success for _, success in self.store.commits], [False])
+
+    def test_non_owner_lookup_registers_request_without_store_query(self):
+        self.linker._lookup_owner = False
+        transfers = (types.SimpleNamespace(keys=("page",), hit_policy="all_pages"),)
+        with patch.object(self.store, "lookup", side_effect=AssertionError("queried")):
+            self.assertEqual(self.linker.lookup("r", transfers), [1])
+        self.assertIn("r", self.linker._registered_requests)
+        self.assertEqual(self.linker._page_requests["page"], {"r"})
+        self.linker.finish_request("r")
+        self.assertIn("r", self.store.finished_requests)
 
     def test_dump_uses_each_lookup_request_and_holds_its_route_until_commit(self):
         transfers = (types.SimpleNamespace(keys=("page",), hit_policy="all_pages"),)
