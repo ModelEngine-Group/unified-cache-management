@@ -355,10 +355,15 @@ def apply_all_patches() -> None:
                 logger.info(
                     "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
                 )
-                import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
+
+        # Both release lines can omit the synchronous-load flag in Ascend's
+        # copied balance scheduler. Reuse the idempotent metadata-driven fix;
+        # do not enable unrelated v0300 patches on the v0320 release line.
+        if ascend_version in {"0.30.0", "0.32.0"}:
+            import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
 
         if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (0, 26):
             import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch
