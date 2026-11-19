@@ -41,6 +41,7 @@
 
 namespace kv {
 class Router;
+class RefreshScheduler;
 }  // namespace kv
 
 namespace kv {
@@ -144,8 +145,6 @@ private:
     Status RefreshView();
     // Starts a non-blocking refresh after a status indicates stale routing or transport state.
     void RequestBackgroundRefresh();
-    // Waits for the background refresh worker to finish.
-    void JoinBackgroundRefresh();
 
     // Shuts down transports owned by a snapshot.
     Status ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot);
@@ -180,12 +179,14 @@ private:
     std::mutex memoryMu_;
     // Tracks whether Init has published a usable snapshot.
     bool initialized_{false};
-    // Prevents duplicate background refresh workers.
-    bool refreshInProgress_{false};
+    // Allows a refresh accepted before Shutdown to finish while new IO is rejected.
+    bool shutdownRequested_{false};
     // Last accepted initialization config.
     KvClientConfig config_;
     // Source for dynamic global views; may be backed by viewServiceAddrs.
     std::shared_ptr<ViewServer> viewServer_;
+    // Resident scheduler that serializes timer- and IO-triggered view refreshes.
+    std::unique_ptr<RefreshScheduler> refreshScheduler_;
     // Transport configs indexed by ASU id for snapshot construction.
     std::unordered_map<NodeId, TransportConfig> transportConfigs_;
     // Provider-local handles indexed by the canonical handles returned by this client.
@@ -200,8 +201,6 @@ private:
     ViewSnapshotMap snapshots_;
     // Transports removed from the active snapshot but still needed by old tasks.
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports_;
-    // Worker used for non-blocking refresh requests.
-    std::thread refreshThread_;
 };
 
 }  // namespace kv

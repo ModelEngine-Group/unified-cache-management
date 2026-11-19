@@ -46,8 +46,8 @@ public:
     // an in-progress callback to finish, so the callback must return within a
     // bounded time.
     virtual Status Start(std::chrono::milliseconds interval, RefreshCallback callback) = 0;
-    // Stops accepting triggers, wakes the worker, joins it, and waits for the
-    // refresh in progress to finish.
+    // Stops accepting triggers, drains a refresh already accepted by the
+    // scheduler, waits for an active callback to finish, and joins the worker.
     virtual void Stop() = 0;
 
     virtual void TriggerByTimer() = 0;

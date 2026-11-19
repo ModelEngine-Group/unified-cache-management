@@ -90,7 +90,6 @@ void ThreadedRefreshScheduler::Stop()
         }
 
         stopping_ = true;
-        stopRequested_ = true;
         workerCv_.notify_all();
         workerToJoin = std::move(worker_);
     }
@@ -133,7 +132,7 @@ Status ThreadedRefreshScheduler::RefreshNow()
     std::shared_ptr<RefreshWaiter> waiter;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!running_ || stopRequested_) {
+        if (!running_ || stopping_ || stopRequested_) {
             return Status::Error(StatusCode::NOT_INITIALIZED, "RefreshScheduler is not running");
         }
         waiter = RequestRefreshLocked(TriggerSource::MANUAL, true);
@@ -149,7 +148,7 @@ Status ThreadedRefreshScheduler::RefreshNow()
 std::shared_ptr<ThreadedRefreshScheduler::RefreshWaiter>
 ThreadedRefreshScheduler::RequestRefreshLocked(TriggerSource source, bool createWaiter)
 {
-    if (!running_ || stopRequested_) { return nullptr; }
+    if (!running_ || stopping_ || stopRequested_) { return nullptr; }
 
     auto waiter = createWaiter ? std::make_shared<RefreshWaiter>() : nullptr;
     if (refreshPending_) {
@@ -173,10 +172,14 @@ void ThreadedRefreshScheduler::WorkerLoop()
 {
     std::unique_lock<std::mutex> lock{mutex_};
     while (true) {
+        if (stopping_ && !refreshPending_ && !refreshActive_) {
+            stopRequested_ = true;
+            break;
+        }
         if (stopRequested_) { break; }
 
         const auto now = std::chrono::steady_clock::now();
-        if (now >= nextDeadline_) {
+        if (!stopping_ && now >= nextDeadline_) {
             if (!refreshPending_ && !refreshActive_) {
                 (void)RequestRefreshLocked(TriggerSource::TIMER, false);
             }
@@ -217,7 +220,7 @@ void ThreadedRefreshScheduler::WorkerLoop()
 
         if (stopRequested_) { break; }
         workerCv_.wait_until(lock, nextDeadline_,
-                             [this] { return stopRequested_ || refreshPending_; });
+                             [this] { return stopping_ || stopRequested_ || refreshPending_; });
     }
 }
 
