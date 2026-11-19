@@ -42,12 +42,24 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 #include "kvcache_log.h"
 
 namespace acl_stub {
+
+/* Host-side scatter emulator (defined after the ACL type surface below).
+ * aclnnInplaceScatter becomes a real in-memory scatter when realScatter is
+ * set, letting end-to-end tests verify the HBM KV cache bytes the way the
+ * real ACL op would write them. */
+struct ScatterEmulator;
+inline ScatterEmulator& ScatterEmu();
+inline void ResetScatterEmulator();
 
 /* Injectable failure switches.  Reset to defaults by calling Reset(). */
 struct StubControl {
@@ -69,6 +81,11 @@ struct StubControl {
     std::atomic<bool> createTensorFails{false};
     std::atomic<bool> destroyTensorFails{false};
     std::atomic<bool> returnNullErrMsg{false};
+
+    /* Off by default: history is a count-only stub. When enabled, tensor
+     * handles become registry keys and aclnnInplaceScatter applies
+     * dst[index[i][j], j] = src[i][j] in host memory (dim 0 only). */
+    bool realScatter{false};
 
     /* Call counters for assertions in tests. */
     std::atomic<int> setDeviceCount{0};
@@ -108,6 +125,8 @@ struct StubControl {
         createTensorFails = false;
         destroyTensorFails = false;
         returnNullErrMsg = false;
+        realScatter = false;
+        ResetScatterEmulator();
 
         setDeviceCount = 0;
         createContextCount = 0;
@@ -190,6 +209,190 @@ enum aclFormat {
 
 struct aclTensor;
 struct aclOpExecutor;
+
+/* ---- Host-side scatter emulator ------------------------------------------
+ * Opt-in (Stub().realScatter). Mirrors the semantics of the production
+ * KVCacheInplaceScatter call chain: AtTensorToAclTensorShared hands ACL the
+ * real storage base + storage offset + sizes/strides, so the emulator can
+ * resolve every (dst, index, src) triple to host memory and apply
+ * dst[index[i][j], j] = src[i][j] (dim 0, stride-aware including broadcast
+ * index strides of 0). Handles are registry keys and only exist while
+ * realScatter is on, so the default count-only stub path is untouched. */
+namespace acl_stub {
+
+struct ScatterEmulator {
+    struct TensorDesc {
+        std::vector<int64_t> dims;
+        std::vector<int64_t> strides;
+        aclDataType dtype = ACL_DT_UNDEFINED;
+        int64_t offset = 0;  // storage offset, in elements
+        void* data = nullptr;  // storage base
+    };
+
+    struct PendingScatter {
+        TensorDesc dst;
+        TensorDesc index;
+        TensorDesc src;
+        int64_t dim = 0;
+    };
+
+    std::map<void*, TensorDesc> registry;
+    std::deque<PendingScatter> pending;
+    std::mutex mu;
+    uintptr_t nextHandle = 0x100000;
+
+    static size_t ElemSize(aclDataType dtype)
+    {
+        switch (dtype) {
+            case ACL_BOOL:
+            case ACL_INT8: return 1;
+            case ACL_FLOAT16:
+            case ACL_BF16: return 2;
+            case ACL_FLOAT:
+            case ACL_INT32:
+            case ACL_UINT32: return 4;
+            case ACL_INT64:
+            case ACL_UINT64:
+            case ACL_DOUBLE: return 8;
+            default: return 0;
+        }
+    }
+
+    aclTensor* Register(const int64_t* dims, uint64_t dimNum, aclDataType dtype,
+                        const int64_t* strides, int64_t offset, void* data)
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        TensorDesc desc;
+        desc.dims.assign(dims, dims + dimNum);
+        desc.strides.assign(strides, strides + dimNum);
+        desc.dtype = dtype;
+        desc.offset = offset;
+        desc.data = data;
+        void* handle = reinterpret_cast<void*>(nextHandle);
+        nextHandle += 0x10;
+        registry[handle] = std::move(desc);
+        return reinterpret_cast<aclTensor*>(handle);
+    }
+
+    void Unregister(const aclTensor* tensor)
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        registry.erase(const_cast<void*>(reinterpret_cast<const void*>(tensor)));
+    }
+
+    /* Records (dst, dim, index, src) at workspace-size time; the op runs at
+     * aclnnInplaceScatter time. Returns false when a handle is unknown
+     * (e.g. failure-injection tests passing sentinel pointers). */
+    bool TryQueueScatter(aclTensor* dst, int64_t dim, aclTensor* index, aclTensor* src)
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        auto dstIt = registry.find(dst);
+        auto idxIt = registry.find(index);
+        auto srcIt = registry.find(src);
+        if (dstIt == registry.end() || idxIt == registry.end() ||
+            srcIt == registry.end()) {
+            return false;
+        }
+        PendingScatter op;
+        op.dst = dstIt->second;
+        op.index = idxIt->second;
+        op.src = srcIt->second;
+        op.dim = dim;
+        pending.push_back(std::move(op));
+        return true;
+    }
+
+    void ApplyOne()
+    {
+        PendingScatter op;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            if (pending.empty()) { return; }
+            op = std::move(pending.front());
+            pending.pop_front();
+        }
+        Apply(op);
+    }
+
+    void Clear()
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        registry.clear();
+        pending.clear();
+    }
+
+    /* dst[index[i][j], j] = src[i][j] over every element of the index shape. */
+    static void Apply(const PendingScatter& op)
+    {
+        size_t dstElem = 0, srcElem = 0, idxElem = 0, copyBytes = 0;
+        if (!ValidateScatterOp(op, dstElem, srcElem, idxElem, copyBytes)) { return; }
+        int64_t total = 1;
+        for (int64_t d : op.index.dims) { total *= d; }
+        std::vector<int64_t> coords(op.index.dims.size(), 0);
+        for (int64_t flat = 0; flat < total; ++flat) {
+            ScatterOneElement(op, coords, dstElem, srcElem, idxElem, copyBytes);
+            /* odometer increment over the index shape */
+            for (size_t d = coords.size(); d-- > 0;) {
+                if (++coords[d] < op.index.dims[d]) { break; }
+                coords[d] = 0;
+            }
+        }
+    }
+
+    static bool ValidateScatterOp(const PendingScatter& op, size_t& dstElem, size_t& srcElem,
+                                  size_t& idxElem, size_t& copyBytes)
+    {
+        if (op.dim != 0 || op.index.dims.empty() || op.index.dims.size() != op.src.dims.size() ||
+            op.index.dims.size() != op.dst.dims.size()) {
+            return false;
+        }
+        dstElem = ElemSize(op.dst.dtype);
+        srcElem = ElemSize(op.src.dtype);
+        idxElem = ElemSize(op.index.dtype);
+        if (dstElem == 0 || srcElem == 0 || idxElem != sizeof(int64_t)) { return false; }
+        copyBytes = (dstElem < srcElem) ? dstElem : srcElem;
+        return true;
+    }
+
+    static void ScatterOneElement(const PendingScatter& op, const std::vector<int64_t>& coords,
+                                  size_t dstElem, size_t srcElem, size_t idxElem, size_t copyBytes)
+    {
+        auto* dstBase = static_cast<uint8_t*>(op.dst.data);
+        auto* srcBase = static_cast<uint8_t*>(op.src.data);
+        auto* idxBase = static_cast<uint8_t*>(op.index.data);
+        int64_t idxOffset = op.index.offset;
+        int64_t srcOffset = op.src.offset;
+        for (size_t d = 0; d < coords.size(); ++d) {
+            idxOffset += coords[d] * op.index.strides[d];
+            srcOffset += coords[d] * op.src.strides[d];
+        }
+        const int64_t idxVal =
+            *reinterpret_cast<const int64_t*>(idxBase + idxOffset * idxElem);
+        if (idxVal < 0 || idxVal >= op.dst.dims[op.dim]) {
+            /* Out-of-range scatter: real ACL errors; the emulator skips
+             * the element so a broken index cannot corrupt the dump. */
+            return;
+        }
+        int64_t dstOffset = op.dst.offset;
+        for (size_t d = 0; d < coords.size(); ++d) {
+            dstOffset += (d == op.dim ? idxVal : coords[d]) * op.dst.strides[d];
+        }
+        std::memcpy(dstBase + dstOffset * dstElem, srcBase + srcOffset * srcElem, copyBytes);
+    }
+};
+
+inline ScatterEmulator& ScatterEmu()
+{
+    static ScatterEmulator emu;
+    return emu;
+}
+
+inline void ResetScatterEmulator()
+{
+    ScatterEmu().Clear();
+}
+
+}  // namespace acl_stub
 
 /* ---- ACL functions used by kvcache_trans_ascend.cpp ---- */
 
@@ -323,13 +526,12 @@ inline aclError aclnnInplaceScatterGetWorkspaceSize(aclTensor* dst, int64_t dim,
                                                     uint64_t* workspaceSize,
                                                     aclOpExecutor** executor)
 {
-    (void)dst;
-    (void)dim;
-    (void)index;
-    (void)src;
     (void)reduce;
     acl_stub::Stub().inplaceScatterWsfCount.fetch_add(1);
     if (acl_stub::Stub().inplaceScatterWsfFails.load()) { return ACL_ERROR_INTERNAL_ERROR; }
+    if (acl_stub::Stub().realScatter) {
+        (void)acl_stub::ScatterEmu().TryQueueScatter(dst, dim, index, src);
+    }
     if (workspaceSize != nullptr) { *workspaceSize = 0; }
     if (executor != nullptr) { *executor = reinterpret_cast<aclOpExecutor*>(0xE7ECu); }
     return ACL_SUCCESS;
@@ -342,6 +544,7 @@ inline aclError aclnnInplaceScatter(void* workspace, uint64_t workspaceSize,
     (void)workspaceSize;
     (void)executor;
     (void)stream;
+    if (acl_stub::Stub().realScatter) { acl_stub::ScatterEmu().ApplyOne(); }
     acl_stub::Stub().inplaceScatterCount.fetch_add(1);
     return acl_stub::Stub().inplaceScatterFails.load() ? ACL_ERROR_INTERNAL_ERROR : ACL_SUCCESS;
 }
@@ -350,17 +553,14 @@ inline aclTensor* aclCreateTensor(const int64_t* dims, uint64_t dimNum, aclDataT
                                   const int64_t* stride, int64_t offset, aclFormat format,
                                   const int64_t* storageDims, uint64_t storageDimNum, void* data)
 {
-    (void)dims;
-    (void)dimNum;
-    (void)dtype;
-    (void)stride;
-    (void)offset;
     (void)format;
     (void)storageDims;
     (void)storageDimNum;
-    (void)data;
     acl_stub::Stub().createTensorCount.fetch_add(1);
     if (acl_stub::Stub().createTensorFails.load()) { return nullptr; }
+    if (acl_stub::Stub().realScatter) {
+        return acl_stub::ScatterEmu().Register(dims, dimNum, dtype, stride, offset, data);
+    }
     return reinterpret_cast<aclTensor*>(0xABCD1234u);
 }
 
@@ -368,7 +568,9 @@ inline aclError aclDestroyTensor(const aclTensor* tensor)
 {
     (void)tensor;
     acl_stub::Stub().destroyTensorCount.fetch_add(1);
-    return acl_stub::Stub().destroyTensorFails.load() ? ACL_ERROR_INTERNAL_ERROR : ACL_SUCCESS;
+    if (acl_stub::Stub().destroyTensorFails.load()) { return ACL_ERROR_INTERNAL_ERROR; }
+    if (acl_stub::Stub().realScatter) { acl_stub::ScatterEmu().Unregister(tensor); }
+    return ACL_SUCCESS;
 }
 
 /* ---- dlsym-style opapi resolver expected by kvcache_trans_ascend.cpp ----
@@ -407,7 +609,7 @@ inline void* GetOpApiFuncAddr(const char* apiName)
 class Logger;  // forward decl (kvcache_log.h is included by the .cpp)
 int32_t CopyTrans(void** host_ptrs_addr, void** device_ptrs_addr, size_t size_bytes, size_t number,
                   std::string type, void* stream_);
-void ObtainStream(void** outputStream, void** outputContext, int32_t deviceID, int32_t mStreamNum);
+int32_t ObtainStream(void** outputStream, void** outputContext, int32_t deviceID, int32_t mStreamNum);
 int32_t Synchronize(void* context, void* stream, int streamNum, Logger& mLogger);
 bool IsStreamIdle(void* stream);
 void DestroyStream(void* stream, void* context, int32_t deviceID, int32_t mStreamNum);

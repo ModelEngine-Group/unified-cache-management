@@ -3,10 +3,8 @@
 // GSA ops torch binding: 统一用 torch.ops._C_gsa 调用所有算子
 //
 // 包含两类算子（均注册到 torch.ops._C_gsa 命名空间）:
-//   1. 调内置 aclnn 的轻量算子: gsa_scatter_copy / gsa_gather_copy / indexer_gather_qw /
-//   gsa_topk_expand_tmp
-//   2. 自定义 AscendC 算子: npu_kv_quant_sparse_flash_attention_gsa（需先编译 ascend/ 下的 kernel
-//   并安装 .run）
+//   1. 调内置 aclnn 的轻量算子: gsa_scatter_copy / gsa_gather_copy / indexer_gather_qw / gsa_topk_expand_tmp
+//   2. 自定义 AscendC 算子: npu_kv_quant_sparse_flash_attention_gsa（需先编译 ascend/ 下的 kernel 并安装 .run）
 
 #include <c10/core/Device.h>
 #include <c10/util/Exception.h>
@@ -142,16 +140,25 @@ at::Tensor gsa_topk_expand_tmp_wrapper(at::Tensor& topk_indices, at::Tensor& swa
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_kv_quant_sparse_flash_attention_gsa(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
-    const at::Tensor& sparseIndices, double scaleValue, int64_t keyQuantMode,
-    int64_t valueQuantMode, const c10::optional<at::Tensor>& keyDequantScale,
-    const c10::optional<at::Tensor>& valueDequantScale, const c10::optional<at::Tensor>& blockTable,
+    const at::Tensor& sparseIndices,
+    double scaleValue, int64_t keyQuantMode, int64_t valueQuantMode,
+    const c10::optional<at::Tensor>& keyDequantScale,
+    const c10::optional<at::Tensor>& valueDequantScale,
+    const c10::optional<at::Tensor>& blockTable,
     const c10::optional<at::Tensor>& actualSeqLengthsQuery,
-    const c10::optional<at::Tensor>& actualSeqLengthsKV, const c10::optional<at::Tensor>& sinks,
-    const c10::optional<at::Tensor>& actualSparseLengths, c10::optional<int64_t> sparseBlockSize,
-    c10::string_view layoutQuery, c10::string_view layoutKV, c10::optional<int64_t> sparseMode,
-    c10::optional<int64_t> preTokens, c10::optional<int64_t> nextTokens,
-    c10::optional<int64_t> attentionMode, c10::optional<int64_t> quantScaleRepoMode,
-    c10::optional<int64_t> tileSize, c10::optional<int64_t> ropeHeadDim,
+    const c10::optional<at::Tensor>& actualSeqLengthsKV,
+    const c10::optional<at::Tensor>& sinks,
+    const c10::optional<at::Tensor>& actualSparseLengths,
+    c10::optional<int64_t> sparseBlockSize,
+    c10::string_view layoutQuery,
+    c10::string_view layoutKV,
+    c10::optional<int64_t> sparseMode,
+    c10::optional<int64_t> preTokens,
+    c10::optional<int64_t> nextTokens,
+    c10::optional<int64_t> attentionMode,
+    c10::optional<int64_t> quantScaleRepoMode,
+    c10::optional<int64_t> tileSize,
+    c10::optional<int64_t> ropeHeadDim,
     c10::optional<bool> returnSoftmaxLse)
 {
     auto queryShape = query.sizes();
@@ -172,16 +179,18 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_kv_quant_sparse_flash_attenti
     auto&& tileSize_ = tileSize.value_or(128);
     auto&& returnSoftmaxLse_ = returnSoftmaxLse.value_or(false);
 
-    // CovertTypes
+    // CovertTypes 
     std::string layoutQueryStr(layoutQuery);
     std::string layoutKVStr(layoutKV);
 
     EXEC_NPU_CMD(aclnnKvQuantSparseFlashAttentionGsa, query, key, value, sparseIndices,
-                 keyDequantScale, valueDequantScale, blockTable, actualSeqLengthsQuery,
-                 actualSeqLengthsKV, sinks, actualSparseLengths, scaleValue, keyQuantMode,
-                 valueQuantMode, sparseBlockSize_, layoutQueryStr, layoutKVStr, sparseMode_,
-                 preTokens_, nextTokens_, attentionMode_, quantScaleRepoMode_, tileSize_, ropeDim,
-                 returnSoftmaxLse_, attentionOut, softmaxMax, softmaxSum);
+                 keyDequantScale, valueDequantScale, blockTable,
+                 actualSeqLengthsQuery, actualSeqLengthsKV, sinks, actualSparseLengths,
+                 scaleValue, keyQuantMode, valueQuantMode, sparseBlockSize_,
+                 layoutQueryStr, layoutKVStr, sparseMode_,
+                 preTokens_, nextTokens_, attentionMode_, quantScaleRepoMode_,
+                 tileSize_, ropeDim, returnSoftmaxLse_,
+                 attentionOut, softmaxMax, softmaxSum);
     return std::make_tuple(attentionOut, softmaxMax, softmaxSum);
 }
 
@@ -200,16 +209,14 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _gsa), ops)
     ops.def("gsa_gather_copy(Tensor(a!) dst, Tensor src, Tensor index) -> ()");
     ops.impl("gsa_gather_copy", torch::kPrivateUse1, &gsa::gsa_gather_copy);
 
-    ops.def(
-        "indexer_gather_qw(Tensor q_src, Tensor w_src, Tensor(a!) q_dst, "
-        "Tensor(a!) w_dst, Tensor q_index, Tensor w_index) -> ()");
+    ops.def("indexer_gather_qw(Tensor q_src, Tensor w_src, Tensor(a!) q_dst, "
+            "Tensor(a!) w_dst, Tensor q_index, Tensor w_index) -> ()");
     ops.impl("indexer_gather_qw", torch::kPrivateUse1, &gsa::indexer_gather_qw);
 
     // gsa_topk_expand_tmp: pad 是 IntArrayRef，用 SymInt list 表达；padValue 用 int
     // 返回 view 的 tensor
-    ops.def(
-        "gsa_topk_expand_tmp(Tensor topk_indices, Tensor swap_topk, Tensor swap_index, "
-        "Tensor tmp_tensor, int[] pad, int pad_value, int expand_len) -> Tensor");
+    ops.def("gsa_topk_expand_tmp(Tensor topk_indices, Tensor swap_topk, Tensor swap_index, "
+            "Tensor tmp_tensor, int[] pad, int pad_value, int expand_len) -> Tensor");
     ops.impl("gsa_topk_expand_tmp", torch::kPrivateUse1, &gsa::gsa_topk_expand_tmp_wrapper);
 
     // --- 自定义 AscendC 算子 ---

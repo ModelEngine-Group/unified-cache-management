@@ -106,7 +106,6 @@ def allocate_slots(
     """
     from ucm.sparse.base import INVALID_SLOT
     from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     # When loading KV data asynchronously, we may have zero new tokens to
     # compute while still allocating slots for externally computed tokens.
@@ -116,7 +115,11 @@ def allocate_slots(
             "external computed tokens"
         )
 
-    if num_slots_sparsed != INVALID_SLOT and has_ucm_sparse():
+    if (
+        num_slots_sparsed is not None
+        and num_slots_sparsed != INVALID_SLOT
+        and has_ucm_sparse()
+    ):
         return get_ucm_sparse().allocate_slots(self, request, num_slots_sparsed)
 
     if new_computed_blocks is not None:
@@ -171,7 +174,7 @@ def allocate_slots(
     )
 
     gsa_preempted_flag = False
-    if has_ucm_sparse() and PTOPK_PREFETCH_ENABLE:
+    if has_ucm_sparse():
         gsa_preempted_flag = get_ucm_sparse().estimate_free_slots_sparse(
             request, num_blocks_to_allocate, num_new_computed_tokens
         )

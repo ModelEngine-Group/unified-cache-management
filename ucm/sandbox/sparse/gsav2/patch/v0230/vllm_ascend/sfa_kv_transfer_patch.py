@@ -1,4 +1,17 @@
 """Replace the vLLM-Ascend 0.23.0 SFA forward with the GSA-aware KV-save fix.
+
+This is the GSA counterpart of
+``ucm/integration/vllm/patch/v0230/vllm_ascend/sfa_kv_transfer_patch.py``.
+It is toggled by ``ENABLE_GSA_PATCH=1`` (in addition to ``ENABLE_UCM_PATCH=1``)
+via ``apply_patch.apply_all_patches`` and patches ``AscendSFAImpl.forward`` with
+the GSA-aware implementation that drives
+``maybe_execute_sparse_attention_begin/finished`` and the
+``gsa_prefetch/warmup/swap`` top-k bookkeeping introduced by
+``vllm-ascend-adapt-1020-c8.patch``.
+
+The remaining GSA SFA patches (``__init__``, ``_build``,
+``indexer_select_post_process``, ``_execute_sparse_flash_attention_process``)
+live in ``ucm/sandbox/sparse/gsav2/patch/vllm_ascend/sfa_v1_patch.py``.
 """
 
 from __future__ import annotations
@@ -326,7 +339,6 @@ def forward(
     if (
         (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
         and has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and self.layer_id < self.layer_num
     ):
         if self.enable_sparse_sfa_c8:
@@ -368,7 +380,6 @@ def forward(
         if (
             (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
             and has_ucm_sparse()
-            and PTOPK_PREFETCH_ENABLE
             and self.layer_id < self.layer_num
         ):
             torch_npu.npu_scatter_nd_update_(
@@ -412,7 +423,6 @@ def forward(
                             or not self.vllm_config.kv_transfer_config.is_kv_producer
                         )
                         and has_ucm_sparse()
-                        and PTOPK_PREFETCH_ENABLE
                         and self.layer_id < self.layer_num
                     ):
                         torch_npu.npu_scatter_nd_update_(
@@ -466,7 +476,6 @@ def forward(
     if (
         (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
         and has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and self.layer_id < self.layer_num
     ):
         if has_prefill:
@@ -535,7 +544,7 @@ def forward(
                 )
         else:
             if attn_metadata.gsa_warmup_len > 0 and self.has_indexer:
-                torch.ops._C_ascend.gsa_gather_copy(
+                torch.ops._C_gsa.gsa_gather_copy(
                     attn_metadata.gsa_warmup_topk[self.cur_topk_index][
                         : attn_metadata.gsa_warmup_len
                     ].view(-1, DEFAULT_TOPK_LEN),
@@ -545,7 +554,7 @@ def forward(
                     .expand((-1, DEFAULT_TOPK_LEN)),
                 )
             if attn_metadata.gsa_prefetch_len != 0 and self.has_indexer:
-                torch.ops._C_ascend.gsa_gather_copy(
+                torch.ops._C_gsa.gsa_gather_copy(
                     attn_metadata.gsa_prefetch_topk[self.cur_topk_index][
                         : attn_metadata.gsa_prefetch_len
                     ].view(-1, DEFAULT_TOPK_LEN),
@@ -554,7 +563,7 @@ def forward(
                     .view(-1, 1)
                     .expand((-1, DEFAULT_TOPK_LEN)),
                 )
-            topk_indices_out = torch.ops._C_ascend.gsa_topk_expand_tmp(
+            topk_indices_out = torch.ops._C_gsa.gsa_topk_expand_tmp(
                 topk_indices.view(-1, DEFAULT_TOPK_LEN),
                 attn_metadata.gsa_swap_topk[self.cur_topk_index][
                     : attn_metadata.gsa_swap_len
@@ -590,7 +599,6 @@ def forward(
     if (
         (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
         and has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and self.layer_id < self.layer_num
     ):
         k_cache = kv_cache[0]
