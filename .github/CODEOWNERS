@@ -1,8 +1,8 @@
 # See https://help.github.com/articles/about-codeowners/
 # for more info about CODEOWNERS file
 
-* @mag1c-h @ygwpz @FangRun2 @Tarrei @Wwwzff @han964 @aisakaki @ljw559godv
-/.github @Wwwzff @Infinite666 @ygwpz @mag1c-h @FangRun2 @Tarrei
+* @mag1c-h @ygwpz @FangRun2 @Tarrei @Wwwzff @han9641 @aisakaki @ljw559godv
+/.github @Wwwzff @Infinite666 @ygwpz @mag1c-h @FangRun2 @Tarrei @han9641 @aisakaki @ljw559godv
 
 /ucm/sparse @wuhuxiao @wangwenxin0312 @Infinite666 @ygwpz @mag1c-h
 /ucm/sparse/cache_blend @wuhuxiao @Infinite666 @ygwpz @mag1c-h
@@ -46,4 +46,4 @@
 
 /scripts @SuperMarioYL
 
-/kv_semantics @mag1c-h @nrj868 @Infinite666 @Wwwzff @han964 @aisakaki @ljw559godv
+/kv_semantics @mag1c-h @nrj868 @Infinite666 @Wwwzff @han9641 @aisakaki @ljw559godv
