@@ -58,6 +58,18 @@ std::uint64_t Crc32IEEE(std::string_view data)
     return crc ^ 0xFFFFFFFFU;
 }
 
+// Fnv1a64 is the independent hash used by the secondary failover ring. Its ring
+// positions therefore differ from the primary CRC32 ring for the same node set.
+std::uint64_t Fnv1a64(std::string_view data)
+{
+    std::uint64_t hash = 0xcbf29ce484222325ULL;
+    for (unsigned char ch : data) {
+        hash ^= ch;
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
+
 std::string BuildVirtualNodeKey(NodeId nodeId, std::uint64_t index, std::uint64_t salt)
 {
     auto key = "vn-" + std::to_string(index) + "#node-" + std::to_string(nodeId);
@@ -153,9 +165,10 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
 
 RingHashRouter::RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
                                RouterConfig config)
-    : Router(std::move(hash)), config_(config)
+    : Router(std::move(hash)), config_(config), secondaryHash_(Fnv1a64)
 {
     Build(nodeIds);
+    BuildSecondary(nodeIds);
 }
 
 void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
@@ -175,6 +188,23 @@ void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
     ring_ = std::move(ringData);
 }
 
+void RingHashRouter::BuildSecondary(const std::vector<NodeId>& nodeIds)
+{
+    RingData ringData;
+    const auto activeNodeIds = NormalizeNodeIds(nodeIds);
+    ringData.reserve(activeNodeIds.size() * config_.ringHash.virtualNodeCount);
+    std::unordered_set<std::uint64_t> usedHashes;
+    usedHashes.reserve(activeNodeIds.size() * config_.ringHash.virtualNodeCount);
+    for (auto nodeId : activeNodeIds) {
+        for (std::uint64_t index = 0; index < config_.ringHash.virtualNodeCount; ++index) {
+            if (!InsertVirtualNode(ringData, usedHashes, nodeId, index, secondaryHash_)) { break; }
+        }
+    }
+
+    std::sort(ringData.begin(), ringData.end());
+    secondaryRing_ = std::move(ringData);
+}
+
 NodeId RingHashRouter::RouteKey(const Key& key) const
 {
     if (ring_.empty()) { return kInvalidNodeId; }
@@ -185,6 +215,44 @@ NodeId RingHashRouter::RouteKey(const Key& key) const
         [](const RingNode& ringNode, std::uint64_t value) { return ringNode.first < value; });
     if (iter == ring_.end()) { iter = ring_.begin(); }
     return iter->second;
+}
+
+NodeId RingHashRouter::RouteKeyWithFailover(const Key& key,
+                                            const UnavailableNodeSet& unavailableNodes) const
+{
+    if (ring_.empty()) { return kInvalidNodeId; }
+
+    const auto primary = RouteKey(key);
+    if (primary != kInvalidNodeId && unavailableNodes.count(primary) == 0) { return primary; }
+
+    // The primary owner is unavailable. Consult the secondary ring exactly once: a
+    // fallback equal to the primary owner, or an unavailable fallback, fails the entry.
+    // No further ring walk and no third hash is performed.
+    if (secondaryRing_.empty()) { return kInvalidNodeId; }
+
+    const auto hashValue = secondaryHash_(key);
+    auto iter = std::lower_bound(
+        secondaryRing_.begin(), secondaryRing_.end(), hashValue,
+        [](const RingNode& ringNode, std::uint64_t value) { return ringNode.first < value; });
+    if (iter == secondaryRing_.end()) { iter = secondaryRing_.begin(); }
+
+    const auto fallback = iter->second;
+    if (fallback == primary || unavailableNodes.count(fallback) != 0) { return kInvalidNodeId; }
+    return fallback;
+}
+
+std::unordered_map<NodeId, std::vector<Router::EntryIndex>> RingHashRouter::RouteKeys(
+    const std::vector<Key>& keys, const UnavailableNodeSet& unavailableNodes) const
+{
+    if (unavailableNodes.empty()) { return Router::RouteKeys(keys); }
+
+    std::unordered_map<NodeId, std::vector<EntryIndex>> routes;
+    routes.reserve(keys.size());
+    for (EntryIndex index = 0; index < keys.size(); ++index) {
+        const auto nodeId = RouteKeyWithFailover(keys[index], unavailableNodes);
+        if (nodeId != kInvalidNodeId) { routes[nodeId].emplace_back(index); }
+    }
+    return routes;
 }
 
 MaglevRouter::MaglevRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
