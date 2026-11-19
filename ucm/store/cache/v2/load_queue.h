@@ -82,6 +82,7 @@ class LoadQ {
     bool sdmaDirect_{false};
     bool ioAggregation_{false};
     bool useGdr_{false};
+    bool loadBackendOnly_{false};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     std::vector<size_t> tensorSizes_{};
@@ -108,6 +109,7 @@ public:
         sdmaDirect_ = config.sdmaDirect;
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
+        loadBackendOnly_ = config.loadBackendOnly;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         tensorSizes_ = config.tensorSizes;
@@ -165,7 +167,8 @@ private:
         const auto startTp = NowTime::Now();
         const auto nShard = task->desc.size();
         std::vector<size_t> indexes(nShard);
-        if (task->desc.distributeBackendLoad) {
+        const bool distribute = task->desc.distributeBackendLoad && !loadBackendOnly_;
+        if (distribute) {
             indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
         } else {
             std::iota(indexes.begin(), indexes.end(), 0);
@@ -177,9 +180,9 @@ private:
             auto& shard = task->desc[originalIndex];
             ShardTask shardTask;
             auto handle =
-                task->desc.distributeBackendLoad
+                distribute
                     ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_)
-                    : buffer_->Get(shard.owner, shard.index, true);
+                    : buffer_->Get(shard.owner, shard.index, true, kInvalid, loadBackendOnly_);
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
@@ -207,7 +210,7 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
         RecordLoadSourceShards(nShard, waitShardCount);
-        PreallocNextShards(task, indexes);
+        if (!loadBackendOnly_) { PreallocNextShards(task, indexes); }
     }
     Expected<Detail::TaskHandle> SubmitBackendLoad(const TaskPtr& task, const Detail::Shard& shard,
                                                    Handle& handle)

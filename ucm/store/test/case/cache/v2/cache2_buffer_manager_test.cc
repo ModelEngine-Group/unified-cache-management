@@ -100,6 +100,22 @@ protected:
     TestedManager mgr_;
 };
 
+TEST_F(UCCache2BufferManagerTest, BackendOnlyLooksUpAllKeysInBackend)
+{
+    UC::Cache2::Config config;
+    config.storeBackend = &backend_;
+    config.loadBackendOnly = true;
+    ASSERT_TRUE(mgr_.Setup(config).Success());
+    const auto blocks = MakeBlocks(2);
+    mgr_.GetTransBuffer()->SetHits(blocks);
+    EXPECT_CALL(backend_, Lookup).WillOnce(testing::Return(std::vector<uint8_t>{0, 0}));
+    EXPECT_CALL(backend_, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    EXPECT_CALL(backend_, LookupOnReverse).WillOnce(testing::Return(ssize_t{-1}));
+    EXPECT_THAT(mgr_.Lookup(blocks.data(), blocks.size()).Value(), testing::ElementsAre(0, 0));
+    EXPECT_EQ(mgr_.LookupOnPrefix(blocks.data(), blocks.size()).Value(), -1);
+    EXPECT_EQ(mgr_.LookupOnReverse(blocks.data(), blocks.size()).Value(), -1);
+}
+
 TEST_F(UCCache2BufferManagerTest, LookupOnPrefixAllBufferHitsSkipsBackend)
 {
     auto blocks = MakeBlocks(3);

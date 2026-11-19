@@ -67,6 +67,14 @@ These fields apply to pipelines containing Cache. Cache2 capacity is planned per
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
 | `share_buffer_enable` | Optional | bool | Legacy compatibility | Cache2 always uses a shared control plane and per-worker memfd data segments within each cache domain. |
 
+Cache2 runtime reset supports only single-host `mp`/`uni` deployments without PP. Ray and external-launcher topology are not inferred and reset is rejected. PP (including single-host PP) and cross-host TP reset are unsupported; the vLLM connector returns false without clearing its local Cache in these cases. Reset only invalidates local DRAM entries, keeps backend files, and requires quiescent Cache traffic. No reset communication between scheduler and workers is added. Each DP engine clears its own local Cache; reaching every DP engine depends on vLLM request routing.
+
+For Posix-hit benchmarks with PP or cross-host TP, start the service with `cache_load_backend_only: true` in every worker's `ucm_connector_config`, using a Posix backend. Benchmark in this mode instead of calling UCM reset. This flag controls the UCM Cache tier; vLLM HBM prefix-cache reuse is configured separately.
+
+| Parameter | Required | Type | Value Range | Description |
+| --- | --- | --- | --- | --- |
+| `cache_load_backend_only` | Optional | bool | Default: `false` | Test mode: query the backend and reload unused Cache2 slots in place. As in legacy Cache, referenced Ready slots and in-flight fills may be shared. Requires a backend store; configure it on every worker. |
+
 ## Posix capacity reclamation
 
 Capacity settings do not reserve filesystem space. Coordinate GC ownership for shared namespaces instead of letting independent instances reclaim against separate budgets.

@@ -43,9 +43,20 @@ TEST(UCCache2CopyConfigTest, DefaultsFollowRuntime)
     const auto config = UC::Cache2::Config::From(MakeWorkerConfig());
 
     EXPECT_EQ(config.bufferCapacity, 160ULL << 30);
+    EXPECT_FALSE(config.loadBackendOnly);
     EXPECT_FALSE(config.ioAggregation);
     EXPECT_EQ(config.sdmaDirect, bool(UCM_RUNTIME_ASCEND_SDMA_DIRECT));
     EXPECT_TRUE(config.Validate().Success());
+}
+
+TEST(UCCache2CopyConfigTest, BackendOnlyParsesFlagAndRequiresBackend)
+{
+    auto dict = MakeWorkerConfig();
+    dict.Set("cache_load_backend_only", true);
+    const auto config = UC::Cache2::Config::From(dict);
+    EXPECT_TRUE(config.loadBackendOnly);
+    EXPECT_TRUE(config.Validate().Failure());
+    EXPECT_NE(config.Validate().ToString().find("requires a backend"), std::string::npos);
 }
 
 TEST(UCCache2CopyConfigTest, HmaFaAggregationDefaultRespectsRuntime)

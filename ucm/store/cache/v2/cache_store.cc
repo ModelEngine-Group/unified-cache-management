@@ -96,9 +96,21 @@ public:
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override { return transMgr_.Check(taskId); }
     Status Wait(Detail::TaskHandle taskId) override { return transMgr_.Wait(taskId); }
+    Status ResetCache()
+    {
+        // The control region exists on every participant, including the
+        // scheduler side that never maps slot data.
+        bufferMgr_.Reset();
+        return Status::OK();
+    }
 };
 
 }  // namespace UC::Cache2
 
 /* Platforms using Cache2, including simu, share this entry point. */
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::Cache2::Store(); }
+extern "C" UC::Status ResetCacheStore(UC::StoreV1* store)
+{
+    if (store == nullptr) { return UC::Status::InvalidParam("Cache store is null"); }
+    return static_cast<UC::Cache2::Store*>(store)->ResetCache();
+}

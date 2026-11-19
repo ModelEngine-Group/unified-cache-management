@@ -49,6 +49,7 @@ public:
 
 class PipelineStore {
     using StoreLoader = LibraryLoader<StoreV1>;
+    using ResetCacheFn = Status (*)(StoreV1*);
     template <typename T>
     struct BufferArrayView {
         const T* data;
@@ -81,6 +82,7 @@ class PipelineStore {
     std::list<std::shared_ptr<StoreV1>> stores_;
     std::list<std::shared_ptr<HealthBreakerStore>> healthBreakerStores_;
     StoreV1* entry_{nullptr};
+    ResetCacheFn resetCache_{nullptr};
 
     StoreV1* StoreBack() const { return entry_; }
     [[noreturn]] static void ThrowError(const Status& s)
@@ -196,6 +198,11 @@ public:
             healthBreakerStores_.push_back(std::move(healthBreakerStore));
             entry_ = healthBreakerStores_.back().get();
         }
+        // Reset the outer Cache directly, including while its health wrapper is open.
+        resetCache_ =
+            name == "Cache"
+                ? reinterpret_cast<ResetCacheFn>(loaders_.back().FindSymbol("ResetCacheStore"))
+                : nullptr;
     }
     uintptr_t Self() const { return (uintptr_t)(void*)StoreBack(); }
     pybind11::bytes Lookup(const pybind11::buffer& ids)
@@ -278,6 +285,17 @@ public:
         }
         ThrowIfFailed(status);
     }
+    bool ResetCache()
+    {
+        if (resetCache_ == nullptr) { return false; }
+        auto status = [&] {
+            pybind11::gil_scoped_release release;
+            return resetCache_(stores_.back().get());
+        }();
+        if (status.Success()) { return true; }
+        if (status == Status::Unsupported()) { return false; }
+        ThrowError(status);
+    }
 };
 
 }  // namespace UC::PipelineStore
@@ -309,4 +327,5 @@ PYBIND11_MODULE(ucmpipelinestore, m)
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);
     s.def("Wait", &PipelineStore::Wait);
+    s.def("ResetCache", &PipelineStore::ResetCache);
 }
