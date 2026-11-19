@@ -23,7 +23,10 @@
  * */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "kv_types.h"
@@ -31,25 +34,47 @@
 
 namespace kv {
 
+namespace detail {
+// Structural comparison used by snapshot change detection and unit tests.
+bool NodeInfoEquals(const NodeInfo& lhs, const NodeInfo& rhs);
+std::string BuildViewPublishedLog(KvNsId nsId, std::uint64_t previousEpoch,
+                                  const GlobalView& nextView);
+std::string BuildViewNotPublishedLog(KvNsId nsId, std::uint64_t currentEpoch);
+std::string BuildViewPublishedSummaryLog(std::size_t nsChanged, std::size_t nsTotal,
+                                         std::size_t changedNs);
+}  // namespace detail
+
 // ViewUniverse defines the update/query contract for the complete
 // multi-namespace cluster view. Shard 5 provides the concrete implementation.
 class ViewUniverse {
 public:
     virtual ~ViewUniverse() = default;
 
-    // Atomically publishes a complete universe. A lower globalEpoch is
-    // rejected and the current universe is retained; an equal epoch is a no-op.
+    // Atomically publishes a non-empty complete universe only when nextEpoch is
+    // newer than the current globalEpoch. Empty snapshots and lower epochs fail
+    // without changing state; an equal epoch returns OK as a whole-universe
+    // no-op. A newer snapshot replaces every namespace; there are no
+    // per-namespace epoch decisions.
     virtual Status PublishAll(const ViewUniverse& nextUniverse) = 0;
-    // Replaces the contents without the monotonic-globalEpoch check. This is
-    // used for a freshly fetched ViewServer result and initial construction.
+    // Unconditionally replaces the complete contents and globalEpoch, including
+    // with an empty or older snapshot.
     virtual Status ReplaceAll(const ViewUniverse& nextUniverse) = 0;
 
     virtual Status GetView(KvNsId nsId, GlobalView& view) const = 0;
+    // Returns the namespace map and global epoch from one immutable snapshot.
+    // The default implementation preserves compatibility for external custom
+    // universes; the built-in implementation overrides it atomically.
+    virtual void GetSnapshot(std::unordered_map<KvNsId, GlobalView>& views,
+                             std::uint64_t& globalEpoch) const;
     virtual std::unordered_map<KvNsId, GlobalView> GetAllViews() const = 0;
     virtual std::vector<KvNsId> GetAllNsIds() const = 0;
     virtual std::uint64_t GetGlobalEpoch() const = 0;
     virtual bool Empty() const = 0;
     virtual void Clear() = 0;
 };
+
+std::shared_ptr<ViewUniverse> CreateViewUniverse();
+std::shared_ptr<ViewUniverse> CreateViewUniverse(std::unordered_map<KvNsId, GlobalView> views,
+                                                 std::uint64_t globalEpoch);
 
 }  // namespace kv

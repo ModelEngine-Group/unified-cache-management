@@ -129,9 +129,10 @@ target_include_directories(kv_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
         ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
         ${CMAKE_CURRENT_SOURCE_DIR}/client
+        ${CMAKE_CURRENT_SOURCE_DIR}/../agent/include
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
-target_link_libraries(kv_client PRIVATE kv_metrics)
+target_link_libraries(kv_client PRIVATE kv_metrics ${CMAKE_DL_LIBS})
 target_compile_definitions(kv_client PRIVATE SPDLOG_FMT_EXTERNAL)
 
 set(INSTALL_REL_PATH "kv_semantics/src")
