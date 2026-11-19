@@ -34,6 +34,7 @@
 #include <utility>
 #include "logger.h"
 #include "view/m800_view_codec.h"
+#include "view/view_universe.h"
 
 namespace kv {
 namespace {
@@ -71,6 +72,13 @@ bool ValidIpAddress(const std::string& ip)
     in6_addr ipv6{};
     return inet_pton(AF_INET, ip.c_str(), &ipv4) == 1 ||
            inet_pton(AF_INET6, ip.c_str(), &ipv6) == 1;
+}
+
+std::uint64_t ViewsGlobalEpoch(const std::unordered_map<KvNsId, GlobalView>& views)
+{
+    std::uint64_t epoch{0};
+    for (const auto& item : views) { epoch = std::max(epoch, item.second.viewEpoch); }
+    return epoch;
 }
 
 bool ParseNodeEndpoint(const std::string& address, const M800ViewServerConfig& config,
@@ -264,13 +272,40 @@ public:
         stopping_ = false;
     }
 
-    Status GetAllViews(ViewUniverse& universe)
+    Status GetAllViews(std::unordered_map<KvNsId, GlobalView>& views) override
     {
         std::lock_guard<std::mutex> fetchGuard(fetchMutex_);
         if (!running_.load()) {
             return MasterError(StatusCode::NOT_INITIALIZED, "M800 master is not running");
         }
-        return FetchAndPublish(universe);
+        auto output = CreateViewUniverse(views, ViewsGlobalEpoch(views));
+        if (!output) {
+            return MasterError(StatusCode::INTERNAL_ERROR,
+                               "failed to allocate M800 output ViewUniverse");
+        }
+        const auto status = FetchAndPublish(*output);
+        if (!status.ok()) { return status; }
+
+        std::unordered_map<KvNsId, GlobalView> nextViews;
+        std::uint64_t nextEpoch{0};
+        output->GetSnapshot(nextViews, nextEpoch);
+        views = std::move(nextViews);
+        return Status::OK();
+    }
+
+    Status GetGlobalViewByKvnsId(KvNsId nsId, GlobalView& view) override
+    {
+        std::unordered_map<KvNsId, GlobalView> views;
+        auto status = GetAllViews(views);
+        if (!status.ok()) { return status; }
+
+        const auto iter = views.find(nsId);
+        if (iter == views.end()) {
+            return MasterError(StatusCode::NOT_FOUND,
+                               "M800 view namespace not found, nsId=" + std::to_string(nsId));
+        }
+        view = iter->second;
+        return Status::OK();
     }
 
     Status GetGlobalView(GlobalView& view) override

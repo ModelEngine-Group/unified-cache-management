@@ -42,6 +42,7 @@
 namespace kv {
 class Router;
 class RefreshScheduler;
+class AsuTransportPool;
 }  // namespace kv
 
 namespace kv {
@@ -107,6 +108,9 @@ public:
                            std::vector<RegisteredMemory>& registeredRegions) override;
     // Unregisters regions and forgets successful resources.
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
+    // Returns the immutable snapshot of one namespace. This is an internal
+    // implementation accessor, not part of the public KvClient ABI.
+    std::shared_ptr<ViewSnapshot> GetSnapshotByKvnsId(KvNsId nsId) const;
 
 private:
     struct ProviderMemoryState {
@@ -128,11 +132,18 @@ private:
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
                                std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
     // Builds a complete immutable snapshot for a view.
-    Status BuildSnapshot(const GlobalView& view, const std::shared_ptr<ViewSnapshot>& oldSnapshot,
-                         std::shared_ptr<ViewSnapshot>& snapshot);
-    // Creates and initializes a transport for one ASU.
-    Status BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
-                          std::shared_ptr<AsuTransport>& transport);
+    Status BuildSnapshot(const GlobalView& view, std::shared_ptr<ViewSnapshot>& snapshot);
+    // Builds a complete immutable snapshot for one namespace view.
+    Status BuildSnapshotByKvnsId(KvNsId nsId, const GlobalView& view,
+                                 std::shared_ptr<ViewSnapshot>& snapshot);
+    // Builds every namespace snapshot before any state is published. A failure
+    // leaves the old universe and snapshot map untouched.
+    Status BuildSnapshots(const std::unordered_map<KvNsId, GlobalView>& views,
+                          ViewSnapshotMap& snapshots);
+    // Prepares the transport config used by the global transport pool.
+    Status MakeTransportConfig(NodeId nodeId, const NodeInfo& asuInfo, TransportConfig& config);
+    // Creates one transport and binds its provider memory; used by the pool.
+    Status CreateTransport(const TransportConfig& config, std::shared_ptr<AsuTransport>& transport);
     Status BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
                                const std::vector<RegisteredMemory>& registeredRegions,
                                std::vector<MRHandle>& localHandles);
@@ -140,14 +151,13 @@ private:
                                      const std::vector<MRHandle>& handles);
     // Returns the current immutable snapshot if initialized.
     std::shared_ptr<ViewSnapshot> GetSnapshot() const;
+    // Shuts the global transport pool after task drain.
+    Status ShutdownTransportPool();
 
     // Refreshes the view and publishes it if it is newer.
     Status RefreshView();
     // Starts a non-blocking refresh after a status indicates stale routing or transport state.
     void RequestBackgroundRefresh();
-
-    // Shuts down transports owned by a snapshot.
-    Status ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot);
 
     // Returns whether a status suggests the published snapshot should be refreshed.
     bool IsRefreshNeeded(const Status& status) const;
@@ -185,6 +195,8 @@ private:
     KvClientConfig config_;
     // Source for dynamic global views; may be backed by viewServiceAddrs.
     std::shared_ptr<ViewServer> viewServer_;
+    // True only when the selected provider requires multi-namespace snapshots.
+    bool multiNamespaceView_{false};
     // Resident scheduler that serializes timer- and IO-triggered view refreshes.
     std::unique_ptr<RefreshScheduler> refreshScheduler_;
     // Transport configs indexed by ASU id for snapshot construction.
@@ -199,8 +211,8 @@ private:
     std::shared_ptr<ViewSnapshot> snapshot_;
     // Per-namespace snapshots; publishing and construction are owned by the view layer.
     ViewSnapshotMap snapshots_;
-    // Transports removed from the active snapshot but still needed by old tasks.
-    std::vector<std::shared_ptr<AsuTransport>> retiredTransports_;
+    // Global per-node transport pool shared by every namespace snapshot.
+    std::unique_ptr<AsuTransportPool> transportPool_;
 };
 
 }  // namespace kv

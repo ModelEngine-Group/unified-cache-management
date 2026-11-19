@@ -41,12 +41,20 @@
 #include "logger.h"
 #include "view/m800_view_codec.h"
 #include "view/m800_view_common.h"
+#include "view/view_universe.h"
 
 namespace kv {
 namespace {
 
 constexpr std::size_t kMaxHeaderBytes = 64 * 1024;
 constexpr std::size_t kMaxBodyBytes = 4 * 1024 * 1024;
+
+std::uint64_t ViewsGlobalEpoch(const std::unordered_map<KvNsId, GlobalView>& views)
+{
+    std::uint64_t epoch{0};
+    for (const auto& item : views) { epoch = std::max(epoch, item.second.viewEpoch); }
+    return epoch;
+}
 
 struct MasterAddress {
     std::string host;
@@ -432,14 +440,51 @@ public:
 
     Status Start() override
     {
-        auto initialUniverse = CreateViewUniverse();
-        if (!initialUniverse) {
-            return SlaveError(StatusCode::INTERNAL_ERROR, "failed to create initial ViewUniverse");
-        }
-        return GetAllViews(*initialUniverse);
+        std::unordered_map<KvNsId, GlobalView> views;
+        return GetAllViews(views);
     }
 
-    Status GetAllViews(ViewUniverse& universe)
+    Status GetAllViews(std::unordered_map<KvNsId, GlobalView>& views) override
+    {
+        auto universe = CreateViewUniverse(views, ViewsGlobalEpoch(views));
+        if (!universe) {
+            return SlaveError(StatusCode::INTERNAL_ERROR,
+                              "failed to allocate M800 output ViewUniverse");
+        }
+        auto status = FetchAllViews(*universe);
+        if (!status.ok()) { return status; }
+
+        std::unordered_map<KvNsId, GlobalView> nextViews;
+        std::uint64_t nextEpoch{0};
+        universe->GetSnapshot(nextViews, nextEpoch);
+        views = std::move(nextViews);
+        return Status::OK();
+    }
+
+    Status GetGlobalViewByKvnsId(KvNsId nsId, GlobalView& view) override
+    {
+        std::unordered_map<KvNsId, GlobalView> views;
+        auto status = GetAllViews(views);
+        if (!status.ok()) { return status; }
+
+        const auto iter = views.find(nsId);
+        if (iter == views.end()) {
+            return SlaveError(StatusCode::NOT_FOUND,
+                              "M800 view namespace not found, nsId=" + std::to_string(nsId));
+        }
+        view = iter->second;
+        return Status::OK();
+    }
+
+private:
+    Status GetGlobalView(GlobalView& view) override
+    {
+        (void)view;
+        return SlaveError(StatusCode::UNSUPPORTED,
+                          "M800 view slave serves multiple namespaces; use GetAllViews");
+    }
+
+    Status FetchAllViews(ViewUniverse& universe)
     {
         std::lock_guard<std::mutex> guard(mutex_);
         if (stopRequested_.load()) {
@@ -529,13 +574,6 @@ public:
         return lastFailure;
     }
 
-    Status GetGlobalView(GlobalView& view) override
-    {
-        (void)view;
-        return SlaveError(StatusCode::UNSUPPORTED,
-                          "M800 view slave serves multiple namespaces; use GetAllViews");
-    }
-
     void Stop() override
     {
         stopRequested_.store(true);
@@ -548,7 +586,6 @@ public:
         stopRequested_.store(false);
     }
 
-private:
     M800ViewServerConfig config_;
     std::mutex mutex_;
     std::mutex activeFdMutex_;

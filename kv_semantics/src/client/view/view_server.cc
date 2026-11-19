@@ -29,6 +29,7 @@
 #include "parser_common.h"
 #include "status_utils.h"
 #include "utils/config_utils.h"
+#include "view/m800_view_service_factory.h"
 
 namespace kv {
 namespace {
@@ -41,6 +42,37 @@ NodeInfo ExtractAsuInfo(const TransportConfig& config)
 }
 
 bool HasKnownViewEpoch(const GlobalView& view) { return view.viewEpoch != 0; }
+
+}  // namespace
+
+Status ViewServer::GetAllViews(std::unordered_map<KvNsId, GlobalView>& views)
+{
+    GlobalView view;
+    auto status = GetGlobalView(view);
+    if (!status.ok()) { return status; }
+
+    std::unordered_map<KvNsId, GlobalView> nextViews;
+    nextViews.emplace(kDefaultKvNsId, std::move(view));
+    views = std::move(nextViews);
+    return Status::OK();
+}
+
+Status ViewServer::GetGlobalViewByKvnsId(KvNsId nsId, GlobalView& view)
+{
+    std::unordered_map<KvNsId, GlobalView> views;
+    auto status = GetAllViews(views);
+    if (!status.ok()) { return status; }
+
+    const auto iter = views.find(nsId);
+    if (iter == views.end()) {
+        return Status::Error(StatusCode::NOT_FOUND,
+                             "view namespace not found, nsId=" + std::to_string(nsId));
+    }
+    view = iter->second;
+    return Status::OK();
+}
+
+namespace {
 
 class ConfigFileViewServer final : public ViewServer {
 public:
@@ -147,6 +179,8 @@ bool ViewServer::ShouldRefreshView(const TaskResult& result) const
 
 std::shared_ptr<ViewServer> CreateDefaultViewServer(const KvClientConfig& config)
 {
+    if (HasViewProvider(config)) { return CreateM800ViewServer(config); }
+
     auto viewConfigPath = config.attrs.find("view.config_path");
     if (viewConfigPath != config.attrs.end() && !viewConfigPath->second.empty()) {
         return std::make_shared<ConfigFileViewServer>(viewConfigPath->second);

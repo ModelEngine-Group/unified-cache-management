@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include "view/m800_view_slave_server.h"
@@ -112,6 +113,13 @@ private:
     std::thread worker_;
 };
 
+std::uint64_t MaxViewEpoch(const std::unordered_map<KvNsId, GlobalView>& views)
+{
+    std::uint64_t epoch{0};
+    for (const auto& item : views) { epoch = std::max(epoch, item.second.viewEpoch); }
+    return epoch;
+}
+
 std::string ValidText(std::uint64_t epoch)
 {
     const auto value = std::to_string(epoch);
@@ -149,15 +157,13 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsMalformedResponsesWithoutChangingUniv
         GlobalView initial;
         initial.viewEpoch = 8;
         initial.viewId = 9;
-        auto universe = CreateViewUniverse(
-            {
-                {9, initial}
-        },
-            8);
-        const auto status = worker->GetAllViews(*universe);
+        std::unordered_map<KvNsId, GlobalView> universe{
+            {9, initial}
+        };
+        const auto status = worker->GetAllViews(universe);
         EXPECT_EQ(status.code, expectedCode) << response;
-        EXPECT_EQ(universe->GetGlobalEpoch(), 8) << response;
-        EXPECT_EQ(universe->GetAllNsIds().size(), 1) << response;
+        EXPECT_EQ(MaxViewEpoch(universe), 8) << response;
+        EXPECT_EQ(universe.size(), 1) << response;
         worker->Stop();
     }
 }
@@ -181,9 +187,9 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsNon200FramingErrors)
         config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
         config.httpTimeoutMs = 300;
         auto worker = CreateM800ViewSlaveServer(config);
-        auto universe = CreateViewUniverse();
-        EXPECT_EQ(worker->GetAllViews(*universe).code, expectedCode) << response;
-        EXPECT_TRUE(universe->Empty());
+        std::unordered_map<KvNsId, GlobalView> universe;
+        EXPECT_EQ(worker->GetAllViews(universe).code, expectedCode) << response;
+        EXPECT_TRUE(universe.empty());
         worker->Stop();
     }
 }
@@ -203,9 +209,9 @@ TEST(M800ViewSlaveHttpNegativeTest, RejectsBodyBytesBeyondContentLength)
     config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
     config.httpTimeoutMs = 300;
     auto worker = CreateM800ViewSlaveServer(config);
-    auto universe = CreateViewUniverse();
-    EXPECT_EQ(worker->GetAllViews(*universe).code, StatusCode::INTERNAL_ERROR);
-    EXPECT_TRUE(universe->Empty());
+    std::unordered_map<KvNsId, GlobalView> universe;
+    EXPECT_EQ(worker->GetAllViews(universe).code, StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(universe.empty());
 }
 
 // 测试场景：主节点延迟 500ms 且不发送任何响应，从节点的 HTTP 超时为
@@ -219,9 +225,9 @@ TEST(M800ViewSlaveHttpNegativeTest, StopInterruptsBlockedRead)
     config.masterAddrs = {"127.0.0.1:" + std::to_string(server.Port())};
     config.httpTimeoutMs = 2000;
     auto worker = CreateM800ViewSlaveServer(config);
-    auto universe = CreateViewUniverse();
+    std::unordered_map<KvNsId, GlobalView> universe;
     Status fetchStatus;
-    std::thread fetcher([&] { fetchStatus = worker->GetAllViews(*universe); });
+    std::thread fetcher([&] { fetchStatus = worker->GetAllViews(universe); });
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     const auto begin = std::chrono::steady_clock::now();
@@ -244,8 +250,8 @@ TEST(M800ViewSlaveHttpNegativeTest, StopThenNewConnectionWorks)
             config.masterAddrs = {"127.0.0.1:" + std::to_string(slowServer.Port())};
             config.httpTimeoutMs = 1000;
             auto worker = CreateM800ViewSlaveServer(config);
-            auto universe = CreateViewUniverse();
-            std::thread fetcher([&] { (void)worker->GetAllViews(*universe); });
+            std::unordered_map<KvNsId, GlobalView> universe;
+            std::thread fetcher([&] { (void)worker->GetAllViews(universe); });
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             worker->Stop();
             fetcher.join();
@@ -258,9 +264,9 @@ TEST(M800ViewSlaveHttpNegativeTest, StopThenNewConnectionWorks)
         config.masterAddrs = {"127.0.0.1:" + std::to_string(validServer.Port())};
         config.httpTimeoutMs = 300;
         auto worker = CreateM800ViewSlaveServer(config);
-        auto universe = CreateViewUniverse();
-        ASSERT_TRUE(worker->GetAllViews(*universe).ok()) << "iteration=" << iteration;
-        EXPECT_EQ(universe->GetGlobalEpoch(), 10);
+        std::unordered_map<KvNsId, GlobalView> universe;
+        ASSERT_TRUE(worker->GetAllViews(universe).ok()) << "iteration=" << iteration;
+        EXPECT_EQ(MaxViewEpoch(universe), 10);
         worker->Stop();
     }
 }
@@ -278,9 +284,9 @@ TEST(M800ViewSlaveHttpNegativeTest, AllMasterAddressesShareOneDeadline)
                           "127.0.0.1:" + std::to_string(second.Port())};
     config.httpTimeoutMs = 100;
     auto worker = CreateM800ViewSlaveServer(config);
-    auto universe = CreateViewUniverse();
+    std::unordered_map<KvNsId, GlobalView> universe;
     const auto begin = std::chrono::steady_clock::now();
-    const auto status = worker->GetAllViews(*universe);
+    const auto status = worker->GetAllViews(universe);
     const auto elapsed = std::chrono::steady_clock::now() - begin;
     EXPECT_EQ(status.code, StatusCode::TIMEOUT);
     EXPECT_LT(elapsed, std::chrono::milliseconds(180));

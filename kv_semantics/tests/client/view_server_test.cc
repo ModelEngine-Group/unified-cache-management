@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <unordered_map>
 #include "kv_client.h"
 
 namespace kv::test {
@@ -65,6 +66,40 @@ TEST(ViewServerTest, ConfigBackedViewServerBuildsViewFromTransportConfigs)
     ASSERT_EQ(view.asuMap[10].endpoints.size(), std::size_t{1});
     EXPECT_EQ(view.asuMap[10].endpoints[0].ip, "127.0.0.1");
     EXPECT_EQ(view.asuMap[10].endpoints[0].protocol, Protocol::ROCE);
+}
+
+TEST(ViewServerTest, LegacyViewServerWrapsSingleViewByKvnsId)
+{
+    KvClientConfig config;
+    TransportConfig transportConfig;
+    transportConfig.nodeId = 10;
+    NodeEndpoint endpoint;
+    endpoint.ip = "127.0.0.1";
+    endpoint.port = 6000;
+    endpoint.protocol = Protocol::ROCE;
+    transportConfig.endpoints.emplace_back(endpoint);
+    config.transportConfigs.emplace_back(transportConfig);
+
+    auto viewServer = CreateDefaultViewServer(config);
+
+    std::unordered_map<KvNsId, GlobalView> views;
+    views.emplace(KvNsId{999}, GlobalView{});
+    auto status = viewServer->GetAllViews(views);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(views.size(), std::size_t{1});
+    ASSERT_NE(views.find(kDefaultKvNsId), views.end());
+    ASSERT_EQ(views.find(kDefaultKvNsId)->second.asuMap.size(), std::size_t{1});
+
+    GlobalView view;
+    view.viewEpoch = 7;
+    status = viewServer->GetGlobalViewByKvnsId(KvNsId{999}, view);
+    EXPECT_EQ(status.code, StatusCode::NOT_FOUND);
+    EXPECT_EQ(view.viewEpoch, std::uint64_t{7});
+
+    status = viewServer->GetGlobalViewByKvnsId(kDefaultKvNsId, view);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(view.asuMap.size(), std::size_t{1});
 }
 
 TEST(ViewServerTest, PublishAndRefreshPolicies)
