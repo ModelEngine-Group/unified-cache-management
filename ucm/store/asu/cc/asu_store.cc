@@ -1034,6 +1034,9 @@ private:
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
+        for (const auto& [key, value] : config.roceAttrs) {
+            UC_INFO("Set AsuStore::TransportAttr {} to {}.", key, value);
+        }
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
         UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
         UC_INFO("Set AsuStore::FakeBackendCompleteImmediately to {}.",

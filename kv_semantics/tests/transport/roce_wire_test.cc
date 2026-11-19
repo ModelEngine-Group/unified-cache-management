@@ -37,20 +37,6 @@ using roce::CapabilityRequest;
 using roce::Message;
 using roce::QpInfo;
 
-std::uint32_t Crc32(const std::uint8_t* data, std::size_t size)
-{
-    // Same construction as the wire code: reflected CRC-32C with a zero
-    // initial value and no final inversion.
-    std::uint32_t crc = 0;
-    for (std::size_t index = 0; index < size; ++index) {
-        crc ^= data[index];
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc & 1U) != 0U ? (0x82F63B78U ^ (crc >> 1U)) : (crc >> 1U);
-        }
-    }
-    return crc;
-}
-
 std::uint32_t ReadU32(const std::vector<std::uint8_t>& frame, std::size_t offset)
 {
     return (static_cast<std::uint32_t>(frame[offset]) << 24U) |
@@ -120,7 +106,7 @@ std::vector<std::uint8_t> LegacyCapabilityReply(const Capabilities& capabilities
     WriteU16Le(frame, offset, capabilities.controllerId);
     offset += 2;
     WriteU32Le(frame, offset, capabilities.controllerCap);
-    WriteU32(frame, 0, Crc32(frame.data() + 4, frame.size() - 4));
+    WriteU32(frame, 0, roce::Crc32c(frame.data() + 4, frame.size() - 4));
     return frame;
 }
 
@@ -170,8 +156,8 @@ TEST(RoceWireTest, ChecksumIsCrc32cStartingFromZero)
     // all ones); zeroing both leaves 0x58E3FA20.
     const std::string check = "123456789";
     EXPECT_EQ(0x58E3FA20U,
-              Crc32(reinterpret_cast<const std::uint8_t*>(check.data()), check.size()));
-    EXPECT_EQ(0U, Crc32(nullptr, 0));
+              roce::Crc32c(reinterpret_cast<const std::uint8_t*>(check.data()), check.size()));
+    EXPECT_EQ(0U, roce::Crc32c(nullptr, 0));
 }
 
 TEST(RoceWireTest, CapabilityRequestPutsTheProtocolVersionAfterPrivateLength)
@@ -296,7 +282,7 @@ TEST(RoceWireTest, RejectsAConnectBodyThatDoesNotMatchTheQueuePairCount)
     // Drop one queue pair entry but keep total_qp_num at two.
     frame.resize(frame.size() - 4U);
     WriteU32(frame, 12, static_cast<std::uint32_t>(frame.size() - roce::kWireHeaderBytes));
-    WriteU32(frame, 0, Crc32(frame.data() + 4, frame.size() - 4));
+    WriteU32(frame, 0, roce::Crc32c(frame.data() + 4, frame.size() - 4));
 
     Message message;
     std::string error;
@@ -387,7 +373,7 @@ TEST(RoceWireTest, UnknownCommandsAndUnexpectedVersionsAreReported)
 
     std::vector<std::uint8_t> unknown = frame;
     unknown[5] = 9;
-    WriteU32(unknown, 0, Crc32(unknown.data() + 4, unknown.size() - 4));
+    WriteU32(unknown, 0, roce::Crc32c(unknown.data() + 4, unknown.size() - 4));
 
     Message message;
     std::string error;
@@ -396,7 +382,7 @@ TEST(RoceWireTest, UnknownCommandsAndUnexpectedVersionsAreReported)
 
     std::vector<std::uint8_t> newer = frame;
     newer[4] = static_cast<std::uint8_t>(roce::kWireVersion + 1);
-    WriteU32(newer, 0, Crc32(newer.data() + 4, newer.size() - 4));
+    WriteU32(newer, 0, roce::Crc32c(newer.data() + 4, newer.size() - 4));
     EXPECT_FALSE(roce::DecodeMessage(newer.data(), newer.size(), message, error).ok());
     EXPECT_NE(std::string::npos, error.find("unsupported message version"));
 }

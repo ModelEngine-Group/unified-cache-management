@@ -121,12 +121,15 @@ struct QpInfo {
 // Decoded frame; only the member that matches cmd carries data.
 struct Message {
     std::uint8_t cmd{0};
-    CapabilityRequest request{};
     Capabilities capabilities{};
     QpInfo qp{};
     // True when a cmd 0 message carries the reply form (table 2).
     bool capabilityReply{false};
 };
+
+// Checksum of the header: reflected CRC-32C with a zero initial value and
+// no final inversion, so an empty buffer checksums to zero.
+std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size);
 
 // The MTU code used by table 3 (1 -> 256 ... 5 -> 4096).
 std::uint8_t MtuCodeFromBytes(std::size_t mtu);

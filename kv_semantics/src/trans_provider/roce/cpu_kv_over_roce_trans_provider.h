@@ -99,7 +99,7 @@ public:
 
     Status GetMemTokenId(MRHandle mrHandle, std::uint32_t& tokenId) override;
 
-    // Diagnostics used by the smoke test and by config dumps.
+    // Diagnostics used by the tests and by config dumps.
     const char* Name() const noexcept;
 
     const TransportConfig& Config() const noexcept;
@@ -114,9 +114,6 @@ private:
     // queue pairs whose handles are addressed from the low bits of each handle.
     struct Link {
         std::uint64_t id{0};
-        std::string remoteIp;
-        std::uint16_t remotePort{0};
-        bool verbs{false};
         TcpChannel channel;
         Capabilities localCapabilities;
         Capabilities peerCapabilities;

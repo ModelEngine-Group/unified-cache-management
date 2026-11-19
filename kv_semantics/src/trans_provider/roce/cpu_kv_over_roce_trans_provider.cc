@@ -569,7 +569,6 @@ Status CpuKvOverRoceTransProvider::CreateQueuePairs(Link& link, std::uint32_t qp
     if (!UseVerbsBackend()) {
         // Test backend: the protocol runs end to end while the queue pairs are
         // simulated, so the handshake can be exercised without RDMA hardware.
-        link.verbs = false;
         link.linkPsn = NextPsn();
         link.localQpInfo.startPsn = link.linkPsn;
         for (std::uint32_t index = 0; index < qpNum; ++index) {
@@ -584,7 +583,6 @@ Status CpuKvOverRoceTransProvider::CreateQueuePairs(Link& link, std::uint32_t qp
     VerbQpConfig verbConfig;
     Status built = BuildVerbConfig(localIp, verbConfig, error);
     if (!built.ok()) { return built; }
-    link.verbs = true;
     link.linkPsn = NextPsn();
     link.localQpInfo.startPsn = link.linkPsn;
     for (std::uint32_t index = 0; index < qpNum; ++index) {
@@ -639,7 +637,7 @@ Status CpuKvOverRoceTransProvider::ExchangeConnectRequests(Link& link, std::stri
 
 Status CpuKvOverRoceTransProvider::ConnectQueuePairs(Link& link, std::string& error)
 {
-    if (!link.verbs) { return Status::OK(); }
+    if (!UseVerbsBackend()) { return Status::OK(); }
     VerbQpConfig verbConfig;
     Status built = BuildVerbConfig(std::string(), verbConfig, error);
     if (!built.ok()) { return built; }
@@ -765,8 +763,6 @@ Status CpuKvOverRoceTransProvider::CreateConnection(
     if (!opened.ok()) { return opened; }
 
     auto link = std::make_unique<Link>();
-    link->remoteIp = remoteIp;
-    link->remotePort = static_cast<std::uint16_t>(port);
     link->channel = std::move(channel);
     link->localCapabilities = LocalCapabilities(qpNum);
     link->negotiatedCapabilities = link->localCapabilities;

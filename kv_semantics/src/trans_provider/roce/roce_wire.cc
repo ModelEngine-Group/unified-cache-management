@@ -74,18 +74,6 @@ const std::array<std::uint32_t, 256>& CrcTable()
     return table;
 }
 
-std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size)
-{
-    // Reflected CRC-32C with a zero initial value and no final inversion,
-    // so the checksum of an empty buffer is zero.
-    std::uint32_t crc = 0;
-    const auto& table = CrcTable();
-    for (std::size_t index = 0; index < size; ++index) {
-        crc = table[(crc ^ data[index]) & 0xFFU] ^ (crc >> 8U);
-    }
-    return crc;
-}
-
 class Writer {
 public:
     explicit Writer(std::vector<std::uint8_t>& buffer) : buffer_(buffer) {}
@@ -251,6 +239,18 @@ void FinishFrame(std::vector<std::uint8_t>& frame, std::uint8_t cmd)
 }
 
 }  // namespace
+
+std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size)
+{
+    // Reflected CRC-32C with a zero initial value and no final inversion,
+    // so the checksum of an empty buffer is zero.
+    std::uint32_t crc = 0;
+    const auto& table = CrcTable();
+    for (std::size_t index = 0; index < size; ++index) {
+        crc = table[(crc ^ data[index]) & 0xFFU] ^ (crc >> 8U);
+    }
+    return crc;
+}
 
 std::uint8_t MtuCodeFromBytes(std::size_t mtu)
 {
@@ -424,14 +424,8 @@ Status DecodeMessage(const std::uint8_t* frame, std::size_t size, Message& messa
                 return Fail(StatusCode::INVALID_ARGUMENT, error);
             }
             if (privateLength == kRequestPrivateBytes) {
-                Reader privateReader(body + kPrivateOffset, bodyLength - kPrivateOffset);
-                CapabilityRequest request;
-                if (!privateReader.U8(request.majorVersion) ||
-                    !privateReader.U8(request.minorVersion) || !privateReader.U16Le(request.kato)) {
-                    error = "capability request is truncated";
-                    return Fail(StatusCode::INVALID_ARGUMENT, error);
-                }
-                message.request = request;
+                // Nothing in a capability request is consumed today; the private
+                // length is what tells the two cmd 0 forms apart.
                 return Status::OK();
             }
             if (privateLength >= kReplyMinPrivateBytes) {
